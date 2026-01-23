@@ -1,0 +1,69 @@
+name: Build NixOS Installer ISO
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build ISO
+        working-directory: homelab
+        run: |
+          nix build .#iso --print-build-logs
+
+      - name: Get ISO info
+        id: iso_info
+        working-directory: homelab
+        run: |
+          ISO_PATH=$(readlink -f result/iso/*.iso)
+          ISO_NAME=$(basename "$ISO_PATH")
+          echo "iso_path=$ISO_PATH" >> $GITHUB_OUTPUT
+          echo "iso_name=$ISO_NAME" >> $GITHUB_OUTPUT
+          echo "ISO built: $ISO_NAME"
+          ls -lh "$ISO_PATH"
+
+      - name: Create/Update Latest Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: Latest NixOS Homelab Installer
+          files: ${{ steps.iso_info.outputs.iso_path }}
+          body: |
+            ## NixOS Homelab Installer ISO
+
+            This ISO can be used to install the homelab configuration.
+
+            **Usage:**
+            - Download the ISO file
+            - Write to USB drive using Rufus (Windows) or dd (Linux/macOS):
+              ```bash
+              sudo dd if=${{ steps.iso_info.outputs.iso_name }} of=/dev/sdX bs=4M status=progress && sync
+              ```
+            - Boot from USB and follow installation instructions
+
+            **Built from:** `${{ github.sha }}`
+            **Built at:** ${{ github.event.head_commit.timestamp }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-homelab-installer-${{ github.sha }}
+          path: ${{ steps.iso_info.outputs.iso_path }}
+          retention-days: 7

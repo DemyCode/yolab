@@ -1,0 +1,19 @@
+[project]
+name = "dns-server"
+version = "0.1.0"
+description = "FRP IPv6 Tunneling Service - DNS Server"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.5.0",
+  "pydantic-settings>=2.1.0",
+  "dnslib>=0.9.23",
+  "httpx>=0.25.2",
+  "python-dotenv>=1.0.0",
+  "devtools>=0.12.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+    "ty>=0.0.13",
+]

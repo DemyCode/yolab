@@ -1,0 +1,24 @@
+[common]
+# Bind on all IPv6 addresses
+bind_addr = ::
+bind_port = 7000
+
+# Domain for subdomain resolution
+subdomain_host = ${DOMAIN}
+
+# Enable IPv6 binding for services
+# frps will bind specific IPv6:port combinations as clients connect
+
+# Logging
+log_file = /var/log/frps.log
+log_level = info
+max_pool_count = 10
+
+# Auth plugin for validation
+# When running in hybrid mode (frps on host, auth plugin in Docker):
+# - Auth plugin container exposes port 7100 to host
+# - frps accesses it via localhost:7100
+[plugin.user_auth]
+addr = ${AUTH_PLUGIN_ADDR}
+path = /handler
+ops = NewProxy

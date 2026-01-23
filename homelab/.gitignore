@@ -1,0 +1,9 @@
+# Exclude config.toml as it contains sensitive information
+config.toml
+
+# NixOS build results
+result
+result-*
+
+# Hardware configuration (machine-specific)
+hardware-configuration.nix

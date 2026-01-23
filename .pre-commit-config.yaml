@@ -1,0 +1,17 @@
+# Root pre-commit config for monorepo
+# Uses sub-pre-commit to delegate to child configs
+repos:
+  - repo: https://github.com/ddanier/sub-pre-commit
+    rev: v4.5.1
+    hooks:
+      - id: sub-pre-commit
+        alias: backend
+        name: pre-commit for backend/
+        args: ["-p", "backend"]
+        files: ^backend/
+
+      - id: sub-pre-commit
+        alias: dns_server
+        name: pre-commit for dns_server/
+        args: ["-p", "dns_server"]
+        files: ^dns_server/
