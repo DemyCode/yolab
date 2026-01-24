@@ -4,7 +4,7 @@
   inputs,
   ...
 }: let
-  # Build backend with uv2nix
+  # Build backend with uv2nix (following template pattern)
   workspace = inputs.uv2nix.lib.workspace.loadWorkspace {
     workspaceRoot = ./backend;
   };
@@ -13,16 +13,19 @@
     sourcePreference = "wheel";
   };
 
-  # Override Python with uv2nix overlay
-  python = pkgs.python311.override {
-    packageOverrides = lib.composeManyExtensions [
-      inputs.pyproject-nix.lib.overlays.default
+  # Create Python package set with build-systems and workspace overlays
+  pythonSet =
+    (pkgs.callPackage inputs.pyproject-nix.build.packages {
+      python = pkgs.python311;
+    })
+    .overrideScope
+    (lib.composeManyExtensions [
+      inputs.pyproject-build-systems.overlays.wheel
       overlay
-    ];
-  };
+    ]);
 
   # Create virtual environment with backend and all dependencies
-  installerBackend = python.pkgs.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
+  installerBackend = pythonSet.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
   # Build the React frontend
   frontend = pkgs.buildNpmPackage {
     pname = "homelab-installer-frontend";
