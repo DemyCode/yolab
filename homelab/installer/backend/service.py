@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import http.server
+import json
 import socketserver
 import subprocess
-import json
 import urllib.parse
 from pathlib import Path
 
@@ -17,13 +17,15 @@ def test_internet():
             timeout=3,
         )
         return result.returncode == 0
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         return False
 
 
 def scan_wifi_networks():
     try:
-        subprocess.run(["nmcli", "device", "wifi", "rescan"], capture_output=True, timeout=10)
+        subprocess.run(
+            ["nmcli", "device", "wifi", "rescan"], capture_output=True, timeout=10
+        )
         result = subprocess.run(
             ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
             capture_output=True,
@@ -35,13 +37,17 @@ def scan_wifi_networks():
             if line:
                 parts = line.split(":")
                 if len(parts) >= 3 and parts[0]:
-                    networks.append({
-                        "ssid": parts[0],
-                        "signal": parts[1],
-                        "security": parts[2],
-                    })
-        return sorted(networks, key=lambda x: int(x["signal"]) if x["signal"] else 0, reverse=True)
-    except:
+                    networks.append(
+                        {
+                            "ssid": parts[0],
+                            "signal": parts[1],
+                            "security": parts[2],
+                        }
+                    )
+        return sorted(
+            networks, key=lambda x: int(x["signal"]) if x["signal"] else 0, reverse=True
+        )
+    except (subprocess.TimeoutExpired, OSError):
         return []
 
 
@@ -62,7 +68,7 @@ def connect_wifi(ssid, password):
                 timeout=30,
             )
         return result.returncode == 0
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         return False
 
 
@@ -78,14 +84,22 @@ def get_wifi_config():
             if "802-11-wireless" in line:
                 ssid = line.split(":")[0]
                 psk_result = subprocess.run(
-                    ["nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", ssid],
+                    [
+                        "nmcli",
+                        "-s",
+                        "-g",
+                        "802-11-wireless-security.psk",
+                        "connection",
+                        "show",
+                        ssid,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=5,
                 )
                 return {"ssid": ssid, "psk": psk_result.stdout.strip()}
         return None
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         return None
 
 
@@ -117,18 +131,20 @@ def detect_ram_size():
                     kb = int(line.split()[1])
                     gb = kb // (1024 * 1024)
                     return min(gb, 32)
-    except:
+    except (OSError, ValueError, IndexError):
         return 8
     return 8
 
 
-def generate_config_toml(disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config):
+def generate_config_toml(
+    disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
+):
     wifi_section = ""
     if wifi_config:
         wifi_section = f'''
 [wifi]
-ssid = "{wifi_config['ssid']}"
-psk = "{wifi_config['psk']}"
+ssid = "{wifi_config["ssid"]}"
+psk = "{wifi_config["psk"]}"
 '''
 
     return f'''[homelab]
@@ -342,7 +358,9 @@ def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
 
     config_toml = install_dir / "config.toml"
     config_toml.write_text(
-        generate_config_toml(disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config)
+        generate_config_toml(
+            disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
+        )
     )
 
     subprocess.run(
@@ -434,7 +452,10 @@ class InstallerHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(html.encode())
             else:
                 networks = scan_wifi_networks()
-                html = generate_wifi_html(networks, error=f"Failed to connect to {ssid}. Check password and try again.")
+                html = generate_wifi_html(
+                    networks,
+                    error=f"Failed to connect to {ssid}. Check password and try again.",
+                )
                 self.send_response(500)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
@@ -444,7 +465,11 @@ class InstallerHandler(http.server.SimpleHTTPRequestHandler):
             # Validate internet connection before install
             if not test_internet():
                 disks = detect_disks()
-                html = generate_html(disks, error="⚠️ Internet connection required! Please configure WiFi or connect ethernet.", internet_connected=False)
+                html = generate_html(
+                    disks,
+                    error="⚠️ Internet connection required! Please configure WiFi or connect ethernet.",
+                    internet_connected=False,
+                )
                 self.send_response(400)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
@@ -463,7 +488,9 @@ class InstallerHandler(http.server.SimpleHTTPRequestHandler):
 
             if not disk:
                 disks = detect_disks()
-                html = generate_html(disks, error="Please select a disk", internet_connected=True)
+                html = generate_html(
+                    disks, error="Please select a disk", internet_connected=True
+                )
                 self.send_response(400)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
@@ -472,7 +499,9 @@ class InstallerHandler(http.server.SimpleHTTPRequestHandler):
 
             if not git_remote:
                 disks = detect_disks()
-                html = generate_html(disks, error="Git remote URL is required!", internet_connected=True)
+                html = generate_html(
+                    disks, error="Git remote URL is required!", internet_connected=True
+                )
                 self.send_response(400)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
@@ -493,7 +522,9 @@ class InstallerHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(html.encode())
             except subprocess.CalledProcessError as e:
                 disks = detect_disks()
-                html = generate_html(disks, error=f"Installation failed: {e}", internet_connected=True)
+                html = generate_html(
+                    disks, error=f"Installation failed: {e}", internet_connected=True
+                )
                 self.send_response(500)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()

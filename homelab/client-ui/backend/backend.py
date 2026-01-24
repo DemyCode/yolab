@@ -81,7 +81,7 @@ def toml_to_dict(text):
 
             try:
                 current[key] = json.loads(value)
-            except:
+            except (json.JSONDecodeError, ValueError):
                 if value.lower() in ("true", "false"):
                     current[key] = value.lower() == "true"
                 else:

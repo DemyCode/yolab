@@ -21,10 +21,10 @@ repos:
 
       - id: statix
         name: statix
-        entry: nix run nixpkgs#statix -- check
+        entry: nix run nixpkgs#statix -- check .
         language: system
         files: \.nix$
-        pass_filenames: true
+        pass_filenames: false
 
       - id: deadnix
         name: deadnix

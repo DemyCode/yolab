@@ -30,8 +30,6 @@ in
     (modulesPath + "/profiles/qemu-guest.nix")
   ] ++ lib.optional (builtins.pathExists ./hardware-configuration.nix) ./hardware-configuration.nix;
 
-  networking.hostName = hostname;
-
   boot.loader.grub = {
     efiSupport = true;
     efiInstallAsRemovable = true;
@@ -40,12 +38,14 @@ in
   time.timeZone = timezone;
   i18n.defaultLocale = locale;
 
-  networking.networkmanager.enable = true;
-  networking.enableIPv6 = true;
-  networking.firewall.enable = false;
-
-  networking.wireless.networks = lib.mkIf (wifiSSID != "") {
-    "${wifiSSID}".psk = wifiPSK;
+  networking = {
+    hostName = hostname;
+    networkmanager.enable = true;
+    enableIPv6 = true;
+    firewall.enable = false;
+    wireless.networks = lib.mkIf (wifiSSID != "") {
+      "${wifiSSID}".psk = wifiPSK;
+    };
   };
 
   services.openssh = {

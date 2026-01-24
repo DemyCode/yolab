@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-import subprocess
 import json
 import os
+import subprocess
 from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 app = FastAPI()
 
 app.add_middleware(
-    CORSMiddleware,
+    CORSMiddleware,  # type: ignore
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 class WifiConnectRequest(BaseModel):
     ssid: str
     password: str = ""
+
 
 class InstallRequest(BaseModel):
     disk: str
@@ -29,6 +33,7 @@ class InstallRequest(BaseModel):
     timezone: str
     root_ssh_key: str
     git_remote: str
+
 
 def test_internet():
     try:
@@ -38,12 +43,15 @@ def test_internet():
             timeout=3,
         )
         return result.returncode == 0
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         return False
+
 
 def scan_wifi_networks():
     try:
-        subprocess.run(["nmcli", "device", "wifi", "rescan"], capture_output=True, timeout=10)
+        subprocess.run(
+            ["nmcli", "device", "wifi", "rescan"], capture_output=True, timeout=10
+        )
         result = subprocess.run(
             ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
             capture_output=True,
@@ -55,14 +63,19 @@ def scan_wifi_networks():
             if line:
                 parts = line.split(":")
                 if len(parts) >= 3 and parts[0]:
-                    networks.append({
-                        "ssid": parts[0],
-                        "signal": parts[1],
-                        "security": parts[2],
-                    })
-        return sorted(networks, key=lambda x: int(x["signal"]) if x["signal"] else 0, reverse=True)
-    except:
+                    networks.append(
+                        {
+                            "ssid": parts[0],
+                            "signal": parts[1],
+                            "security": parts[2],
+                        }
+                    )
+        return sorted(
+            networks, key=lambda x: int(x["signal"]) if x["signal"] else 0, reverse=True
+        )
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
         return []
+
 
 def connect_wifi(ssid, password):
     try:
@@ -81,8 +94,9 @@ def connect_wifi(ssid, password):
                 timeout=30,
             )
         return result.returncode == 0
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         return False
+
 
 def get_wifi_config():
     try:
@@ -96,15 +110,24 @@ def get_wifi_config():
             if "802-11-wireless" in line:
                 ssid = line.split(":")[0]
                 psk_result = subprocess.run(
-                    ["nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", ssid],
+                    [
+                        "nmcli",
+                        "-s",
+                        "-g",
+                        "802-11-wireless-security.psk",
+                        "connection",
+                        "show",
+                        ssid,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=5,
                 )
                 return {"ssid": ssid, "psk": psk_result.stdout.strip()}
         return None
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         return None
+
 
 def detect_disks():
     result = subprocess.run(
@@ -116,12 +139,15 @@ def detect_disks():
     disks = []
     for device in data.get("blockdevices", []):
         if device.get("type") == "disk":
-            disks.append({
-                "name": f"/dev/{device['name']}",
-                "size": device["size"],
-                "mounted": bool(device.get("mountpoint")),
-            })
+            disks.append(
+                {
+                    "name": f"/dev/{device['name']}",
+                    "size": device["size"],
+                    "mounted": bool(device.get("mountpoint")),
+                }
+            )
     return disks
+
 
 def detect_ram_size():
     try:
@@ -131,17 +157,20 @@ def detect_ram_size():
                     kb = int(line.split()[1])
                     gb = kb // (1024 * 1024)
                     return min(gb, 32)
-    except:
+    except (OSError, ValueError, IndexError):
         return 8
     return 8
 
-def generate_config_toml(disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config):
+
+def generate_config_toml(
+    disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
+):
     wifi_section = ""
     if wifi_config:
         wifi_section = f'''
 [wifi]
-ssid = "{wifi_config['ssid']}"
-psk = "{wifi_config['psk']}"
+ssid = "{wifi_config["ssid"]}"
+psk = "{wifi_config["psk"]}"
 '''
 
     return f'''[homelab]
@@ -174,6 +203,7 @@ server_port = 7000
 account_token = ""
 '''
 
+
 def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
     install_dir = Path("/mnt/installer")
     install_dir.mkdir(parents=True, exist_ok=True)
@@ -189,7 +219,9 @@ def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
 
     config_toml = install_dir / "config.toml"
     config_toml.write_text(
-        generate_config_toml(disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config)
+        generate_config_toml(
+            disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
+        )
     )
 
     subprocess.run(
@@ -225,6 +257,7 @@ def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
         capture_output=True,
     )
 
+
 @app.get("/api/status")
 async def get_status():
     return {
@@ -232,10 +265,12 @@ async def get_status():
         "disks": detect_disks(),
     }
 
+
 @app.get("/api/wifi/scan")
 async def scan_wifi():
     networks = scan_wifi_networks()
     return {"networks": networks}
+
 
 @app.post("/api/wifi/connect")
 async def wifi_connect(request: WifiConnectRequest):
@@ -243,6 +278,7 @@ async def wifi_connect(request: WifiConnectRequest):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to connect to WiFi")
     return {"success": True, "message": f"Connected to {request.ssid}"}
+
 
 @app.post("/api/install")
 async def install(request: InstallRequest):
@@ -255,7 +291,7 @@ async def install(request: InstallRequest):
             request.hostname,
             request.timezone,
             request.root_ssh_key,
-            request.git_remote
+            request.git_remote,
         )
         return {
             "success": True,
@@ -267,6 +303,7 @@ async def install(request: InstallRequest):
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"Installation failed: {str(e)}")
 
+
 frontend_dir_env = os.environ.get("FRONTEND_DIR")
 if frontend_dir_env:
     frontend_dir = Path(frontend_dir_env)
@@ -274,7 +311,9 @@ else:
     frontend_dir = Path(__file__).parent.parent / "frontend" / "dist"
 
 if frontend_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
+    app.mount(
+        "/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets"
+    )
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
@@ -283,6 +322,8 @@ if frontend_dir.exists():
             return FileResponse(file_path)
         return FileResponse(frontend_dir / "index.html")
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
