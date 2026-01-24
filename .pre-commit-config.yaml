@@ -15,3 +15,21 @@ repos:
         name: pre-commit for dns_server/
         args: ["-p", "dns_server"]
         files: ^dns_server/
+
+      - id: sub-pre-commit
+        alias: homelab
+        name: pre-commit for homelab/
+        args: ["-p", "homelab"]
+        files: ^homelab/.*\.nix$
+
+      - id: sub-pre-commit
+        alias: homelab-installer-backend
+        name: pre-commit for homelab/installer/backend/
+        args: ["-p", "homelab/installer/backend"]
+        files: ^homelab/installer/backend/
+
+      - id: sub-pre-commit
+        alias: homelab-client-ui-backend
+        name: pre-commit for homelab/client-ui/backend/
+        args: ["-p", "homelab/client-ui/backend"]
+        files: ^homelab/client-ui/backend/
