@@ -5,6 +5,11 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     disko.url = "github:nix-community/disko";
     disko.inputs.nixpkgs.follows = "nixpkgs";
+    pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
+    pyproject-nix.inputs.nixpkgs.follows = "nixpkgs";
+    uv2nix.url = "github:pyproject-nix/uv2nix";
+    uv2nix.inputs.pyproject-nix.follows = "pyproject-nix";
+    uv2nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {

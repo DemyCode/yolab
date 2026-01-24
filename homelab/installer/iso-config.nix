@@ -1,8 +1,23 @@
 {
   pkgs,
   lib,
+  inputs,
   ...
 }: let
+  # Build backend with uv2nix
+  workspace = inputs.uv2nix.lib.workspace.loadWorkspace {
+    workspaceRoot = ./backend;
+  };
+
+  pythonSet = workspace.mkPyprojectOverlay {
+    sourcePreference = "wheel";
+  };
+
+  python = pkgs.python311.override {
+    packageOverrides = pythonSet;
+  };
+
+  installerBackend = python.pkgs.backend;
   # Build the React frontend
   frontend = pkgs.buildNpmPackage {
     pname = "homelab-installer-frontend";
@@ -19,14 +34,6 @@
       cp -r dist/* $out/
     '';
   };
-
-  # Backend directory with all Python files
-  backend = pkgs.runCommand "homelab-installer-backend" {} ''
-    mkdir -p $out
-    cp ${./backend/main.py} $out/main.py
-    cp ${./backend/functions.py} $out/functions.py
-    cp ${./backend/cli.py} $out/cli.py
-  '';
 in {
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
@@ -42,12 +49,6 @@ in {
     gptfdisk
     util-linux
     iproute2
-    python311
-    python311Packages.fastapi
-    python311Packages.uvicorn
-    python311Packages.httpx
-    python311Packages.pydantic
-    python311Packages.pydantic-settings
     jq
     nodejs
   ];
@@ -62,17 +63,10 @@ in {
       gptfdisk
       util-linux
       nixos-install-tools
-      python311
-      python311Packages.fastapi
-      python311Packages.uvicorn
-      python311Packages.httpx
-      python311Packages.pydantic
-      python311Packages.pydantic-settings
     ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${pkgs.python311}/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000";
-      WorkingDirectory = "${backend}";
+      ExecStart = "${installerBackend}/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000";
       Restart = "always";
       RestartSec = "5s";
     };
