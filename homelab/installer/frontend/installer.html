@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YoLab Installer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            border-bottom: 2px solid #00ff00;
+            padding-bottom: 10px;
+        }
+
+        .status-bar {
+            background: #1a1a1a;
+            padding: 15px;
+            margin: 20px 0;
+            border-left: 4px solid #00ff00;
+        }
+
+        .status-bar.error {
+            border-left-color: #ff0000;
+            color: #ff6666;
+        }
+
+        .card {
+            background: #1a1a1a;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #333;
+        }
+
+        .card h2 {
+            color: #00ff00;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 5px 5px 5px 0;
+        }
+
+        button:hover {
+            background: #00cc00;
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 10px;
+            background: #0a0a0a;
+            color: #00ff00;
+            border: 1px solid #333;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            margin: 8px 0;
+        }
+
+        label {
+            display: block;
+            margin-top: 15px;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 10px;
+            border: 1px solid #333;
+        }
+
+        th {
+            background: #0a0a0a;
+            font-weight: bold;
+        }
+
+        tr:hover {
+            background: #1a1a1a;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid #333;
+            border-top: 3px solid #00ff00;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .warning {
+            color: #ffff00;
+            padding: 10px;
+            background: #3a3a00;
+            margin: 10px 0;
+            border-left: 4px solid #ffff00;
+        }
+
+        .success {
+            color: #00ff00;
+            padding: 10px;
+            background: #0a2a0a;
+            margin: 10px 0;
+            border-left: 4px solid #00ff00;
+        }
+
+        .error-msg {
+            color: #ff6666;
+            padding: 10px;
+            background: #2a0a0a;
+            margin: 10px 0;
+            border-left: 4px solid #ff0000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ YoLab NixOS Installer</h1>
+
+        <div id="status-bar" class="status-bar">
+            <div>Internet: <span id="internet-status">Checking...</span></div>
+        </div>
+
+        <div id="wifi-section" class="card hidden">
+            <h2>📡 WiFi Setup</h2>
+            <p style="margin-bottom: 15px;">Internet connection required for installation. Please connect to WiFi or plug in ethernet.</p>
+            <button onclick="scanWifi()">🔄 Scan Networks</button>
+            <div id="wifi-list"></div>
+        </div>
+
+        <div id="install-section" class="card hidden">
+            <h2>💾 Available Disks</h2>
+            <table id="disks-table">
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        <th>Size</th>
+                        <th>Mounted</th>
+                    </tr>
+                </thead>
+                <tbody id="disks-body"></tbody>
+            </table>
+
+            <h2 style="margin-top: 30px;">⚙️ Installation Configuration</h2>
+            <form id="install-form" onsubmit="return installSystem(event)">
+                <label>Disk Device *</label>
+                <select id="disk" required></select>
+                <div class="warning">⚠️ All data on selected disk will be erased!</div>
+
+                <label>Hostname *</label>
+                <input type="text" id="hostname" value="yolab" required pattern="[a-z0-9-]+" title="Lowercase letters, numbers, and hyphens only">
+
+                <label>Timezone *</label>
+                <input type="text" id="timezone" value="UTC" required placeholder="UTC, America/New_York, Europe/Paris, etc.">
+
+                <label>Root SSH Key * (Required for remote access)</label>
+                <input type="text" id="root_ssh_key" required placeholder="ssh-ed25519 AAAA...">
+
+                <label>Git Remote URL * (Your homelab configuration repository)</label>
+                <input type="url" id="git_remote" required placeholder="https://github.com/username/homelab.git">
+
+                <button type="submit" style="margin-top: 20px;">🚀 Install NixOS</button>
+            </form>
+        </div>
+
+        <div id="result-section" class="hidden"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+
+        async function checkStatus() {
+            try {
+                const res = await fetch(`${API_URL}/api/status`);
+                const data = await res.json();
+
+                const internetStatus = document.getElementById('internet-status');
+                const statusBar = document.getElementById('status-bar');
+
+                if (data.internet) {
+                    internetStatus.textContent = '🟢 Connected';
+                    statusBar.classList.remove('error');
+                    showInstallSection(data.disks);
+                } else {
+                    internetStatus.textContent = '🔴 Not Connected';
+                    statusBar.classList.add('error');
+                    showWifiSection();
+                }
+            } catch (err) {
+                console.error('Failed to check status:', err);
+            }
+        }
+
+        function showWifiSection() {
+            document.getElementById('wifi-section').classList.remove('hidden');
+            document.getElementById('install-section').classList.add('hidden');
+        }
+
+        function showInstallSection(disks) {
+            document.getElementById('wifi-section').classList.add('hidden');
+            document.getElementById('install-section').classList.remove('hidden');
+
+            const tbody = document.getElementById('disks-body');
+            const select = document.getElementById('disk');
+            tbody.innerHTML = '';
+            select.innerHTML = '<option value="">-- Select a disk --</option>';
+
+            disks.forEach(disk => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${disk.name}</td>
+                    <td>${disk.size}</td>
+                    <td>${disk.mounted ? '✓' : '✗'}</td>
+                `;
+                tbody.appendChild(tr);
+
+                const option = document.createElement('option');
+                option.value = disk.name;
+                option.textContent = `${disk.name} - ${disk.size}${disk.mounted ? ' (MOUNTED)' : ''}`;
+                select.appendChild(option);
+            });
+        }
+
+        async function scanWifi() {
+            const wifiList = document.getElementById('wifi-list');
+            wifiList.innerHTML = '<div style="margin: 15px 0;">Scanning... <span class="spinner"></span></div>';
+
+            try {
+                const res = await fetch(`${API_URL}/api/wifi/scan`);
+                const data = await res.json();
+
+                if (data.networks.length === 0) {
+                    wifiList.innerHTML = '<div class="warning">No networks found</div>';
+                    return;
+                }
+
+                let html = '<table style="margin-top: 15px;"><thead><tr><th>SSID</th><th>Signal</th><th>Security</th><th>Action</th></tr></thead><tbody>';
+
+                data.networks.forEach(network => {
+                    html += `
+                        <tr>
+                            <td>${network.ssid}</td>
+                            <td>${network.signal}%</td>
+                            <td>${network.security || 'Open'}</td>
+                            <td><button onclick="connectWifi('${network.ssid}', '${network.security}')">Connect</button></td>
+                        </tr>
+                    `;
+                });
+
+                html += '</tbody></table>';
+                wifiList.innerHTML = html;
+            } catch (err) {
+                wifiList.innerHTML = '<div class="error-msg">Failed to scan networks</div>';
+            }
+        }
+
+        async function connectWifi(ssid, security) {
+            let password = '';
+
+            if (security && security !== 'Open') {
+                password = prompt(`Enter password for ${ssid}:`);
+                if (password === null) return;
+            }
+
+            const wifiList = document.getElementById('wifi-list');
+            wifiList.innerHTML = `<div style="margin: 15px 0;">Connecting to ${ssid}... <span class="spinner"></span></div>`;
+
+            try {
+                const res = await fetch(`${API_URL}/api/wifi/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    wifiList.innerHTML = `<div class="success">✅ ${data.message}<br>Checking connection...</div>`;
+                    setTimeout(checkStatus, 2000);
+                } else {
+                    wifiList.innerHTML = `<div class="error-msg">❌ ${data.detail}</div>`;
+                    setTimeout(scanWifi, 2000);
+                }
+            } catch (err) {
+                wifiList.innerHTML = '<div class="error-msg">❌ Failed to connect</div>';
+                setTimeout(scanWifi, 2000);
+            }
+        }
+
+        async function installSystem(event) {
+            event.preventDefault();
+
+            const disk = document.getElementById('disk').value;
+            const hostname = document.getElementById('hostname').value;
+            const timezone = document.getElementById('timezone').value;
+            const root_ssh_key = document.getElementById('root_ssh_key').value;
+            const git_remote = document.getElementById('git_remote').value;
+
+            if (!confirm(`⚠️ DESTRUCTIVE OPERATION!\n\nThis will ERASE all data on ${disk}\n\nHostname: ${hostname}\nTimezone: ${timezone}\nGit Remote: ${git_remote}\n\nAre you sure you want to proceed?`)) {
+                return false;
+            }
+
+            const resultSection = document.getElementById('result-section');
+            resultSection.classList.remove('hidden');
+            resultSection.innerHTML = '<div class="warning">Installing... This may take several minutes. <span class="spinner"></span></div>';
+
+            document.getElementById('install-form').style.display = 'none';
+
+            try {
+                const res = await fetch(`${API_URL}/api/install`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ disk, hostname, timezone, root_ssh_key, git_remote })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    resultSection.innerHTML = `
+                        <div class="success">
+                            <h2>✅ Installation Complete!</h2>
+                            <p>Hostname: ${data.hostname}</p>
+                            <p>Disk: ${data.disk}</p>
+                            <p>Git Remote: ${data.git_remote}</p>
+                            <p style="margin-top: 15px;">Remove installation media and reboot the system.</p>
+                            <button onclick="location.reload()">🔄 Install Another System</button>
+                        </div>
+                    `;
+                } else {
+                    resultSection.innerHTML = `
+                        <div class="error-msg">
+                            <h2>❌ Installation Failed</h2>
+                            <p>${data.detail}</p>
+                            <button onclick="location.reload()">🔄 Try Again</button>
+                        </div>
+                    `;
+                }
+            } catch (err) {
+                resultSection.innerHTML = `
+                    <div class="error-msg">
+                        <h2>❌ Installation Failed</h2>
+                        <p>${err.message}</p>
+                        <button onclick="location.reload()">🔄 Try Again</button>
+                    </div>
+                `;
+            }
+
+            return false;
+        }
+
+        checkStatus();
+        setInterval(checkStatus, 5000);
+    </script>
+</body>
+</html>

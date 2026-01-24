@@ -1,6 +1,4 @@
-{ lib, ... }:
-
-let
+{lib, ...}: let
   configPath = ./config.toml;
   homelabConfig =
     if builtins.pathExists configPath
@@ -11,9 +9,7 @@ let
   diskDevice = diskConfig.device or (throw "[disk] device is required in config.toml");
   espSize = diskConfig.esp_size or (throw "[disk] esp_size is required in config.toml");
   swapSize = diskConfig.swap_size or (throw "[disk] swap_size is required in config.toml");
-
-in
-{
+in {
   disko.devices = {
     disk.disk1 = {
       device = lib.mkDefault diskDevice;
@@ -58,7 +54,7 @@ in
               type = "filesystem";
               format = "ext4";
               mountpoint = "/";
-              mountOptions = [ "defaults" ];
+              mountOptions = ["defaults"];
             };
           };
         };

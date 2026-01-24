@@ -1,17 +1,21 @@
-{ modulesPath, pkgs, lib, ... }:
-
-let
+{
+  modulesPath,
+  pkgs,
+  lib,
+  ...
+}: let
   # Read config.toml from ignored/ directory (relative path)
   configPath = ../ignored/config.toml;
   homelabConfig =
     if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
-    else throw ''
-      config.toml not found!
-      Please create it from config.toml.example:
-        cp ignored/config.toml.example ignored/config.toml
-        # Edit ignored/config.toml with your settings
-    '';
+    else
+      throw ''
+        config.toml not found!
+        Please create it from config.toml.example:
+          cp ignored/config.toml.example ignored/config.toml
+          # Edit ignored/config.toml with your settings
+      '';
 
   # Parse config sections
   cfg = homelabConfig.homelab or (throw "[homelab] section missing in config.toml");
@@ -26,17 +30,17 @@ let
   dockerEnabled = dockerCfg.enabled or (throw "[docker] enabled is required in config.toml");
   dockerComposeUrl = dockerCfg.compose_url or "";
 
-  wifiCfg = homelabConfig.wifi or { };
+  wifiCfg = homelabConfig.wifi or {};
   wifiEnabled = wifiCfg.enabled or false;
   wifiSSID = wifiCfg.ssid or "";
   wifiPSK = wifiCfg.psk or "";
-
-in
-{
-  imports = [
-    (modulesPath + "/installer/scan/not-detected.nix")
-    (modulesPath + "/profiles/qemu-guest.nix")
-  ] ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
+in {
+  imports =
+    [
+      (modulesPath + "/installer/scan/not-detected.nix")
+      (modulesPath + "/profiles/qemu-guest.nix")
+    ]
+    ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
 
   boot.loader.grub = {
     efiSupport = true;
@@ -56,9 +60,9 @@ in
   # WiFi configuration using NetworkManager (if enabled)
   systemd.services.yolab-wifi-setup = lib.mkIf (wifiEnabled && wifiSSID != "" && wifiPSK != "") {
     description = "Setup WiFi from config";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" ];
-    path = [ pkgs.networkmanager ];
+    wantedBy = ["multi-user.target"];
+    after = ["network.target"];
+    path = [pkgs.networkmanager];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -85,7 +89,7 @@ in
 
   services.openssh = {
     enable = true;
-    ports = [ sshPort ];
+    ports = [sshPort];
     settings = {
       PermitRootLogin = lib.mkIf (rootSshKey != "") "prohibit-password";
       PasswordAuthentication = false;
@@ -96,7 +100,7 @@ in
 
   users.users.homelab = {
     isNormalUser = true;
-    extraGroups = [ "wheel" "networkmanager" "docker" ];
+    extraGroups = ["wheel" "networkmanager" "docker"];
     openssh.authorizedKeys.keys = allowedSshKeys;
   };
 
@@ -104,22 +108,23 @@ in
   virtualisation.docker.enable = true;
   services.logind.lidSwitchExternalPower = "ignore";
 
-  environment.systemPackages = with pkgs; map lib.lowPrio [
-    curl
-    gitMinimal
-    just
-    nginx
-    wireguard-tools
-    docker
-    docker-compose
-    dysk
-    ctop
-    vim
-    wget
-    htop
-    tmux
-    frp
-  ];
+  environment.systemPackages = with pkgs;
+    map lib.lowPrio [
+      curl
+      gitMinimal
+      just
+      nginx
+      wireguard-tools
+      docker
+      docker-compose
+      dysk
+      ctop
+      vim
+      wget
+      htop
+      tmux
+      frp
+    ];
 
   nix.settings.experimental-features = [
     "nix-command"
@@ -162,12 +167,12 @@ in
       pkgs.docker
       pkgs.curl
     ];
-    wantedBy = [ "multi-user.target" ];
+    wantedBy = ["multi-user.target"];
     after = [
       "docker.service"
       "docker.socket"
     ];
-    requires = [ "docker.service" ];
+    requires = ["docker.service"];
   };
 
   system.stateVersion = "24.05";

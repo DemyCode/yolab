@@ -1,41 +1,9 @@
-#!/usr/bin/env python3
 import json
-import os
 import subprocess
 from pathlib import Path
-from typing import Any
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,  # type: ignore
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
-class WifiConnectRequest(BaseModel):
-    ssid: str
-    password: str = ""
-
-
-class InstallRequest(BaseModel):
-    disk: str
-    hostname: str
-    timezone: str
-    root_ssh_key: str
-    git_remote: str
-
-
-def test_internet():
+def test_internet() -> bool:
     try:
         result = subprocess.run(
             ["ping", "-c", "1", "-W", "2", "1.1.1.1"],
@@ -47,7 +15,7 @@ def test_internet():
         return False
 
 
-def scan_wifi_networks():
+def scan_wifi_networks() -> list[dict]:
     try:
         subprocess.run(
             ["nmcli", "device", "wifi", "rescan"], capture_output=True, timeout=10
@@ -77,7 +45,7 @@ def scan_wifi_networks():
         return []
 
 
-def connect_wifi(ssid, password):
+def connect_wifi(ssid: str, password: str) -> bool:
     try:
         if password:
             result = subprocess.run(
@@ -98,7 +66,7 @@ def connect_wifi(ssid, password):
         return False
 
 
-def get_wifi_config():
+def get_wifi_config() -> dict | None:
     try:
         result = subprocess.run(
             ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
@@ -129,27 +97,31 @@ def get_wifi_config():
         return None
 
 
-def detect_disks():
-    result = subprocess.run(
-        ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINT"],
-        capture_output=True,
-        text=True,
-    )
-    data = json.loads(result.stdout)
-    disks = []
-    for device in data.get("blockdevices", []):
-        if device.get("type") == "disk":
-            disks.append(
-                {
-                    "name": f"/dev/{device['name']}",
-                    "size": device["size"],
-                    "mounted": bool(device.get("mountpoint")),
-                }
-            )
-    return disks
+def detect_disks() -> list[dict]:
+    try:
+        result = subprocess.run(
+            ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINT"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        disks = []
+        for device in data.get("blockdevices", []):
+            if device.get("type") == "disk":
+                disks.append(
+                    {
+                        "name": f"/dev/{device['name']}",
+                        "size": device["size"],
+                        "mounted": bool(device.get("mountpoint")),
+                    }
+                )
+        return disks
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+        return []
 
 
-def detect_ram_size():
+def detect_ram_size() -> int:
     try:
         with open("/proc/meminfo", "r") as f:
             for line in f:
@@ -163,14 +135,21 @@ def detect_ram_size():
 
 
 def generate_config_toml(
-    disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
-):
+    disk: str,
+    hostname: str,
+    timezone: str,
+    root_ssh_key: str,
+    swap_size: int,
+    git_remote: str,
+    wifi_config: dict | None,
+) -> str:
     wifi_section = ""
     if wifi_config:
-        wifi_section = f'''
-[wifi]
+        wifi_section = f'''[wifi]
+enabled = true
 ssid = "{wifi_config["ssid"]}"
 psk = "{wifi_config["psk"]}"
+
 '''
 
     return f'''[homelab]
@@ -186,8 +165,8 @@ allowed_ssh_keys = []
 device = "{disk}"
 esp_size = "500M"
 swap_size = "{swap_size}G"
-{wifi_section}
-[client_ui]
+
+{wifi_section}[client_ui]
 enabled = true
 port = 8080
 platform_api_url = ""
@@ -204,8 +183,16 @@ account_token = ""
 '''
 
 
-def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
+def run_installation(
+    disk: str, hostname: str, timezone: str, root_ssh_key: str, git_remote: str
+) -> None:
+    import shutil
+
     install_dir = Path("/mnt/installer")
+
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+
     install_dir.mkdir(parents=True, exist_ok=True)
 
     subprocess.run(
@@ -217,18 +204,22 @@ def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
     swap_size = detect_ram_size()
     wifi_config = get_wifi_config()
 
-    config_toml = install_dir / "config.toml"
+    config_toml = install_dir / "ignored" / "config.toml"
+    config_toml.parent.mkdir(parents=True, exist_ok=True)
     config_toml.write_text(
         generate_config_toml(
             disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
         )
     )
 
-    subprocess.run(
-        ["nixos-generate-config", "--no-filesystems", "--dir", str(install_dir)],
+    hardware_config = install_dir / "ignored" / "hardware-configuration.nix"
+    result = subprocess.run(
+        ["nixos-generate-config", "--no-filesystems", "--show-hardware-config"],
         check=True,
         capture_output=True,
+        text=True,
     )
+    hardware_config.write_text(result.stdout)
 
     subprocess.run(
         [
@@ -258,72 +249,36 @@ def run_installation(disk, hostname, timezone, root_ssh_key, git_remote):
     )
 
 
-@app.get("/api/status")
-async def get_status():
+def get_status() -> dict:
     return {
         "internet": test_internet(),
         "disks": detect_disks(),
     }
 
 
-@app.get("/api/wifi/scan")
-async def scan_wifi():
-    networks = scan_wifi_networks()
-    return {"networks": networks}
+def scan_wifi() -> dict:
+    return {"networks": scan_wifi_networks()}
 
 
-@app.post("/api/wifi/connect")
-async def wifi_connect(request: WifiConnectRequest):
-    success = connect_wifi(request.ssid, request.password)
+def wifi_connect(ssid: str, password: str) -> dict:
+    success = connect_wifi(ssid, password)
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to connect to WiFi")
-    return {"success": True, "message": f"Connected to {request.ssid}"}
+        raise Exception("Failed to connect to WiFi")
+    return {"success": True, "message": f"Connected to {ssid}"}
 
 
-@app.post("/api/install")
-async def install(request: InstallRequest):
+def install(
+    disk: str, hostname: str, timezone: str, root_ssh_key: str, git_remote: str
+) -> dict:
     if not test_internet():
-        raise HTTPException(status_code=400, detail="Internet connection required")
+        raise Exception("Internet connection required")
 
-    try:
-        run_installation(
-            request.disk,
-            request.hostname,
-            request.timezone,
-            request.root_ssh_key,
-            request.git_remote,
-        )
-        return {
-            "success": True,
-            "message": "Installation complete",
-            "hostname": request.hostname,
-            "disk": request.disk,
-            "git_remote": request.git_remote,
-        }
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Installation failed: {str(e)}")
+    run_installation(disk, hostname, timezone, root_ssh_key, git_remote)
 
-
-frontend_dir_env = os.environ.get("FRONTEND_DIR")
-if frontend_dir_env:
-    frontend_dir = Path(frontend_dir_env)
-else:
-    frontend_dir = Path(__file__).parent.parent / "frontend" / "dist"
-
-if frontend_dir.exists():
-    app.mount(
-        "/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets"
-    )
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        file_path = frontend_dir / full_path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(frontend_dir / "index.html")
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {
+        "success": True,
+        "message": "Installation complete",
+        "hostname": hostname,
+        "disk": disk,
+        "git_remote": git_remote,
+    }

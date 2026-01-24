@@ -12,16 +12,16 @@ repos:
 
   - repo: local
     hooks:
-      - id: nixpkgs-fmt
-        name: nixpkgs-fmt
-        entry: nix run nixpkgs#nixpkgs-fmt --
+      - id: alejandra
+        name: alejandra
+        entry: nix run github:kamadorueda/alejandra --
         language: system
         files: \.nix$
         pass_filenames: true
 
       - id: statix
         name: statix
-        entry: nix run nixpkgs#statix -- check .
+        entry: nix run nixpkgs#statix -- fix .
         language: system
         files: \.nix$
         pass_filenames: false

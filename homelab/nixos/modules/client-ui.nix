@@ -1,23 +1,26 @@
-{ pkgs, lib, ... }:
-
-let
+{
+  pkgs,
+  lib,
+  ...
+}: let
   # Read config.toml from ignored/ directory (relative path)
   configPath = ../../ignored/config.toml;
   homelabConfig =
     if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
-    else { };
+    else {};
 
-  uiConfig = homelabConfig.client_ui or { };
+  uiConfig = homelabConfig.client_ui or {};
   uiEnabled = uiConfig.enabled or true;
   uiPort = uiConfig.port or 8080;
   platformApiUrl = uiConfig.platform_api_url or "http://localhost:5000";
 
-  pythonEnv = pkgs.python311.withPackages (ps: with ps; [
-    fastapi
-    uvicorn
-    httpx
-  ]);
+  pythonEnv = pkgs.python311.withPackages (ps:
+    with ps; [
+      fastapi
+      uvicorn
+      httpx
+    ]);
 
   # Build frontend (if it exists)
   frontend = pkgs.buildNpmPackage {
@@ -53,15 +56,13 @@ let
       chmod +x $out/bin/yolab-client-ui
     '';
   };
-
-in
-{
+in {
   config = lib.mkIf uiEnabled {
     # Systemd service for client-ui
     systemd.services.yolab-client-ui = {
       description = "YoLab Client UI";
-      after = [ "network.target" ];
-      wantedBy = [ "multi-user.target" ];
+      after = ["network.target"];
+      wantedBy = ["multi-user.target"];
 
       environment = {
         PLATFORM_API_URL = platformApiUrl;
@@ -83,6 +84,6 @@ in
     };
 
     # Open firewall port for client-ui
-    networking.firewall.allowedTCPPorts = [ uiPort ];
+    networking.firewall.allowedTCPPorts = [uiPort];
   };
 }
