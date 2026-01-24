@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -7,6 +6,8 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def dict_to_toml(obj, indent=""):
@@ -90,19 +91,23 @@ def toml_to_dict(text):
     return result
 
 
-class Settings:
-    platform_api_url: str
-    config_path: str
-    services_dir: str
+class ClientUISettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).parent.parent / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
-    def __init__(self):
-        self.platform_api_url = os.getenv("PLATFORM_API_URL", "http://localhost:5000")
-        self.config_path = os.getenv("CONFIG_PATH", "/etc/yolab/config.toml")
-        self.services_dir = os.getenv("SERVICES_DIR", "/var/lib/yolab/services")
+    platform_api_url: str = Field(default="http://localhost:5000")
+    config_path: str = Field(default="/etc/yolab/config.toml")
+    services_dir: str = Field(default="/var/lib/yolab/services")
+    flake_path: str = Field(default="/etc/nixos#yolab")
+    port: int = Field(default=8080, ge=1, le=65535)
 
 
 app = FastAPI(title="YoLab Client UI")
-settings = Settings()
+settings = ClientUISettings()  # type: ignore[call-arg]
 
 CONFIG_PATH = Path(settings.config_path)
 SERVICES_DIR = Path(settings.services_dir)
@@ -211,7 +216,7 @@ async def delete_service(service_name: str):
 async def rebuild_system():
     try:
         result = subprocess.run(
-            ["nixos-rebuild", "switch", "--flake", "/etc/nixos#yolab"],
+            ["nixos-rebuild", "switch", "--flake", settings.flake_path],
             capture_output=True,
             text=True,
             timeout=300,
@@ -237,4 +242,4 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=settings.port)

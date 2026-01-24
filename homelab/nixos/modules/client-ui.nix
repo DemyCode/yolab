@@ -1,7 +1,8 @@
 { pkgs, lib, ... }:
 
 let
-  configPath = ../config.toml;
+  # Read config.toml from ignored/ directory (relative path)
+  configPath = ../../ignored/config.toml;
   homelabConfig =
     if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
@@ -9,15 +10,16 @@ let
 
   uiConfig = homelabConfig.client_ui or { };
   uiEnabled = uiConfig.enabled or true;
+  uiPort = uiConfig.port or 8080;
   platformApiUrl = uiConfig.platform_api_url or "http://localhost:5000";
 
   pythonEnv = pkgs.python311.withPackages (ps: with ps; [
     fastapi
     uvicorn
     httpx
-    toml
   ]);
 
+  # Build frontend (if it exists)
   frontend = pkgs.buildNpmPackage {
     name = "yolab-client-ui-frontend";
     src = ../../client-ui/frontend;
@@ -34,6 +36,7 @@ let
     '';
   };
 
+  # Package the client-ui backend
   clientUiApp = pkgs.stdenv.mkDerivation {
     name = "yolab-client-ui";
     src = ../../client-ui/backend;
@@ -54,12 +57,7 @@ let
 in
 {
   config = lib.mkIf uiEnabled {
-    systemd.tmpfiles.rules = [
-      "d /etc/yolab 0755 root root -"
-      "d /var/lib/yolab 0755 root root -"
-      "d /var/lib/yolab/services 0755 root root -"
-    ];
-
+    # Systemd service for client-ui
     systemd.services.yolab-client-ui = {
       description = "YoLab Client UI";
       after = [ "network.target" ];
@@ -67,8 +65,12 @@ in
 
       environment = {
         PLATFORM_API_URL = platformApiUrl;
+        # Config is at /etc/yolab/config.toml (copied by configuration.nix)
         CONFIG_PATH = "/etc/yolab/config.toml";
         SERVICES_DIR = "/var/lib/yolab/services";
+        PORT = toString uiPort;
+        # Flake path for nixos-rebuild (default assumes /opt/yolab)
+        FLAKE_PATH = "/opt/yolab/homelab#yolab";
       };
 
       serviceConfig = {
@@ -79,5 +81,8 @@ in
         WorkingDirectory = "${clientUiApp}/lib";
       };
     };
+
+    # Open firewall port for client-ui
+    networking.firewall.allowedTCPPorts = [ uiPort ];
   };
 }

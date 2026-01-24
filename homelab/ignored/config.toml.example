@@ -1,0 +1,52 @@
+# YoLab Homelab Configuration
+# Copy this file to config.toml and customize for your setup
+
+[homelab]
+hostname = "yolab-client"
+timezone = "UTC"
+locale = "en_US.UTF-8"
+ssh_port = 22
+# Root SSH public key (optional - for root access)
+root_ssh_key = ""
+# SSH public keys for homelab user (required)
+allowed_ssh_keys = [
+    "ssh-ed25519 AAAA... user@host"
+]
+
+[disk]
+device = "/dev/sda"
+esp_size = "500M"
+swap_size = "8G"
+
+[client_ui]
+enabled = true
+port = 8080
+# Platform API URL - your YoLab backend server
+platform_api_url = "https://your-backend-server.com"
+
+[docker]
+enabled = false
+# Optional URL to download docker-compose.yml from
+compose_url = ""
+
+[frpc]
+enabled = false
+server_addr = "your-frp-server.com"
+server_port = 7000
+# Your YoLab account token
+account_token = "your-account-token-here"
+
+# WiFi configuration (optional)
+[wifi]
+enabled = false
+ssid = "YourWiFiSSID"
+psk = "YourWiFiPassword"
+
+# Example FRP service configuration
+# Add your services here
+[[frpc.services]]
+name = "example"
+type = "tcp"
+local_port = 8080
+remote_port = 10080
+description = "Example service"

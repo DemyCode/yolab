@@ -1,9 +1,11 @@
-# Exclude config.toml as it contains sensitive information
-config.toml
+# Exclude ignored/ folder - contains user-specific config and hardware config
+ignored/config.toml
+ignored/hardware-configuration.nix
 
 # NixOS build results
 result
 result-*
 
-# Hardware configuration (machine-specific)
-hardware-configuration.nix
+# Backup files
+*.backup
+*.bak

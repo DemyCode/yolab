@@ -1,12 +1,19 @@
 { modulesPath, pkgs, lib, ... }:
 
 let
-  configPath = ./config.toml;
+  # Read config.toml from ignored/ directory (relative path)
+  configPath = ../ignored/config.toml;
   homelabConfig =
     if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
-    else throw "config.toml not found! Please create it from config.toml.example";
+    else throw ''
+      config.toml not found!
+      Please create it from config.toml.example:
+        cp ignored/config.toml.example ignored/config.toml
+        # Edit ignored/config.toml with your settings
+    '';
 
+  # Parse config sections
   cfg = homelabConfig.homelab or (throw "[homelab] section missing in config.toml");
   hostname = cfg.hostname or (throw "[homelab] hostname is required in config.toml");
   timezone = cfg.timezone or (throw "[homelab] timezone is required in config.toml");
@@ -20,6 +27,7 @@ let
   dockerComposeUrl = dockerCfg.compose_url or "";
 
   wifiCfg = homelabConfig.wifi or { };
+  wifiEnabled = wifiCfg.enabled or false;
   wifiSSID = wifiCfg.ssid or "";
   wifiPSK = wifiCfg.psk or "";
 
@@ -28,7 +36,7 @@ in
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     (modulesPath + "/profiles/qemu-guest.nix")
-  ] ++ lib.optional (builtins.pathExists ./hardware-configuration.nix) ./hardware-configuration.nix;
+  ] ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
 
   boot.loader.grub = {
     efiSupport = true;
@@ -43,9 +51,36 @@ in
     networkmanager.enable = true;
     enableIPv6 = true;
     firewall.enable = false;
-    wireless.networks = lib.mkIf (wifiSSID != "") {
-      "${wifiSSID}".psk = wifiPSK;
+  };
+
+  # WiFi configuration using NetworkManager (if enabled)
+  systemd.services.yolab-wifi-setup = lib.mkIf (wifiEnabled && wifiSSID != "" && wifiPSK != "") {
+    description = "Setup WiFi from config";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    path = [ pkgs.networkmanager ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
     };
+    script = ''
+      SSID="${wifiSSID}"
+      PSK="${wifiPSK}"
+
+      # Check if connection already exists
+      if ! nmcli connection show "$SSID" &>/dev/null; then
+        echo "Creating WiFi connection for $SSID"
+        nmcli connection add \
+          type wifi \
+          con-name "$SSID" \
+          ifname wlan0 \
+          ssid "$SSID" \
+          wifi-sec.key-mgmt wpa-psk \
+          wifi-sec.psk "$PSK"
+      else
+        echo "WiFi connection $SSID already exists"
+      fi
+    '';
   };
 
   services.openssh = {
@@ -93,6 +128,17 @@ in
 
   nix.gc.automatic = true;
 
+  # Setup directories
+  systemd.tmpfiles.rules = [
+    "d /etc/yolab 0755 root root -"
+    "d /var/lib/yolab 0755 root root -"
+    "d /var/lib/yolab/services 0755 root root -"
+  ];
+
+  # Copy config.toml to /etc/yolab for runtime access
+  environment.etc."yolab/config.toml".source = configPath;
+
+  # Docker compose service
   systemd.services.homelab-docker-compose = lib.mkIf dockerEnabled {
     script = ''
       mkdir -p /deployments

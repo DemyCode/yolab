@@ -1,25 +1,32 @@
 { pkgs, lib, ... }:
 
 let
-  configPath = ../config.toml;
+  configPath = ../../ignored/config.toml;
   homelabConfig =
-    if builtins.pathExists configPath
-    then builtins.fromTOML (builtins.readFile configPath)
-    else throw "config.toml not found! Please create it from config.toml.example";
+    if builtins.pathExists configPath then
+      builtins.fromTOML (builtins.readFile configPath)
+    else
+      throw "config.toml not found! Please create it from config.toml.example";
 
   frpcConfig = homelabConfig.frpc or (throw "[frpc] section missing in config.toml");
-  frpcEnabled = frpcConfig.enabled or (throw "[frpc] enabled is required in config.toml");
+  frpcEnabled = frpcConfig.enabled or false;
   serverAddr = frpcConfig.server_addr or (throw "[frpc] server_addr is required in config.toml");
   serverPort = frpcConfig.server_port or (throw "[frpc] server_port is required in config.toml");
-  accountToken = frpcConfig.account_token or (throw "[frpc] account_token is required in config.toml");
-  services = frpcConfig.services or (throw "[frpc] services array is required in config.toml");
+  accountToken =
+    frpcConfig.account_token or (throw "[frpc] account_token is required in config.toml");
+  services = frpcConfig.services or [ ];
 
-  generateFrpcConfig = service:
+  generateFrpcConfig =
+    service:
     let
       serviceName = service.name or (throw "Service missing 'name' field in [frpc.services]");
       serviceType = service.type or (throw "Service '${serviceName}' missing 'type' field");
-      localPort = toString (service.local_port or (throw "Service '${serviceName}' missing 'local_port' field"));
-      remotePort = toString (service.remote_port or (throw "Service '${serviceName}' missing 'remote_port' field"));
+      localPort = toString (
+        service.local_port or (throw "Service '${serviceName}' missing 'local_port' field")
+      );
+      remotePort = toString (
+        service.remote_port or (throw "Service '${serviceName}' missing 'remote_port' field")
+      );
     in
     ''
       [common]
@@ -35,7 +42,8 @@ let
       remote_port = ${remotePort}
     '';
 
-  createFrpcService = service:
+  createFrpcService =
+    service:
     let
       serviceName = service.name;
       configFile = pkgs.writeText "frpc-${serviceName}.ini" (generateFrpcConfig service);
@@ -60,6 +68,7 @@ let
 in
 {
   config = lib.mkIf frpcEnabled {
+    # Create frpc user and group
     users.users.frpc = {
       isSystemUser = true;
       group = "frpc";
@@ -68,6 +77,7 @@ in
 
     users.groups.frpc = { };
 
+    # Create systemd service for each configured FRP service
     systemd.services = builtins.listToAttrs (map createFrpcService services);
   };
 }
