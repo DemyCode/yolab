@@ -9,15 +9,20 @@
     workspaceRoot = ./backend;
   };
 
-  pythonSet = workspace.mkPyprojectOverlay {
+  overlay = workspace.mkPyprojectOverlay {
     sourcePreference = "wheel";
   };
 
-  python = pkgs.python311.override {
-    packageOverrides = pythonSet;
-  };
+  # Create Python set with pyproject-nix build system
+  pythonSet =
+    (pkgs.callPackage inputs.pyproject-nix.build.packages {
+      python = pkgs.python311;
+    })
+    .overrideScope
+    overlay;
 
-  installerBackend = python.pkgs.backend;
+  # Create virtual environment with backend and all dependencies
+  installerBackend = pythonSet.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
   # Build the React frontend
   frontend = pkgs.buildNpmPackage {
     pname = "homelab-installer-frontend";
@@ -66,7 +71,7 @@ in {
     ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${installerBackend}/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000";
+      ExecStart = "${installerBackend}/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000";
       Restart = "always";
       RestartSec = "5s";
     };
