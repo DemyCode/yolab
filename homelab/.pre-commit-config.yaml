@@ -10,18 +10,25 @@ repos:
       - id: check-merge-conflict
       - id: check-toml
 
-  - repo: https://github.com/nix-community/nixpkgs-fmt
-    rev: v1.3.0
+  - repo: local
     hooks:
       - id: nixpkgs-fmt
+        name: nixpkgs-fmt
+        entry: nix run nixpkgs#nixpkgs-fmt --
+        language: system
+        files: \.nix$
+        pass_filenames: true
 
-  - repo: https://github.com/nix-community/statix
-    rev: v0.7.3
-    hooks:
       - id: statix
+        name: statix
+        entry: nix run nixpkgs#statix -- check
+        language: system
+        files: \.nix$
+        pass_filenames: true
 
-  - repo: https://github.com/astro/deadnix
-    rev: v1.2.1
-    hooks:
       - id: deadnix
-        args: [--edit]
+        name: deadnix
+        entry: nix run nixpkgs#deadnix -- --edit
+        language: system
+        files: \.nix$
+        pass_filenames: true

@@ -2,7 +2,8 @@
 
 let
   configPath = ./config.toml;
-  homelabConfig = if builtins.pathExists configPath
+  homelabConfig =
+    if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
     else throw "config.toml not found! Please create it from config.toml.example";
 
@@ -11,7 +12,8 @@ let
   espSize = diskConfig.esp_size or (throw "[disk] esp_size is required in config.toml");
   swapSize = diskConfig.swap_size or (throw "[disk] swap_size is required in config.toml");
 
-in {
+in
+{
   disko.devices = {
     disk.disk1 = {
       device = lib.mkDefault diskDevice;

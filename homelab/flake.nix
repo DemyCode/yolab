@@ -8,15 +8,11 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      disko,
-      ...
+    { self
+    , nixpkgs
+    , disko
+    , ...
     }@inputs:
-    let
-      pkgs = import nixpkgs { system = "x86_64-linux"; };
-    in
     {
       nixosConfigurations.yolab = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";

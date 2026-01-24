@@ -1,14 +1,14 @@
-{ config, pkgs, lib, ... }:
+{ pkgs, lib, ... }:
 
 let
   configPath = ../config.toml;
-  homelabConfig = if builtins.pathExists configPath
+  homelabConfig =
+    if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
-    else {};
+    else { };
 
-  uiConfig = homelabConfig.client_ui or {};
+  uiConfig = homelabConfig.client_ui or { };
   uiEnabled = uiConfig.enabled or true;
-  uiPort = uiConfig.port or 8080;
   platformApiUrl = uiConfig.platform_api_url or "http://localhost:5000";
 
   pythonEnv = pkgs.python311.withPackages (ps: with ps; [
@@ -51,7 +51,8 @@ let
     '';
   };
 
-in {
+in
+{
   config = lib.mkIf uiEnabled {
     systemd.tmpfiles.rules = [
       "d /etc/yolab 0755 root root -"

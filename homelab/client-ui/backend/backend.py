@@ -1,7 +1,7 @@
+import json
 import os
 import subprocess
 from pathlib import Path
-import json
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 
-def dict_to_toml(obj, indent=''):
+def dict_to_toml(obj, indent=""):
     lines = []
     simple = {}
     tables = {}
@@ -25,28 +25,28 @@ def dict_to_toml(obj, indent=''):
 
     for key, value in simple.items():
         if isinstance(value, list):
-            lines.append(f'{key} = {json.dumps(value)}')
+            lines.append(f"{key} = {json.dumps(value)}")
         elif isinstance(value, str):
             lines.append(f'{key} = "{value}"')
         elif isinstance(value, bool):
-            lines.append(f'{key} = {str(value).lower()}')
+            lines.append(f"{key} = {str(value).lower()}")
         else:
-            lines.append(f'{key} = {value}')
+            lines.append(f"{key} = {value}")
 
     for key, value in tables.items():
-        lines.append(f'\n[{key}]')
-        lines.append(dict_to_toml(value, indent + '  '))
+        lines.append(f"\n[{key}]")
+        lines.append(dict_to_toml(value, indent + "  "))
 
     for key, items in arrays:
         for item in items:
-            lines.append(f'\n[[{key}]]')
-            lines.append(dict_to_toml(item, indent + '  '))
+            lines.append(f"\n[[{key}]]")
+            lines.append(dict_to_toml(item, indent + "  "))
 
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
 def toml_to_dict(text):
-    lines = text.split('\n')
+    lines = text.split("\n")
     result = {}
     current = result
     current_path = []
@@ -54,19 +54,19 @@ def toml_to_dict(text):
 
     for line in lines:
         line = line.strip()
-        if not line or line.startswith('#'):
+        if not line or line.startswith("#"):
             continue
 
-        if line.startswith('[[') and line.endswith(']]'):
+        if line.startswith("[[") and line.endswith("]]"):
             array_name = line[2:-2]
             if array_name not in result:
                 result[array_name] = []
             current_array = {}
             result[array_name].append(current_array)
             current = current_array
-        elif line.startswith('[') and line.endswith(']'):
+        elif line.startswith("[") and line.endswith("]"):
             section = line[1:-1]
-            current_path = section.split('.')
+            current_path = section.split(".")
             current = result
             current_array = None
 
@@ -74,18 +74,18 @@ def toml_to_dict(text):
                 if part not in current:
                     current[part] = {}
                 current = current[part]
-        elif '=' in line:
-            key, _, value = line.partition('=')
+        elif "=" in line:
+            key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip()
 
             try:
                 current[key] = json.loads(value)
             except:
-                if value.lower() in ('true', 'false'):
-                    current[key] = value.lower() == 'true'
+                if value.lower() in ("true", "false"):
+                    current[key] = value.lower() == "true"
                 else:
-                    current[key] = value.strip('"\'')
+                    current[key] = value.strip("\"'")
 
     return result
 
@@ -117,9 +117,12 @@ if FRONTEND_DIR.exists():
     async def root():
         return FileResponse(FRONTEND_DIR / "index.html")
 else:
+
     @app.get("/")
     async def root():
-        return {"error": "Frontend not built. Run: cd frontend && npm install && npm run build"}
+        return {
+            "error": "Frontend not built. Run: cd frontend && npm install && npm run build"
+        }
 
 
 @app.get("/config")
@@ -161,11 +164,13 @@ async def list_downloaded_services():
         if service_dir.is_dir():
             has_compose = (service_dir / "docker-compose.yml").exists()
             has_caddy = (service_dir / "Caddyfile").exists()
-            services.append({
-                "name": service_dir.name,
-                "has_compose": has_compose,
-                "has_caddy": has_caddy
-            })
+            services.append(
+                {
+                    "name": service_dir.name,
+                    "has_compose": has_compose,
+                    "has_caddy": has_caddy,
+                }
+            )
 
     return services
 
@@ -196,6 +201,7 @@ async def delete_service(service_name: str):
         raise HTTPException(status_code=404, detail="Service not found")
 
     import shutil
+
     shutil.rmtree(service_dir)
 
     return {"status": "success", "service": service_name}
@@ -208,14 +214,14 @@ async def rebuild_system():
             ["nixos-rebuild", "switch", "--flake", "/etc/nixos#yolab"],
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300,
         )
 
         return {
             "status": "success" if result.returncode == 0 else "error",
             "stdout": result.stdout,
             "stderr": result.stderr,
-            "returncode": result.returncode
+            "returncode": result.returncode,
         }
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=408, detail="Rebuild timeout")
@@ -230,4 +236,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8080)

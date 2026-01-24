@@ -1,8 +1,9 @@
-{ modulesPath, config, pkgs, lib, ... }:
+{ modulesPath, pkgs, lib, ... }:
 
 let
   configPath = ./config.toml;
-  homelabConfig = if builtins.pathExists configPath
+  homelabConfig =
+    if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
     else throw "config.toml not found! Please create it from config.toml.example";
 
@@ -18,11 +19,12 @@ let
   dockerEnabled = dockerCfg.enabled or (throw "[docker] enabled is required in config.toml");
   dockerComposeUrl = dockerCfg.compose_url or "";
 
-  wifiCfg = homelabConfig.wifi or {};
+  wifiCfg = homelabConfig.wifi or { };
   wifiSSID = wifiCfg.ssid or "";
   wifiPSK = wifiCfg.psk or "";
 
-in {
+in
+{
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     (modulesPath + "/profiles/qemu-guest.nix")
