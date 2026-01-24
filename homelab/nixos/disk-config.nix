@@ -1,19 +1,15 @@
-# Generic disk configuration for homelab
-# Disk device is loaded from config.toml
 { lib, ... }:
 
 let
-  # Load machine-specific configuration from TOML
   configPath = ./config.toml;
   homelabConfig = if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
-    else {};
+    else throw "config.toml not found! Please create it from config.toml.example";
 
-  # Extract disk configuration
-  diskConfig = homelabConfig.disk or {};
-  diskDevice = diskConfig.device or "/dev/sda";
-  espSize = diskConfig.esp_size or "500M";
-  swapSize = diskConfig.swap_size or "8G";
+  diskConfig = homelabConfig.disk or (throw "[disk] section missing in config.toml");
+  diskDevice = diskConfig.device or (throw "[disk] device is required in config.toml");
+  espSize = diskConfig.esp_size or (throw "[disk] esp_size is required in config.toml");
+  swapSize = diskConfig.swap_size or (throw "[disk] swap_size is required in config.toml");
 
 in {
   disko.devices = {

@@ -1,39 +1,32 @@
 { config, pkgs, lib, ... }:
 
 let
-  # Load machine-specific configuration from TOML
   configPath = ../config.toml;
   homelabConfig = if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)
-    else {};
+    else throw "config.toml not found! Please create it from config.toml.example";
 
-  # Extract frpc configuration
-  frpcConfig = homelabConfig.frpc or {};
-  frpcEnabled = frpcConfig.enabled or false;
-  serverAddr = frpcConfig.server_addr or "";
-  accountToken = frpcConfig.account_token or "";
-  services = frpcConfig.services or [];
+  frpcConfig = homelabConfig.frpc or (throw "[frpc] section missing in config.toml");
+  frpcEnabled = frpcConfig.enabled or (throw "[frpc] enabled is required in config.toml");
+  serverAddr = frpcConfig.server_addr or (throw "[frpc] server_addr is required in config.toml");
+  serverPort = frpcConfig.server_port or (throw "[frpc] server_port is required in config.toml");
+  accountToken = frpcConfig.account_token or (throw "[frpc] account_token is required in config.toml");
+  services = frpcConfig.services or (throw "[frpc] services array is required in config.toml");
 
-  # Validate configuration
-  _ = if frpcEnabled && serverAddr == ""
-      then throw "FRPC enabled but server_addr is not set in config.toml!"
-      else if frpcEnabled && accountToken == ""
-      then throw "FRPC enabled but account_token is not set in config.toml!"
-      else if frpcEnabled && services == []
-      then throw "FRPC enabled but no services configured in config.toml!"
+  _ = if frpcEnabled && services == []
+      then throw "[frpc] services array cannot be empty when enabled=true"
       else null;
 
-  # Generate frpc config for a single service
   generateFrpcConfig = service:
     let
-      serviceName = service.name;
-      serviceType = service.type or "tcp";
-      localPort = toString service.local_port;
-      remotePort = toString service.remote_port;
+      serviceName = service.name or (throw "Service missing 'name' field in [frpc.services]");
+      serviceType = service.type or (throw "Service '${serviceName}' missing 'type' field");
+      localPort = toString (service.local_port or (throw "Service '${serviceName}' missing 'local_port' field"));
+      remotePort = toString (service.remote_port or (throw "Service '${serviceName}' missing 'remote_port' field"));
     in ''
       [common]
-      server_addr = ${frpcConfig.server_addr or ""}
-      server_port = ${toString (frpcConfig.server_port or 7000)}
+      server_addr = ${serverAddr}
+      server_port = ${toString serverPort}
       user = ${serviceName}
       meta_account_token = ${accountToken}
 
@@ -44,7 +37,6 @@ let
       remote_port = ${remotePort}
     '';
 
-  # Create a systemd service for each frpc service
   createFrpcService = service:
     let
       serviceName = service.name;
@@ -68,7 +60,6 @@ let
 
 in {
   config = lib.mkIf frpcEnabled {
-    # Create frpc user
     users.users.frpc = {
       isSystemUser = true;
       group = "frpc";
@@ -77,7 +68,6 @@ in {
 
     users.groups.frpc = {};
 
-    # Create systemd services for each configured service
     systemd.services = builtins.listToAttrs (map createFrpcService services);
   };
 }

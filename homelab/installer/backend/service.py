@@ -145,10 +145,10 @@ device = "{disk}"
 esp_size = "500M"
 swap_size = "{swap_size}G"
 {wifi_section}
-[setup]
+[client_ui]
 enabled = true
-port = 5001
-registration_api_url = ""
+port = 8080
+platform_api_url = ""
 
 [docker]
 enabled = false

@@ -1,0 +1,34 @@
+[homelab]
+hostname = "yolab-client"
+timezone = "UTC"
+locale = "en_US.UTF-8"
+ssh_port = 22
+root_ssh_key = ""
+allowed_ssh_keys = []
+
+[disk]
+device = "/dev/sda"
+esp_size = "500M"
+swap_size = "8G"
+
+[client_ui]
+enabled = true
+port = 8080
+platform_api_url = "http://your-backend-server:5000"
+
+[docker]
+enabled = false
+compose_url = ""
+
+[frpc]
+enabled = false
+server_addr = ""
+server_port = 7000
+account_token = ""
+
+[[frpc.services]]
+name = "example"
+type = "tcp"
+local_port = 8080
+remote_port = 10080
+description = "Example service"

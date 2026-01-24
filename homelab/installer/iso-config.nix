@@ -1,12 +1,18 @@
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   installerScript = pkgs.writeScriptBin "homelab-installer" ''
     #!${pkgs.python3}/bin/python3
-    ${builtins.readFile ./service.py}
+    ${builtins.readFile ./backend/service.py}
   '';
 
-in {
+in
+{
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
 
@@ -41,31 +47,34 @@ in {
   services.getty.autologinUser = "nixos";
 
   programs.bash.interactiveShellInit = ''
-    cat <<EOF
+        cat <<EOF
 
-    ╔══════════════════════════════════════════════════════════╗
-    ║                                                          ║
-    ║           Homelab NixOS Installer                        ║
-    ║                                                          ║
-    ╚══════════════════════════════════════════════════════════╝
+        ╔══════════════════════════════════════════════════════════╗
+        ║                                                          ║
+        ║           Homelab NixOS Installer                        ║
+        ║                                                          ║
+        ╚══════════════════════════════════════════════════════════╝
 
-    Installer service is running on http://0.0.0.0:8000
+        Installer service is running on http://0.0.0.0:8000
 
-    Web UI: Open http://localhost:8000 in a browser
+        Web UI: Open http://localhost:8000 in a browser
 
-    Or use CLI:
-      curl http://localhost:8000/detect | jq
-      curl -X POST http://localhost:8000/install \\
-        -H "Content-Type: application/json" \\
-        -d '{"disk": "/dev/sda", "hostname": "homelab", "root_ssh_key": "ssh-ed25519 ..."}'
+        Or use CLI:
+          curl http://localhost:8000/detect | jq
+          curl -X POST http://localhost:8000/install \\
+            -H "Content-Type: application/json" \\
+            -d '{"disk": "/dev/sda", "hostname": "homelab", "root_ssh_key": "ssh-ed25519 ..."}'
 
-    Useful commands:
-      lsblk               - List disks
-      ip a                - Show network interfaces
-      systemctl status homelab-installer - Check installer status
+        Useful commands:
+          lsblk               - List disks
+          ip a                - Show network interfaces
+          systemctl status homelab-installer - Check installer status
 
-EOF
+    EOF
   '';
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
 }

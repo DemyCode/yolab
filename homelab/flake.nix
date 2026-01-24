@@ -1,5 +1,5 @@
 {
-  description = "Generic Homelab NixOS Configuration";
+  description = "YoLab Client NixOS Configuration";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -18,14 +18,14 @@
       pkgs = import nixpkgs { system = "x86_64-linux"; };
     in
     {
-      nixosConfigurations.homelab = nixpkgs.lib.nixosSystem {
+      nixosConfigurations.yolab = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
           disko.nixosModules.disko
-          ./configuration.nix
-          ./disk-config.nix
-          ./modules/frpc.nix
-          ./modules/homelab-setup.nix
+          ./nixos/configuration.nix
+          ./nixos/disk-config.nix
+          ./nixos/modules/frpc.nix
+          ./nixos/modules/client-ui.nix
         ];
         specialArgs = { inherit inputs; };
       };
