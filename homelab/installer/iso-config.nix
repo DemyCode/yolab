@@ -13,16 +13,16 @@
     sourcePreference = "wheel";
   };
 
-  # Create Python set with pyproject-nix build system
-  pythonSet =
-    (pkgs.callPackage inputs.pyproject-nix.build.packages {
-      python = pkgs.python311;
-    })
-    .overrideScope
-    overlay;
+  # Override Python with uv2nix overlay
+  python = pkgs.python311.override {
+    packageOverrides = lib.composeManyExtensions [
+      inputs.pyproject-nix.lib.overlays.default
+      overlay
+    ];
+  };
 
   # Create virtual environment with backend and all dependencies
-  installerBackend = pythonSet.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
+  installerBackend = python.pkgs.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
   # Build the React frontend
   frontend = pkgs.buildNpmPackage {
     pname = "homelab-installer-frontend";
