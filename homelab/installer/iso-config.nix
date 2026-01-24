@@ -31,7 +31,7 @@
     pname = "homelab-installer-frontend";
     version = "1.0.0";
     src = ./frontend;
-    npmDepsHash =  "sha256-jWCdFYNL2IxKRHIgoXybLDnGdlfwAIDO312nkBQqNpU=";
+    npmDepsHash = "sha256-jWCdFYNL2IxKRHIgoXybLDnGdlfwAIDO312nkBQqNpU=";
 
     buildPhase = ''
       npm run build
@@ -45,6 +45,13 @@
 in {
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
+  isoImage.squashfsCompression = "xz -Xdict-size 100%";
+
+  # Reduce ISO size
+  documentation.enable = false;
+  documentation.man.enable = false;
+  documentation.info.enable = false;
+  documentation.doc.enable = false;
 
   networking.networkmanager.enable = true;
   networking.wireless.enable = lib.mkForce false;
@@ -52,13 +59,9 @@ in {
   environment.systemPackages = with pkgs; [
     vim
     curl
-    git
     parted
     gptfdisk
     util-linux
-    iproute2
-    jq
-    nodejs
   ];
 
   systemd.services.homelab-installer-backend = {
@@ -111,7 +114,12 @@ in {
 
   environment.etc."xdg/openbox/autostart".text = ''
     #!/bin/sh
-    sleep 3
+    # Wait for frontend service to be ready
+    echo "Waiting for installer frontend to start..."
+    while ! ${pkgs.curl}/bin/curl -s http://localhost:3000 >/dev/null 2>&1; do
+      sleep 1
+    done
+    echo "Frontend ready, launching browser..."
     ${pkgs.firefox}/bin/firefox --kiosk --private-window http://localhost:3000/ &
   '';
 
