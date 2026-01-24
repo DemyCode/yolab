@@ -31,7 +31,7 @@
     pname = "homelab-installer-frontend";
     version = "1.0.0";
     src = ./frontend;
-    npmDepsHash = lib.fakeHash;
+    npmDepsHash =  "sha256-jWCdFYNL2IxKRHIgoXybLDnGdlfwAIDO312nkBQqNpU=";
 
     buildPhase = ''
       npm run build
