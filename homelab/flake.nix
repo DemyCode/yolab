@@ -12,12 +12,12 @@
     uv2nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = {
+  outputs = inputs @ {
     self,
     nixpkgs,
     disko,
     ...
-  } @ inputs: {
+  }: {
     nixosConfigurations.yolab = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
