@@ -70,19 +70,23 @@ def show_config_summary(config: dict):
     table.add_column("Setting", style="bold")
     table.add_column("Value")
 
-    table.add_row("Disk", f"[yellow]{config['disk']}[/yellow]")
-    table.add_row("Hostname", config["hostname"])
-    table.add_row("Timezone", config["timezone"])
+    homelab = config.get("homelab", {})
+    disk = config.get("disk", {})
+    wifi = config.get("wifi", {})
+
+    table.add_row("Disk", f"[yellow]{disk.get('device', 'N/A')}[/yellow]")
+    table.add_row("Hostname", homelab.get("hostname", "N/A"))
+    table.add_row("Timezone", homelab.get("timezone", "N/A"))
+
+    ssh_key = homelab.get("root_ssh_key", "")
     table.add_row(
         "SSH Key",
-        f"{config['root_ssh_key'][:50]}..."
-        if len(config["root_ssh_key"]) > 50
-        else config["root_ssh_key"],
+        f"{ssh_key[:50]}..." if len(ssh_key) > 50 else ssh_key,
     )
-    table.add_row("Git Remote", config["git_remote"])
+    table.add_row("Git Remote", homelab.get("git_remote", "N/A"))
 
-    if config.get("wifi_ssid"):
-        table.add_row("WiFi SSID", config["wifi_ssid"])
+    if wifi.get("enabled"):
+        table.add_row("WiFi SSID", wifi.get("ssid", "N/A"))
         table.add_row("WiFi Password", "[dim]********[/dim]")
 
     console.print(table)

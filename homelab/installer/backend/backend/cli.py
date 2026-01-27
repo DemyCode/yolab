@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from typer import Typer
 
-from backend.functions import get_status, install, scan_wifi, wifi_connect
+from backend.functions import get_status, scan_wifi, wifi_connect
 
 console = Console()
 
@@ -110,6 +110,9 @@ def cli_install(
     git_remote: Optional[str] = typer.Option(
         None, "--git-remote", "-g", help="Git remote URL"
     ),
+    password: Optional[str] = typer.Option(
+        None, "--password", help="Homelab user password"
+    ),
     wifi_ssid: Optional[str] = typer.Option(None, "--wifi-ssid", help="WiFi SSID"),
     wifi_password: Optional[str] = typer.Option(
         None, "--wifi-password", help="WiFi password"
@@ -117,17 +120,19 @@ def cli_install(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ):
     """Install NixOS to disk."""
+    from backend.install_flow import build_install_config, install_system
+    from backend.password import hash_password
+
     # Determine if we have all required arguments
-    required_args = [disk, hostname, timezone, root_ssh_key, git_remote]
+    required_args = [disk, hostname, timezone, root_ssh_key, git_remote, password]
     has_all_args = all(arg is not None for arg in required_args)
     has_any_args = any(arg is not None for arg in required_args)
 
     # If interactive mode and no args, run wizard
     if interactive and not has_any_args:
-        from backend.interactive import InteractiveInstaller
+        from backend.interactive import run_interactive_install
 
-        installer = InteractiveInstaller()
-        installer.run()
+        run_interactive_install()
         return
 
     # If some but not all args provided, show error
@@ -136,7 +141,7 @@ def cli_install(
             "[bold red]Error:[/bold red] Provide all required arguments or use interactive mode"
         )
         rprint(
-            "\n[yellow]Required:[/yellow] --disk, --hostname, --timezone, --ssh-key, --git-remote"
+            "\n[yellow]Required:[/yellow] --disk, --hostname, --timezone, --ssh-key, --git-remote, --password"
         )
         rprint("[yellow]Or run without arguments for interactive mode[/yellow]")
         raise typer.Exit(1)
@@ -175,9 +180,25 @@ def cli_install(
 
     try:
         rprint("[yellow]Starting installation...[/yellow]")
-        result = install(disk, hostname, timezone, root_ssh_key, git_remote)
-        rprint(f"[bold green]✓ {result['message']}[/bold green]")
-        rprint("[yellow]→[/yellow] Remove installation media and reboot")
+
+        # Hash password
+        password_hash = hash_password(password)
+
+        # Build configuration
+        config = build_install_config(
+            disk=disk,
+            hostname=hostname,
+            timezone=timezone,
+            root_ssh_key=root_ssh_key,
+            git_remote=git_remote,
+            homelab_password_hash=password_hash,
+            wifi_ssid=wifi_ssid,
+            wifi_password=wifi_password,
+        )
+
+        # Install system
+        install_system(config)
+
     except subprocess.CalledProcessError as e:
         rprint(f"[bold red]✗ Installation failed:[/bold red] {e}")
         raise typer.Exit(1)

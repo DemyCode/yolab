@@ -208,7 +208,7 @@ def run_installation(
     subprocess.run(
         ["git", "clone", git_remote, str(install_dir)],
         check=True,
-        capture_output=True,
+        # capture_output=True,
     )
 
     swap_size = detect_ram_size()
@@ -233,7 +233,7 @@ def run_installation(
     result = subprocess.run(
         ["nixos-generate-config", "--no-filesystems", "--show-hardware-config"],
         check=True,
-        capture_output=True,
+        # capture_output=True,
         text=True,
     )
     hardware_config.write_text(result.stdout)
