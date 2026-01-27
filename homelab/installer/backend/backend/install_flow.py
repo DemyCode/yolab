@@ -316,7 +316,7 @@ def prompt_git_remote() -> str:
     """Prompt for git remote URL."""
     git_remote = questionary.text(
         "Git remote URL:",
-        default="https://github.com/DemyCode/yolab",
+        default="https://github.com/DemyCode/yolab.git",
         validate=lambda text: validate_git_url(text)
         or "Invalid git URL (must be http, https, or git protocol)",
         style=PROMPT_STYLE,
@@ -502,11 +502,18 @@ def install_system(config: dict) -> None:
 
     # Clone repository
     console.print("[yellow]Cloning homelab repository...[/yellow]")
-    subprocess.run(
-        ["git", "clone", config["homelab"]["git_remote"], str(install_dir)],
-        check=True,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["git", "clone", config["homelab"]["git_remote"], str(install_dir)],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        show_error(f"Failed to clone repository: {config['homelab']['git_remote']}")
+        console.print("[dim]Make sure:")
+        console.print("  1. The repository exists")
+        console.print("  2. If private, SSH keys are configured (ssh-add)")
+        console.print("  3. URL ends with .git")
+        raise
 
     # Write config.toml
     console.print("[yellow]Writing configuration...[/yellow]")
@@ -558,7 +565,6 @@ def install_system(config: dict) -> None:
     subprocess.run(
         ["cp", "-rT", str(install_dir), str(nixos_dir)],
         check=True,
-        capture_output=True,
     )
 
     console.print()
