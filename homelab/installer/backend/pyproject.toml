@@ -9,6 +9,9 @@ dependencies = [
   "questionary>=2.0.0",
 ]
 
+[project.scripts]
+yolab-installer = "backend.cli:cli"
+
 [dependency-groups]
 dev = [
     "ruff>=0.14.14",
