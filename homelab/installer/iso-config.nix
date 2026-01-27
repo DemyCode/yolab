@@ -51,7 +51,7 @@ in {
     ++ [installerBackend];
 
   # Auto-login to TTY1 as root
-  services.getty.autologinUser = "root";
+  services.getty.autologinUser = lib.mkForce "root";
 
   # Run installer CLI on login
   programs.bash.interactiveShellInit = ''

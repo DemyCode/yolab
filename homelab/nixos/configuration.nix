@@ -25,6 +25,7 @@
   sshPort = cfg.ssh_port or (throw "[homelab] ssh_port is required in config.toml");
   allowedSshKeys = cfg.allowed_ssh_keys or (throw "[homelab] allowed_ssh_keys is required in config.toml");
   rootSshKey = cfg.root_ssh_key or "";
+  homelabPasswordHash = cfg.homelab_password_hash or "";
 
   dockerCfg = homelabConfig.docker or (throw "[docker] section missing in config.toml");
   dockerEnabled = dockerCfg.enabled or (throw "[docker] enabled is required in config.toml");
@@ -102,9 +103,10 @@ in {
     isNormalUser = true;
     extraGroups = ["wheel" "networkmanager" "docker"];
     openssh.authorizedKeys.keys = allowedSshKeys;
+    hashedPassword = lib.mkIf (homelabPasswordHash != "") homelabPasswordHash;
   };
 
-  security.sudo.wheelNeedsPassword = false;
+  # Sudo requires password (default behavior, wheelNeedsPassword = true)
   virtualisation.docker.enable = true;
   services.logind.lidSwitchExternalPower = "ignore";
 

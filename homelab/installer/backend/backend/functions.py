@@ -142,6 +142,7 @@ def generate_config_toml(
     swap_size: int,
     git_remote: str,
     wifi_config: dict | None,
+    homelab_password_hash: str | None = None,
 ) -> str:
     wifi_section = ""
     if wifi_config:
@@ -152,6 +153,10 @@ psk = "{wifi_config["psk"]}"
 
 '''
 
+    password_line = ""
+    if homelab_password_hash:
+        password_line = f'\nhomelab_password_hash = "{homelab_password_hash}"'
+
     return f'''[homelab]
 hostname = "{hostname}"
 timezone = "{timezone}"
@@ -159,7 +164,7 @@ locale = "en_US.UTF-8"
 ssh_port = 22
 root_ssh_key = "{root_ssh_key}"
 git_remote = "{git_remote}"
-allowed_ssh_keys = []
+allowed_ssh_keys = []{password_line}
 
 [disk]
 device = "{disk}"
@@ -184,7 +189,12 @@ account_token = ""
 
 
 def run_installation(
-    disk: str, hostname: str, timezone: str, root_ssh_key: str, git_remote: str
+    disk: str,
+    hostname: str,
+    timezone: str,
+    root_ssh_key: str,
+    git_remote: str,
+    homelab_password_hash: str | None = None,
 ) -> None:
     import shutil
 
@@ -208,7 +218,14 @@ def run_installation(
     config_toml.parent.mkdir(parents=True, exist_ok=True)
     config_toml.write_text(
         generate_config_toml(
-            disk, hostname, timezone, root_ssh_key, swap_size, git_remote, wifi_config
+            disk,
+            hostname,
+            timezone,
+            root_ssh_key,
+            swap_size,
+            git_remote,
+            wifi_config,
+            homelab_password_hash,
         )
     )
 

@@ -267,6 +267,7 @@ class InteractiveInstaller:
         console.print()
         git_remote = questionary.text(
             "Git remote URL:",
+            default="git@github.com:DemyCode/yolab.git",
             validate=lambda text: validate_git_url(text)
             or "Invalid git URL (must be http, https, or git protocol)",
             style=custom_style,
@@ -277,6 +278,58 @@ class InteractiveInstaller:
             sys.exit(1)
 
         self.config["git_remote"] = git_remote
+
+        # Homelab user password
+        console.print()
+        self._prompt_for_password()
+
+    def _prompt_for_password(self):
+        """Prompt for homelab user password."""
+        from backend.password import hash_password, validate_password_strength
+
+        console.print("[bold cyan]Set password for homelab user[/bold cyan]")
+        console.print(
+            "[dim]This password will be required for sudo commands (e.g., nixos-rebuild)[/dim]"
+        )
+        console.print()
+
+        while True:
+            password = questionary.password(
+                "Enter password:",
+                style=custom_style,
+            ).ask()
+
+            if not password:
+                show_error("Password is required")
+                sys.exit(1)
+
+            # Validate password strength
+            is_valid, error_msg = validate_password_strength(password)
+            if not is_valid:
+                show_error(error_msg)
+                console.print()
+                continue
+
+            # Confirm password
+            password_confirm = questionary.password(
+                "Confirm password:",
+                style=custom_style,
+            ).ask()
+
+            if not password_confirm:
+                show_error("Password confirmation is required")
+                sys.exit(1)
+
+            if password != password_confirm:
+                show_error("Passwords do not match")
+                console.print()
+                continue
+
+            # Hash the password
+            password_hash = hash_password(password)
+            self.config["homelab_password_hash"] = password_hash
+            show_success("Password set successfully")
+            break
 
     def _generate_and_display_ssh_key(self):
         """Generate SSH key pair and display for user to save."""
@@ -388,6 +441,7 @@ class InteractiveInstaller:
                     timezone=self.config["timezone"],
                     root_ssh_key=self.config["root_ssh_key"],
                     git_remote=self.config["git_remote"],
+                    homelab_password_hash=self.config.get("homelab_password_hash"),
                 )
 
                 progress.update(task, completed=True)
