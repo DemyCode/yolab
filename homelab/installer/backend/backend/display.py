@@ -107,3 +107,33 @@ def show_warning(message: str):
 def show_info(message: str):
     """Display an info message."""
     console.print(f"[cyan]→[/cyan] {message}")
+
+
+def show_generated_ssh_key(private_key: str):
+    """
+    Display generated SSH private key.
+
+    Args:
+        private_key: The SSH private key content
+    """
+    console.print()
+    console.print("[bold red]🔑 IMPORTANT: SAVE YOUR SSH PRIVATE KEY![/bold red]")
+    console.print()
+    console.print(
+        "[yellow]You will need this to access your server. Save it securely.[/yellow]"
+    )
+    console.print()
+
+    # Display private key in a panel
+    key_panel = Panel(
+        private_key,
+        title="[bold cyan]SSH Private Key[/bold cyan]",
+        border_style="red",
+        padding=(1, 2),
+    )
+    console.print(key_panel)
+    console.print()
+    console.print(
+        "[dim]Copy this entire key (including BEGIN and END lines) to a file on your computer[/dim]"
+    )
+    console.print()

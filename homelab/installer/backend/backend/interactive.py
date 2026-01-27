@@ -243,7 +243,84 @@ class InteractiveInstaller:
 
         self.config["timezone"] = timezone
 
-        # SSH Key
+        # SSH Key - Choice between generate or provide
+        console.print()
+        key_choice = questionary.select(
+            "SSH Key Setup:",
+            choices=[
+                questionary.Choice("Generate a new SSH key for me", value="generate"),
+                questionary.Choice("I have my own SSH public key", value="provide"),
+            ],
+            style=custom_style,
+        ).ask()
+
+        if not key_choice:
+            show_error("SSH key setup is required")
+            sys.exit(1)
+
+        if key_choice == "generate":
+            self._generate_and_display_ssh_key()
+        else:
+            self._prompt_for_ssh_key()
+
+        # Git Remote
+        console.print()
+        git_remote = questionary.text(
+            "Git remote URL:",
+            validate=lambda text: validate_git_url(text)
+            or "Invalid git URL (must be http, https, or git protocol)",
+            style=custom_style,
+        ).ask()
+
+        if not git_remote:
+            show_error("Git remote URL is required")
+            sys.exit(1)
+
+        self.config["git_remote"] = git_remote
+
+    def _generate_and_display_ssh_key(self):
+        """Generate SSH key pair and display for user to save."""
+        from backend.display import show_generated_ssh_key
+        from backend.ssh_keygen import generate_ssh_keypair
+
+        console.print()
+        console.print("[yellow]Generating SSH key pair...[/yellow]")
+
+        try:
+            private_key, public_key = generate_ssh_keypair()
+
+            console.print()
+            show_generated_ssh_key(private_key)
+
+            # Confirm they saved it
+            saved = False
+            while not saved:
+                saved = questionary.confirm(
+                    "Have you saved your SSH private key securely?",
+                    default=False,
+                    style=custom_style,
+                ).ask()
+
+                if saved is None:
+                    show_error("You must confirm you have saved your key")
+                    sys.exit(1)
+
+                if not saved:
+                    console.print()
+                    show_warning("Please save your key before continuing!")
+                    console.print()
+                    console.print("[dim]Scroll up to see your private key[/dim]")
+                    console.print()
+
+            # Store the public key for installation
+            self.config["root_ssh_key"] = public_key
+
+        except Exception as e:
+            show_error(f"Failed to generate SSH key: {e}")
+            sys.exit(1)
+
+    def _prompt_for_ssh_key(self):
+        """Prompt user to paste their SSH public key."""
         console.print()
         show_info("Enter your SSH public key (paste and press Enter twice when done):")
 
@@ -275,21 +352,6 @@ class InteractiveInstaller:
             sys.exit(1)
 
         self.config["root_ssh_key"] = ssh_key
-
-        # Git Remote
-        console.print()
-        git_remote = questionary.text(
-            "Git remote URL:",
-            validate=lambda text: validate_git_url(text)
-            or "Invalid git URL (must be http, https, or git protocol)",
-            style=custom_style,
-        ).ask()
-
-        if not git_remote:
-            show_error("Git remote URL is required")
-            sys.exit(1)
-
-        self.config["git_remote"] = git_remote
 
     def review_and_confirm(self) -> bool:
         """Show configuration summary and get confirmation."""
