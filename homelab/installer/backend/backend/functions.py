@@ -226,17 +226,20 @@ def run_installation(
             "nix",
             "--extra-experimental-features",
             "nix-command flakes",
+            "--verbose",
+            "--print-build-logs",
+            "--show-trace",
             "run",
-            "github:nix-community/disko#disko-install",
+            "github:nix-community/disko/latest#disko-install",
             "--",
             "--flake",
             f"{install_dir}#yolab",
             "--disk",
             "disk1",
             disk,
+            "--write-efi-boot-entries",
         ],
         check=True,
-        capture_output=True,
     )
 
     nixos_dir = Path("/mnt/etc/nixos")
