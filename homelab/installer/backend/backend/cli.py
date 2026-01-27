@@ -92,16 +92,73 @@ def cli_wifi_connect(
 
 @cli.command("install")
 def cli_install(
-    disk: str = typer.Option(
-        ..., "--disk", "-d", help="Disk to install on (e.g. /dev/sda)"
+    interactive: bool = typer.Option(
+        True, "--interactive/--no-interactive", help="Run interactive wizard"
     ),
-    hostname: str = typer.Option(..., "--hostname", "-h", help="System hostname"),
-    timezone: str = typer.Option(..., "--timezone", "-t", help="Timezone (e.g. UTC)"),
-    root_ssh_key: str = typer.Option(
-        ..., "--ssh-key", "-s", help="Root SSH public key"
+    disk: Optional[str] = typer.Option(
+        None, "--disk", "-d", help="Disk to install on (e.g. /dev/sda)"
     ),
-    git_remote: str = typer.Option(..., "--git-remote", "-g", help="Git remote URL"),
+    hostname: Optional[str] = typer.Option(
+        None, "--hostname", "-h", help="System hostname"
+    ),
+    timezone: Optional[str] = typer.Option(
+        None, "--timezone", "-t", help="Timezone (e.g. UTC)"
+    ),
+    root_ssh_key: Optional[str] = typer.Option(
+        None, "--ssh-key", "-s", help="Root SSH public key"
+    ),
+    git_remote: Optional[str] = typer.Option(
+        None, "--git-remote", "-g", help="Git remote URL"
+    ),
+    wifi_ssid: Optional[str] = typer.Option(None, "--wifi-ssid", help="WiFi SSID"),
+    wifi_password: Optional[str] = typer.Option(
+        None, "--wifi-password", help="WiFi password"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ):
+    """Install NixOS to disk."""
+    # Determine if we have all required arguments
+    required_args = [disk, hostname, timezone, root_ssh_key, git_remote]
+    has_all_args = all(arg is not None for arg in required_args)
+    has_any_args = any(arg is not None for arg in required_args)
+
+    # If interactive mode and no args, run wizard
+    if interactive and not has_any_args:
+        from backend.interactive import InteractiveInstaller
+
+        installer = InteractiveInstaller()
+        installer.run()
+        return
+
+    # If some but not all args provided, show error
+    if has_any_args and not has_all_args:
+        rprint(
+            "[bold red]Error:[/bold red] Provide all required arguments or use interactive mode"
+        )
+        rprint(
+            "\n[yellow]Required:[/yellow] --disk, --hostname, --timezone, --ssh-key, --git-remote"
+        )
+        rprint("[yellow]Or run without arguments for interactive mode[/yellow]")
+        raise typer.Exit(1)
+
+    # Non-interactive mode with all args
+    if not has_all_args:
+        rprint(
+            "[bold red]Error:[/bold red] Missing required arguments for non-interactive install"
+        )
+        raise typer.Exit(1)
+
+    # Set up WiFi if credentials provided
+    if wifi_ssid:
+        try:
+            rprint(f"[yellow]Connecting to WiFi network {wifi_ssid}...[/yellow]")
+            wifi_connect(wifi_ssid, wifi_password or "")
+            rprint("[bold green]✓[/bold green] Connected to WiFi")
+        except Exception as e:
+            rprint(f"[bold red]✗[/bold red] WiFi connection failed: {e}")
+            raise typer.Exit(1)
+
+    # Show configuration
     rprint("[bold green]Installation Configuration:[/bold green]")
     rprint(f"  Disk: {disk}")
     rprint(f"  Hostname: {hostname}")
@@ -109,10 +166,12 @@ def cli_install(
     rprint(f"  Git Remote: {git_remote}")
     rprint()
 
-    confirm = typer.confirm("Proceed with installation? This will ERASE the disk!")
-    if not confirm:
-        rprint("[yellow]Installation cancelled[/yellow]")
-        raise typer.Exit(0)
+    # Confirm unless --yes flag
+    if not yes:
+        confirm = typer.confirm("Proceed with installation? This will ERASE the disk!")
+        if not confirm:
+            rprint("[yellow]Installation cancelled[/yellow]")
+            raise typer.Exit(0)
 
     try:
         rprint("[yellow]Starting installation...[/yellow]")
@@ -125,17 +184,6 @@ def cli_install(
     except Exception as e:
         rprint(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)
-
-
-@cli.command("server")
-def cli_run_server(
-    host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind to"),
-    port: int = typer.Option(8000, "--port", "-p", help="Port to bind to"),
-):
-    import uvicorn
-
-    rprint(f"[bold green]Starting server on {host}:{port}[/bold green]")
-    uvicorn.run("main:app", host=host, port=port)
 
 
 if __name__ == "__main__":

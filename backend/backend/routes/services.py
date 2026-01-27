@@ -20,7 +20,6 @@ router = APIRouter(prefix="/api", tags=["services"])
 async def register_service(
     request: RegisterRequest, db: Session = Depends(get_db)
 ) -> ServiceResponse:
-    """Register a new service tunnel."""
     try:
         user = db.exec(
             select(User).where(User.account_token == request.account_token)
