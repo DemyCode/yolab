@@ -210,6 +210,11 @@ def run_installation(
         check=True,
     )
 
+    # Check if repository has homelab subdirectory and adjust path
+    homelab_subdir = install_dir / "homelab"
+    if homelab_subdir.exists() and (homelab_subdir / "flake.nix").exists():
+        install_dir = homelab_subdir
+
     swap_size = detect_ram_size()
     wifi_config = get_wifi_config()
 

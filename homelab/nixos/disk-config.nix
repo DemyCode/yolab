@@ -1,5 +1,5 @@
 {lib, ...}: let
-  configPath = ./config.toml;
+  configPath = ../ignored/config.toml;
   homelabConfig =
     if builtins.pathExists configPath
     then builtins.fromTOML (builtins.readFile configPath)

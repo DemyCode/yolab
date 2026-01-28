@@ -429,7 +429,7 @@ def build_install_config(
             "swap_size": f"{swap_size}G",
         },
         "client_ui": {
-            "enabled": True,
+            "enabled": False,
             "port": 8080,
             "platform_api_url": "",
         },
@@ -514,6 +514,12 @@ def install_system(config: dict) -> None:
         console.print("  2. If private, SSH keys are configured (ssh-add)")
         console.print("  3. URL ends with .git")
         raise
+
+    # Check if repository has homelab subdirectory and adjust path
+    homelab_subdir = install_dir / "homelab"
+    if homelab_subdir.exists() and (homelab_subdir / "flake.nix").exists():
+        console.print("[cyan]Detected homelab subdirectory in repository[/cyan]")
+        install_dir = homelab_subdir
 
     # Write config.toml
     console.print("[yellow]Writing configuration...[/yellow]")
