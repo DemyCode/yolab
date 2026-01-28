@@ -502,33 +502,25 @@ def install_system(config: dict) -> None:
 
     # Clone repository
     console.print("[yellow]Cloning homelab repository...[/yellow]")
-    try:
-        subprocess.run(
-            ["git", "clone", config["homelab"]["git_remote"], str(install_dir)],
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        show_error(f"Failed to clone repository: {config['homelab']['git_remote']}")
-        console.print("[dim]Make sure:")
-        console.print("  1. The repository exists")
-        console.print("  2. If private, SSH keys are configured (ssh-add)")
-        console.print("  3. URL ends with .git")
-        raise
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            config["homelab"]["git_remote"],
+            str(install_dir),
+        ],
+        check=True,
+    )
+    console.print(f"[dim]Repository cloned to: {install_dir}[/dim]")
 
-    # Check if repository has homelab subdirectory and adjust path
-    homelab_subdir = install_dir / "homelab"
-    if homelab_subdir.exists() and (homelab_subdir / "flake.nix").exists():
-        console.print("[cyan]Detected homelab subdirectory in repository[/cyan]")
-        install_dir = homelab_subdir
-
-    # Write config.toml
     console.print("[yellow]Writing configuration...[/yellow]")
-    config_path = install_dir / "ignored" / "config.toml"
+    config_path = install_dir / "homelab" / "ignored" / "config.toml"
     write_config_toml(config, config_path)
 
-    # Generate hardware configuration
     console.print("[yellow]Generating hardware configuration...[/yellow]")
-    hardware_config = install_dir / "ignored" / "hardware-configuration.nix"
+    hardware_config = install_dir / "homelab" / "ignored" / "hardware-configuration.nix"
     result = subprocess.run(
         ["nixos-generate-config", "--no-filesystems", "--show-hardware-config"],
         check=True,
@@ -539,6 +531,9 @@ def install_system(config: dict) -> None:
 
     # Run disko-install
     console.print("[yellow]Running disko-install...[/yellow]")
+    console.print(
+        "[dim]This will partition disk, install NixOS, and set up boot entries...[/dim]"
+    )
     console.print("[dim]This will take several minutes...[/dim]")
     console.print()
 
@@ -547,14 +542,13 @@ def install_system(config: dict) -> None:
             "nix",
             "--extra-experimental-features",
             "nix-command flakes",
-            "--verbose",
-            "--print-build-logs",
-            "--show-trace",
             "run",
             "github:nix-community/disko/latest#disko-install",
             "--",
+            "--mode",
+            "format",
             "--flake",
-            f"{install_dir}#yolab",
+            f"path:{install_dir}/homelab#yolab",
             "--disk",
             "disk1",
             config["disk"]["device"],

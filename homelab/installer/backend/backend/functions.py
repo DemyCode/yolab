@@ -206,14 +206,17 @@ def run_installation(
     install_dir.mkdir(parents=True, exist_ok=True)
 
     subprocess.run(
-        ["git", "clone", git_remote, str(install_dir)],
+        ["git", "clone", "--depth", "1", git_remote, str(install_dir)],
         check=True,
     )
 
     # Check if repository has homelab subdirectory and adjust path
     homelab_subdir = install_dir / "homelab"
-    if homelab_subdir.exists() and (homelab_subdir / "flake.nix").exists():
-        install_dir = homelab_subdir
+    if homelab_subdir.exists():
+        flake_path = homelab_subdir / "flake.nix"
+        if flake_path.exists():
+            install_dir = homelab_subdir
+        # If homelab/ exists but no flake, keep using install_dir root
 
     swap_size = detect_ram_size()
     wifi_config = get_wifi_config()
@@ -247,14 +250,13 @@ def run_installation(
             "nix",
             "--extra-experimental-features",
             "nix-command flakes",
-            "--verbose",
-            "--print-build-logs",
-            "--show-trace",
             "run",
             "github:nix-community/disko/latest#disko-install",
             "--",
+            "--mode",
+            "format",
             "--flake",
-            f"{install_dir}#yolab",
+            f"path:{install_dir}#yolab",
             "--disk",
             "disk1",
             disk,

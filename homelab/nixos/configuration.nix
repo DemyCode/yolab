@@ -45,8 +45,11 @@ in {
 
   boot.loader.grub = {
     efiSupport = true;
-    efiInstallAsRemovable = true;
+    efiInstallAsRemovable = lib.mkDefault false;  # Allow proper EFI boot entries
   };
+  
+  # Allow EFI variable manipulation for persistent boot entries
+  boot.loader.efi.canTouchEfiVariables = lib.mkDefault true;
 
   time.timeZone = timezone;
   i18n.defaultLocale = locale;
