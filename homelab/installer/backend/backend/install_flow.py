@@ -492,15 +492,13 @@ def install_system(config: dict) -> None:
     """
     import shutil
 
-    install_dir = Path("/mnt/installer")
+    code_dir = Path("yolab")
 
-    # Clean up existing installation directory
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+    if code_dir.exists():
+        shutil.rmtree(code_dir)
 
-    install_dir.mkdir(parents=True, exist_ok=True)
+    code_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clone repository
     console.print("[yellow]Cloning homelab repository...[/yellow]")
     subprocess.run(
         [
@@ -509,18 +507,18 @@ def install_system(config: dict) -> None:
             "--depth",
             "1",
             config["homelab"]["git_remote"],
-            str(install_dir),
+            str(code_dir),
         ],
         check=True,
     )
-    console.print(f"[dim]Repository cloned to: {install_dir}[/dim]")
+    console.print(f"[dim]Repository cloned to: {code_dir}[/dim]")
 
     console.print("[yellow]Writing configuration...[/yellow]")
-    config_path = install_dir / "homelab" / "ignored" / "config.toml"
+    config_path = code_dir / "homelab" / "ignored" / "config.toml"
     write_config_toml(config, config_path)
 
     console.print("[yellow]Generating hardware configuration...[/yellow]")
-    hardware_config = install_dir / "homelab" / "ignored" / "hardware-configuration.nix"
+    hardware_config = code_dir / "homelab" / "ignored" / "hardware-configuration.nix"
     result = subprocess.run(
         ["nixos-generate-config", "--no-filesystems", "--show-hardware-config"],
         check=True,
@@ -529,41 +527,44 @@ def install_system(config: dict) -> None:
     )
     hardware_config.write_text(result.stdout)
 
-    # Run disko-install
-    console.print("[yellow]Running disko-install...[/yellow]")
     console.print(
-        "[dim]This will partition disk, install NixOS, and set up boot entries...[/dim]"
+        "[yellow]Step 1: Partitioning and formatting disk with disko...[/yellow]"
     )
-    console.print("[dim]This will take several minutes...[/dim]")
+    console.print(f"[dim]Target disk: {config['disk']['device']}[/dim]")
+    console.print("[dim]This will erase all data on the disk...[/dim]")
     console.print()
 
+    disk_config_path = code_dir / "homelab" / "nixos" / "disk-config.nix"
     subprocess.run(
         [
-            "nix",
-            "--extra-experimental-features",
-            "nix-command flakes",
-            "run",
-            "github:nix-community/disko/latest#disko-install",
-            "--",
+            "disko",
             "--mode",
-            "format",
-            "--flake",
-            f"path:{install_dir}/homelab#yolab",
-            "--disk",
-            "disk1",
-            config["disk"]["device"],
-            "--write-efi-boot-entries",
+            "destroy,format,mount",
+            str(disk_config_path),
         ],
         check=True,
     )
 
-    # Copy configuration to installed system
-    console.print("[yellow]Copying configuration to installed system...[/yellow]")
-    nixos_dir = Path("/mnt/etc/nixos")
-    nixos_dir.mkdir(parents=True, exist_ok=True)
+    console.print()
+    show_success("Disk partitioned and mounted to /mnt")
+    console.print()
+
+    console.print("[yellow]Step 3: Installing NixOS...[/yellow]")
+    console.print(
+        "[dim]Build is limited to 1 job and 2 cores to conserve memory.[/dim]"
+    )
+    console.print(
+        "[dim]This will take several minutes (possibly 10-20 minutes)...[/dim]"
+    )
+    console.print()
 
     subprocess.run(
-        ["cp", "-rT", str(install_dir), str(nixos_dir)],
+        [
+            "nixos-install",
+            "--flake",
+            f"path:{code_dir}/homelab#yolab",
+            "--no-root-password",
+        ],
         check=True,
     )
 

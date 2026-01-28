@@ -3,12 +3,13 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   # Read config.toml from ignored/ directory (relative path)
   configPath = ../ignored/config.toml;
   homelabConfig =
-    if builtins.pathExists configPath
-    then builtins.fromTOML (builtins.readFile configPath)
+    if builtins.pathExists configPath then
+      builtins.fromTOML (builtins.readFile configPath)
     else
       throw ''
         config.toml not found!
@@ -23,7 +24,8 @@
   timezone = cfg.timezone or (throw "[homelab] timezone is required in config.toml");
   locale = cfg.locale or (throw "[homelab] locale is required in config.toml");
   sshPort = cfg.ssh_port or (throw "[homelab] ssh_port is required in config.toml");
-  allowedSshKeys = cfg.allowed_ssh_keys or (throw "[homelab] allowed_ssh_keys is required in config.toml");
+  allowedSshKeys =
+    cfg.allowed_ssh_keys or (throw "[homelab] allowed_ssh_keys is required in config.toml");
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
 
@@ -31,25 +33,18 @@
   dockerEnabled = dockerCfg.enabled or (throw "[docker] enabled is required in config.toml");
   dockerComposeUrl = dockerCfg.compose_url or "";
 
-  wifiCfg = homelabConfig.wifi or {};
+  wifiCfg = homelabConfig.wifi or { };
   wifiEnabled = wifiCfg.enabled or false;
   wifiSSID = wifiCfg.ssid or "";
   wifiPSK = wifiCfg.psk or "";
-in {
-  imports =
-    [
-      (modulesPath + "/installer/scan/not-detected.nix")
-      (modulesPath + "/profiles/qemu-guest.nix")
-    ]
-    ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
-
-  boot.loader.grub = {
-    efiSupport = true;
-    efiInstallAsRemovable = lib.mkDefault false;  # Allow proper EFI boot entries
-  };
-  
-  # Allow EFI variable manipulation for persistent boot entries
-  boot.loader.efi.canTouchEfiVariables = lib.mkDefault true;
+in
+{
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+    (modulesPath + "/profiles/qemu-guest.nix")
+  ]
+  ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
+  boot.loader.systemd-boot.enable = true;
 
   time.timeZone = timezone;
   i18n.defaultLocale = locale;
@@ -64,9 +59,9 @@ in {
   # WiFi configuration using NetworkManager (if enabled)
   systemd.services.yolab-wifi-setup = lib.mkIf (wifiEnabled && wifiSSID != "" && wifiPSK != "") {
     description = "Setup WiFi from config";
-    wantedBy = ["multi-user.target"];
-    after = ["network.target"];
-    path = [pkgs.networkmanager];
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    path = [ pkgs.networkmanager ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -93,7 +88,7 @@ in {
 
   services.openssh = {
     enable = true;
-    ports = [sshPort];
+    ports = [ sshPort ];
     settings = {
       PermitRootLogin = lib.mkIf (rootSshKey != "") "prohibit-password";
       PasswordAuthentication = false;
@@ -104,7 +99,11 @@ in {
 
   users.users.homelab = {
     isNormalUser = true;
-    extraGroups = ["wheel" "networkmanager" "docker"];
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+      "docker"
+    ];
     openssh.authorizedKeys.keys = allowedSshKeys;
     hashedPassword = lib.mkIf (homelabPasswordHash != "") homelabPasswordHash;
   };
@@ -113,7 +112,8 @@ in {
   virtualisation.docker.enable = true;
   services.logind.lidSwitchExternalPower = "ignore";
 
-  environment.systemPackages = with pkgs;
+  environment.systemPackages =
+    with pkgs;
     map lib.lowPrio [
       curl
       gitMinimal
@@ -172,12 +172,12 @@ in {
       pkgs.docker
       pkgs.curl
     ];
-    wantedBy = ["multi-user.target"];
+    wantedBy = [ "multi-user.target" ];
     after = [
       "docker.service"
       "docker.socket"
     ];
-    requires = ["docker.service"];
+    requires = [ "docker.service" ];
   };
 
   system.stateVersion = "24.05";

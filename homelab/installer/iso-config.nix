@@ -47,6 +47,7 @@ in {
       parted
       gptfdisk
       util-linux
+      inputs.disko.packages.${pkgs.system}.disko
     ])
     ++ [installerBackend];
 

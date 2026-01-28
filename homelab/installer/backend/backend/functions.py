@@ -245,31 +245,39 @@ def run_installation(
     )
     hardware_config.write_text(result.stdout)
 
+    # Step 1: Run disko to partition, format, and mount
+    disk_config_path = install_dir / "nixos" / "disk-config.nix"
     subprocess.run(
         [
-            "nix",
-            "--extra-experimental-features",
-            "nix-command flakes",
-            "run",
-            "github:nix-community/disko/latest#disko-install",
-            "--",
+            "disko",
             "--mode",
-            "format",
-            "--flake",
-            f"path:{install_dir}#yolab",
-            "--disk",
-            "disk1",
-            disk,
-            "--write-efi-boot-entries",
+            "destroy,format,mount",
+            str(disk_config_path),
         ],
         check=True,
     )
 
+    # Step 2: Copy configuration to mounted system
     nixos_dir = Path("/mnt/etc/nixos")
     nixos_dir.mkdir(parents=True, exist_ok=True)
 
     subprocess.run(
         ["cp", "-rT", str(install_dir), str(nixos_dir)],
+        check=True,
+    )
+
+    # Step 3: Run nixos-install
+    subprocess.run(
+        [
+            "nixos-install",
+            "--flake",
+            f"/mnt/etc/nixos/homelab#yolab",
+            "--no-root-password",
+            "--max-jobs",
+            "1",
+            "--cores",
+            "2",
+        ],
         check=True,
     )
 
