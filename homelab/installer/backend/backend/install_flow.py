@@ -504,8 +504,6 @@ def install_system(config: dict) -> None:
         [
             "git",
             "clone",
-            "--depth",
-            "1",
             config["homelab"]["git_remote"],
             str(code_dir),
         ],
@@ -538,6 +536,7 @@ def install_system(config: dict) -> None:
     subprocess.run(
         [
             "disko",
+            "--yes-wipe-all-disks",
             "--mode",
             "destroy,format,mount",
             str(disk_config_path),
@@ -550,12 +549,6 @@ def install_system(config: dict) -> None:
     console.print()
 
     console.print("[yellow]Step 3: Installing NixOS...[/yellow]")
-    console.print(
-        "[dim]Build is limited to 1 job and 2 cores to conserve memory.[/dim]"
-    )
-    console.print(
-        "[dim]This will take several minutes (possibly 10-20 minutes)...[/dim]"
-    )
     console.print()
 
     subprocess.run(
@@ -567,6 +560,8 @@ def install_system(config: dict) -> None:
         ],
         check=True,
     )
+
+    subprocess.run(["rsync", "-a", f"{str(code_dir)}/", "/mnt/yolab"], check=True)
 
     console.print()
     show_success("Installation completed successfully!")
