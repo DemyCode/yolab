@@ -1,2 +1,40 @@
 .DS_Store
 .claude
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Terraform
+deployment/terraform/*.tfstate
+deployment/terraform/*.tfstate.*
+deployment/terraform/.terraform/
+deployment/terraform/.terraform.lock.hcl
+deployment/terraform/terraform.tfvars
+deployment/terraform/tfplan
+
+# Secrets
+secrets/
+*.secret
+*.key
+*.pem
+
+# Nix build artifacts
+result
+result-*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+

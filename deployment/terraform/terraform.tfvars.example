@@ -1,0 +1,31 @@
+# Hetzner Cloud Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# Hetzner Cloud API token (get from https://console.hetzner.cloud/)
+hcloud_token = "YOUR_HETZNER_CLOUD_TOKEN"
+
+# SSH key name in Hetzner Cloud (must be uploaded first)
+ssh_key_name = "your-ssh-key-name"
+
+# GitHub repository
+github_repo = "your-username/yolab"
+repo_url    = "https://github.com/your-username/yolab.git"
+
+# Server location (nbg1, fsn1, hel1, etc.)
+hetzner_location = "nbg1"
+
+# Server types (cpx11, cpx21, cpx31, etc.)
+frps_server_type     = "cpx11"
+services_server_type = "cpx11"
+
+# Environment
+environment = "production"
+
+# Application configuration
+domain           = "superbusiness.com"
+ipv6_subnet_base = "2001:db8::1:0:0:0"  # Replace with your IPv6 subnet
+
+# Database configuration
+postgres_db       = "frp_services"
+postgres_user     = "frp_user"
+postgres_password = "GENERATE_SECURE_PASSWORD_HERE"

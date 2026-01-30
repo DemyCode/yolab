@@ -1,0 +1,16 @@
+# Terraform state and variables
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars.backup
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Secrets
+secrets/
+*.secret
