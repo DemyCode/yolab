@@ -43,11 +43,6 @@ variable "domain" {
   type        = string
 }
 
-variable "ipv6_subnet_base" {
-  description = "IPv6 subnet base for client allocation"
-  type        = string
-}
-
 variable "postgres_db" {
   description = "PostgreSQL database name"
   type        = string

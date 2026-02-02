@@ -72,7 +72,10 @@ resource "filemanager_toml_file" "deployment_config" {
     }
 
     network = {
-      ipv6_subnet_base = var.ipv6_subnet_base
+      # Auto-calculate subnet base from server's IPv6
+      # Server gets: 2a01:4f8:c010:1234::1
+      # We use:      2a01:4f8:c010:1234::1:0:0:0 for client allocation
+      ipv6_subnet_base = "${hcloud_server.yolab.ipv6_address}:1:0:0:0"
       frps_server_ipv6 = hcloud_server.yolab.ipv6_address
       frps_bind_port   = 7000
       auth_plugin_addr = "127.0.0.1:5000"

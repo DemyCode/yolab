@@ -35,7 +35,9 @@ Configure these secrets in your GitHub repository (Settings → Secrets → Acti
 - `HCLOUD_TOKEN` - Your Hetzner Cloud API token
 - `SSH_PUBLIC_KEY` - Your SSH public key content (e.g., "ssh-ed25519 AAAAC3N...")
 - `POSTGRES_PASSWORD` - PostgreSQL password (generate strong password)
-- `IPV6_SUBNET_BASE` - IPv6 subnet for client allocation (get from Hetzner server IPv6)
+- `IPV6_SUBNET_BASE` - IPv6 subnet for client allocation (see [IPv6 Guide](../IPV6_GUIDE.md))
+  - Example: `2a01:4f8:c010:1234::1:0:0:0`
+  - This should match your server's /64 subnet with `::1:0:0:0` suffix
 
 ### Optional Secrets:
 - `SSH_KEY_NAME` - Name for SSH key in Hetzner Cloud (default: yolab-deployment-key)

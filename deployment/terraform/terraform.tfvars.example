@@ -14,8 +14,6 @@ environment = "production"
 
 domain = "yourdomain.com"
 
-ipv6_subnet_base = "2001:db8::1:0:0:0"
-
 postgres_db = "frp_services"
 
 postgres_user = "frp_user"

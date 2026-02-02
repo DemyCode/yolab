@@ -41,10 +41,6 @@ jobs:
             echo "Error: POSTGRES_PASSWORD secret is not set"
             exit 1
           fi
-          if [ -z "${{ secrets.IPV6_SUBNET_BASE }}" ]; then
-            echo "Error: IPV6_SUBNET_BASE secret is not set"
-            exit 1
-          fi
 
       - name: Terraform Init
         working-directory: deployment/terraform
@@ -55,11 +51,10 @@ jobs:
         env:
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME  }}
+          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME || 'yolab-deployment-key' }}
           TF_VAR_repo_url: https://github.com/${{ github.repository }}
           TF_VAR_domain: ${{ inputs.domain }}
           TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
-          TF_VAR_ipv6_subnet_base: ${{ secrets.IPV6_SUBNET_BASE }}
           TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
           TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
           TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
@@ -71,11 +66,10 @@ jobs:
         env:
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME }}
+          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME || 'yolab-deployment-key' }}
           TF_VAR_repo_url: https://github.com/${{ github.repository }}
           TF_VAR_domain: ${{ inputs.domain }}
           TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
-          TF_VAR_ipv6_subnet_base: ${{ secrets.IPV6_SUBNET_BASE }}
           TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
           TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
           TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
