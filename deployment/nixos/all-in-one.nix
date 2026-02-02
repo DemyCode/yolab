@@ -4,6 +4,7 @@
     (modulesPath + "/installer/scan/not-detected.nix")
     (modulesPath + "/profiles/qemu-guest.nix")
     ./disk-config.nix
+    ./modules/frps.nix
     ./modules/services.nix
   ];
 
@@ -16,7 +17,7 @@
   i18n.defaultLocale = "en_US.UTF-8";
 
   networking = {
-    hostName = "yolab-services";
+    hostName = "yolab-server";
     enableIPv6 = true;
     useDHCP = true;
   };
@@ -39,6 +40,12 @@
     jq
   ];
 
+  services.yolab-frps = {
+    enable = true;
+    domain = "REPLACE_DOMAIN";
+    authPluginAddr = "127.0.0.1:5000";
+  };
+
   services.yolab-services = {
     enable = true;
     repoUrl = "REPLACE_REPO_URL";
@@ -49,6 +56,9 @@
     ipv6SubnetBase = "REPLACE_IPV6_SUBNET_BASE";
     frpsServerIpv6 = "REPLACE_FRPS_SERVER_IPV6";
   };
+
+  systemd.services.frps.after = [ "yolab-deploy.service" ];
+  systemd.services.frps.wants = [ "yolab-deploy.service" ];
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   

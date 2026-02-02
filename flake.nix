@@ -10,6 +10,7 @@
   outputs = { self, nixpkgs, disko, ... }: {
     # Server Configurations (Cloud Deployment)
     nixosConfigurations = {
+      # Legacy separate servers
       frps-server = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
@@ -23,6 +24,15 @@
         modules = [
           disko.nixosModules.disko
           ./deployment/nixos/services-stack.nix
+        ];
+      };
+
+      # All-in-one server (FRP + Services on same machine)
+      yolab-server = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          disko.nixosModules.disko
+          ./deployment/nixos/all-in-one.nix
         ];
       };
 

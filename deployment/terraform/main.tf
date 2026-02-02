@@ -16,27 +16,9 @@ data "hcloud_ssh_key" "deployment_key" {
   name = var.ssh_key_name
 }
 
-module "frps_server" {
-  source = "github.com/nix-community/nixos-anywhere//terraform/all-in-one"
-
-  nixos_system_attr      = ".#nixosConfigurations.frps-server.config.system.build.toplevel"
-  nixos_partitioner_attr = ".#nixosConfigurations.frps-server.config.system.build.diskoScript"
-  target_host            = hcloud_server.frps.ipv4_address
-}
-
-module "services_stack" {
-  source = "github.com/nix-community/nixos-anywhere//terraform/all-in-one"
-
-  nixos_system_attr      = ".#nixosConfigurations.services-stack.config.system.build.toplevel"
-  nixos_partitioner_attr = ".#nixosConfigurations.services-stack.config.system.build.diskoScript"
-  target_host            = hcloud_server.services.ipv4_address
-
-  depends_on = [module.frps_server]
-}
-
-resource "hcloud_server" "frps" {
-  name        = "yolab-frps"
-  server_type = var.frps_server_type
+resource "hcloud_server" "yolab" {
+  name        = "yolab-server"
+  server_type = var.server_type
   location    = var.hetzner_location
   image       = "ubuntu-22.04"
   ssh_keys    = [data.hcloud_ssh_key.deployment_key.id]
@@ -47,7 +29,7 @@ resource "hcloud_server" "frps" {
   }
 
   labels = {
-    role        = "frps"
+    role        = "all-in-one"
     environment = var.environment
   }
 
@@ -56,26 +38,34 @@ resource "hcloud_server" "frps" {
   }
 }
 
-resource "hcloud_server" "services" {
-  name        = "yolab-services"
-  server_type = var.services_server_type
-  location    = var.hetzner_location
-  image       = "ubuntu-22.04"
-  ssh_keys    = [data.hcloud_ssh_key.deployment_key.id]
-
-  public_net {
-    ipv4_enabled = true
-    ipv6_enabled = true
+resource "null_resource" "prepare_config" {
+  triggers = {
+    server_ipv6 = hcloud_server.yolab.ipv6_address
   }
 
-  labels = {
-    role        = "services"
-    environment = var.environment
+  provisioner "local-exec" {
+    command = <<-EOT
+      cd ${path.module}/../..
+      sed -e "s|REPLACE_REPO_URL|${var.repo_url}|g" \
+          -e "s|REPLACE_DOMAIN|${var.domain}|g" \
+          -e "s|REPLACE_POSTGRES_DB|${var.postgres_db}|g" \
+          -e "s|REPLACE_POSTGRES_USER|${var.postgres_user}|g" \
+          -e "s|REPLACE_POSTGRES_PASSWORD|${var.postgres_password}|g" \
+          -e "s|REPLACE_IPV6_SUBNET_BASE|${var.ipv6_subnet_base}|g" \
+          -e "s|REPLACE_FRPS_SERVER_IPV6|${hcloud_server.yolab.ipv6_address}|g" \
+          deployment/nixos/all-in-one.nix > deployment/nixos/all-in-one.nix.tmp
+      mv deployment/nixos/all-in-one.nix.tmp deployment/nixos/all-in-one.nix
+    EOT
   }
+}
 
-  lifecycle {
-    ignore_changes = [image]
-  }
+module "deploy_nixos" {
+  source = "github.com/nix-community/nixos-anywhere//terraform/all-in-one"
 
-  depends_on = [hcloud_server.frps]
+  nixos_system_attr      = ".#nixosConfigurations.yolab-server.config.system.build.toplevel"
+  nixos_partitioner_attr = ".#nixosConfigurations.yolab-server.config.system.build.diskoScript"
+  target_host            = hcloud_server.yolab.ipv4_address
+  instance_id            = hcloud_server.yolab.id
+
+  depends_on = [null_resource.prepare_config]
 }

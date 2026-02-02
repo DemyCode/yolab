@@ -1,0 +1,158 @@
+name: Deploy YoLab with Terraform
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: 'Domain name'
+        required: true
+        type: string
+      action:
+        description: 'Terraform action'
+        required: true
+        type: choice
+        options:
+          - apply
+          - destroy
+        default: apply
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Verify secrets
+        run: |
+          if [ -z "${{ secrets.HCLOUD_TOKEN }}" ]; then
+            echo "Error: HCLOUD_TOKEN secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.SSH_KEY_NAME }}" ]; then
+            echo "Error: SSH_KEY_NAME secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.POSTGRES_PASSWORD }}" ]; then
+            echo "Error: POSTGRES_PASSWORD secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.IPV6_SUBNET_BASE }}" ]; then
+            echo "Error: IPV6_SUBNET_BASE secret is not set"
+            exit 1
+          fi
+
+      - name: Terraform Init
+        working-directory: deployment/terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        if: inputs.action == 'apply'
+        working-directory: deployment/terraform
+        env:
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME }}
+          TF_VAR_repo_url: https://github.com/${{ github.repository }}
+          TF_VAR_domain: ${{ inputs.domain }}
+          TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
+          TF_VAR_ipv6_subnet_base: ${{ secrets.IPV6_SUBNET_BASE }}
+          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
+          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
+          TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
+          TF_VAR_hetzner_location: ${{ secrets.HETZNER_LOCATION || 'nbg1' }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply'
+        working-directory: deployment/terraform
+        env:
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME }}
+          TF_VAR_repo_url: https://github.com/${{ github.repository }}
+          TF_VAR_domain: ${{ inputs.domain }}
+          TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
+          TF_VAR_ipv6_subnet_base: ${{ secrets.IPV6_SUBNET_BASE }}
+          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
+          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
+          TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
+          TF_VAR_hetzner_location: ${{ secrets.HETZNER_LOCATION || 'nbg1' }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Terraform Destroy
+        if: inputs.action == 'destroy'
+        working-directory: deployment/terraform
+        env:
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME }}
+          TF_VAR_repo_url: https://github.com/${{ github.repository }}
+          TF_VAR_domain: ${{ inputs.domain }}
+          TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
+          TF_VAR_ipv6_subnet_base: ${{ secrets.IPV6_SUBNET_BASE }}
+          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
+          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
+          TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
+          TF_VAR_hetzner_location: ${{ secrets.HETZNER_LOCATION || 'nbg1' }}
+        run: terraform destroy -auto-approve
+
+      - name: Get outputs
+        if: inputs.action == 'apply'
+        id: outputs
+        working-directory: deployment/terraform
+        run: |
+          echo "server_ipv4=$(terraform output -raw server_ipv4)" >> $GITHUB_OUTPUT
+          echo "server_ipv6=$(terraform output -raw server_ipv6)" >> $GITHUB_OUTPUT
+          terraform output -json > outputs.json
+          cat outputs.json
+
+      - name: Health check
+        if: inputs.action == 'apply'
+        run: |
+          sleep 60
+          
+          for i in {1..20}; do
+            if curl -f "http://${{ steps.outputs.outputs.server_ipv4 }}:5000/health"; then
+              echo "Backend is healthy!"
+              exit 0
+            fi
+            echo "Waiting for backend... (attempt $i/20)"
+            sleep 15
+          done
+          
+          echo "Backend health check failed after 5 minutes"
+          exit 1
+
+      - name: Display deployment info
+        if: inputs.action == 'apply' && success()
+        run: |
+          echo "🎉 Deployment successful!"
+          echo ""
+          echo "Server IPv4: ${{ steps.outputs.outputs.server_ipv4 }}"
+          echo "Server IPv6: ${{ steps.outputs.outputs.server_ipv6 }}"
+          echo ""
+          echo "SSH: ssh root@${{ steps.outputs.outputs.server_ipv4 }}"
+          echo "Backend API: http://${{ steps.outputs.outputs.server_ipv4 }}:5000"
+          echo "Health Check: curl http://${{ steps.outputs.outputs.server_ipv4 }}:5000/health"
+          echo ""
+          echo "Configure DNS records:"
+          echo "  ${{ inputs.domain }} A ${{ steps.outputs.outputs.server_ipv4 }}"
+          echo "  ${{ inputs.domain }} AAAA ${{ steps.outputs.outputs.server_ipv6 }}"
+          echo "  *.${{ inputs.domain }} A ${{ steps.outputs.outputs.server_ipv4 }}"
+          echo "  *.${{ inputs.domain }} AAAA ${{ steps.outputs.outputs.server_ipv6 }}"
+          echo "  ns1.${{ inputs.domain }} A ${{ steps.outputs.outputs.server_ipv4 }}"
+          echo "  ns1.${{ inputs.domain }} AAAA ${{ steps.outputs.outputs.server_ipv6 }}"

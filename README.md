@@ -34,28 +34,30 @@ The platform consists of:
 
 ## 🚀 Quick Start
 
-### For Server Deployment (Hetzner Cloud)
+### For Server Deployment
 
-Deploy the complete backend infrastructure to Hetzner Cloud:
+**New: All-in-One Deployment (Recommended)**
+
+Deploy everything to a single server in under 10 minutes:
 
 ```bash
-# 1. Configure deployment
-cd deployment/terraform
-cp terraform.tfvars.example terraform.tfvars
-vim terraform.tfvars  # Add your Hetzner API token and settings
+# Using GitHub Actions (easiest)
+# 1. Set up GitHub secrets (see deployment/QUICKSTART.md)
+# 2. Go to Actions → Deploy YoLab Server → Run workflow
 
-# 2. Deploy using the helper script
-cd ..
-./scripts/deploy.sh
-
-# Or manually with Terraform
-cd terraform
-terraform init
-terraform plan
-terraform apply
+# Or using local script
+cd deployment/scripts
+TARGET_HOST="YOUR_IP" \
+POSTGRES_PASSWORD="password" \
+IPV6_SUBNET_BASE="2001:db8::1:0:0:0" \
+FRPS_SERVER_IPV6="2001:db8::1" \
+DOMAIN="yourdomain.com" \
+./deploy-all-in-one.sh
 ```
 
-**See [deployment/README.md](deployment/README.md) for detailed deployment instructions.**
+**See [deployment/QUICKSTART.md](deployment/QUICKSTART.md) for fast deployment guide.**
+
+**See [deployment/README.md](deployment/README.md) for detailed instructions.**
 
 ### For Client Setup (Homelab)
 
@@ -123,14 +125,25 @@ yolab/
 
 ## 📦 Deployment Options
 
-### Option 1: Full Cloud Deployment (Production)
+### Option 1: All-in-One Server (Recommended)
 
-Deploy both FRPS server and services stack to Hetzner Cloud:
-- **Cost**: ~€9/month for 2x CPX11 servers
-- **Setup Time**: 15-20 minutes
-- **Automation**: Fully automated with Terraform
+Deploy everything to a single server:
+- **Components**: FRP Server + Backend + DNS + Database
+- **Cost**: ~€5/month for 1x CPX11 server
+- **Setup Time**: 10 minutes with GitHub Actions
+- **Configuration**: `deployment/nixos/all-in-one.nix`
+- **Best for**: Small to medium deployments, cost-conscious users
 
-### Option 2: Local Development
+### Option 2: Separate Servers (Advanced)
+
+Deploy components across two servers:
+- **Server 1**: FRP Server only
+- **Server 2**: Backend + DNS + Database
+- **Cost**: ~€10/month for 2x CPX11 servers
+- **Setup Time**: 20 minutes with Terraform
+- **Best for**: High-traffic deployments, geographic distribution
+
+### Option 3: Local Development
 
 Run services locally with Docker Compose:
 
@@ -146,11 +159,17 @@ docker-compose up -d
 curl http://localhost:5000/health
 ```
 
-### Option 3: Hybrid Setup
+### Deployment Methods
 
-- Deploy FRPS + Backend to cloud
-- Run additional services locally
-- Perfect for testing before full deployment
+- **GitHub Actions** (easiest): Automated via workflow
+- **Deployment Script**: One-command local deployment
+- **nixos-anywhere**: Direct Nix flake deployment
+- **Terraform**: Infrastructure-as-code with Hetzner Cloud
+
+**Quick Links:**
+- [Quick Start Guide](deployment/QUICKSTART.md) - Deploy in 10 minutes
+- [Full Deployment Guide](deployment/README.md) - Detailed instructions
+- [GitHub Actions Setup](#github-actions-deployment) - CI/CD deployment
 
 ## 🔧 Configuration
 

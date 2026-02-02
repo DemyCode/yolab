@@ -1,49 +1,41 @@
-output "frps_server_name" {
-  description = "Name of the FRPS server"
-  value       = hcloud_server.frps.name
+output "server_name" {
+  description = "Name of the YoLab server"
+  value       = hcloud_server.yolab.name
 }
 
-output "frps_server_id" {
-  description = "ID of the FRPS server"
-  value       = hcloud_server.frps.id
+output "server_id" {
+  description = "ID of the YoLab server"
+  value       = hcloud_server.yolab.id
 }
 
-output "frps_server_ipv4" {
-  description = "IPv4 address of the FRPS server"
-  value       = hcloud_server.frps.ipv4_address
+output "server_ipv4" {
+  description = "IPv4 address of the YoLab server"
+  value       = hcloud_server.yolab.ipv4_address
 }
 
-output "frps_server_ipv6" {
-  description = "IPv6 address of the FRPS server"
-  value       = hcloud_server.frps.ipv6_address
+output "server_ipv6" {
+  description = "IPv6 address of the YoLab server"
+  value       = hcloud_server.yolab.ipv6_address
 }
 
-output "services_server_name" {
-  description = "Name of the services stack server"
-  value       = hcloud_server.services.name
+output "ssh_command" {
+  description = "SSH command to access server"
+  value       = "ssh root@${hcloud_server.yolab.ipv4_address}"
 }
 
-output "services_server_id" {
-  description = "ID of the services stack server"
-  value       = hcloud_server.services.id
+output "frps_url" {
+  description = "FRP server control endpoint"
+  value       = "http://[${hcloud_server.yolab.ipv6_address}]:7000"
 }
 
-output "services_server_ipv4" {
-  description = "IPv4 address of the services stack server"
-  value       = hcloud_server.services.ipv4_address
+output "backend_api_url" {
+  description = "Backend API URL"
+  value       = "http://${hcloud_server.yolab.ipv4_address}:5000"
 }
 
-output "services_server_ipv6" {
-  description = "IPv6 address of the services stack server"
-  value       = hcloud_server.services.ipv6_address
-}
-
-output "ssh_commands" {
-  description = "SSH commands to access servers"
-  value = {
-    frps     = "ssh root@${hcloud_server.frps.ipv4_address}"
-    services = "ssh root@${hcloud_server.services.ipv4_address}"
-  }
+output "health_check_command" {
+  description = "Command to check backend health"
+  value       = "curl -f http://${hcloud_server.yolab.ipv4_address}:5000/health"
 }
 
 output "dns_configuration" {
@@ -54,42 +46,38 @@ output "dns_configuration" {
       {
         type  = "A"
         name  = "@"
-        value = hcloud_server.frps.ipv4_address
+        value = hcloud_server.yolab.ipv4_address
       },
       {
         type  = "AAAA"
         name  = "@"
-        value = hcloud_server.frps.ipv6_address
+        value = hcloud_server.yolab.ipv6_address
       },
       {
         type  = "A"
-        name  = "*.${var.domain}"
-        value = hcloud_server.frps.ipv4_address
+        name  = "*"
+        value = hcloud_server.yolab.ipv4_address
       },
       {
         type  = "AAAA"
-        name  = "*.${var.domain}"
-        value = hcloud_server.frps.ipv6_address
+        name  = "*"
+        value = hcloud_server.yolab.ipv6_address
+      },
+      {
+        type  = "NS"
+        name  = "@"
+        value = "ns1.${var.domain}"
       },
       {
         type  = "A"
-        name  = "api"
-        value = hcloud_server.services.ipv4_address
+        name  = "ns1"
+        value = hcloud_server.yolab.ipv4_address
       },
       {
         type  = "AAAA"
-        name  = "api"
-        value = hcloud_server.services.ipv6_address
+        name  = "ns1"
+        value = hcloud_server.yolab.ipv6_address
       }
     ]
-  }
-}
-
-output "deployment_info" {
-  description = "Deployment information"
-  value = {
-    frps_url     = "http://${hcloud_server.frps.ipv4_address}:7000"
-    api_url      = "http://${hcloud_server.services.ipv4_address}:5000"
-    health_check = "curl http://${hcloud_server.services.ipv4_address}:5000/health"
   }
 }

@@ -9,43 +9,29 @@ variable "ssh_key_name" {
   type        = string
 }
 
-variable "github_repo" {
-  description = "GitHub repository in format: owner/repo"
-  type        = string
-  default     = "your-username/yolab"
-}
-
 variable "repo_url" {
   description = "Full repository URL for cloning"
   type        = string
-  default     = "https://github.com/your-username/yolab.git"
 }
 
 variable "hetzner_location" {
   description = "Hetzner datacenter location"
   type        = string
-  default     = "nbg1"  # Nuremberg
+  default     = "nbg1"
 }
 
-variable "frps_server_type" {
-  description = "Server type for FRPS server"
+variable "server_type" {
+  description = "Server type for YoLab all-in-one server"
   type        = string
-  default     = "cpx11"  # 2 vCPU, 2GB RAM
-}
-
-variable "services_server_type" {
-  description = "Server type for services stack"
-  type        = string
-  default     = "cpx11"  # 2 vCPU, 2GB RAM
+  default     = "cpx11"
 }
 
 variable "environment" {
-  description = "Environment name (e.g., production, staging)"
+  description = "Environment name"
   type        = string
   default     = "production"
 }
 
-# Application configuration
 variable "domain" {
   description = "Domain name for the service"
   type        = string
@@ -56,7 +42,6 @@ variable "ipv6_subnet_base" {
   type        = string
 }
 
-# Database configuration
 variable "postgres_db" {
   description = "PostgreSQL database name"
   type        = string
