@@ -6,7 +6,7 @@ terraform {
     }
     filemanager = {
       source  = "ebogdum/filemanager"
-      version = "~> 0.3"
+      version = "~> 1.2"
     }
   }
   required_version = ">= 1.0"
