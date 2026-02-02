@@ -9,13 +9,13 @@ output "server_id" {
 }
 
 output "ssh_key_id" {
-  description = "ID of the created SSH key"
-  value       = hcloud_ssh_key.deployment_key.id
+  description = "ID of the SSH key"
+  value       = data.hcloud_ssh_key.deployment_key.id
 }
 
 output "ssh_key_fingerprint" {
-  description = "Fingerprint of the created SSH key"
-  value       = hcloud_ssh_key.deployment_key.fingerprint
+  description = "Fingerprint of the SSH key"
+  value       = data.hcloud_ssh_key.deployment_key.fingerprint
 }
 
 output "server_ipv4" {

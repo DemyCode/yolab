@@ -12,9 +12,10 @@ provider "hcloud" {
   token = var.hcloud_token
 }
 
-resource "hcloud_ssh_key" "deployment_key" {
-  name       = var.ssh_key_name
-  public_key = var.ssh_public_key
+# Look up existing SSH key by name
+# If it doesn't exist, this will fail with a clear error
+data "hcloud_ssh_key" "deployment_key" {
+  name = var.ssh_key_name
 }
 
 resource "hcloud_server" "yolab" {
@@ -22,7 +23,7 @@ resource "hcloud_server" "yolab" {
   server_type = var.server_type
   location    = var.hetzner_location
   image       = "ubuntu-22.04"
-  ssh_keys    = [hcloud_ssh_key.deployment_key.id]
+  ssh_keys    = [data.hcloud_ssh_key.deployment_key.id]
 
   public_net {
     ipv4_enabled = true
