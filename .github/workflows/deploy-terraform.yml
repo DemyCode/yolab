@@ -39,6 +39,7 @@ jobs:
           fi
           if [ -z "${{ secrets.POSTGRES_PASSWORD }}" ]; then
             echo "Error: POSTGRES_PASSWORD secret is not set"
+
             exit 1
           fi
 
