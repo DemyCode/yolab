@@ -29,7 +29,7 @@ variable "hetzner_location" {
 variable "server_type" {
   description = "Server type for YoLab all-in-one server"
   type        = string
-  default     = "cpx11"
+  default     = "cpx22"
 }
 
 variable "environment" {
