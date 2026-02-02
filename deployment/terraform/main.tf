@@ -4,6 +4,10 @@ terraform {
       source  = "hetznercloud/hcloud"
       version = "~> 1.45"
     }
+    filemanager = {
+      source  = "ebogdum/filemanager"
+      version = "~> 0.3"
+    }
   }
   required_version = ">= 1.0"
 }
@@ -12,8 +16,11 @@ provider "hcloud" {
   token = var.hcloud_token
 }
 
-data "hcloud_ssh_key" "deployment_key" {
-  name = var.ssh_key_name
+provider "filemanager" {}
+
+resource "hcloud_ssh_key" "deployment_key" {
+  name       = var.ssh_key_name
+  public_key = var.ssh_public_key
 }
 
 resource "hcloud_server" "yolab" {
@@ -21,7 +28,7 @@ resource "hcloud_server" "yolab" {
   server_type = var.server_type
   location    = var.hetzner_location
   image       = "ubuntu-22.04"
-  ssh_keys    = [data.hcloud_ssh_key.deployment_key.id]
+  ssh_keys    = [hcloud_ssh_key.deployment_key.id]
 
   public_net {
     ipv4_enabled = true
@@ -38,24 +45,50 @@ resource "hcloud_server" "yolab" {
   }
 }
 
-resource "null_resource" "prepare_config" {
-  triggers = {
-    server_ipv6 = hcloud_server.yolab.ipv6_address
-  }
+resource "local_file" "ssh_public_key" {
+  content  = var.ssh_public_key
+  filename = "${path.module}/.ssh_public_key.tmp"
+}
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      cd ${path.module}/../..
-      sed -e "s|REPLACE_REPO_URL|${var.repo_url}|g" \
-          -e "s|REPLACE_DOMAIN|${var.domain}|g" \
-          -e "s|REPLACE_POSTGRES_DB|${var.postgres_db}|g" \
-          -e "s|REPLACE_POSTGRES_USER|${var.postgres_user}|g" \
-          -e "s|REPLACE_POSTGRES_PASSWORD|${var.postgres_password}|g" \
-          -e "s|REPLACE_IPV6_SUBNET_BASE|${var.ipv6_subnet_base}|g" \
-          -e "s|REPLACE_FRPS_SERVER_IPV6|${hcloud_server.yolab.ipv6_address}|g" \
-          deployment/nixos/all-in-one.nix > deployment/nixos/all-in-one.nix.tmp
-      mv deployment/nixos/all-in-one.nix.tmp deployment/nixos/all-in-one.nix
-    EOT
+resource "filemanager_toml_file" "deployment_config" {
+  path = "${path.module}/../nixos/ignored/config.toml"
+
+  content = {
+    server = {
+      hostname = "yolab-server"
+      domain   = var.domain
+      repo_url = var.repo_url
+    }
+
+    ssh = {
+      public_key = var.ssh_public_key
+      key_name   = var.ssh_key_name
+    }
+
+    database = {
+      db_name     = var.postgres_db
+      db_user     = var.postgres_user
+      db_password = var.postgres_password
+    }
+
+    network = {
+      ipv6_subnet_base = var.ipv6_subnet_base
+      frps_server_ipv6 = hcloud_server.yolab.ipv6_address
+      frps_bind_port   = 7000
+      auth_plugin_addr = "127.0.0.1:5000"
+    }
+
+    frps = {
+      enable = true
+    }
+
+    services = {
+      enable        = true
+      api_host      = "0.0.0.0"
+      api_port      = 5000
+      auto_update   = true
+      open_firewall = true
+    }
   }
 }
 
@@ -66,6 +99,8 @@ module "deploy_nixos" {
   nixos_partitioner_attr = ".#nixosConfigurations.yolab-server.config.system.build.diskoScript"
   target_host            = hcloud_server.yolab.ipv4_address
   instance_id            = hcloud_server.yolab.id
+  install_ssh_key        = local_file.ssh_public_key.filename
 
-  depends_on = [null_resource.prepare_config]
+  depends_on = [filemanager_toml_file.deployment_config]
 }
+

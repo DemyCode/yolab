@@ -1,4 +1,24 @@
 { config, pkgs, lib, modulesPath, ... }:
+let
+  configPath = ./ignored/config.toml;
+  
+  # Read and parse TOML configuration
+  deployConfig = if builtins.pathExists configPath then
+    builtins.fromTOML (builtins.readFile configPath)
+  else
+    throw ''
+      Configuration file not found: ${toString configPath}
+      
+      Please create deployment/nixos/ignored/config.toml with your deployment settings.
+      You can copy from deployment/nixos/ignored/config.toml.example:
+      
+        cp deployment/nixos/ignored/config.toml.example deployment/nixos/ignored/config.toml
+      
+      Then edit the file with your values.
+    '';
+
+  cfg = deployConfig;
+in
 {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
@@ -29,7 +49,9 @@
     };
   };
 
-  users.users.root.openssh.authorizedKeys.keys = [];
+  users.users.root.openssh.authorizedKeys.keys = [
+    cfg.ssh.public_key
+  ];
 
   environment.systemPackages = with pkgs; [
     vim
@@ -40,14 +62,14 @@
   ];
 
   services.yolab-services = {
-    enable = true;
-    repoUrl = "REPLACE_REPO_URL";
-    domain = "REPLACE_DOMAIN";
-    postgresDb = "REPLACE_POSTGRES_DB";
-    postgresUser = "REPLACE_POSTGRES_USER";
-    postgresPassword = "REPLACE_POSTGRES_PASSWORD";
-    ipv6SubnetBase = "REPLACE_IPV6_SUBNET_BASE";
-    frpsServerIpv6 = "REPLACE_FRPS_SERVER_IPV6";
+    enable = cfg.services.enable;
+    repoUrl = cfg.server.repo_url;
+    domain = cfg.server.domain;
+    postgresDb = cfg.database.db_name;
+    postgresUser = cfg.database.db_user;
+    postgresPassword = cfg.database.db_password;
+    ipv6SubnetBase = cfg.network.ipv6_subnet_base;
+    frpsServerIpv6 = cfg.network.frps_server_ipv6;
   };
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];

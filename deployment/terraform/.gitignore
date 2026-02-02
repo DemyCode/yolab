@@ -14,3 +14,4 @@ override.tf.json
 # Secrets
 secrets/
 *.secret
+.ssh_public_key.tmp

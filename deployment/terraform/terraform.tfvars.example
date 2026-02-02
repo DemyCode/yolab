@@ -1,6 +1,8 @@
 hcloud_token = "YOUR_HETZNER_CLOUD_TOKEN"
 
-ssh_key_name = "your-ssh-key-name"
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host"
+
+ssh_key_name = "yolab-deployment-key"
 
 repo_url = "https://github.com/your-username/yolab.git"
 

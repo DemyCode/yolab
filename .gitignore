@@ -27,6 +27,11 @@ secrets/
 *.key
 *.pem
 
+# Deployment configuration (contains secrets)
+deployment/nixos/ignored/
+!deployment/nixos/ignored/.gitkeep
+!deployment/nixos/ignored/config.toml.example
+
 # Nix build artifacts
 result
 result-*

@@ -4,9 +4,15 @@ variable "hcloud_token" {
   sensitive   = true
 }
 
-variable "ssh_key_name" {
-  description = "Name of the SSH key in Hetzner Cloud"
+variable "ssh_public_key" {
+  description = "SSH public key for server access"
   type        = string
+}
+
+variable "ssh_key_name" {
+  description = "Name for the SSH key in Hetzner Cloud"
+  type        = string
+  default     = "yolab-deployment-key"
 }
 
 variable "repo_url" {
