@@ -61,7 +61,7 @@ in
   ];
 
   services.yolab-frps = {
-    enable = cfg.frps.enable;
+    enable = cfg.frps.enable == "true";
     domain = cfg.server.domain;
     authPluginAddr = cfg.network.auth_plugin_addr;
   };

@@ -71,14 +71,14 @@ in
   ];
 
   services.yolab-frps = {
-    enable = cfg.frps.enable;
+    enable = cfg.frps.enable == "true";
     domain = cfg.server.domain;
     authPluginAddr = cfg.network.auth_plugin_addr;
-    bindPort = cfg.network.frps_bind_port;
+    bindPort = lib.toInt cfg.network.frps_bind_port;
   };
 
   services.yolab-services = {
-    enable = cfg.services.enable;
+    enable = cfg.services.enable == "true";
     repoUrl = cfg.server.repo_url;
     domain = cfg.server.domain;
     postgresDb = cfg.database.db_name;
@@ -86,8 +86,8 @@ in
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
     frpsServerIpv6 = cfg.network.frps_server_ipv6;
-    openFirewall = cfg.services.open_firewall;
-    autoUpdate = cfg.services.auto_update;
+    openFirewall = cfg.services.open_firewall == "true";
+    autoUpdate = cfg.services.auto_update == "true";
   };
 
   systemd.services.frps.after = [ "yolab-deploy.service" ];

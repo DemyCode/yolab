@@ -77,20 +77,20 @@ resource "filemanager_toml_file" "deployment_config" {
       # We use:      2a01:4f8:c010:1234::1:0:0:0 for client allocation
       ipv6_subnet_base = "${hcloud_server.yolab.ipv6_address}:1:0:0:0"
       frps_server_ipv6 = hcloud_server.yolab.ipv6_address
-      frps_bind_port   = 7000
+      frps_bind_port   = "7000"
       auth_plugin_addr = "127.0.0.1:5000"
     }
 
     frps = {
-      enable = true
+      enable = "true"
     }
 
     services = {
-      enable        = true
+      enable        = "true"
       api_host      = "0.0.0.0"
-      api_port      = 5000
-      auto_update   = true
-      open_firewall = true
+      api_port      = "5000"
+      auto_update   = "true"
+      open_firewall = "true"
     }
   }
 }

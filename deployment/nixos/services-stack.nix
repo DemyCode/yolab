@@ -62,7 +62,7 @@ in
   ];
 
   services.yolab-services = {
-    enable = cfg.services.enable;
+    enable = cfg.services.enable == "true";
     repoUrl = cfg.server.repo_url;
     domain = cfg.server.domain;
     postgresDb = cfg.database.db_name;
@@ -70,6 +70,8 @@ in
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
     frpsServerIpv6 = cfg.network.frps_server_ipv6;
+    openFirewall = cfg.services.open_firewall == "true";
+    autoUpdate = cfg.services.auto_update == "true";
   };
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];

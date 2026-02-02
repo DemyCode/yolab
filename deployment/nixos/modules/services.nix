@@ -51,6 +51,12 @@ in
       default = true;
       description = "Enable automatic daily updates";
     };
+
+    openFirewall = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Whether to open firewall ports";
+    };
   };
 
   config = mkIf cfg.enable {
