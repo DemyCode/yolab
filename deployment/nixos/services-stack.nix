@@ -1,18 +1,18 @@
 { config, pkgs, lib, modulesPath, ... }:
 let
-  configPath = ./ignored/config.toml;
+  configPath = ./ignored/config.json;
   
-  # Read and parse TOML configuration
+  # Read and parse JSON configuration
   deployConfig = if builtins.pathExists configPath then
-    builtins.fromTOML (builtins.readFile configPath)
+    builtins.fromJSON (builtins.readFile configPath)
   else
     throw ''
       Configuration file not found: ${toString configPath}
       
-      Please create deployment/nixos/ignored/config.toml with your deployment settings.
-      You can copy from deployment/nixos/ignored/config.toml.example:
+      Please create deployment/nixos/ignored/config.json with your deployment settings.
+      You can copy from deployment/nixos/ignored/config.json.example:
       
-        cp deployment/nixos/ignored/config.toml.example deployment/nixos/ignored/config.toml
+        cp deployment/nixos/ignored/config.json.example deployment/nixos/ignored/config.json
       
       Then edit the file with your values.
     '';
@@ -62,7 +62,7 @@ in
   ];
 
   services.yolab-services = {
-    enable = cfg.services.enable == "true";
+    enable = cfg.services.enable;
     repoUrl = cfg.server.repo_url;
     domain = cfg.server.domain;
     postgresDb = cfg.database.db_name;
@@ -70,8 +70,8 @@ in
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
     frpsServerIpv6 = cfg.network.frps_server_ipv6;
-    openFirewall = cfg.services.open_firewall == "true";
-    autoUpdate = cfg.services.auto_update == "true";
+    openFirewall = cfg.services.open_firewall;
+    autoUpdate = cfg.services.auto_update;
   };
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];

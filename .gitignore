@@ -30,7 +30,7 @@ secrets/
 # Deployment configuration (contains secrets)
 deployment/nixos/ignored/
 !deployment/nixos/ignored/.gitkeep
-!deployment/nixos/ignored/config.toml.example
+!deployment/nixos/ignored/config.json.example
 
 # Nix build artifacts
 result

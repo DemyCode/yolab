@@ -6,25 +6,25 @@
   ...
 }:
 let
-  configPath = ./ignored/config.toml;
+  configPath = ./ignored/config.json;
   
-  # Read and parse TOML configuration
+  # Read and parse JSON configuration
   # Throws error with helpful message if file doesn't exist
   deployConfig = if builtins.pathExists configPath then
-    builtins.fromTOML (builtins.readFile configPath)
+    builtins.fromJSON (builtins.readFile configPath)
   else
     throw ''
       Configuration file not found: ${toString configPath}
       
-      Please create deployment/nixos/ignored/config.toml with your deployment settings.
-      You can copy from deployment/nixos/ignored/config.toml.example:
+      Please create deployment/nixos/ignored/config.json with your deployment settings.
+      You can copy from deployment/nixos/ignored/config.json.example:
       
-        cp deployment/nixos/ignored/config.toml.example deployment/nixos/ignored/config.toml
+        cp deployment/nixos/ignored/config.json.example deployment/nixos/ignored/config.json
       
       Then edit the file with your values.
     '';
 
-  # Direct access to nested config (fromTOML creates nested attribute sets)
+  # Direct access to nested config (fromJSON creates nested attribute sets)
   cfg = deployConfig;
 in
 {
@@ -71,14 +71,14 @@ in
   ];
 
   services.yolab-frps = {
-    enable = cfg.frps.enable == "true";
+    enable = cfg.frps.enable;
     domain = cfg.server.domain;
     authPluginAddr = cfg.network.auth_plugin_addr;
-    bindPort = lib.toInt cfg.network.frps_bind_port;
+    bindPort = cfg.network.frps_bind_port;
   };
 
   services.yolab-services = {
-    enable = cfg.services.enable == "true";
+    enable = cfg.services.enable;
     repoUrl = cfg.server.repo_url;
     domain = cfg.server.domain;
     postgresDb = cfg.database.db_name;
@@ -86,8 +86,8 @@ in
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
     frpsServerIpv6 = cfg.network.frps_server_ipv6;
-    openFirewall = cfg.services.open_firewall == "true";
-    autoUpdate = cfg.services.auto_update == "true";
+    openFirewall = cfg.services.open_firewall;
+    autoUpdate = cfg.services.auto_update;
   };
 
   systemd.services.frps.after = [ "yolab-deploy.service" ];
