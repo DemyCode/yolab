@@ -4,17 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       domain:
-        description: 'Domain name'
+        description: "Domain name"
         required: true
         type: string
       action:
-        description: 'Terraform action'
+        description: "Terraform action"
         required: true
         type: choice
         options:
           - apply
           - destroy
         default: apply
+  push:
+    branches: [master, main]
 
 permissions:
   contents: read
@@ -22,7 +24,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -124,7 +126,7 @@ jobs:
         if: inputs.action == 'apply'
         run: |
           sleep 60
-          
+
           for i in {1..20}; do
             if curl -f "http://${{ steps.outputs.outputs.server_ipv4 }}:5000/health"; then
               echo "Backend is healthy!"
@@ -133,7 +135,7 @@ jobs:
             echo "Waiting for backend... (attempt $i/20)"
             sleep 15
           done
-          
+
           echo "Backend health check failed after 5 minutes"
           exit 1
 
