@@ -58,14 +58,12 @@ jobs:
             -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
             -var="postgres_db=${{ secrets.POSTGRES_DB || 'frp_services' }}" \
             -var="postgres_user=${{ secrets.POSTGRES_USER || 'frp_user' }}" \
-            -var="server_type=${{ secrets.SERVER_TYPE || 'cpx11' }}" \
+            -var="server_type=${{ secrets.SERVER_TYPE || 'cpx22' }}" \
             -var="hetzner_location=${{ secrets.HETZNER_LOCATION || 'nbg1' }}"
 
       - name: Terraform Apply
         working-directory: deployment/terraform
         run: terraform apply -auto-approve tfplan
-
-
 
       - name: Get outputs
         id: outputs
@@ -75,4 +73,3 @@ jobs:
           echo "server_ipv6=$(terraform output -raw server_ipv6)" >> $GITHUB_OUTPUT
           terraform output -json > outputs.json
           cat outputs.json
-
