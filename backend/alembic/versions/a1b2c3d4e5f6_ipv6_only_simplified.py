@@ -28,9 +28,8 @@ def upgrade():
         "services", "remote_port", existing_type=sa.INTEGER(), nullable=True
     )
 
-    op.execute("""
-        DELETE FROM services WHERE service_type IN ('web', 'http', 'https')
-    """)
+    # Clean up any existing services as we're changing the schema significantly
+    op.execute("DELETE FROM services")
 
 
 def downgrade():

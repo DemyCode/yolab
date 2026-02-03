@@ -23,7 +23,6 @@
             ./deployment/nixos/frps-server.nix
           ];
         };
-
         services-stack = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
@@ -31,7 +30,6 @@
             ./deployment/nixos/services-stack.nix
           ];
         };
-
         yolab-server = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
@@ -39,7 +37,6 @@
             ./deployment/nixos/all-in-one.nix
           ];
         };
-
         yolab = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
@@ -50,7 +47,6 @@
             ./homelab/nixos/modules/client-ui.nix
           ];
         };
-
         yolab-installer = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
@@ -59,10 +55,8 @@
           ];
         };
       };
-
       packages.x86_64-linux = {
         iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
       };
-
     };
 }

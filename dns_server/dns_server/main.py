@@ -142,9 +142,9 @@ class APIResolver(BaseResolver):
 
 if __name__ == "__main__":
     resolver = APIResolver()
-    server = DNSServer(resolver, port=53, address="::", server=ThreadingUDPServer)
+    server = DNSServer(resolver, port=53, address="0.0.0.0", server=ThreadingUDPServer)
 
-    logger.info("Starting DNS server on [::]:53 (IPv6)...")
+    logger.info("Starting DNS server on 0.0.0.0:53 (IPv4, returning IPv6 addresses)...")
     logger.info(f"Resolving *.{settings.domain} via Registration API")
 
     try:
