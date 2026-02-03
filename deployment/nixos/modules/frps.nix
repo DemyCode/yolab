@@ -39,10 +39,6 @@ in
 
     environment.systemPackages = [ pkgs.frp ];
 
-    systemd.tmpfiles.rules = [
-      "d /var/lib/frps 0755 frps frps -"
-    ];
-
     environment.etc."frps/frps.ini" = {
       text = ''
         [common]

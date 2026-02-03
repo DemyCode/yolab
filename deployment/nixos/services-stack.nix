@@ -76,7 +76,6 @@ in
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
     frpsServerIpv6 = cfg.network.frps_server_ipv6;
     openFirewall = cfg.services.open_firewall;
-    autoUpdate = cfg.services.auto_update;
   };
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
