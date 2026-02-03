@@ -68,7 +68,6 @@ in
 
   services.yolab-services = {
     enable = cfg.services.enable;
-    repoUrl = cfg.server.repo_url;
     domain = cfg.server.domain;
     postgresDb = cfg.database.db_name;
     postgresUser = cfg.database.db_user;
