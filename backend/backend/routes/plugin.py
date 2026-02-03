@@ -1,24 +1,22 @@
 from datetime import datetime, timezone
-import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
 from backend.database import get_db
 from backend.models import Service, ServiceStatus, User
 from backend.schemas import PluginRequest, PluginResponse
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["plugin"])
 
 
 @router.post("/handler")
 async def handle_plugin_request(
-    request: Request, req: PluginRequest, db: Session = Depends(get_db)
+    req: PluginRequest, db: Session = Depends(get_db)
 ) -> PluginResponse:
-    body = await request.body()
-    logger.info(f"Plugin request: {body.decode()}")
-    logger.info(f"Parsed: {req.model_dump()}")
+    from devtools import pprint
+
+    pprint(req)
     if req.op != "NewProxy":
         return PluginResponse(reject=False, reject_reason="", unchange=True)
 
