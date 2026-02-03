@@ -1,30 +1,33 @@
 from datetime import datetime, timezone
+import json
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Request
 from sqlmodel import Session, select
 
 from backend.database import get_db
 from backend.models import Service, ServiceStatus, User
-from backend.schemas import PluginContent, PluginResponse
+from backend.schemas import PluginResponse
 
 router = APIRouter(tags=["plugin"])
 
 
 @router.post("/handler")
 async def handle_plugin_request(
-    content: PluginContent,
-    version: str = Query(...),
-    op: str = Query(...),
+    request: Request,
     db: Session = Depends(get_db),
 ) -> PluginResponse:
-    from devtools import pprint
+    raw_body = await request.body()
+    data = json.loads(raw_body)
 
-    pprint({"version": version, "op": op, "content": content})
+    op = data.get("op")
+    content = data.get("content", {})
+
     if op != "NewProxy":
         return PluginResponse(reject=False, reject_reason="", unchange=True)
 
-    account_token = content.user.metas.get("account_token", "")
-    service_id_str = content.user.metas.get("service_id", "")
+    metas = content.get("metas", {})
+    account_token = metas.get("account_token", "")
+    service_id_str = metas.get("service_id", "")
 
     if not account_token:
         return PluginResponse(
@@ -70,24 +73,24 @@ async def handle_plugin_request(
             unchange=True,
         )
 
-    if service.service_type.value != content.proxy_type:
+    if service.service_type.value != content.get("proxy_type"):
         return PluginResponse(
             reject=True,
-            reject_reason=f"Service is for {service.service_type.value}, not {content.proxy_type}",
+            reject_reason=f"Service is for {service.service_type.value}, not {content.get('proxy_type')}",
             unchange=True,
         )
 
-    if content.remote_ip != service.ipv6_address:
+    if content.get("remote_ip", "") != service.ipv6_address:
         return PluginResponse(
             reject=True,
-            reject_reason=f"IPv6 mismatch: expected {service.ipv6_address}, got {content.remote_ip}",
+            reject_reason=f"IPv6 mismatch: expected {service.ipv6_address}, got {content.get('remote_ip')}",
             unchange=True,
         )
 
-    if content.remote_port != service.remote_port:
+    if content.get("remote_port", 0) != service.remote_port:
         return PluginResponse(
             reject=True,
-            reject_reason=f"Port mismatch: expected {service.remote_port}, got {content.remote_port}",
+            reject_reason=f"Port mismatch: expected {service.remote_port}, got {content.get('remote_port')}",
             unchange=True,
         )
 

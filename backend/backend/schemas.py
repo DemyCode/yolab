@@ -151,11 +151,18 @@ class PluginContent(BaseModel):
     proxy_type: str
     use_encryption: bool
     use_compression: bool
+    metas: Dict[str, str]
     remote_ip: str = ""
     remote_port: int = 0
 
 
 class PluginRequest(BaseModel):
+    version: str
+    op: str
+    content: PluginContent
+
+
+class PluginRequestBody(BaseModel):
     version: str
     op: str
     content: PluginContent
