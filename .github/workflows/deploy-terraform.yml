@@ -1,5 +1,10 @@
 name: Deploy YoLab with Terraform
 
+# This workflow deploys YoLab infrastructure to Hetzner Cloud
+# Architecture: Two-server setup
+#   - Server 1 (frps-server): Runs FRP server for tunnel connections
+#   - Server 2 (services-stack): Runs backend API + DNS + PostgreSQL
+
 on:
   push:
     branches: [master, main]
@@ -63,7 +68,8 @@ jobs:
             -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
             -var="postgres_db=${{ secrets.POSTGRES_DB || 'frp_services' }}" \
             -var="postgres_user=${{ secrets.POSTGRES_USER || 'frp_user' }}" \
-            -var="server_type=${{ secrets.SERVER_TYPE || 'cpx22' }}" \
+            -var="frps_server_type=${{ secrets.FRPS_SERVER_TYPE || 'cpx22' }}" \
+            -var="services_server_type=${{ secrets.SERVICES_SERVER_TYPE || 'cpx22' }}" \
             -var="hetzner_location=${{ secrets.HETZNER_LOCATION || 'nbg1' }}"
 
       - name: Terraform Apply
@@ -74,7 +80,9 @@ jobs:
         id: outputs
         working-directory: deployment/terraform
         run: |
-          echo "server_ipv4=$(terraform output -raw server_ipv4)" >> $GITHUB_OUTPUT
-          echo "server_ipv6=$(terraform output -raw server_ipv6)" >> $GITHUB_OUTPUT
-          terraform output -json > outputs.json
-          cat outputs.json
+          echo "frps_server_ipv4=$(terraform output -raw frps_server_ipv4)" >> $GITHUB_OUTPUT
+          echo "frps_server_ipv6=$(terraform output -raw frps_server_ipv6)" >> $GITHUB_OUTPUT
+          echo "services_server_ipv4=$(terraform output -raw services_server_ipv4)" >> $GITHUB_OUTPUT
+          echo "services_server_ipv6=$(terraform output -raw services_server_ipv6)" >> $GITHUB_OUTPUT
+          terraform output -json deployment_summary
+          terraform output -json dns_configuration
