@@ -45,12 +45,6 @@ resource "local_file" "ssh_public_key" {
   filename = "${path.module}/.ssh_public_key.tmp"
 }
 
-resource "local_file" "ssh_private_key" {
-  content         = var.ssh_private_key
-  filename        = "${path.module}/.ssh_private_key.tmp"
-  file_permission = "0600"
-}
-
 resource "local_file" "deployment_config" {
   filename = "${path.module}/../nixos/ignored/config.json"
 
@@ -100,7 +94,7 @@ module "deploy_nixos" {
   nixos_partitioner_attr = "path:${path.module}/../..#nixosConfigurations.yolab-server.config.system.build.diskoScript"
   target_host            = hcloud_server.yolab.ipv4_address
   instance_id            = hcloud_server.yolab.id
-  install_ssh_key        = local_file.ssh_private_key.filename
+  install_ssh_key        = var.ssh_private_key
 
   depends_on = [local_file.deployment_config]
 }
