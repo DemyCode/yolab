@@ -1,6 +1,6 @@
 { config, pkgs, lib, modulesPath, ... }:
 let
-  configPath = ./ignored/config.json;
+  configPath = ./ignored/config-services.json;
   
   # Read and parse JSON configuration
   deployConfig = if builtins.pathExists configPath then
@@ -9,12 +9,12 @@ let
     throw ''
       Configuration file not found: ${toString configPath}
       
-      Please create deployment/nixos/ignored/config.json with your deployment settings.
-      You can copy from deployment/nixos/ignored/config.json.example:
+      Please create deployment/nixos/ignored/config-services.json with your deployment settings.
+      You can copy from deployment/nixos/ignored/config-services.json.example:
       
-        cp deployment/nixos/ignored/config.json.example deployment/nixos/ignored/config.json
+        cp deployment/nixos/ignored/config-services.json.example deployment/nixos/ignored/config-services.json
       
-      Then edit the file with your values.
+      Then edit the file with your values, or use Terraform to auto-generate it.
     '';
 
   cfg = deployConfig;
@@ -39,6 +39,11 @@ in
     hostName = "yolab-services";
     enableIPv6 = true;
     useDHCP = true;
+    firewall = {
+      enable = true;
+      allowedTCPPorts = [ 22 5000 ];  # SSH + Backend API (for FRPS auth)
+      allowedUDPPorts = [ 53 ];       # DNS
+    };
   };
 
   services.openssh = {

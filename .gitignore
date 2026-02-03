@@ -31,6 +31,8 @@ secrets/
 deployment/nixos/ignored/
 !deployment/nixos/ignored/.gitkeep
 !deployment/nixos/ignored/config.json.example
+!deployment/nixos/ignored/config-frps.json.example
+!deployment/nixos/ignored/config-services.json.example
 
 # Nix build artifacts
 result

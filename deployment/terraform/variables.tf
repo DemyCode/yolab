@@ -32,8 +32,14 @@ variable "hetzner_location" {
   default     = "nbg1"
 }
 
-variable "server_type" {
-  description = "Server type for YoLab all-in-one server"
+variable "frps_server_type" {
+  description = "Server type for FRPS server (handles tunnel connections)"
+  type        = string
+  default     = "cpx22"
+}
+
+variable "services_server_type" {
+  description = "Server type for services stack (backend + DNS + database)"
   type        = string
   default     = "cpx22"
 }

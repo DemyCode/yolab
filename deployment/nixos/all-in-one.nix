@@ -79,7 +79,6 @@ in
 
   services.yolab-services = {
     enable = cfg.services.enable;
-    repoUrl = cfg.server.repo_url;
     domain = cfg.server.domain;
     postgresDb = cfg.database.db_name;
     postgresUser = cfg.database.db_user;
@@ -87,7 +86,7 @@ in
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
     frpsServerIpv6 = cfg.network.frps_server_ipv6;
     openFirewall = cfg.services.open_firewall;
-    autoUpdate = cfg.services.auto_update;
+    autoUpdate = false;
   };
 
   systemd.services.frps.after = [ "yolab-deploy.service" ];
