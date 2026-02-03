@@ -95,6 +95,7 @@ module "deploy_nixos" {
   target_host            = hcloud_server.yolab.ipv4_address
   instance_id            = hcloud_server.yolab.id
   install_ssh_key        = var.ssh_private_key
+  deployment_ssh_key     = var.ssh_private_key
 
   depends_on = [local_file.deployment_config]
 }
