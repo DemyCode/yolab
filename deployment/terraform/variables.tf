@@ -9,6 +9,12 @@ variable "ssh_public_key" {
   type        = string
 }
 
+variable "ssh_private_key" {
+  description = "SSH private key for server deployment"
+  type        = string
+  sensitive   = true
+}
+
 variable "ssh_key_name" {
   description = "Name for the SSH key in Hetzner Cloud"
   type        = string
