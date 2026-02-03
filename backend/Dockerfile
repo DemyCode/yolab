@@ -15,7 +15,7 @@ RUN uv sync --frozen --no-dev
 COPY backend ./backend
 COPY alembic ./alembic
 COPY alembic.ini .
-COPY .env .
+# COPY .env .
 COPY services ./services
 
 EXPOSE 5000

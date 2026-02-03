@@ -25,7 +25,6 @@ async def health_check():
     return {"status": "healthy", "service": "backend"}
 
 
-# Register routers
 app.include_router(tokens.router)
 app.include_router(services.router)
 app.include_router(templates.router)
