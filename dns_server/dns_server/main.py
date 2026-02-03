@@ -61,10 +61,9 @@ class APIResolver(BaseResolver):
             subdomain = qname[: -len(self.domain_suffix)]
 
             try:
-                # Call Registration API synchronously (dnslib doesn't support async)
                 with httpx.Client(timeout=2.0) as client:
                     response = client.get(
-                        f"{self.api_url}/internal/dns/resolve/{subdomain}"
+                        f"{self.api_url}/dns/resolve/{subdomain}"
                     )
 
                     if response.status_code == 200:

@@ -8,18 +8,18 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-frp_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frp_password}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_2:/var/lib/postgresql/data
 
   backend:
     build:
       context: ./backend
-    container_name: frp-backend
+    container_name: backend
     restart: unless-stopped
     depends_on:
       - postgres
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frp_user}:${POSTGRES_PASSWORD:-frp_password}@postgres:5432/${POSTGRES_DB:-frp_services}
-      DOMAIN: ${DOMAIN:-superbusiness.com}
+      DOMAIN: ${DOMAIN:-demycode.ovh}
       FRPS_SERVER_IPV6: ${FRPS_SERVER_IPV6:-2a01:4f8:c2c:9b00::}
       FRPS_SERVER_PORT: ${FRPS_SERVER_PORT:-7000}
       IPV6_SUBNET_BASE: ${IPV6_SUBNET_BASE:-2001:db8::1:0:0:0}
@@ -31,12 +31,12 @@ services:
   dns-server:
     build:
       context: ./dns_server
-    container_name: frp-dns-server
+    container_name: dns-server
     restart: unless-stopped
     depends_on:
       - backend
     environment:
-      DOMAIN: ${DOMAIN:-superbusiness.com}
+      DOMAIN: ${DOMAIN:-demycode.ovh}
       FRPS_SERVER_IPV6: ${FRPS_SERVER_IPV6:-2001:db8::1}
       REGISTRATION_API_URL: http://backend:5000
     cap_add:
@@ -45,11 +45,11 @@ services:
       - "15353:53/udp" # Use port 15353 locally to avoid conflicts
 
   frps:
-    image: ghcr.io/fatedier/frps:v0.67.0
+    build:
+      context: ./frps
     ports:
-      - "55000-55100:55000-55100"
+      - "38000-38100:38000-38100"
+      - "7000:7000"
 
 volumes:
-  postgres_data:
-    driver: local
-
+  postgres_data_2:

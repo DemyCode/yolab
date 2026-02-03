@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
+from pydantic import BaseModel
 
 from backend.database import get_db
 from backend.models import Service, ServiceStatus, ServiceType, User
@@ -13,10 +14,10 @@ from backend.schemas import (
 )
 from backend.utils import allocate_ipv6, generate_frpc_config, get_service_access_url
 
-router = APIRouter(prefix="/api", tags=["services"])
+router = APIRouter(tags=["services"])
 
 
-@router.post("/register", response_model=ServiceResponse)
+@router.post("/service", response_model=ServiceResponse)
 async def register_service(
     request: RegisterRequest, db: Session = Depends(get_db)
 ) -> ServiceResponse:
@@ -27,7 +28,7 @@ async def register_service(
         if not user:
             raise HTTPException(status_code=401, detail="Invalid account token")
 
-        subdomain = f"{request.service_name}-{user.id}"
+        subdomain = f"{request.service_name}.{user.id}"
 
         existing_service = db.exec(
             select(Service).where(
@@ -138,42 +139,26 @@ async def get_dashboard(account_token: str, db: Session = Depends(get_db)):
     return UserDashboard(account_token=account_token, services=services_data)
 
 
-@router.get("/service/{service_id}/config", response_model=ServiceConfigResponse)
-async def get_service_config(service_id: int, db: Session = Depends(get_db)):
-    """Get configuration details for a specific service."""
-    service = db.exec(select(Service).where(Service.id == service_id)).first()
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-
-    user = db.exec(select(User).where(User.id == service.user_id)).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    frpc_config = generate_frpc_config(service, user)
-    access_url, access_direct = get_service_access_url(service, user)
-
-    return ServiceConfigResponse(
-        service_id=service_id,
-        service_name=service.service_name,
-        service_type=service.service_type.value,
-        subdomain=service.subdomain,
-        ipv6_address=service.ipv6_address,
-        remote_port=service.remote_port,
-        local_port=service.local_port,
-        access_url=access_url,
-        access_direct=access_direct,
-        frpc_config=frpc_config,
-    )
+class DeleteServiceRequest(BaseModel):
+    service_id: int
+    user_token: str
 
 
 @router.delete("/service/{service_id}")
-async def delete_service(service_id: int, db: Session = Depends(get_db)):
+async def delete_service(
+    delete_service_request: DeleteServiceRequest, db: Session = Depends(get_db)
+):
     """Delete (deactivate) a service."""
-    service = db.exec(select(Service).where(Service.id == service_id)).first()
+    service = db.exec(
+        select(Service).where(
+            Service.id == delete_service_request.service_id,
+            User.account_token == delete_service_request.user_token,
+        )
+    ).first()
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
 
     service.status = ServiceStatus.deleted
     db.commit()
 
-    return {"message": "Service deleted successfully", "service_id": service_id}
+    return {"message": "Service deleted successfully"}

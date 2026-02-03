@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from backend.database import init_db
-from backend.routes import internal, plugin, services, stats, templates, tokens
+from backend.routes import internal, plugin, services, templates, tokens
 from backend.settings import settings
 
 
@@ -28,7 +28,6 @@ async def health_check():
 app.include_router(tokens.router)
 app.include_router(services.router)
 app.include_router(templates.router)
-app.include_router(stats.router)
 app.include_router(internal.router)
 app.include_router(plugin.router)
 
@@ -37,5 +36,8 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app, host=settings.registration_api_host, port=settings.registration_api_port
+        app,
+        host=settings.registration_api_host,
+        port=settings.registration_api_port,
+        log_level="debug",
     )

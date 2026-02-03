@@ -11,7 +11,7 @@ class RegistrationAPISettings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
-        cli_parse_args=True,
+        cli_parse_args=False,  # Disabled to prevent conflicts with Alembic CLI
     )
 
     domain: str

@@ -8,23 +8,30 @@ from backend.settings import settings
 
 
 def allocate_ipv6(db: Session) -> str:
-    """Allocate IPv6 address using atomic counter to prevent race conditions."""
-    # Get or create counter with SELECT FOR UPDATE to ensure atomicity
-    counter_obj = db.exec(select(IPv6Counter).with_for_update()).first()
+    """Allocate IPv6 address using atomic counter to prevent race conditions.
+
+    Uses singleton pattern with id=1 to ensure only one counter exists.
+    The SELECT FOR UPDATE lock prevents concurrent allocations.
+    """
+    # Get the singleton counter (id=1) with row-level lock
+    # This prevents race conditions by locking the row during the transaction
+    counter_obj = db.exec(
+        select(IPv6Counter).where(IPv6Counter.id == 1).with_for_update()
+    ).first()
 
     if not counter_obj:
-        # Initialize counter if doesn't exist
-        counter_obj = IPv6Counter(counter=1)
-        db.add(counter_obj)
-        db.flush()
-        next_id = 1
-    else:
-        # Increment counter atomically
-        counter_obj.counter += 1
-        next_id = counter_obj.counter
+        # Should never happen if migration ran correctly, but handle it gracefully
+        counter_obj = IPv6Counter(id=1, counter=0)
         db.add(counter_obj)
         db.flush()
 
+    # Increment counter atomically
+    counter_obj.counter += 1
+    next_id = counter_obj.counter
+    db.add(counter_obj)
+    db.flush()
+
+    # Calculate IPv6 address from base + counter
     base = ipaddress.IPv6Address(settings.ipv6_subnet_base)
     allocated = base + next_id
 
