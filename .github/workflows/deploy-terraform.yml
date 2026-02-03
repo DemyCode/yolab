@@ -48,33 +48,23 @@ jobs:
 
       - name: Terraform Plan
         working-directory: deployment/terraform
-        env:
-          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME || 'yolab-deployment-key' }}
-          TF_VAR_repo_url: https://github.com/${{ github.repository }}
-          TF_VAR_domain: ${{ inputs.domain }}
-          TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
-          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
-          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
-          TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
-          TF_VAR_hetzner_location: ${{ secrets.HETZNER_LOCATION || 'nbg1' }}
-        run: terraform plan -out=tfplan
+        run: |
+          terraform plan -out=tfplan \
+            -var="hcloud_token=${{ secrets.HCLOUD_TOKEN }}" \
+            -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+            -var="ssh_key_name=${{ secrets.SSH_KEY_NAME || 'yolab-deployment-key' }}" \
+            -var="repo_url=https://github.com/${{ github.repository }}" \
+            -var="domain=${{ inputs.domain }}" \
+            -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
+            -var="postgres_db=${{ secrets.POSTGRES_DB || 'frp_services' }}" \
+            -var="postgres_user=${{ secrets.POSTGRES_USER || 'frp_user' }}" \
+            -var="server_type=${{ secrets.SERVER_TYPE || 'cpx11' }}" \
+            -var="hetzner_location=${{ secrets.HETZNER_LOCATION || 'nbg1' }}"
 
       - name: Terraform Apply
         working-directory: deployment/terraform
-        env:
-          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-          TF_VAR_ssh_key_name: ${{ secrets.SSH_KEY_NAME || 'yolab-deployment-key' }}
-          TF_VAR_repo_url: https://github.com/${{ github.repository }}
-          TF_VAR_domain: ${{ inputs.domain }}
-          TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
-          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB || 'frp_services' }}
-          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER || 'frp_user' }}
-          TF_VAR_server_type: ${{ secrets.SERVER_TYPE || 'cpx11' }}
-          TF_VAR_hetzner_location: ${{ secrets.HETZNER_LOCATION || 'nbg1' }}
         run: terraform apply -auto-approve tfplan
+
 
 
       - name: Get outputs
