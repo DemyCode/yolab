@@ -8,8 +8,6 @@ name: Deploy YoLab with Terraform
 on:
   push:
     branches: [master, main]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
   contents: read

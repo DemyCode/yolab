@@ -3,7 +3,6 @@ name: Build NixOS Installer ISO
 on:
   push:
     branches: [master, main]
-  workflow_dispatch:
 
 permissions:
   contents: write
