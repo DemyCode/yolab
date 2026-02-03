@@ -118,7 +118,7 @@ resource "local_file" "services_deployment_config" {
     }
     network = {
       # IPv6 subnet for client allocation (based on services-stack IPv6)
-      ipv6_subnet_base = "${hcloud_server.services_stack.ipv6_address}:1:0:0:0"
+      ipv6_subnet_base = "${hcloud_server.services_stack.ipv6_address}1"
       # Reference to FRPS server IPv6 (used in env vars for Docker)
       frps_server_ipv6 = hcloud_server.frps_server.ipv6_address
       frps_bind_port   = 7000
