@@ -7,7 +7,7 @@ from alembic import context
 from backend.settings import settings
 
 # Import all models so they are registered with SQLModel.metadata
-from backend.models import User, Service, IPv6Counter, ServiceType, ServiceStatus
+from backend.models import *
 
 config = context.config
 

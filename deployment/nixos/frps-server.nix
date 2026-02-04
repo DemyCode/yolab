@@ -71,12 +71,14 @@ in
   services.yolab-frps = {
     enable = cfg.frps.enable;
     authPluginAddr = cfg.network.auth_plugin_addr;
+    bindPort = cfg.frps.bind_port;
   };
 
   services.yolab-nftables-manager = {
     enable = cfg.nftables.enable;
     backendUrl = cfg.network.auth_plugin_addr;
     pollInterval = 30;
+    nftables_file = cfg.nftables.nftables_file;
   };
 
   nix.settings.experimental-features = [

@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "devtools>=0.12.2",
+    "pydantic-settings>=2.12.0",
+    "requests>=2.32.5",
+]
 
 [project.scripts]
-nft-manager = "nftables_manager.manager:main"
+nftables-manager = "nftables_manager.manager:main_loop"

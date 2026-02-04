@@ -21,6 +21,7 @@ from typing import List
 import requests
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from devtools import pprint
 
 logger = logging.getLogger("nftables_manager")
 
@@ -60,7 +61,7 @@ def fetch_rules() -> List[dict]:
         requests.RequestException: If API call fails
     """
     try:
-        response = requests.get(f"{settings.BACKEND_URL}/services", timeout=5)
+        response = requests.get(f"{settings.backend_url}/services", timeout=5)
         response.raise_for_status()
         data = response.json()
         return data["rules"]
@@ -220,7 +221,7 @@ def main_loop():
                 sys.exit(1)
 
         # Wait before next iteration
-        time.sleep(settings.POLL_INTERVAL)
+        time.sleep(settings.poll_interval)
 
 
 if __name__ == "__main__":

@@ -86,13 +86,16 @@ resource "local_file" "frps_deployment_config" {
       auth_plugin_addr = "${hcloud_server.services_stack.ipv4_address}:5000"
     }
     frps = {
-      enable = true
+      enable    = true
+      bind_port = 7000
     }
     services = {
       enable = false
     }
     nftables = {
-      enable = true
+      enable         = true
+      nftables_file = "/var/lib/nftables-manager/rules.nft"
+      log_level      = "DEBUG"
     }
   })
 

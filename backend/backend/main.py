@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from backend.database import init_db
-from backend.routes import internal, plugin, services, templates, tokens
+from backend.routes import internal, plugin, services, templates, users
 from backend.settings import settings
 
 
@@ -25,7 +25,7 @@ async def health_check():
     return {"status": "healthy", "service": "backend"}
 
 
-app.include_router(tokens.router)
+app.include_router(users.router)
 app.include_router(services.router)
 app.include_router(templates.router)
 app.include_router(internal.router)

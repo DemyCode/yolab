@@ -36,10 +36,13 @@ in
       type = types.str;
       description = "Backend API URL";
     };
-
     pollInterval = mkOption {
       type = types.int;
       description = "Polling interval in seconds";
+    };
+    nftables_file = mkOption {
+      type = types.str;
+      description = "nftables configuration options";
     };
   };
 
@@ -61,6 +64,8 @@ in
       environment = {
         BACKEND_URL = cfg.backendUrl;
         POLL_INTERVAL = toString cfg.pollInterval;
+        NFTABLES_FILE = cfg.nftables_file;
+        LOG_LEVEL = "INFO";
       };
 
       serviceConfig = {

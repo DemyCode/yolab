@@ -4,7 +4,7 @@ from sqlmodel import Session, select
 from pydantic import BaseModel
 
 from backend.database import get_db
-from backend.models import Service, ServiceStatus, ServiceType, User
+from backend.models import Service, ServiceType, User
 from backend.schemas import (
     RegisterRequest,
     ServiceResponse,
@@ -55,7 +55,6 @@ async def register_service(
             client_port=request.client_port,
             frps_internal_port=frps_internal_port,
             local_port=request.local_port,
-            status=ServiceStatus.active,
         )
 
         db.add(service)
