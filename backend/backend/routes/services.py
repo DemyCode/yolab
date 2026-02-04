@@ -12,6 +12,7 @@ from backend.schemas import (
 from backend.utils import (
     allocate_sub_ipv6,
     allocate_frps_port,
+    generate_frpc_config,
 )
 
 router = APIRouter(tags=["services"])
@@ -62,10 +63,18 @@ async def register_service(
         db.refresh(service)
 
         assert service.id is not None  # type: ignore[misc]
+
+        # Generate FRPC config and access URLs
+        frpc_config = generate_frpc_config(service, user)
+        access_direct = f"[{sub_ipv6}]:{request.client_port}"
+
         return ServiceResponse(
             service_id=service.id,
             subdomain=subdomain,
             sub_ipv6=sub_ipv6,
+            client_port=request.client_port,
+            access_direct=access_direct,
+            frpc_config=frpc_config,
         )
 
     except IntegrityError:

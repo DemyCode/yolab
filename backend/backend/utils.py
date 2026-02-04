@@ -27,11 +27,33 @@ def allocate_frps_port(db: Session) -> int:
     raise RuntimeError("No available FRPS internal ports")
 
 
+def generate_frpc_config(service: Service, user: User) -> str:
+    """Generate FRP client configuration for a service."""
+    return "\n".join(
+        [
+            "[common]",
+            f"server_addr = {settings.frps_server_ipv4}",
+            f"server_port = {settings.frps_server_port}",
+            f"user = service_{service.id}",
+            f"meta_account_token = {user.account_token}",
+            f"meta_service_id = {service.id}",
+            "",
+            f"[{service.service_name}]",
+            f"type = {service.service_type.value}",
+            "local_ip = 127.0.0.1",
+            f"local_port = {service.local_port}",
+            f"remote_port = {service.frps_internal_port}",
+        ]
+    )
+
+
 def get_service_access_url(service: Service, user: User) -> tuple[str, str]:
+    """Get subdomain and direct IPv6 access URLs for a service."""
     subdomain_url = f"{service.subdomain}.{settings.domain}"
     direct_url = f"[{service.sub_ipv6}]:{service.client_port}"
     return (subdomain_url, direct_url)
 
 
 def generate_account_token() -> str:
+    """Generate a secure random account token."""
     return secrets.token_urlsafe(24)
