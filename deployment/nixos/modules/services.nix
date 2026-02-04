@@ -47,6 +47,11 @@ in
       description = "FRP server IPv6 address";
     };
 
+    frpsServerIpv4 = mkOption {
+      type = types.str;
+      description = "FRP server IPv4 address for FRPC clients to connect";
+    };
+
     openFirewall = mkOption {
       type = types.bool;
       default = true;
@@ -97,6 +102,7 @@ in
         POSTGRES_PASSWORD=${cfg.postgresPassword}
         DOMAIN=${cfg.domain}
         FRPS_SERVER_IPV6=${cfg.frpsServerIpv6}
+        FRPS_SERVER_IPV4=${cfg.frpsServerIpv4}
         FRPS_SERVER_PORT=7000
         IPV6_SUBNET_BASE=${cfg.ipv6SubnetBase}
         EOF

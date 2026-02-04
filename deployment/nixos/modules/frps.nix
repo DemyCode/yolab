@@ -42,7 +42,7 @@ in
     environment.etc."frps/frps.ini" = {
       text = ''
         [common]
-        bind_addr = ::
+        bind_addr = 0.0.0.0
         bind_port = ${toString cfg.bindPort}
         subdomain_host = ${cfg.domain}
         log_file = /var/lib/frps/frps.log

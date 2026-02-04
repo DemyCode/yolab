@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlmodel import Session, select
 
 from backend.database import get_db
-from backend.models import Service, ServiceStatus, User
+from backend.models import Service, User
 from backend.schemas import PluginResponse
 
 router = APIRouter(tags=["plugin"])
@@ -63,13 +63,6 @@ async def handle_plugin_request(
         return PluginResponse(
             reject=True,
             reject_reason="Service not found or does not belong to this account",
-            unchange=True,
-        )
-
-    if service.status != ServiceStatus.active:
-        return PluginResponse(
-            reject=True,
-            reject_reason=f"Service is {service.status.value}",
             unchange=True,
         )
 

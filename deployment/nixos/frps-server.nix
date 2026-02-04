@@ -1,21 +1,28 @@
-{ config, pkgs, lib, modulesPath, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  modulesPath,
+  ...
+}:
 let
   configPath = ./ignored/config-frps.json;
-  
+
   # Read and parse JSON configuration
-  deployConfig = if builtins.pathExists configPath then
-    builtins.fromJSON (builtins.readFile configPath)
-  else
-    throw ''
-      Configuration file not found: ${toString configPath}
-      
-      Please create deployment/nixos/ignored/config-frps.json with your deployment settings.
-      You can copy from deployment/nixos/ignored/config-frps.json.example:
-      
-        cp deployment/nixos/ignored/config-frps.json.example deployment/nixos/ignored/config-frps.json
-      
-      Then edit the file with your values, or use Terraform to auto-generate it.
-    '';
+  deployConfig =
+    if builtins.pathExists configPath then
+      builtins.fromJSON (builtins.readFile configPath)
+    else
+      throw ''
+        Configuration file not found: ${toString configPath}
+
+        Please create deployment/nixos/ignored/config-frps.json with your deployment settings.
+        You can copy from deployment/nixos/ignored/config-frps.json.example:
+
+          cp deployment/nixos/ignored/config-frps.json.example deployment/nixos/ignored/config-frps.json
+
+        Then edit the file with your values, or use Terraform to auto-generate it.
+      '';
 
   cfg = deployConfig;
 in
@@ -66,7 +73,17 @@ in
     authPluginAddr = cfg.network.auth_plugin_addr;
   };
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  services.yolab-nftables-manager = {
+    enable = cfg.nftables.enable;
+    backendUrl = cfg.network.auth_plugin_addr;
+    pollInterval = 30;
+    ipv6Subnet = cfg.network.ipv6_subnet;
+  };
+
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
 
   system.stateVersion = "24.05";
 }

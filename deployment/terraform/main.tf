@@ -93,6 +93,9 @@ resource "local_file" "frps_deployment_config" {
     services = {
       enable = false
     }
+    nftables = {
+      enable = true
+    }
   })
 
   file_permission = "0644"

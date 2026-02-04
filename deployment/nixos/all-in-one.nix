@@ -34,6 +34,7 @@ in
     ./disk-config.nix
     ./modules/frps.nix
     ./modules/services.nix
+    ./modules/nftables-manager.nix
   ];
 
   boot.loader.grub = {
@@ -84,10 +85,10 @@ in
     postgresUser = cfg.database.db_user;
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
-    frpsServerIpv6 = cfg.network.frps_server_ipv6;
+    frpsServerIpv4 = cfg.network.frps_server_ipv4;
     openFirewall = cfg.services.open_firewall;
-    autoUpdate = false;
   };
+
 
   systemd.services.frps.after = [ "yolab-deploy.service" ];
   systemd.services.frps.wants = [ "yolab-deploy.service" ];

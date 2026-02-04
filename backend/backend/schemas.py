@@ -16,7 +16,7 @@ class RegisterRequest(BaseModel):
     service_name: str = Field(..., min_length=3, max_length=20)
     service_type: str
     local_port: int = Field(..., ge=1, le=65535)
-    remote_port: int = Field(..., ge=1, le=65535)
+    client_port: int = Field(..., ge=1, le=65535)  # NEW: Port exposed to users
 
     @field_validator("service_name")
     @classmethod
@@ -38,12 +38,9 @@ class RegisterRequest(BaseModel):
 
 class ServiceResponse(BaseModel):
     service_id: int
-    service_name: str
-    service_type: str
     subdomain: str
-    ipv6_address: str
-    remote_port: int
-    access_url: str
+    sub_ipv6: str  
+    client_port: int  
     access_direct: str
     frpc_config: str
 
@@ -56,8 +53,8 @@ class ServiceInfo(BaseModel):
     service_name: str
     service_type: str
     subdomain: str
-    ipv6_address: str
-    remote_port: int
+    sub_ipv6: str  # NEW
+    client_port: int  # NEW
     local_port: int
     access_url: str
     access_direct: str
@@ -172,3 +169,19 @@ class PluginResponse(BaseModel):
     reject: bool
     reject_reason: str
     unchange: bool
+
+
+class NFTablesRule(BaseModel):
+    """Single nftables rule for service routing."""
+
+    service_id: int
+    sub_ipv6: str
+    client_port: int
+    protocol: str  # tcp or udp
+    frps_internal_port: int
+
+
+class NFTablesRulesResponse(BaseModel):
+    """Response containing all active nftables rules."""
+
+    rules: List[NFTablesRule]
