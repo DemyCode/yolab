@@ -9,20 +9,13 @@ in
   options.services.yolab-frps = {
     enable = mkEnableOption "YoLab FRP Server";
 
-    domain = mkOption {
-      type = types.str;
-      description = "Domain for subdomain resolution";
-    };
-
     authPluginAddr = mkOption {
       type = types.str;
-      default = "127.0.0.1:5000";
       description = "Auth plugin address";
     };
 
     bindPort = mkOption {
       type = types.int;
-      default = 7000;
       description = "FRP server bind port";
     };
   };
@@ -44,10 +37,6 @@ in
         [common]
         bind_addr = 0.0.0.0
         bind_port = ${toString cfg.bindPort}
-        subdomain_host = ${cfg.domain}
-        log_file = /var/lib/frps/frps.log
-        log_level = info
-        max_pool_count = 10
         
         [plugin.user_auth]
         addr = ${cfg.authPluginAddr}
@@ -71,7 +60,5 @@ in
         ExecStart = "${pkgs.frp}/bin/frps -c /etc/frps/frps.ini";
       };
     };
-
-    networking.firewall.enable = false;
   };
 }

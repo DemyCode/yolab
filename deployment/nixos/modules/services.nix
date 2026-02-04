@@ -22,13 +22,11 @@ in
 
     postgresDb = mkOption {
       type = types.str;
-      default = "frp_services";
       description = "PostgreSQL database name";
     };
 
     postgresUser = mkOption {
       type = types.str;
-      default = "frp_user";
       description = "PostgreSQL user";
     };
 
@@ -42,11 +40,6 @@ in
       description = "IPv6 subnet base for client allocation";
     };
 
-    frpsServerIpv6 = mkOption {
-      type = types.str;
-      description = "FRP server IPv6 address";
-    };
-
     frpsServerIpv4 = mkOption {
       type = types.str;
       description = "FRP server IPv4 address for FRPC clients to connect";
@@ -54,7 +47,6 @@ in
 
     openFirewall = mkOption {
       type = types.bool;
-      default = true;
       description = "Whether to open firewall ports";
     };
   };
@@ -101,7 +93,6 @@ in
         POSTGRES_USER=${cfg.postgresUser}
         POSTGRES_PASSWORD=${cfg.postgresPassword}
         DOMAIN=${cfg.domain}
-        FRPS_SERVER_IPV6=${cfg.frpsServerIpv6}
         FRPS_SERVER_IPV4=${cfg.frpsServerIpv4}
         FRPS_SERVER_PORT=7000
         IPV6_SUBNET_BASE=${cfg.ipv6SubnetBase}

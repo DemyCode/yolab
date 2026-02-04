@@ -1,21 +1,28 @@
-{ config, pkgs, lib, modulesPath, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  modulesPath,
+  ...
+}:
 let
   configPath = ./ignored/config-services.json;
-  
+
   # Read and parse JSON configuration
-  deployConfig = if builtins.pathExists configPath then
-    builtins.fromJSON (builtins.readFile configPath)
-  else
-    throw ''
-      Configuration file not found: ${toString configPath}
-      
-      Please create deployment/nixos/ignored/config-services.json with your deployment settings.
-      You can copy from deployment/nixos/ignored/config-services.json.example:
-      
-        cp deployment/nixos/ignored/config-services.json.example deployment/nixos/ignored/config-services.json
-      
-      Then edit the file with your values, or use Terraform to auto-generate it.
-    '';
+  deployConfig =
+    if builtins.pathExists configPath then
+      builtins.fromJSON (builtins.readFile configPath)
+    else
+      throw ''
+        Configuration file not found: ${toString configPath}
+
+        Please create deployment/nixos/ignored/config-services.json with your deployment settings.
+        You can copy from deployment/nixos/ignored/config-services.json.example:
+
+          cp deployment/nixos/ignored/config-services.json.example deployment/nixos/ignored/config-services.json
+
+        Then edit the file with your values, or use Terraform to auto-generate it.
+      '';
 
   cfg = deployConfig;
 in
@@ -41,8 +48,11 @@ in
     useDHCP = true;
     firewall = {
       enable = true;
-      allowedTCPPorts = [ 22 5000 ];  # SSH + Backend API (for FRPS auth)
-      allowedUDPPorts = [ 53 ];       # DNS
+      allowedTCPPorts = [
+        22
+        5000
+      ]; # SSH + Backend API (for FRPS auth)
+      allowedUDPPorts = [ 53 ]; # DNS
     };
   };
 
@@ -73,12 +83,14 @@ in
     postgresUser = cfg.database.db_user;
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
-    frpsServerIpv6 = cfg.network.frps_server_ipv6;
-    openFirewall = cfg.services.open_firewall;
+    frpsServerIpv4 = cfg.network.frps_server_ipv4;
   };
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
+
   nix.gc = {
     automatic = true;
     dates = "weekly";

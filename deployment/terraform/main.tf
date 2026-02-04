@@ -81,10 +81,8 @@ resource "local_file" "frps_deployment_config" {
       key_name   = var.ssh_key_name
     }
     network = {
-      # FRPS server uses its own IPv6
-      frps_server_ipv6 = hcloud_server.frps_server.ipv6_address
+      frps_server_ipv4 = hcloud_server.frps_server.ipv4_address
       frps_bind_port   = 7000
-      # Auth plugin points to services-stack server (public IPv4)
       auth_plugin_addr = "${hcloud_server.services_stack.ipv4_address}:5000"
     }
     frps = {
@@ -106,7 +104,6 @@ resource "local_file" "services_deployment_config" {
 
   content = jsonencode({
     server = {
-      hostname = "yolab-services"
       domain   = var.domain
       repo_url = var.repo_url
     }
@@ -120,10 +117,8 @@ resource "local_file" "services_deployment_config" {
       db_password = var.postgres_password
     }
     network = {
-      # IPv6 subnet for client allocation (based on services-stack IPv6)
       ipv6_subnet_base = "${hcloud_server.services_stack.ipv6_address}1"
-      # Reference to FRPS server IPv6 (used in env vars for Docker)
-      frps_server_ipv6 = hcloud_server.frps_server.ipv6_address
+      frps_server_ipv4 = hcloud_server.frps_server.ipv4_address
       frps_bind_port   = 7000
     }
     frps = {
@@ -141,11 +136,6 @@ resource "local_file" "services_deployment_config" {
   file_permission = "0644"
 }
 
-# =============================================================================
-# NixOS Deployments via nixos-anywhere
-# =============================================================================
-
-# Deploy FRPS Server
 module "deploy_nixos_frps" {
   source = "github.com/nix-community/nixos-anywhere//terraform/all-in-one"
 
@@ -159,7 +149,6 @@ module "deploy_nixos_frps" {
   depends_on = [local_file.frps_deployment_config]
 }
 
-# Deploy Services Stack
 module "deploy_nixos_services" {
   source = "github.com/nix-community/nixos-anywhere//terraform/all-in-one"
 

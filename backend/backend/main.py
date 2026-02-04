@@ -37,7 +37,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host=settings.registration_api_host,
-        port=settings.registration_api_port,
+        host="0.0.0.0",
+        port=settings.port,
         log_level="debug",
     )

@@ -20,12 +20,10 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frp_user}:${POSTGRES_PASSWORD:-frp_password}@postgres:5432/${POSTGRES_DB:-frp_services}
       DOMAIN: ${DOMAIN:-demycode.ovh}
-      FRPS_SERVER_IPV6: ${FRPS_SERVER_IPV6:-2a01:4f8:c2c:9b00::}
-      FRPS_SERVER_IPV4: ${FRPS_SERVER_IPV4:-127.0.0.1}
-      FRPS_SERVER_PORT: ${FRPS_SERVER_PORT:-7000}
-      IPV6_SUBNET_BASE: ${IPV6_SUBNET_BASE:-2a01:4f8:1c19:b96::}
-      REGISTRATION_API_HOST: 0.0.0.0
-      REGISTRATION_API_PORT: 5000
+      FRPS_SERVER_IPV4: ${FRPS_SERVER_IPV4}
+      FRPS_SERVER_PORT: ${FRPS_SERVER_PORT}
+      IPV6_SUBNET_BASE: ${IPV6_SUBNET_BASE}
+      PORT: 5000
     ports:
       - "5000:5000"
 

@@ -15,15 +15,11 @@ class RegistrationAPISettings(BaseSettings):
     )
 
     domain: str
-    frps_server_ipv6: str
-    frps_server_ipv4: str  # NEW: IPv4 address for FRPC to connect
+    frps_server_ipv4: str  
     frps_server_port: int = Field(ge=1, le=65535)
     ipv6_subnet_base: str  # Base IPv6 subnet (e.g., "2a01:4f8:1c19:b96::")
     database_url: str
-    registration_api_host: str
-    registration_api_port: int
-    username_pattern: str = Field(default=r"^[a-z0-9-]{3,20}$")
-    service_name_pattern: str = Field(default=r"^[a-z0-9-]{3,20}$")
+    port: int
 
     def model_post_init(self, __context):
         pprint(self)

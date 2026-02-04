@@ -1,16 +1,31 @@
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 with lib;
 
 let
   cfg = config.services.yolab-nftables-manager;
-  repoRoot = ../../..;
-  
-  # Create a Python script with dependencies
-  nftablesManagerScript = pkgs.writeScriptBin "nftables-manager" ''
-    #!${pkgs.python3.withPackages (ps: with ps; [ requests ])}/bin/python3
-    exec ${repoRoot}/nftables_manager/manager.py "$@"
-  '';
+  workspace = inputs.uv2nix.lib.workspace.loadWorkspace {
+    workspaceRoot = ../../../nftables-manager;
+  };
+  overlay = workspace.mkPyprojectOverlay {
+    sourcePreference = "wheel";
+  };
+  pythonSet =
+    (pkgs.callPackage inputs.pyproject-nix.build.packages {
+      python = pkgs.python311;
+    }).overrideScope
+      (
+        lib.composeManyExtensions [
+          inputs.pyproject-build-systems.overlays.wheel
+          overlay
+        ]
+      );
+  installerNFtables = pythonSet.mkVirtualEnv "nftables-manager-env" workspace.deps.default;
 in
 {
   options.services.yolab-nftables-manager = {
@@ -33,41 +48,46 @@ in
   };
 
   config = mkIf cfg.enable {
+    # Enable nftables
     networking.nftables.enable = true;
 
+    # Enable IPv6 forwarding
     boot.kernel.sysctl = {
       "net.ipv6.conf.all.forwarding" = 1;
     };
 
+    # Configure IPv6 routing to accept all IPs in subnet
     networking.localCommands = ''
       ${pkgs.iproute2}/bin/ip -6 route add local ${cfg.ipv6Subnet} dev lo || true
     '';
 
     systemd.services.nftables-manager = {
       description = "YoLab nftables Manager";
-      after = [ "network.target" "yolab-deploy.service" ];
-      wants = [ "yolab-deploy.service" ];
+      after = [
+        "network.target"
+      ];
       wantedBy = [ "multi-user.target" ];
-      
+
       environment = {
         BACKEND_URL = cfg.backendUrl;
         POLL_INTERVAL = toString cfg.pollInterval;
       };
-      
+
       serviceConfig = {
         Type = "simple";
-        User = "root";  
+        User = "root";
         Restart = "always";
         RestartSec = "10s";
-        ExecStart = "${pkgs.python3.withPackages (ps: with ps; [ requests ])}/bin/python3 ${repoRoot}/nftables_manager/manager.py";
+        ExecStart = "${nftablesManager}/bin/nftables-manager";
       };
     };
 
-    # Install required packages
-    environment.systemPackages = with pkgs; [
-      nftables
-      iproute2
-      python3
-    ];
+    environment.systemPackages =
+      (with pkgs; [
+        nftables
+        iproute2
+        python3
+      ])
+      ++ [ installerNFtables ];
   };
 }
