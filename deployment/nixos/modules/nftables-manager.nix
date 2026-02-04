@@ -1,4 +1,5 @@
 {
+  inputs,
   config,
   pkgs,
   lib,
@@ -40,26 +41,15 @@ in
       type = types.int;
       description = "Polling interval in seconds";
     };
-
-    ipv6Subnet = mkOption {
-      type = types.str;
-      description = "IPv6 subnet to accept (e.g., 2a01:4f8:1c19:b96::/64)";
-    };
   };
 
   config = mkIf cfg.enable {
-    # Enable nftables
     networking.nftables.enable = true;
 
     # Enable IPv6 forwarding
     boot.kernel.sysctl = {
       "net.ipv6.conf.all.forwarding" = 1;
     };
-
-    # Configure IPv6 routing to accept all IPs in subnet
-    networking.localCommands = ''
-      ${pkgs.iproute2}/bin/ip -6 route add local ${cfg.ipv6Subnet} dev lo || true
-    '';
 
     systemd.services.nftables-manager = {
       description = "YoLab nftables Manager";
@@ -78,7 +68,7 @@ in
         User = "root";
         Restart = "always";
         RestartSec = "10s";
-        ExecStart = "${nftablesManager}/bin/nftables-manager";
+        ExecStart = "${installerNFtables}/bin/nftables-manager";
       };
     };
 

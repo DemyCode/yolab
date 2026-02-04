@@ -11,7 +11,6 @@ Architecture:
 - FRPS tunnels: 127.0.0.1:38012 → FRPC client → localhost:8080
 """
 
-import json
 import logging
 import subprocess
 import sys
@@ -21,19 +20,29 @@ from typing import List
 
 import requests
 
-# Configuration
-BACKEND_URL = "http://localhost:5000"
-POLL_INTERVAL = 30  # seconds
-NFTABLES_FILE = "/tmp/yolab-nftables.nft"
-LOG_LEVEL = logging.INFO
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Setup logging
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-logger = logging.getLogger("nftables-manager")
+logger = logging.getLogger("nftables_manager")
+
+
+class EnvironmentSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).parent.parent / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    backend_url: str
+    poll_interval: int
+    nftables_file: str
+    log_level: str
+
+    def model_post_init(self, __context):
+        pprint(self)
+
+
+settings = EnvironmentSettings()
 
 
 def fetch_rules() -> List[dict]:
@@ -51,7 +60,7 @@ def fetch_rules() -> List[dict]:
         requests.RequestException: If API call fails
     """
     try:
-        response = requests.get(f"{BACKEND_URL}/services", timeout=5)
+        response = requests.get(f"{settings.BACKEND_URL}/services", timeout=5)
         response.raise_for_status()
         data = response.json()
         return data["rules"]
@@ -133,14 +142,17 @@ def apply_nftables_rules(config: str) -> None:
         subprocess.CalledProcessError: If nft command fails
     """
     # Write config to file
-    config_path = Path(NFTABLES_FILE)
+    config_path = Path(settings.nftables_file)
     config_path.write_text(config)
-    logger.debug(f"Wrote nftables config to {NFTABLES_FILE}")
+    logger.debug(f"Wrote nftables config to {settings.nftables_file}")
 
     # Apply configuration
     try:
         result = subprocess.run(
-            ["nft", "-f", NFTABLES_FILE], check=True, capture_output=True, text=True
+            ["nft", "-f", settings.nftables_file],
+            check=True,
+            capture_output=True,
+            text=True,
         )
         logger.debug(f"nft command output: {result.stdout}")
     except subprocess.CalledProcessError as e:
@@ -151,8 +163,8 @@ def apply_nftables_rules(config: str) -> None:
 def main_loop():
     """Main service loop: fetch rules, generate config, apply rules."""
     logger.info("Starting nftables-manager service")
-    logger.info(f"Backend URL: {BACKEND_URL}")
-    logger.info(f"Poll interval: {POLL_INTERVAL} seconds")
+    logger.info(f"Backend URL: {settings.backend_url}")
+    logger.info(f"Poll interval: {settings.poll_interval} seconds")
 
     consecutive_errors = 0
     max_consecutive_errors = 5
@@ -208,7 +220,7 @@ def main_loop():
                 sys.exit(1)
 
         # Wait before next iteration
-        time.sleep(POLL_INTERVAL)
+        time.sleep(settings.POLL_INTERVAL)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ in
     (modulesPath + "/profiles/qemu-guest.nix")
     ./disk-config.nix
     ./modules/frps.nix
+    ./modules/nftables-manager.nix
   ];
 
   boot.loader.grub = {
@@ -76,7 +77,6 @@ in
     enable = cfg.nftables.enable;
     backendUrl = cfg.network.auth_plugin_addr;
     pollInterval = 30;
-    ipv6Subnet = cfg.network.ipv6_subnet;
   };
 
   nix.settings.experimental-features = [

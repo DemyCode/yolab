@@ -1,4 +1,9 @@
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 with lib;
 
@@ -28,7 +33,7 @@ in
       createHome = true;
     };
 
-    users.groups.frps = {};
+    users.groups.frps = { };
 
     environment.systemPackages = [ pkgs.frp ];
 
@@ -37,7 +42,7 @@ in
         [common]
         bind_addr = 0.0.0.0
         bind_port = ${toString cfg.bindPort}
-        
+
         [plugin.user_auth]
         addr = ${cfg.authPluginAddr}
         path = /handler
@@ -50,7 +55,7 @@ in
       description = "FRP Server";
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
-      
+
       serviceConfig = {
         Type = "simple";
         User = "frps";

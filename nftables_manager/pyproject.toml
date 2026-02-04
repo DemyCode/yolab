@@ -7,4 +7,4 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
-yolab-installer = "nft-manager.main:main"
+nft-manager = "nftables_manager.manager:main"
