@@ -93,9 +93,9 @@ resource "local_file" "frps_deployment_config" {
       enable = false
     }
     nftables = {
-      enable         = true
+      enable        = true
       nftables_file = "/var/lib/nftables-manager/rules.nft"
-      log_level      = "DEBUG"
+      log_level     = "DEBUG"
     }
   })
 
@@ -120,7 +120,7 @@ resource "local_file" "services_deployment_config" {
       db_password = var.postgres_password
     }
     network = {
-      ipv6_subnet_base = "${hcloud_server.services_stack.ipv6_address}1"
+      ipv6_subnet_base = "${hcloud_server.frps_server.ipv6_address}1"
       frps_server_ipv4 = hcloud_server.frps_server.ipv4_address
       frps_bind_port   = 7000
     }

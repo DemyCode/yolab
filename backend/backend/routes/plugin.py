@@ -73,23 +73,21 @@ async def handle_plugin_request(
             unchange=True,
         )
 
-    if content.get("remote_ip", "") != service.ipv6_address:
-        return PluginResponse(
-            reject=True,
-            reject_reason=f"IPv6 mismatch: expected {service.ipv6_address}, got {content.get('remote_ip')}",
-            unchange=True,
-        )
+    # if content.get("remote_ip", "") != service.ipv6_address:
+    #     return PluginResponse(
+    #         reject=True,
+    #         reject_reason=f"IPv6 mismatch: expected {service.ipv6_address}, got {content.get('remote_ip')}",
+    #         unchange=True,
+    #     )
 
-    if content.get("remote_port", 0) != service.remote_port:
-        return PluginResponse(
-            reject=True,
-            reject_reason=f"Port mismatch: expected {service.remote_port}, got {content.get('remote_port')}",
-            unchange=True,
-        )
+    # if content.get("remotePort", 0) != service.frps_internal_port:
+    #     return PluginResponse(
+    #         reject=True,
+    #         reject_reason=f"Port mismatch: expected {service.frps_internal_port}, got {content.get('remotePort')}",
+    #         unchange=True,
+    #     )
 
-    # Update last_seen timestamp
-    service.last_seen = datetime.now(timezone.utc)
-    db.add(service)
-    db.commit()
+    # db.add(service)
+    # db.commit()
 
     return PluginResponse(reject=False, reject_reason="", unchange=True)

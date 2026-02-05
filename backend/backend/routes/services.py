@@ -4,21 +4,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from pydantic import BaseModel
 
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from backend.schemas import (
-    AvailableService,
-    AvailableServicesResponse,
-    ServiceTemplateResponse,
-)
 from backend.database import get_db
 from backend.models import Service, ServiceType, User
 from backend.schemas import (
     RegisterRequest,
     NFTablesRule,
-    NFTablesRulesResponse,
 )
 from backend.utils import (
     allocate_sub_ipv6,

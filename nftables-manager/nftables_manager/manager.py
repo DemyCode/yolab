@@ -34,10 +34,83 @@ def fetch_rules() -> List[dict]:
     response = httpx.get(f"http://{settings.backend_url}/services")
     return response.json()
 
+
+import subprocess
+import signal
+import os
+import atexit
+
+# Dictionary to keep track of active socat processes
+# Key: (sub_ipv6, client_port, protocol, internal_port)
+# Value: subprocess.Popen object
+active_relays = {}
+
+
+def cleanup_relays():
+    """Terminate all active socat processes on shutdown."""
+    print("Shutting down all active relays...")
+    for key, proc in list(active_relays.items()):
+        print(f"Stopping relay: {key}")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    active_relays.clear()
+    print("All relays stopped")
+
+
+# Register cleanup on exit
+atexit.register(cleanup_relays)
+
+
+def reconcile_relays(desired_rules: list, server_ipv4: str = "127.0.0.1"):
+    """
+    Declaratively syncs running socat processes with the desired state.
+    """
+    global active_relays
+    desired_keys = set()
+    for rule in desired_rules:
+        key = (
+            rule["sub_ipv6"],
+            rule["client_port"],
+            rule["protocol"].lower(),
+            rule["frps_internal_port"],
+        )
+        desired_keys.add(key)
+    for key in list(active_relays.keys()):
+        if key not in desired_keys:
+            print(f"[-] Stopping redundant relay: {key}")
+            active_relays[key].terminate()
+            del active_relays[key]
+    for key in desired_keys:
+        sub_ipv6, client_port, protocol, internal_port = key
+        if key not in active_relays:
+            print(
+                f"[+] Starting relay: {sub_ipv6}:{client_port} -> {server_ipv4}:{internal_port}"
+            )
+            listen_type = "TCP6-LISTEN" if protocol == "tcp" else "UDP6-RECVFROM"
+            forward_type = "TCP4" if protocol == "tcp" else "UDP4"
+            cmd = [
+                "socat",
+                f"{listen_type}:{client_port},bind=[{sub_ipv6}],fork,reuseaddr",
+                f"{forward_type}:{server_ipv4}:{internal_port}",
+            ]
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            active_relays[key] = proc
+
+
+# Example Usage:
+# rules = api.get_rules()
+# reconcile_relays(rules)
+
+
 def generate_nftables_config(rules: List[dict], server_ipv4: str = "127.0.0.1") -> str:
     """
-    Generate nftables configuration using 'meta nfproto' to avoid
-    family conflicts between IPv6 matches and IPv4 DNAT targets.
+    Generate nftables configuration for IPv6 to IPv4 NAT.
+    Uses 'table ip6' to explicitly support NAT64 (IPv6 -> IPv4 translation).
     """
     lines = [
         "#!/usr/sbin/nft -f",
@@ -49,7 +122,8 @@ def generate_nftables_config(rules: List[dict], server_ipv4: str = "127.0.0.1") 
         "",
         "flush ruleset",
         "",
-        "table inet nat {",
+        # Using 'ip6' family here is the key to solving the 'family not supported' error
+        "table ip6 nat {",
         "    chain prerouting {",
         "        type nat hook prerouting priority dstnat; policy accept;",
         "",
@@ -62,26 +136,31 @@ def generate_nftables_config(rules: List[dict], server_ipv4: str = "127.0.0.1") 
         protocol = rule["protocol"]
         internal_port = rule["frps_internal_port"]
 
-        lines.append(f"        # Service {service_id}: {protocol}:{client_port} -> FRPS:{internal_port}")
-        
-        # FIX: Added 'meta nfproto ipv6' at the start of the rule.
-        # This allows the use of 'dnat ip to' for cross-family translation.
         lines.append(
-            f"        meta nfproto ipv6 ip6 daddr {sub_ipv6} {protocol} dport {client_port} "
-            f"dnat ip to {server_ipv4}:{internal_port}"
+            f"        # Service {service_id}: {protocol}:{client_port} -> FRPS:{internal_port}"
+        )
+
+        # In the ip6 table, 'dnat to' followed by an IPv4 address is the standard
+        # way to perform cross-protocol translation.
+        lines.append(
+            f"        ip6 daddr {sub_ipv6} {protocol} dport {client_port} "
+            f"dnat to {server_ipv4}:{internal_port}"
         )
         lines.append("")
 
-    lines.extend([
-        "    }",
-        "",
-        "    chain postrouting {",
-        "        type nat hook postrouting priority srcnat; policy accept;",
-        "        masquerade",
-        "    }",
-        "}",
-        ""
-    ])
+    lines.extend(
+        [
+            "    }",
+            "",
+            "    chain postrouting {",
+            "        type nat hook postrouting priority srcnat; policy accept;",
+            "        # Masquerade ensures the IPv4 stack knows how to route back to the NAT engine",
+            "        masquerade",
+            "    }",
+            "}",
+            "",
+        ]
+    )
 
     return "\n".join(lines)
 
@@ -100,7 +179,7 @@ def apply_nftables_rules(config: str) -> None:
 
 
 def main_loop():
-    """Main service loop: fetch rules, generate config, apply rules."""
+    """Main service loop: fetch rules, reconcile socat relays."""
     print("Starting nftables-manager service")
     print(f"Backend URL: {settings.backend_url}")
     print(f"Poll interval: {settings.poll_interval} seconds")
@@ -113,10 +192,8 @@ def main_loop():
             rules = fetch_rules()
             print(f"Fetched {len(rules)} active service rules")
 
-            config = generate_nftables_config(rules)
-
-            apply_nftables_rules(config)
-            print(f"Successfully applied {len(rules)} nftables rules")
+            reconcile_relays(rules)
+            print(f"Successfully reconciled {len(rules)} relay rules")
 
             consecutive_errors = 0
 
@@ -126,11 +203,9 @@ def main_loop():
                 f"Backend API error ({consecutive_errors}/{max_consecutive_errors}): {e}"
             )
 
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError) as e:
             consecutive_errors += 1
-            print(
-                f"nftables error ({consecutive_errors}/{max_consecutive_errors}): {e}"
-            )
+            print(f"Relay error ({consecutive_errors}/{max_consecutive_errors}): {e}")
 
         except Exception as e:
             print(f"Unexpected error: {e}")

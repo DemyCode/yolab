@@ -64,6 +64,7 @@ in
       ];
       wantedBy = [ "multi-user.target" ];
       path = [
+        pkgs.socat
         pkgs.nftables
       ];
       environment = {
@@ -84,6 +85,7 @@ in
 
     environment.systemPackages =
       (with pkgs; [
+        socat
         nftables
         iproute2
         python3
