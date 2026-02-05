@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-nftables Manager Service for YoLab
-
-Periodically fetches service configurations from the backend API
-and applies nftables rules to route IPv6 traffic to FRPS internal ports.
-
-Architecture:
-- User connects to: [2a01:4f8:1c19:b96::a]:8080
-- nftables DNAT: [IPv6::a]:8080 → 127.0.0.1:38012
-- FRPS tunnels: 127.0.0.1:38012 → FRPC client → localhost:8080
-"""
-
 import logging
 import subprocess
 import sys
@@ -22,6 +9,7 @@ import requests
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from devtools import pprint
+import httpx
 
 logger = logging.getLogger("nftables_manager")
 
@@ -47,27 +35,8 @@ settings = EnvironmentSettings()
 
 
 def fetch_rules() -> List[dict]:
-    """Fetch active service rules from backend API.
-
-    Returns:
-        List of rule dictionaries with fields:
-        - service_id: int
-        - sub_ipv6: str
-        - client_port: int
-        - protocol: str (tcp or udp)
-        - frps_internal_port: int
-
-    Raises:
-        requests.RequestException: If API call fails
-    """
-    try:
-        response = requests.get(f"{settings.backend_url}/services", timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        return data["rules"]
-    except requests.RequestException as e:
-        logger.error(f"Failed to fetch rules from backend: {e}")
-        raise
+    response = httpx.get(f"http://{settings.backend_url}/services")
+    return response.json()
 
 
 def generate_nftables_config(rules: List[dict]) -> str:
@@ -134,31 +103,16 @@ def generate_nftables_config(rules: List[dict]) -> str:
 
 
 def apply_nftables_rules(config: str) -> None:
-    """Write nftables config to file and apply it.
-
-    Args:
-        config: Complete nftables configuration
-
-    Raises:
-        subprocess.CalledProcessError: If nft command fails
-    """
-    # Write config to file
     config_path = Path(settings.nftables_file)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(config)
-    logger.debug(f"Wrote nftables config to {settings.nftables_file}")
+    print(f"Wrote nftables config to {settings.nftables_file}")
 
-    # Apply configuration
-    try:
-        result = subprocess.run(
-            ["nft", "-f", settings.nftables_file],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        logger.debug(f"nft command output: {result.stdout}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to apply nftables rules: {e.stderr}")
-        raise
+    result = subprocess.run(
+        ["nft", "-f", settings.nftables_file],
+        check=True,
+    )
+    logger.debug(f"nft command output: {result.stdout}")
 
 
 def main_loop():
@@ -172,55 +126,32 @@ def main_loop():
 
     while True:
         try:
-            # Fetch rules from backend
             rules = fetch_rules()
-            logger.info(f"Fetched {len(rules)} active service rules")
+            print(f"Fetched {len(rules)} active service rules")
 
-            # Generate nftables configuration
             config = generate_nftables_config(rules)
 
-            # Apply rules
             apply_nftables_rules(config)
-            logger.info(f"Successfully applied {len(rules)} nftables rules")
+            print(f"Successfully applied {len(rules)} nftables rules")
 
-            # Reset error counter on success
             consecutive_errors = 0
 
         except requests.RequestException as e:
             consecutive_errors += 1
-            logger.error(
+            print(
                 f"Backend API error ({consecutive_errors}/{max_consecutive_errors}): {e}"
             )
 
-            if consecutive_errors >= max_consecutive_errors:
-                logger.critical(
-                    f"Too many consecutive errors ({consecutive_errors}), exiting"
-                )
-                sys.exit(1)
-
         except subprocess.CalledProcessError as e:
             consecutive_errors += 1
-            logger.error(
+            print(
                 f"nftables error ({consecutive_errors}/{max_consecutive_errors}): {e}"
             )
 
-            if consecutive_errors >= max_consecutive_errors:
-                logger.critical(
-                    f"Too many consecutive errors ({consecutive_errors}), exiting"
-                )
-                sys.exit(1)
-
         except Exception as e:
-            logger.exception(f"Unexpected error: {e}")
+            print(f"Unexpected error: {e}")
             consecutive_errors += 1
 
-            if consecutive_errors >= max_consecutive_errors:
-                logger.critical(
-                    f"Too many consecutive errors ({consecutive_errors}), exiting"
-                )
-                sys.exit(1)
-
-        # Wait before next iteration
         time.sleep(settings.poll_interval)
 
 

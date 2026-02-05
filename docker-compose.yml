@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-frp_services}
       POSTGRES_USER: ${POSTGRES_USER:-frp_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frp_password}
+    ports:
+      - "5432:5432"
     # volumes:
     #   - postgres_data_4:/var/lib/postgresql/data
 
@@ -49,6 +51,5 @@ services:
   #   ports:
   #     - "38000-38100:38000-38100"
   #     - "7000:7000"
-
 # volumes:
 #   postgres_data_4:

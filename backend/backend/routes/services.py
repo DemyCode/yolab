@@ -3,25 +3,63 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from pydantic import BaseModel
 
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+
+from backend.schemas import (
+    AvailableService,
+    AvailableServicesResponse,
+    ServiceTemplateResponse,
+)
 from backend.database import get_db
 from backend.models import Service, ServiceType, User
 from backend.schemas import (
     RegisterRequest,
-    ServiceResponse,
+    NFTablesRule,
+    NFTablesRulesResponse,
 )
 from backend.utils import (
     allocate_sub_ipv6,
     allocate_frps_port,
-    generate_frpc_config,
 )
 
 router = APIRouter(tags=["services"])
 
 
-@router.post("/services", response_model=ServiceResponse)
+@router.get("/services/{subdomain}", response_model=str)
+async def resolve_subdomain(subdomain: str, db: Session = Depends(get_db)) -> str:
+    service = db.exec(select(Service).where(Service.subdomain == subdomain)).first()
+
+    if service:
+        return service.sub_ipv6
+    raise HTTPException(status_code=404, detail="Service not found")
+
+
+@router.get("/services", response_model=NFTablesRulesResponse)
+async def get_services(db: Session = Depends(get_db)) -> NFTablesRulesResponse:
+    services = db.exec(select(Service)).all()
+
+    rules = []
+    for service in services:
+        assert service.id is not None
+        rules.append(
+            NFTablesRule(
+                service_id=service.id,
+                sub_ipv6=service.sub_ipv6,
+                client_port=service.client_port,
+                protocol=service.service_type.value,  # tcp or udp
+                frps_internal_port=service.frps_internal_port,
+            )
+        )
+
+    return NFTablesRulesResponse(rules=rules)
+
+
+@router.post("/services", response_model=int)
 async def register_service(
     request: RegisterRequest, db: Session = Depends(get_db)
-) -> ServiceResponse:
+) -> int:
     try:
         user = db.exec(
             select(User).where(User.account_token == request.account_token)
@@ -33,16 +71,16 @@ async def register_service(
 
         existing_subdomain = db.exec(
             select(Service).where(
-                Service.subdomain == subdomain,
+                Service.service_name == request.service_name,
+                Service.user_id == user.id,
             )
         ).first()
 
         if existing_subdomain:
             raise HTTPException(
-                status_code=400, detail=f"Subdomain '{subdomain}' is already taken"
+                status_code=400,
+                detail=f"User already created this subdomain '{subdomain}' is already taken",
             )
-
-        service_type_enum = ServiceType(request.service_type)
 
         sub_ipv6 = allocate_sub_ipv6(db)
         frps_internal_port = allocate_frps_port(db)
@@ -50,34 +88,21 @@ async def register_service(
         service = Service(
             user_id=user.id,
             service_name=request.service_name,
-            service_type=service_type_enum,
-            subdomain=subdomain,
+            service_type=ServiceType(request.service_type),
             sub_ipv6=sub_ipv6,
             client_port=request.client_port,
             frps_internal_port=frps_internal_port,
-            local_port=request.local_port,
         )
 
         db.add(service)
         db.commit()
         db.refresh(service)
 
-        assert service.id is not None  # type: ignore[misc]
+        assert service.id is not None
 
-        # Generate FRPC config and access URLs
-        frpc_config = generate_frpc_config(service, user)
-        access_direct = f"[{sub_ipv6}]:{request.client_port}"
+        return service.id
 
-        return ServiceResponse(
-            service_id=service.id,
-            subdomain=subdomain,
-            sub_ipv6=sub_ipv6,
-            client_port=request.client_port,
-            access_direct=access_direct,
-            frpc_config=frpc_config,
-        )
-
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
         raise HTTPException(
             status_code=400, detail="Registration failed due to duplicate entry"

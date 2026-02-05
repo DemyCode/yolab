@@ -60,12 +60,14 @@ in
         "network.target"
       ];
       wantedBy = [ "multi-user.target" ];
-
+      path = [
+        pkgs.nftables
+      ];
       environment = {
         BACKEND_URL = cfg.backendUrl;
         POLL_INTERVAL = toString cfg.pollInterval;
         NFTABLES_FILE = cfg.nftables_file;
-        LOG_LEVEL = "INFO";
+        LOG_LEVEL = "DEBUG";
       };
 
       serviceConfig = {

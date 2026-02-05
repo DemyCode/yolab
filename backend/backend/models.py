@@ -27,10 +27,8 @@ class Service(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id")
     service_name: str
     service_type: ServiceType
-    subdomain: str = Field(unique=True, index=True)
     sub_ipv6: str = Field(unique=True, index=True)
     client_port: int
     frps_internal_port: int = Field(unique=True)
-    local_port: int
 
     user: Optional[User] = Relationship(back_populates="services")

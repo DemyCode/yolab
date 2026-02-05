@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -8,44 +8,13 @@ from backend.models import ServiceType
 
 class TokenResponse(BaseModel):
     account_token: str
-    created_at: str
 
 
 class RegisterRequest(BaseModel):
-    account_token: str = Field(..., min_length=16, max_length=64)
-    service_name: str = Field(..., min_length=3, max_length=20)
-    service_type: str
-    local_port: int = Field(..., ge=1, le=65535)
-    client_port: int = Field(..., ge=1, le=65535)  # NEW: Port exposed to users
-
-    @field_validator("service_name")
-    @classmethod
-    def validate_alphanumeric(cls, v):
-        v = v.lower().strip()
-        if not re.match(r"^[a-z0-9-]{3,20}$", v):
-            raise ValueError(
-                "must be 3-20 characters, lowercase letters, numbers, and hyphens only"
-            )
-        return v
-
-    @field_validator("service_type")
-    @classmethod
-    def validate_service_type(cls, v):
-        if v not in [t.value for t in ServiceType]:
-            raise ValueError("Invalid service type. Must be: tcp or udp")
-        return v
-
-
-class ServiceResponse(BaseModel):
-    service_id: int
-    subdomain: str
-    sub_ipv6: str  
-    client_port: int  
-    access_direct: str
-    frpc_config: str
-
-    class Config:
-        from_attributes = True
+    account_token: str
+    service_name: str
+    service_type: Literal["tcp", "udp"]
+    client_port: int = Field(..., ge=1, le=65535)
 
 
 class ServiceInfo(BaseModel):
