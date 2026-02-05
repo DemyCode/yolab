@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from typing import List
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from pydantic import BaseModel
@@ -36,8 +37,8 @@ async def resolve_subdomain(subdomain: str, db: Session = Depends(get_db)) -> st
     raise HTTPException(status_code=404, detail="Service not found")
 
 
-@router.get("/services", response_model=NFTablesRulesResponse)
-async def get_services(db: Session = Depends(get_db)) -> NFTablesRulesResponse:
+@router.get("/services", response_model=List[NFTablesRule])
+async def get_services(db: Session = Depends(get_db)) -> List[NFTablesRule]:
     services = db.exec(select(Service)).all()
 
     rules = []
@@ -53,7 +54,7 @@ async def get_services(db: Session = Depends(get_db)) -> NFTablesRulesResponse:
             )
         )
 
-    return NFTablesRulesResponse(rules=rules)
+    return rules
 
 
 @router.post("/services", response_model=int)

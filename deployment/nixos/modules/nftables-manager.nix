@@ -49,9 +49,12 @@ in
   config = mkIf cfg.enable {
     networking.nftables.enable = true;
 
-    # Enable IPv6 forwarding
+    # Enable IPv6 forwarding and IPv4 NAT to localhost
     boot.kernel.sysctl = {
+      "net.ipv4.conf.all.route_localnet" = 1;
+      "net.ipv4.ip_forward" = 1;
       "net.ipv6.conf.all.forwarding" = 1;
+    "net.ipv4.conf.default.route_localnet" = 1; # Recommended for consistency
     };
 
     systemd.services.nftables-manager = {

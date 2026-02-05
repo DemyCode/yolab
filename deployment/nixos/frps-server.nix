@@ -40,6 +40,10 @@ in
     efiInstallAsRemovable = true;
   };
 
+
+  networking.nftables.enable = true;
+  networking.firewall.enable = false;
+
   time.timeZone = "UTC";
   i18n.defaultLocale = "en_US.UTF-8";
 

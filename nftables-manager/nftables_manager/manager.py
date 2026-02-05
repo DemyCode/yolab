@@ -1,6 +1,4 @@
-import logging
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import List
@@ -10,8 +8,6 @@ import requests
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from devtools import pprint
 import httpx
-
-logger = logging.getLogger("nftables_manager")
 
 
 class EnvironmentSettings(BaseSettings):
@@ -38,18 +34,10 @@ def fetch_rules() -> List[dict]:
     response = httpx.get(f"http://{settings.backend_url}/services")
     return response.json()
 
-
-def generate_nftables_config(rules: List[dict]) -> str:
-    """Generate nftables configuration from service rules.
-
-    Creates an IPv6 NAT table with DNAT rules that redirect traffic
-    from user-facing IPv6:port to internal FRPS IPv4:port.
-
-    Args:
-        rules: List of service rule dictionaries
-
-    Returns:
-        Complete nftables configuration as string
+def generate_nftables_config(rules: List[dict], server_ipv4: str = "127.0.0.1") -> str:
+    """
+    Generate nftables configuration using 'meta nfproto' to avoid
+    family conflicts between IPv6 matches and IPv4 DNAT targets.
     """
     lines = [
         "#!/usr/sbin/nft -f",
@@ -61,13 +49,12 @@ def generate_nftables_config(rules: List[dict]) -> str:
         "",
         "flush ruleset",
         "",
-        "table ip6 nat {",
+        "table inet nat {",
         "    chain prerouting {",
-        "        type nat hook prerouting priority -100; policy accept;",
+        "        type nat hook prerouting priority dstnat; policy accept;",
         "",
     ]
 
-    # Add DNAT rule for each service
     for rule in rules:
         service_id = rule["service_id"]
         sub_ipv6 = rule["sub_ipv6"]
@@ -75,29 +62,26 @@ def generate_nftables_config(rules: List[dict]) -> str:
         protocol = rule["protocol"]
         internal_port = rule["frps_internal_port"]
 
-        # Add comment and DNAT rule
+        lines.append(f"        # Service {service_id}: {protocol}:{client_port} -> FRPS:{internal_port}")
+        
+        # FIX: Added 'meta nfproto ipv6' at the start of the rule.
+        # This allows the use of 'dnat ip to' for cross-family translation.
         lines.append(
-            f"        # Service {service_id}: {protocol}:{client_port} -> FRPS:{internal_port}"
-        )
-        lines.append(
-            f"        ip6 daddr {sub_ipv6} {protocol} dport {client_port} "
-            f"dnat to 127.0.0.1:{internal_port}"
+            f"        meta nfproto ipv6 ip6 daddr {sub_ipv6} {protocol} dport {client_port} "
+            f"dnat ip to {server_ipv4}:{internal_port}"
         )
         lines.append("")
 
-    # Close chains and table
-    lines.extend(
-        [
-            "    }",
-            "",
-            "    chain postrouting {",
-            "        type nat hook postrouting priority 100; policy accept;",
-            "        # Automatic reverse NAT handled by conntrack",
-            "    }",
-            "}",
-            "",
-        ]
-    )
+    lines.extend([
+        "    }",
+        "",
+        "    chain postrouting {",
+        "        type nat hook postrouting priority srcnat; policy accept;",
+        "        masquerade",
+        "    }",
+        "}",
+        ""
+    ])
 
     return "\n".join(lines)
 
@@ -112,14 +96,14 @@ def apply_nftables_rules(config: str) -> None:
         ["nft", "-f", settings.nftables_file],
         check=True,
     )
-    logger.debug(f"nft command output: {result.stdout}")
+    print(f"nft command output: {result.stdout}")
 
 
 def main_loop():
     """Main service loop: fetch rules, generate config, apply rules."""
-    logger.info("Starting nftables-manager service")
-    logger.info(f"Backend URL: {settings.backend_url}")
-    logger.info(f"Poll interval: {settings.poll_interval} seconds")
+    print("Starting nftables-manager service")
+    print(f"Backend URL: {settings.backend_url}")
+    print(f"Poll interval: {settings.poll_interval} seconds")
 
     consecutive_errors = 0
     max_consecutive_errors = 5
@@ -153,11 +137,3 @@ def main_loop():
             consecutive_errors += 1
 
         time.sleep(settings.poll_interval)
-
-
-if __name__ == "__main__":
-    try:
-        main_loop()
-    except KeyboardInterrupt:
-        logger.info("Received shutdown signal, exiting gracefully")
-        sys.exit(0)
