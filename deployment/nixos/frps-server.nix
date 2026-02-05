@@ -50,7 +50,23 @@ in
   networking = {
     hostName = "yolab-frps";
     enableIPv6 = true;
-    useDHCP = true;
+    useDHCP = false;
+    
+    interfaces.enp1s0 = {
+      useDHCP = true;  # IPv4 DHCP
+      
+      ipv6.addresses = [
+        {
+          address = "2a01:4f8:1c1a:42d0::1";
+          prefixLength = 64;
+        }
+      ];
+    };
+    
+    defaultGateway6 = {
+      address = "fe80::1";
+      interface = "enp1s0";
+    };
   };
 
   services.openssh = {
