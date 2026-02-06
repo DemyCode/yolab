@@ -94,7 +94,7 @@ resource "local_file" "frps_deployment_config" {
     }
     nftables = {
       enable        = true
-      nftables_file = "/var/lib/nftables-manager/rules.nft"
+      nftables_file = "/var/lib/haproxy/haproxy.cfg"
       log_level     = "DEBUG"
     }
   })

@@ -42,36 +42,78 @@ in
     };
     nftables_file = mkOption {
       type = types.str;
-      description = "nftables configuration options";
+      description = "HAProxy configuration file path";
     };
   };
 
   config = mkIf cfg.enable {
     networking.nftables.enable = true;
 
-    # Enable IPv6 forwarding and IPv4 NAT to localhost
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.route_localnet" = 1;
       "net.ipv4.ip_forward" = 1;
       "net.ipv6.conf.all.forwarding" = 1;
-    "net.ipv4.conf.default.route_localnet" = 1; # Recommended for consistency
+      "net.ipv4.conf.default.route_localnet" = 1; # Recommended for consistency
+    };
+
+    services.haproxy = {
+      enable = true;
+      config = ''
+        # Main HAProxy config - managed by nftables-manager
+        # Service-specific config is in ${cfg.nftables_file}
+      '';
+    };
+
+    # Create a systemd override to include our generated config
+    systemd.services.haproxy = {
+      preStart = ''
+        # Ensure the config directory exists with proper permissions
+        mkdir -p $(dirname ${cfg.nftables_file})
+        # Always create fresh config to ensure correct settings
+        cat > ${cfg.nftables_file} <<'EOF'
+global
+    log /dev/log local0
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+
+defaults
+    log global
+    mode tcp
+    option tcplog
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+EOF
+      '';
+      
+      serviceConfig = {
+        # Override to use our dynamic config file
+        ExecStart = lib.mkForce "${pkgs.haproxy}/sbin/haproxy -Ws -f ${cfg.nftables_file} -p /run/haproxy/haproxy.pid";
+        ExecReload = lib.mkForce "${pkgs.bash}/bin/bash -c '${pkgs.haproxy}/sbin/haproxy -Ws -f ${cfg.nftables_file} -p /run/haproxy/haproxy.pid -sf $(cat /run/haproxy/haproxy.pid)'";
+        # Ensure required directories exist
+        StateDirectory = "haproxy";
+        RuntimeDirectory = "haproxy";
+      };
     };
 
     systemd.services.nftables-manager = {
-      description = "YoLab nftables Manager";
+      description = "YoLab HAProxy Config Manager";
       after = [
         "network.target"
+        "haproxy.service"
       ];
+      wants = [ "haproxy.service" ];
       wantedBy = [ "multi-user.target" ];
       path = [
-        pkgs.socat
-        pkgs.nftables
+        pkgs.haproxy
+        pkgs.iproute2
       ];
       environment = {
         BACKEND_URL = cfg.backendUrl;
         POLL_INTERVAL = toString cfg.pollInterval;
         NFTABLES_FILE = cfg.nftables_file;
         LOG_LEVEL = "DEBUG";
+Environment = "PYTHONUNBUFFERED=1"; 
       };
 
       serviceConfig = {
@@ -85,8 +127,7 @@ in
 
     environment.systemPackages =
       (with pkgs; [
-        socat
-        nftables
+        haproxy
         iproute2
         python3
       ])
