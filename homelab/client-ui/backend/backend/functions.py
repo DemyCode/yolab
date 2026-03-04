@@ -28,29 +28,12 @@ def init_config(config_path: Path, example_path: Path) -> None:
     shutil.copy(example_path, config_path)
 
 
-def validate_config(config_path: Path) -> tuple[bool, list[str]]:
-    errors = []
-    try:
-        config = read_config(config_path)
+
+
+
+def list_available_serv        config = read_config(config_path)
     except Exception as e:
-        return False, [f"Failed to read config: {e}"]
-
-    required_sections = ["homelab", "client_ui", "docker", "frpc"]
-    for section in required_sections:
-        if section not in config:
-            errors.append(f"Missing required section: [{section}]")
-
-    if "homelab" in config:
-        required_homelab = ["hostname", "timezone", "locale", "ssh_port"]
-        for field in required_homelab:
-            if field not in config["homelab"]:
-                errors.append(f"Missing required field: [homelab].{field}")
-
-    return len(errors) == 0, errors
-
-
-def list_available_services(platform_api_url: str) -> list[dict]:
-    with httpx.Client() as client:
+        errors.append(f"Failed to read config: {e}")with httpx.Client() as client:
         response = client.get(f"{platform_api_url}/api/templates")
         response.raise_for_status()
         return response.json()

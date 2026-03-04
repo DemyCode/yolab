@@ -21,25 +21,20 @@ variable "ssh_key_name" {
   default     = "yolab-deployment-key"
 }
 
-variable "repo_url" {
-  description = "Full repository URL for cloning"
-  type        = string
-}
-
 variable "hetzner_location" {
   description = "Hetzner datacenter location"
   type        = string
   default     = "nbg1"
 }
 
-variable "frps_server_type" {
-  description = "Server type for FRPS server (handles tunnel connections)"
+variable "wg_server_type" {
+  description = "Server type for WireGuard server"
   type        = string
   default     = "cpx22"
 }
 
 variable "services_server_type" {
-  description = "Server type for services stack (backend + DNS + database)"
+  description = "Server type for services stack"
   type        = string
   default     = "cpx22"
 }
@@ -53,22 +48,4 @@ variable "environment" {
 variable "domain" {
   description = "Domain name for the service"
   type        = string
-}
-
-variable "postgres_db" {
-  description = "PostgreSQL database name"
-  type        = string
-  default     = "frp_services"
-}
-
-variable "postgres_user" {
-  description = "PostgreSQL user"
-  type        = string
-  default     = "frp_user"
-}
-
-variable "postgres_password" {
-  description = "PostgreSQL password"
-  type        = string
-  sensitive   = true
 }

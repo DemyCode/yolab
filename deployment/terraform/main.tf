@@ -4,6 +4,14 @@ terraform {
       source  = "hetznercloud/hcloud"
       version = "~> 1.45"
     }
+    wireguard = {
+      source  = "OJFord/wireguard"
+      version = "~> 0.3"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
   required_version = ">= 1.0"
 }
@@ -12,15 +20,27 @@ provider "hcloud" {
   token = var.hcloud_token
 }
 
-# Look up existing SSH key by name
-# If it doesn't exist, this will fail with a clear error
+locals {
+  wg_ipv6_prefix = trimsuffix(hcloud_server.wireguard_server.ipv6_address, "1")
+  wg_server_ipv6 = "${local.wg_ipv6_prefix}11"
+  wg_peers_start = "${local.wg_ipv6_prefix}12"
+  wg_endpoint    = "${hcloud_server.wireguard_server.ipv4_address}:51820"
+}
+
+resource "wireguard_asymmetric_key" "server" {}
+
+resource "random_password" "postgres" {
+  length  = 32
+  special = false
+}
+
 data "hcloud_ssh_key" "deployment_key" {
   name = var.ssh_key_name
 }
 
-resource "hcloud_server" "frps_server" {
-  name        = "yolab-frps"
-  server_type = var.frps_server_type
+resource "hcloud_server" "wireguard_server" {
+  name        = "yolab-wireguard"
+  server_type = var.wg_server_type
   location    = var.hetzner_location
   image       = "ubuntu-22.04"
   ssh_keys    = [data.hcloud_ssh_key.deployment_key.id]
@@ -31,7 +51,7 @@ resource "hcloud_server" "frps_server" {
   }
 
   labels = {
-    role        = "frps"
+    role        = "wireguard"
     environment = var.environment
   }
 
@@ -67,39 +87,36 @@ resource "local_file" "ssh_public_key" {
   filename = "${path.module}/.ssh_public_key.tmp"
 }
 
-resource "local_file" "frps_deployment_config" {
-  filename = "${path.module}/../nixos/ignored/config-frps.json"
+resource "local_file" "wireguard_deployment_config" {
+  filename = "${path.module}/../nixos/ignored/config-wireguard.json"
 
   content = jsonencode({
     server = {
-      hostname = "yolab-frps"
+      hostname = "yolab-wireguard"
       domain   = var.domain
-      repo_url = var.repo_url
     }
     ssh = {
       public_key = var.ssh_public_key
       key_name   = var.ssh_key_name
     }
     network = {
-      frps_server_ipv4 = hcloud_server.frps_server.ipv4_address
-      frps_bind_port   = 7000
-      auth_plugin_addr = "${hcloud_server.services_stack.ipv4_address}:5000"
+      ipv6_address = hcloud_server.wireguard_server.ipv6_address
+      backend_url  = "${hcloud_server.services_stack.ipv4_address}:5000"
     }
-    frps = {
-      enable    = true
-      bind_port = 7000
+    wireguard = {
+      enable      = true
+      interface   = "wg0"
+      address     = "${local.wg_server_ipv6}/64"
+      listen_port = 51820
+      private_key = wireguard_asymmetric_key.server.private_key
     }
-    services = {
-      enable = false
-    }
-    nftables = {
+    wireguard_manager = {
       enable        = true
-      nftables_file = "/var/lib/haproxy/haproxy.cfg"
-      log_level     = "DEBUG"
+      poll_interval = 30
     }
   })
 
-  file_permission = "0644"
+  file_permission = "0600"
 }
 
 resource "local_file" "services_deployment_config" {
@@ -107,25 +124,22 @@ resource "local_file" "services_deployment_config" {
 
   content = jsonencode({
     server = {
-      domain   = var.domain
-      repo_url = var.repo_url
+      domain = var.domain
     }
     ssh = {
       public_key = var.ssh_public_key
       key_name   = var.ssh_key_name
     }
     database = {
-      db_name     = var.postgres_db
-      db_user     = var.postgres_user
-      db_password = var.postgres_password
+      db_name     = "yolab"
+      db_user     = "yolab"
+      db_password = random_password.postgres.result
     }
     network = {
-      ipv6_subnet_base = "${hcloud_server.frps_server.ipv6_address}1"
-      frps_server_ipv4 = hcloud_server.frps_server.ipv4_address
-      frps_bind_port   = 7000
-    }
-    frps = {
-      enable = false
+      ipv6_subnet_base     = local.wg_peers_start
+      wg_server_endpoint   = local.wg_endpoint
+      wg_server_public_key = wireguard_asymmetric_key.server.public_key
+      wg_server_ipv6       = hcloud_server.wireguard_server.ipv6_address
     }
     services = {
       enable        = true
@@ -136,20 +150,20 @@ resource "local_file" "services_deployment_config" {
     }
   })
 
-  file_permission = "0644"
+  file_permission = "0600"
 }
 
-module "deploy_nixos_frps" {
+module "deploy_nixos_wireguard_server" {
   source = "github.com/nix-community/nixos-anywhere//terraform/all-in-one"
 
-  nixos_system_attr      = "path:${path.module}/../..#nixosConfigurations.frps-server.config.system.build.toplevel"
-  nixos_partitioner_attr = "path:${path.module}/../..#nixosConfigurations.frps-server.config.system.build.diskoScript"
-  target_host            = hcloud_server.frps_server.ipv4_address
-  instance_id            = hcloud_server.frps_server.id
+  nixos_system_attr      = "path:${path.module}/../..#nixosConfigurations.wireguard-server.config.system.build.toplevel"
+  nixos_partitioner_attr = "path:${path.module}/../..#nixosConfigurations.wireguard-server.config.system.build.diskoScript"
+  target_host            = hcloud_server.wireguard_server.ipv4_address
+  instance_id            = hcloud_server.wireguard_server.id
   install_ssh_key        = var.ssh_private_key
   deployment_ssh_key     = var.ssh_private_key
 
-  depends_on = [local_file.frps_deployment_config]
+  depends_on = [local_file.wireguard_deployment_config]
 }
 
 module "deploy_nixos_services" {

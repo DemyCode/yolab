@@ -26,11 +26,11 @@
     }@inputs:
     {
       nixosConfigurations = {
-        frps-server = nixpkgs.lib.nixosSystem {
+        wireguard-server = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
             disko.nixosModules.disko
-            ./deployment/nixos/frps-server.nix
+            ./deployment/nixos/wireguard-server.nix
           ];
           specialArgs = {
             inherit inputs;
@@ -46,20 +46,12 @@
             inherit inputs;
           };
         };
-        yolab-server = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            disko.nixosModules.disko
-            ./deployment/nixos/all-in-one.nix
-          ];
-        };
         yolab = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
             disko.nixosModules.disko
             ./homelab/nixos/configuration.nix
             ./homelab/nixos/disk-config.nix
-            ./homelab/nixos/modules/frpc.nix
             ./homelab/nixos/modules/client-ui.nix
           ];
         };

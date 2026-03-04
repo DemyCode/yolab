@@ -1,0 +1,14 @@
+[Interface]
+# Generate with: wg genkey | tee privatekey | wg pubkey > publickey
+PrivateKey = <YOUR_PRIVATE_KEY>
+# Each service gets a unique IPv6 from the server's /64 block
+# Share YOUR_PUBLIC_KEY (wg pubkey < privatekey) with the server admin
+# to have it added as a peer with this address
+Address = <YOUR_SERVICE_IPV6>/128
+
+[Peer]
+PublicKey = <SERVER_PUBLIC_KEY>
+Endpoint = <SERVER_IPV4>:51820
+# Route all traffic through the server (inbound service + outbound via server IP)
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25

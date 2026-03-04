@@ -3,39 +3,30 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from backend.database import init_db
-from backend.routes import plugin, services, users
-from backend.settings import settings
+from backend.routes import services, users
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan event handler for startup and shutdown."""
-    # Startup
     init_db()
     yield
-    # Shutdown (if needed)
 
 
-app = FastAPI(title="FRP IPv6 Tunneling Service", lifespan=lifespan)
+app = FastAPI(title="YoLab Tunneling Service", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring."""
     return {"status": "healthy", "service": "backend"}
 
 
 app.include_router(users.router)
 app.include_router(services.router)
-app.include_router(plugin.router)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=settings.port,
-        log_level="debug",
-    )
+    from backend.settings import settings
+
+    uvicorn.run(app, host="0.0.0.0", port=settings.port, log_level="debug")

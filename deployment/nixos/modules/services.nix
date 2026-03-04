@@ -40,9 +40,19 @@ in
       description = "IPv6 subnet base for client allocation";
     };
 
-    frpsServerIpv4 = mkOption {
+    wgServerEndpoint = mkOption {
       type = types.str;
-      description = "FRP server IPv4 address for FRPC clients to connect";
+      description = "WireGuard server endpoint (ip:port) for client wg0.conf generation";
+    };
+
+    wgServerPublicKey = mkOption {
+      type = types.str;
+      description = "WireGuard server public key for client wg0.conf generation";
+    };
+
+    wgServerIpv6 = mkOption {
+      type = types.str;
+      description = "WireGuard server public IPv6 for DNS root domain resolution";
     };
 
     openFirewall = mkOption {
@@ -93,8 +103,9 @@ in
         POSTGRES_USER=${cfg.postgresUser}
         POSTGRES_PASSWORD=${cfg.postgresPassword}
         DOMAIN=${cfg.domain}
-        FRPS_SERVER_IPV4=${cfg.frpsServerIpv4}
-        FRPS_SERVER_PORT=7000
+        WG_SERVER_ENDPOINT=${cfg.wgServerEndpoint}
+        WG_SERVER_PUBLIC_KEY=${cfg.wgServerPublicKey}
+        WG_SERVER_IPV6=${cfg.wgServerIpv6}
         IPV6_SUBNET_BASE=${cfg.ipv6SubnetBase}
         EOF
                         

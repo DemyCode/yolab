@@ -1,34 +1,32 @@
 services:
+  wg-sidecar:
+    build: ../wg-sidecar
+    container_name: wg-sidecar
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+    volumes:
+      - ./wg0.conf:/etc/wireguard/wg0.conf:ro
+    restart: unless-stopped
+
   librespeed:
     image: lscr.io/linuxserver/librespeed:latest
     container_name: librespeed
+    network_mode: "service:wg-sidecar"
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
       - PASSWORD=PASSWORD
-      - CUSTOM_RESULTS=false #optional
-      - DB_TYPE=sqlite #optional
-      - DB_NAME=DB_NAME #optional
-      - DB_HOSTNAME=DB_HOSTNAME #optional
-      - DB_USERNAME=DB_USERNAME #optional
-      - DB_PASSWORD=DB_PASSWORD #optional
-      - DB_PORT=DB_PORT #optional
-      - IPINFO_APIKEY=ACCESS_TOKEN #optional
+      - CUSTOM_RESULTS=false
+      - DB_TYPE=sqlite
     volumes:
       - librespeed_config:/config
-    ports:
-      - 80:80
-    restart: unless-stopped
-
-  frpc:
-    image: ghcr.io/fatedier/frpc:v0.67.0
-    container_name: frpc
-    volumes:
-      - ./frpc.ini:/etc/frp/frpc.ini
-    command: -c /etc/frp/frpc.ini
     depends_on:
-      - librespeed
+      - wg-sidecar
     restart: unless-stopped
 
 volumes:

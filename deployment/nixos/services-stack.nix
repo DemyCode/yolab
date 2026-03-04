@@ -51,7 +51,7 @@ in
       allowedTCPPorts = [
         22
         5000
-      ]; # SSH + Backend API (for FRPS auth)
+      ]; # SSH + Backend API
       allowedUDPPorts = [ 53 ]; # DNS
     };
   };
@@ -83,7 +83,9 @@ in
     postgresUser = cfg.database.db_user;
     postgresPassword = cfg.database.db_password;
     ipv6SubnetBase = cfg.network.ipv6_subnet_base;
-    frpsServerIpv4 = cfg.network.frps_server_ipv4;
+    wgServerEndpoint = cfg.network.wg_server_endpoint;
+    wgServerPublicKey = cfg.network.wg_server_public_key;
+    wgServerIpv6 = cfg.network.wg_server_ipv6;
   };
 
   nix.settings.experimental-features = [

@@ -1,40 +1,43 @@
-# =============================================================================
-# FRPS Server Outputs
-# =============================================================================
-
-output "frps_server_name" {
-  description = "Name of the FRPS server"
-  value       = hcloud_server.frps_server.name
+output "wg_public_key" {
+  description = "Generated WireGuard server public key"
+  value       = wireguard_asymmetric_key.server.public_key
 }
 
-output "frps_server_id" {
-  description = "ID of the FRPS server"
-  value       = hcloud_server.frps_server.id
+output "postgres_password" {
+  description = "Generated PostgreSQL password"
+  value       = random_password.postgres.result
+  sensitive   = true
 }
 
-output "frps_server_ipv4" {
-  description = "IPv4 address of the FRPS server"
-  value       = hcloud_server.frps_server.ipv4_address
+output "wireguard_server_name" {
+  description = "Name of the WireGuard server"
+  value       = hcloud_server.wireguard_server.name
 }
 
-output "frps_server_ipv6" {
-  description = "IPv6 address of the FRPS server"
-  value       = hcloud_server.frps_server.ipv6_address
+output "wireguard_server_id" {
+  description = "ID of the WireGuard server"
+  value       = hcloud_server.wireguard_server.id
 }
 
-output "frps_ssh_command" {
-  description = "SSH command to access FRPS server"
-  value       = "ssh root@${hcloud_server.frps_server.ipv4_address}"
+output "wireguard_server_ipv4" {
+  description = "IPv4 address of the WireGuard server"
+  value       = hcloud_server.wireguard_server.ipv4_address
 }
 
-output "frps_server_url" {
-  description = "FRP server endpoint"
-  value       = "frp://[${hcloud_server.frps_server.ipv6_address}]:7000"
+output "wireguard_server_ipv6" {
+  description = "IPv6 address of the WireGuard server"
+  value       = hcloud_server.wireguard_server.ipv6_address
 }
 
-# =============================================================================
-# Services Stack Outputs
-# =============================================================================
+output "wireguard_server_ssh" {
+  description = "SSH command to access WireGuard server"
+  value       = "ssh root@${hcloud_server.wireguard_server.ipv4_address}"
+}
+
+output "wireguard_endpoint" {
+  description = "WireGuard endpoint for client wg0.conf"
+  value       = "${hcloud_server.wireguard_server.ipv4_address}:51820"
+}
 
 output "services_server_name" {
   description = "Name of the services stack server"
@@ -56,7 +59,7 @@ output "services_server_ipv6" {
   value       = hcloud_server.services_stack.ipv6_address
 }
 
-output "services_ssh_command" {
+output "services_server_ssh" {
   description = "SSH command to access services stack server"
   value       = "ssh root@${hcloud_server.services_stack.ipv4_address}"
 }
@@ -66,17 +69,8 @@ output "backend_api_url" {
   value       = "http://${hcloud_server.services_stack.ipv4_address}:5000"
 }
 
-output "health_check_command" {
-  description = "Command to check backend health"
-  value       = "curl -f http://${hcloud_server.services_stack.ipv4_address}:5000/health"
-}
-
-# =============================================================================
-# SSH Key Info
-# =============================================================================
-
 output "ssh_key_id" {
-  description = "ID of the SSH key used for both servers"
+  description = "ID of the SSH key"
   value       = data.hcloud_ssh_key.deployment_key.id
 }
 
@@ -85,72 +79,55 @@ output "ssh_key_fingerprint" {
   value       = data.hcloud_ssh_key.deployment_key.fingerprint
 }
 
-# =============================================================================
-# Combined Deployment Summary
-# =============================================================================
-
 output "deployment_summary" {
-  description = "Summary of the two-server deployment"
+  description = "Summary of the deployment"
   value = {
-    frps_server = {
-      name = hcloud_server.frps_server.name
-      ipv4 = hcloud_server.frps_server.ipv4_address
-      ipv6 = hcloud_server.frps_server.ipv6_address
-      role = "FRP Server (tunnel connections)"
-      ssh  = "ssh root@${hcloud_server.frps_server.ipv4_address}"
+    wireguard_server = {
+      name     = hcloud_server.wireguard_server.name
+      ipv4     = hcloud_server.wireguard_server.ipv4_address
+      ipv6     = hcloud_server.wireguard_server.ipv6_address
+      endpoint = "${hcloud_server.wireguard_server.ipv4_address}:51820"
+      ssh      = "ssh root@${hcloud_server.wireguard_server.ipv4_address}"
     }
     services_stack = {
       name    = hcloud_server.services_stack.name
       ipv4    = hcloud_server.services_stack.ipv4_address
       ipv6    = hcloud_server.services_stack.ipv6_address
-      role    = "Backend API + DNS + Database"
-      ssh     = "ssh root@${hcloud_server.services_stack.ipv4_address}"
       api_url = "http://${hcloud_server.services_stack.ipv4_address}:5000"
-    }
-    connectivity = {
-      frps_to_backend = "${hcloud_server.services_stack.ipv4_address}:5000"
-      status_check    = "curl http://${hcloud_server.services_stack.ipv4_address}:5000/health"
+      ssh     = "ssh root@${hcloud_server.services_stack.ipv4_address}"
     }
   }
 }
 
-# =============================================================================
-# DNS Configuration Instructions
-# =============================================================================
-
 output "dns_configuration" {
-  description = "DNS records to configure manually"
+  description = "DNS records to configure"
   value = {
-    domain       = var.domain
-    instructions = "Configure these DNS records in your DNS provider:"
+    domain  = var.domain
     records = [
       {
-        comment = "Root domain points to FRPS server (main tunnel endpoint)"
-        type    = "A"
-        name    = "@"
-        value   = hcloud_server.frps_server.ipv4_address
+        type  = "A"
+        name  = "@"
+        value = hcloud_server.wireguard_server.ipv4_address
       },
       {
         type  = "AAAA"
         name  = "@"
-        value = hcloud_server.frps_server.ipv6_address
+        value = hcloud_server.wireguard_server.ipv6_address
       },
       {
-        comment = "Wildcard for all client subdomains points to FRPS server"
-        type    = "A"
-        name    = "*"
-        value   = hcloud_server.frps_server.ipv4_address
+        type  = "A"
+        name  = "*"
+        value = hcloud_server.wireguard_server.ipv4_address
       },
       {
         type  = "AAAA"
         name  = "*"
-        value = hcloud_server.frps_server.ipv6_address
+        value = hcloud_server.wireguard_server.ipv6_address
       },
       {
-        comment = "API endpoint points to services stack"
-        type    = "A"
-        name    = "api"
-        value   = hcloud_server.services_stack.ipv4_address
+        type  = "A"
+        name  = "api"
+        value = hcloud_server.services_stack.ipv4_address
       },
       {
         type  = "AAAA"
@@ -158,22 +135,15 @@ output "dns_configuration" {
         value = hcloud_server.services_stack.ipv6_address
       },
       {
-        comment = "DNS nameserver points to services stack"
-        type    = "A"
-        name    = "ns1"
-        value   = hcloud_server.services_stack.ipv4_address
+        type  = "A"
+        name  = "ns1"
+        value = hcloud_server.services_stack.ipv4_address
       },
       {
         type  = "AAAA"
         name  = "ns1"
         value = hcloud_server.services_stack.ipv6_address
       },
-      {
-        comment = "Optional: Nameserver delegation"
-        type    = "NS"
-        name    = "@"
-        value   = "ns1.${var.domain}"
-      }
     ]
   }
 }

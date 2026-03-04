@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "backend"
 version = "0.1.0"
-description = "FRP IPv6 Tunneling Service - Registration API"
+description = "YoLab Tunneling Service - Registration API"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.104.1",

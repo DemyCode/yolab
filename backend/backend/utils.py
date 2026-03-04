@@ -3,7 +3,7 @@ import secrets
 
 from sqlmodel import Session, select
 
-from backend.models import Service, User
+from backend.models import Service
 from backend.settings import settings
 
 
@@ -17,15 +17,5 @@ def allocate_sub_ipv6(db: Session) -> str:
     raise RuntimeError("No available IPv6 addresses in subnet")
 
 
-def allocate_frps_port(db: Session) -> int:
-    used_ports = set(
-        service.frps_internal_port for service in db.exec(select(Service)).all()
-    )
-    for port in range(10000, 65536):
-        if port not in used_ports:
-            return port
-    raise RuntimeError("No available FRPS internal ports")
-
 def generate_account_token() -> str:
-    """Generate a secure random account token."""
     return secrets.token_urlsafe(24)

@@ -21,7 +21,7 @@ class DNSServerSettings(BaseSettings):
 
     registration_api_url: str
     domain: str
-    frps_server_ipv6: str
+    wg_server_ipv6: str
 
 
 settings = DNSServerSettings()
@@ -30,7 +30,7 @@ settings = DNSServerSettings()
 class APIResolver(BaseResolver):
     def __init__(self):
         self.domain_suffix = f".{settings.domain}"
-        self.main_ipv6 = settings.frps_server_ipv6
+        self.main_ipv6 = settings.wg_server_ipv6
         self.api_url = settings.registration_api_url
         logger.info(f"DNS Resolver: {settings.domain} -> {self.api_url}")
 
