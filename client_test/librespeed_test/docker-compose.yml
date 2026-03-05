@@ -1,6 +1,6 @@
 services:
   wg-sidecar:
-    build: ../wg-sidecar
+    build: ../../wg-sidecar
     container_name: wg-sidecar
     privileged: true
     volumes:

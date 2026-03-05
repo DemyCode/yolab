@@ -1,0 +1,35 @@
+services:
+  wg-sidecar:
+    build: ../../wg-sidecar
+    # container_name: wg-sidecar
+    privileged: true
+    volumes:
+      - ./wg0.conf:/etc/wireguard/wg0.conf:ro
+    restart: unless-stopped
+
+  librespeed:
+    image: lscr.io/linuxserver/librespeed:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD=PASSWORD
+      - CUSTOM_RESULTS=false
+      - DB_TYPE=sqlite
+    volumes:
+      - librespeed_config:/config
+    depends_on:
+      - wg-sidecar
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:latest
+    network_mode: "service:wg-sidecar"
+    restart: unless-stopped
+    volumes:
+      - /opt/data/caddy/data:/data
+      - /opt/data/caddy/config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
+volumes:
+  librespeed_config:
