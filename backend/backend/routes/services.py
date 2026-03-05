@@ -18,12 +18,15 @@ from backend.utils import allocate_sub_ipv6
 router = APIRouter(tags=["services"])
 
 
-@router.get("/dns/resolve/{service_name}", response_model=DNSResolveResponse)
+@router.get("/dns/resolve/{subdomain}", response_model=DNSResolveResponse)
 async def dns_resolve(
-    service_name: str, db: Session = Depends(get_db)
+    subdomain: str, db: Session = Depends(get_db)
 ) -> DNSResolveResponse:
+    service_name, user_id = subdomain.split(".")
     service = db.exec(
-        select(Service).where(Service.service_name == service_name)
+        select(Service).where(
+            Service.service_name == service_name, Service.user_id == user_id
+        )
     ).first()
     if service:
         return DNSResolveResponse(found=True, ipv6_address=service.sub_ipv6)

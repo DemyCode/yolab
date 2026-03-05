@@ -38,7 +38,6 @@ def sync_peers() -> None:
     desired: dict[str, str] = {p["wg_public_key"]: p["sub_ipv6"] for p in resp.json()}
     current = get_current_peers()
 
-    # Reconcile routes for peers already known to WireGuard (e.g. after reboot)
     for pubkey, ipv6 in current.items():
         subprocess.run(
             ["ip", "-6", "route", "add", f"{ipv6}/128", "dev", WG_INTERFACE],

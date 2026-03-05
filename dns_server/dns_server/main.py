@@ -2,7 +2,7 @@ import logging
 from socketserver import ThreadingUDPServer
 
 import httpx
-from dnslib import AAAA, QTYPE, RR
+from dnslib import AAAA, NS, QTYPE, RR, SOA
 from dnslib.server import BaseResolver, DNSServer
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -35,14 +35,34 @@ class APIResolver(BaseResolver):
         logger.info(f"DNS Resolver: {settings.domain} -> {self.api_url}")
 
     def resolve(self, request, handler):
+        logger.info(f"Received DNS query: {request.q.qname} ({QTYPE[request.q.qtype]})")
         reply = request.reply()
         qname = str(request.q.qname).rstrip(".")
         qtype = QTYPE[request.q.qtype]
 
-        if qtype not in ("AAAA", "ANY"):
-            return reply
+        if qtype in ("NS", "ANY") and qname == settings.domain:
+            ns1 = f"ns1.{settings.domain}"
+            ns2 = f"ns2.{settings.domain}"
+            reply.add_answer(RR(qname, QTYPE.NS, rdata=NS(ns1), ttl=3600))
+            reply.add_answer(RR(qname, QTYPE.NS, rdata=NS(ns2), ttl=3600))
+            logger.info(f"{qname} NS -> {ns1}, {ns2}")
 
-        if qname == settings.domain:
+        if qtype in ("SOA", "ANY") and qname == settings.domain:
+            reply.add_answer(
+                RR(
+                    qname,
+                    QTYPE.SOA,
+                    rdata=SOA(
+                        mname=f"ns1.{settings.domain}",
+                        rname=f"admin.{settings.domain}",
+                        times=(2026030501, 3600, 900, 604800, 300),
+                    ),
+                    ttl=3600,
+                )
+            )
+            logger.info(f"{qname} SOA")
+
+        if qtype in ("AAAA", "ANY") and qname == settings.domain:
             reply.add_answer(RR(qname, QTYPE.AAAA, rdata=AAAA(self.main_ipv6), ttl=300))
             logger.info(f"{qname} -> {self.main_ipv6}")
             return reply
