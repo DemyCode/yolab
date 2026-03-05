@@ -22,7 +22,14 @@ router = APIRouter(tags=["services"])
 async def dns_resolve(
     subdomain: str, db: Session = Depends(get_db)
 ) -> DNSResolveResponse:
-    service_name, user_id = subdomain.split(".")
+    parts = subdomain.split(".", 1)
+    if len(parts) != 2:
+        return DNSResolveResponse(found=False)
+    service_name, user_id_str = parts
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        return DNSResolveResponse(found=False)
     service = db.exec(
         select(Service).where(
             Service.service_name == service_name, Service.user_id == user_id
@@ -65,32 +72,34 @@ async def register_service(
                 detail=f"Service '{request.service_name}' already exists",
             )
 
-        sub_ipv6 = allocate_sub_ipv6(db)
+        service = None
+        for _ in range(3):
+            sub_ipv6 = allocate_sub_ipv6(db)
+            service = Service(
+                user_id=user.id,
+                service_name=request.service_name,
+                sub_ipv6=sub_ipv6,
+                wg_public_key=request.wg_public_key,
+            )
+            db.add(service)
+            try:
+                db.commit()
+                break
+            except IntegrityError:
+                db.rollback()
+                service = None
 
-        service = Service(
-            user_id=user.id,
-            service_name=request.service_name,
-            sub_ipv6=sub_ipv6,
-            wg_public_key=request.wg_public_key,
-        )
+        if service is None:
+            raise HTTPException(status_code=500, detail="Failed to allocate IPv6 address")
 
-        db.add(service)
-        db.commit()
         db.refresh(service)
-
         assert service.id is not None
 
         return RegisterResponse(
             service_id=service.id,
-            sub_ipv6=sub_ipv6,
+            sub_ipv6=service.sub_ipv6,
             wg_server_endpoint=settings.wg_server_endpoint,
             wg_server_public_key=settings.wg_server_public_key,
-        )
-
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=400, detail="Registration failed due to duplicate entry"
         )
     except HTTPException:
         raise

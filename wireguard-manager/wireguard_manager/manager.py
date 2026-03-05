@@ -17,6 +17,8 @@ def get_current_peers() -> dict[str, str]:
         text=True,
     )
     peers: dict[str, str] = {}
+    if result.returncode != 0:
+        return peers
     for line in result.stdout.strip().splitlines():
         parts = line.split()
         if len(parts) >= 2:

@@ -11,5 +11,10 @@ fi
 
 wg-quick up "$WG_CONF"
 
-# Keep container alive — WireGuard runs in kernel, not as a process
-exec tail -f /dev/null
+cleanup() {
+  wg-quick down "$WG_CONF"
+}
+trap cleanup INT TERM
+
+tail -f /dev/null &
+wait $!
