@@ -89,7 +89,7 @@ in
       ];
       wants = [ "wireguard-wg0.service" ];
       wantedBy = [ "multi-user.target" ];
-      path = [ pkgs.wireguard-tools ];
+      path = [ pkgs.wireguard-tools pkgs.iproute2 ];
       environment = {
         BACKEND_URL = cfg.managerBackendUrl;
         POLL_INTERVAL = toString cfg.managerPollInterval;
