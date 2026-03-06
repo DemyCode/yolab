@@ -35,20 +35,16 @@ let
     (lib.head (lib.splitString "::" tunnelCfg.sub_ipv6)) + "::/64"
   );
 
-  clientUiPath = ../client-ui;
-  clientUiExists = builtins.pathExists clientUiPath;
-  clientUi = if clientUiExists then
-    pkgs.buildNpmPackage {
-      pname = "client-ui";
-      version = "0.1.0";
-      src = clientUiPath;
-      npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
-      installPhase = ''
-        npm run build
-        cp -r dist $out
-      '';
-    }
-  else null;
+  clientUi = pkgs.buildNpmPackage {
+    pname = "client-ui";
+    version = "0.1.0";
+    src = ../client-ui;
+    npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
+    installPhase = ''
+      npm run build
+      cp -r dist $out
+    '';
+  };
 in
 {
   imports = [
@@ -102,15 +98,25 @@ in
     };
   };
 
-  services.nginx = lib.mkIf clientUiExists {
+  services.nginx = {
     enable = true;
     virtualHosts."default" = {
       default = true;
       listen = [
-        { addr = "0.0.0.0"; port = 80; }
-        { addr = "[::]"; port = 80; }
-      ] ++ lib.optionals tunnelEnabled [
-        { addr = "[${tunnelCfg.sub_ipv6}]"; port = 80; }
+        {
+          addr = "0.0.0.0";
+          port = 80;
+        }
+        {
+          addr = "[::]";
+          port = 80;
+        }
+      ]
+      ++ lib.optionals tunnelEnabled [
+        {
+          addr = "[${tunnelCfg.sub_ipv6}]";
+          port = 80;
+        }
       ];
       root = "${clientUi}";
       locations."/" = {
