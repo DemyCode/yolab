@@ -52,7 +52,6 @@
             disko.nixosModules.disko
             ./homelab/nixos/configuration.nix
             ./homelab/nixos/disk-config.nix
-            ./homelab/nixos/modules/client-ui.nix
           ];
           specialArgs = { inherit inputs; };
         };
