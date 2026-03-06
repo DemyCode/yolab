@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from typer import Typer
 
-from backend.functions import get_status, scan_wifi, wifi_connect
+from installer.functions import get_status, scan_wifi, wifi_connect
 
 console = Console()
 

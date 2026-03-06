@@ -4,10 +4,10 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from alembic import context
-from backend.settings import settings
 
 # Import all models so they are registered with SQLModel.metadata
 from backend.models import *
+from backend.settings import settings
 
 config = context.config
 

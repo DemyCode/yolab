@@ -8,7 +8,7 @@ import questionary
 import tomli_w
 from questionary import Style
 
-from backend.display import (
+from installer.display import (
     console,
     show_disk_table,
     show_error,
@@ -17,24 +17,23 @@ from backend.display import (
     show_success,
     show_warning,
 )
-from backend.functions import (
+from installer.functions import (
     connect_wifi,
     detect_disks,
     detect_ram_size,
-    get_wifi_config,
     scan_wifi_networks,
     test_internet,
 )
-from backend.password import hash_password, validate_password_strength
-from backend.ssh_keygen import generate_ssh_keypair
-from backend.tunnel import register_tunnel
-from backend.validators import (
+from installer.password import hash_password, validate_password_strength
+from installer.ssh_keygen import generate_ssh_keypair
+from installer.tunnel import register_tunnel
+from installer.validators import (
     validate_git_url,
     validate_hostname,
     validate_ssh_key,
     validate_timezone,
 )
-from backend.wg_keygen import generate_wg_keypair
+from installer.wg_keygen import generate_wg_keypair
 
 # Custom questionary style
 PROMPT_STYLE = Style(
@@ -387,7 +386,7 @@ def prompt_tunnel_setup(platform_api_url: str | None = None) -> dict | None:
     if not platform_api_url:
         platform_api_url = questionary.text(
             "YoLab platform API URL:",
-                default="http://188.245.104.63:5000",
+            default="http://188.245.104.63:5000",
             style=PROMPT_STYLE,
         ).ask()
 
@@ -423,7 +422,9 @@ def prompt_tunnel_setup(platform_api_url: str | None = None) -> dict | None:
 
     console.print("[yellow]Registering tunnel with YoLab platform...[/yellow]")
     try:
-        result = register_tunnel(platform_api_url, account_token, service_name, wg_public_key)
+        result = register_tunnel(
+            platform_api_url, account_token, service_name, wg_public_key
+        )
     except Exception as e:
         show_error(f"Tunnel registration failed: {e}")
         return None
@@ -564,6 +565,8 @@ def install_system(config: dict) -> None:
             "--flake",
             f"path:{code_dir}#yolab",
             "--no-root-password",
+            "--print-build-logs",
+            "--verbose",
         ],
         check=True,
     )

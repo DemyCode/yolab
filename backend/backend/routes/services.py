@@ -90,7 +90,9 @@ async def register_service(
                 service = None
 
         if service is None:
-            raise HTTPException(status_code=500, detail="Failed to allocate IPv6 address")
+            raise HTTPException(
+                status_code=500, detail="Failed to allocate IPv6 address"
+            )
 
         db.refresh(service)
         assert service.id is not None

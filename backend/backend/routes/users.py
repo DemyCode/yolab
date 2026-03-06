@@ -16,6 +16,4 @@ async def create_new_user(db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
-    return TokenResponse(
-        account_token=account_token
-    )
+    return TokenResponse(account_token=account_token)

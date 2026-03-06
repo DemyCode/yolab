@@ -1,7 +1,7 @@
 [project]
-name = "backend"
+name = "installer"
 version = "1.0.0"
-description = "YoLab Homelab Installer Backend"
+description = "YoLab Homelab Installer"
 requires-python = ">=3.11"
 dependencies = [
   "typer>=0.12.0",
@@ -14,7 +14,4 @@ dependencies = [
 yolab-installer = "backend.cli:cli"
 
 [dependency-groups]
-dev = [
-    "ruff>=0.14.14",
-    "ty>=0.0.13",
-]
+dev = ["ruff>=0.14.14", "ty>=0.0.13"]

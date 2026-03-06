@@ -4,7 +4,7 @@ import sys
 
 import questionary
 
-from backend.display import (
+from installer.display import (
     console,
     show_config_summary,
     show_error,
@@ -12,7 +12,7 @@ from backend.display import (
     show_step,
     show_warning,
 )
-from backend.install_flow import (
+from installer.install_flow import (
     PROMPT_STYLE,
     build_install_config,
     check_internet_connectivity,

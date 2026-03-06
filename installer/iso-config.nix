@@ -3,9 +3,10 @@
   lib,
   inputs,
   ...
-}: let
+}:
+let
   workspace = inputs.uv2nix.lib.workspace.loadWorkspace {
-    workspaceRoot = ./backend;
+    workspaceRoot = ./.;
   };
   overlay = workspace.mkPyprojectOverlay {
     sourcePreference = "wheel";
@@ -13,14 +14,16 @@
   pythonSet =
     (pkgs.callPackage inputs.pyproject-nix.build.packages {
       python = pkgs.python311;
-    })
-    .overrideScope
-    (lib.composeManyExtensions [
-      inputs.pyproject-build-systems.overlays.wheel
-      overlay
-    ]);
+    }).overrideScope
+      (
+        lib.composeManyExtensions [
+          inputs.pyproject-build-systems.overlays.wheel
+          overlay
+        ]
+      );
   installerBackend = pythonSet.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
-in {
+in
+{
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
   isoImage.squashfsCompression = "xz -Xdict-size 100%";
@@ -42,7 +45,7 @@ in {
       util-linux
       inputs.disko.packages.${pkgs.system}.disko
     ])
-    ++ [installerBackend];
+    ++ [ installerBackend ];
   services.getty.autologinUser = lib.mkForce "root";
   programs.bash.interactiveShellInit = ''
     if [ "$(tty)" = "/dev/tty1" ]; then
