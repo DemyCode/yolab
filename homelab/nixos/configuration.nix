@@ -45,7 +45,6 @@ in
     firewall.enable = false;
   };
 
-
   services.openssh = {
     enable = true;
     ports = [ sshPort ];
@@ -68,7 +67,6 @@ in
     hashedPassword = lib.mkIf (homelabPasswordHash != "") homelabPasswordHash;
   };
 
-  # Sudo requires password (default behavior, wheelNeedsPassword = true)
   virtualisation.docker.enable = true;
   services.logind.lidSwitchExternalPower = "ignore";
 
@@ -83,28 +81,17 @@ in
       docker
       docker-compose
       dysk
+      dust
       ctop
       vim
       wget
       htop
-      tmux
-      frp
     ];
 
   nix.settings.experimental-features = [
     "nix-command"
     "flakes"
   ];
-
   nix.gc.automatic = true;
-
-  systemd.tmpfiles.rules = [
-    "d /etc/yolab 0755 root root -"
-    "d /var/lib/yolab 0755 root root -"
-    "d /var/lib/yolab/services 0755 root root -"
-  ];
-
-  environment.etc."yolab/config.toml".source = configPath;
-
   system.stateVersion = "24.05";
 }
