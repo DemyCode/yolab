@@ -139,12 +139,10 @@ def cli_install(
     from backend.password import hash_password
     from backend.ssh_keygen import generate_ssh_keypair
 
-    # Only disk and password are truly required
     required_args = [disk, password]
     has_all_required = all(arg is not None for arg in required_args)
     has_any_args = disk is not None or password is not None
 
-    # If interactive mode and no args, run wizard
     if interactive and not has_any_args:
         from backend.interactive import run_interactive_install
 

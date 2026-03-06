@@ -54,6 +54,7 @@
             ./homelab/nixos/disk-config.nix
             ./homelab/nixos/modules/client-ui.nix
           ];
+          specialArgs = { inherit inputs; };
         };
         yolab-installer = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
@@ -61,10 +62,12 @@
             "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
             ./homelab/installer/iso-config.nix
           ];
+          specialArgs = { inherit inputs; };
         };
       };
       packages.x86_64-linux = {
         iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
       };
+
     };
 }

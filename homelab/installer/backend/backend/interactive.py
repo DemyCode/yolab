@@ -28,10 +28,8 @@ from backend.install_flow import (
 
 
 def run_interactive_install() -> None:
-    """Run the complete interactive installation wizard."""
     show_header()
 
-    # Step 1: Check internet connectivity
     if not check_internet_connectivity():
         console.print()
         setup_wifi = questionary.confirm(
@@ -55,11 +53,9 @@ def run_interactive_install() -> None:
         wifi_ssid = None
         wifi_password = None
 
-    # Step 2: Select disk
     show_step(1, 4, "Disk Selection")
     disk = prompt_disk_selection()
 
-    # Step 3: System configuration
     show_step(2, 4, "System Configuration")
     console.print()
 
@@ -73,7 +69,6 @@ def run_interactive_install() -> None:
     console.print()
     homelab_password_hash = prompt_password()
 
-    # Step 4: Build configuration
     config = build_install_config(
         disk=disk,
         hostname=hostname,
@@ -85,7 +80,6 @@ def run_interactive_install() -> None:
         wifi_password=wifi_password,
     )
 
-    # Step 5: Review and confirm
     show_step(3, 4, "Review Configuration")
     show_config_summary(config)
 
@@ -104,6 +98,5 @@ def run_interactive_install() -> None:
         show_warning("Installation cancelled by user")
         sys.exit(0)
 
-    # Step 6: Install
     show_step(4, 4, "Installing NixOS")
     install_system(config)

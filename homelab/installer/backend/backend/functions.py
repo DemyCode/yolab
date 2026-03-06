@@ -66,37 +66,6 @@ def connect_wifi(ssid: str, password: str) -> bool:
         return False
 
 
-def get_wifi_config() -> dict | None:
-    try:
-        result = subprocess.run(
-            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        for line in result.stdout.strip().split("\n"):
-            if "802-11-wireless" in line:
-                ssid = line.split(":")[0]
-                psk_result = subprocess.run(
-                    [
-                        "nmcli",
-                        "-s",
-                        "-g",
-                        "802-11-wireless-security.psk",
-                        "connection",
-                        "show",
-                        ssid,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                return {"ssid": ssid, "psk": psk_result.stdout.strip()}
-        return None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-
-
 def detect_disks() -> list[dict]:
     try:
         result = subprocess.run(
@@ -141,18 +110,8 @@ def generate_config_toml(
     root_ssh_key: str,
     swap_size: int,
     git_remote: str,
-    wifi_config: dict | None,
     homelab_password_hash: str | None = None,
 ) -> str:
-    wifi_section = ""
-    if wifi_config:
-        wifi_section = f'''[wifi]
-enabled = true
-ssid = "{wifi_config["ssid"]}"
-psk = "{wifi_config["psk"]}"
-
-'''
-
     password_line = ""
     if homelab_password_hash:
         password_line = f'\nhomelab_password_hash = "{homelab_password_hash}"'
@@ -170,21 +129,6 @@ allowed_ssh_keys = []{password_line}
 device = "{disk}"
 esp_size = "500M"
 swap_size = "{swap_size}G"
-
-{wifi_section}[client_ui]
-enabled = true
-port = 8080
-platform_api_url = ""
-
-[docker]
-enabled = false
-compose_url = ""
-
-[frpc]
-enabled = false
-server_addr = ""
-server_port = 7000
-account_token = ""
 '''
 
 
@@ -219,7 +163,6 @@ def run_installation(
         # If homelab/ exists but no flake, keep using install_dir root
 
     swap_size = detect_ram_size()
-    wifi_config = get_wifi_config()
 
     config_toml = install_dir / "ignored" / "config.toml"
     config_toml.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +174,6 @@ def run_installation(
             root_ssh_key,
             swap_size,
             git_remote,
-            wifi_config,
             homelab_password_hash,
         )
     )
@@ -258,7 +200,7 @@ def run_installation(
     )
 
     # Step 2: Copy configuration to mounted system
-    nixos_dir = Path("/mnt/etc/nixos")
+    nixos_dir = Path("/mnt/etc/yolab")
     nixos_dir.mkdir(parents=True, exist_ok=True)
 
     subprocess.run(

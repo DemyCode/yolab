@@ -51,13 +51,7 @@ PROMPT_STYLE = Style(
 )
 
 
-# ============================================================================
-# Internet and WiFi
-# ============================================================================
-
-
 def check_internet_connectivity() -> bool:
-    """Check if internet is available."""
     console.print("[cyan]Checking internet connectivity...[/cyan]")
     if test_internet():
         show_success("Internet connection detected")
@@ -138,10 +132,6 @@ def setup_wifi_interactive() -> dict | None:
 
 
 def prompt_disk_selection() -> str:
-    """
-    Interactive disk selection.
-    Returns selected disk path.
-    """
     available_disks = detect_disks()
 
     if not available_disks:
@@ -150,14 +140,12 @@ def prompt_disk_selection() -> str:
 
     show_disk_table(available_disks)
 
-    # Filter to only available (unmounted) disks
     unmounted_disks = [d for d in available_disks if not d["mounted"]]
 
     if not unmounted_disks:
         show_error("No available disks found (all disks are mounted)")
         sys.exit(1)
 
-    # Create choices for questionary
     choices = [
         questionary.Choice(title=f"{disk['name']} ({disk['size']})", value=disk["name"])
         for disk in unmounted_disks
@@ -378,11 +366,6 @@ def prompt_password() -> str:
         return password_hash
 
 
-# ============================================================================
-# Config Building
-# ============================================================================
-
-
 def build_install_config(
     disk: str,
     hostname: str,
@@ -390,27 +373,8 @@ def build_install_config(
     root_ssh_key: str,
     git_remote: str,
     homelab_password_hash: str,
-    wifi_ssid: str | None = None,
-    wifi_password: str | None = None,
 ) -> dict:
-    """
-    Build complete installation configuration dictionary.
-
-    Args:
-        disk: Disk device path (e.g., /dev/sda)
-        hostname: System hostname
-        timezone: Timezone string
-        root_ssh_key: SSH public key for root
-        git_remote: Git repository URL
-        homelab_password_hash: Hashed password for homelab user
-        wifi_ssid: WiFi SSID (optional)
-        wifi_password: WiFi password (optional)
-
-    Returns:
-        Complete config dictionary ready for installation
-    """
     swap_size = detect_ram_size()
-    wifi_config = get_wifi_config()
 
     config = {
         "homelab": {
@@ -428,68 +392,21 @@ def build_install_config(
             "esp_size": "500M",
             "swap_size": f"{swap_size}G",
         },
-        "client_ui": {
-            "enabled": False,
-            "port": 8080,
-            "platform_api_url": "",
-        },
         "docker": {
             "enabled": False,
             "compose_url": "",
         },
-        "frpc": {
-            "enabled": False,
-            "server_addr": "",
-            "server_port": 7000,
-            "account_token": "",
-        },
     }
-
-    # Add WiFi config if available
-    if wifi_config or (wifi_ssid and wifi_password):
-        if wifi_ssid and wifi_password:
-            # Use provided WiFi credentials
-            config["wifi"] = {
-                "enabled": True,
-                "ssid": wifi_ssid,
-                "psk": wifi_password,
-            }
-        elif wifi_config:
-            # Use existing WiFi connection
-            config["wifi"] = {
-                "enabled": True,
-                "ssid": wifi_config["ssid"],
-                "psk": wifi_config["psk"],
-            }
-
     return config
 
 
 def write_config_toml(config: dict, path: Path) -> None:
-    """
-    Write configuration dictionary to TOML file.
-
-    Args:
-        config: Configuration dictionary
-        path: Path to write TOML file
-    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         tomli_w.dump(config, f)
 
 
-# ============================================================================
-# Installation
-# ============================================================================
-
-
 def install_system(config: dict) -> None:
-    """
-    Install NixOS using the provided configuration.
-
-    Args:
-        config: Complete installation configuration dictionary
-    """
     import shutil
 
     code_dir = Path("yolab")
@@ -555,13 +472,13 @@ def install_system(config: dict) -> None:
         [
             "nixos-install",
             "--flake",
-            f"path:{code_dir}/homelab#yolab",
+            f"path:{code_dir}#yolab",
             "--no-root-password",
         ],
         check=True,
     )
 
-    subprocess.run(["rsync", "-a", f"{str(code_dir)}/", "/mnt/yolab"], check=True)
+    subprocess.run(["rsync", "-a", f"{str(code_dir)}/", "/mnt/etc/nixos"], check=True)
 
     console.print()
     show_success("Installation completed successfully!")
