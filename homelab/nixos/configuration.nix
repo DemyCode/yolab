@@ -92,14 +92,25 @@ in
     };
   };
 
-  services.nginx = lib.mkIf (tunnelEnabled && clientUiExists) {
+  services.avahi = {
     enable = true;
-    virtualHosts."homelab" = {
+    nssmdns4 = true;
+    publish = {
+      enable = true;
+      addresses = true;
+      domain = true;
+    };
+  };
+
+  services.nginx = lib.mkIf clientUiExists {
+    enable = true;
+    virtualHosts."default" = {
+      default = true;
       listen = [
-        {
-          addr = "[${tunnelCfg.sub_ipv6}]";
-          port = 80;
-        }
+        { addr = "0.0.0.0"; port = 80; }
+        { addr = "[::]"; port = 80; }
+      ] ++ lib.optionals tunnelEnabled [
+        { addr = "[${tunnelCfg.sub_ipv6}]"; port = 80; }
       ];
       root = "${clientUi}";
       locations."/" = {
