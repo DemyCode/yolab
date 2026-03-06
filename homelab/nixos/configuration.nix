@@ -26,6 +26,25 @@ let
     cfg.allowed_ssh_keys or (throw "[homelab] allowed_ssh_keys is required in config.toml");
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
+
+  tunnelCfg = homelabConfig.tunnel or { };
+  tunnelEnabled = tunnelCfg.enabled or false;
+  # Derive the /64 prefix from sub_ipv6 (e.g. "2a01:4f8:1c19:b6ce::42" → "2a01:4f8:1c19:b6ce::/64")
+  # Only route traffic within the WireGuard subnet through the tunnel — no default route.
+  wgSubnet = lib.optionalString tunnelEnabled (
+    (lib.head (lib.splitString "::" tunnelCfg.sub_ipv6)) + "::/64"
+  );
+
+  clientUi = pkgs.buildNpmPackage {
+    pname = "client-ui";
+    version = "0.1.0";
+    src = ../../client-ui;
+    npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
+    installPhase = ''
+      npm run build
+      cp -r dist $out
+    '';
+  };
 in
 {
   imports = [
@@ -43,6 +62,21 @@ in
     networkmanager.enable = true;
     enableIPv6 = true;
     firewall.enable = false;
+
+    wireguard.interfaces = lib.mkIf tunnelEnabled {
+      wg0 = {
+        ips = [ "${tunnelCfg.sub_ipv6}/128" ];
+        privateKey = tunnelCfg.wg_private_key;
+        peers = [
+          {
+            publicKey = tunnelCfg.wg_server_public_key;
+            endpoint = tunnelCfg.wg_server_endpoint;
+            allowedIPs = [ wgSubnet ];
+            persistentKeepalive = 25;
+          }
+        ];
+      };
+    };
   };
 
   services.openssh = {
@@ -51,6 +85,22 @@ in
     settings = {
       PermitRootLogin = lib.mkIf (rootSshKey != "") "prohibit-password";
       PasswordAuthentication = false;
+    };
+  };
+
+  services.nginx = lib.mkIf tunnelEnabled {
+    enable = true;
+    virtualHosts."homelab" = {
+      listen = [
+        {
+          addr = "[${tunnelCfg.sub_ipv6}]";
+          port = 80;
+        }
+      ];
+      root = "${clientUi}";
+      locations."/" = {
+        tryFiles = "$uri $uri/ /index.html";
+      };
     };
   };
 

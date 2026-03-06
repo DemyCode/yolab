@@ -23,6 +23,7 @@ from backend.install_flow import (
     prompt_password,
     prompt_ssh_key_setup,
     prompt_timezone,
+    prompt_tunnel_setup,
     setup_wifi_interactive,
 )
 
@@ -53,10 +54,10 @@ def run_interactive_install() -> None:
         wifi_ssid = None
         wifi_password = None
 
-    show_step(1, 4, "Disk Selection")
+    show_step(1, 5, "Disk Selection")
     disk = prompt_disk_selection()
 
-    show_step(2, 4, "System Configuration")
+    show_step(2, 5, "System Configuration")
     console.print()
 
     hostname = prompt_hostname()
@@ -69,6 +70,9 @@ def run_interactive_install() -> None:
     console.print()
     homelab_password_hash = prompt_password()
 
+    show_step(3, 5, "Tunnel Registration")
+    tunnel = prompt_tunnel_setup()
+
     config = build_install_config(
         disk=disk,
         hostname=hostname,
@@ -76,11 +80,12 @@ def run_interactive_install() -> None:
         root_ssh_key=root_ssh_key,
         git_remote=git_remote,
         homelab_password_hash=homelab_password_hash,
+        tunnel=tunnel,
         wifi_ssid=wifi_ssid,
         wifi_password=wifi_password,
     )
 
-    show_step(3, 4, "Review Configuration")
+    show_step(4, 5, "Review Configuration")
     show_config_summary(config)
 
     console.print(
@@ -98,5 +103,5 @@ def run_interactive_install() -> None:
         show_warning("Installation cancelled by user")
         sys.exit(0)
 
-    show_step(4, 4, "Installing NixOS")
+    show_step(5, 5, "Installing NixOS")
     install_system(config)

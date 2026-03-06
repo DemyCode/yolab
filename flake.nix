@@ -59,7 +59,7 @@
           system = "x86_64-linux";
           modules = [
             "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
-            ./homelab/installer/iso-config.nix
+            ./installer/iso-config.nix
           ];
           specialArgs = { inherit inputs; };
         };

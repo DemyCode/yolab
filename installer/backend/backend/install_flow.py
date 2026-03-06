@@ -27,12 +27,14 @@ from backend.functions import (
 )
 from backend.password import hash_password, validate_password_strength
 from backend.ssh_keygen import generate_ssh_keypair
+from backend.tunnel import register_tunnel
 from backend.validators import (
     validate_git_url,
     validate_hostname,
     validate_ssh_key,
     validate_timezone,
 )
+from backend.wg_keygen import generate_wg_keypair
 
 # Custom questionary style
 PROMPT_STYLE = Style(
@@ -366,6 +368,82 @@ def prompt_password() -> str:
         return password_hash
 
 
+def prompt_tunnel_setup(platform_api_url: str | None = None) -> dict | None:
+    """
+    Interactively register a WireGuard tunnel with the YoLab platform.
+
+    Returns a tunnel config dict on success, or None if the user skips.
+    """
+    console.print()
+    wants_tunnel = questionary.confirm(
+        "Register a YoLab tunnel so your homelab is reachable from the internet?",
+        default=True,
+        style=PROMPT_STYLE,
+    ).ask()
+
+    if not wants_tunnel:
+        return None
+
+    if not platform_api_url:
+        platform_api_url = questionary.text(
+            "YoLab platform API URL:",
+                default="http://188.245.104.63:5000",
+            style=PROMPT_STYLE,
+        ).ask()
+
+    if not platform_api_url:
+        show_error("Platform API URL is required for tunnel registration")
+        return None
+
+    account_token = questionary.text(
+        "Your account token:",
+        style=PROMPT_STYLE,
+    ).ask()
+
+    if not account_token:
+        show_error("Account token is required")
+        return None
+
+    service_name = questionary.text(
+        "Service name (identifies this homelab):",
+        default="homelab",
+        style=PROMPT_STYLE,
+    ).ask()
+
+    if not service_name:
+        show_error("Service name is required")
+        return None
+
+    console.print("[yellow]Generating WireGuard key pair...[/yellow]")
+    try:
+        wg_private_key, wg_public_key = generate_wg_keypair()
+    except Exception as e:
+        show_error(f"Failed to generate WireGuard keys: {e}")
+        return None
+
+    console.print("[yellow]Registering tunnel with YoLab platform...[/yellow]")
+    try:
+        result = register_tunnel(platform_api_url, account_token, service_name, wg_public_key)
+    except Exception as e:
+        show_error(f"Tunnel registration failed: {e}")
+        return None
+
+    show_success(f"Tunnel registered — IPv6: {result['sub_ipv6']}")
+
+    return {
+        "enabled": True,
+        "platform_api_url": platform_api_url,
+        "account_token": account_token,
+        "service_name": service_name,
+        "service_id": result["service_id"],
+        "wg_private_key": wg_private_key,
+        "wg_public_key": wg_public_key,
+        "sub_ipv6": result["sub_ipv6"],
+        "wg_server_endpoint": result["wg_server_endpoint"],
+        "wg_server_public_key": result["wg_server_public_key"],
+    }
+
+
 def build_install_config(
     disk: str,
     hostname: str,
@@ -373,6 +451,9 @@ def build_install_config(
     root_ssh_key: str,
     git_remote: str,
     homelab_password_hash: str,
+    tunnel: dict | None = None,
+    wifi_ssid: str | None = None,
+    wifi_password: str | None = None,
 ) -> dict:
     swap_size = detect_ram_size()
 
@@ -396,7 +477,16 @@ def build_install_config(
             "enabled": False,
             "compose_url": "",
         },
+        "tunnel": tunnel if tunnel is not None else {"enabled": False},
     }
+
+    if wifi_ssid:
+        config["wifi"] = {
+            "enabled": True,
+            "ssid": wifi_ssid,
+            "psk": wifi_password or "",
+        }
+
     return config
 
 
