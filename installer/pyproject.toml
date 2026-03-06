@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-yolab-installer = "backend.cli:cli"
+yolab-installer = "installer.cli:cli"
 
 [dependency-groups]
 dev = ["ruff>=0.14.14", "ty>=0.0.13"]

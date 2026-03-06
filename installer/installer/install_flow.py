@@ -18,11 +18,8 @@ from installer.display import (
     show_warning,
 )
 from installer.functions import (
-    connect_wifi,
     detect_disks,
     detect_ram_size,
-    scan_wifi_networks,
-    test_internet,
 )
 from installer.password import hash_password, validate_password_strength
 from installer.ssh_keygen import generate_ssh_keypair
@@ -50,87 +47,6 @@ PROMPT_STYLE = Style(
         ("disabled", "fg:#666666 italic"),
     ]
 )
-
-
-def check_internet_connectivity() -> bool:
-    console.print("[cyan]Checking internet connectivity...[/cyan]")
-    if test_internet():
-        show_success("Internet connection detected")
-        return True
-    else:
-        show_warning("No internet connection detected")
-        return False
-
-
-def setup_wifi_interactive() -> dict | None:
-    """
-    Interactive WiFi setup.
-    Returns wifi config dict or None if setup failed/skipped.
-    """
-    console.print()
-    networks = scan_wifi_networks()
-
-    if not networks:
-        show_error("No WiFi networks found")
-        return None
-
-    # Create choices for questionary
-    choices = [
-        questionary.Choice(
-            title=f"{net['ssid']} ({net['signal']}% - {net['security']})",
-            value=net["ssid"],
-        )
-        for net in networks
-    ]
-
-    selected_ssid = questionary.select(
-        "Select WiFi network:",
-        choices=choices,
-        style=PROMPT_STYLE,
-    ).ask()
-
-    if not selected_ssid:
-        return None
-
-    # Check if network is secured
-    selected_network = next(n for n in networks if n["ssid"] == selected_ssid)
-    needs_password = (
-        selected_network["security"] and selected_network["security"] != "--"
-    )
-
-    password = ""
-    if needs_password:
-        password = questionary.password(
-            "Enter WiFi password:",
-            style=PROMPT_STYLE,
-        ).ask()
-
-        if password is None:
-            return None
-
-    console.print()
-    console.print(f"[yellow]Connecting to {selected_ssid}...[/yellow]")
-
-    if connect_wifi(selected_ssid, password):
-        show_success(f"Connected to {selected_ssid}")
-
-        # Verify internet connectivity
-        console.print("[cyan]Verifying internet connection...[/cyan]")
-        if test_internet():
-            show_success("Internet connection verified")
-            return {"ssid": selected_ssid, "password": password}
-        else:
-            show_error("Connected to WiFi but no internet access")
-            return None
-    else:
-        show_error("Failed to connect to WiFi")
-        return None
-
-
-# ============================================================================
-# Disk Selection
-# ============================================================================
-
 
 def prompt_disk_selection() -> str:
     available_disks = detect_disks()
@@ -368,11 +284,6 @@ def prompt_password() -> str:
 
 
 def prompt_tunnel_setup(platform_api_url: str | None = None) -> dict | None:
-    """
-    Interactively register a WireGuard tunnel with the YoLab platform.
-
-    Returns a tunnel config dict on success, or None if the user skips.
-    """
     console.print()
     wants_tunnel = questionary.confirm(
         "Register a YoLab tunnel so your homelab is reachable from the internet?",
@@ -453,8 +364,6 @@ def build_install_config(
     git_remote: str,
     homelab_password_hash: str,
     tunnel: dict | None = None,
-    wifi_ssid: str | None = None,
-    wifi_password: str | None = None,
 ) -> dict:
     swap_size = detect_ram_size()
 
@@ -480,13 +389,6 @@ def build_install_config(
         },
         "tunnel": tunnel if tunnel is not None else {"enabled": False},
     }
-
-    if wifi_ssid:
-        config["wifi"] = {
-            "enabled": True,
-            "ssid": wifi_ssid,
-            "psk": wifi_password or "",
-        }
 
     return config
 
@@ -565,7 +467,6 @@ def install_system(config: dict) -> None:
             "--flake",
             f"path:{code_dir}#yolab",
             "--no-root-password",
-            "--print-build-logs",
             "--verbose",
         ],
         check=True,

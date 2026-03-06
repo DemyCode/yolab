@@ -38,7 +38,7 @@ let
   clientUi = pkgs.buildNpmPackage {
     pname = "client-ui";
     version = "0.1.0";
-    src = ../../client-ui;
+    src = ../client-ui;
     npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
     installPhase = ''
       npm run build

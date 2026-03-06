@@ -15,57 +15,6 @@ def test_internet() -> bool:
         return False
 
 
-def scan_wifi_networks() -> list[dict]:
-    try:
-        subprocess.run(
-            ["nmcli", "device", "wifi", "rescan"], capture_output=True, timeout=10
-        )
-        result = subprocess.run(
-            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        networks = []
-        for line in result.stdout.strip().split("\n"):
-            if line:
-                parts = line.split(":")
-                if len(parts) >= 3 and parts[0]:
-                    networks.append(
-                        {
-                            "ssid": parts[0],
-                            "signal": parts[1],
-                            "security": parts[2],
-                        }
-                    )
-        return sorted(
-            networks, key=lambda x: int(x["signal"]) if x["signal"] else 0, reverse=True
-        )
-    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-        return []
-
-
-def connect_wifi(ssid: str, password: str) -> bool:
-    try:
-        if password:
-            result = subprocess.run(
-                ["nmcli", "device", "wifi", "connect", ssid, "password", password],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        else:
-            result = subprocess.run(
-                ["nmcli", "device", "wifi", "connect", ssid],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-
-
 def detect_disks() -> list[dict]:
     try:
         result = subprocess.run(
@@ -229,18 +178,6 @@ def get_status() -> dict:
         "internet": test_internet(),
         "disks": detect_disks(),
     }
-
-
-def scan_wifi() -> dict:
-    return {"networks": scan_wifi_networks()}
-
-
-def wifi_connect(ssid: str, password: str) -> dict:
-    success = connect_wifi(ssid, password)
-    if not success:
-        raise Exception("Failed to connect to WiFi")
-    return {"success": True, "message": f"Connected to {ssid}"}
-
 
 def install(
     disk: str, hostname: str, timezone: str, root_ssh_key: str, git_remote: str

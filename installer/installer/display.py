@@ -72,7 +72,6 @@ def show_config_summary(config: dict):
 
     homelab = config.get("homelab", {})
     disk = config.get("disk", {})
-    wifi = config.get("wifi", {})
 
     table.add_row("Disk", f"[yellow]{disk.get('device', 'N/A')}[/yellow]")
     table.add_row("Hostname", homelab.get("hostname", "N/A"))
@@ -84,10 +83,6 @@ def show_config_summary(config: dict):
         f"{ssh_key[:50]}..." if len(ssh_key) > 50 else ssh_key,
     )
     table.add_row("Git Remote", homelab.get("git_remote", "N/A"))
-
-    if wifi.get("enabled"):
-        table.add_row("WiFi SSID", wifi.get("ssid", "N/A"))
-        table.add_row("WiFi Password", "[dim]********[/dim]")
 
     console.print(table)
     console.print()

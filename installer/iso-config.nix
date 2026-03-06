@@ -21,7 +21,7 @@ let
           overlay
         ]
       );
-  installerBackend = pythonSet.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
+  yolabInstaller = pythonSet.mkVirtualEnv "homelab-installer-env" workspace.deps.default;
 in
 {
   isoImage.makeEfiBootable = true;
@@ -44,12 +44,13 @@ in
       gptfdisk
       util-linux
       inputs.disko.packages.${pkgs.system}.disko
+      wireguard-tools
     ])
-    ++ [ installerBackend ];
+    ++ [ yolabInstaller ];
   services.getty.autologinUser = lib.mkForce "root";
   programs.bash.interactiveShellInit = ''
     if [ "$(tty)" = "/dev/tty1" ]; then
-      ${installerBackend}/bin/yolab-installer install
+      ${yolabInstaller}/bin/yolab-installer install
     fi
   '';
   nix.settings.experimental-features = [

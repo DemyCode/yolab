@@ -2,13 +2,16 @@
 import subprocess
 from typing import Optional
 
+from installer.install_flow import build_install_config, install_system
+from installer.password import hash_password
+from installer.ssh_keygen import generate_ssh_keypair
 import typer
 from rich import print as rprint
 from rich.console import Console
 from rich.table import Table
 from typer import Typer
 
-from installer.functions import get_status, scan_wifi, wifi_connect
+from installer.functions import get_status
 
 console = Console()
 
@@ -45,51 +48,6 @@ def cli_status():
     console.print(table)
 
 
-wifi_app = Typer(help="WiFi management")
-cli.add_typer(wifi_app, name="wifi")
-
-
-@wifi_app.command("scan")
-def cli_wifi_scan():
-    rprint("[yellow]Scanning WiFi networks...[/yellow]")
-    result = scan_wifi()
-    networks = result["networks"]
-
-    if not networks:
-        rprint("[yellow]No networks found[/yellow]")
-        return
-
-    rprint("[bold green]Available Networks:[/bold green]")
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("SSID")
-    table.add_column("Signal")
-    table.add_column("Security")
-
-    for network in networks:
-        table.add_row(
-            network["ssid"],
-            network["signal"],
-            network["security"],
-        )
-    console.print(table)
-
-
-@wifi_app.command("connect")
-def cli_wifi_connect(
-    ssid: str = typer.Argument(..., help="WiFi SSID to connect to"),
-    password: Optional[str] = typer.Option(
-        None, "--password", "-p", help="WiFi password"
-    ),
-):
-    try:
-        rprint(f"[yellow]Connecting to {ssid}...[/yellow]")
-        result = wifi_connect(ssid, password or "")
-        rprint(f"[bold green]✓[/bold green] {result['message']}")
-    except Exception as e:
-        rprint(f"[bold red]✗[/bold red] {e}")
-        raise typer.Exit(1)
-
-
 @cli.command("install")
 def cli_install(
     interactive: bool = typer.Option(
@@ -119,12 +77,6 @@ def cli_install(
         "-g",
         help="Git remote URL (default: official repo)",
     ),
-    wifi_ssid: Optional[str] = typer.Option(
-        None, "--wifi-ssid", help="WiFi SSID (optional)"
-    ),
-    wifi_password: Optional[str] = typer.Option(
-        None, "--wifi-password", help="WiFi password (optional)"
-    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ):
     """Install NixOS to disk.
@@ -135,16 +87,13 @@ def cli_install(
       yolab-installer install --disk /dev/vda --password MySecurePass123
       yolab-installer install -d /dev/sda -p MyPass --hostname myserver --timezone America/New_York
     """
-    from backend.install_flow import build_install_config, install_system
-    from backend.password import hash_password
-    from backend.ssh_keygen import generate_ssh_keypair
 
     required_args = [disk, password]
     has_all_required = all(arg is not None for arg in required_args)
     has_any_args = disk is not None or password is not None
 
     if interactive and not has_any_args:
-        from backend.interactive import run_interactive_install
+        from installer.interactive import run_interactive_install
 
         run_interactive_install()
         return
@@ -182,16 +131,6 @@ def cli_install(
             rprint("[dim]  ssh -i your-key.pem root@your-server[/dim]\n")
         except Exception as e:
             rprint(f"[bold red]✗[/bold red] Failed to generate SSH key: {e}")
-            raise typer.Exit(1)
-
-    # Set up WiFi if credentials provided
-    if wifi_ssid:
-        try:
-            rprint(f"[yellow]Connecting to WiFi network {wifi_ssid}...[/yellow]")
-            wifi_connect(wifi_ssid, wifi_password or "")
-            rprint("[bold green]✓[/bold green] Connected to WiFi")
-        except Exception as e:
-            rprint(f"[bold red]✗[/bold red] WiFi connection failed: {e}")
             raise typer.Exit(1)
 
     # Show configuration
@@ -233,8 +172,6 @@ def cli_install(
             root_ssh_key=root_ssh_key,
             git_remote=git_remote,
             homelab_password_hash=password_hash,
-            wifi_ssid=wifi_ssid,
-            wifi_password=wifi_password,
         )
 
         # Install system
