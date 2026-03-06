@@ -21,6 +21,6 @@ class Service(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id")
     service_name: str
     sub_ipv6: str = Field(unique=True, index=True)
-    wg_public_key: str
+    wg_public_key: str = Field(unique=True, index=True)
 
     user: Optional[User] = Relationship(back_populates="services")

@@ -37,7 +37,7 @@ class APIResolver(BaseResolver):
     def resolve(self, request, handler):
         logger.info(f"Received DNS query: {request.q.qname} ({QTYPE[request.q.qtype]})")
         reply = request.reply()
-        qname = str(request.q.qname).rstrip(".")
+        qname = str(request.q.qname).rstrip(".").lower()
         qtype = QTYPE[request.q.qtype]
 
         if qtype in ("NS", "ANY") and qname == settings.domain:
@@ -67,7 +67,7 @@ class APIResolver(BaseResolver):
             logger.info(f"{qname} -> {self.main_ipv6}")
             return reply
 
-        if qname.endswith(self.domain_suffix):
+        if qname.endswith(self.domain_suffix) and qtype in ("AAAA", "ANY"):
             subdomain = qname[: -len(self.domain_suffix)]
 
             try:
