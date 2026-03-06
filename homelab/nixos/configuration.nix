@@ -35,16 +35,20 @@ let
     (lib.head (lib.splitString "::" tunnelCfg.sub_ipv6)) + "::/64"
   );
 
-  clientUi = pkgs.buildNpmPackage {
-    pname = "client-ui";
-    version = "0.1.0";
-    src = ../client-ui;
-    npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
-    installPhase = ''
-      npm run build
-      cp -r dist $out
-    '';
-  };
+  clientUiPath = ../client-ui;
+  clientUiExists = builtins.pathExists clientUiPath;
+  clientUi = if clientUiExists then
+    pkgs.buildNpmPackage {
+      pname = "client-ui";
+      version = "0.1.0";
+      src = clientUiPath;
+      npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
+      installPhase = ''
+        npm run build
+        cp -r dist $out
+      '';
+    }
+  else null;
 in
 {
   imports = [
@@ -88,7 +92,7 @@ in
     };
   };
 
-  services.nginx = lib.mkIf tunnelEnabled {
+  services.nginx = lib.mkIf (tunnelEnabled && clientUiExists) {
     enable = true;
     virtualHosts."homelab" = {
       listen = [
