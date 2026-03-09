@@ -43,9 +43,11 @@ class APIResolver(BaseResolver):
         if qtype in ("NS", "ANY") and qname == settings.domain:
             ns1 = f"ns1.{settings.domain}"
             ns2 = f"ns2.{settings.domain}"
+            ns3 = f"ns3.{settings.domain}"
             reply.add_answer(RR(qname, QTYPE.NS, rdata=NS(ns1), ttl=3600))
             reply.add_answer(RR(qname, QTYPE.NS, rdata=NS(ns2), ttl=3600))
-            logger.info(f"{qname} NS -> {ns1}, {ns2}")
+            reply.add_answer(RR(qname, QTYPE.NS, rdata=NS(ns3), ttl=3600))
+            logger.info(f"{qname} NS -> {ns1}, {ns2}, {ns3}")
 
         if qtype in ("SOA", "ANY") and qname == settings.domain:
             reply.add_answer(
