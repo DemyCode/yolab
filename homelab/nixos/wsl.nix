@@ -1,5 +1,4 @@
 {
-  modulesPath,
   pkgs,
   lib,
   inputs,
@@ -11,27 +10,18 @@ let
     if builtins.pathExists configPath then
       builtins.fromTOML (builtins.readFile configPath)
     else
-      throw ''
-        config.toml not found!
-        Please create it from config.toml.example:
-          cp ignored/config.toml.example ignored/config.toml
-          # Edit ignored/config.toml with your settings
-      '';
+      { };
 
-  cfg = homelabConfig.homelab or (throw "[homelab] section missing in config.toml");
-  hostname = cfg.hostname or (throw "[homelab] hostname is required in config.toml");
-  timezone = cfg.timezone or (throw "[homelab] timezone is required in config.toml");
-  locale = cfg.locale or (throw "[homelab] locale is required in config.toml");
-  sshPort = cfg.ssh_port or (throw "[homelab] ssh_port is required in config.toml");
-  allowedSshKeys =
-    cfg.allowed_ssh_keys or (throw "[homelab] allowed_ssh_keys is required in config.toml");
+  cfg = homelabConfig.homelab or { };
+  hostname = cfg.hostname or "homelab-wsl";
+  timezone = cfg.timezone or "UTC";
+  locale = cfg.locale or "en_US.UTF-8";
+  allowedSshKeys = cfg.allowed_ssh_keys or [ ];
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
 
   tunnelCfg = homelabConfig.tunnel or { };
   tunnelEnabled = tunnelCfg.enabled or false;
-  # Derive the /64 prefix from sub_ipv6 (e.g. "2a01:4f8:1c19:b6ce::42" → "2a01:4f8:1c19:b6ce::/64")
-  # Only route traffic within the WireGuard subnet through the tunnel — no default route.
   wgSubnet = lib.optionalString tunnelEnabled (
     (lib.head (lib.splitString "::" tunnelCfg.sub_ipv6)) + "::/64"
   );
@@ -60,19 +50,16 @@ let
   localApiEnv = localApiPythonSet.mkVirtualEnv "local-api-env" localApiWorkspace.deps.default;
 in
 {
-  imports = [
-    (modulesPath + "/installer/scan/not-detected.nix")
-    (modulesPath + "/profiles/qemu-guest.nix")
-  ]
-  ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
-  boot.loader.systemd-boot.enable = true;
+  wsl = {
+    enable = true;
+    defaultUser = "homelab";
+  };
 
   time.timeZone = timezone;
   i18n.defaultLocale = locale;
 
   networking = {
     hostName = hostname;
-    networkmanager.enable = true;
     enableIPv6 = true;
     firewall.enable = false;
 
@@ -94,7 +81,6 @@ in
 
   services.openssh = {
     enable = true;
-    ports = [ sshPort ];
     settings = {
       PermitRootLogin = lib.mkIf (rootSshKey != "") "prohibit-password";
       PasswordAuthentication = false;
@@ -106,20 +92,11 @@ in
     virtualHosts."default" = {
       default = true;
       listen = [
-        {
-          addr = "0.0.0.0";
-          port = 80;
-        }
-        {
-          addr = "[::]";
-          port = 80;
-        }
+        { addr = "0.0.0.0"; port = 80; }
+        { addr = "[::]"; port = 80; }
       ]
       ++ lib.optionals tunnelEnabled [
-        {
-          addr = "[${tunnelCfg.sub_ipv6}]";
-          port = 80;
-        }
+        { addr = "[${tunnelCfg.sub_ipv6}]"; port = 80; }
       ];
       root = "${clientUi}";
       locations."/" = {
@@ -144,8 +121,8 @@ in
     path = [ pkgs.git pkgs.nix ];
     environment = {
       YOLAB_REPO_PATH = "/etc/nixos";
-      YOLAB_PLATFORM = "nixos";
-      YOLAB_FLAKE_TARGET = "yolab";
+      YOLAB_PLATFORM = "wsl";
+      YOLAB_FLAKE_TARGET = "yolab-wsl";
     };
     serviceConfig = {
       Type = "simple";
@@ -160,17 +137,12 @@ in
 
   users.users.homelab = {
     isNormalUser = true;
-    extraGroups = [
-      "wheel"
-      "networkmanager"
-      "docker"
-    ];
+    extraGroups = [ "wheel" "docker" ];
     openssh.authorizedKeys.keys = allowedSshKeys;
     hashedPassword = lib.mkIf (homelabPasswordHash != "") homelabPasswordHash;
   };
 
   virtualisation.docker.enable = true;
-  services.logind.lidSwitchExternalPower = "ignore";
 
   environment.systemPackages =
     with pkgs;
@@ -178,22 +150,15 @@ in
       curl
       gitMinimal
       just
-      nginx
       wireguard-tools
       docker
       docker-compose
-      dysk
-      dust
-      ctop
       vim
       wget
       htop
     ];
 
-  nix.settings.experimental-features = [
-    "nix-command"
-    "flakes"
-  ];
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.gc.automatic = true;
   system.stateVersion = "24.05";
 }

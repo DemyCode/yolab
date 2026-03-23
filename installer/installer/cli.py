@@ -185,5 +185,53 @@ def cli_install(
         raise typer.Exit(1)
 
 
+@cli.command("wsl-setup")
+def cli_wsl_setup():
+    """Configure YoLab inside NixOS-WSL (no disk setup, no reboot required).
+
+    Prompts for homelab settings and tunnel registration, writes config.toml,
+    then applies the yolab-wsl NixOS configuration.
+    """
+    from pathlib import Path
+    from installer.install_flow import (
+        prompt_hostname,
+        prompt_timezone,
+        prompt_tunnel_setup,
+        write_config_toml,
+    )
+    from installer.display import show_success, show_info
+
+    rprint("[bold cyan]YoLab WSL Setup[/bold cyan]")
+    rprint("[dim]Configuring your homelab inside NixOS-WSL...[/dim]\n")
+
+    hostname = prompt_hostname()
+    timezone = prompt_timezone()
+    tunnel = prompt_tunnel_setup()
+
+    config = {
+        "homelab": {
+            "hostname": hostname,
+            "timezone": timezone,
+            "locale": "en_US.UTF-8",
+            "ssh_port": 22,
+            "root_ssh_key": "",
+            "allowed_ssh_keys": [],
+            "homelab_password_hash": "",
+            "git_remote": "https://github.com/DemyCode/yolab.git",
+        },
+        "system": {
+            "platform": "wsl",
+            "flake_target": "yolab-wsl",
+            "repo_path": "/etc/nixos",
+        },
+        "tunnel": tunnel if tunnel is not None else {"enabled": False},
+    }
+
+    config_path = Path("/etc/nixos/homelab/ignored/config.toml")
+    show_info(f"Writing configuration to {config_path}")
+    write_config_toml(config, config_path)
+    show_success("Configuration written.")
+
+
 if __name__ == "__main__":
     cli()
