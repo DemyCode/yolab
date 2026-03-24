@@ -1,7 +1,7 @@
-"""Core installation flow - reusable functions for both interactive and non-interactive modes."""
-
+import secrets
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import questionary
@@ -48,6 +48,33 @@ PROMPT_STYLE = Style(
     ]
 )
 
+def generate_node_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _parse_size(size_str: str) -> float:
+    size_str = size_str.strip().upper()
+    if size_str.endswith("T"):
+        return float(size_str[:-1]) * 1000
+    if size_str.endswith("G"):
+        return float(size_str[:-1])
+    if size_str.endswith("M"):
+        return float(size_str[:-1]) / 1000
+    return 0.0
+
+
+def auto_select_disk() -> str:
+    available_disks = detect_disks()
+    if not available_disks:
+        show_error("No disks found")
+        sys.exit(1)
+    unmounted = [d for d in available_disks if not d["mounted"]]
+    if not unmounted:
+        show_error("No unmounted disks found")
+        sys.exit(1)
+    return max(unmounted, key=lambda d: _parse_size(d.get("size", "0")))["name"]
+
+
 def prompt_disk_selection() -> str:
     available_disks = detect_disks()
 
@@ -81,13 +108,43 @@ def prompt_disk_selection() -> str:
     return selected_disk
 
 
+def prompt_cluster_setup() -> dict:
+    console.print()
+    is_first = questionary.confirm(
+        "Is this the first machine in your cluster?",
+        default=True,
+        style=PROMPT_STYLE,
+    ).ask()
+
+    if is_first:
+        token = secrets.token_urlsafe(32)
+        show_success("This node will be the first K3s server.")
+        show_info(f"Cluster token (save this for joining other nodes): {token}")
+        return {"enabled": True, "k3s": {"role": "server", "token": token, "server_addr": ""}}
+
+    server_url = questionary.text(
+        "K3s server address (https://[ipv6]:6443):",
+        style=PROMPT_STYLE,
+    ).ask()
+
+    token = questionary.text(
+        "Cluster token:",
+        style=PROMPT_STYLE,
+    ).ask()
+
+    if not server_url or not token:
+        show_error("Server address and token are required to join a cluster")
+        return {"enabled": False, "k3s": {"role": "server", "token": "", "server_addr": ""}}
+
+    return {"enabled": True, "k3s": {"role": "agent", "token": token, "server_addr": server_url}}
+
+
 # ============================================================================
 # System Configuration Prompts
 # ============================================================================
 
 
 def prompt_hostname() -> str:
-    """Prompt for hostname."""
     hostname = questionary.text(
         "Hostname:",
         default="homelab",
@@ -104,7 +161,6 @@ def prompt_hostname() -> str:
 
 
 def prompt_timezone() -> str:
-    """Prompt for timezone."""
     timezone = questionary.text(
         "Timezone:",
         default="UTC",
@@ -120,10 +176,6 @@ def prompt_timezone() -> str:
 
 
 def prompt_ssh_key_setup() -> str:
-    """
-    Prompt for SSH key setup (generate or provide).
-    Returns public key.
-    """
     console.print()
     key_choice = questionary.select(
         "SSH Key Setup:",
@@ -145,7 +197,6 @@ def prompt_ssh_key_setup() -> str:
 
 
 def generate_and_display_ssh_key() -> str:
-    """Generate SSH key pair, display private key, return public key."""
     console.print()
     console.print("[yellow]Generating SSH key pair...[/yellow]")
 
@@ -183,7 +234,6 @@ def generate_and_display_ssh_key() -> str:
 
 
 def prompt_ssh_public_key() -> str:
-    """Prompt user to paste their SSH public key."""
     console.print()
     show_info("Enter your SSH public key (paste and press Enter twice when done):")
 
@@ -218,7 +268,6 @@ def prompt_ssh_public_key() -> str:
 
 
 def prompt_git_remote() -> str:
-    """Prompt for git remote URL."""
     git_remote = questionary.text(
         "Git remote URL:",
         default="https://github.com/DemyCode/yolab.git",
@@ -235,10 +284,6 @@ def prompt_git_remote() -> str:
 
 
 def prompt_password() -> str:
-    """
-    Prompt for homelab user password.
-    Returns hashed password.
-    """
     console.print("[bold cyan]Set password for homelab user[/bold cyan]")
     console.print(
         "[dim]This password will be required for sudo commands (e.g., nixos-rebuild)[/dim]"
@@ -364,6 +409,8 @@ def build_install_config(
     git_remote: str,
     homelab_password_hash: str,
     tunnel: dict | None = None,
+    swarm: dict | None = None,
+    node_id: str | None = None,
 ) -> dict:
     swap_size = detect_ram_size()
 
@@ -388,6 +435,11 @@ def build_install_config(
             "compose_url": "",
         },
         "tunnel": tunnel if tunnel is not None else {"enabled": False},
+        "swarm": {"enabled": swarm.get("enabled", False)} if swarm else {"enabled": False},
+        "node": {
+            "node_id": node_id or generate_node_id(),
+            "k3s": swarm.get("k3s", {"role": "server", "token": "", "server_addr": ""}) if swarm else {},
+        },
     }
 
     return config

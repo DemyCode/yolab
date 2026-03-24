@@ -194,6 +194,7 @@ def cli_wsl_setup():
     """
     from pathlib import Path
     from installer.install_flow import (
+        generate_node_id,
         prompt_hostname,
         prompt_timezone,
         prompt_tunnel_setup,
@@ -225,6 +226,8 @@ def cli_wsl_setup():
             "repo_path": "/etc/nixos",
         },
         "tunnel": tunnel if tunnel is not None else {"enabled": False},
+        "swarm": {"enabled": False, "mode": "manager"},
+        "node": {"node_id": generate_node_id()},
     }
 
     config_path = Path("/etc/nixos/homelab/ignored/config.toml")

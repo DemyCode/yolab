@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 
@@ -86,6 +87,13 @@ def main():
     hostname = prompt("Hostname", "homelab-mac")
     timezone = prompt("Timezone", "UTC")
 
+    print("\n--- Swarm setup ---")
+    wants_swarm = prompt_bool("Enable swarm (connect multiple machines)?")
+    swarm: dict = {"enabled": False, "mode": "manager"}
+    if wants_swarm:
+        is_first = prompt_bool("Is this the first machine (new swarm manager)?")
+        swarm = {"enabled": True, "mode": "manager" if is_first else "worker"}
+
     print("\n--- Tunnel setup ---")
     wants_tunnel = prompt_bool("Register a YoLab tunnel (makes your homelab reachable from the internet)?")
 
@@ -158,6 +166,8 @@ def main():
             "repo_path": str(yolab_dir),
         },
         "tunnel": tunnel,
+        "swarm": swarm,
+        "node": {"node_id": str(uuid.uuid4())},
     }
 
     write_toml(config, config_path)

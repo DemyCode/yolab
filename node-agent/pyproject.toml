@@ -3,17 +3,20 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "local-api"
+name = "node-agent"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "httpx>=0.25.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "protobuf>=4.25.0",
 ]
 
 [project.scripts]
-local-api = "local_api.main:run"
+node-agent = "node_agent.main:run"
 
 [tool.hatch.build.targets.wheel]
-packages = ["local_api"]
+packages = ["node_agent"]

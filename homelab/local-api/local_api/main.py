@@ -1,7 +1,9 @@
 import asyncio
+import json
 import os
 import subprocess
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -9,6 +11,7 @@ from fastapi.responses import StreamingResponse
 REPO_PATH = os.environ.get("YOLAB_REPO_PATH", "/etc/nixos")
 PLATFORM = os.environ.get("YOLAB_PLATFORM", "nixos")
 FLAKE_TARGET = os.environ.get("YOLAB_FLAKE_TARGET", "yolab")
+NODE_AGENT_PORT = 3002
 
 
 def get_update_commands() -> list[list[str]]:
@@ -18,6 +21,46 @@ def get_update_commands() -> list[list[str]]:
         else ["nixos-rebuild", "switch", "--flake", f"{REPO_PATH}#{FLAKE_TARGET}"]
     )
     return [["git", "-C", REPO_PATH, "pull"], rebuild]
+
+
+def _cluster_node_ips() -> list[str]:
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "nodes", "-o", "json"],
+            capture_output=True, text=True, check=True,
+        )
+        data = json.loads(result.stdout)
+        ips = []
+        for item in data.get("items", []):
+            for addr in item.get("status", {}).get("addresses", []):
+                if addr["type"] == "InternalIP":
+                    ips.append(addr["address"])
+        return ips
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return []
+
+
+async def _fetch_peer(client: httpx.AsyncClient, ip: str, path: str):
+    host = f"[{ip}]" if ":" in ip else ip
+    try:
+        resp = await client.get(f"http://{host}:{NODE_AGENT_PORT}{path}", timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return None
+
+
+async def _fan_out(path: str) -> list:
+    ips = _cluster_node_ips() or ["127.0.0.1"]
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(*[_fetch_peer(client, ip, path) for ip in ips])
+    merged = []
+    for r in results:
+        if isinstance(r, list):
+            merged.extend(r)
+        elif r is not None:
+            merged.append(r)
+    return merged
 
 
 app = FastAPI()
@@ -39,9 +82,7 @@ def status():
     try:
         result = subprocess.run(
             ["git", "-C", REPO_PATH, "log", "-1", "--format=%H|||%s|||%ci"],
-            capture_output=True,
-            text=True,
-            check=True,
+            capture_output=True, text=True, check=True,
         )
         parts = result.stdout.strip().split("|||")
         return {
@@ -78,7 +119,48 @@ async def update():
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@app.get("/api/nodes")
+async def get_nodes():
+    ips = _cluster_node_ips() or ["127.0.0.1"]
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(*[_fetch_peer(client, ip, "/info") for ip in ips])
+    nodes = []
+    for ip, info in zip(ips, results):
+        if info:
+            info["agent_ip"] = ip
+            nodes.append(info)
+    return nodes
+
+
+@app.get("/api/disks")
+async def get_disks():
+    return await _fan_out("/disks")
+
+
+@app.get("/api/volumes")
+async def get_volumes():
+    return await _fan_out("/volumes")
+
+
+@app.get("/api/cluster/status")
+async def get_cluster_status():
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "nodes", "-o", "json"],
+            capture_output=True, text=True, check=True,
+        )
+        data = json.loads(result.stdout)
+        items = data.get("items", [])
+        ready = sum(
+            1 for n in items
+            if any(c["type"] == "Ready" and c["status"] == "True"
+                   for c in n.get("status", {}).get("conditions", []))
+        )
+        return {"total": len(items), "ready": ready}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def run():
     import uvicorn
-
     uvicorn.run(app, host="127.0.0.1", port=3001)

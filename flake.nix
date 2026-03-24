@@ -30,11 +30,13 @@
       ...
     }@inputs:
     let
-      mkDarwinSystem = system: nix-darwin.lib.darwinSystem {
-        inherit system;
-        modules = [ ./homelab/darwin/configuration.nix ];
-        specialArgs = { inherit inputs; };
-      };
+      mkDarwinSystem =
+        system:
+        nix-darwin.lib.darwinSystem {
+          inherit system;
+          modules = [ ./homelab/darwin/configuration.nix ];
+          specialArgs = { inherit inputs; };
+        };
     in
     {
       nixosConfigurations = {
@@ -82,9 +84,7 @@
       };
 
       darwinConfigurations = {
-        # Apple Silicon (M1/M2/M3/M4)
         "yolab-mac" = mkDarwinSystem "aarch64-darwin";
-        # Intel Mac
         "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
       };
 

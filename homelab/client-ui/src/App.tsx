@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { NodesPage } from "./pages/NodesPage";
+import { DisksPage } from "./pages/DisksPage";
+import { VolumesPage } from "./pages/VolumesPage";
+
+type Tab = "overview" | "nodes" | "disks" | "volumes";
 
 interface Status {
   commit_hash: string;
@@ -9,7 +14,7 @@ interface Status {
   error?: string;
 }
 
-function App() {
+function OverviewPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [updating, setUpdating] = useState(false);
   const [log, setLog] = useState<string[]>([]);
@@ -52,7 +57,6 @@ function App() {
         if (!line.trim()) continue;
         if (line === "[DONE]") {
           setUpdateDone(true);
-          // Refresh status after a successful update
           fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
         } else {
           setLog((prev) => [...prev, line]);
@@ -69,10 +73,7 @@ function App() {
     : "—";
 
   return (
-    <div style={{ fontFamily: "monospace", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>Your homelab is up and running.</p>
-
+    <div>
       <div style={{
         background: "#f5f5f5",
         borderRadius: 8,
@@ -140,6 +141,50 @@ function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "nodes", label: "Nodes" },
+  { id: "disks", label: "Disks" },
+  { id: "volumes", label: "Volumes" },
+];
+
+function App() {
+  const [tab, setTab] = useState<Tab>("overview");
+
+  return (
+    <div style={{ fontFamily: "monospace", maxWidth: 820, margin: "3rem auto", padding: "0 1rem" }}>
+      <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
+      <p style={{ color: "#666", marginTop: 0, marginBottom: "1.5rem" }}>Your homelab is up and running.</p>
+
+      <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "1px solid #333", paddingBottom: "0" }}>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "0.5rem 1rem",
+              background: "none",
+              border: "none",
+              borderBottom: tab === t.id ? "2px solid #eee" : "2px solid transparent",
+              color: tab === t.id ? "#eee" : "#666",
+              cursor: "pointer",
+              fontSize: "0.9rem",
+              fontFamily: "monospace",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "overview" && <OverviewPage />}
+      {tab === "nodes" && <NodesPage />}
+      {tab === "disks" && <DisksPage />}
+      {tab === "volumes" && <VolumesPage />}
     </div>
   );
 }

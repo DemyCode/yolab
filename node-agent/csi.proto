@@ -1,0 +1,140 @@
+syntax = "proto3";
+package csi.v1;
+option go_package = "github.com/container-storage-interface/spec/lib/go/csi";
+
+service Identity {
+  rpc GetPluginInfo(GetPluginInfoRequest) returns (GetPluginInfoResponse) {}
+  rpc GetPluginCapabilities(GetPluginCapabilitiesRequest) returns (GetPluginCapabilitiesResponse) {}
+  rpc Probe(ProbeRequest) returns (ProbeResponse) {}
+}
+
+service Controller {
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse) {}
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse) {}
+  rpc ControllerGetCapabilities(ControllerGetCapabilitiesRequest) returns (ControllerGetCapabilitiesResponse) {}
+}
+
+service Node {
+  rpc NodePublishVolume(NodePublishVolumeRequest) returns (NodePublishVolumeResponse) {}
+  rpc NodeUnpublishVolume(NodeUnpublishVolumeRequest) returns (NodeUnpublishVolumeResponse) {}
+  rpc NodeGetCapabilities(NodeGetCapabilitiesRequest) returns (NodeGetCapabilitiesResponse) {}
+  rpc NodeGetInfo(NodeGetInfoRequest) returns (NodeGetInfoResponse) {}
+}
+
+message GetPluginInfoRequest {}
+message GetPluginInfoResponse {
+  string name = 1;
+  string vendor_version = 2;
+}
+
+message GetPluginCapabilitiesRequest {}
+message GetPluginCapabilitiesResponse {
+  repeated PluginCapability capabilities = 1;
+}
+message PluginCapability {
+  message Service {
+    enum Type {
+      UNKNOWN = 0;
+      CONTROLLER_SERVICE = 1;
+    }
+    Type type = 1;
+  }
+  oneof type {
+    Service service = 1;
+  }
+}
+
+message ProbeRequest {}
+message ProbeResponse {
+  google.protobuf.BoolValue ready = 1;
+}
+
+message CreateVolumeRequest {
+  string name = 1;
+  map<string, string> parameters = 3;
+  VolumeCapability volume_capability = 2;
+}
+message CreateVolumeResponse {
+  Volume volume = 1;
+}
+message Volume {
+  string volume_id = 1;
+  map<string, string> volume_context = 5;
+}
+
+message DeleteVolumeRequest {
+  string volume_id = 1;
+}
+message DeleteVolumeResponse {}
+
+message ControllerGetCapabilitiesRequest {}
+message ControllerGetCapabilitiesResponse {
+  repeated ControllerServiceCapability capabilities = 1;
+}
+message ControllerServiceCapability {
+  message RPC {
+    enum Type {
+      UNKNOWN = 0;
+      CREATE_DELETE_VOLUME = 1;
+    }
+    Type type = 1;
+  }
+  oneof type {
+    RPC rpc = 1;
+  }
+}
+
+message NodePublishVolumeRequest {
+  string volume_id = 1;
+  string target_path = 3;
+  VolumeCapability volume_capability = 4;
+  bool readonly = 5;
+  map<string, string> volume_context = 7;
+}
+message NodePublishVolumeResponse {}
+
+message NodeUnpublishVolumeRequest {
+  string volume_id = 1;
+  string target_path = 2;
+}
+message NodeUnpublishVolumeResponse {}
+
+message NodeGetCapabilitiesRequest {}
+message NodeGetCapabilitiesResponse {
+  repeated NodeServiceCapability capabilities = 1;
+}
+message NodeServiceCapability {
+  message RPC {
+    enum Type {
+      UNKNOWN = 0;
+    }
+    Type type = 1;
+  }
+  oneof type {
+    RPC rpc = 1;
+  }
+}
+
+message NodeGetInfoRequest {}
+message NodeGetInfoResponse {
+  string node_id = 1;
+}
+
+message VolumeCapability {
+  message MountVolume {
+    string fs_type = 1;
+  }
+  message AccessMode {
+    enum Mode {
+      UNKNOWN = 0;
+      SINGLE_NODE_WRITER = 1;
+    }
+    Mode mode = 1;
+  }
+  oneof access_type {
+    MountVolume mount = 1;
+  }
+  AccessMode access_mode = 3;
+}
+
+import "google/protobuf/wrappers.proto";
