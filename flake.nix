@@ -40,22 +40,6 @@
     in
     {
       nixosConfigurations = {
-        wireguard-server = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            disko.nixosModules.disko
-            ./deployment/nixos/wireguard-server.nix
-          ];
-          specialArgs = { inherit inputs; };
-        };
-        services-stack = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            disko.nixosModules.disko
-            ./deployment/nixos/services-stack.nix
-          ];
-          specialArgs = { inherit inputs; };
-        };
         yolab = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
