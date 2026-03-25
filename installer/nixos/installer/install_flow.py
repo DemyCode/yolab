@@ -1,4 +1,6 @@
+import os
 import secrets
+import shutil
 import subprocess
 import sys
 import uuid
@@ -19,7 +21,6 @@ from installer.display import (
 )
 from installer.functions import (
     detect_disks,
-    detect_ram_size,
 )
 from installer.password import hash_password, validate_password_strength
 from installer.ssh_keygen import generate_ssh_keypair
@@ -412,8 +413,6 @@ def build_install_config(
     swarm: dict | None = None,
     node_id: str | None = None,
 ) -> dict:
-    swap_size = detect_ram_size()
-
     config = {
         "homelab": {
             "hostname": hostname,
@@ -428,7 +427,6 @@ def build_install_config(
         "disk": {
             "device": disk,
             "esp_size": "500M",
-            "swap_size": f"{swap_size}G",
         },
         "docker": {
             "enabled": False,
@@ -488,7 +486,16 @@ def install_system(config: dict) -> None:
     hardware_config.write_text(result.stdout)
 
     console.print(
-        "[yellow]Step 1: Partitioning and formatting disk with disko...[/yellow]"
+        "[yellow]Step 1: Generating disk encryption key...[/yellow]"
+    )
+    keyfile_tmp = Path("/tmp/yolab-luks-key.bin")
+    keyfile_tmp.write_bytes(os.urandom(4096))
+    os.chmod(keyfile_tmp, 0o400)
+    show_success("Encryption key generated")
+    console.print()
+
+    console.print(
+        "[yellow]Step 2: Partitioning and formatting disk with disko...[/yellow]"
     )
     console.print(f"[dim]Target disk: {config['disk']['device']}[/dim]")
     console.print("[dim]This will erase all data on the disk...[/dim]")
@@ -510,7 +517,17 @@ def install_system(config: dict) -> None:
     show_success("Disk partitioned and mounted to /mnt")
     console.print()
 
-    console.print("[yellow]Step 3: Installing NixOS...[/yellow]")
+    console.print("[yellow]Storing encryption key in installed system...[/yellow]")
+    secrets_dir = Path("/mnt/etc/secrets/initrd")
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    final_keyfile = secrets_dir / "keyfile.bin"
+    shutil.copy2(str(keyfile_tmp), str(final_keyfile))
+    os.chmod(final_keyfile, 0o400)
+    keyfile_tmp.unlink()
+    show_success("Encryption key stored")
+    console.print()
+
+    console.print("[yellow]Step 3: Installing NixOS (this will take a few minutes)...[/yellow]")
     console.print()
 
     subprocess.run(

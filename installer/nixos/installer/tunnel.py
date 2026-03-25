@@ -11,12 +11,6 @@ def register_tunnel(
     service_name: str,
     wg_public_key: str,
 ) -> dict:
-    """
-    Register a WireGuard tunnel with the YoLab platform API.
-
-    Returns a dict with: service_id, sub_ipv6, wg_server_endpoint, wg_server_public_key
-    Raises an exception on failure.
-    """
     url = f"{platform_api_url.rstrip('/')}/services"
     payload = json.dumps(
         {

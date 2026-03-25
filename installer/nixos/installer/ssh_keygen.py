@@ -6,16 +6,9 @@ from pathlib import Path
 
 
 def generate_ssh_keypair() -> tuple[str, str]:
-    """
-    Generate an SSH ed25519 key pair.
-
-    Returns:
-        tuple: (private_key, public_key)
-    """
     with tempfile.TemporaryDirectory() as tmpdir:
         key_path = Path(tmpdir) / "id_ed25519"
 
-        # Generate SSH key without passphrase
         subprocess.run(
             [
                 "ssh-keygen",

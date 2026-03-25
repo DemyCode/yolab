@@ -1,5 +1,5 @@
 {
-  description = "YoLab Packages";
+  description = "Yolab";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -61,7 +61,7 @@
           system = "x86_64-linux";
           modules = [
             "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
-            ./installer/iso-config.nix
+            ./installer/nixos/iso-config.nix
           ];
           specialArgs = { inherit inputs; };
         };

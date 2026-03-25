@@ -8,7 +8,6 @@
   diskConfig = homelabConfig.disk or (throw "[disk] section missing in config.toml");
   diskDevice = diskConfig.device or (throw "[disk] device is required in config.toml");
   espSize = diskConfig.esp_size or (throw "[disk] esp_size is required in config.toml");
-  swapSize = diskConfig.swap_size or (throw "[disk] swap_size is required in config.toml");
 in {
   disko.devices = {
     disk.disk1 = {
@@ -31,8 +30,17 @@ in {
             name = "root";
             size = "100%";
             content = {
-              type = "lvm_pv";
-              vg = "pool";
+              type = "luks";
+              name = "crypted";
+              passwordFile = "/tmp/yolab-luks-key.bin";
+              settings = {
+                allowDiscards = true;
+                keyFile = "/tmp/yolab-luks-key.bin";
+              };
+              content = {
+                type = "lvm_pv";
+                vg = "pool";
+              };
             };
           };
         };
@@ -42,12 +50,6 @@ in {
       pool = {
         type = "lvm_vg";
         lvs = {
-          swap = {
-            size = swapSize;
-            content = {
-              type = "swap";
-            };
-          };
           root = {
             size = "100%FREE";
             content = {
