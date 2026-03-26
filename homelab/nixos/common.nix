@@ -148,6 +148,7 @@ in
       ];
       environment = {
         YOLAB_REPO_PATH = config.yolab.repoPath;
+        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
         YOLAB_PLATFORM = config.yolab.platform;
         YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
       };

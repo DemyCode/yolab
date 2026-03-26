@@ -45,3 +45,4 @@ result-*
 *.swo
 *~
 
+node_modules
