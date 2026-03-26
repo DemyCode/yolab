@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { NodesPage } from "./pages/NodesPage";
 import { DisksPage } from "./pages/DisksPage";
 import { VolumesPage } from "./pages/VolumesPage";
+import { AppsPage } from "./pages/AppsPage";
 
-type Tab = "overview" | "nodes" | "disks" | "volumes";
+type Tab = "overview" | "nodes" | "disks" | "volumes" | "apps";
 
 interface Status {
   commit_hash: string;
@@ -150,6 +151,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "nodes", label: "Nodes" },
   { id: "disks", label: "Disks" },
   { id: "volumes", label: "Volumes" },
+  { id: "apps", label: "Apps" },
 ];
 
 function App() {
@@ -185,6 +187,7 @@ function App() {
       {tab === "nodes" && <NodesPage />}
       {tab === "disks" && <DisksPage />}
       {tab === "volumes" && <VolumesPage />}
+      {tab === "apps" && <AppsPage />}
     </div>
   );
 }

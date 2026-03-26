@@ -46,15 +46,24 @@ def show_disk_table(disks: list[dict]):
     table = Table(show_header=True, header_style="bold magenta", border_style="dim")
     table.add_column("Device", style="cyan")
     table.add_column("Size", justify="right")
+    table.add_column("Type")
     table.add_column("Status")
 
     for disk in disks:
-        status = "[red]Mounted[/red]" if disk["mounted"] else "[green]Available[/green]"
-        table.add_row(
-            disk["name"],
-            disk["size"],
-            status,
-        )
+        if disk.get("is_usb"):
+            disk_type = "[yellow]USB[/yellow]"
+        else:
+            tran = disk.get("tran", "unknown")
+            disk_type = f"[blue]{tran.upper() if tran != 'unknown' else 'Internal'}[/blue]"
+
+        if disk["mounted"]:
+            status = "[red]In use[/red]"
+        elif disk.get("recommended"):
+            status = "[green]Available[/green] [bold green](Recommended)[/bold green]"
+        else:
+            status = "[green]Available[/green]"
+
+        table.add_row(disk["name"], disk["size"], disk_type, status)
 
     console.print(table)
     console.print()

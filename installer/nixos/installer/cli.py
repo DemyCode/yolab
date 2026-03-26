@@ -187,11 +187,6 @@ def cli_install(
 
 @cli.command("wsl-setup")
 def cli_wsl_setup():
-    """Configure YoLab inside NixOS-WSL (no disk setup, no reboot required).
-
-    Prompts for homelab settings and tunnel registration, writes config.toml,
-    then applies the yolab-wsl NixOS configuration.
-    """
     from pathlib import Path
     from installer.install_flow import (
         generate_node_id,

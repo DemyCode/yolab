@@ -73,6 +73,9 @@ def auto_select_disk() -> str:
     if not unmounted:
         show_error("No unmounted disks found")
         sys.exit(1)
+    recommended = next((d for d in unmounted if d.get("recommended")), None)
+    if recommended:
+        return recommended["name"]
     return max(unmounted, key=lambda d: _parse_size(d.get("size", "0")))["name"]
 
 
@@ -91,14 +94,21 @@ def prompt_disk_selection() -> str:
         show_error("No available disks found (all disks are mounted)")
         sys.exit(1)
 
-    choices = [
-        questionary.Choice(title=f"{disk['name']} ({disk['size']})", value=disk["name"])
-        for disk in unmounted_disks
-    ]
+    default_disk = next((d for d in unmounted_disks if d.get("recommended")), unmounted_disks[0])
+
+    choices = []
+    for disk in unmounted_disks:
+        label = f"{disk['name']}  {disk['size']}"
+        if disk.get("is_usb"):
+            label += "  [USB]"
+        if disk.get("recommended"):
+            label += "  ★ Recommended"
+        choices.append(questionary.Choice(title=label, value=disk["name"]))
 
     selected_disk = questionary.select(
         "Select disk for installation:",
         choices=choices,
+        default=default_disk["name"],
         style=PROMPT_STYLE,
     ).ask()
 

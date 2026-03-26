@@ -1,0 +1,287 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ app_id }}
+  labels:
+    yolab.dev/app: {{ app_id }}
+    yolab.dev/managed: "true"
+  annotations:
+    yolab.dev/tunnel-url: "https://{{ subdomain }}.{{ domain }}"
+    yolab.dev/service-id: "{{ tunnel_service_id }}"
+---
+# All app secrets + WireGuard private key in one Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: yolab-{{ app_id }}
+type: Opaque
+stringData:
+  DB_PASSWORD: "{{ db_password }}"
+  DB_USERNAME: "immich"
+  DB_DATABASE_NAME: "immich"
+  DB_URL: "postgresql://immich:{{ db_password }}@immich-postgres:5432/immich"
+  REDIS_HOSTNAME: "immich-redis"
+  TZ: "{{ timezone }}"
+  wg0.conf: |
+    [Interface]
+    PrivateKey = {{ wg_private_key }}
+    Address = {{ sub_ipv6 }}/128
+
+    [Peer]
+    PublicKey = {{ wg_server_public_key }}
+    Endpoint = {{ wg_server_endpoint }}
+    AllowedIPs = 0.0.0.0/0, ::/0
+    PersistentKeepalive = 25
+---
+# Caddy config — listens ONLY on the tunnel IPv6, unreachable otherwise
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config
+  namespace: yolab-{{ app_id }}
+data:
+  Caddyfile: |
+    {
+        admin off
+    }
+    http://[{{ sub_ipv6 }}] {
+        reverse_proxy immich-server:{{ port }}
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-upload
+  namespace: yolab-{{ app_id }}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: yolab
+  resources:
+    requests:
+      storage: {{ upload_size }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-postgres
+  namespace: yolab-{{ app_id }}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: yolab
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-ml-cache
+  namespace: yolab-{{ app_id }}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: yolab
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-redis
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    matchLabels:
+      app: immich-redis
+  template:
+    metadata:
+      labels:
+        app: immich-redis
+    spec:
+      containers:
+        - name: redis
+          image: docker.io/valkey/valkey:8-bookworm
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-redis
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    app: immich-redis
+  ports:
+    - port: 6379
+---
+# Postgres
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-postgres
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    matchLabels:
+      app: immich-postgres
+  template:
+    metadata:
+      labels:
+        app: immich-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DB_PASSWORD
+            - name: POSTGRES_USER
+              value: "immich"
+            - name: POSTGRES_DB
+              value: "immich"
+            - name: POSTGRES_INITDB_ARGS
+              value: "--data-checksums"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: immich-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-postgres
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    app: immich-postgres
+  ports:
+    - port: 5432
+---
+# Machine learning
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-machine-learning
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    matchLabels:
+      app: immich-machine-learning
+  template:
+    metadata:
+      labels:
+        app: immich-machine-learning
+    spec:
+      containers:
+        - name: ml
+          image: ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}
+          envFrom:
+            - secretRef:
+                name: app-secrets
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+          resources:
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: immich-ml-cache
+---
+# Immich server — ClusterIP only, not exposed outside the cluster
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-server
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    matchLabels:
+      app: immich-server
+  template:
+    metadata:
+      labels:
+        app: immich-server
+    spec:
+      containers:
+        - name: server
+          image: ghcr.io/immich-app/immich-server:{{ immich_version }}
+          envFrom:
+            - secretRef:
+                name: app-secrets
+          env:
+            - name: VIPS_NOVECTOR
+              value: "1"
+          volumeMounts:
+            - name: upload
+              mountPath: /usr/src/app/upload
+      volumes:
+        - name: upload
+          persistentVolumeClaim:
+            claimName: immich-upload
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-server
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    app: immich-server
+  ports:
+    - port: {{ port }}
+---
+# Tunnel pod: wg-sidecar owns the network namespace, Caddy shares it.
+# Nothing in this pod is exposed — traffic arrives exclusively via the WireGuard tunnel.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunnel-proxy
+  namespace: yolab-{{ app_id }}
+spec:
+  selector:
+    matchLabels:
+      app: tunnel-proxy
+  template:
+    metadata:
+      labels:
+        app: tunnel-proxy
+    spec:
+      containers:
+        - name: wg-sidecar
+          image: ghcr.io/yolab/wg-sidecar:latest
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: wg-config
+              mountPath: /etc/wireguard/wg0.conf
+              subPath: wg0.conf
+              readOnly: true
+
+        - name: caddy
+          image: caddy:2-alpine
+          # No ports declared — unreachable except through wg0
+          volumeMounts:
+            - name: caddy-config
+              mountPath: /etc/caddy/Caddyfile
+              subPath: Caddyfile
+              readOnly: true
+
+      volumes:
+        - name: wg-config
+          secret:
+            secretName: app-secrets
+            defaultMode: 0600
+        - name: caddy-config
+          configMap:
+            name: caddy-config

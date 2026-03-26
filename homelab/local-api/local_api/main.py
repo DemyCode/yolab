@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from local_api.apps import router as apps_router
+
 REPO_PATH = os.environ.get("YOLAB_REPO_PATH", "/etc/nixos")
 PLATFORM = os.environ.get("YOLAB_PLATFORM", "nixos")
 FLAKE_TARGET = os.environ.get("YOLAB_FLAKE_TARGET", "yolab")
@@ -70,6 +72,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(apps_router)
 
 
 @app.get("/api/health")

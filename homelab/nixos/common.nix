@@ -77,7 +77,6 @@ in
       extraFlags = lib.concatStringsSep " " (
         [
           "--flannel-backend=wireguard-native"
-          "--disable=traefik"
         ]
         ++ lib.optionals s.tunnelEnabled [
           "--advertise-address=${s.tunnelCfg.sub_ipv6}"
@@ -228,6 +227,6 @@ in
     ];
     nix.gc.automatic = true;
 
-    services.swap.enable = true;
+    services.swapspace.enable = true;
   };
 }

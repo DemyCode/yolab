@@ -15,10 +15,37 @@ def test_internet() -> bool:
         return False
 
 
+def _parse_size(size_str: str) -> float:
+    size_str = size_str.strip().upper()
+    if size_str.endswith("T"):
+        return float(size_str[:-1]) * 1000
+    if size_str.endswith("G"):
+        return float(size_str[:-1])
+    if size_str.endswith("M"):
+        return float(size_str[:-1]) / 1000
+    return 0.0
+
+
+def _is_removable(name: str) -> bool:
+    try:
+        return Path(f"/sys/block/{name}/removable").read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+def _has_mounted_children(device: dict) -> bool:
+    for child in device.get("children", []):
+        if child.get("mountpoint"):
+            return True
+        if _has_mounted_children(child):
+            return True
+    return False
+
+
 def detect_disks() -> list[dict]:
     try:
         result = subprocess.run(
-            ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINT"],
+            ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,TRAN"],
             capture_output=True,
             text=True,
             check=True,
@@ -26,14 +53,30 @@ def detect_disks() -> list[dict]:
         data = json.loads(result.stdout)
         disks = []
         for device in data.get("blockdevices", []):
-            if device.get("type") == "disk":
-                disks.append(
-                    {
-                        "name": f"/dev/{device['name']}",
-                        "size": device["size"],
-                        "mounted": bool(device.get("mountpoint")),
-                    }
-                )
+            if device.get("type") != "disk":
+                continue
+            name = device["name"]
+            tran = (device.get("tran") or "").lower()
+            is_usb = tran == "usb" or _is_removable(name)
+            mounted = bool(device.get("mountpoint")) or _has_mounted_children(device)
+            disks.append(
+                {
+                    "name": f"/dev/{name}",
+                    "size": device["size"],
+                    "tran": tran or "unknown",
+                    "is_usb": is_usb,
+                    "mounted": mounted,
+                }
+            )
+
+        # Mark the recommended disk: largest internal, non-mounted disk
+        internal_available = [
+            d for d in disks if not d["is_usb"] and not d["mounted"]
+        ]
+        if internal_available:
+            recommended = max(internal_available, key=lambda d: _parse_size(d["size"]))
+            recommended["recommended"] = True
+
         return disks
     except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         return []

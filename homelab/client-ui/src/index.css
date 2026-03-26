@@ -66,3 +66,66 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+/* ── RJSF form dark theme ───────────────────────────────────────────────── */
+.yolab-form .form-group { margin-bottom: 1rem; }
+
+.yolab-form label {
+  display: block;
+  font-size: 0.85rem;
+  color: #bbb;
+  margin-bottom: 0.3rem;
+  font-family: monospace;
+}
+
+.yolab-form input[type="text"],
+.yolab-form input[type="password"],
+.yolab-form input[type="number"],
+.yolab-form input[type="email"],
+.yolab-form input[type="url"],
+.yolab-form select,
+.yolab-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.6rem;
+  background: #111;
+  color: #eee;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+.yolab-form input:focus,
+.yolab-form select:focus,
+.yolab-form textarea:focus {
+  outline: none;
+  border-color: #646cff;
+}
+
+.yolab-form p.field-description {
+  font-size: 0.78rem;
+  color: #555;
+  margin: 0.25rem 0 0;
+}
+
+.yolab-form .text-danger,
+.yolab-form .errors { color: #f87171; font-size: 0.8rem; margin-top: 0.25rem; }
+
+.yolab-form fieldset {
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 1rem;
+  margin: 0 0 1rem;
+}
+
+.yolab-form legend {
+  font-size: 0.85rem;
+  color: #888;
+  padding: 0 0.4rem;
+  font-family: monospace;
+}
+
+.yolab-form .array-item { display: flex; gap: 0.5rem; align-items: flex-start; margin-bottom: 0.5rem; }
+.yolab-form .array-item-toolbox { display: flex; gap: 0.25rem; padding-top: 0.25rem; }
+.yolab-form .btn-add { margin-top: 0.25rem; font-size: 0.8rem; }

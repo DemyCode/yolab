@@ -11,7 +11,10 @@
   },
   "dependencies": {
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "@rjsf/core": "^5.24.0",
+    "@rjsf/utils": "^5.24.0",
+    "@rjsf/validator-ajv8": "^5.24.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
