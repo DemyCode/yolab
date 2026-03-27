@@ -144,11 +144,10 @@ in
     systemd.services.yolab-local-api = {
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
-      path = [
-        pkgs.git
-        pkgs.nix
-      ];
+      # Use the full system PATH so nixos-rebuild, git, nix and friends are all reachable.
+      # The service runs as root so no sudo is needed for nixos-rebuild.
       environment = {
+        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
         YOLAB_REPO_PATH = config.yolab.repoPath;
         YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
         YOLAB_PLATFORM = config.yolab.platform;

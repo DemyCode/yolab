@@ -113,18 +113,23 @@ async def update():
     async def stream():
         for cmd in get_update_commands():
             yield f"data: $ {' '.join(cmd)}\n\n"
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            except Exception as e:
+                yield f"data: [ERROR] failed to start '{cmd[0]}': {e}\n\n"
+                return
+            assert process.stdout is not None
             async for line in process.stdout:
                 text = line.decode().rstrip()
                 if text:
                     yield f"data: {text}\n\n"
             await process.wait()
             if process.returncode != 0:
-                yield f"data: [ERROR] exited with code {process.returncode}\n\n"
+                yield f"data: [ERROR] '{cmd[0]}' exited with code {process.returncode}\n\n"
                 return
         yield "data: [DONE]\n\n"
 
