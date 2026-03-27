@@ -41,11 +41,24 @@ in
         wg0 = {
           ips = [ "${s.tunnelCfg.sub_ipv6}/128" ];
           privateKey = s.tunnelCfg.wg_private_key;
+          # Accept inbound packets from any source (same as AllowedIPs = ::/0 on the installer).
+          # postSetup removes the default route NixOS injects for ::/0 and replaces it with
+          # source-based policy routing so only return traffic (packets *from* sub_ipv6) is
+          # sent back through the tunnel — outbound internet access is unaffected.
+          postSetup = ''
+            ip -6 route del ::/0 dev wg0 2>/dev/null || true
+            ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
+            ip -6 route add ::/0 dev wg0 table 51820
+          '';
+          preShutdown = ''
+            ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
+            ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
+          '';
           peers = [
             {
               publicKey = s.tunnelCfg.wg_server_public_key;
               endpoint = s.tunnelCfg.wg_server_endpoint;
-              allowedIPs = [ s.wgSubnet ];
+              allowedIPs = [ "::/0" ];
               persistentKeepalive = 25;
             }
           ];
