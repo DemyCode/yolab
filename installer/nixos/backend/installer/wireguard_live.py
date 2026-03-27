@@ -27,20 +27,27 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
     wg_server_public_key = info["wg_server_public_key"]
     service_id = info["service_id"]
 
-    # Route only the WireGuard /64 subnet through the tunnel so the installer's
-    # own internet traffic (package downloads, git clones) goes directly out
-    # the host machine's interface, not through the server.
-    wg_prefix = sub_ipv6.split("::")[0]
-    wg_subnet = f"{wg_prefix}::/64"
-
+    # Table = off: disable wg-quick's automatic route injection so the
+    # installer's own outbound traffic (DNS, package downloads) is NOT
+    # routed through the tunnel.
+    #
+    # PostUp adds a policy rule: packets *sourced from* sub_ipv6 (i.e.
+    # return traffic for inbound connections) use routing table 51820,
+    # which sends everything through wg0. This keeps the return path
+    # working without hijacking the installer's own internet traffic.
     conf = (
         f"[Interface]\n"
         f"PrivateKey = {private_key}\n"
-        f"Address = {sub_ipv6}/128\n\n"
+        f"Address = {sub_ipv6}/128\n"
+        f"Table = off\n"
+        f"PostUp = ip -6 rule add from {sub_ipv6} lookup 51820 priority 100; "
+        f"ip -6 route add ::/0 dev wg0 table 51820\n"
+        f"PreDown = ip -6 rule del from {sub_ipv6} lookup 51820 priority 100; "
+        f"ip -6 route del ::/0 dev wg0 table 51820\n\n"
         f"[Peer]\n"
         f"PublicKey = {wg_server_public_key}\n"
         f"Endpoint = {wg_server_endpoint}\n"
-        f"AllowedIPs = {wg_subnet}\n"
+        f"AllowedIPs = ::/0\n"
         f"PersistentKeepalive = 25\n"
     )
 

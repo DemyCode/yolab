@@ -88,7 +88,7 @@ async def api_install(body: dict) -> JSONResponse:
 @app.get("/api/progress")
 async def api_progress() -> StreamingResponse:
     async def generate():
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while True:
             try:
                 line = await loop.run_in_executor(None, lambda: _log_q.get(timeout=120))

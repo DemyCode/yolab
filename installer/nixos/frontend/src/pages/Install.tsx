@@ -358,21 +358,31 @@ export default function Install() {
   const [disk, setDisk] = useState('')
   const [config, setConfig] = useState<Config | null>(null)
 
+  const [installError, setInstallError] = useState('')
+
   async function startInstall() {
     if (!config) return
-    const res = await fetch('/api/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        disk,
-        hostname: config.hostname,
-        timezone: config.timezone,
-        password: config.password,
-        ssh_key: config.sshKey,
-      }),
-    })
-    if (res.ok) {
-      setStep(4)
+    setInstallError('')
+    try {
+      const res = await fetch('/api/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          disk,
+          hostname: config.hostname,
+          timezone: config.timezone,
+          password: config.password,
+          ssh_key: config.sshKey,
+        }),
+      })
+      if (res.ok) {
+        setStep(4)
+      } else {
+        const body = await res.json().catch(() => ({}))
+        setInstallError(body.detail ?? `Server error ${res.status}`)
+      }
+    } catch (e) {
+      setInstallError(String(e))
     }
   }
 
@@ -393,12 +403,17 @@ export default function Install() {
         />
       )}
       {step === 3 && config && (
+        <>
+          {installError && (
+            <p className="text-[#f87171] text-sm">{installError}</p>
+          )}
         <StepConfirm
           disk={disk}
           config={config}
           onInstall={startInstall}
           onBack={() => setStep(2)}
         />
+        </>
       )}
       {step === 4 && <StepProgress />}
     </div>

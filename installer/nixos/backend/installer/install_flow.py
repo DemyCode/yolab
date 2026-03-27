@@ -54,7 +54,8 @@ def install_system(config: dict, log: Callable[[str], None] = lambda _: None) ->
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
-        assert proc.stdout
+        if proc.stdout is None:
+            raise RuntimeError(f"Failed to open stdout for: {' '.join(cmd)}")
         for line in proc.stdout:
             log(line.rstrip())
         proc.wait()

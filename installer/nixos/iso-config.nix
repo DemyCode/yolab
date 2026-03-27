@@ -73,7 +73,8 @@ in
   systemd.services.yolab-installer-ui = {
     description = "YoLab Installer Web UI";
     wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" ];
+    after = [ "network.target" "network-online.target" ];
+    wants = [ "network-online.target" ];
     environment.PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin";
     serviceConfig = {
       ExecStart = "${yolabInstaller}/bin/yolab-installer serve";
