@@ -1,9 +1,7 @@
-[app]
-id          = "immich"
-name        = "Immich"
-description = "Self-hosted photo and video backup — your personal Google Photos"
-icon        = "📷"
-category    = "Media"
-subdomain   = "immich"
-port        = 2283
-tunnel      = true
+id = "immich"
+name = "Immich"
+description = "Self-hosted photo and video backup"
+icon = "📸"
+category = "media"
+subdomain = "immich"
+tunnel = true

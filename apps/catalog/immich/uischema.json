@@ -1,18 +1,6 @@
 {
-  "ui:order": ["db_password", "upload_size", "timezone", "immich_version"],
   "db_password": {
     "ui:widget": "password",
-    "ui:options": {
-      "generateButton": true
-    }
-  },
-  "upload_size": {
-    "ui:widget": "select"
-  },
-  "timezone": {
-    "ui:placeholder": "UTC"
-  },
-  "immich_version": {
-    "ui:placeholder": "release"
+    "ui:options": { "generateButton": true }
   }
 }

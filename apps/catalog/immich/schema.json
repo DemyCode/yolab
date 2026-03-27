@@ -1,32 +1,18 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Immich",
   "type": "object",
   "required": ["db_password"],
   "properties": {
     "db_password": {
       "type": "string",
       "title": "Database password",
-      "minLength": 8,
-      "description": "Password for the internal Immich database"
+      "minLength": 12
     },
-    "upload_size": {
+    "data_path": {
       "type": "string",
-      "title": "Photo library storage",
-      "enum": ["10Gi", "20Gi", "50Gi", "100Gi", "200Gi", "500Gi"],
-      "default": "50Gi",
-      "description": "Disk space reserved for your photos and videos — can be expanded later"
-    },
-    "timezone": {
-      "type": "string",
-      "title": "Timezone",
-      "default": "UTC",
-      "description": "Used for correct EXIF timestamps (e.g. Europe/Paris, America/New_York)"
-    },
-    "immich_version": {
-      "type": "string",
-      "title": "Version",
-      "default": "release",
-      "description": "Immich image tag — leave as 'release' to always use the latest stable"
+      "title": "Data storage path",
+      "description": "Host path where photos, database and ML cache will be stored.",
+      "default": "/var/lib/yolab/immich"
     }
   }
 }
