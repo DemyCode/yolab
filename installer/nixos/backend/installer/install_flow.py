@@ -1,6 +1,6 @@
-import os
 import shutil
 import subprocess
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -82,22 +82,9 @@ def install_system(config: dict, log: Callable[[str], None] = lambda _: None) ->
         result.stdout
     )
 
-    log("Generating disk encryption key…")
-    keyfile_tmp = Path("/tmp/yolab-luks-key.bin")
-    keyfile_tmp.write_bytes(os.urandom(4096))
-    os.chmod(keyfile_tmp, 0o400)
-
     log(f"Partitioning disk {config['disk']['device']} with disko…")
     disk_config = code_dir / "homelab" / "nixos" / "disk-config.nix"
     run(["disko", "--yes-wipe-all-disks", "--mode", "destroy,format,mount", str(disk_config)])
-
-    log("Storing encryption key…")
-    secrets_dir = Path("/mnt/etc/secrets/initrd")
-    secrets_dir.mkdir(parents=True, exist_ok=True)
-    final_keyfile = secrets_dir / "keyfile.bin"
-    shutil.copy2(str(keyfile_tmp), str(final_keyfile))
-    os.chmod(final_keyfile, 0o400)
-    keyfile_tmp.unlink()
 
     log("Installing NixOS (this takes several minutes)…")
     run(["nixos-install", "--flake", f"path:{code_dir}#yolab", "--no-root-password"])
@@ -105,4 +92,9 @@ def install_system(config: dict, log: Callable[[str], None] = lambda _: None) ->
     log("Copying repository to installed system…")
     run(["rsync", "-a", f"{code_dir}/", "/mnt/etc/nixos"])
 
-    log("Done!")
+    log("Setting installed disk as next boot target…")
+    run(["nixos-enter", "--root", "/mnt", "--", "bootctl", "set-oneshot", "@current"])
+
+    log("Done! Rebooting in 10 seconds…")
+    time.sleep(10)
+    subprocess.run(["systemctl", "reboot"], check=False)

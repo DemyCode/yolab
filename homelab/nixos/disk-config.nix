@@ -30,17 +30,8 @@ in {
             name = "root";
             size = "100%";
             content = {
-              type = "luks";
-              name = "crypted";
-              passwordFile = "/tmp/yolab-luks-key.bin";
-              settings = {
-                allowDiscards = true;
-                keyFile = "/tmp/yolab-luks-key.bin";
-              };
-              content = {
-                type = "lvm_pv";
-                vg = "pool";
-              };
+              type = "lvm_pv";
+              vg = "pool";
             };
           };
         };

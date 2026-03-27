@@ -26,16 +26,6 @@ in
   };
 
   config = {
-    boot.initrd.secrets = {
-      "/keyfile.bin" = "/etc/secrets/initrd/keyfile.bin";
-    };
-
-    boot.initrd.luks.devices."crypted" = {
-      keyFile = "/keyfile.bin";
-      preLVM = true;
-      allowDiscards = true;
-    };
-
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
 

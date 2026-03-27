@@ -74,6 +74,7 @@ in
     description = "YoLab Installer Web UI";
     wantedBy = [ "multi-user.target" ];
     after = [ "network.target" ];
+    environment.PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin";
     serviceConfig = {
       ExecStart = "${yolabInstaller}/bin/yolab-installer serve";
       Restart = "on-failure";
@@ -83,9 +84,6 @@ in
 
   services.getty.autologinUser = lib.mkForce "root";
   programs.bash.interactiveShellInit = ''
-    # Log every command to the systemd journal (visible via journalctl -t shell)
-    trap 'logger -t shell -- "$(whoami): $BASH_COMMAND"' DEBUG
-
     if [ "$(tty)" = "/dev/tty1" ]; then
       ${yolabInstaller}/bin/yolab-installer install
     fi
