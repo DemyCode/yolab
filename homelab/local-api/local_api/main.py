@@ -18,7 +18,17 @@ NODE_AGENT_PORT = 3002
 
 def get_update_commands() -> list[list[str]]:
     rebuild = (
-        ["darwin-rebuild", "switch", "--flake", f"{REPO_PATH}#{FLAKE_TARGET}"]
+        [
+            "darwin-rebuild",
+            "switch",
+            "--flake",
+            f"{REPO_PATH}#{FLAKE_TARGET}",
+            "--print-build-logs",
+            "--verbose",
+            "--repair",
+            "--log-format",
+            "--raw"
+        ]
         if PLATFORM == "darwin"
         else ["nixos-rebuild", "switch", "--flake", f"{REPO_PATH}#{FLAKE_TARGET}"]
     )
@@ -29,7 +39,9 @@ def _cluster_node_ips() -> list[str]:
     try:
         result = subprocess.run(
             ["kubectl", "get", "nodes", "-o", "json"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         data = json.loads(result.stdout)
         ips = []
@@ -94,7 +106,9 @@ def status():
     try:
         result = subprocess.run(
             ["git", "-C", REPO_PATH, "log", "-1", "--format=%H|||%s|||%ci"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         parts = result.stdout.strip().split("|||")
         return {
@@ -140,7 +154,9 @@ async def update():
 async def get_nodes():
     ips = _cluster_node_ips() or ["127.0.0.1"]
     async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(*[_fetch_peer(client, ip, "/info") for ip in ips])
+        results = await asyncio.gather(
+            *[_fetch_peer(client, ip, "/info") for ip in ips]
+        )
     nodes = []
     for ip, info in zip(ips, results):
         if info:
@@ -149,14 +165,17 @@ async def get_nodes():
         elif ip == "127.0.0.1":
             # Node-agent not reachable — return minimal local info so the node always appears.
             import socket as _socket
-            nodes.append({
-                "node_id": "",
-                "hostname": _socket.gethostname(),
-                "platform": PLATFORM,
-                "k3s_role": "server",
-                "wg_ipv6": "",
-                "agent_ip": ip,
-            })
+
+            nodes.append(
+                {
+                    "node_id": "",
+                    "hostname": _socket.gethostname(),
+                    "platform": PLATFORM,
+                    "k3s_role": "server",
+                    "wg_ipv6": "",
+                    "agent_ip": ip,
+                }
+            )
     return nodes
 
 
@@ -175,14 +194,19 @@ async def get_cluster_status():
     try:
         result = subprocess.run(
             ["kubectl", "get", "nodes", "-o", "json"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         data = json.loads(result.stdout)
         items = data.get("items", [])
         ready = sum(
-            1 for n in items
-            if any(c["type"] == "Ready" and c["status"] == "True"
-                   for c in n.get("status", {}).get("conditions", []))
+            1
+            for n in items
+            if any(
+                c["type"] == "Ready" and c["status"] == "True"
+                for c in n.get("status", {}).get("conditions", [])
+            )
         )
         return {"total": len(items), "ready": ready}
     except Exception as e:
@@ -191,4 +215,5 @@ async def get_cluster_status():
 
 def run():
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=3001)
