@@ -17,32 +17,47 @@ NODE_AGENT_PORT = 3002
 
 
 def get_update_commands() -> list[list[str]]:
-    rebuild = (
-        [
-            "darwin-rebuild",
-            "switch",
-            "--flake",
-            f"path:{REPO_PATH}#{FLAKE_TARGET}",
-            "--print-build-logs",
-            "--verbose",
-            "--repair",
-            "--log-format",
-            "raw",
-        ]
-        if PLATFORM == "darwin"
-        else [
-            "nixos-rebuild",
-            "switch",
-            "--flake",
-            f"path:{REPO_PATH}#{FLAKE_TARGET}",
-            "--print-build-logs",
-            "--verbose",
-            "--repair",
-            "--log-format",
-            "raw",
-        ]
-    )
-    return [["git", "-C", REPO_PATH, "pull"], rebuild]
+    if PLATFORM not in ("nixos", "darwin"):
+        raise ValueError(f"Unsupported platform: {PLATFORM}")
+    git_cmd = [["git", "-C", REPO_PATH, "pull"]]
+    nix_store_verify = [["nix-store", "--verify", "--check-contents", "--repair"]]
+    if PLATFORM == "nixos":
+        return (
+            git_cmd
+            + nix_store_verify
+            + [
+                [
+                    "nixos-rebuild",
+                    "switch",
+                    "--flake",
+                    f"path:{REPO_PATH}#{FLAKE_TARGET}",
+                    "--print-build-logs",
+                    "--verbose",
+                    "--repair",
+                    "--log-format",
+                    "raw",
+                ],
+            ]
+        )
+    elif PLATFORM == "darwin":
+        return (
+            git_cmd
+            + nix_store_verify
+            + [
+                [
+                    "darwin-rebuild",
+                    "switch",
+                    "--flake",
+                    f"path:{REPO_PATH}#{FLAKE_TARGET}",
+                    "--print-build-logs",
+                    "--verbose",
+                    "--repair",
+                    "--log-format",
+                    "raw",
+                ]
+            ]
+        )
+    raise ValueError(f"Unsupported platform: {PLATFORM}")
 
 
 def _cluster_node_ips() -> list[str]:
