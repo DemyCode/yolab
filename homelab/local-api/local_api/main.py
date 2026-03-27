@@ -34,7 +34,7 @@ def get_update_commands() -> list[list[str]]:
             "nixos-rebuild",
             "switch",
             "--flake",
-            f"{REPO_PATH}#{FLAKE_TARGET}",
+            f"path:{REPO_PATH}#{FLAKE_TARGET}",
             "--print-build-logs",
             "--verbose",
             "--repair",
