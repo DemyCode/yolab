@@ -21,42 +21,20 @@ def get_update_commands() -> list[list[str]]:
         raise ValueError(f"Unsupported platform: {PLATFORM}")
     git_cmd = [["git", "-C", REPO_PATH, "pull"]]
     nix_store_verify = [["nix-store", "--verify", "--check-contents", "--repair"]]
+    switch_cmd = [
+        "switch",
+        "--flake",
+        f"path:{REPO_PATH}#{FLAKE_TARGET}",
+        "--print-build-logs",
+        "--verbose",
+        "--repair",
+        "--log-format",
+        "raw",
+    ]
     if PLATFORM == "nixos":
-        return (
-            git_cmd
-            + nix_store_verify
-            + [
-                [
-                    "nixos-rebuild",
-                    "switch",
-                    "--flake",
-                    f"path:{REPO_PATH}#{FLAKE_TARGET}",
-                    "--print-build-logs",
-                    "--verbose",
-                    "--repair",
-                    "--log-format",
-                    "raw",
-                ],
-            ]
-        )
+        return git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd]
     elif PLATFORM == "darwin":
-        return (
-            git_cmd
-            + nix_store_verify
-            + [
-                [
-                    "darwin-rebuild",
-                    "switch",
-                    "--flake",
-                    f"path:{REPO_PATH}#{FLAKE_TARGET}",
-                    "--print-build-logs",
-                    "--verbose",
-                    "--repair",
-                    "--log-format",
-                    "raw",
-                ]
-            ]
-        )
+        return git_cmd + nix_store_verify + [["darwin-rebuild"] + switch_cmd]
     raise ValueError(f"Unsupported platform: {PLATFORM}")
 
 
