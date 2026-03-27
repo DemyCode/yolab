@@ -20,7 +20,8 @@ let
     pname = "client-ui";
     version = "0.1.0";
     src = ./client-ui;
-    npmDepsHash = "sha256-vB4y/Ct1i7An5uP6fTEUwEYhjZApT6ZpLMq3cs996NY=";
+    npmDepsFetcherVersion = 2;
+    npmDepsHash = "sha256-yzipuO2Ue8XDMmTmMtbmYFxC73k78YgIEOwDAhlkixw=";
     installPhase = ''
       npm run build
       cp -r dist $out
