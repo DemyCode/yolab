@@ -8,6 +8,9 @@
 let
   s = import ../shared.nix { inherit pkgs lib inputs; };
   k3sCfg = s.nodeCfg.k3s or { };
+  tunnelDomain = if s.tunnelEnabled
+    then lib.removePrefix "https://" (lib.removePrefix "http://" (s.tunnelCfg.dns_url or ""))
+    else "";
 in
 {
   options.yolab = {
@@ -83,50 +86,46 @@ in
       "L /var/lib/rancher/k3s/server/manifests/yolab-csi.yaml - - - - ${./k3s-manifests/yolab-csi.yaml}"
     ];
 
-    services.nginx = {
+    services.caddy = {
       enable = true;
-      virtualHosts."default" = {
-        default = true;
-        listen = [
-          {
-            addr = "0.0.0.0";
-            port = 80;
+      configFile = pkgs.writeText "Caddyfile" (
+        lib.optionalString s.tunnelEnabled ''
+          ${tunnelDomain} {
+            handle /api/node-agent/* {
+              uri strip_prefix /api/node-agent
+              reverse_proxy 127.0.0.1:3002
+            }
+            handle /api/* {
+              reverse_proxy 127.0.0.1:3001
+            }
+            handle {
+              root * ${s.clientUi}
+              try_files {path} /index.html
+              file_server
+            }
           }
-          {
-            addr = "[::]";
-            port = 80;
+        '' + ''
+          :80 {
+            handle /api/node-agent/* {
+              uri strip_prefix /api/node-agent
+              reverse_proxy 127.0.0.1:3002
+            }
+            handle /api/* {
+              reverse_proxy 127.0.0.1:3001
+            }
+            handle {
+              root * ${s.clientUi}
+              try_files {path} /index.html
+              file_server
+            }
           }
-        ]
-        ++ lib.optionals s.tunnelEnabled [
-          {
-            addr = "[${s.tunnelCfg.sub_ipv6}]";
-            port = 80;
-          }
-        ];
-        root = "${s.clientUi}";
-        locations."/" = {
-          tryFiles = "$uri $uri/ /index.html";
-        };
-        locations."/api/" = {
-          proxyPass = "http://127.0.0.1:3001";
-          extraConfig = ''
-            proxy_http_version 1.1;
-            proxy_set_header Connection "";
-            proxy_buffering off;
-            proxy_cache off;
-          '';
-        };
-        locations."/api/node-agent/" = {
-          proxyPass = "http://127.0.0.1:3002";
-          extraConfig = ''
-            rewrite ^/api/node-agent/(.*) /$1 break;
-            proxy_http_version 1.1;
-            proxy_set_header Connection "";
-            proxy_buffering off;
-            proxy_cache off;
-          '';
-        };
-      };
+        ''
+      );
+    };
+
+    systemd.services.caddy = lib.mkIf s.tunnelEnabled {
+      after = [ "wireguard-wg0.service" ];
+      wants = [ "wireguard-wg0.service" ];
     };
 
     systemd.services.yolab-local-api = {
