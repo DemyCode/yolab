@@ -73,7 +73,7 @@ def run_interactive_install() -> None:
     show_step(2, 3, "Tunnel")
     console.print("[yellow]Registering installer tunnel…[/yellow]")
     try:
-        tunnel = register_and_bring_up_tunnel(account_token, service_name="installer")
+        tunnel = register_and_bring_up_tunnel(account_token, service_name="yolab")
     except Exception as e:
         show_error(f"Tunnel registration failed: {e}")
         sys.exit(1)

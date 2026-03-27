@@ -1,6 +1,5 @@
 import shutil
 import subprocess
-import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -92,9 +91,4 @@ def install_system(config: dict, log: Callable[[str], None] = lambda _: None) ->
     log("Copying repository to installed system…")
     run(["rsync", "-a", f"{code_dir}/", "/mnt/etc/nixos"])
 
-    log("Setting installed disk as next boot target…")
-    run(["nixos-enter", "--root", "/mnt", "--", "bootctl", "set-oneshot", "@current"])
-
-    log("Done! Rebooting in 10 seconds…")
-    time.sleep(10)
-    subprocess.run(["systemctl", "reboot"], check=False)
+    log("Installation complete!")

@@ -333,9 +333,14 @@ function StepProgress() {
       </div>
 
       {done && (
-        <p className="mt-4 text-accent font-bold text-sm">
-          ✓ Installation complete! Remove the USB stick and reboot.
-        </p>
+        <div className="mt-6 rounded-lg border border-[#86efac] bg-[#0d1f14] p-4 text-sm space-y-2">
+          <p className="text-[#86efac] font-bold">✓ Installation complete!</p>
+          <ol className="text-[#ccc] space-y-1 list-decimal list-inside">
+            <li>Power off the computer</li>
+            <li>Remove the installation USB stick</li>
+            <li>Turn on the machine again</li>
+          </ol>
+        </div>
       )}
       {failed && (
         <p className="mt-4 text-[#f87171] font-bold text-sm">
