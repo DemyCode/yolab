@@ -39,7 +39,7 @@ def get_update_commands() -> list[list[str]]:
             "--verbose",
             "--repair",
             "--log-format",
-            "--raw",
+            "raw",
         ]
     )
     return [["git", "-C", REPO_PATH, "pull"], rebuild]
