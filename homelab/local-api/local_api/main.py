@@ -32,7 +32,9 @@ def get_update_commands() -> list[list[str]]:
         "raw",
     ]
     if PLATFORM == "nixos":
-        return git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd]
+        return (
+            git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd + ["reboot"]]
+        )
     elif PLATFORM == "darwin":
         return git_cmd + nix_store_verify + [["darwin-rebuild"] + switch_cmd]
     raise ValueError(f"Unsupported platform: {PLATFORM}")
