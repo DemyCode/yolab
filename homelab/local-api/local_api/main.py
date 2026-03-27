@@ -52,15 +52,24 @@ async def _fetch_peer(client: httpx.AsyncClient, ip: str, path: str):
         return None
 
 
-async def _fan_out(path: str) -> list:
+async def _fan_out(path: str, tag_hostname: bool = False) -> list:
     ips = _cluster_node_ips() or ["127.0.0.1"]
     async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(*[_fetch_peer(client, ip, path) for ip in ips])
+        node_infos, results = await asyncio.gather(
+            asyncio.gather(*[_fetch_peer(client, ip, "/info") for ip in ips]),
+            asyncio.gather(*[_fetch_peer(client, ip, path) for ip in ips]),
+        )
     merged = []
-    for r in results:
+    for info, r in zip(node_infos, results):
+        hostname = (info or {}).get("hostname") if tag_hostname else None
         if isinstance(r, list):
-            merged.extend(r)
+            for item in r:
+                if hostname and isinstance(item, dict):
+                    item["node_hostname"] = hostname
+                merged.append(item)
         elif r is not None:
+            if hostname and isinstance(r, dict):
+                r["node_hostname"] = hostname
             merged.append(r)
     return merged
 
@@ -132,12 +141,23 @@ async def get_nodes():
         if info:
             info["agent_ip"] = ip
             nodes.append(info)
+        elif ip == "127.0.0.1":
+            # Node-agent not reachable — return minimal local info so the node always appears.
+            import socket as _socket
+            nodes.append({
+                "node_id": "",
+                "hostname": _socket.gethostname(),
+                "platform": PLATFORM,
+                "k3s_role": "server",
+                "wg_ipv6": "",
+                "agent_ip": ip,
+            })
     return nodes
 
 
 @app.get("/api/disks")
 async def get_disks():
-    return await _fan_out("/disks")
+    return await _fan_out("/disks", tag_hostname=True)
 
 
 @app.get("/api/volumes")

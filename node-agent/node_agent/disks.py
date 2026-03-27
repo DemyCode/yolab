@@ -6,6 +6,30 @@ from typing import Any
 
 from node_agent.config import DISK_JSON_NAME, YOLAB_DATA_ROOT
 
+VOLUMES_META_ROOT = "/yolab/volumes"
+
+
+def _service_by_mount_path() -> dict[str, str]:
+    """Read volume metadata and return {disk_mount_path: service_name}."""
+    mapping: dict[str, str] = {}
+    if not os.path.isdir(VOLUMES_META_ROOT):
+        return mapping
+    for svc in os.listdir(VOLUMES_META_ROOT):
+        svc_dir = os.path.join(VOLUMES_META_ROOT, svc)
+        if not os.path.isdir(svc_dir):
+            continue
+        for fname in os.listdir(svc_dir):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(svc_dir, fname)) as f:
+                    meta = json.load(f)
+                for path in meta.get("disk_paths", []):
+                    mapping[path] = svc
+            except Exception:
+                pass
+    return mapping
+
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(list(args), capture_output=True, text=True, check=True)
@@ -50,6 +74,7 @@ def _collect_mountpoints(dev: dict[str, Any]) -> set[str]:
 
 def discover_disks() -> list[dict[str, Any]]:
     disks: list[dict[str, Any]] = []
+    service_by_mount = _service_by_mount_path()
 
     try:
         result = _run("lsblk", "-J", "-o", "NAME,SIZE,MOUNTPOINT,TYPE")
@@ -63,6 +88,25 @@ def discover_disks() -> list[dict[str, Any]]:
             continue
         if "/" in _collect_mountpoints(dev):
             system_names.add(dev["name"])
+
+    # Include the root/system disk(s) with a "system" status so the UI can show OS disk usage.
+    for dev in lsblk_data.get("blockdevices", []):
+        if dev.get("type") != "disk" or dev["name"] not in system_names:
+            continue
+        sizes = _statvfs("/")
+        disks.append({
+            "disk_id": dev["name"],
+            "device": f"/dev/{dev['name']}",
+            "label": "System",
+            "type": "block",
+            "mount_path": "/",
+            "status": "system",
+            "service_name": None,
+            "total_bytes": sizes[0] if sizes else None,
+            "free_bytes": sizes[1] if sizes else None,
+            "data_written": True,
+            "disk_json": None,
+        })
 
     for dev in lsblk_data.get("blockdevices", []):
         if dev.get("type") != "disk" or dev["name"] in system_names:
@@ -79,6 +123,7 @@ def discover_disks() -> list[dict[str, Any]]:
                 "type": "block",
                 "mount_path": None,
                 "status": "unformatted",
+                "service_name": None,
                 "total_bytes": None,
                 "free_bytes": None,
                 "data_written": False,
@@ -96,6 +141,7 @@ def discover_disks() -> list[dict[str, Any]]:
             "type": "block",
             "mount_path": mount,
             "status": "registered" if data else "incompatible",
+            "service_name": service_by_mount.get(mount),
             "total_bytes": sizes[0] if sizes else None,
             "free_bytes": sizes[1] if sizes else None,
             "data_written": data.get("data_written", False) if data else False,
@@ -126,6 +172,7 @@ def discover_disks() -> list[dict[str, Any]]:
             "type": "network",
             "mount_path": mountpoint,
             "status": "registered" if data else "unconfigured_network",
+            "service_name": service_by_mount.get(mountpoint),
             "total_bytes": sizes[0] if sizes else None,
             "free_bytes": sizes[1] if sizes else None,
             "data_written": data.get("data_written", False) if data else False,

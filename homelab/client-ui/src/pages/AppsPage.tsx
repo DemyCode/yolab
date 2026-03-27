@@ -233,16 +233,49 @@ function AppCard({ app, onInstall }: { app: AppMeta; onInstall: () => void }) {
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// ── Services page (installed) ──────────────────────────────────────────────────
 
-export function AppsPage() {
+export function ServicesPage() {
+  const [installed, setInstalled] = useState<InstalledApp[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = () => {
+    fetch("/api/apps/installed")
+      .then((r) => r.json())
+      .then((d) => { setInstalled(Array.isArray(d) ? d : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: "1.2rem", marginBottom: "1rem" }}>Services</h2>
+      {loading ? (
+        <div style={{ color: "#666" }}>Loading…</div>
+      ) : installed.length === 0 ? (
+        <div style={{ color: "#555", fontSize: "0.9rem" }}>
+          No services running. Install one from the <strong>Services Store</strong>.
+        </div>
+      ) : (
+        installed.map((i) => (
+          <InstalledRow key={i.app_id} app_id={i.app_id} tunnel_url={i.tunnel_url} onRemove={refresh} />
+        ))
+      )}
+    </div>
+  );
+}
+
+// ── Services Store page (catalog) ──────────────────────────────────────────────
+
+export function ServicesStorePage() {
   const [catalog, setCatalog] = useState<AppMeta[]>([]);
   const [installed, setInstalled] = useState<InstalledApp[]>([]);
   const [modal, setModal] = useState<AppMeta | null>(null);
 
   const refresh = () => {
-    fetch("/api/apps").then((r) => r.json()).then(setCatalog).catch(() => { });
-    fetch("/api/apps/installed").then((r) => r.json()).then(setInstalled).catch(() => { });
+    fetch("/api/apps").then((r) => r.json()).then((d) => setCatalog(Array.isArray(d) ? d : [])).catch(() => { });
+    fetch("/api/apps/installed").then((r) => r.json()).then((d) => setInstalled(Array.isArray(d) ? d : [])).catch(() => { });
   };
 
   useEffect(() => { refresh(); }, []);
@@ -252,31 +285,16 @@ export function AppsPage() {
 
   return (
     <div>
-      {installed.length > 0 && (
-        <section style={{ marginBottom: "2.5rem" }}>
-          <h2 style={{ fontSize: "0.75rem", letterSpacing: "0.1em", color: "#555", marginBottom: "0.75rem", textTransform: "uppercase" }}>
-            Installed
-          </h2>
-          {installed.map((i) => (
-            <InstalledRow key={i.app_id} app_id={i.app_id} tunnel_url={i.tunnel_url} onRemove={refresh} />
+      <h2 style={{ fontSize: "1.2rem", marginBottom: "1rem" }}>Services Store</h2>
+      {available.length === 0 ? (
+        <div style={{ color: "#555", fontSize: "0.9rem" }}>No services available in catalog.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "0.75rem" }}>
+          {available.map((app) => (
+            <AppCard key={app.id} app={app} onInstall={() => setModal(app)} />
           ))}
-        </section>
+        </div>
       )}
-
-      <section>
-        <h2 style={{ fontSize: "0.75rem", letterSpacing: "0.1em", color: "#555", marginBottom: "0.75rem", textTransform: "uppercase" }}>
-          Available
-        </h2>
-        {available.length === 0 ? (
-          <div style={{ color: "#555", fontSize: "0.9rem" }}>No apps available in catalog.</div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "0.75rem" }}>
-            {available.map((app) => (
-              <AppCard key={app.id} app={app} onInstall={() => setModal(app)} />
-            ))}
-          </div>
-        )}
-      </section>
 
       {modal && (
         <InstallModal
