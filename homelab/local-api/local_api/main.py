@@ -33,7 +33,7 @@ def get_update_commands() -> list[list[str]]:
     ]
     if PLATFORM == "nixos":
         return (
-            git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd + ["reboot"]]
+            git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd] + [["reboot"]]
         )
     elif PLATFORM == "darwin":
         return git_cmd + nix_store_verify + [["darwin-rebuild"] + switch_cmd]
