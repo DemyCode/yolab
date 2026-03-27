@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Form from "@rjsf/core";
-import { RJSFSchema, UiSchema, WidgetProps } from "@rjsf/utils";
+import type { IChangeEvent } from "@rjsf/core";
+import type { RJSFSchema, UiSchema, WidgetProps } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 
 function PasswordWidget({ id, value, onChange, options }: WidgetProps) {
@@ -80,7 +81,7 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
     });
   }, [app.id]);
 
-  const handleSubmit = async ({ formData }: { formData: unknown }) => {
+  const handleSubmit = async ({ formData }: IChangeEvent) => {
     setBusy(true);
     setError(null);
     try {
