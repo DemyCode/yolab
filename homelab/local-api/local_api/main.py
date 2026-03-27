@@ -27,7 +27,7 @@ def get_update_commands() -> list[list[str]]:
             "--verbose",
             "--repair",
             "--log-format",
-            "--raw",
+            "raw",
         ]
         if PLATFORM == "darwin"
         else [
