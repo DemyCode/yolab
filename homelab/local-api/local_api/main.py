@@ -30,7 +30,17 @@ def get_update_commands() -> list[list[str]]:
             "--raw",
         ]
         if PLATFORM == "darwin"
-        else ["nixos-rebuild", "switch", "--flake", f"{REPO_PATH}#{FLAKE_TARGET}"]
+        else [
+            "nixos-rebuild",
+            "switch",
+            "--flake",
+            f"{REPO_PATH}#{FLAKE_TARGET}",
+            "--print-build-logs",
+            "--verbose",
+            "--repair",
+            "--log-format",
+            "--raw",
+        ]
     )
     return [["git", "-C", REPO_PATH, "pull"], rebuild]
 
