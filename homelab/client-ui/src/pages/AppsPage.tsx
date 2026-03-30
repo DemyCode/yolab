@@ -222,8 +222,8 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError(body.detail ?? "Installation failed");
+        const errBody = await res.json().catch(() => ({}));
+        setError(errBody.detail ?? "Installation failed");
       } else {
         onDone();
       }
@@ -426,12 +426,10 @@ export function ServicesPage() {
 
 export function ServicesStorePage() {
   const [catalog, setCatalog] = useState<AppMeta[]>([]);
-  const [installed, setInstalled] = useState<InstalledApp[]>([]);
   const [modal, setModal] = useState<AppMeta | null>(null);
 
   const refresh = () => {
     fetch("/api/apps").then((r) => r.json()).then((d) => setCatalog(Array.isArray(d) ? d : [])).catch(() => { });
-    fetch("/api/apps/installed").then((r) => r.json()).then((d) => setInstalled(Array.isArray(d) ? d : [])).catch(() => { });
   };
 
   useEffect(() => { refresh(); }, []);
