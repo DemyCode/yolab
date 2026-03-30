@@ -1,3 +1,4 @@
+[app]
 id = "immich"
 name = "Immich"
 description = "Self-hosted photo and video backup"
@@ -6,6 +7,6 @@ category = "media"
 subdomain = "immich"
 tunnel = true
 
-[[volumes]]
+[[app.volumes]]
 name = "data"
 description = "Storage for photos, database and ML cache"
