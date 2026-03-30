@@ -123,7 +123,7 @@ spec:
 
 def _kubectl_apply(yaml_str: str) -> None:
     result = subprocess.run(
-        ["kubectl", "apply", "-f", "-"],
+        ["kubectl", "apply", "--validate=false", "-f", "-"],
         input=yaml_str,
         capture_output=True,
         text=True,
@@ -308,7 +308,7 @@ metadata:
 
     try:
         result = subprocess.run(
-            ["kubectl", "apply", "-f", tmp_path],
+            ["kubectl", "apply", "--validate=false", "-f", tmp_path],
             capture_output=True, text=True, env=_KUBECTL_ENV,
         )
         if result.returncode != 0:
