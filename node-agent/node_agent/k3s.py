@@ -1,9 +1,15 @@
 import json
+import os
 import subprocess
+
+_KUBECTL_ENV = {
+    **os.environ,
+    "KUBECONFIG": os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
+}
 
 
 def _run(*args: str) -> str:
-    result = subprocess.run(list(args), capture_output=True, text=True, check=True)
+    result = subprocess.run(list(args), capture_output=True, text=True, check=True, env=_KUBECTL_ENV)
     return result.stdout.strip()
 
 
@@ -33,6 +39,7 @@ def scale_deployment(name: str, replicas: int, namespace: str = "default") -> No
         ["kubectl", "scale", "deployment", name,
          f"--replicas={replicas}", f"--namespace={namespace}"],
         check=False,
+        env=_KUBECTL_ENV,
     )
 
 

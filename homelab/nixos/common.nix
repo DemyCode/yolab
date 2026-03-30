@@ -152,6 +152,7 @@ in
         YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
         YOLAB_PLATFORM = config.yolab.platform;
         YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
+        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };
       serviceConfig = {
         Type = "simple";
@@ -183,6 +184,7 @@ in
         WG_INTERFACE = "wg0";
         K3S_ROLE = k3sCfg.role or "server";
         YOLAB_PLATFORM = config.yolab.platform;
+        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };
       serviceConfig = {
         Type = "simple";

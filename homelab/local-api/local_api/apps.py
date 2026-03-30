@@ -13,6 +13,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 REPO_PATH = os.environ.get("YOLAB_REPO_PATH", "/etc/nixos")
 CATALOG_PATH = Path(os.environ.get("YOLAB_APPS_CATALOG", f"{REPO_PATH}/apps/catalog"))
+
+_KUBECTL_ENV = {
+    **os.environ,
+    "KUBECONFIG": os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
+}
 DOMAIN = os.environ.get("YOLAB_DOMAIN", "homelab.local")
 CLUSTER_CONFIG_PATH = Path(os.environ.get("YOLAB_CONFIG", "/etc/yolab/config.toml"))
 
@@ -121,6 +126,7 @@ def _kubectl_apply(yaml_str: str) -> None:
         input=yaml_str,
         capture_output=True,
         text=True,
+        env=_KUBECTL_ENV,
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr)
@@ -151,7 +157,7 @@ def list_installed():
             ["kubectl", "get", "namespaces",
              "-l", "yolab.dev/managed=true",
              "-o", "json"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, env=_KUBECTL_ENV,
         )
         items = json.loads(result.stdout).get("items", [])
         return [
@@ -194,7 +200,7 @@ def get_status(app_id: str):
     try:
         result = subprocess.run(
             ["kubectl", "get", "pods", "-n", namespace, "-o", "json"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, env=_KUBECTL_ENV,
         )
         pods = [
             {
@@ -285,7 +291,7 @@ metadata:
     try:
         result = subprocess.run(
             ["kubectl", "apply", "-f", tmp_path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=_KUBECTL_ENV,
         )
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=result.stderr)
@@ -301,7 +307,7 @@ def uninstall_app(app_id: str, wipe: bool = False):
     try:
         ns_result = subprocess.run(
             ["kubectl", "get", "namespace", namespace, "-o", "json"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=_KUBECTL_ENV,
         )
         if ns_result.returncode == 0:
             ns_data = json.loads(ns_result.stdout)
@@ -316,20 +322,20 @@ def uninstall_app(app_id: str, wipe: bool = False):
     if wipe:
         subprocess.run(
             ["kubectl", "delete", "namespace", namespace, "--ignore-not-found"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=_KUBECTL_ENV,
         )
         subprocess.run(
             ["kubectl", "delete", "pv",
              "-l", f"yolab.dev/app={app_id}",
              "--ignore-not-found"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=_KUBECTL_ENV,
         )
     else:
         result = subprocess.run(
             ["kubectl", "delete",
              "deployments,services,ingress,secrets",
              "--all", "-n", namespace, "--ignore-not-found"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=_KUBECTL_ENV,
         )
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=result.stderr)

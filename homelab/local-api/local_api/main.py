@@ -14,6 +14,11 @@ from local_api.apps import router as apps_router
 REPO_PATH = os.environ.get("YOLAB_REPO_PATH", "/etc/nixos")
 PLATFORM = os.environ.get("YOLAB_PLATFORM", "nixos")
 FLAKE_TARGET = os.environ.get("YOLAB_FLAKE_TARGET", "yolab")
+
+_KUBECTL_ENV = {
+    **os.environ,
+    "KUBECONFIG": os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
+}
 NODE_AGENT_PORT = 3002
 
 UPDATE_LOG = "/tmp/yolab-update.log"
@@ -126,6 +131,7 @@ def _cluster_node_ips() -> list[str]:
             capture_output=True,
             text=True,
             check=True,
+            env=_KUBECTL_ENV,
         )
         data = json.loads(result.stdout)
         ips = []
@@ -320,6 +326,7 @@ async def get_cluster_status():
             capture_output=True,
             text=True,
             check=True,
+            env=_KUBECTL_ENV,
         )
         data = json.loads(result.stdout)
         items = data.get("items", [])
