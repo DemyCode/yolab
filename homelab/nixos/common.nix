@@ -174,7 +174,6 @@ in
         util-linux
         e2fsprogs
         nfs-utils
-        mergerfs
         kubectl
         rsync
       ];
@@ -215,7 +214,6 @@ in
         just
         wireguard-tools
         kubectl
-        mergerfs
         nfs-utils
         dysk
         dust

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from node_agent.health import health_loop
-from node_agent.routes import disks, info, k3s, nfs, volumes
+from node_agent.routes import disks, info, k3s, nfs
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,7 +39,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.include_router(info.router)
 app.include_router(disks.router)
 app.include_router(nfs.router)
-app.include_router(volumes.router)
 app.include_router(k3s.router)
 
 
