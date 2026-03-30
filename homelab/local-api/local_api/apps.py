@@ -119,6 +119,14 @@ spec:
 """
 
 
+def _require_k3s() -> None:
+    if not Path(KUBECONFIG).exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"k3s is not running or has not initialized yet (kubeconfig not found at {KUBECONFIG})",
+        )
+
+
 def _kubectl(*args: str, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["kubectl", "--kubeconfig", KUBECONFIG, *args],
@@ -236,6 +244,7 @@ def get_status(app_id: str, instance_name: str | None = None):
 
 @router.post("/api/apps/{app_id}/install")
 def install_app(app_id: str, config: dict[str, Any]):
+    _require_k3s()
     app_dir = _app_dir(app_id)
     meta = _read_meta(app_id)
 
@@ -308,6 +317,7 @@ metadata:
 
 @router.delete("/api/apps/{app_id}")
 def uninstall_app(app_id: str, instance_name: str | None = None, wipe: bool = False):
+    _require_k3s()
     effective = instance_name or app_id
     namespace = f"yolab-{effective}"
 

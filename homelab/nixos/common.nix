@@ -8,9 +8,12 @@
 let
   s = import ../shared.nix { inherit pkgs lib inputs; };
   k3sCfg = s.nodeCfg.k3s or { };
-  tunnelDomain = if s.tunnelEnabled
-    then lib.removePrefix "https://" (lib.removePrefix "http://" (s.tunnelCfg.dns_url or ""))
-    else "";
+  isFirstNode = (k3sCfg.server_addr or "") == "";
+  tunnelDomain =
+    if s.tunnelEnabled then
+      lib.removePrefix "https://" (lib.removePrefix "http://" (s.tunnelCfg.dns_url or ""))
+    else
+      "";
 in
 {
   options.yolab = {
@@ -75,29 +78,18 @@ in
       };
     };
 
-    services.k3s = lib.mkIf s.swarmEnabled {
+    services.k3s = {
       enable = true;
       role = k3sCfg.role or "server";
       token = k3sCfg.token or "";
-      serverAddr = lib.optionalString (k3sCfg.role or "server" == "agent") (k3sCfg.server_addr or "");
-      extraFlags = lib.concatStringsSep " " (
-        [
-          "--flannel-backend=wireguard-native"
-        ]
-        ++ lib.optionals s.tunnelEnabled [
-          "--advertise-address=${s.tunnelCfg.sub_ipv6}"
-          "--node-ip=${s.tunnelCfg.sub_ipv6}"
-        ]
-        ++ lib.optionals (k3sCfg.role or "server" == "server" && (k3sCfg.server_addr or "") == "") [
-          "--cluster-init"
-        ]
-      );
+      clusterInit = isFirstNode;
+      serverAddr = lib.optionalString (!isFirstNode) (k3sCfg.server_addr or "");
+      extraFlags = toString [
+        "--flannel-backend=wireguard-native"
+        "--advertise-address=${s.tunnelCfg.sub_ipv6}"
+        "--node-ip=${s.tunnelCfg.sub_ipv6}"
+      ];
     };
-
-    systemd.tmpfiles.rules = lib.mkIf s.swarmEnabled [
-      "d /var/lib/rancher/k3s/server/manifests 0755 root root -"
-      "L /var/lib/rancher/k3s/server/manifests/yolab-csi.yaml - - - - ${./k3s-manifests/yolab-csi.yaml}"
-    ];
 
     services.caddy = {
       enable = true;
@@ -117,7 +109,8 @@ in
               file_server
             }
           }
-        '' + ''
+        ''
+        + ''
           :80 {
             handle /api/node-agent/* {
               uri strip_prefix /api/node-agent
@@ -136,7 +129,7 @@ in
       );
     };
 
-    systemd.services.caddy = lib.mkIf s.tunnelEnabled {
+    systemd.services.caddy = {
       after = [ "wireguard-wg0.service" ];
       wants = [ "wireguard-wg0.service" ];
     };
@@ -166,9 +159,9 @@ in
     systemd.services.yolab-node-agent = {
       after = [
         "network.target"
+        "k3s.service"
       ]
-      ++ lib.optional s.tunnelEnabled "wireguard-wg0.service"
-      ++ lib.optional s.swarmEnabled "k3s.service";
+      ++ lib.optional s.tunnelEnabled "wireguard-wg0.service";
       wantedBy = [ "multi-user.target" ];
       path = with pkgs; [
         util-linux
