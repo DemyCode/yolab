@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 
 import httpx
@@ -14,6 +15,10 @@ REPO_PATH = os.environ.get("YOLAB_REPO_PATH", "/etc/nixos")
 PLATFORM = os.environ.get("YOLAB_PLATFORM", "nixos")
 FLAKE_TARGET = os.environ.get("YOLAB_FLAKE_TARGET", "yolab")
 NODE_AGENT_PORT = 3002
+
+UPDATE_LOG = "/tmp/yolab-update.log"
+UPDATE_SCRIPT = "/tmp/yolab-update.sh"
+UPDATE_UNIT = "yolab-update.service"
 
 
 def get_update_commands() -> list[list[str]]:
@@ -127,30 +132,99 @@ def status():
         return {"error": str(e), "platform": PLATFORM}
 
 
+def _build_update_script() -> str:
+    """Build a shell script that runs all update commands and logs output to UPDATE_LOG."""
+    lines = ["#!/bin/sh", f"exec > {UPDATE_LOG} 2>&1"]
+    for cmd in get_update_commands():
+        display = " ".join(cmd)
+        quoted = shlex.join(cmd)
+        lines.append(f'echo "$ {display}"')
+        lines.append(quoted)
+        lines.append(
+            f'rc=$?; if [ $rc -ne 0 ]; then echo "[ERROR] {cmd[0]} exited with code $rc"; exit 1; fi'
+        )
+    lines.append('echo "[DONE]"')
+    return "\n".join(lines) + "\n"
+
+
 @app.post("/api/update")
 async def update():
     async def stream():
-        for cmd in get_update_commands():
-            yield f"data: $ {' '.join(cmd)}\n\n"
+        # Stop any leftover unit from a previous run
+        subprocess.run(
+            ["systemctl", "stop", UPDATE_UNIT],
+            capture_output=True,
+        )
+
+        # Write the update script
+        with open(UPDATE_SCRIPT, "w") as f:
+            f.write(_build_update_script())
+        os.chmod(UPDATE_SCRIPT, 0o755)
+
+        # Truncate log
+        open(UPDATE_LOG, "w").close()
+
+        # Launch in its own transient systemd unit so it lives outside
+        # yolab-local-api's cgroup. When nixos-rebuild restarts this service,
+        # the update unit keeps running and the rebuild completes.
+        try:
+            subprocess.run(
+                [
+                    "systemd-run",
+                    f"--unit={UPDATE_UNIT.removesuffix('.service')}",
+                    "--description=YoLab homelab update",
+                    "/bin/sh",
+                    UPDATE_SCRIPT,
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            yield f"data: [ERROR] failed to start update unit: {e.stderr.decode()}\n\n"
+            return
+
+        yield "data: Update started in background systemd unit\n\n"
+
+        # Stream the log file by polling until the unit exits
+        pos = 0
+        while True:
             try:
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-            except Exception as e:
-                yield f"data: [ERROR] failed to start '{cmd[0]}': {e}\n\n"
+                with open(UPDATE_LOG) as f:
+                    f.seek(pos)
+                    chunk = f.read()
+            except FileNotFoundError:
+                await asyncio.sleep(0.1)
+                continue
+
+            if chunk:
+                pos += len(chunk)
+                for line in chunk.splitlines():
+                    if line:
+                        yield f"data: {line}\n\n"
+                if "[DONE]" in chunk or "[ERROR]" in chunk:
+                    return
+
+            # Check whether the unit is still running
+            result = subprocess.run(
+                ["systemctl", "is-active", UPDATE_UNIT],
+                capture_output=True,
+                text=True,
+            )
+            status = result.stdout.strip()
+            if status not in ("active", "activating"):
+                # Unit stopped — emit whatever remains in the log then exit
+                try:
+                    with open(UPDATE_LOG) as f:
+                        f.seek(pos)
+                        remainder = f.read()
+                    for line in remainder.splitlines():
+                        if line:
+                            yield f"data: {line}\n\n"
+                except FileNotFoundError:
+                    pass
                 return
-            assert process.stdout is not None
-            async for line in process.stdout:
-                text = line.decode().rstrip()
-                if text:
-                    yield f"data: {text}\n\n"
-            await process.wait()
-            if process.returncode != 0:
-                yield f"data: [ERROR] '{cmd[0]}' exited with code {process.returncode}\n\n"
-                return
-        yield "data: [DONE]\n\n"
+
+            await asyncio.sleep(0.2)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

@@ -19,6 +19,7 @@ function OverviewPage() {
   const [updating, setUpdating] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [updateDone, setUpdateDone] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,34 +35,65 @@ function OverviewPage() {
     }
   }, [log]);
 
+  async function pollUntilAlive() {
+    setReconnecting(true);
+    for (let i = 0; i < 90; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const r = await fetch("/api/status");
+        if (r.ok) {
+          const s = await r.json();
+          setStatus(s);
+          setReconnecting(false);
+          return;
+        }
+      } catch {}
+    }
+    setReconnecting(false);
+  }
+
   async function runUpdate() {
     setUpdating(true);
     setLog([]);
     setUpdateDone(false);
+    setReconnecting(false);
 
-    const response = await fetch("/api/update", { method: "POST" });
-    if (!response.body) return;
+    try {
+      const response = await fetch("/api/update", { method: "POST" });
+      if (!response.body) return;
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let sawDone = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.startsWith("data: ") ? part.slice(6) : part;
-        if (!line.trim()) continue;
-        if (line === "[DONE]") {
-          setUpdateDone(true);
-          fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
-        } else {
-          setLog((prev) => [...prev, line]);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part.startsWith("data: ") ? part.slice(6) : part;
+          if (!line.trim()) continue;
+          if (line === "[DONE]") {
+            sawDone = true;
+            setUpdateDone(true);
+            fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
+          } else {
+            setLog((prev) => [...prev, line]);
+          }
         }
       }
+
+      // Stream ended without [DONE] — service restarted or machine is rebooting
+      if (!sawDone) {
+        setLog((prev) => [...prev, "[INFO] Connection lost — service is restarting or machine is rebooting…"]);
+        pollUntilAlive();
+      }
+    } catch {
+      setLog((prev) => [...prev, "[INFO] Connection lost — service is restarting or machine is rebooting…"]);
+      pollUntilAlive();
     }
 
     setUpdating(false);
@@ -103,11 +135,16 @@ function OverviewPage() {
         {updating ? "Updating…" : "Update homelab"}
       </button>
 
-      {(log.length > 0 || updateDone) && (
+      {(log.length > 0 || updateDone || reconnecting) && (
         <div style={{ marginTop: "1.25rem" }}>
           {updateDone && (
             <div style={{ color: "green", marginBottom: "0.5rem", fontWeight: "bold" }}>
               Update complete.
+            </div>
+          )}
+          {reconnecting && (
+            <div style={{ color: "#facc15", marginBottom: "0.5rem", fontWeight: "bold" }}>
+              Waiting for service to come back online…
             </div>
           )}
           <div
