@@ -5,3 +5,7 @@ icon = "📸"
 category = "media"
 subdomain = "immich"
 tunnel = true
+
+[[volumes]]
+name = "data"
+description = "Storage for photos, database and ML cache"

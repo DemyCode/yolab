@@ -73,6 +73,59 @@ def _delete_tunnel(service_id: int, cluster_cfg: dict) -> None:
     )
 
 
+def _build_pv_yaml(app_id: str, volume_name: str, disk_specs: list[dict]) -> str:
+    pv_name = f"yolab-{app_id}-{volume_name}"
+    namespace = f"yolab-{app_id}"
+    pvc_name = f"{app_id}-{volume_name}"
+    disk_specs_json = json.dumps(disk_specs).replace("'", "\\'")
+    return f"""apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {pv_name}
+  labels:
+    yolab.dev/app: {app_id}
+    yolab.dev/volume: {volume_name}
+spec:
+  capacity:
+    storage: 10Ti
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: yolab
+  volumeMode: Filesystem
+  csi:
+    driver: csi.yolab.dev
+    volumeHandle: "{app_id}/{volume_name}"
+    volumeAttributes:
+      diskSpecs: '{disk_specs_json}'
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {pvc_name}
+  namespace: {namespace}
+spec:
+  storageClassName: yolab
+  accessModes:
+    - ReadWriteMany
+  volumeName: {pv_name}
+  resources:
+    requests:
+      storage: 1Ti
+"""
+
+
+def _kubectl_apply(yaml_str: str) -> None:
+    result = subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        input=yaml_str,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr)
+
+
 # ── Catalog ───────────────────────────────────────────────────────────────────
 
 @router.get("/api/apps")
@@ -170,6 +223,8 @@ def install_app(app_id: str, config: dict[str, Any]):
     app_dir = _app_dir(app_id)
     meta = _read_meta(app_id)
 
+    volumes_selection: dict[str, list[dict]] = config.pop("volumes", {})
+
     schema_file = app_dir / "schema.json"
     if schema_file.exists():
         try:
@@ -200,6 +255,22 @@ def install_app(app_id: str, config: dict[str, Any]):
             tunnel_service_id=tunnel_info["service_id"],
             subdomain=subdomain,
         )
+
+    namespace = f"yolab-{app_id}"
+
+    if volumes_selection:
+        ns_yaml = f"""apiVersion: v1
+kind: Namespace
+metadata:
+  name: {namespace}
+  labels:
+    yolab.dev/managed: "true"
+    yolab.dev/app: "{app_id}"
+"""
+        _kubectl_apply(ns_yaml)
+
+        for vol_name, disk_specs in volumes_selection.items():
+            _kubectl_apply(_build_pv_yaml(app_id, vol_name, disk_specs))
 
     env = Environment(
         loader=FileSystemLoader(str(app_dir)),
@@ -243,14 +314,24 @@ def uninstall_app(app_id: str, wipe: bool = False):
         pass
 
     if wipe:
-        cmd = ["kubectl", "delete", "namespace", namespace, "--ignore-not-found"]
+        subprocess.run(
+            ["kubectl", "delete", "namespace", namespace, "--ignore-not-found"],
+            capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["kubectl", "delete", "pv",
+             "-l", f"yolab.dev/app={app_id}",
+             "--ignore-not-found"],
+            capture_output=True, text=True,
+        )
     else:
-        cmd = [
-            "kubectl", "delete",
-            "deployments,services,ingress,secrets",
-            "--all", "-n", namespace, "--ignore-not-found",
-        ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=result.stderr)
+        result = subprocess.run(
+            ["kubectl", "delete",
+             "deployments,services,ingress,secrets",
+             "--all", "-n", namespace, "--ignore-not-found"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=result.stderr)
+
     return {"ok": True}

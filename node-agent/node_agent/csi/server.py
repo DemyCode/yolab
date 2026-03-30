@@ -9,7 +9,7 @@ import grpc
 from node_agent import config
 from node_agent.csi import csi_pb2, csi_pb2_grpc
 from node_agent.nfs import mount_remote, umount_remote
-from node_agent.mergerfs import create_volume, destroy_volume
+from node_agent.mergerfs import create_volume, destroy_volume, volume_path
 
 log = logging.getLogger("csi")
 
@@ -109,7 +109,9 @@ class NodeServicer(csi_pb2_grpc.NodeServicer):
                 return csi_pb2.NodePublishVolumeResponse()
 
         service_name, volume_name = _split_volume_id(volume_id)
-        mount_point = create_volume(service_name, volume_name, local_paths)
+        mount_point = volume_path(service_name, volume_name)
+        if not os.path.ismount(mount_point):
+            mount_point = create_volume(service_name, volume_name, local_paths)
 
         try:
             subprocess.run(

@@ -7,12 +7,6 @@
       "type": "string",
       "title": "Database password",
       "minLength": 12
-    },
-    "data_path": {
-      "type": "string",
-      "title": "Data storage path",
-      "description": "Host path where photos, database and ML cache will be stored.",
-      "default": "/var/lib/yolab/immich"
     }
   }
 }

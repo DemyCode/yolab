@@ -12,6 +12,7 @@ from node_agent.disks import (
     init_directory_disk,
     init_network_disk,
 )
+from node_agent.nfs import export_disk
 
 router = APIRouter(tags=["disks"])
 
@@ -35,7 +36,13 @@ async def _init_block_gen(disk_id: str, device: str, label: str | None):
     yield f"$ mkfs.ext4 -F {device}"
     try:
         init_block_disk(disk_id, device, label)
-        yield f"Mounted at /yolab/data/{disk_id}"
+        mount_path = f"/yolab/data/{disk_id}"
+        yield f"Mounted at {mount_path}"
+        try:
+            export_disk(disk_id, mount_path)
+            yield f"Exported via NFS: {mount_path}"
+        except Exception as e:
+            yield f"[WARN] NFS export skipped: {e}"
         yield "[DONE]"
     except Exception as e:
         yield f"[ERROR] {e}"

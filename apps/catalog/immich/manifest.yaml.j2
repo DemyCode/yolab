@@ -5,6 +5,9 @@ metadata:
   labels:
     yolab.dev/managed: "true"
     yolab.dev/app: "{{ app_id }}"
+  annotations:
+    yolab.dev/tunnel-url: "https://{{ subdomain }}.{{ domain }}"
+    yolab.dev/service-id: "{{ tunnel_service_id }}"
 ---
 apiVersion: v1
 kind: Secret
@@ -79,8 +82,9 @@ spec:
         volumeMounts:
         - name: caddy-config
           mountPath: /etc/caddy
-        - name: caddy-data
+        - name: data
           mountPath: /data
+          subPath: caddy
       volumes:
       - name: wg-secret
         secret:
@@ -88,10 +92,9 @@ spec:
       - name: caddy-config
         configMap:
           name: immich-caddy
-      - name: caddy-data
-        hostPath:
-          path: {{ data_path }}/caddy
-          type: DirectoryOrCreate
+      - name: data
+        persistentVolumeClaim:
+          claimName: immich-data
 ---
 # ── Immich Server ─────────────────────────────────────────────────────────────
 apiVersion: apps/v1
@@ -133,13 +136,13 @@ spec:
         - name: VIPS_NOVECTOR
           value: "1"
         volumeMounts:
-        - name: upload
+        - name: data
           mountPath: /usr/src/app/upload
+          subPath: uploads
       volumes:
-      - name: upload
-        hostPath:
-          path: {{ data_path }}/uploads
-          type: DirectoryOrCreate
+      - name: data
+        persistentVolumeClaim:
+          claimName: immich-data
 ---
 apiVersion: v1
 kind: Service
@@ -176,13 +179,13 @@ spec:
           limits:
             memory: 4Gi
         volumeMounts:
-        - name: model-cache
+        - name: data
           mountPath: /cache
+          subPath: ml-cache
       volumes:
-      - name: model-cache
-        hostPath:
-          path: {{ data_path }}/ml-cache
-          type: DirectoryOrCreate
+      - name: data
+        persistentVolumeClaim:
+          claimName: immich-data
 ---
 apiVersion: v1
 kind: Service
@@ -215,7 +218,6 @@ spec:
       containers:
       - name: redis
         image: docker.io/valkey/valkey:8-bookworm
-        command: ["redis-cli", "ping"]
         livenessProbe:
           exec:
             command: ["redis-cli", "ping"]
@@ -266,13 +268,13 @@ spec:
         - name: POSTGRES_INITDB_ARGS
           value: "--data-checksums"
         volumeMounts:
-        - name: pgdata
+        - name: data
           mountPath: /var/lib/postgresql/data
+          subPath: postgres
       volumes:
-      - name: pgdata
-        hostPath:
-          path: {{ data_path }}/postgres
-          type: DirectoryOrCreate
+      - name: data
+        persistentVolumeClaim:
+          claimName: immich-data
 ---
 apiVersion: v1
 kind: Service

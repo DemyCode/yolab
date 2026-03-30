@@ -27,7 +27,49 @@ function OverviewPage() {
       .then((r) => r.json())
       .then(setStatus)
       .catch(() => setStatus(null));
+
+    fetch("/api/update/status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.running) {
+          setUpdating(true);
+          setLog(d.log ?? []);
+          streamUpdateLog();
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  async function streamUpdateLog() {
+    const response = await fetch("/api/update/status");
+    if (!response.ok) return;
+    const d = await response.json();
+    if (!d.running) {
+      setUpdating(false);
+      return;
+    }
+    const poll = async () => {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const r = await fetch("/api/update/status");
+        const d = await r.json();
+        setLog(d.log ?? []);
+        if (!d.running) {
+          setUpdating(false);
+          const sawDone = (d.log ?? []).includes("[DONE]");
+          if (sawDone) setUpdateDone(true);
+          else pollUntilAlive();
+          return;
+        }
+      } catch {
+        setUpdating(false);
+        pollUntilAlive();
+        return;
+      }
+      poll();
+    };
+    poll();
+  }
 
   useEffect(() => {
     if (logRef.current) {

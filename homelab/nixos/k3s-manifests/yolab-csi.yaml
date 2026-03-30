@@ -22,6 +22,7 @@ spec:
     spec:
       hostNetwork: true
       hostPID: true
+      serviceAccountName: yolab-csi
       tolerations:
         - operator: Exists
       containers:

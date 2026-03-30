@@ -53,6 +53,7 @@ interface AppMeta {
   description: string;
   icon: string;
   category: string;
+  volumes?: Array<{ name: string; description: string }>;
 }
 
 interface InstalledApp {
@@ -61,13 +62,120 @@ interface InstalledApp {
   tunnel_url: string;
 }
 
+interface Disk {
+  disk_id: string;
+  label: string | null;
+  mount_path: string;
+  status: string;
+  node_hostname: string;
+  node_wg_ipv6: string;
+  total_bytes: number | null;
+  free_bytes: number | null;
+}
+
+interface DiskSpec {
+  disk_id: string;
+  node_wg_ipv6: string;
+  mount_path: string;
+}
+
 type AppStatus = "running" | "starting" | "error" | "not_installed";
+
+// ── Disk picker ───────────────────────────────────────────────────────────────
+
+function DiskPicker({
+  volume,
+  disks,
+  selected,
+  onChange,
+}: {
+  volume: { name: string; description: string };
+  disks: Disk[];
+  selected: DiskSpec[];
+  onChange: (specs: DiskSpec[]) => void;
+}) {
+  const usable = disks.filter((d) => d.status === "registered" && d.mount_path);
+
+  const toggle = (disk: Disk) => {
+    const already = selected.some((s) => s.disk_id === disk.disk_id);
+    if (already) {
+      onChange(selected.filter((s) => s.disk_id !== disk.disk_id));
+    } else {
+      onChange([
+        ...selected,
+        { disk_id: disk.disk_id, node_wg_ipv6: disk.node_wg_ipv6 ?? "", mount_path: disk.mount_path },
+      ]);
+    }
+  };
+
+  const fmt = (bytes: number | null) => {
+    if (!bytes) return "";
+    const gb = bytes / 1e9;
+    return gb >= 1000 ? `${(gb / 1000).toFixed(1)} TB` : `${gb.toFixed(0)} GB`;
+  };
+
+  return (
+    <div style={{ marginBottom: "1rem" }}>
+      <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem" }}>
+        {volume.name}
+      </div>
+      <div style={{ fontSize: "0.78rem", color: "#888", marginBottom: "0.5rem" }}>
+        {volume.description}
+      </div>
+      {usable.length === 0 ? (
+        <div style={{ fontSize: "0.82rem", color: "#f87171" }}>
+          No initialized disks available. Initialize a disk first from the Disks tab.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          {usable.map((disk) => {
+            const isSelected = selected.some((s) => s.disk_id === disk.disk_id);
+            return (
+              <label
+                key={disk.disk_id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.6rem",
+                  padding: "0.45rem 0.6rem",
+                  border: `1px solid ${isSelected ? "#86efac" : "#333"}`,
+                  borderRadius: 5,
+                  cursor: "pointer",
+                  background: isSelected ? "#0f2a1a" : "#111",
+                  fontSize: "0.82rem",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggle(disk)}
+                  style={{ accentColor: "#86efac" }}
+                />
+                <span style={{ flex: 1, fontFamily: "monospace" }}>
+                  {disk.label || disk.disk_id}
+                </span>
+                <span style={{ color: "#888" }}>{disk.node_hostname}</span>
+                {disk.total_bytes && (
+                  <span style={{ color: "#666" }}>
+                    {fmt(disk.free_bytes)} free / {fmt(disk.total_bytes)}
+                  </span>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Install modal ─────────────────────────────────────────────────────────────
 
 function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => void; onDone: () => void }) {
   const [schema, setSchema] = useState<RJSFSchema | null>(null);
   const [uiSchema, setUiSchema] = useState<UiSchema>({});
+  const [disks, setDisks] = useState<Disk[]>([]);
+  const [volumeSelections, setVolumeSelections] = useState<Record<string, DiskSpec[]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,20 +183,38 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
     Promise.all([
       fetch(`/api/apps/${app.id}/schema`).then((r) => r.json()),
       fetch(`/api/apps/${app.id}/uischema`).then((r) => r.json()),
-    ]).then(([s, u]) => {
+      fetch("/api/disks").then((r) => r.json()).catch(() => []),
+    ]).then(([s, u, d]) => {
       setSchema(s);
       setUiSchema(u);
+      setDisks(Array.isArray(d) ? d : []);
+      const init: Record<string, DiskSpec[]> = {};
+      for (const vol of app.volumes ?? []) init[vol.name] = [];
+      setVolumeSelections(init);
     });
   }, [app.id]);
 
+  const hasVolumes = (app.volumes ?? []).length > 0;
+
+  const volumesComplete = !hasVolumes || (app.volumes ?? []).every(
+    (v) => (volumeSelections[v.name] ?? []).length > 0
+  );
+
   const handleSubmit = async ({ formData }: IChangeEvent) => {
+    if (!volumesComplete) {
+      setError("Select at least one disk for each volume.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
+      const body = hasVolumes
+        ? { ...formData, volumes: volumeSelections }
+        : formData;
       const res = await fetch(`/api/apps/${app.id}/install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -115,7 +241,7 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
         border: "1px solid #333",
         borderRadius: 10,
         padding: "1.5rem",
-        width: "min(520px, 92vw)",
+        width: "min(540px, 92vw)",
         maxHeight: "88vh",
         overflowY: "auto",
       }}>
@@ -129,24 +255,49 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
         {!schema ? (
           <div style={{ color: "#666", fontSize: "0.9rem" }}>Loading…</div>
         ) : (
-          <Form
-            className="yolab-form"
-            schema={schema}
-            uiSchema={uiSchema}
-            validator={validator}
-            widgets={widgets}
-            onSubmit={handleSubmit}
-            disabled={busy}
-          >
-            {error && (
-              <div style={{ color: "#f87171", fontSize: "0.85rem", marginBottom: "0.75rem" }}>
-                {error}
+          <>
+            {hasVolumes && (
+              <div style={{ marginBottom: "1rem", borderBottom: "1px solid #2a2a2a", paddingBottom: "1rem" }}>
+                <div style={{ fontSize: "0.82rem", color: "#888", marginBottom: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Storage
+                </div>
+                {(app.volumes ?? []).map((vol) => (
+                  <DiskPicker
+                    key={vol.name}
+                    volume={vol}
+                    disks={disks}
+                    selected={volumeSelections[vol.name] ?? []}
+                    onChange={(specs) =>
+                      setVolumeSelections((prev) => ({ ...prev, [vol.name]: specs }))
+                    }
+                  />
+                ))}
               </div>
             )}
-            <button type="submit" disabled={busy} style={{ width: "100%", marginTop: "0.5rem" }}>
-              {busy ? "Installing…" : `Install ${app.name}`}
-            </button>
-          </Form>
+
+            <Form
+              className="yolab-form"
+              schema={schema}
+              uiSchema={uiSchema}
+              validator={validator}
+              widgets={widgets}
+              onSubmit={handleSubmit}
+              disabled={busy}
+            >
+              {error && (
+                <div style={{ color: "#f87171", fontSize: "0.85rem", marginBottom: "0.75rem" }}>
+                  {error}
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={busy || !volumesComplete}
+                style={{ width: "100%", marginTop: "0.5rem", opacity: !volumesComplete ? 0.5 : 1 }}
+              >
+                {busy ? "Installing…" : `Install ${app.name}`}
+              </button>
+            </Form>
+          </>
         )}
       </div>
     </div>
