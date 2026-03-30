@@ -58,6 +58,7 @@ interface AppMeta {
 
 interface InstalledApp {
   app_id: string;
+  instance_name: string;
   namespace: string;
   tunnel_url: string;
 }
@@ -310,23 +311,23 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
 
 // ── Installed app row ─────────────────────────────────────────────────────────
 
-function InstalledRow({ app_id, tunnel_url, onRemove }: { app_id: string; tunnel_url: string; onRemove: () => void }) {
+function InstalledRow({ app_id, instance_name, tunnel_url, onRemove }: { app_id: string; instance_name: string; tunnel_url: string; onRemove: () => void }) {
   const [status, setStatus] = useState<AppStatus>("starting");
   const [confirmWipe, setConfirmWipe] = useState(false);
 
   useEffect(() => {
     const poll = () =>
-      fetch(`/api/apps/${app_id}/status`)
+      fetch(`/api/apps/${app_id}/status?instance_name=${instance_name}`)
         .then((r) => r.json())
         .then((d) => setStatus(d.status))
         .catch(() => { });
     poll();
     const id = setInterval(poll, 6000);
     return () => clearInterval(id);
-  }, [app_id]);
+  }, [app_id, instance_name]);
 
   const remove = async (wipe: boolean) => {
-    await fetch(`/api/apps/${app_id}?wipe=${wipe}`, { method: "DELETE" });
+    await fetch(`/api/apps/${app_id}?instance_name=${instance_name}&wipe=${wipe}`, { method: "DELETE" });
     setConfirmWipe(false);
     onRemove();
   };
@@ -337,7 +338,7 @@ function InstalledRow({ app_id, tunnel_url, onRemove }: { app_id: string; tunnel
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "1rem", padding: "0.65rem 0", borderBottom: "1px solid #2a2a2a" }}>
       <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor, display: "inline-block", flexShrink: 0 }} />
-      <span style={{ flex: 1, fontFamily: "monospace" }}>{app_id}</span>
+      <span style={{ flex: 1, fontFamily: "monospace" }}>{instance_name}</span>
       <span style={{ color: dotColor, fontSize: "0.8rem", width: 70 }}>{dotLabel}</span>
       {tunnel_url && (
         <button
@@ -414,7 +415,7 @@ export function ServicesPage() {
         </div>
       ) : (
         installed.map((i) => (
-          <InstalledRow key={i.app_id} app_id={i.app_id} tunnel_url={i.tunnel_url} onRemove={refresh} />
+          <InstalledRow key={i.namespace} app_id={i.app_id} instance_name={i.instance_name} tunnel_url={i.tunnel_url} onRemove={refresh} />
         ))
       )}
     </div>
@@ -435,8 +436,7 @@ export function ServicesStorePage() {
 
   useEffect(() => { refresh(); }, []);
 
-  const installedIds = new Set(installed.map((i) => i.app_id));
-  const available = catalog.filter((a) => !installedIds.has(a.id));
+  const available = catalog;
 
   return (
     <div>

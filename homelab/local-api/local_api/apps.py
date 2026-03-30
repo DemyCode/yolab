@@ -78,10 +78,10 @@ def _delete_tunnel(service_id: int, cluster_cfg: dict) -> None:
     )
 
 
-def _build_pv_yaml(app_id: str, volume_name: str, disk_spec: dict) -> str:
-    pv_name = f"yolab-{app_id}-{volume_name}"
-    namespace = f"yolab-{app_id}"
-    pvc_name = f"{app_id}-{volume_name}"
+def _build_pv_yaml(app_id: str, instance_name: str, volume_name: str, disk_spec: dict) -> str:
+    pv_name = f"yolab-{instance_name}-{volume_name}"
+    namespace = f"yolab-{instance_name}"
+    pvc_name = f"{instance_name}-{volume_name}"
     disk_spec_json = json.dumps(disk_spec).replace("'", "\\'")
     return f"""apiVersion: v1
 kind: PersistentVolume
@@ -89,6 +89,7 @@ metadata:
   name: {pv_name}
   labels:
     yolab.dev/app: {app_id}
+    yolab.dev/instance: {instance_name}
     yolab.dev/volume: {volume_name}
 spec:
   capacity:
@@ -100,7 +101,7 @@ spec:
   volumeMode: Filesystem
   csi:
     driver: csi.yolab.dev
-    volumeHandle: "{app_id}/{volume_name}"
+    volumeHandle: "{instance_name}/{volume_name}"
     volumeAttributes:
       diskSpec: '{disk_spec_json}'
 ---
@@ -163,6 +164,7 @@ def list_installed():
         return [
             {
                 "app_id": item["metadata"]["labels"].get("yolab.dev/app", ""),
+                "instance_name": item["metadata"]["name"].removeprefix("yolab-"),
                 "namespace": item["metadata"]["name"],
                 "tunnel_url": item["metadata"].get("annotations", {}).get("yolab.dev/tunnel-url", ""),
             }
@@ -180,10 +182,27 @@ def get_app(app_id: str):
 
 @router.get("/api/apps/{app_id}/schema")
 def get_schema(app_id: str):
+    meta = _read_meta(app_id)
     f = _app_dir(app_id) / "schema.json"
-    if not f.exists():
-        return {}
-    return json.loads(f.read_text())
+    schema = json.loads(f.read_text()) if f.exists() else {
+        "title": meta["name"], "type": "object", "required": [], "properties": {}
+    }
+    schema.setdefault("required", [])
+    schema.setdefault("properties", {})
+    title = "Subdomain" if meta.get("tunnel") else "Instance name"
+    description = "Becomes part of your public URL" if meta.get("tunnel") else "Unique name for this installation"
+    instance_field = {
+        "type": "string",
+        "title": title,
+        "description": description,
+        "default": app_id,
+        "minLength": 2,
+        "pattern": "^[a-z0-9-]+$",
+    }
+    schema["properties"] = {"instance_name": instance_field, **schema["properties"]}
+    if "instance_name" not in schema["required"]:
+        schema["required"] = ["instance_name"] + schema["required"]
+    return schema
 
 
 @router.get("/api/apps/{app_id}/uischema")
@@ -195,8 +214,8 @@ def get_uischema(app_id: str):
 
 
 @router.get("/api/apps/{app_id}/status")
-def get_status(app_id: str):
-    namespace = f"yolab-{app_id}"
+def get_status(app_id: str, instance_name: str | None = None):
+    namespace = f"yolab-{instance_name or app_id}"
     try:
         result = subprocess.run(
             ["kubectl", "get", "pods", "-n", namespace, "-o", "json"],
@@ -229,6 +248,7 @@ def install_app(app_id: str, config: dict[str, Any]):
     app_dir = _app_dir(app_id)
     meta = _read_meta(app_id)
 
+    instance_name: str = config.pop("instance_name", app_id)
     volumes_selection: dict[str, dict] = config.pop("volumes", {})
 
     schema_file = app_dir / "schema.json"
@@ -245,24 +265,22 @@ def install_app(app_id: str, config: dict[str, Any]):
     if not template_file.exists():
         raise HTTPException(status_code=500, detail="No manifest template found for this app")
 
-    render_ctx: dict[str, Any] = {**config, "domain": DOMAIN, "app_id": app_id}
+    render_ctx: dict[str, Any] = {**config, "domain": DOMAIN, "app_id": app_id, "instance_name": instance_name}
 
     if meta.get("tunnel"):
         cluster_cfg = _cluster_config()
         wg_private_key, wg_public_key = _wg_genkey()
-        subdomain = meta.get("subdomain", app_id)
-        service_name = f"{subdomain}-{app_id}"
-        tunnel_info = _register_tunnel(service_name, wg_public_key, cluster_cfg)
+        tunnel_info = _register_tunnel(instance_name, wg_public_key, cluster_cfg)
         render_ctx.update(
             wg_private_key=wg_private_key,
             sub_ipv6=tunnel_info["sub_ipv6"],
             wg_server_endpoint=tunnel_info["wg_server_endpoint"],
             wg_server_public_key=tunnel_info["wg_server_public_key"],
             tunnel_service_id=tunnel_info["service_id"],
-            subdomain=subdomain,
+            subdomain=instance_name,
         )
 
-    namespace = f"yolab-{app_id}"
+    namespace = f"yolab-{instance_name}"
 
     if volumes_selection:
         ns_yaml = f"""apiVersion: v1
@@ -276,7 +294,7 @@ metadata:
         _kubectl_apply(ns_yaml)
 
         for vol_name, disk_spec in volumes_selection.items():
-            _kubectl_apply(_build_pv_yaml(app_id, vol_name, disk_spec))
+            _kubectl_apply(_build_pv_yaml(app_id, instance_name, vol_name, disk_spec))
 
     env = Environment(
         loader=FileSystemLoader(str(app_dir)),
@@ -301,8 +319,9 @@ metadata:
 
 
 @router.delete("/api/apps/{app_id}")
-def uninstall_app(app_id: str, wipe: bool = False):
-    namespace = f"yolab-{app_id}"
+def uninstall_app(app_id: str, instance_name: str | None = None, wipe: bool = False):
+    effective = instance_name or app_id
+    namespace = f"yolab-{effective}"
 
     try:
         ns_result = subprocess.run(
@@ -326,7 +345,7 @@ def uninstall_app(app_id: str, wipe: bool = False):
         )
         subprocess.run(
             ["kubectl", "delete", "pv",
-             "-l", f"yolab.dev/app={app_id}",
+             "-l", f"yolab.dev/instance={effective}",
              "--ignore-not-found"],
             capture_output=True, text=True, env=_KUBECTL_ENV,
         )
