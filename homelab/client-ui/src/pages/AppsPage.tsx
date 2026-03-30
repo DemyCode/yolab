@@ -94,24 +94,30 @@ function DiskPicker({
   selected: DiskSpec[];
   onChange: (specs: DiskSpec[]) => void;
 }) {
-  const usable = disks.filter((d) => d.status === "registered" && d.mount_path);
-
-  const toggle = (disk: Disk) => {
-    const already = selected.some((s) => s.disk_id === disk.disk_id);
-    if (already) {
-      onChange(selected.filter((s) => s.disk_id !== disk.disk_id));
-    } else {
-      onChange([
-        ...selected,
-        { disk_id: disk.disk_id, node_wg_ipv6: disk.node_wg_ipv6 ?? "", mount_path: disk.mount_path },
-      ]);
-    }
-  };
-
   const fmt = (bytes: number | null) => {
     if (!bytes) return "";
     const gb = bytes / 1e9;
     return gb >= 1000 ? `${(gb / 1000).toFixed(1)} TB` : `${gb.toFixed(0)} GB`;
+  };
+
+  type DiskOption = { disk_id: string; label: string; node_hostname: string; node_wg_ipv6: string; mount_path: string; total_bytes: number | null; free_bytes: number | null; isSystem: boolean };
+
+  const options: DiskOption[] = [
+    ...disks
+      .filter((d) => d.status === "registered" && d.mount_path)
+      .map((d) => ({ disk_id: d.disk_id, label: d.label || d.disk_id, node_hostname: d.node_hostname, node_wg_ipv6: d.node_wg_ipv6 ?? "", mount_path: d.mount_path, total_bytes: d.total_bytes, free_bytes: d.free_bytes, isSystem: false })),
+    ...disks
+      .filter((d) => d.status === "system")
+      .map((d) => ({ disk_id: `${d.disk_id}-local`, label: "Local storage (system disk)", node_hostname: d.node_hostname, node_wg_ipv6: d.node_wg_ipv6 ?? "", mount_path: "/var/lib/yolab", total_bytes: d.total_bytes, free_bytes: d.free_bytes, isSystem: true })),
+  ];
+
+  const toggle = (opt: DiskOption) => {
+    const already = selected.some((s) => s.disk_id === opt.disk_id);
+    if (already) {
+      onChange(selected.filter((s) => s.disk_id !== opt.disk_id));
+    } else {
+      onChange([...selected, { disk_id: opt.disk_id, node_wg_ipv6: opt.node_wg_ipv6, mount_path: opt.mount_path }]);
+    }
   };
 
   return (
@@ -122,17 +128,17 @@ function DiskPicker({
       <div style={{ fontSize: "0.78rem", color: "#888", marginBottom: "0.5rem" }}>
         {volume.description}
       </div>
-      {usable.length === 0 ? (
+      {options.length === 0 ? (
         <div style={{ fontSize: "0.82rem", color: "#f87171" }}>
-          No initialized disks available. Initialize a disk first from the Disks tab.
+          No disks available.
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-          {usable.map((disk) => {
-            const isSelected = selected.some((s) => s.disk_id === disk.disk_id);
+          {options.map((opt) => {
+            const isSelected = selected.some((s) => s.disk_id === opt.disk_id);
             return (
               <label
-                key={disk.disk_id}
+                key={opt.disk_id}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -148,16 +154,17 @@ function DiskPicker({
                 <input
                   type="checkbox"
                   checked={isSelected}
-                  onChange={() => toggle(disk)}
+                  onChange={() => toggle(opt)}
                   style={{ accentColor: "#86efac" }}
                 />
                 <span style={{ flex: 1, fontFamily: "monospace" }}>
-                  {disk.label || disk.disk_id}
+                  {opt.label}
+                  {opt.isSystem && <span style={{ color: "#666", marginLeft: "0.4rem" }}>(system disk)</span>}
                 </span>
-                <span style={{ color: "#888" }}>{disk.node_hostname}</span>
-                {disk.total_bytes && (
+                <span style={{ color: "#888" }}>{opt.node_hostname}</span>
+                {opt.total_bytes && (
                   <span style={{ color: "#666" }}>
-                    {fmt(disk.free_bytes)} free / {fmt(disk.total_bytes)}
+                    {fmt(opt.free_bytes)} free / {fmt(opt.total_bytes)}
                   </span>
                 )}
               </label>
