@@ -79,6 +79,7 @@ interface DiskSpec {
   mount_path: string;
 }
 
+
 type AppStatus = "running" | "starting" | "error" | "not_installed";
 
 // ── Disk picker ───────────────────────────────────────────────────────────────
@@ -91,8 +92,8 @@ function DiskPicker({
 }: {
   volume: { name: string; description: string };
   disks: Disk[];
-  selected: DiskSpec[];
-  onChange: (specs: DiskSpec[]) => void;
+  selected: DiskSpec | null;
+  onChange: (spec: DiskSpec | null) => void;
 }) {
   const fmt = (bytes: number | null) => {
     if (!bytes) return "";
@@ -108,17 +109,8 @@ function DiskPicker({
       .map((d) => ({ disk_id: d.disk_id, label: d.label || d.disk_id, node_hostname: d.node_hostname, node_wg_ipv6: d.node_wg_ipv6 ?? "", mount_path: d.mount_path, total_bytes: d.total_bytes, free_bytes: d.free_bytes, isSystem: false })),
     ...disks
       .filter((d) => d.status === "system")
-      .map((d) => ({ disk_id: `${d.disk_id}-local`, label: "Local storage (system disk)", node_hostname: d.node_hostname, node_wg_ipv6: d.node_wg_ipv6 ?? "", mount_path: "/var/lib/yolab", total_bytes: d.total_bytes, free_bytes: d.free_bytes, isSystem: true })),
+      .map((d) => ({ disk_id: `${d.disk_id}-system`, label: "System disk", node_hostname: d.node_hostname, node_wg_ipv6: d.node_wg_ipv6 ?? "", mount_path: "/var/lib/yolab", total_bytes: d.total_bytes, free_bytes: d.free_bytes, isSystem: true })),
   ];
-
-  const toggle = (opt: DiskOption) => {
-    const already = selected.some((s) => s.disk_id === opt.disk_id);
-    if (already) {
-      onChange(selected.filter((s) => s.disk_id !== opt.disk_id));
-    } else {
-      onChange([...selected, { disk_id: opt.disk_id, node_wg_ipv6: opt.node_wg_ipv6, mount_path: opt.mount_path }]);
-    }
-  };
 
   return (
     <div style={{ marginBottom: "1rem" }}>
@@ -135,7 +127,7 @@ function DiskPicker({
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
           {options.map((opt) => {
-            const isSelected = selected.some((s) => s.disk_id === opt.disk_id);
+            const isSelected = selected?.disk_id === opt.disk_id;
             return (
               <label
                 key={opt.disk_id}
@@ -152,9 +144,10 @@ function DiskPicker({
                 }}
               >
                 <input
-                  type="checkbox"
+                  type="radio"
+                  name={`vol-${volume.name}`}
                   checked={isSelected}
-                  onChange={() => toggle(opt)}
+                  onChange={() => onChange({ disk_id: opt.disk_id, node_wg_ipv6: opt.node_wg_ipv6, mount_path: opt.mount_path })}
                   style={{ accentColor: "#86efac" }}
                 />
                 <span style={{ flex: 1, fontFamily: "monospace" }}>
@@ -182,7 +175,7 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
   const [schema, setSchema] = useState<RJSFSchema | null>(null);
   const [uiSchema, setUiSchema] = useState<UiSchema>({});
   const [disks, setDisks] = useState<Disk[]>([]);
-  const [volumeSelections, setVolumeSelections] = useState<Record<string, DiskSpec[]>>({});
+  const [volumeSelections, setVolumeSelections] = useState<Record<string, DiskSpec | null>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -195,8 +188,8 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
       setSchema(s);
       setUiSchema(u);
       setDisks(Array.isArray(d) ? d : []);
-      const init: Record<string, DiskSpec[]> = {};
-      for (const vol of app.volumes ?? []) init[vol.name] = [];
+      const init: Record<string, DiskSpec | null> = {};
+      for (const vol of app.volumes ?? []) init[vol.name] = null;
       setVolumeSelections(init);
     });
   }, [app.id]);
@@ -204,19 +197,23 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
   const hasVolumes = (app.volumes ?? []).length > 0;
 
   const volumesComplete = !hasVolumes || (app.volumes ?? []).every(
-    (v) => (volumeSelections[v.name] ?? []).length > 0
+    (v) => volumeSelections[v.name] != null
   );
 
   const handleSubmit = async ({ formData }: IChangeEvent) => {
     if (!volumesComplete) {
-      setError("Select at least one disk for each volume.");
+      setError("Select a disk for each volume.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
+      const volumes: Record<string, DiskSpec> = {};
+      for (const [k, v] of Object.entries(volumeSelections)) {
+        if (v) volumes[k] = v;
+      }
       const body = hasVolumes
-        ? { ...formData, volumes: volumeSelections }
+        ? { ...formData, volumes }
         : formData;
       const res = await fetch(`/api/apps/${app.id}/install`, {
         method: "POST",
@@ -273,9 +270,9 @@ function InstallModal({ app, onClose, onDone }: { app: AppMeta; onClose: () => v
                     key={vol.name}
                     volume={vol}
                     disks={disks}
-                    selected={volumeSelections[vol.name] ?? []}
-                    onChange={(specs) =>
-                      setVolumeSelections((prev) => ({ ...prev, [vol.name]: specs }))
+                    selected={volumeSelections[vol.name] ?? null}
+                    onChange={(spec) =>
+                      setVolumeSelections((prev) => ({ ...prev, [vol.name]: spec }))
                     }
                   />
                 ))}

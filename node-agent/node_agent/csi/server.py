@@ -9,50 +9,38 @@ import grpc
 from node_agent import config
 from node_agent.csi import csi_pb2, csi_pb2_grpc
 from node_agent.nfs import mount_remote, umount_remote
-from node_agent.mergerfs import create_volume, destroy_volume, volume_path
 
 log = logging.getLogger("csi")
 
 PLUGIN_NAME = "csi.yolab.dev"
 PLUGIN_VERSION = "0.1.0"
 NFS_MOUNT_ROOT = "/mnt/yolab-nfs"
-VOLUMES_MOUNT_ROOT = "/mnt/yolab-volumes"
 
-_published_disk_specs: dict[str, list[dict]] = {}
+_published_specs: dict[str, dict] = {}
 
 
-def _parse_disk_specs(volume_context: dict) -> list[dict]:
-    raw = volume_context.get("diskSpecs", "[]")
+def _parse_disk_spec(volume_context: dict) -> dict:
+    raw = volume_context.get("diskSpec", "{}")
     return json.loads(raw)
 
 
-def _ensure_disk_mounted(spec: dict) -> str:
+def _ensure_mounted(spec: dict) -> str:
     disk_id = spec["disk_id"]
-    node_ipv6 = spec.get("node_ipv6", "")
-    remote_path = spec.get("mount_path", f"/yolab/data/{disk_id}")
+    node_wg_ipv6 = spec.get("node_wg_ipv6", "")
+    mount_path = spec.get("mount_path", f"/yolab/data/{disk_id}")
 
-    if not node_ipv6 or node_ipv6 == config.WG_IPV6:
-        return remote_path
+    if not node_wg_ipv6 or node_wg_ipv6 == config.WG_IPV6:
+        return mount_path
 
     local_path = f"{NFS_MOUNT_ROOT}/{disk_id}"
     if os.path.ismount(local_path):
         return local_path
-    return mount_remote(disk_id, node_ipv6, remote_path)
-
-
-def _unmount_remote_disks(disk_specs: list[dict]) -> None:
-    for spec in disk_specs:
-        node_ipv6 = spec.get("node_ipv6", "")
-        if node_ipv6 and node_ipv6 != config.WG_IPV6:
-            umount_remote(spec["disk_id"])
+    return mount_remote(disk_id, node_wg_ipv6, mount_path)
 
 
 class IdentityServicer(csi_pb2_grpc.IdentityServicer):
     def GetPluginInfo(self, request, context):
-        return csi_pb2.GetPluginInfoResponse(
-            name=PLUGIN_NAME,
-            vendor_version=PLUGIN_VERSION,
-        )
+        return csi_pb2.GetPluginInfoResponse(name=PLUGIN_NAME, vendor_version=PLUGIN_VERSION)
 
     def GetPluginCapabilities(self, request, context):
         cap = csi_pb2.PluginCapability(
@@ -69,10 +57,9 @@ class IdentityServicer(csi_pb2_grpc.IdentityServicer):
 
 class ControllerServicer(csi_pb2_grpc.ControllerServicer):
     def CreateVolume(self, request, context):
-        volume_id = request.name
         return csi_pb2.CreateVolumeResponse(
             volume=csi_pb2.Volume(
-                volume_id=volume_id,
+                volume_id=request.name,
                 volume_context=dict(request.parameters),
             )
         )
@@ -93,48 +80,43 @@ class NodeServicer(csi_pb2_grpc.NodeServicer):
     def NodePublishVolume(self, request, context):
         volume_id = request.volume_id
         target_path = request.target_path
-        disk_specs = _parse_disk_specs(dict(request.volume_context))
+        spec = _parse_disk_spec(dict(request.volume_context))
+
+        if not spec:
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details("No disk spec in volume context")
+            return csi_pb2.NodePublishVolumeResponse()
 
         os.makedirs(target_path, exist_ok=True)
 
-        local_paths = []
-        for spec in disk_specs:
-            try:
-                path = _ensure_disk_mounted(spec)
-                local_paths.append(path)
-            except Exception as e:
-                log.error("failed to mount disk %s: %s", spec.get("disk_id"), e)
-                context.set_code(grpc.StatusCode.INTERNAL)
-                context.set_details(str(e))
-                return csi_pb2.NodePublishVolumeResponse()
-
-        service_name, volume_name = _split_volume_id(volume_id)
-        mount_point = volume_path(service_name, volume_name)
-        if not os.path.ismount(mount_point):
-            mount_point = create_volume(service_name, volume_name, local_paths)
+        try:
+            source_path = _ensure_mounted(spec)
+        except Exception as e:
+            log.error("failed to mount disk %s: %s", spec.get("disk_id"), e)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return csi_pb2.NodePublishVolumeResponse()
 
         try:
-            subprocess.run(
-                ["mount", "--bind", mount_point, target_path], check=True
-            )
+            subprocess.run(["mount", "--bind", source_path, target_path], check=True)
         except subprocess.CalledProcessError as e:
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return csi_pb2.NodePublishVolumeResponse()
 
-        _published_disk_specs[volume_id] = disk_specs
+        _published_specs[volume_id] = spec
         return csi_pb2.NodePublishVolumeResponse()
 
     def NodeUnpublishVolume(self, request, context):
         target_path = request.target_path
         volume_id = request.volume_id
-        disk_specs = _published_disk_specs.pop(volume_id, [])
+        spec = _published_specs.pop(volume_id, {})
 
         subprocess.run(["umount", target_path], check=False)
 
-        service_name, volume_name = _split_volume_id(volume_id)
-        destroy_volume(service_name, volume_name)
-        _unmount_remote_disks(disk_specs)
+        node_wg_ipv6 = spec.get("node_wg_ipv6", "")
+        if node_wg_ipv6 and node_wg_ipv6 != config.WG_IPV6:
+            umount_remote(spec["disk_id"])
 
         return csi_pb2.NodeUnpublishVolumeResponse()
 
@@ -143,13 +125,6 @@ class NodeServicer(csi_pb2_grpc.NodeServicer):
 
     def NodeGetInfo(self, request, context):
         return csi_pb2.NodeGetInfoResponse(node_id=config.NODE_ID or "unknown")
-
-
-def _split_volume_id(volume_id: str) -> tuple[str, str]:
-    parts = volume_id.split("/", 1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return volume_id, "data"
 
 
 def create_csi_server() -> grpc.Server:

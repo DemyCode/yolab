@@ -78,11 +78,11 @@ def _delete_tunnel(service_id: int, cluster_cfg: dict) -> None:
     )
 
 
-def _build_pv_yaml(app_id: str, volume_name: str, disk_specs: list[dict]) -> str:
+def _build_pv_yaml(app_id: str, volume_name: str, disk_spec: dict) -> str:
     pv_name = f"yolab-{app_id}-{volume_name}"
     namespace = f"yolab-{app_id}"
     pvc_name = f"{app_id}-{volume_name}"
-    disk_specs_json = json.dumps(disk_specs).replace("'", "\\'")
+    disk_spec_json = json.dumps(disk_spec).replace("'", "\\'")
     return f"""apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -102,7 +102,7 @@ spec:
     driver: csi.yolab.dev
     volumeHandle: "{app_id}/{volume_name}"
     volumeAttributes:
-      diskSpecs: '{disk_specs_json}'
+      diskSpec: '{disk_spec_json}'
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -229,7 +229,7 @@ def install_app(app_id: str, config: dict[str, Any]):
     app_dir = _app_dir(app_id)
     meta = _read_meta(app_id)
 
-    volumes_selection: dict[str, list[dict]] = config.pop("volumes", {})
+    volumes_selection: dict[str, dict] = config.pop("volumes", {})
 
     schema_file = app_dir / "schema.json"
     if schema_file.exists():
@@ -275,8 +275,8 @@ metadata:
 """
         _kubectl_apply(ns_yaml)
 
-        for vol_name, disk_specs in volumes_selection.items():
-            _kubectl_apply(_build_pv_yaml(app_id, vol_name, disk_specs))
+        for vol_name, disk_spec in volumes_selection.items():
+            _kubectl_apply(_build_pv_yaml(app_id, vol_name, disk_spec))
 
     env = Environment(
         loader=FileSystemLoader(str(app_dir)),
