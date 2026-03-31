@@ -96,9 +96,6 @@ in
       configFile = pkgs.writeText "Caddyfile" (
         lib.optionalString s.tunnelEnabled ''
           ${tunnelDomain} {
-            handle /api/* {
-              reverse_proxy 127.0.0.1:3001
-            }
             handle {
               root * ${s.clientUi}
               try_files {path} /index.html

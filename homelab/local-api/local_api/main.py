@@ -46,7 +46,6 @@ async def status():
 @app.post("/api/update")
 async def update():
     async def stream():
-        # Step 1: git pull — safe to run in-process, won't restart the API
         yield f"data: $ git -C {settings.yolab_repo_path} pull\n\n"
         try:
             proc = subprocess.Popen(
@@ -65,17 +64,16 @@ async def update():
             yield f"data: [ERROR] {e}\n\n"
             return
 
-        # Step 2: launch nixos-rebuild fully detached — it will restart this service,
-        # so we must not be its parent. start_new_session=True creates a new process
-        # group + session, and all fds are closed so the child is completely orphaned.
         flake = f"path:{settings.yolab_repo_path}#{settings.yolab_flake_target}"
         yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
         yield "data: [INFO] nixos-rebuild launched — service will restart shortly\n\n"
 
         subprocess.Popen(
             [
-                "nixos-rebuild", "switch",
-                "--flake", flake,
+                "nixos-rebuild",
+                "switch",
+                "--flake",
+                flake,
                 "--verbose",
                 "--print-build-logs",
             ],
