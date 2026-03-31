@@ -78,6 +78,14 @@ in
       };
     };
 
+    boot.kernelModules = [
+      "wireguard"
+      "ip6_tables"
+      "ip6table_filter"
+      "iptable_nat"
+      "xt_conntrack"
+    ];
+
     services.k3s = {
       enable = true;
       role = "server";
