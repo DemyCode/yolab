@@ -40,7 +40,7 @@ in
       enableIPv6 = true;
       firewall.enable = false;
 
-      wireguard.interfaces = lib.mkIf s.tunnelEnabled {
+      wireguard.interfaces = {
         wg0 = {
           ips = [ "${s.tunnelCfg.sub_ipv6}/128" ];
           privateKey = s.tunnelCfg.wg_private_key;
