@@ -80,8 +80,8 @@ in
 
     services.k3s = {
       enable = true;
-      role = k3sCfg.role or "server";
-      token = k3sCfg.token or "";
+      role = "server";
+      token = k3sCfg.token;
       clusterInit = isFirstNode;
       serverAddr = lib.optionalString (!isFirstNode) (k3sCfg.server_addr or "");
       extraFlags = toString [
@@ -96,26 +96,6 @@ in
       configFile = pkgs.writeText "Caddyfile" (
         lib.optionalString s.tunnelEnabled ''
           ${tunnelDomain} {
-            handle /api/node-agent/* {
-              uri strip_prefix /api/node-agent
-              reverse_proxy 127.0.0.1:3002
-            }
-            handle /api/* {
-              reverse_proxy 127.0.0.1:3001
-            }
-            handle {
-              root * ${s.clientUi}
-              try_files {path} /index.html
-              file_server
-            }
-          }
-        ''
-        + ''
-          :80 {
-            handle /api/node-agent/* {
-              uri strip_prefix /api/node-agent
-              reverse_proxy 127.0.0.1:3002
-            }
             handle /api/* {
               reverse_proxy 127.0.0.1:3001
             }
@@ -153,37 +133,6 @@ in
         Restart = "always";
         RestartSec = "5s";
         ExecStart = "${s.localApiEnv}/bin/local-api";
-      };
-    };
-
-    systemd.services.yolab-node-agent = {
-      after = [
-        "network.target"
-        "k3s.service"
-      ]
-      ++ lib.optional s.tunnelEnabled "wireguard-wg0.service";
-      wantedBy = [ "multi-user.target" ];
-      path = with pkgs; [
-        util-linux
-        e2fsprogs
-        nfs-utils
-        kubectl
-        rsync
-      ];
-      environment = {
-        NODE_ID = s.nodeCfg.node_id or "";
-        WG_IPV6 = if s.tunnelEnabled then s.tunnelCfg.sub_ipv6 else "";
-        WG_INTERFACE = "wg0";
-        K3S_ROLE = k3sCfg.role or "server";
-        YOLAB_PLATFORM = config.yolab.platform;
-        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-      };
-      serviceConfig = {
-        Type = "simple";
-        User = "root";
-        Restart = "always";
-        RestartSec = "10s";
-        ExecStart = "${s.nodeAgentEnv}/bin/node-agent";
       };
     };
 

@@ -1,14 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 
-from node_agent import config
-from node_agent import nfs
+from local_api import config
+from local_api import nfs
 
 router = APIRouter(tags=["nfs"])
 
 
 def _check_platform():
-    if config.YOLAB_PLATFORM == "wsl":
+    if config.PLATFORM == "wsl":
         raise HTTPException(status_code=501, detail="NFS not supported on WSL")
 
 

@@ -1,13 +1,13 @@
 from fastapi import APIRouter, HTTPException
 
-from node_agent import config
-from node_agent import k3s
+from local_api import config
+from local_api import k3s
 
 router = APIRouter(tags=["k3s"])
 
 
 def _check_platform():
-    if config.YOLAB_PLATFORM == "wsl":
+    if config.PLATFORM == "wsl":
         raise HTTPException(status_code=501, detail="K3s not supported on WSL")
 
 

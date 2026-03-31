@@ -43,7 +43,9 @@ def get_update_commands() -> list[list[str]]:
         "raw",
     ]
     if PLATFORM == "nixos":
-        return git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd] + [["reboot"]]
+        return (
+            git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd] + [["reboot"]]
+        )
     elif PLATFORM == "darwin":
         return git_cmd + nix_store_verify + [["darwin-rebuild"] + switch_cmd]
     raise ValueError(f"Unsupported platform: {PLATFORM}")
@@ -52,7 +54,7 @@ def get_update_commands() -> list[list[str]]:
 def _build_update_script() -> str:
     lines = ["#!/bin/sh", f"exec > {UPDATE_LOG} 2>&1"]
     if PLATFORM == "darwin":
-        lines.append(f'echo $$ > {UPDATE_PID_FILE}')
+        lines.append(f"echo $$ > {UPDATE_PID_FILE}")
     for cmd in get_update_commands():
         display = " ".join(cmd)
         quoted = shlex.join(cmd)
@@ -63,7 +65,7 @@ def _build_update_script() -> str:
         )
     lines.append('echo "[DONE]"')
     if PLATFORM == "darwin":
-        lines.append(f'rm -f {UPDATE_PID_FILE}')
+        lines.append(f"rm -f {UPDATE_PID_FILE}")
     return "\n".join(lines) + "\n"
 
 
@@ -88,40 +90,6 @@ def _launch_update() -> None:
         )
         with open(UPDATE_PID_FILE, "w") as f:
             f.write(str(proc.pid))
-
-
-def _is_update_running() -> bool:
-    if PLATFORM in ("nixos", "wsl"):
-        result = subprocess.run(
-            ["systemctl", "is-active", UPDATE_UNIT],
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout.strip() in ("active", "activating")
-    else:
-        if not os.path.exists(UPDATE_PID_FILE):
-            return False
-        try:
-            with open(UPDATE_PID_FILE) as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return True
-        except (ValueError, ProcessLookupError, PermissionError, OSError):
-            return False
-
-
-def _stop_update() -> None:
-    if PLATFORM in ("nixos", "wsl"):
-        subprocess.run(["systemctl", "stop", UPDATE_UNIT], capture_output=True)
-    else:
-        if os.path.exists(UPDATE_PID_FILE):
-            try:
-                with open(UPDATE_PID_FILE) as f:
-                    pid = int(f.read().strip())
-                os.kill(pid, 15)
-            except Exception:
-                pass
-            os.unlink(UPDATE_PID_FILE)
 
 
 def _cluster_node_ips() -> list[str]:
@@ -189,96 +157,26 @@ app.add_middleware(
 app.include_router(apps_router)
 
 
-@app.get("/api/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/api/status")
-def status():
-    try:
-        result = subprocess.run(
-            ["git", "-C", REPO_PATH, "log", "-1", "--format=%H|||%s|||%ci"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        parts = result.stdout.strip().split("|||")
-        return {
-            "commit_hash": parts[0] if len(parts) > 0 else "",
-            "commit_message": parts[1] if len(parts) > 1 else "",
-            "commit_date": parts[2] if len(parts) > 2 else "",
-            "platform": PLATFORM,
-            "flake_target": FLAKE_TARGET,
-        }
-    except Exception as e:
-        return {"error": str(e), "platform": PLATFORM}
-
-
-@app.get("/api/update/status")
-def update_status():
-    running = _is_update_running()
-    log: list[str] = []
-    try:
-        with open(UPDATE_LOG) as f:
-            log = f.read().splitlines()
-    except FileNotFoundError:
-        pass
-    return {"running": running, "log": log}
-
-
 @app.post("/api/update")
 async def update():
-    async def stream():
-        _stop_update()
-
-        with open(UPDATE_SCRIPT, "w") as f:
-            f.write(_build_update_script())
-        os.chmod(UPDATE_SCRIPT, 0o755)
-
-        open(UPDATE_LOG, "w").close()
-
-        try:
-            _launch_update()
-        except subprocess.CalledProcessError as e:
-            yield f"data: [ERROR] failed to start update: {e.stderr.decode()}\n\n"
-            return
-
-        yield "data: Update started\n\n"
-
-        pos = 0
-        while True:
-            try:
-                with open(UPDATE_LOG) as f:
-                    f.seek(pos)
-                    chunk = f.read()
-            except FileNotFoundError:
-                await asyncio.sleep(0.1)
-                continue
-
-            if chunk:
-                pos += len(chunk)
-                for line in chunk.splitlines():
-                    if line:
-                        yield f"data: {line}\n\n"
-                if "[DONE]" in chunk or "[ERROR]" in chunk:
-                    return
-
-            if not _is_update_running():
-                try:
-                    with open(UPDATE_LOG) as f:
-                        f.seek(pos)
-                        remainder = f.read()
-                    for line in remainder.splitlines():
-                        if line:
-                            yield f"data: {line}\n\n"
-                except FileNotFoundError:
-                    pass
-                return
-
-            await asyncio.sleep(0.2)
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    subprocess.Popen(
+        [
+            "cd",
+            "/etc/nixos",
+            "&&",
+            "git",
+            "pull",
+            "&&",
+            "nixos-rebuild",
+            "switch",
+            "--flake",
+            "path:.#yolab",
+            "--print-build-logs",
+            "--verbose",
+        ],
+        start_new_session=True,
+        close_fds=True,
+    )
 
 
 @app.get("/api/nodes")
@@ -295,6 +193,7 @@ async def get_nodes():
             nodes.append(info)
         elif ip == "127.0.0.1":
             import socket as _socket
+
             nodes.append(
                 {
                     "node_id": "",
@@ -311,11 +210,6 @@ async def get_nodes():
 @app.get("/api/disks")
 async def get_disks():
     return await _fan_out("/disks", tag_hostname=True)
-
-
-@app.get("/api/volumes")
-async def get_volumes():
-    return await _fan_out("/volumes")
 
 
 @app.get("/api/cluster/status")
@@ -345,4 +239,5 @@ async def get_cluster_status():
 
 def run():
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=3001)

@@ -4,31 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from node_agent.config import DISK_JSON_NAME, YOLAB_DATA_ROOT
-
-VOLUMES_META_ROOT = "/yolab/volumes"
-
-
-def _service_by_mount_path() -> dict[str, str]:
-    """Read volume metadata and return {disk_mount_path: service_name}."""
-    mapping: dict[str, str] = {}
-    if not os.path.isdir(VOLUMES_META_ROOT):
-        return mapping
-    for svc in os.listdir(VOLUMES_META_ROOT):
-        svc_dir = os.path.join(VOLUMES_META_ROOT, svc)
-        if not os.path.isdir(svc_dir):
-            continue
-        for fname in os.listdir(svc_dir):
-            if not fname.endswith(".json"):
-                continue
-            try:
-                with open(os.path.join(svc_dir, fname)) as f:
-                    meta = json.load(f)
-                for path in meta.get("disk_paths", []):
-                    mapping[path] = svc
-            except Exception:
-                pass
-    return mapping
+from local_api.config import DISK_JSON_NAME, YOLAB_DATA_ROOT
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -55,9 +31,7 @@ def write_disk_json(disk_id: str, data: dict[str, Any]) -> None:
 def _statvfs(path: str) -> tuple[int, int] | None:
     try:
         st = os.statvfs(path)
-        total = st.f_blocks * st.f_frsize
-        free = st.f_bavail * st.f_frsize
-        return total, free
+        return st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
     except OSError:
         return None
 
@@ -74,7 +48,6 @@ def _collect_mountpoints(dev: dict[str, Any]) -> set[str]:
 
 def discover_disks() -> list[dict[str, Any]]:
     disks: list[dict[str, Any]] = []
-    service_by_mount = _service_by_mount_path()
 
     try:
         result = _run("lsblk", "-J", "-o", "NAME,SIZE,MOUNTPOINT,TYPE")
@@ -89,7 +62,6 @@ def discover_disks() -> list[dict[str, Any]]:
         if "/" in _collect_mountpoints(dev):
             system_names.add(dev["name"])
 
-    # Include the root/system disk(s) with a "system" status so the UI can show OS disk usage.
     for dev in lsblk_data.get("blockdevices", []):
         if dev.get("type") != "disk" or dev["name"] not in system_names:
             continue
@@ -105,7 +77,6 @@ def discover_disks() -> list[dict[str, Any]]:
             "total_bytes": sizes[0] if sizes else None,
             "free_bytes": sizes[1] if sizes else None,
             "data_written": True,
-            "disk_json": None,
         })
 
     for dev in lsblk_data.get("blockdevices", []):
@@ -127,7 +98,6 @@ def discover_disks() -> list[dict[str, Any]]:
                 "total_bytes": None,
                 "free_bytes": None,
                 "data_written": False,
-                "disk_json": None,
             })
             continue
         mount = next(iter(all_mounts))
@@ -141,26 +111,23 @@ def discover_disks() -> list[dict[str, Any]]:
             "type": "block",
             "mount_path": mount,
             "status": "registered" if data else "incompatible",
-            "service_name": service_by_mount.get(mount),
+            "service_name": None,
             "total_bytes": sizes[0] if sizes else None,
             "free_bytes": sizes[1] if sizes else None,
             "data_written": data.get("data_written", False) if data else False,
-            "disk_json": data,
         })
 
     try:
-        with open("/proc/mounts") as f:
-            mounts_text = f.read()
+        mounts_text = Path("/proc/mounts").read_text()
     except OSError:
         mounts_text = ""
 
-    net_fstypes = {"cifs", "nfs", "nfs4"}
     for line in mounts_text.splitlines():
         parts = line.split()
         if len(parts) < 3:
             continue
         source, mountpoint, fstype = parts[0], parts[1], parts[2]
-        if fstype not in net_fstypes:
+        if fstype not in {"cifs", "nfs", "nfs4"}:
             continue
         disk_id_candidate = os.path.basename(mountpoint)
         data = read_disk_json(disk_id_candidate) if mountpoint.startswith(YOLAB_DATA_ROOT) else None
@@ -172,30 +139,27 @@ def discover_disks() -> list[dict[str, Any]]:
             "type": "network",
             "mount_path": mountpoint,
             "status": "registered" if data else "unconfigured_network",
-            "service_name": service_by_mount.get(mountpoint),
+            "service_name": None,
             "total_bytes": sizes[0] if sizes else None,
             "free_bytes": sizes[1] if sizes else None,
             "data_written": data.get("data_written", False) if data else False,
-            "disk_json": data,
         })
 
-    for entry in _discover_directory_disks():
-        disks.append(entry)
-
+    disks.extend(_discover_directory_disks())
     return disks
 
 
 def _discover_directory_disks() -> list[dict[str, Any]]:
     results = []
     candidates: list[str] = []
-
     for base in ["/mnt/c", "/mnt/d", "/mnt/e", "/mnt/f"]:
         if os.path.isdir(base):
             candidates.append(base)
-
-    for vol in _list_macos_volumes():
-        candidates.append(vol)
-
+    if os.path.isdir("/Volumes"):
+        for v in os.listdir("/Volumes"):
+            full = os.path.join("/Volumes", v)
+            if os.path.isdir(full) and v != "Macintosh HD":
+                candidates.append(full)
     for base in candidates:
         yolab_dir = os.path.join(base, "yolab-data")
         if not os.path.isdir(yolab_dir):
@@ -204,7 +168,8 @@ def _discover_directory_disks() -> list[dict[str, Any]]:
             full = os.path.join(yolab_dir, entry)
             if not os.path.isdir(full):
                 continue
-            data = _read_disk_json_at(full)
+            p = Path(full) / "yolab" / "disk.json"
+            data = json.loads(p.read_text()) if p.exists() else None
             sizes = _statvfs(full)
             results.append({
                 "disk_id": data["disk_id"] if data else entry,
@@ -213,30 +178,12 @@ def _discover_directory_disks() -> list[dict[str, Any]]:
                 "type": "directory",
                 "mount_path": full,
                 "status": "registered" if data else "incompatible",
+                "service_name": None,
                 "total_bytes": sizes[0] if sizes else None,
                 "free_bytes": sizes[1] if sizes else None,
                 "data_written": data.get("data_written", False) if data else False,
-                "disk_json": data,
             })
     return results
-
-
-def _list_macos_volumes() -> list[str]:
-    vols_dir = "/Volumes"
-    if not os.path.isdir(vols_dir):
-        return []
-    return [
-        os.path.join(vols_dir, v)
-        for v in os.listdir(vols_dir)
-        if os.path.isdir(os.path.join(vols_dir, v)) and v not in ("Macintosh HD",)
-    ]
-
-
-def _read_disk_json_at(directory: str) -> dict[str, Any] | None:
-    p = Path(directory) / "yolab" / "disk.json"
-    if p.exists():
-        return json.loads(p.read_text())
-    return None
 
 
 def init_block_disk(disk_id: str, device: str, label: str | None) -> None:
@@ -245,12 +192,8 @@ def init_block_disk(disk_id: str, device: str, label: str | None) -> None:
     _run("mkfs.ext4", "-F", device)
     _run("mount", device, mount_path)
     write_disk_json(disk_id, {
-        "disk_id": disk_id,
-        "device": device,
-        "label": label,
-        "type": "block",
-        "mount_path": mount_path,
-        "data_written": False,
+        "disk_id": disk_id, "device": device, "label": label,
+        "type": "block", "mount_path": mount_path, "data_written": False,
     })
 
 
@@ -259,26 +202,16 @@ def init_directory_disk(disk_id: str, base_path: str, label: str | None) -> str:
     os.makedirs(mount_path, exist_ok=True)
     meta_dir = os.path.join(mount_path, "yolab")
     os.makedirs(meta_dir, exist_ok=True)
-    data = {
-        "disk_id": disk_id,
-        "device": base_path,
-        "label": label,
-        "type": "directory",
-        "mount_path": mount_path,
-        "data_written": False,
-    }
+    data = {"disk_id": disk_id, "device": base_path, "label": label,
+            "type": "directory", "mount_path": mount_path, "data_written": False}
     Path(os.path.join(meta_dir, "disk.json")).write_text(json.dumps(data, indent=2))
     return mount_path
 
 
 def init_network_disk(disk_id: str, mount_path: str, label: str | None) -> None:
     write_disk_json(disk_id, {
-        "disk_id": disk_id,
-        "device": None,
-        "label": label,
-        "type": "network",
-        "mount_path": mount_path,
-        "data_written": False,
+        "disk_id": disk_id, "device": None, "label": label,
+        "type": "network", "mount_path": mount_path, "data_written": False,
     })
 
 

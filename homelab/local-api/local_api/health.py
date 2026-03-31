@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from node_agent import config
-from node_agent.disks import discover_disks, mark_data_written
+from local_api import config
+from local_api.disks import discover_disks, mark_data_written
 
 log = logging.getLogger("health")
 
@@ -19,7 +19,7 @@ async def health_loop() -> None:
 
 
 def _check_disks() -> None:
-    if config.YOLAB_PLATFORM == "wsl":
+    if config.PLATFORM == "wsl":
         return
 
     for disk in discover_disks():
