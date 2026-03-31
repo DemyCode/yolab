@@ -1,151 +1,11 @@
-import asyncio
-import json
-import os
-import shlex
 import subprocess
 
-import httpx
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from local_api.apps import router as apps_router
-
-REPO_PATH = os.environ.get("YOLAB_REPO_PATH", "/etc/nixos")
-PLATFORM = os.environ.get("YOLAB_PLATFORM", "nixos")
-FLAKE_TARGET = os.environ.get("YOLAB_FLAKE_TARGET", "yolab")
-
-_KUBECTL_ENV = {
-    **os.environ,
-    "KUBECONFIG": os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
-}
-NODE_AGENT_PORT = 3002
-
-UPDATE_LOG = "/tmp/yolab-update.log"
-UPDATE_SCRIPT = "/tmp/yolab-update.sh"
-UPDATE_UNIT = "yolab-update.service"
-UPDATE_PID_FILE = "/tmp/yolab-update.pid"
-
-
-def get_update_commands() -> list[list[str]]:
-    if PLATFORM not in ("nixos", "darwin"):
-        raise ValueError(f"Unsupported platform: {PLATFORM}")
-    git_cmd = [["git", "-C", REPO_PATH, "pull"]]
-    nix_store_verify = [["nix-store", "--verify", "--check-contents", "--repair"]]
-    switch_cmd = [
-        "switch",
-        "--flake",
-        f"path:{REPO_PATH}#{FLAKE_TARGET}",
-        "--print-build-logs",
-        "--verbose",
-        "--repair",
-        "--log-format",
-        "raw",
-    ]
-    if PLATFORM == "nixos":
-        return (
-            git_cmd + nix_store_verify + [["nixos-rebuild"] + switch_cmd] + [["reboot"]]
-        )
-    elif PLATFORM == "darwin":
-        return git_cmd + nix_store_verify + [["darwin-rebuild"] + switch_cmd]
-    raise ValueError(f"Unsupported platform: {PLATFORM}")
-
-
-def _build_update_script() -> str:
-    lines = ["#!/bin/sh", f"exec > {UPDATE_LOG} 2>&1"]
-    if PLATFORM == "darwin":
-        lines.append(f"echo $$ > {UPDATE_PID_FILE}")
-    for cmd in get_update_commands():
-        display = " ".join(cmd)
-        quoted = shlex.join(cmd)
-        lines.append(f'echo "$ {display}"')
-        lines.append(quoted)
-        lines.append(
-            f'rc=$?; if [ $rc -ne 0 ]; then echo "[ERROR] {cmd[0]} exited with code $rc"; exit 1; fi'
-        )
-    lines.append('echo "[DONE]"')
-    if PLATFORM == "darwin":
-        lines.append(f"rm -f {UPDATE_PID_FILE}")
-    return "\n".join(lines) + "\n"
-
-
-def _launch_update() -> None:
-    if PLATFORM in ("nixos", "wsl"):
-        subprocess.run(
-            [
-                "systemd-run",
-                f"--unit={UPDATE_UNIT.removesuffix('.service')}",
-                "--description=YoLab homelab update",
-                "/bin/sh",
-                UPDATE_SCRIPT,
-            ],
-            check=True,
-            capture_output=True,
-        )
-    else:
-        proc = subprocess.Popen(
-            ["/bin/sh", UPDATE_SCRIPT],
-            start_new_session=True,
-            close_fds=True,
-        )
-        with open(UPDATE_PID_FILE, "w") as f:
-            f.write(str(proc.pid))
-
-
-def _cluster_node_ips() -> list[str]:
-    try:
-        result = subprocess.run(
-            ["kubectl", "get", "nodes", "-o", "json"],
-            capture_output=True,
-            text=True,
-            check=True,
-            env=_KUBECTL_ENV,
-        )
-        data = json.loads(result.stdout)
-        ips = []
-        for item in data.get("items", []):
-            for addr in item.get("status", {}).get("addresses", []):
-                if addr["type"] == "InternalIP":
-                    ips.append(addr["address"])
-        return ips
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
-        return []
-
-
-async def _fetch_peer(client: httpx.AsyncClient, ip: str, path: str):
-    host = f"[{ip}]" if ":" in ip else ip
-    try:
-        resp = await client.get(f"http://{host}:{NODE_AGENT_PORT}{path}", timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return None
-
-
-async def _fan_out(path: str, tag_hostname: bool = False) -> list:
-    ips = _cluster_node_ips() or ["127.0.0.1"]
-    async with httpx.AsyncClient() as client:
-        node_infos, results = await asyncio.gather(
-            asyncio.gather(*[_fetch_peer(client, ip, "/info") for ip in ips]),
-            asyncio.gather(*[_fetch_peer(client, ip, path) for ip in ips]),
-        )
-    merged = []
-    for info, r in zip(node_infos, results):
-        hostname = (info or {}).get("hostname") if tag_hostname else None
-        wg_ipv6 = (info or {}).get("wg_ipv6", "") if tag_hostname else None
-        if isinstance(r, list):
-            for item in r:
-                if hostname and isinstance(item, dict):
-                    item["node_hostname"] = hostname
-                    item["node_wg_ipv6"] = wg_ipv6
-                merged.append(item)
-        elif r is not None:
-            if hostname and isinstance(r, dict):
-                r["node_hostname"] = hostname
-                r["node_wg_ipv6"] = wg_ipv6
-            merged.append(r)
-    return merged
-
+from local_api.settings import settings
 
 app = FastAPI()
 app.add_middleware(
@@ -154,90 +14,79 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(apps_router)
+
+
+def _git(*args: str) -> str:
+    return subprocess.check_output(
+        ["git", *args], cwd=settings.yolab_repo_path, text=True
+    ).strip()
+
+
+@app.get("/api/status")
+async def status():
+    try:
+        return {
+            "commit_hash": _git("rev-parse", "HEAD"),
+            "commit_message": _git("log", "-1", "--pretty=%s"),
+            "commit_date": _git("log", "-1", "--pretty=%cI"),
+            "platform": settings.yolab_platform,
+            "flake_target": settings.yolab_flake_target,
+        }
+    except Exception as e:
+        return {
+            "commit_hash": "",
+            "commit_message": "",
+            "commit_date": "",
+            "platform": settings.yolab_platform,
+            "flake_target": settings.yolab_flake_target,
+            "error": str(e),
+        }
 
 
 @app.post("/api/update")
 async def update():
-    subprocess.Popen(
-        [
-            "cd",
-            "/etc/nixos",
-            "&&",
-            "git",
-            "pull",
-            "&&",
-            "nixos-rebuild",
-            "switch",
-            "--flake",
-            "path:.#yolab",
-            "--print-build-logs",
-            "--verbose",
-        ],
-        start_new_session=True,
-        close_fds=True,
-    )
-
-
-@app.get("/api/nodes")
-async def get_nodes():
-    ips = _cluster_node_ips() or ["127.0.0.1"]
-    async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(
-            *[_fetch_peer(client, ip, "/info") for ip in ips]
-        )
-    nodes = []
-    for ip, info in zip(ips, results):
-        if info:
-            info["agent_ip"] = ip
-            nodes.append(info)
-        elif ip == "127.0.0.1":
-            import socket as _socket
-
-            nodes.append(
-                {
-                    "node_id": "",
-                    "hostname": _socket.gethostname(),
-                    "platform": PLATFORM,
-                    "k3s_role": "server",
-                    "wg_ipv6": "",
-                    "agent_ip": ip,
-                }
+    async def stream():
+        # Step 1: git pull — safe to run in-process, won't restart the API
+        yield f"data: $ git -C {settings.yolab_repo_path} pull\n\n"
+        try:
+            proc = subprocess.Popen(
+                ["git", "-C", settings.yolab_repo_path, "pull"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
-    return nodes
+            for line in proc.stdout:
+                yield f"data: {line.rstrip()}\n\n"
+            proc.wait()
+            if proc.returncode != 0:
+                yield f"data: [ERROR] git pull failed (exit {proc.returncode})\n\n"
+                return
+        except Exception as e:
+            yield f"data: [ERROR] {e}\n\n"
+            return
 
+        # Step 2: launch nixos-rebuild fully detached — it will restart this service,
+        # so we must not be its parent. start_new_session=True creates a new process
+        # group + session, and all fds are closed so the child is completely orphaned.
+        flake = f"path:{settings.yolab_repo_path}#{settings.yolab_flake_target}"
+        yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
+        yield "data: [INFO] nixos-rebuild launched — service will restart shortly\n\n"
 
-@app.get("/api/disks")
-async def get_disks():
-    return await _fan_out("/disks", tag_hostname=True)
-
-
-@app.get("/api/cluster/status")
-async def get_cluster_status():
-    try:
-        result = subprocess.run(
-            ["kubectl", "get", "nodes", "-o", "json"],
-            capture_output=True,
-            text=True,
-            check=True,
-            env=_KUBECTL_ENV,
+        subprocess.Popen(
+            [
+                "nixos-rebuild", "switch",
+                "--flake", flake,
+                "--verbose",
+                "--print-build-logs",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-        data = json.loads(result.stdout)
-        items = data.get("items", [])
-        ready = sum(
-            1
-            for n in items
-            if any(
-                c["type"] == "Ready" and c["status"] == "True"
-                for c in n.get("status", {}).get("conditions", [])
-            )
-        )
-        return {"total": len(items), "ready": ready}
-    except Exception as e:
-        return {"error": str(e)}
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 def run():
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=3001)
+    uvicorn.run(app, host="127.0.0.1", port=settings.port)

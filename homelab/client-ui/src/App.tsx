@@ -1,9 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { NodesPage } from "./pages/NodesPage";
-import { DisksPage } from "./pages/DisksPage";
-import { ServicesPage, ServicesStorePage } from "./pages/AppsPage";
-
-type Tab = "overview" | "nodes" | "disks" | "services" | "services-store";
 
 interface Status {
   commit_hash: string;
@@ -224,48 +219,12 @@ function OverviewPage() {
   );
 }
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "nodes", label: "Nodes" },
-  { id: "disks", label: "Disks" },
-  { id: "services", label: "Services" },
-  { id: "services-store", label: "Services Store" },
-];
-
 function App() {
-  const [tab, setTab] = useState<Tab>("overview");
-
   return (
     <div style={{ fontFamily: "monospace", maxWidth: 820, margin: "3rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
       <p style={{ color: "#666", marginTop: 0, marginBottom: "1.5rem" }}>Your homelab is up and running.</p>
-
-      <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "1px solid #333", paddingBottom: "0" }}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            style={{
-              padding: "0.5rem 1rem",
-              background: "none",
-              border: "none",
-              borderBottom: tab === t.id ? "2px solid #eee" : "2px solid transparent",
-              color: tab === t.id ? "#eee" : "#666",
-              cursor: "pointer",
-              fontSize: "0.9rem",
-              fontFamily: "monospace",
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "overview" && <OverviewPage />}
-      {tab === "nodes" && <NodesPage />}
-      {tab === "disks" && <DisksPage />}
-      {tab === "services" && <ServicesPage />}
-      {tab === "services-store" && <ServicesStorePage />}
+      <OverviewPage />
     </div>
   );
 }
