@@ -89,7 +89,7 @@ in
     services.k3s = {
       enable = true;
       role = "server";
-      token = k3sCfg.token or "caca";
+      token = k3sCfg.token or "";
       clusterInit = isFirstNode;
       serverAddr = lib.optionalString (!isFirstNode) (k3sCfg.server_addr or "");
       extraFlags = toString [
