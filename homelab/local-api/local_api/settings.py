@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     yolab_repo_path: str = "/etc/nixos"
     yolab_platform: str = "nixos"
     yolab_flake_target: str = "yolab"
+    yolab_node_ipv6: str = "::1"
     port: int = 3001
 
 

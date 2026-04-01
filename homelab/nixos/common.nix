@@ -115,6 +115,7 @@ in
         YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
         YOLAB_PLATFORM = config.yolab.platform;
         YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
+        YOLAB_NODE_IPV6 = s.tunnelCfg.sub_ipv6_private;
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };
       serviceConfig = {

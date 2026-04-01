@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DisksPage } from "./DisksPage";
 
 interface Status {
   commit_hash: string;
@@ -219,12 +220,38 @@ function OverviewPage() {
   );
 }
 
+type Tab = "overview" | "disks";
+
 function App() {
+  const [tab, setTab] = useState<Tab>("overview");
+
   return (
-    <div style={{ fontFamily: "monospace", maxWidth: 820, margin: "3rem auto", padding: "0 1rem" }}>
+    <div style={{ fontFamily: "monospace", maxWidth: 900, margin: "3rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
-      <p style={{ color: "#666", marginTop: 0, marginBottom: "1.5rem" }}>Your homelab is up and running.</p>
-      <OverviewPage />
+      <p style={{ color: "#666", marginTop: 0, marginBottom: "1rem" }}>Your homelab is up and running.</p>
+      <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "2px solid #e5e7eb" }}>
+        {(["overview", "disks"] as Tab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              background: "none",
+              border: "none",
+              borderBottom: tab === t ? "2px solid #1a1a1a" : "2px solid transparent",
+              marginBottom: -2,
+              padding: "0.5rem 0.75rem",
+              cursor: "pointer",
+              fontFamily: "monospace",
+              fontSize: "0.9rem",
+              fontWeight: tab === t ? "bold" : "normal",
+            }}
+          >
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
+      {tab === "overview" && <OverviewPage />}
+      {tab === "disks" && <DisksPage />}
     </div>
   );
 }
