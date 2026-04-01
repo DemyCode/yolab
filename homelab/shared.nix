@@ -10,11 +10,6 @@ let
   cfg = homelabConfig.homelab or { };
   sysCfg = homelabConfig.system or { };
   tunnelCfg = homelabConfig.tunnel or { };
-  tunnelEnabled = tunnelCfg.enabled or false;
-
-  wgSubnet = lib.optionalString tunnelEnabled (
-    (lib.head (lib.splitString "::" tunnelCfg.sub_ipv6)) + "::/64"
-  );
 
   clientUi = pkgs.buildNpmPackage {
     pname = "client-ui";
@@ -67,6 +62,5 @@ in
   homelabPasswordHash = cfg.homelab_password_hash or "";
   flakeTarget = sysCfg.flake_target or "yolab";
   repoPath = sysCfg.repo_path or "/opt/yolab";
-  inherit tunnelCfg tunnelEnabled wgSubnet clientUi localApiEnv
-          nodeAgentEnv swarmCfg swarmEnabled nodeCfg;
+  inherit tunnelCfg clientUi localApiEnv nodeAgentEnv swarmCfg swarmEnabled nodeCfg;
 }

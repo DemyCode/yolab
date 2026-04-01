@@ -87,4 +87,4 @@ async def update():
 
 
 def run():
-    uvicorn.run(app, host="127.0.0.1", port=settings.port)
+    uvicorn.run(app, host="0.0.0.0", port=settings.port)
