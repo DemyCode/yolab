@@ -27,6 +27,17 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
     wg_server_public_key = info["wg_server_public_key"]
     service_id = info["service_id"]
 
+    node_resp = httpx.post(
+        f"{PLATFORM_API}/nodes",
+        json={"account_token": account_token, "wg_public_key": public_key},
+        timeout=15,
+    )
+    node_resp.raise_for_status()
+    node_info = node_resp.json()
+
+    sub_ipv6_private = node_info["sub_ipv6"]
+    node_id = node_info["node_id"]
+
     # Table = off: disable wg-quick's automatic route injection so the
     # installer's own outbound traffic (DNS, package downloads) is NOT
     # routed through the tunnel.
@@ -69,9 +80,11 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
         "account_token": account_token,
         "service_name": service_name,
         "service_id": service_id,
+        "node_id": node_id,
         "wg_private_key": private_key,
         "wg_public_key": public_key,
         "sub_ipv6": sub_ipv6,
+        "sub_ipv6_private": sub_ipv6_private,
         "dns_url": dns_url,
         "wg_server_endpoint": wg_server_endpoint,
         "wg_server_public_key": wg_server_public_key,
