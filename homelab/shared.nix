@@ -1,15 +1,17 @@
-{ pkgs, lib, inputs }:
+{
+  pkgs,
+  lib,
+  inputs,
+}:
 let
   configPath = ./ignored/config.toml;
-  homelabConfig =
-    if builtins.pathExists configPath then
-      builtins.fromTOML (builtins.readFile configPath)
-    else
-      { };
+  homelabConfig = builtins.fromTOML (builtins.readFile configPath);
 
-  cfg = homelabConfig.homelab or { };
-  sysCfg = homelabConfig.system or { };
-  tunnelCfg = homelabConfig.tunnel or { };
+  cfg = homelabConfig.homelab;
+  sysCfg = homelabConfig.system;
+  tunnelCfg = homelabConfig.tunnel;
+  swarmCfg = homelabConfig.swarm;
+  nodeCfg = homelabConfig.node;
 
   clientUi = pkgs.buildNpmPackage {
     pname = "client-ui";
@@ -30,10 +32,12 @@ let
   localApiOverlay = localApiWorkspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
   localApiPythonSet =
     (pkgs.callPackage inputs.pyproject-nix.build.packages { python = pkgs.python311; }).overrideScope
-      (lib.composeManyExtensions [
-        inputs.pyproject-build-systems.overlays.wheel
-        localApiOverlay
-      ]);
+      (
+        lib.composeManyExtensions [
+          inputs.pyproject-build-systems.overlays.wheel
+          localApiOverlay
+        ]
+      );
   localApiEnv = localApiPythonSet.mkVirtualEnv "local-api-env" localApiWorkspace.deps.default;
 
   nodeAgentWorkspace = inputs.uv2nix.lib.workspace.loadWorkspace {
@@ -42,25 +46,30 @@ let
   nodeAgentOverlay = nodeAgentWorkspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
   nodeAgentPythonSet =
     (pkgs.callPackage inputs.pyproject-nix.build.packages { python = pkgs.python311; }).overrideScope
-      (lib.composeManyExtensions [
-        inputs.pyproject-build-systems.overlays.wheel
-        nodeAgentOverlay
-      ]);
+      (
+        lib.composeManyExtensions [
+          inputs.pyproject-build-systems.overlays.wheel
+          nodeAgentOverlay
+        ]
+      );
   nodeAgentEnv = nodeAgentPythonSet.mkVirtualEnv "node-agent-env" nodeAgentWorkspace.deps.default;
-
-  swarmCfg = homelabConfig.swarm or { };
-  swarmEnabled = swarmCfg.enabled or false;
-  nodeCfg = homelabConfig.node or { };
 in
 {
-  hostname = cfg.hostname or "homelab";
-  timezone = cfg.timezone or "UTC";
-  locale = cfg.locale or "en_US.UTF-8";
-  sshPort = cfg.ssh_port or 22;
-  allowedSshKeys = cfg.allowed_ssh_keys or [ ];
-  rootSshKey = cfg.root_ssh_key or "";
-  homelabPasswordHash = cfg.homelab_password_hash or "";
-  flakeTarget = sysCfg.flake_target or "yolab";
-  repoPath = sysCfg.repo_path or "/opt/yolab";
-  inherit tunnelCfg clientUi localApiEnv nodeAgentEnv swarmCfg swarmEnabled nodeCfg;
+  hostname = cfg.hostname;
+  timezone = cfg.timezone;
+  locale = cfg.locale;
+  sshPort = cfg.ssh_port;
+  allowedSshKeys = cfg.allowed_ssh_keys;
+  rootSshKey = cfg.root_ssh_key;
+  homelabPasswordHash = cfg.homelab_password_hash;
+  flakeTarget = sysCfg.flake_target;
+  repoPath = sysCfg.repo_path;
+  inherit
+    tunnelCfg
+    clientUi
+    localApiEnv
+    nodeAgentEnv
+    swarmCfg
+    nodeCfg
+    ;
 }

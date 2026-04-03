@@ -1,5 +1,4 @@
 {
-  config,
   pkgs,
   lib,
   inputs,
@@ -7,17 +6,11 @@
 }:
 let
   s = import ../shared.nix { inherit pkgs lib inputs; };
-  k3sCfg = s.nodeCfg.k3s or { };
-  isFirstNode = (k3sCfg.server_addr or "") == "";
+  k3sCfg = s.nodeCfg.k3s;
+  isFirstNode = k3sCfg.server_addr == "";
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
 {
-  options.yolab = {
-    platform = lib.mkOption { type = lib.types.str; default = "nixos"; };
-    flakeTarget = lib.mkOption { type = lib.types.str; default = "yolab"; };
-    repoPath = lib.mkOption { type = lib.types.str; default = "/etc/nixos"; };
-  };
-
   config = {
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
@@ -75,9 +68,9 @@ in
     services.k3s = {
       enable = true;
       role = "server";
-      token = k3sCfg.token or "";
+      token = k3sCfg.token;
       clusterInit = isFirstNode;
-      serverAddr = lib.optionalString (!isFirstNode) (k3sCfg.server_addr or "");
+      serverAddr = lib.optionalString (!isFirstNode) k3sCfg.server_addr;
       extraFlags = toString [
         "--flannel-backend=wireguard-native"
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
@@ -111,10 +104,10 @@ in
       wantedBy = [ "multi-user.target" ];
       environment = {
         PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
-        YOLAB_REPO_PATH = config.yolab.repoPath;
-        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
-        YOLAB_PLATFORM = config.yolab.platform;
-        YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
+        YOLAB_REPO_PATH = s.repoPath;
+        YOLAB_CONFIG = "${s.repoPath}/homelab/ignored/config.toml";
+        YOLAB_PLATFORM = "nixos";
+        YOLAB_FLAKE_TARGET = s.flakeTarget;
         YOLAB_NODE_IPV6 = s.tunnelCfg.sub_ipv6_private;
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };
@@ -156,9 +149,11 @@ in
         htop
       ];
 
-    nix.settings.experimental-features = [ "nix-command" "flakes" ];
+    nix.settings.experimental-features = [
+      "nix-command"
+      "flakes"
+    ];
     nix.gc.automatic = true;
-
     services.swapspace.enable = true;
   };
 }
