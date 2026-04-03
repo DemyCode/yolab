@@ -53,13 +53,13 @@ function formatBytes(b: number) {
 }
 
 function DiskWidget({ value, onChange }: WidgetProps) {
-  const [disks, setDisks] = useState<DiskInfo[]>([]);
+  const [disks, setDisks] = useState<DiskInfo[] | null>(null);
 
   useEffect(() => {
-    fetch("/api/disks").then((r) => r.json()).then(setDisks).catch(() => {});
+    fetch("/api/disks").then((r) => r.json()).then(setDisks).catch(() => setDisks([]));
   }, []);
 
-  const options = disks.flatMap((d) =>
+  const options = (disks ?? []).flatMap((d) =>
     (d.mountpoints || []).map((mp) => ({
       key: JSON.stringify({ node_name: d.node_name, host: d.host, path: mp }),
       label: `${d.node_name} — ${d.name}${d.model ? ` (${d.model})` : ""} ${formatBytes(d.size_bytes)} @ ${mp}`,
@@ -67,6 +67,13 @@ function DiskWidget({ value, onChange }: WidgetProps) {
   );
 
   const currentKey = value?.node_name ? JSON.stringify({ node_name: value.node_name, host: value.host, path: value.path }) : "";
+
+  if (disks === null) return <div style={{ fontSize: "0.82rem", color: "#999" }}>Loading disks…</div>;
+  if (options.length === 0) return (
+    <div style={{ fontSize: "0.82rem", color: "#ef4444" }}>
+      No mounted disks found. Mount a disk on a cluster node and add its path to <code>[[node.nfs_exports]]</code> in <code>config.toml</code>.
+    </div>
+  );
 
   return (
     <select
