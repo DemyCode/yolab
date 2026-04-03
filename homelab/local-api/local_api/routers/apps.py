@@ -184,39 +184,3 @@ async def install_app(app_id: str, body: AppInstallRequest):
         yield f"data: [DONE] {app_id} is live at {tunnel_urls[0] if tunnel_urls else 'cluster'}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
-
-
-@router.get("/api/apps/{instance_name}/pods")
-async def list_pods(instance_name: str):
-    result = subprocess.run(
-        ["kubectl", "get", "pods", "-n", f"yolab-{instance_name}", "-o", "json"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise HTTPException(status_code=404, detail=result.stderr)
-    items = json.loads(result.stdout).get("items", [])
-    return [
-        {
-            "name": p["metadata"]["name"],
-            "phase": p["status"].get("phase", "Unknown"),
-            "ready": any(
-                c["type"] == "Ready" and c["status"] == "True"
-                for c in p["status"].get("conditions", [])
-            ),
-        }
-        for p in items
-    ]
-
-
-@router.get("/api/apps/{instance_name}/logs/{pod_name}")
-async def pod_logs(instance_name: str, pod_name: str):
-    async def stream():
-        proc = subprocess.Popen(
-            ["kubectl", "logs", "-n", f"yolab-{instance_name}", pod_name,
-             "--all-containers=true", "--follow", "--prefix=true", "--tail=100"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
-        for line in proc.stdout:
-            yield f"data: {line.rstrip()}\n\n"
-        proc.wait()
-    return StreamingResponse(stream(), media_type="text/event-stream")
