@@ -17,5 +17,8 @@ async def rebuild_log():
             running = Path(f"/proc/{pid}").exists()
         except Exception:
             pass
-    log = REBUILD_LOG.read_text().splitlines() if REBUILD_LOG.exists() else []
+    try:
+        log = REBUILD_LOG.read_text(errors="replace").splitlines() if REBUILD_LOG.exists() else []
+    except Exception:
+        log = []
     return {"running": running, "log": log}
