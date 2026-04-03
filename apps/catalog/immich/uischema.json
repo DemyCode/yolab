@@ -1,6 +1,5 @@
 {
-  "db_password": {
-    "ui:widget": "password",
-    "ui:options": { "generateButton": true }
+  "subdomain": {
+    "ui:widget": "TunnelWidget"
   }
 }

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import secrets
 import subprocess
 import tempfile
 import tomllib
@@ -42,8 +43,6 @@ def _save_installed(apps: list[dict]) -> None:
 
 class AppInstallRequest(BaseModel):
     instance_name: str
-    subdomain: str
-    storage_size: str
     config: dict
 
 
@@ -64,15 +63,21 @@ async def catalog():
         if not toml_path.exists():
             continue
         meta = tomllib.loads(toml_path.read_text())["app"]
+        schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
+        user_schema = {
+            **schema,
+            "properties": {
+                k: v for k, v in schema.get("properties", {}).items()
+                if not v.get("x-auto")
+            },
+        }
         apps.append({
             "id": meta["id"],
             "name": meta["name"],
             "description": meta["description"],
             "icon": meta.get("icon", ""),
             "category": meta.get("category", ""),
-            "requires_tunnel": meta.get("tunnel", False),
-            "default_subdomain": meta.get("subdomain", meta["id"]),
-            "schema": json.loads(schema_path.read_text()) if schema_path.exists() else {},
+            "schema": user_schema,
             "uischema": json.loads(uischema_path.read_text()) if uischema_path.exists() else {},
         })
     return apps
@@ -89,45 +94,61 @@ async def install_app(app_id: str, body: AppInstallRequest):
     if not app_dir.exists():
         raise HTTPException(status_code=404, detail=f"App '{app_id}' not found in catalog")
 
+    schema_path = app_dir / "schema.json"
+    schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
+    properties = schema.get("properties", {})
+
+    tunnel_fields = [k for k, v in properties.items() if v.get("format") == "tunnel"]
+    auto_fields = {k: secrets.token_urlsafe(32) for k, v in properties.items() if v.get("x-auto") == "password"}
+
     manifest_template = (app_dir / "manifest.yaml.j2").read_text()
 
     async def stream():
         tunnel_cfg = _tunnel_config()
-        domain = tunnel_cfg["dns_url"].removeprefix("https://").removeprefix("http://")
+        tunnel_vars = {}
+        tunnel_urls = []
 
-        yield f"data: Generating WireGuard keypair for {app_id}...\n\n"
-        wg_private_key, wg_public_key = await asyncio.to_thread(_generate_wg_keypair)
+        for field in tunnel_fields:
+            subdomain = body.config.get(field, field)
+            yield f"data: Generating WireGuard keypair for '{subdomain}'...\n\n"
+            wg_private_key, wg_public_key = await asyncio.to_thread(_generate_wg_keypair)
 
-        yield "data: Registering tunnel with yolab platform...\n\n"
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{tunnel_cfg['platform_api_url']}/services",
-                json={
-                    "account_token": tunnel_cfg["account_token"],
-                    "service_name": body.subdomain,
-                    "wg_public_key": wg_public_key,
-                },
-            )
-            if resp.status_code != 200:
-                yield f"data: [ERROR] Tunnel registration failed: {resp.text}\n\n"
-                return
-            tunnel = resp.json()
+            yield f"data: Registering tunnel '{subdomain}'...\n\n"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{tunnel_cfg['platform_api_url']}/services",
+                    json={
+                        "account_token": tunnel_cfg["account_token"],
+                        "service_name": subdomain,
+                        "wg_public_key": wg_public_key,
+                    },
+                )
+                if resp.status_code != 200:
+                    yield f"data: [ERROR] Tunnel registration failed: {resp.text}\n\n"
+                    return
+                tunnel = resp.json()
 
-        yield f"data: Tunnel registered — {tunnel['dns_url']}\n\n"
+            url = tunnel["dns_url"]
+            domain = url.removeprefix("https://").removeprefix("http://")
+            tunnel_vars[f"{field}_tunnel"] = {
+                "url": url,
+                "domain": domain,
+                "service_id": tunnel["service_id"],
+                "sub_ipv6": tunnel["sub_ipv6"],
+                "wg_private_key": wg_private_key,
+                "wg_server_public_key": tunnel["wg_server_public_key"],
+                "wg_server_endpoint": tunnel["wg_server_endpoint"],
+            }
+            tunnel_urls.append(url)
+            yield f"data: Tunnel registered — {url}\n\n"
 
         yield "data: Rendering manifest...\n\n"
         rendered = Template(manifest_template).render(
             instance_name=body.instance_name,
             app_id=app_id,
-            subdomain=body.subdomain,
-            domain=domain,
-            tunnel_service_id=tunnel["service_id"],
-            storage_size=body.storage_size,
-            wg_private_key=wg_private_key,
-            sub_ipv6=tunnel["sub_ipv6"],
-            wg_server_public_key=tunnel["wg_server_public_key"],
-            wg_server_endpoint=tunnel["wg_server_endpoint"],
             **body.config,
+            **auto_fields,
+            **tunnel_vars,
         )
 
         yield "data: Applying manifests to cluster...\n\n"
@@ -154,14 +175,11 @@ async def install_app(app_id: str, body: AppInstallRequest):
         installed.append({
             "app_id": app_id,
             "instance_name": body.instance_name,
-            "subdomain": body.subdomain,
-            "domain": domain,
-            "tunnel_url": tunnel["dns_url"],
-            "service_id": tunnel["service_id"],
-            "storage_size": body.storage_size,
+            "tunnel_urls": tunnel_urls,
+            "tunnel_url": tunnel_urls[0] if tunnel_urls else "",
         })
         _save_installed(installed)
 
-        yield f"data: [DONE] {app_id} is live at {tunnel['dns_url']}\n\n"
+        yield f"data: [DONE] {app_id} is live at {tunnel_urls[0] if tunnel_urls else 'cluster'}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")

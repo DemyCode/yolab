@@ -6,8 +6,8 @@ metadata:
     yolab.dev/managed: "true"
     yolab.dev/app: "{{ app_id }}"
   annotations:
-    yolab.dev/tunnel-url: "https://{{ subdomain }}.{{ domain }}"
-    yolab.dev/service-id: "{{ tunnel_service_id }}"
+    yolab.dev/tunnel-url: "{{ subdomain_tunnel.url }}"
+    yolab.dev/service-id: "{{ subdomain_tunnel.service_id }}"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -19,7 +19,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ storage_size }}
+      storage: 100Gi
 ---
 apiVersion: v1
 kind: Secret
@@ -31,15 +31,15 @@ stringData:
   db_password: "{{ db_password }}"
   wg_config: |
     [Interface]
-    PrivateKey = {{ wg_private_key }}
-    Address = {{ sub_ipv6 }}/128
+    PrivateKey = {{ subdomain_tunnel.wg_private_key }}
+    Address = {{ subdomain_tunnel.sub_ipv6 }}/128
     Table = off
-    PostUp = ip -6 rule add from {{ sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
-    PreDown = ip -6 rule del from {{ sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true
+    PostUp = ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
+    PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true
 
     [Peer]
-    PublicKey = {{ wg_server_public_key }}
-    Endpoint = {{ wg_server_endpoint }}
+    PublicKey = {{ subdomain_tunnel.wg_server_public_key }}
+    Endpoint = {{ subdomain_tunnel.wg_server_endpoint }}
     AllowedIPs = ::/0
     PersistentKeepalive = 25
 ---
@@ -50,11 +50,10 @@ metadata:
   namespace: yolab-{{ instance_name }}
 data:
   Caddyfile: |
-    {{ subdomain }}.{{ domain }} {
+    {{ subdomain_tunnel.domain }} {
       reverse_proxy immich-server:2283
     }
 ---
-# ── Gateway (WireGuard + Caddy) ───────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -108,7 +107,6 @@ spec:
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data
 ---
-# ── Immich Server ─────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -168,7 +166,6 @@ spec:
   - port: 2283
     targetPort: 2283
 ---
-# ── Machine Learning ──────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -211,7 +208,6 @@ spec:
   - port: 3003
     targetPort: 3003
 ---
-# ── Redis ─────────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -248,7 +244,6 @@ spec:
   - port: 6379
     targetPort: 6379
 ---
-# ── PostgreSQL ────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:

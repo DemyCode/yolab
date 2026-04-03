@@ -1,4 +1,5 @@
 import Form from "@rjsf/core";
+import type { WidgetProps } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { useEffect, useRef, useState } from "react";
 
@@ -8,8 +9,6 @@ interface CatalogApp {
   description: string;
   icon: string;
   category: string;
-  requires_tunnel: boolean;
-  default_subdomain: string;
   schema: object;
   uischema: object;
 }
@@ -17,10 +16,25 @@ interface CatalogApp {
 interface InstalledApp {
   app_id: string;
   instance_name: string;
-  subdomain: string;
-  domain: string;
   tunnel_url: string;
-  storage_size: string;
+}
+
+function TunnelWidget({ value, onChange, registry }: WidgetProps) {
+  const { tunnelDomain } = registry.formContext as { tunnelDomain: string };
+  return (
+    <div>
+      <input
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem", boxSizing: "border-box" }}
+      />
+      {tunnelDomain && value && (
+        <div style={{ fontSize: "0.75rem", color: "#7c3aed", marginTop: 4, fontFamily: "monospace" }}>
+          {`https://${value}.${tunnelDomain}`}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function InstalledCard({ app }: { app: InstalledApp }) {
@@ -49,16 +63,8 @@ function InstalledCard({ app }: { app: InstalledApp }) {
   );
 }
 
-function InstallModal({
-  app,
-  onClose,
-}: {
-  app: CatalogApp;
-  onClose: () => void;
-}) {
-  const [instanceName, setInstanceName] = useState(app.default_subdomain);
-  const [subdomain, setSubdomain] = useState(app.default_subdomain);
-  const [storageSize, setStorageSize] = useState("50Gi");
+function InstallModal({ app, onClose }: { app: CatalogApp; onClose: () => void }) {
+  const [instanceName, setInstanceName] = useState(app.id);
   const [formData, setFormData] = useState<object>({});
   const [log, setLog] = useState<string[]>([]);
   const [installing, setInstalling] = useState(false);
@@ -68,10 +74,8 @@ function InstallModal({
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (app.requires_tunnel) {
-      fetch("/api/tunnel/domain").then((r) => r.json()).then((d) => setTunnelDomain(d.domain)).catch(() => {});
-    }
-  }, [app.requires_tunnel]);
+    fetch("/api/tunnel/domain").then((r) => r.json()).then((d) => setTunnelDomain(d.domain)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -85,12 +89,7 @@ function InstallModal({
     const response = await fetch(`/api/apps/${app.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        instance_name: instanceName,
-        subdomain,
-        storage_size: storageSize,
-        config: formData,
-      }),
+      body: JSON.stringify({ instance_name: instanceName, config: formData }),
     });
 
     if (!response.body) { setInstalling(false); return; }
@@ -122,7 +121,7 @@ function InstallModal({
     }}>
       <div style={{
         background: "#fff", borderRadius: 12, padding: "2rem",
-        width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto",
+        width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto",
       }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
           <h2 style={{ margin: 0, fontSize: "1.2rem" }}>{app.icon} Install {app.name}</h2>
@@ -138,29 +137,6 @@ function InstallModal({
           />
         </div>
 
-        <div style={{ marginBottom: "1rem" }}>
-          <label style={{ display: "block", fontSize: "0.78rem", fontWeight: "bold", marginBottom: 4 }}>Tunnel subdomain</label>
-          <input
-            value={subdomain}
-            onChange={(e) => setSubdomain(e.target.value)}
-            style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem", boxSizing: "border-box" }}
-          />
-          {app.requires_tunnel && (
-            <div style={{ fontSize: "0.75rem", color: "#7c3aed", marginTop: 4, fontFamily: "monospace" }}>
-              {tunnelDomain ? `https://${subdomain}.${tunnelDomain}` : "A new yolab tunnel will be created for this app."}
-            </div>
-          )}
-        </div>
-
-        <div style={{ marginBottom: "1.5rem" }}>
-          <label style={{ display: "block", fontSize: "0.78rem", fontWeight: "bold", marginBottom: 4 }}>Storage size</label>
-          <input
-            value={storageSize}
-            onChange={(e) => setStorageSize(e.target.value)}
-            style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem", boxSizing: "border-box" }}
-          />
-        </div>
-
         <Form
           schema={app.schema as never}
           uiSchema={app.uischema as never}
@@ -168,6 +144,8 @@ function InstallModal({
           formData={formData}
           onChange={({ formData: d }) => setFormData(d ?? {})}
           onSubmit={() => install()}
+          widgets={{ TunnelWidget }}
+          formContext={{ tunnelDomain }}
         >
           <button
             type="submit"
@@ -247,9 +225,6 @@ export function AppsPage() {
             <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>{app.icon}</div>
             <div style={{ fontWeight: "bold", marginBottom: "0.25rem" }}>{app.name}</div>
             <div style={{ fontSize: "0.8rem", color: "#666" }}>{app.description}</div>
-            {app.requires_tunnel && (
-              <div style={{ marginTop: "0.5rem", fontSize: "0.72rem", color: "#7c3aed" }}>Tunnel required</div>
-            )}
           </div>
         ))}
       </div>

@@ -1,12 +1,17 @@
 {
   "title": "Immich",
   "type": "object",
-  "required": ["db_password"],
+  "required": ["subdomain"],
   "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "immich"
+    },
     "db_password": {
       "type": "string",
-      "title": "Database password",
-      "minLength": 12
+      "x-auto": "password"
     }
   }
 }
