@@ -110,7 +110,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: caddy
+          subPath: {{ instance_name }}/caddy
       volumes:
       - name: wg-secret
         secret:
@@ -160,7 +160,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /usr/src/app/upload
-          subPath: uploads
+          subPath: {{ instance_name }}/uploads
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -202,7 +202,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /cache
-          subPath: ml-cache
+          subPath: {{ instance_name }}/ml-cache
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -289,7 +289,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: postgres
+          subPath: {{ instance_name }}/postgres
       volumes:
       - name: data
         persistentVolumeClaim:
