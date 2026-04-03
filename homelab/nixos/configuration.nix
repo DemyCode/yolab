@@ -6,10 +6,6 @@
     ./common.nix
   ] ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
 
-  yolab.platform = "nixos";
-  yolab.flakeTarget = "yolab";
-  yolab.repoPath = "/etc/nixos";
-
   boot.loader.systemd-boot.enable = true;
 
   networking.networkmanager.enable = true;
