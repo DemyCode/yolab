@@ -209,6 +209,16 @@ async def list_pods(instance_name: str):
     ]
 
 
+@router.get("/api/apps/{instance_name}/describe/{pod_name}")
+async def describe_pod(instance_name: str, pod_name: str):
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "describe", "pod", pod_name, "-n", f"yolab-{instance_name}"],
+        capture_output=True, text=True,
+    )
+    return {"output": result.stdout + result.stderr}
+
+
 @router.get("/api/apps/{instance_name}/logs/{pod_name}")
 async def pod_logs(instance_name: str, pod_name: str):
     async def stream():

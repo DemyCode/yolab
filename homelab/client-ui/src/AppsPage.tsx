@@ -52,8 +52,10 @@ function phaseColor(pod: Pod) {
 function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => void }) {
   const [pods, setPods] = useState<Pod[]>([]);
   const [selectedPod, setSelectedPod] = useState<string | null>(null);
+  const [view, setView] = useState<"describe" | "logs">("describe");
+  const [describe, setDescribe] = useState<string>("");
   const [logs, setLogs] = useState<string[]>([]);
-  const logRef = useRef<HTMLDivElement>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<ReadableStreamDefaultReader | null>(null);
 
   useEffect(() => {
@@ -63,17 +65,30 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
   }, []);
 
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs]);
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
+  }, [logs, describe]);
 
   async function fetchPods() {
     const r = await fetch(`/api/apps/${app.instance_name}/pods`).catch(() => null);
     if (r?.ok) setPods(await r.json());
   }
 
-  async function streamLogs(podName: string) {
+  async function selectPod(podName: string) {
     if (readerRef.current) { readerRef.current.cancel(); readerRef.current = null; }
     setSelectedPod(podName);
+    setView("describe");
+    setDescribe("");
+    setLogs([]);
+    const r = await fetch(`/api/apps/${app.instance_name}/describe/${podName}`).catch(() => null);
+    if (r?.ok) {
+      const d = await r.json();
+      setDescribe(d.output);
+    }
+  }
+
+  async function showLogs(podName: string) {
+    if (readerRef.current) { readerRef.current.cancel(); readerRef.current = null; }
+    setView("logs");
     setLogs([]);
     const r = await fetch(`/api/apps/${app.instance_name}/logs/${podName}`);
     if (!r.body) return;
@@ -117,7 +132,7 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
           {pods.map((pod) => (
             <button
               key={pod.name}
-              onClick={() => streamLogs(pod.name)}
+              onClick={() => selectPod(pod.name)}
               style={{
                 display: "flex", alignItems: "center", gap: "0.4rem",
                 padding: "0.3rem 0.7rem", borderRadius: 6, cursor: "pointer", fontSize: "0.78rem",
@@ -133,19 +148,39 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
         </div>
 
         {selectedPod && (
-          <div
-            ref={logRef}
-            style={{
-              flex: 1, background: "#111", color: "#d1fae5", borderRadius: 6,
-              padding: "0.75rem", fontSize: "0.72rem", overflowY: "auto",
-              fontFamily: "monospace", whiteSpace: "pre-wrap", minHeight: 300,
-            }}
-          >
-            {logs.length === 0
-              ? <div style={{ color: "#666" }}>Waiting for logs…</div>
-              : logs.map((l, i) => <div key={i}>{l}</div>)
-            }
-          </div>
+          <>
+            <div style={{ display: "flex", gap: "0.25rem", marginBottom: "0.5rem" }}>
+              {(["describe", "logs"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => v === "logs" ? showLogs(selectedPod) : setView("describe")}
+                  style={{
+                    padding: "0.25rem 0.75rem", fontSize: "0.78rem", borderRadius: 4, cursor: "pointer",
+                    background: view === v ? "#1a1a1a" : "#f5f5f5",
+                    color: view === v ? "#fff" : "#333",
+                    border: "none",
+                  }}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+            <div
+              ref={outputRef}
+              style={{
+                flex: 1, background: "#111", color: "#d1fae5", borderRadius: 6,
+                padding: "0.75rem", fontSize: "0.72rem", overflowY: "auto",
+                fontFamily: "monospace", whiteSpace: "pre-wrap", minHeight: 300,
+              }}
+            >
+              {view === "describe"
+                ? (describe || <span style={{ color: "#666" }}>Loading…</span>)
+                : logs.length === 0
+                  ? <span style={{ color: "#666" }}>Waiting for logs…</span>
+                  : logs.map((l, i) => <div key={i}>{l}</div>)
+              }
+            </div>
+          </>
         )}
       </div>
     </div>
