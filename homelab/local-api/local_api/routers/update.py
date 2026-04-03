@@ -1,15 +1,12 @@
 import subprocess
-from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from local_api.routers.rebuild import REBUILD_LOG, REBUILD_PID
 from local_api.settings import settings
 
 router = APIRouter()
-
-REBUILD_LOG = Path("/var/log/yolab-rebuild.log")
-REBUILD_PID = Path("/run/yolab-rebuild.pid")
 
 
 @router.post("/api/update")

@@ -2,9 +2,10 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
-from local_api.routers.update import REBUILD_LOG, REBUILD_PID
-
 router = APIRouter()
+
+REBUILD_LOG = Path("/var/log/yolab-rebuild.log")
+REBUILD_PID = Path("/run/yolab-rebuild.pid")
 
 
 @router.get("/api/rebuild-log")
