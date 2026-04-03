@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     yolab_platform: str = "nixos"
     yolab_flake_target: str = "yolab"
     yolab_node_ipv6: str = "::1"
+    yolab_config: str = "/etc/nixos/homelab/ignored/config.toml"
     port: int = 3001
 
 

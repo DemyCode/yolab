@@ -10,6 +10,18 @@ metadata:
     yolab.dev/service-id: "{{ tunnel_service_id }}"
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ storage_size }}
+---
+apiVersion: v1
 kind: Secret
 metadata:
   name: immich-secrets
