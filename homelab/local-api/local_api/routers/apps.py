@@ -49,8 +49,9 @@ class AppInstallRequest(BaseModel):
 @router.get("/api/tunnel/domain")
 async def tunnel_domain():
     cfg = _tunnel_config()
-    domain = cfg["dns_url"].removeprefix("https://").removeprefix("http://")
-    return {"domain": domain}
+    host = cfg["dns_url"].removeprefix("https://").removeprefix("http://")
+    suffix = host.split(".", 1)[1] if "." in host else host
+    return {"domain": suffix}
 
 
 @router.get("/api/apps/catalog")
