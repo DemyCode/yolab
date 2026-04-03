@@ -1,3 +1,4 @@
+import secrets
 import shutil
 import subprocess
 import uuid
@@ -40,7 +41,7 @@ def build_install_config(
         "docker": {"enabled": False, "compose_url": ""},
         "tunnel": tunnel if tunnel is not None else {"enabled": False},
         "swarm": {"enabled": False},
-        "node": {"node_id": generate_node_id(), "k3s": {}},
+        "node": {"node_id": generate_node_id(), "k3s": {"token": secrets.token_hex(32), "server_addr": ""}},
     }
 
 
