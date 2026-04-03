@@ -83,7 +83,7 @@ in
       configFile = pkgs.writeText "Caddyfile" ''
         ${tunnelDomain} {
           handle /api/* {
-            reverse_proxy 127.0.0.1:3001
+            reverse_proxy [::1]:3001
           }
           handle {
             root * ${s.clientUi}
