@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DisksPage } from "./DisksPage";
+import { RebuildPage } from "./RebuildPage";
 
 interface Status {
   commit_hash: string;
@@ -220,7 +221,7 @@ function OverviewPage() {
   );
 }
 
-type Tab = "overview" | "disks";
+type Tab = "overview" | "disks" | "rebuild";
 
 function App() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -230,7 +231,7 @@ function App() {
       <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
       <p style={{ color: "#666", marginTop: 0, marginBottom: "1rem" }}>Your homelab is up and running.</p>
       <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "2px solid #e5e7eb" }}>
-        {(["overview", "disks"] as Tab[]).map((t) => (
+        {(["overview", "disks", "rebuild"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -252,6 +253,7 @@ function App() {
       </div>
       {tab === "overview" && <OverviewPage />}
       {tab === "disks" && <DisksPage />}
+      {tab === "rebuild" && <RebuildPage />}
     </div>
   );
 }

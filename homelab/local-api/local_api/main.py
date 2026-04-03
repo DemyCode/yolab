@@ -1,6 +1,7 @@
 import asyncio
 import json
 import subprocess
+from pathlib import Path
 
 import httpx
 import uvicorn
@@ -9,6 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from local_api.settings import settings
+
+REBUILD_LOG = Path("/var/log/yolab-rebuild.log")
+REBUILD_PID = Path("/run/yolab-rebuild.pid")
 
 app = FastAPI()
 app.add_middleware(
@@ -128,7 +132,9 @@ async def update():
         yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
         yield "data: [INFO] nixos-rebuild launched — service will restart shortly\n\n"
 
-        subprocess.Popen(
+        REBUILD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(REBUILD_LOG, "w")
+        proc = subprocess.Popen(
             [
                 "nixos-rebuild",
                 "switch",
@@ -138,12 +144,27 @@ async def update():
                 "--print-build-logs",
             ],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
             start_new_session=True,
         )
+        log_file.close()
+        REBUILD_PID.write_text(str(proc.pid))
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/api/rebuild-log")
+async def rebuild_log():
+    running = False
+    if REBUILD_PID.exists():
+        try:
+            pid = int(REBUILD_PID.read_text().strip())
+            running = Path(f"/proc/{pid}").exists()
+        except Exception:
+            pass
+    log = REBUILD_LOG.read_text().splitlines() if REBUILD_LOG.exists() else []
+    return {"running": running, "log": log}
 
 
 @app.get("/api/disks/local")
