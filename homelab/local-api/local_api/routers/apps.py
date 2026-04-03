@@ -65,12 +65,11 @@ async def catalog():
             continue
         meta = tomllib.loads(toml_path.read_text())["app"]
         schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
+        auto_keys = {k for k, v in schema.get("properties", {}).items() if v.get("x-auto")}
         user_schema = {
             **schema,
-            "properties": {
-                k: v for k, v in schema.get("properties", {}).items()
-                if not v.get("x-auto")
-            },
+            "properties": {k: v for k, v in schema.get("properties", {}).items() if k not in auto_keys},
+            "required": [r for r in schema.get("required", []) if r not in auto_keys],
         }
         apps.append({
             "id": meta["id"],

@@ -64,8 +64,15 @@ async def disks_local():
 @router.get("/api/disks")
 async def disks():
     try:
-        node_ips = await asyncio.to_thread(kubectl.get_node_ips)
+        nodes = await asyncio.to_thread(kubectl.get_nodes)
+        ip_to_name = {
+            addr["address"]: node["metadata"]["name"]
+            for node in nodes
+            for addr in node["status"]["addresses"]
+        }
+        node_ips = [ip for ip in ip_to_name if ":" in ip]
     except Exception:
+        ip_to_name = {}
         node_ips = []
     async with httpx.AsyncClient(timeout=10) as client:
         results = await asyncio.gather(
@@ -77,5 +84,7 @@ async def disks():
         if isinstance(r, Exception):
             continue
         if r.status_code == 200:
-            all_disks.extend(r.json())
+            for disk in r.json():
+                disk["node_name"] = ip_to_name.get(disk["host"], disk["host"])
+                all_disks.append(disk)
     return all_disks

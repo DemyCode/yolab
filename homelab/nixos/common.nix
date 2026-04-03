@@ -129,7 +129,12 @@ in
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
 
-    services.nfs.server.enable = true;
+    services.nfs.server = {
+      enable = true;
+      exports = lib.concatMapStrings
+        (e: "${e.path} *(rw,sync,no_subtree_check,no_root_squash)\n")
+        (s.nodeCfg.nfs_exports or []);
+    };
     services.logind.lidSwitchExternalPower = "ignore";
 
     environment.systemPackages =

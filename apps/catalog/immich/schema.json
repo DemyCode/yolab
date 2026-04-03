@@ -1,13 +1,18 @@
 {
   "title": "Immich",
   "type": "object",
-  "required": ["subdomain"],
+  "required": ["subdomain", "disk"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "immich"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
     },
     "db_password": {
       "type": "string",

@@ -10,13 +10,30 @@ metadata:
     yolab.dev/service-id: "{{ subdomain_tunnel.service_id }}"
 ---
 apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: yolab-{{ instance_name }}-data
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: "{{ disk.host }}"
+    path: "{{ disk.path }}"
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ instance_name }}-data
   namespace: yolab-{{ instance_name }}
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: yolab-{{ instance_name }}-data
   resources:
     requests:
       storage: 100Gi
@@ -91,8 +108,6 @@ spec:
         - containerPort: 80
         - containerPort: 443
         volumeMounts:
-        - name: caddy-config
-          mountPath: /etc/caddy
         - name: data
           mountPath: /data
           subPath: caddy
@@ -100,9 +115,6 @@ spec:
       - name: wg-secret
         secret:
           secretName: immich-secrets
-      - name: caddy-config
-        configMap:
-          name: immich-caddy
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data

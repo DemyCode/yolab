@@ -37,6 +37,48 @@ function TunnelWidget({ value, onChange, registry }: WidgetProps) {
   );
 }
 
+interface DiskInfo {
+  name: string;
+  model: string;
+  size_bytes: number;
+  mountpoints: string[];
+  node_name: string;
+}
+
+function formatBytes(b: number) {
+  if (b >= 1e12) return `${(b / 1e12).toFixed(1)}Ti`;
+  if (b >= 1e9) return `${(b / 1e9).toFixed(0)}Gi`;
+  return `${(b / 1e6).toFixed(0)}Mi`;
+}
+
+function DiskWidget({ value, onChange }: WidgetProps) {
+  const [disks, setDisks] = useState<DiskInfo[]>([]);
+
+  useEffect(() => {
+    fetch("/api/disks").then((r) => r.json()).then(setDisks).catch(() => {});
+  }, []);
+
+  const options = disks.flatMap((d) =>
+    (d.mountpoints || []).map((mp) => ({
+      key: JSON.stringify({ node_name: d.node_name, host: d.host, path: mp }),
+      label: `${d.node_name} — ${d.name}${d.model ? ` (${d.model})` : ""} ${formatBytes(d.size_bytes)} @ ${mp}`,
+    }))
+  );
+
+  const currentKey = value?.node_name ? JSON.stringify({ node_name: value.node_name, host: value.host, path: value.path }) : "";
+
+  return (
+    <select
+      value={currentKey}
+      onChange={(e) => { if (e.target.value) onChange(JSON.parse(e.target.value)); }}
+      style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem" }}
+    >
+      <option value="">Select a disk…</option>
+      {options.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+    </select>
+  );
+}
+
 interface Pod {
   name: string;
   phase: string;
@@ -294,7 +336,7 @@ function InstallModal({ app, onClose }: { app: CatalogApp; onClose: () => void }
           formData={formData}
           onChange={({ formData: d }) => setFormData(d ?? {})}
           onSubmit={() => install()}
-          widgets={{ TunnelWidget }}
+          widgets={{ TunnelWidget, DiskWidget }}
           formContext={{ tunnelDomain }}
         >
           <button
