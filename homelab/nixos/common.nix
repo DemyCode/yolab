@@ -104,10 +104,10 @@ in
       wantedBy = [ "multi-user.target" ];
       environment = {
         PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
-        YOLAB_REPO_PATH = s.repoPath;
-        YOLAB_CONFIG = "${s.repoPath}/homelab/ignored/config.toml";
+        YOLAB_REPO_PATH = "/etc/nixos";
+        YOLAB_CONFIG = "/etc/nixos/homelab/ignored/config.toml";
         YOLAB_PLATFORM = "nixos";
-        YOLAB_FLAKE_TARGET = s.flakeTarget;
+        YOLAB_FLAKE_TARGET = "yolab";
         YOLAB_NODE_IPV6 = s.tunnelCfg.sub_ipv6_private;
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };

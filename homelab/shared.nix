@@ -8,7 +8,6 @@ let
   homelabConfig = builtins.fromTOML (builtins.readFile configPath);
 
   cfg = homelabConfig.homelab;
-  sysCfg = homelabConfig.system;
   tunnelCfg = homelabConfig.tunnel;
   swarmCfg = homelabConfig.swarm;
   nodeCfg = homelabConfig.node;
@@ -62,8 +61,6 @@ in
   allowedSshKeys = cfg.allowed_ssh_keys;
   rootSshKey = cfg.root_ssh_key;
   homelabPasswordHash = cfg.homelab_password_hash;
-  flakeTarget = sysCfg.flake_target;
-  repoPath = sysCfg.repo_path;
   inherit
     tunnelCfg
     clientUi
