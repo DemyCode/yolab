@@ -175,7 +175,10 @@ async def disks_local():
 
 @app.get("/api/disks")
 async def disks():
-    node_ips = await asyncio.to_thread(_kubectl_node_ips)
+    try:
+        node_ips = await asyncio.to_thread(_kubectl_node_ips)
+    except Exception:
+        node_ips = []
     async with httpx.AsyncClient(timeout=10) as client:
         results = await asyncio.gather(
             *[client.get(f"http://[{ip}]:{settings.port}/api/disks/local") for ip in node_ips],
@@ -191,4 +194,4 @@ async def disks():
 
 
 def run():
-    uvicorn.run(app, host="0.0.0.0", port=settings.port)
+    uvicorn.run(app, host="::", port=settings.port)
