@@ -42,6 +42,7 @@ interface DiskInfo {
   model: string;
   size_bytes: number;
   mountpoints: string[];
+  host: string;
   node_name: string;
 }
 
