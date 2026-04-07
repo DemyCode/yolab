@@ -102,6 +102,9 @@ spec:
         - name: data
           mountPath: /data
           subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
       volumes:
       - name: wg-secret
         secret:
@@ -109,6 +112,9 @@ spec:
           items:
           - key: wg_config
             path: wg0.conf
+      - name: caddy-config
+        configMap:
+          name: immich-caddy
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data
@@ -196,9 +202,6 @@ spec:
       containers:
       - name: immich-ml
         image: ghcr.io/immich-app/immich-machine-learning:release
-        resources:
-          limits:
-            memory: 4Gi
         volumeMounts:
         - name: data
           mountPath: /cache
