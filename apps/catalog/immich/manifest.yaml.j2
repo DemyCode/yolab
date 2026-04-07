@@ -85,37 +85,14 @@ spec:
       labels:
         app: gateway
     spec:
-      initContainers:
-      - name: wg-routes
-        image: alpine:3.21
-        securityContext:
-          privileged: true
-        command:
-        - sh
-        - -c
-        - |
-          set -e
-          ADDRESS=$(awk '/Address/{print $3}' /etc/wireguard-secret/wg_config)
-          IP="${ADDRESS%/*}"
-          until ip link show wg0 2>/dev/null; do sleep 1; done
-          ip -6 rule add from "$IP" lookup 51820 priority 100 2>/dev/null || true
-          ip -6 route add ::/0 dev wg0 table 51820 2>/dev/null || true
-        volumeMounts:
-        - name: wg-secret
-          mountPath: /etc/wireguard-secret
       containers:
       - name: wireguard
-        image: masipcat/wireguard-go:latest
+        image: lscr.io/linuxserver/wireguard:latest
         securityContext:
           privileged: true
-        env:
-        - name: WG_COLOR_MODE
-          value: "never"
-        - name: LOG_LEVEL
-          value: "error"
         volumeMounts:
         - name: wg-secret
-          mountPath: /etc/wireguard
+          mountPath: /config/wg_confs
       - name: caddy
         image: caddy:2
         ports:
