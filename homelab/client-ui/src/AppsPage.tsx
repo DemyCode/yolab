@@ -41,9 +41,10 @@ interface DiskInfo {
   name: string;
   model: string;
   size_bytes: number;
-  mountpoints: string[];
   host: string;
   node_name: string;
+  is_system: boolean;
+  storage_partition: { name: string; mountpoint: string | null } | null;
 }
 
 function formatBytes(b: number) {
@@ -59,19 +60,19 @@ function DiskWidget({ value, onChange }: WidgetProps) {
     fetch("/api/disks").then((r) => r.json()).then(setDisks).catch(() => setDisks([]));
   }, []);
 
-  const options = (disks ?? []).flatMap((d) =>
-    (d.mountpoints || []).map((mp) => ({
-      key: JSON.stringify({ node_name: d.node_name, host: d.host, path: mp }),
-      label: `${d.node_name} — ${d.name}${d.model ? ` (${d.model})` : ""} ${formatBytes(d.size_bytes)} @ ${mp}`,
-    }))
-  );
+  const options = (disks ?? [])
+    .filter((d) => !d.is_system && d.storage_partition?.mountpoint)
+    .map((d) => ({
+      key: JSON.stringify({ node_name: d.node_name, host: d.host, path: d.storage_partition!.mountpoint }),
+      label: `${d.node_name ?? d.host} — ${d.name}${d.model ? ` (${d.model})` : ""} ${formatBytes(d.size_bytes)} @ ${d.storage_partition!.mountpoint}`,
+    }));
 
-  const currentKey = value?.node_name ? JSON.stringify({ node_name: value.node_name, host: value.host, path: value.path }) : "";
+  const currentKey = value?.host ? JSON.stringify({ node_name: value.node_name, host: value.host, path: value.path }) : "";
 
   if (disks === null) return <div style={{ fontSize: "0.82rem", color: "#999" }}>Loading disks…</div>;
   if (options.length === 0) return (
     <div style={{ fontSize: "0.82rem", color: "#ef4444" }}>
-      No mounted disks found. Mount a disk on a cluster node and add its path to <code>[[node.nfs_exports]]</code> in <code>config.toml</code>.
+      No storage disks available. Go to the Disks page and click "Add to storage" on a disk first.
     </div>
   );
 
