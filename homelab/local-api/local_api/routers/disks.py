@@ -95,15 +95,6 @@ def _export(path: str) -> None:
     )
 
 
-def auto_enable_all_storage():
-    """Export /var/yolab-data at startup so it is always available."""
-    try:
-        Path(SYSTEM_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
-        _export(SYSTEM_STORAGE_PATH)
-    except Exception:
-        pass
-
-
 async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
     ips = await asyncio.to_thread(_node_ips)
     async with httpx.AsyncClient(timeout=10) as client:
@@ -120,7 +111,6 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
 
 @router.get("/api/disks/local")
 async def disks_local():
-    """All physical disks on this node."""
     devices = await asyncio.to_thread(_lsblk)
     out = []
     for d in devices:
@@ -133,14 +123,16 @@ async def disks_local():
             storage_path = SYSTEM_STORAGE_PATH
         else:
             storage_path = None
-        out.append({
-            "name": d["name"],
-            "model": (d.get("model") or "").strip(),
-            "size_bytes": int(d.get("size") or 0),
-            "host": settings.yolab_node_ipv6,
-            "storage_partition": partition["name"] if partition else None,
-            "storage_path": storage_path,
-        })
+        out.append(
+            {
+                "name": d["name"],
+                "model": (d.get("model") or "").strip(),
+                "size_bytes": int(d.get("size") or 0),
+                "host": settings.yolab_node_ipv6,
+                "storage_partition": partition["name"] if partition else None,
+                "storage_path": storage_path,
+            }
+        )
     return out
 
 
@@ -202,7 +194,8 @@ async def enable_storage(body: EnableStorageRequest):
             result = await asyncio.to_thread(
                 subprocess.run,
                 ["mount", f"/dev/{partition['name']}", mount_path],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             if result.returncode != 0:
                 raise HTTPException(status_code=500, detail=result.stderr.strip())
@@ -210,7 +203,9 @@ async def enable_storage(body: EnableStorageRequest):
         mount_path = SYSTEM_STORAGE_PATH
         Path(mount_path).mkdir(parents=True, exist_ok=True)
     else:
-        raise HTTPException(status_code=400, detail="No usable partition found on this disk")
+        raise HTTPException(
+            status_code=400, detail="No usable partition found on this disk"
+        )
 
     try:
         await asyncio.to_thread(_export, mount_path)
@@ -234,7 +229,9 @@ async def disable_storage(body: DisableStorageRequest):
                 json=body.model_dump(),
             )
         if r.status_code != 200:
-            raise HTTPException(status_code=r.status_code, detail=r.json().get("detail", "Failed"))
+            raise HTTPException(
+                status_code=r.status_code, detail=r.json().get("detail", "Failed")
+            )
         return r.json()
 
     subprocess.run(["exportfs", "-u", f"*:{body.path}"], capture_output=True)
