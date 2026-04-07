@@ -139,7 +139,7 @@ spec:
         image: ghcr.io/immich-app/immich-server:release
         env:
         - name: DB_HOSTNAME
-          value: postgres
+          value: postgres.yolab-{{ instance_name }}.svc.cluster.local
         - name: DB_USERNAME
           value: postgres
         - name: DB_PASSWORD
@@ -150,7 +150,7 @@ spec:
         - name: DB_DATABASE_NAME
           value: immich
         - name: REDIS_HOSTNAME
-          value: redis
+          value: redis.yolab-{{ instance_name }}.svc.cluster.local
         - name: REDIS_PORT
           value: "6379"
         - name: IMMICH_MACHINE_LEARNING_URL
