@@ -54,6 +54,9 @@ def _find_storage_partition(device: dict) -> dict | None:
     return None
 
 
+SYSTEM_STORAGE_PATH = "/var/yolab-data"
+
+
 def _disk_entry(device: dict) -> dict:
     mounts = _collect_mountpoints(device)
     used = 0
@@ -64,6 +67,15 @@ def _disk_entry(device: dict) -> dict:
             pass
     is_system = "/" in mounts
     storage_partition = _find_storage_partition(device)
+
+    if is_system:
+        storage_path = SYSTEM_STORAGE_PATH
+        Path(SYSTEM_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
+    elif storage_partition and storage_partition["mountpoint"]:
+        storage_path = storage_partition["mountpoint"]
+    else:
+        storage_path = None
+
     return {
         "name": device["name"],
         "model": (device.get("model") or "").strip(),
@@ -73,6 +85,7 @@ def _disk_entry(device: dict) -> dict:
         "host": settings.yolab_node_ipv6,
         "is_system": is_system,
         "storage_partition": storage_partition,
+        "storage_path": storage_path,
     }
 
 
@@ -168,9 +181,22 @@ def _do_enable_storage(disk_name: str) -> str:
     return mount_path
 
 
+def _ensure_system_storage_exported():
+    """Ensure /var/yolab-data is in config.toml as an NFS export."""
+    path = SYSTEM_STORAGE_PATH
+    Path(path).mkdir(parents=True, exist_ok=True)
+    config_path = Path(settings.yolab_config)
+    text = config_path.read_text() if config_path.exists() else ""
+    if path in text:
+        return
+    with open(config_path, "a") as f:
+        f.write(f'\n[[node.nfs_exports]]\npath = "{path}"\n')
+
+
 def auto_enable_all_storage():
     """Called at startup: auto-enable storage on every non-system disk with a usable partition."""
     try:
+        _ensure_system_storage_exported()
         devices = _lsblk()
     except Exception:
         return
