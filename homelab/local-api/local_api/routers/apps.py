@@ -172,6 +172,10 @@ async def install_app(app_id: str, body: AppInstallRequest):
             tunnel_urls.append(url)
             yield f"data: Tunnel registered — {url}\n\n"
 
+        disk = body.config.get("disk")
+        if isinstance(disk, dict) and disk.get("host") == settings.yolab_node_ipv6:
+            (Path(disk["path"]) / body.instance_name).mkdir(parents=True, exist_ok=True)
+
         yield "data: Rendering manifest...\n\n"
         rendered = Template(manifest_template).render(
             instance_name=body.instance_name,
