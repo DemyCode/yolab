@@ -48,9 +48,8 @@ def _lsblk() -> list[dict]:
 
 
 def _find_storage_partition(device: dict) -> dict | None:
-    """Return first child partition that is usable for storage.
-    Skips partitions mounted at system paths (/, /boot, /nix, etc.).
-    Only accepts unmounted partitions or ones already under /mnt/."""
+    """Return first child partition usable for storage.
+    Skips partitions mounted at system paths — only accepts unmounted ones or those under /mnt/."""
     for child in device.get("children") or []:
         fstype = child.get("fstype") or ""
         mountpoint = child.get("mountpoint")
@@ -61,6 +60,20 @@ def _find_storage_partition(device: dict) -> dict | None:
         if found:
             return found
     return None
+
+
+def _is_system_disk(device: dict) -> bool:
+    """True if this disk hosts the OS — has /boot, LVM2_member, or system mountpoints."""
+    for child in device.get("children") or []:
+        mp = child.get("mountpoint") or ""
+        fstype = child.get("fstype") or ""
+        if mp.startswith("/boot") or mp == "/" or mp.startswith("/nix"):
+            return True
+        if fstype == "LVM2_member":
+            return True
+        if _is_system_disk(child):
+            return True
+    return False
 
 
 def _exported_paths() -> list[str]:
@@ -114,18 +127,20 @@ async def disks_local():
         if d.get("type") != "disk":
             continue
         partition = _find_storage_partition(d)
-        out.append(
-            {
-                "name": d["name"],
-                "model": (d.get("model") or "").strip(),
-                "size_bytes": int(d.get("size") or 0),
-                "host": settings.yolab_node_ipv6,
-                "storage_partition": partition["name"] if partition else None,
-                "storage_path": partition["mountpoint"] or f"/mnt/{d['name']}"
-                if partition
-                else None,
-            }
-        )
+        if partition:
+            storage_path = partition["mountpoint"] or f"/mnt/{d['name']}"
+        elif _is_system_disk(d):
+            storage_path = SYSTEM_STORAGE_PATH
+        else:
+            storage_path = None
+        out.append({
+            "name": d["name"],
+            "model": (d.get("model") or "").strip(),
+            "size_bytes": int(d.get("size") or 0),
+            "host": settings.yolab_node_ipv6,
+            "storage_partition": partition["name"] if partition else None,
+            "storage_path": storage_path,
+        })
     return out
 
 
@@ -179,23 +194,23 @@ async def enable_storage(body: EnableStorageRequest):
         raise HTTPException(status_code=404, detail="Disk not found")
 
     partition = _find_storage_partition(disk)
-    if not partition:
-        raise HTTPException(
-            status_code=400, detail="No usable partition found on this disk"
-        )
 
-    mount_path = partition["mountpoint"] or f"/mnt/{body.disk_name}"
-    Path(mount_path).mkdir(parents=True, exist_ok=True)
-
-    if not partition["mountpoint"]:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["mount", f"/dev/{partition['name']}", mount_path],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=result.stderr.strip())
+    if partition:
+        mount_path = partition["mountpoint"] or f"/mnt/{body.disk_name}"
+        Path(mount_path).mkdir(parents=True, exist_ok=True)
+        if not partition["mountpoint"]:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["mount", f"/dev/{partition['name']}", mount_path],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                raise HTTPException(status_code=500, detail=result.stderr.strip())
+    elif _is_system_disk(disk):
+        mount_path = SYSTEM_STORAGE_PATH
+        Path(mount_path).mkdir(parents=True, exist_ok=True)
+    else:
+        raise HTTPException(status_code=400, detail="No usable partition found on this disk")
 
     try:
         await asyncio.to_thread(_export, mount_path)
