@@ -17,6 +17,7 @@ interface InstalledApp {
   app_id: string;
   instance_name: string;
   tunnel_url: string;
+  status: "starting" | "running" | "uninstalling";
 }
 
 function TunnelWidget({ value, onChange, registry }: WidgetProps) {
@@ -230,6 +231,20 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
   );
 }
 
+function StatusBadge({ status }: { status: InstalledApp["status"] }) {
+  const map = {
+    running:      { label: "Running",      color: "#22c55e", bg: "#f0fdf4" },
+    starting:     { label: "Starting…",    color: "#f59e0b", bg: "#fffbeb" },
+    uninstalling: { label: "Uninstalling…", color: "#ef4444", bg: "#fef2f2" },
+  };
+  const s = map[status] ?? map.starting;
+  return (
+    <span style={{ fontSize: "0.7rem", padding: "0.15rem 0.5rem", borderRadius: 99, background: s.bg, color: s.color, fontWeight: 600, whiteSpace: "nowrap" }}>
+      {s.label}
+    </span>
+  );
+}
+
 function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onClick: () => void; onUninstall: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
@@ -259,9 +274,12 @@ function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onCli
         display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer",
       }}
     >
-      <div>
-        <div style={{ fontWeight: "bold" }}>{app.app_id}</div>
-        <div style={{ fontSize: "0.8rem", color: "#666", marginTop: 2 }}>{app.instance_name}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+        <div>
+          <div style={{ fontWeight: "bold" }}>{app.app_id}</div>
+          <div style={{ fontSize: "0.8rem", color: "#666", marginTop: 2 }}>{app.instance_name}</div>
+        </div>
+        <StatusBadge status={app.status} />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
         <a
@@ -276,7 +294,7 @@ function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onCli
         <div onClick={(e) => e.stopPropagation()}>
           <button
             onClick={doUninstall}
-            disabled={uninstalling}
+            disabled={uninstalling || app.status === "uninstalling"}
             style={{
               fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
               border: "1px solid #fca5a5",

@@ -46,10 +46,29 @@ def _list_installed() -> list[dict]:
     for ns in items:
         ann = ns.get("metadata", {}).get("annotations", {})
         name = ns["metadata"]["name"].removeprefix("yolab-")
+        phase = ns.get("status", {}).get("phase", "Active")
+        if phase == "Terminating":
+            status = "uninstalling"
+        else:
+            pods = subprocess.run(
+                ["kubectl", "get", "pods", "-n", f"yolab-{name}", "-o", "json"],
+                capture_output=True, text=True,
+            )
+            if pods.returncode == 0:
+                pod_items = json.loads(pods.stdout).get("items", [])
+                all_ready = pod_items and all(
+                    any(c["type"] == "Ready" and c["status"] == "True"
+                        for c in p.get("status", {}).get("conditions", []))
+                    for p in pod_items
+                )
+                status = "running" if all_ready else "starting"
+            else:
+                status = "starting"
         apps.append({
             "app_id": ann.get(ANN_APP_ID, ""),
             "instance_name": name,
             "tunnel_url": ann.get(ANN_TUNNEL_URL, ""),
+            "status": status,
         })
     return apps
 
@@ -220,6 +239,11 @@ async def install_app(app_id: str, body: AppInstallRequest):
 
 @router.delete("/api/apps/{instance_name}")
 async def uninstall_app(instance_name: str):
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "delete", "pv", f"yolab-{instance_name}-data", "--ignore-not-found=true"],
+        capture_output=True, text=True,
+    )
     result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "delete", "namespace", f"yolab-{instance_name}", "--ignore-not-found=true"],
