@@ -133,6 +133,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
     manifest_template = (app_dir / "manifest.yaml.j2").read_text()
 
     async def stream():
+      try:
         tunnel_cfg = _tunnel_config()
         tunnel_vars = {}
         tunnel_urls = []
@@ -219,6 +220,9 @@ async def install_app(app_id: str, body: AppInstallRequest):
         await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, tunnel_url)
 
         yield f"data: [DONE] {app_id} is live at {tunnel_url or 'cluster'}\n\n"
+
+      except Exception as e:
+        yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
