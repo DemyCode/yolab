@@ -134,6 +134,10 @@ spec:
       labels:
         app: immich-server
     spec:
+      initContainers:
+      - name: wait-postgres
+        image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+        command: ['sh', '-c', 'until pg_isready -h postgres -p 5432; do sleep 2; done']
       containers:
       - name: immich-server
         image: ghcr.io/immich-app/immich-server:release
