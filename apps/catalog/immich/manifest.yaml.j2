@@ -140,10 +140,8 @@ spec:
         env:
         - name: DB_HOSTNAME
           value: postgres
-        - name: DB_PORT
-          value: "5432"
         - name: DB_USERNAME
-          value: immich
+          value: postgres
         - name: DB_PASSWORD
           valueFrom:
             secretKeyRef:
@@ -275,7 +273,7 @@ spec:
         image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
         env:
         - name: POSTGRES_USER
-          value: immich
+          value: postgres
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
