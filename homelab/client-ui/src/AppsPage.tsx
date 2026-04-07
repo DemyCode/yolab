@@ -240,13 +240,22 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
 function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onClick: () => void; onUninstall: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallError, setUninstallError] = useState("");
 
   async function doUninstall(e: React.MouseEvent) {
     e.stopPropagation();
     if (!confirming) { setConfirming(true); return; }
     setUninstalling(true);
-    await fetch(`/api/apps/${app.instance_name}`, { method: "DELETE" });
-    onUninstall();
+    setUninstallError("");
+    const r = await fetch(`/api/apps/${app.instance_name}`, { method: "DELETE" });
+    if (r.ok) {
+      onUninstall();
+    } else {
+      const d = await r.json().catch(() => ({}));
+      setUninstallError(d.detail ?? "Uninstall failed");
+      setUninstalling(false);
+      setConfirming(false);
+    }
   }
 
   return (
@@ -271,19 +280,22 @@ function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onCli
         >
           {app.tunnel_url}
         </a>
-        <button
-          onClick={doUninstall}
-          disabled={uninstalling}
-          style={{
-            fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
-            border: "1px solid #fca5a5",
-            background: confirming ? "#ef4444" : "#fff",
-            color: confirming ? "#fff" : "#ef4444",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {uninstalling ? "Removing…" : confirming ? "Confirm" : "Uninstall"}
-        </button>
+        <div onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={doUninstall}
+            disabled={uninstalling}
+            style={{
+              fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
+              border: "1px solid #fca5a5",
+              background: confirming ? "#ef4444" : "#fff",
+              color: confirming ? "#fff" : "#ef4444",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {uninstalling ? "Removing…" : confirming ? "Confirm uninstall" : "Uninstall"}
+          </button>
+          {uninstallError && <div style={{ fontSize: "0.7rem", color: "#ef4444", marginTop: 2 }}>{uninstallError}</div>}
+        </div>
       </div>
     </div>
   );

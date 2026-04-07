@@ -17,7 +17,10 @@ from local_api.settings import settings
 router = APIRouter()
 
 CATALOG_DIR = Path(settings.yolab_repo_path) / "apps/catalog"
-INSTALLED_APPS = Path(settings.yolab_repo_path) / "homelab/ignored/installed-apps.json"
+
+LABEL_MANAGED = "yolab.io/managed"
+ANN_APP_ID = "yolab.io/app-id"
+ANN_TUNNEL_URL = "yolab.io/tunnel-url"
 
 
 def _tunnel_config() -> dict:
@@ -30,15 +33,37 @@ def _generate_wg_keypair() -> tuple[str, str]:
     return private, public
 
 
-def _load_installed() -> list[dict]:
-    if not INSTALLED_APPS.exists():
+def _list_installed() -> list[dict]:
+    result = subprocess.run(
+        ["kubectl", "get", "namespaces", "-l", f"{LABEL_MANAGED}=true", "-o", "json"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
         return []
-    return json.loads(INSTALLED_APPS.read_text())
+    items = json.loads(result.stdout).get("items", [])
+    apps = []
+    for ns in items:
+        ann = ns.get("metadata", {}).get("annotations", {})
+        name = ns["metadata"]["name"].removeprefix("yolab-")
+        apps.append({
+            "app_id": ann.get(ANN_APP_ID, ""),
+            "instance_name": name,
+            "tunnel_url": ann.get(ANN_TUNNEL_URL, ""),
+        })
+    return apps
 
 
-def _save_installed(apps: list[dict]) -> None:
-    INSTALLED_APPS.parent.mkdir(parents=True, exist_ok=True)
-    INSTALLED_APPS.write_text(json.dumps(apps, indent=2))
+def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str) -> None:
+    ns = f"yolab-{instance_name}"
+    subprocess.run(
+        ["kubectl", "label", "namespace", ns, f"{LABEL_MANAGED}=true", "--overwrite=true"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["kubectl", "annotate", "namespace", ns,
+         f"{ANN_APP_ID}={app_id}", f"{ANN_TUNNEL_URL}={tunnel_url}", "--overwrite=true"],
+        capture_output=True,
+    )
 
 
 class AppInstallRequest(BaseModel):
@@ -85,7 +110,7 @@ async def catalog():
 
 @router.get("/api/apps")
 async def list_apps():
-    return _load_installed()
+    return await asyncio.to_thread(_list_installed)
 
 
 @router.post("/api/apps/{app_id}")
@@ -171,16 +196,10 @@ async def install_app(app_id: str, body: AppInstallRequest):
             yield f"data: [ERROR] kubectl apply failed (exit {proc.returncode})\n\n"
             return
 
-        installed = _load_installed()
-        installed.append({
-            "app_id": app_id,
-            "instance_name": body.instance_name,
-            "tunnel_urls": tunnel_urls,
-            "tunnel_url": tunnel_urls[0] if tunnel_urls else "",
-        })
-        _save_installed(installed)
+        tunnel_url = tunnel_urls[0] if tunnel_urls else ""
+        await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, tunnel_url)
 
-        yield f"data: [DONE] {app_id} is live at {tunnel_urls[0] if tunnel_urls else 'cluster'}\n\n"
+        yield f"data: [DONE] {app_id} is live at {tunnel_url or 'cluster'}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -194,9 +213,6 @@ async def uninstall_app(instance_name: str):
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
-
-    installed = _load_installed()
-    _save_installed([a for a in installed if a["instance_name"] != instance_name])
     return {"ok": True}
 
 
