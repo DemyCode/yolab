@@ -2,7 +2,6 @@ import asyncio
 import json
 import re
 import subprocess
-import tomllib
 from pathlib import Path
 
 import httpx
@@ -14,10 +13,12 @@ from local_api.settings import settings
 
 router = APIRouter()
 
+MOUNTABLE_FSTYPES = {"ext4", "ext3", "ext2", "xfs", "btrfs", "f2fs", "ntfs", "vfat", "exfat"}
+
 
 def _lsblk() -> list[dict]:
     out = subprocess.check_output(
-        ["lsblk", "-J", "-b", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,MODEL"],
+        ["lsblk", "-J", "-b", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,MODEL,FSTYPE"],
         text=True,
     )
     return json.loads(out)["blockdevices"]
@@ -31,19 +32,6 @@ def _df_used(mountpoint: str) -> int:
     return int(out.strip().splitlines()[1].strip())
 
 
-def _collect_partitions(device: dict) -> list[dict]:
-    parts = []
-    for child in device.get("children") or []:
-        if child.get("type") == "part":
-            parts.append({
-                "name": child["name"],
-                "size_bytes": int(child.get("size") or 0),
-                "mountpoint": child.get("mountpoint"),
-            })
-        parts.extend(_collect_partitions(child))
-    return parts
-
-
 def _collect_mountpoints(device: dict) -> list[str]:
     mounts = []
     mp = device.get("mountpoint")
@@ -54,6 +42,18 @@ def _collect_mountpoints(device: dict) -> list[str]:
     return mounts
 
 
+def _find_storage_partition(device: dict) -> dict | None:
+    for child in device.get("children") or []:
+        fstype = child.get("fstype") or ""
+        mp = child.get("mountpoint")
+        if fstype in MOUNTABLE_FSTYPES:
+            return {"name": child["name"], "mountpoint": mp}
+        deeper = _find_storage_partition(child)
+        if deeper:
+            return deeper
+    return None
+
+
 def _disk_entry(device: dict) -> dict:
     mounts = _collect_mountpoints(device)
     used = 0
@@ -62,14 +62,17 @@ def _disk_entry(device: dict) -> dict:
             used += _df_used(m)
         except Exception:
             pass
+    is_system = "/" in mounts
+    storage_partition = _find_storage_partition(device)
     return {
         "name": device["name"],
         "model": (device.get("model") or "").strip(),
         "size_bytes": int(device.get("size") or 0),
         "used_bytes": used,
         "mountpoints": mounts,
-        "partitions": _collect_partitions(device),
         "host": settings.yolab_node_ipv6,
+        "is_system": is_system,
+        "storage_partition": storage_partition,
     }
 
 
@@ -124,31 +127,74 @@ async def disks():
     return all_disks
 
 
-class MountRequest(BaseModel):
-    device: str
-    path: str
+class EnableStorageRequest(BaseModel):
+    disk_name: str
 
 
-@router.post("/api/disks/mount")
-async def mount_disk(body: MountRequest):
-    if not re.match(r"^/dev/[a-zA-Z0-9]+$", body.device):
-        raise HTTPException(status_code=400, detail="Invalid device path")
-    if not re.match(r"^/[a-zA-Z0-9/_-]+$", body.path):
-        raise HTTPException(status_code=400, detail="Invalid mount path")
+def _do_enable_storage(disk_name: str) -> str:
+    """Mount the storage partition of the named disk and register it in config.toml.
+    Returns the mount path. Raises ValueError on logical errors, RuntimeError on mount failure."""
+    if not re.match(r"^[a-zA-Z0-9]+$", disk_name):
+        raise ValueError("Invalid disk name")
 
-    Path(body.path).mkdir(parents=True, exist_ok=True)
+    devices = _lsblk()
+    disk = next((d for d in devices if d["name"] == disk_name), None)
+    if not disk:
+        raise ValueError("Disk not found")
 
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["mount", body.device, body.path],
+    entry = _disk_entry(disk)
+    partition = entry.get("storage_partition")
+    if not partition:
+        raise ValueError("No usable partition found on this disk")
+    if partition["mountpoint"]:
+        return partition["mountpoint"]  # already mounted — idempotent
+
+    device_path = f"/dev/{partition['name']}"
+    mount_path = f"/mnt/{disk_name}"
+
+    Path(mount_path).mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["mount", device_path, mount_path],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=result.stderr.strip())
+        raise RuntimeError(result.stderr.strip())
 
     config_path = Path(settings.yolab_config)
     with open(config_path, "a") as f:
-        f.write(f'\n[[node.mounts]]\ndevice = "{body.device}"\npath = "{body.path}"\n')
-        f.write(f'\n[[node.nfs_exports]]\npath = "{body.path}"\n')
+        f.write(f'\n[[node.mounts]]\ndevice = "{device_path}"\npath = "{mount_path}"\n')
+        f.write(f'\n[[node.nfs_exports]]\npath = "{mount_path}"\n')
 
-    return {"ok": True, "path": body.path}
+    return mount_path
+
+
+def auto_enable_all_storage():
+    """Called at startup: auto-enable storage on every non-system disk with a usable partition."""
+    try:
+        devices = _lsblk()
+    except Exception:
+        return
+    for device in devices:
+        if device.get("type") != "disk":
+            continue
+        entry = _disk_entry(device)
+        if entry["is_system"]:
+            continue
+        partition = entry.get("storage_partition")
+        if not partition or partition["mountpoint"]:
+            continue
+        try:
+            _do_enable_storage(device["name"])
+        except Exception:
+            pass
+
+
+@router.post("/api/disks/enable-storage")
+async def enable_storage(body: EnableStorageRequest):
+    try:
+        mount_path = await asyncio.to_thread(_do_enable_storage, body.disk_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "path": mount_path}

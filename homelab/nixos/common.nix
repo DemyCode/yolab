@@ -129,20 +129,25 @@ in
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
 
-    fileSystems = lib.listToAttrs (map (m: {
-      name = m.path;
-      value = {
-        device = m.device;
-        fsType = "auto";
-        options = [ "nofail" "x-systemd.device-timeout=10" ];
-      };
-    }) (s.nodeCfg.mounts or []));
+    fileSystems = lib.listToAttrs (
+      map (m: {
+        name = m.path;
+        value = {
+          device = m.device;
+          fsType = "auto";
+          options = [
+            "nofail"
+            "x-systemd.device-timeout=10"
+          ];
+        };
+      }) (s.nodeCfg.mounts or [ ])
+    );
 
     services.nfs.server = {
       enable = true;
-      exports = lib.concatMapStrings
-        (e: "${e.path} *(rw,sync,no_subtree_check,no_root_squash)\n")
-        (s.nodeCfg.nfs_exports or []);
+      exports = lib.concatMapStrings (e: "${e.path} *(rw,sync,no_subtree_check,no_root_squash)\n") (
+        s.nodeCfg.nfs_exports or [ ]
+      );
     };
     services.logind.lidSwitchExternalPower = "ignore";
 
