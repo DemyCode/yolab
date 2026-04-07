@@ -458,6 +458,13 @@ export function AppsPage() {
     loadInstalled();
   }, []);
 
+  useEffect(() => {
+    const needsRefresh = installed.some(a => a.status !== "running");
+    if (!needsRefresh) return;
+    const id = setInterval(loadInstalled, 3000);
+    return () => clearInterval(id);
+  }, [installed]);
+
   return (
     <div>
       {installed.length > 0 && (
