@@ -3,11 +3,10 @@ kind: Namespace
 metadata:
   name: yolab-{{ instance_name }}
   labels:
-    yolab.dev/managed: "true"
-    yolab.dev/app: "{{ app_id }}"
+    yolab.io/managed: "true"
   annotations:
-    yolab.dev/tunnel-url: "{{ subdomain_tunnel.url }}"
-    yolab.dev/service-id: "{{ subdomain_tunnel.service_id }}"
+    yolab.io/app-id: "{{ app_id }}"
+    yolab.io/tunnel-url: "{{ subdomain_tunnel.url }}"
 ---
 apiVersion: v1
 kind: PersistentVolume

@@ -167,6 +167,19 @@ async def install_app(app_id: str, body: AppInstallRequest):
             tunnel_urls.append(url)
             yield f"data: Tunnel registered — {url}\n\n"
 
+        # Pre-create the instance directory on the selected disk so NFS subPath mounts work
+        disk = body.config.get("disk")
+        if isinstance(disk, dict):
+            disk_host = disk.get("host", "")
+            disk_path = disk.get("path", "")
+            if disk_path:
+                if disk_host == settings.yolab_node_ipv6:
+                    instance_dir = Path(disk_path) / body.instance_name
+                    instance_dir.mkdir(parents=True, exist_ok=True)
+                    yield f"data: Created data directory {instance_dir}\n\n"
+                else:
+                    yield f"data: Disk is on remote node {disk_host} — directories must already exist at {disk_path}/{body.instance_name}\n\n"
+
         yield "data: Rendering manifest...\n\n"
         rendered = Template(manifest_template).render(
             instance_name=body.instance_name,
