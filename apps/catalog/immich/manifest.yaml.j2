@@ -86,7 +86,7 @@ spec:
         app: gateway
     spec:
       initContainers:
-      - name: wg-init
+      - name: wg-routes
         image: alpine:3.21
         securityContext:
           privileged: true
@@ -94,13 +94,28 @@ spec:
         - sh
         - -c
         - |
-          apk add --no-cache wireguard-tools iproute2 iptables ip6tables -q
-          cp /etc/wireguard-secret/wg_config /tmp/wg0.conf
-          wg-quick up /tmp/wg0.conf
+          set -e
+          ADDRESS=$(awk '/Address/{print $3}' /etc/wireguard-secret/wg_config)
+          IP="${ADDRESS%/*}"
+          until ip link show wg0 2>/dev/null; do sleep 1; done
+          ip -6 rule add from "$IP" lookup 51820 priority 100 2>/dev/null || true
+          ip -6 route add ::/0 dev wg0 table 51820 2>/dev/null || true
         volumeMounts:
         - name: wg-secret
           mountPath: /etc/wireguard-secret
       containers:
+      - name: wireguard
+        image: masipcat/wireguard-go:latest
+        securityContext:
+          privileged: true
+        env:
+        - name: WG_COLOR_MODE
+          value: "never"
+        - name: LOG_LEVEL
+          value: "error"
+        volumeMounts:
+        - name: wg-secret
+          mountPath: /etc/wireguard
       - name: caddy
         image: caddy:2
         ports:
@@ -114,6 +129,9 @@ spec:
       - name: wg-secret
         secret:
           secretName: immich-secrets
+          items:
+          - key: wg_config
+            path: wg0.conf
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data
@@ -133,6 +151,10 @@ spec:
       labels:
         app: immich-server
     spec:
+      initContainers:
+      - name: wait-postgres
+        image: alpine:3.21
+        command: ['sh', '-c', 'until nc -z postgres 5432; do sleep 2; done']
       containers:
       - name: immich-server
         image: ghcr.io/immich-app/immich-server:release
