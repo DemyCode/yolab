@@ -237,7 +237,18 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
   );
 }
 
-function InstalledCard({ app, onClick }: { app: InstalledApp; onClick: () => void }) {
+function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onClick: () => void; onUninstall: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
+
+  async function doUninstall(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!confirming) { setConfirming(true); return; }
+    setUninstalling(true);
+    await fetch(`/api/apps/${app.instance_name}`, { method: "DELETE" });
+    onUninstall();
+  }
+
   return (
     <div
       onClick={onClick}
@@ -250,15 +261,30 @@ function InstalledCard({ app, onClick }: { app: InstalledApp; onClick: () => voi
         <div style={{ fontWeight: "bold" }}>{app.app_id}</div>
         <div style={{ fontSize: "0.8rem", color: "#666", marginTop: 2 }}>{app.instance_name}</div>
       </div>
-      <a
-        href={app.tunnel_url}
-        target="_blank"
-        rel="noreferrer"
-        onClick={(e) => e.stopPropagation()}
-        style={{ fontSize: "0.82rem", color: "#1a1a1a", fontFamily: "monospace" }}
-      >
-        {app.tunnel_url}
-      </a>
+      <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+        <a
+          href={app.tunnel_url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={{ fontSize: "0.82rem", color: "#1a1a1a", fontFamily: "monospace" }}
+        >
+          {app.tunnel_url}
+        </a>
+        <button
+          onClick={doUninstall}
+          disabled={uninstalling}
+          style={{
+            fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
+            border: "1px solid #fca5a5",
+            background: confirming ? "#ef4444" : "#fff",
+            color: confirming ? "#fff" : "#ef4444",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {uninstalling ? "Removing…" : confirming ? "Confirm" : "Uninstall"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -399,9 +425,13 @@ export function AppsPage() {
   const [installing, setInstalling] = useState<CatalogApp | null>(null);
   const [detail, setDetail] = useState<InstalledApp | null>(null);
 
+  function loadInstalled() {
+    fetch("/api/apps").then((r) => r.json()).then(setInstalled).catch(() => {});
+  }
+
   useEffect(() => {
     fetch("/api/apps/catalog").then((r) => r.json()).then(setCatalog).catch(() => {});
-    fetch("/api/apps").then((r) => r.json()).then(setInstalled).catch(() => {});
+    loadInstalled();
   }, []);
 
   return (
@@ -410,7 +440,14 @@ export function AppsPage() {
         <div style={{ marginBottom: "2rem" }}>
           <h3 style={{ fontSize: "0.9rem", color: "#666", marginBottom: "0.75rem", marginTop: 0 }}>Installed</h3>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-            {installed.map((a) => <InstalledCard key={a.instance_name} app={a} onClick={() => setDetail(a)} />)}
+            {installed.map((a) => (
+              <InstalledCard
+                key={a.instance_name}
+                app={a}
+                onClick={() => setDetail(a)}
+                onUninstall={() => { setDetail(null); loadInstalled(); }}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -435,10 +472,7 @@ export function AppsPage() {
       {installing && (
         <InstallModal
           app={installing}
-          onClose={() => {
-            setInstalling(null);
-            fetch("/api/apps").then((r) => r.json()).then(setInstalled).catch(() => {});
-          }}
+          onClose={() => { setInstalling(null); loadInstalled(); }}
         />
       )}
     </div>

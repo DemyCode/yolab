@@ -185,6 +185,21 @@ async def install_app(app_id: str, body: AppInstallRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.delete("/api/apps/{instance_name}")
+async def uninstall_app(instance_name: str):
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "delete", "namespace", f"yolab-{instance_name}", "--ignore-not-found=true"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr.strip())
+
+    installed = _load_installed()
+    _save_installed([a for a in installed if a["instance_name"] != instance_name])
+    return {"ok": True}
+
+
 @router.get("/api/apps/{instance_name}/pods")
 async def list_pods(instance_name: str):
     result = await asyncio.to_thread(
