@@ -9,6 +9,11 @@ interface Disk {
   storage_path: string | null;
 }
 
+interface StorageEntry {
+  host: string;
+  path: string;
+}
+
 function fmt(bytes: number): string {
   if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -18,14 +23,21 @@ function fmt(bytes: number): string {
 }
 
 export function DisksPage() {
-  const [disks, setDisks] = useState<Disk[] | null>(null);
+  const [disks, setDisks] = useState<Disk[]>([]);
+  const [exported, setExported] = useState<StorageEntry[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [done, setDone] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    fetch("/api/disks").then(r => r.json()).then(setDisks).catch(() => setDisks([]));
-  }, []);
+  function load() {
+    fetch("/api/disks").then(r => r.json()).then(setDisks).catch(() => {});
+    fetch("/api/storage").then(r => r.json()).then(setExported).catch(() => {});
+  }
+
+  useEffect(() => { load(); }, []);
+
+  function isExported(disk: Disk) {
+    return exported.some(e => e.host === disk.host && e.path === disk.storage_path);
+  }
 
   async function exportDisk(disk: Disk) {
     const key = `${disk.host}:${disk.name}`;
@@ -38,15 +50,26 @@ export function DisksPage() {
     });
     const data = await r.json();
     setBusy(null);
-    if (r.ok) {
-      setDone(d => ({ ...d, [key]: data.path }));
-    } else {
-      setErrors(e => ({ ...e, [key]: data.detail ?? "Failed" }));
-    }
+    if (r.ok) load();
+    else setErrors(e => ({ ...e, [key]: data.detail ?? "Failed" }));
   }
 
-  if (!disks) return <div style={{ color: "#666" }}>Loading…</div>;
-  if (disks.length === 0) return <div style={{ color: "#666" }}>No disks found.</div>;
+  async function unexportDisk(disk: Disk) {
+    const key = `${disk.host}:${disk.name}`;
+    setBusy(key);
+    setErrors(e => ({ ...e, [key]: "" }));
+    const r = await fetch("/api/disks/disable-storage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: disk.storage_path, host: disk.host }),
+    });
+    const data = await r.json();
+    setBusy(null);
+    if (r.ok) load();
+    else setErrors(e => ({ ...e, [key]: data.detail ?? "Failed" }));
+  }
+
+  if (!disks.length) return <div style={{ color: "#666" }}>No disks found.</div>;
 
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
@@ -62,7 +85,7 @@ export function DisksPage() {
         {disks.map((d, i) => {
           const key = `${d.host}:${d.name}`;
           const isBusy = busy === key;
-          const exportedPath = done[key];
+          const exported_ = isExported(d);
           const err = errors[key];
 
           return (
@@ -76,24 +99,20 @@ export function DisksPage() {
               </td>
               <td style={{ padding: "0.6rem 0.75rem" }}>{fmt(d.size_bytes)}</td>
               <td style={{ padding: "0.6rem 0.75rem" }}>
-                {exportedPath ? (
-                  <span style={{ color: "#22c55e", fontFamily: "monospace", fontSize: "0.8rem" }}>
-                    ✓ {exportedPath}
-                  </span>
-                ) : d.storage_path ? (
+                {d.storage_path ? (
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <span style={{ color: "#aaa", fontFamily: "monospace", fontSize: "0.8rem" }}>{d.storage_path}</span>
-                    <button
-                      onClick={() => exportDisk(d)}
-                      disabled={isBusy}
-                      style={{
-                        fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: 4,
-                        border: "1px solid #d1d5db", background: "#fff",
-                        cursor: isBusy ? "not-allowed" : "pointer", color: "#1a1a1a",
-                      }}
-                    >
-                      {isBusy ? "Exporting…" : "Export as NFS"}
-                    </button>
+                    <span style={{ fontFamily: "monospace", fontSize: "0.8rem", color: exported_ ? "#22c55e" : "#aaa" }}>
+                      {exported_ ? "✓ " : ""}{d.storage_path}
+                    </span>
+                    {exported_ ? (
+                      <button onClick={() => unexportDisk(d)} disabled={isBusy} style={btnStyle("#fff", "#ef4444", "#fca5a5")}>
+                        {isBusy ? "…" : "Unexport"}
+                      </button>
+                    ) : (
+                      <button onClick={() => exportDisk(d)} disabled={isBusy} style={btnStyle("#fff", "#1a1a1a", "#d1d5db")}>
+                        {isBusy ? "Exporting…" : "Export as NFS"}
+                      </button>
+                    )}
                     {err && <span style={{ color: "#ef4444", fontSize: "0.75rem" }}>{err}</span>}
                   </div>
                 ) : (
@@ -106,4 +125,11 @@ export function DisksPage() {
       </tbody>
     </table>
   );
+}
+
+function btnStyle(bg: string, color: string, border: string): React.CSSProperties {
+  return {
+    fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: 4,
+    border: `1px solid ${border}`, background: bg, cursor: "pointer", color,
+  };
 }
