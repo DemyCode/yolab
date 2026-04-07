@@ -1,5 +1,5 @@
 import Form from "@rjsf/core";
-import type { WidgetProps } from "@rjsf/utils";
+import type { FieldProps, WidgetProps } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { useEffect, useRef, useState } from "react";
 
@@ -39,42 +39,44 @@ function TunnelWidget({ value, onChange, registry }: WidgetProps) {
 
 interface StorageLocation {
   host: string;
-  node_name: string;
   path: string;
 }
 
-function DiskWidget({ value, onChange }: WidgetProps) {
+function DiskField({ formData, onChange }: FieldProps) {
   const [locations, setLocations] = useState<StorageLocation[] | null>(null);
 
   useEffect(() => {
     fetch("/api/storage").then((r) => r.json()).then(setLocations).catch(() => setLocations([]));
   }, []);
 
-  const currentKey = value?.host ? JSON.stringify({ node_name: value.node_name, host: value.host, path: value.path }) : "";
-
   if (locations === null) return <div style={{ fontSize: "0.82rem", color: "#999" }}>Loading…</div>;
   if (locations.length === 0) return (
     <div style={{ fontSize: "0.82rem", color: "#ef4444" }}>
-      No storage available. Enable a disk on the Disks page first.
+      No storage available. Export a disk as NFS on the Disks page first.
     </div>
   );
 
+  const currentKey = formData?.host ? JSON.stringify({ host: formData.host, path: formData.path }) : "";
+
   return (
-    <select
-      value={currentKey}
-      onChange={(e) => { if (e.target.value) onChange(JSON.parse(e.target.value)); }}
-      style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem" }}
-    >
-      <option value="">Select storage…</option>
-      {locations.map((loc) => {
-        const key = JSON.stringify({ node_name: loc.node_name, host: loc.host, path: loc.path });
-        return (
-          <option key={key} value={key}>
-            {loc.node_name ?? loc.host} — {loc.path}
-          </option>
-        );
-      })}
-    </select>
+    <div>
+      <label style={{ display: "block", fontSize: "0.78rem", fontWeight: "bold", marginBottom: 4 }}>Storage</label>
+      <select
+        value={currentKey}
+        onChange={(e) => { if (e.target.value) onChange(JSON.parse(e.target.value)); }}
+        style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem" }}
+      >
+        <option value="">Select storage…</option>
+        {locations.map((loc) => {
+          const key = JSON.stringify({ host: loc.host, path: loc.path });
+          return (
+            <option key={key} value={key}>
+              {loc.host} — {loc.path}
+            </option>
+          );
+        })}
+      </select>
+    </div>
   );
 }
 
@@ -373,7 +375,8 @@ function InstallModal({ app, onClose }: { app: CatalogApp; onClose: () => void }
           formData={formData}
           onChange={({ formData: d }) => setFormData(d ?? {})}
           onSubmit={() => install()}
-          widgets={{ TunnelWidget, DiskWidget }}
+          widgets={{ TunnelWidget }}
+          fields={{ DiskField } as never}
           formContext={{ tunnelDomain }}
         >
           <button

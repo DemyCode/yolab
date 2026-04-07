@@ -3,6 +3,6 @@
     "ui:widget": "TunnelWidget"
   },
   "disk": {
-    "ui:widget": "DiskWidget"
+    "ui:field": "DiskField"
   }
 }
