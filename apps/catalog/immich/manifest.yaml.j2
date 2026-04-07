@@ -134,10 +134,6 @@ spec:
       labels:
         app: immich-server
     spec:
-      initContainers:
-      - name: wait-postgres
-        image: alpine:3.21
-        command: ['sh', '-c', 'until nc -w1 postgres 5432 </dev/null 2>/dev/null; do sleep 2; done']
       containers:
       - name: immich-server
         image: ghcr.io/immich-app/immich-server:release
