@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import secrets
 import subprocess
 import tempfile
@@ -115,6 +116,9 @@ async def list_apps():
 
 @router.post("/api/apps/{app_id}")
 async def install_app(app_id: str, body: AppInstallRequest):
+    if not re.match(r"^[a-z0-9-]+$", body.instance_name):
+        raise HTTPException(status_code=400, detail="instance_name must be lowercase alphanumeric and hyphens only")
+
     app_dir = CATALOG_DIR / app_id
     if not app_dir.exists():
         raise HTTPException(status_code=404, detail=f"App '{app_id}' not found in catalog")
@@ -194,15 +198,17 @@ async def install_app(app_id: str, body: AppInstallRequest):
             f.write(rendered)
             manifest_path = f.name
 
-        proc = subprocess.Popen(
-            ["kubectl", "apply", "-f", manifest_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+        proc = await asyncio.create_subprocess_exec(
+            "kubectl", "apply", "-f", manifest_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        for line in proc.stdout:
-            yield f"data: {line.rstrip()}\n\n"
-        proc.wait()
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            yield f"data: {line.decode().rstrip()}\n\n"
+        await proc.wait()
         Path(manifest_path).unlink(missing_ok=True)
 
         if proc.returncode != 0:
