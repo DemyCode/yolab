@@ -13,7 +13,19 @@ from local_api.settings import settings
 
 router = APIRouter()
 
-MOUNTABLE_FSTYPES = {"ext4", "ext3", "ext2", "xfs", "btrfs", "f2fs", "ntfs", "vfat", "exfat"}
+MOUNTABLE_FSTYPES = {
+    "ext4",
+    "ext3",
+    "ext2",
+    "xfs",
+    "btrfs",
+    "f2fs",
+    "ntfs",
+    "vfat",
+    "exfat",
+}
+
+SYSTEM_STORAGE_PATH = "/var/yolab-data"
 
 
 def _lsblk() -> list[dict]:
@@ -54,10 +66,28 @@ def _find_storage_partition(device: dict) -> dict | None:
     return None
 
 
-SYSTEM_STORAGE_PATH = "/var/yolab-data"
+def _get_exported_paths() -> set[str]:
+    result = subprocess.run(["exportfs", "-v"], capture_output=True, text=True)
+    paths = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0].startswith("/"):
+            paths.add(parts[0])
+    return paths
 
 
-def _disk_entry(device: dict) -> dict:
+def _export_path(path: str) -> None:
+    subprocess.run(
+        ["exportfs", "-o", "rw,sync,no_subtree_check,no_root_squash", f"*:{path}"],
+        check=True,
+    )
+
+
+def _unexport_path(path: str) -> None:
+    subprocess.run(["exportfs", "-u", f"*:{path}"], capture_output=True)
+
+
+def _disk_entry(device: dict, exported_paths: set[str]) -> dict:
     mounts = _collect_mountpoints(device)
     used = 0
     for m in mounts:
@@ -70,11 +100,12 @@ def _disk_entry(device: dict) -> dict:
 
     if is_system:
         storage_path = SYSTEM_STORAGE_PATH
-        Path(SYSTEM_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
     elif storage_partition and storage_partition["mountpoint"]:
         storage_path = storage_partition["mountpoint"]
     else:
         storage_path = None
+
+    storage_enabled = is_system or (storage_path is not None and storage_path in exported_paths)
 
     return {
         "name": device["name"],
@@ -86,13 +117,15 @@ def _disk_entry(device: dict) -> dict:
         "is_system": is_system,
         "storage_partition": storage_partition,
         "storage_path": storage_path,
+        "storage_enabled": storage_enabled,
     }
 
 
 @router.get("/api/disks/local")
 async def disks_local():
     devices = await asyncio.to_thread(_lsblk)
-    return [_disk_entry(d) for d in devices if d.get("type") == "disk"]
+    exported = await asyncio.to_thread(_get_exported_paths)
+    return [_disk_entry(d, exported) for d in devices if d.get("type") == "disk"]
 
 
 @router.get("/api/disks")
@@ -112,11 +145,14 @@ async def disks():
     seen_hosts = set()
     all_disks = []
 
-    local_disks = await asyncio.to_thread(_lsblk)
+    local_devices, exported = await asyncio.gather(
+        asyncio.to_thread(_lsblk),
+        asyncio.to_thread(_get_exported_paths),
+    )
     local_node_name = ip_to_name.get(settings.yolab_node_ipv6, settings.yolab_node_ipv6)
-    for d in local_disks:
+    for d in local_devices:
         if d.get("type") == "disk":
-            entry = _disk_entry(d)
+            entry = _disk_entry(d, exported)
             entry["node_name"] = local_node_name
             all_disks.append(entry)
     seen_hosts.add(settings.yolab_node_ipv6)
@@ -145,8 +181,6 @@ class EnableStorageRequest(BaseModel):
 
 
 def _do_enable_storage(disk_name: str) -> str:
-    """Mount the storage partition of the named disk and register it in config.toml.
-    Returns the mount path. Raises ValueError on logical errors, RuntimeError on mount failure."""
     if not re.match(r"^[a-zA-Z0-9]+$", disk_name):
         raise ValueError("Invalid disk name")
 
@@ -155,64 +189,82 @@ def _do_enable_storage(disk_name: str) -> str:
     if not disk:
         raise ValueError("Disk not found")
 
-    entry = _disk_entry(disk)
+    entry = _disk_entry(disk, set())
+    if entry["is_system"]:
+        # System disk: ensure /var/yolab-data is exported
+        Path(SYSTEM_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
+        _export_path(SYSTEM_STORAGE_PATH)
+        return SYSTEM_STORAGE_PATH
+
     partition = entry.get("storage_partition")
     if not partition:
         raise ValueError("No usable partition found on this disk")
-    if partition["mountpoint"]:
-        return partition["mountpoint"]  # already mounted — idempotent
 
-    device_path = f"/dev/{partition['name']}"
-    mount_path = f"/mnt/{disk_name}"
+    mount_path = partition["mountpoint"] or f"/mnt/{disk_name}"
 
-    Path(mount_path).mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["mount", device_path, mount_path],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
+    if not partition["mountpoint"]:
+        device_path = f"/dev/{partition['name']}"
+        Path(mount_path).mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["mount", device_path, mount_path],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
 
-    config_path = Path(settings.yolab_config)
-    with open(config_path, "a") as f:
-        f.write(f'\n[[node.mounts]]\ndevice = "{device_path}"\npath = "{mount_path}"\n')
-        f.write(f'\n[[node.nfs_exports]]\npath = "{mount_path}"\n')
-
+    _export_path(mount_path)
     return mount_path
 
 
-def _ensure_system_storage_exported():
-    """Ensure /var/yolab-data is in config.toml as an NFS export."""
-    path = SYSTEM_STORAGE_PATH
-    Path(path).mkdir(parents=True, exist_ok=True)
-    config_path = Path(settings.yolab_config)
-    text = config_path.read_text() if config_path.exists() else ""
-    if path in text:
-        return
-    with open(config_path, "a") as f:
-        f.write(f'\n[[node.nfs_exports]]\npath = "{path}"\n')
+def _do_disable_storage(disk_name: str) -> None:
+    if not re.match(r"^[a-zA-Z0-9]+$", disk_name):
+        raise ValueError("Invalid disk name")
+
+    devices = _lsblk()
+    disk = next((d for d in devices if d["name"] == disk_name), None)
+    if not disk:
+        raise ValueError("Disk not found")
+
+    entry = _disk_entry(disk, set())
+    if entry["is_system"]:
+        raise ValueError("Cannot disable system disk")
+
+    storage_path = entry.get("storage_path")
+    if storage_path:
+        _unexport_path(storage_path)
+
+    partition = entry.get("storage_partition")
+    if partition and partition["mountpoint"]:
+        subprocess.run(["umount", partition["mountpoint"]], capture_output=True)
+
+
+def _ensure_system_storage_exported() -> None:
+    Path(SYSTEM_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
+    _export_path(SYSTEM_STORAGE_PATH)
 
 
 def auto_enable_all_storage():
-    """Called at startup: auto-enable storage on every non-system disk with a usable partition."""
+    """Called at startup: export system storage and re-export any already-mounted non-system disks."""
     try:
         _ensure_system_storage_exported()
+    except Exception:
+        pass
+    try:
         devices = _lsblk()
     except Exception:
         return
     for device in devices:
         if device.get("type") != "disk":
             continue
-        entry = _disk_entry(device)
+        entry = _disk_entry(device, set())
         if entry["is_system"]:
             continue
         partition = entry.get("storage_partition")
-        if not partition or partition["mountpoint"]:
-            continue
-        try:
-            _do_enable_storage(device["name"])
-        except Exception:
-            pass
+        if partition and partition["mountpoint"]:
+            try:
+                _export_path(partition["mountpoint"])
+            except Exception:
+                pass
 
 
 @router.post("/api/disks/enable-storage")
@@ -224,3 +276,12 @@ async def enable_storage(body: EnableStorageRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "path": mount_path}
+
+
+@router.delete("/api/disks/{disk_name}/storage")
+async def disable_storage(disk_name: str):
+    try:
+        await asyncio.to_thread(_do_disable_storage, disk_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}

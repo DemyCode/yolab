@@ -45,6 +45,7 @@ interface DiskInfo {
   node_name: string;
   is_system: boolean;
   storage_path: string | null;
+  storage_enabled: boolean;
 }
 
 function formatBytes(b: number) {
@@ -61,7 +62,7 @@ function DiskWidget({ value, onChange }: WidgetProps) {
   }, []);
 
   const options = (disks ?? [])
-    .filter((d) => d.storage_path)
+    .filter((d) => d.storage_enabled && d.storage_path)
     .map((d) => ({
       key: JSON.stringify({ node_name: d.node_name, host: d.host, path: d.storage_path }),
       label: `${d.node_name ?? d.host} — ${d.name}${d.model ? ` (${d.model})` : ""} ${formatBytes(d.size_bytes)}${d.is_system ? " (system)" : ""} @ ${d.storage_path}`,

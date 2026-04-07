@@ -1,20 +1,15 @@
 import { useEffect, useState } from "react";
 
-interface StoragePartition {
-  name: string;
-  mountpoint: string | null;
-}
-
 interface Disk {
   name: string;
   model: string;
   size_bytes: number;
   used_bytes: number;
-  mountpoints: string[];
   host: string;
   node_name?: string;
   is_system: boolean;
-  storage_partition: StoragePartition | null;
+  storage_path: string | null;
+  storage_enabled: boolean;
 }
 
 function fmt(bytes: number): string {
@@ -39,8 +34,8 @@ function FillBar({ used, total }: { used: number; total: number }) {
 export function DisksPage() {
   const [disks, setDisks] = useState<Disk[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [enabling, setEnabling] = useState<string | null>(null);
-  const [enableError, setEnableError] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<Record<string, string>>({});
 
   function load() {
     fetch("/api/disks").then((r) => r.json()).then(setDisks).catch((e) => setError(String(e)));
@@ -48,21 +43,28 @@ export function DisksPage() {
 
   useEffect(() => { load(); }, []);
 
-  async function enableStorage(diskName: string) {
-    setEnabling(diskName);
-    setEnableError((prev) => ({ ...prev, [diskName]: "" }));
+  async function enable(diskName: string) {
+    setBusy(diskName);
+    setActionError((prev) => ({ ...prev, [diskName]: "" }));
     const r = await fetch("/api/disks/enable-storage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ disk_name: diskName }),
     });
     const data = await r.json();
-    setEnabling(null);
-    if (!r.ok) {
-      setEnableError((prev) => ({ ...prev, [diskName]: data.detail ?? "Failed" }));
-    } else {
-      load();
-    }
+    setBusy(null);
+    if (!r.ok) setActionError((prev) => ({ ...prev, [diskName]: data.detail ?? "Failed" }));
+    else load();
+  }
+
+  async function disable(diskName: string) {
+    setBusy(diskName);
+    setActionError((prev) => ({ ...prev, [diskName]: "" }));
+    const r = await fetch(`/api/disks/${diskName}/storage`, { method: "DELETE" });
+    const data = await r.json();
+    setBusy(null);
+    if (!r.ok) setActionError((prev) => ({ ...prev, [diskName]: data.detail ?? "Failed" }));
+    else load();
   }
 
   if (error) return <div style={{ color: "red" }}>{error}</div>;
@@ -78,46 +80,62 @@ export function DisksPage() {
           <th style={{ padding: "0.5rem 0.75rem" }}>Size</th>
           <th style={{ padding: "0.5rem 0.75rem" }}>Used</th>
           <th style={{ padding: "0.5rem 0.75rem", minWidth: 160 }}>Usage</th>
-          <th style={{ padding: "0.5rem 0.75rem" }}>Status</th>
+          <th style={{ padding: "0.5rem 0.75rem" }}>Storage</th>
         </tr>
       </thead>
       <tbody>
         {disks.map((d, i) => {
           const pct = d.size_bytes > 0 ? Math.round((d.used_bytes / d.size_bytes) * 100) : 0;
-          const err = enableError[d.name];
+          const err = actionError[d.name];
+          const isBusy = busy === d.name;
 
           let status: React.ReactNode;
           if (d.is_system) {
-            status = <span style={{ color: "#888", fontSize: "0.8rem" }}>System disk</span>;
-          } else if (d.storage_partition?.mountpoint) {
             status = (
-              <span style={{ color: "#22c55e", fontSize: "0.8rem", fontFamily: "monospace" }}>
-                {d.storage_partition.mountpoint}
+              <span style={{ color: "#888", fontSize: "0.8rem" }}>
+                Always available
+                {d.storage_path && (
+                  <span style={{ marginLeft: 6, fontFamily: "monospace", color: "#aaa" }}>
+                    {d.storage_path}
+                  </span>
+                )}
               </span>
             );
-          } else if (d.storage_partition) {
+          } else if (!d.storage_path) {
+            status = <span style={{ color: "#bbb", fontSize: "0.8rem" }}>No usable partition</span>;
+          } else if (d.storage_enabled) {
             status = (
-              <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                <span style={{ color: "#22c55e", fontSize: "0.8rem", fontFamily: "monospace" }}>
+                  {d.storage_path}
+                </span>
                 <button
-                  onClick={() => enableStorage(d.name)}
-                  disabled={enabling === d.name}
+                  onClick={() => disable(d.name)}
+                  disabled={isBusy}
                   style={{
-                    fontSize: "0.78rem",
-                    padding: "0.25rem 0.75rem",
-                    borderRadius: 5,
-                    border: "1px solid #d1d5db",
-                    background: enabling === d.name ? "#f3f4f6" : "#fff",
-                    cursor: enabling === d.name ? "not-allowed" : "pointer",
-                    color: "#1a1a1a",
+                    fontSize: "0.75rem", padding: "0.2rem 0.55rem", borderRadius: 4,
+                    border: "1px solid #d1d5db", background: "#fff", cursor: isBusy ? "not-allowed" : "pointer",
+                    color: "#666",
                   }}
                 >
-                  {enabling === d.name ? "Adding…" : "Add to storage"}
+                  {isBusy ? "…" : "Disable"}
                 </button>
-                {err && <div style={{ color: "#ef4444", fontSize: "0.75rem", marginTop: 2 }}>{err}</div>}
               </div>
             );
           } else {
-            status = <span style={{ color: "#bbb", fontSize: "0.8rem" }}>No usable partition</span>;
+            status = (
+              <button
+                onClick={() => enable(d.name)}
+                disabled={isBusy}
+                style={{
+                  fontSize: "0.78rem", padding: "0.25rem 0.75rem", borderRadius: 5,
+                  border: "1px solid #d1d5db", background: isBusy ? "#f3f4f6" : "#fff",
+                  cursor: isBusy ? "not-allowed" : "pointer", color: "#1a1a1a",
+                }}
+              >
+                {isBusy ? "Enabling…" : "Enable"}
+              </button>
+            );
           }
 
           return (
@@ -137,7 +155,10 @@ export function DisksPage() {
                   </div>
                 ) : "—"}
               </td>
-              <td style={{ padding: "0.6rem 0.75rem" }}>{status}</td>
+              <td style={{ padding: "0.6rem 0.75rem" }}>
+                {status}
+                {err && <div style={{ color: "#ef4444", fontSize: "0.75rem", marginTop: 2 }}>{err}</div>}
+              </td>
             </tr>
           );
         })}
