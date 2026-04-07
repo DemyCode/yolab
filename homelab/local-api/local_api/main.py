@@ -9,7 +9,13 @@ from local_api.routers import apps, disks, nodes, rebuild, status, update
 from local_api.settings import settings
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await asyncio.to_thread(disks.auto_enable_all_storage)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

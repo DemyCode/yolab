@@ -278,6 +278,57 @@ async def enable_storage(body: EnableStorageRequest):
     return {"ok": True, "path": mount_path}
 
 
+@router.get("/api/storage/local")
+async def storage_local():
+    """Returns NFS-exported storage paths on this node (always includes system storage)."""
+    exported = await asyncio.to_thread(_get_exported_paths)
+    # Always include system storage path regardless of export state
+    paths = {SYSTEM_STORAGE_PATH} | exported
+    return [{"host": settings.yolab_node_ipv6, "path": p} for p in sorted(paths)]
+
+
+@router.get("/api/storage")
+async def storage_all():
+    """Returns all available storage locations across the cluster."""
+    try:
+        nodes = await asyncio.to_thread(kubectl.get_nodes)
+        ip_to_name = {
+            addr["address"]: node["metadata"]["name"]
+            for node in nodes
+            for addr in node["status"]["addresses"]
+        }
+        node_ips = [ip for ip in ip_to_name if ":" in ip]
+    except Exception:
+        ip_to_name = {}
+        node_ips = []
+
+    local_name = ip_to_name.get(settings.yolab_node_ipv6, settings.yolab_node_ipv6)
+    exported = await asyncio.to_thread(_get_exported_paths)
+    paths = {SYSTEM_STORAGE_PATH} | exported
+    locations = [
+        {"host": settings.yolab_node_ipv6, "node_name": local_name, "path": p}
+        for p in sorted(paths)
+    ]
+    seen_hosts = {settings.yolab_node_ipv6}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        results = await asyncio.gather(
+            *[
+                client.get(f"http://[{ip}]:{settings.port}/api/storage/local")
+                for ip in node_ips
+                if ip not in seen_hosts
+            ],
+            return_exceptions=True,
+        )
+    for ip, r in zip([ip for ip in node_ips if ip not in seen_hosts], results):
+        if isinstance(r, Exception) or r.status_code != 200:
+            continue
+        for entry in r.json():
+            locations.append({**entry, "node_name": ip_to_name.get(entry["host"], entry["host"])})
+
+    return locations
+
+
 @router.delete("/api/disks/{disk_name}/storage")
 async def disable_storage(disk_name: str):
     try:

@@ -37,43 +37,25 @@ function TunnelWidget({ value, onChange, registry }: WidgetProps) {
   );
 }
 
-interface DiskInfo {
-  name: string;
-  model: string;
-  size_bytes: number;
+interface StorageLocation {
   host: string;
   node_name: string;
-  is_system: boolean;
-  storage_path: string | null;
-  storage_enabled: boolean;
-}
-
-function formatBytes(b: number) {
-  if (b >= 1e12) return `${(b / 1e12).toFixed(1)}Ti`;
-  if (b >= 1e9) return `${(b / 1e9).toFixed(0)}Gi`;
-  return `${(b / 1e6).toFixed(0)}Mi`;
+  path: string;
 }
 
 function DiskWidget({ value, onChange }: WidgetProps) {
-  const [disks, setDisks] = useState<DiskInfo[] | null>(null);
+  const [locations, setLocations] = useState<StorageLocation[] | null>(null);
 
   useEffect(() => {
-    fetch("/api/disks").then((r) => r.json()).then(setDisks).catch(() => setDisks([]));
+    fetch("/api/storage").then((r) => r.json()).then(setLocations).catch(() => setLocations([]));
   }, []);
-
-  const options = (disks ?? [])
-    .filter((d) => d.storage_enabled && d.storage_path)
-    .map((d) => ({
-      key: JSON.stringify({ node_name: d.node_name, host: d.host, path: d.storage_path }),
-      label: `${d.node_name ?? d.host} — ${d.name}${d.model ? ` (${d.model})` : ""} ${formatBytes(d.size_bytes)}${d.is_system ? " (system)" : ""} @ ${d.storage_path}`,
-    }));
 
   const currentKey = value?.host ? JSON.stringify({ node_name: value.node_name, host: value.host, path: value.path }) : "";
 
-  if (disks === null) return <div style={{ fontSize: "0.82rem", color: "#999" }}>Loading disks…</div>;
-  if (options.length === 0) return (
+  if (locations === null) return <div style={{ fontSize: "0.82rem", color: "#999" }}>Loading…</div>;
+  if (locations.length === 0) return (
     <div style={{ fontSize: "0.82rem", color: "#ef4444" }}>
-      No storage disks available. Go to the Disks page and click "Add to storage" on a disk first.
+      No storage available. Enable a disk on the Disks page first.
     </div>
   );
 
@@ -83,8 +65,15 @@ function DiskWidget({ value, onChange }: WidgetProps) {
       onChange={(e) => { if (e.target.value) onChange(JSON.parse(e.target.value)); }}
       style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.4rem 0.6rem", fontSize: "0.9rem" }}
     >
-      <option value="">Select a disk…</option>
-      {options.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+      <option value="">Select storage…</option>
+      {locations.map((loc) => {
+        const key = JSON.stringify({ node_name: loc.node_name, host: loc.host, path: loc.path });
+        return (
+          <option key={key} value={key}>
+            {loc.node_name ?? loc.host} — {loc.path}
+          </option>
+        );
+      })}
     </select>
   );
 }
