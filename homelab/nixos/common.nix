@@ -129,20 +129,6 @@ in
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
 
-    fileSystems = lib.listToAttrs (
-      map (m: {
-        name = m.path;
-        value = {
-          device = m.device;
-          fsType = "auto";
-          options = [
-            "nofail"
-            "x-systemd.device-timeout=10"
-          ];
-        };
-      }) (s.nodeCfg.mounts or [ ])
-    );
-
     services.nfs.server = {
       enable = true;
     };
