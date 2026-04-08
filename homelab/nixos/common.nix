@@ -95,6 +95,7 @@ in
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
         "--node-ip=${s.tunnelCfg.sub_ipv6_private}"
         "--resolv-conf=/etc/k3s-resolv.conf"
+        "--kube-proxy-arg=proxy-mode=iptables"
       ];
     };
 
@@ -169,6 +170,8 @@ in
         vim
         wget
         htop
+        iptables
+        nftables
       ];
 
     nix.settings.experimental-features = [
