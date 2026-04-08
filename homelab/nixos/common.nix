@@ -61,9 +61,25 @@ in
       "wireguard"
       "ip6_tables"
       "ip6table_filter"
+      "ip6table_nat"
       "iptable_nat"
       "xt_conntrack"
+      "br_netfilter"
+      "overlay"
+      "nf_nat"
     ];
+
+    boot.kernel.sysctl = {
+      "net.bridge.bridge-nf-call-iptables" = 1;
+      "net.bridge.bridge-nf-call-ip6tables" = 1;
+      "net.ipv4.ip_forward" = 1;
+      "net.ipv6.conf.all.forwarding" = 1;
+    };
+
+    environment.etc."k3s-resolv.conf".text = ''
+      nameserver 2606:4700:4700::1111
+      nameserver 2001:4860:4860::8888
+    '';
 
     services.k3s = {
       enable = true;
@@ -73,8 +89,12 @@ in
       serverAddr = lib.optionalString (!isFirstNode) k3sCfg.server_addr;
       extraFlags = toString [
         "--flannel-backend=wireguard-native"
+        "--flannel-ipv6-masq"
+        "--cluster-cidr=fd00:42::/56"
+        "--service-cidr=fd00:43::/112"
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
         "--node-ip=${s.tunnelCfg.sub_ipv6_private}"
+        "--resolv-conf=/etc/k3s-resolv.conf"
       ];
     };
 
