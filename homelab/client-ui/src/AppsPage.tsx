@@ -266,6 +266,20 @@ function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onCli
     }
   }
 
+  async function doForceUninstall(e: React.MouseEvent) {
+    e.stopPropagation();
+    setUninstalling(true);
+    setUninstallError("");
+    const r = await fetch(`/api/apps/${app.instance_name}/force-uninstall`, { method: "POST" });
+    if (r.ok) {
+      onUninstall();
+    } else {
+      const d = await r.json().catch(() => ({}));
+      setUninstallError(d.detail ?? "Force uninstall failed");
+      setUninstalling(false);
+    }
+  }
+
   return (
     <div
       onClick={onClick}
@@ -291,21 +305,35 @@ function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onCli
         >
           {app.tunnel_url}
         </a>
-        <div onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={doUninstall}
-            disabled={uninstalling || app.status === "uninstalling"}
-            style={{
-              fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
-              border: "1px solid #fca5a5",
-              background: confirming ? "#ef4444" : "#fff",
-              color: confirming ? "#fff" : "#ef4444",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {uninstalling ? "Removing…" : confirming ? "Confirm uninstall" : "Uninstall"}
-          </button>
-          {uninstallError && <div style={{ fontSize: "0.7rem", color: "#ef4444", marginTop: 2 }}>{uninstallError}</div>}
+        <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {app.status === "uninstalling" && (
+              <button
+                onClick={doForceUninstall}
+                disabled={uninstalling}
+                style={{
+                  fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
+                  border: "1px solid #dc2626", background: "#dc2626", color: "#fff", whiteSpace: "nowrap",
+                }}
+              >
+                {uninstalling ? "Forcing…" : "Force uninstall"}
+              </button>
+            )}
+            <button
+              onClick={doUninstall}
+              disabled={uninstalling || app.status === "uninstalling"}
+              style={{
+                fontSize: "0.75rem", padding: "0.25rem 0.65rem", borderRadius: 5, cursor: "pointer",
+                border: "1px solid #fca5a5",
+                background: confirming ? "#ef4444" : "#fff",
+                color: confirming ? "#fff" : "#ef4444",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {uninstalling ? "Removing…" : confirming ? "Confirm uninstall" : "Uninstall"}
+            </button>
+          </div>
+          {uninstallError && <div style={{ fontSize: "0.7rem", color: "#ef4444" }}>{uninstallError}</div>}
         </div>
       </div>
     </div>

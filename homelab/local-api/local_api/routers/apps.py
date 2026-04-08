@@ -237,6 +237,32 @@ async def install_app(app_id: str, body: AppInstallRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.post("/api/apps/{instance_name}/force-uninstall")
+async def force_uninstall_app(instance_name: str):
+    ns = f"yolab-{instance_name}"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "patch", "namespace", ns, "-p", '{"metadata":{"finalizers":[]}}', "--type=merge"],
+        capture_output=True, text=True,
+    )
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "delete", "namespace", ns, "--force", "--grace-period=0", "--ignore-not-found=true"],
+        capture_output=True, text=True,
+    )
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "patch", "pv", f"{ns}-data", "-p", '{"metadata":{"finalizers":[]}}', "--type=merge"],
+        capture_output=True, text=True,
+    )
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "delete", "pv", f"{ns}-data", "--force", "--grace-period=0", "--ignore-not-found=true"],
+        capture_output=True, text=True,
+    )
+    return {"ok": True}
+
+
 @router.delete("/api/apps/{instance_name}")
 async def uninstall_app(instance_name: str):
     await asyncio.to_thread(
