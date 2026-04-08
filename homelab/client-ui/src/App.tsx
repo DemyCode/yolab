@@ -3,6 +3,7 @@ import { AppsPage } from "./AppsPage";
 import { DisksPage } from "./DisksPage";
 import { NodesPage } from "./NodesPage";
 import { RebuildPage } from "./RebuildPage";
+import { TerminalPage } from "./TerminalPage";
 
 interface Status {
   commit_hash: string;
@@ -223,7 +224,7 @@ function OverviewPage() {
   );
 }
 
-type Tab = "overview" | "nodes" | "disks" | "rebuild" | "apps";
+type Tab = "overview" | "nodes" | "disks" | "rebuild" | "apps" | "terminal";
 
 function App() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -233,7 +234,7 @@ function App() {
       <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
       <p style={{ color: "#666", marginTop: 0, marginBottom: "1rem" }}>Your homelab is up and running.</p>
       <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "2px solid #e5e7eb" }}>
-        {(["overview", "nodes", "disks", "rebuild", "apps"] as Tab[]).map((t) => (
+        {(["overview", "nodes", "disks", "rebuild", "apps", "terminal"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -258,6 +259,7 @@ function App() {
       {tab === "disks" && <DisksPage />}
       {tab === "rebuild" && <RebuildPage />}
       {tab === "apps" && <AppsPage />}
+      {tab === "terminal" && <TerminalPage />}
     </div>
   );
 }
