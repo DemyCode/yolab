@@ -88,11 +88,24 @@ def _exported_paths() -> list[str]:
         return []
 
 
+EXPORTS_FILE = Path("/etc/exports.d/yolab.exports")
+
+
 def _export(path: str) -> None:
-    subprocess.run(
-        ["exportfs", "-o", "rw,sync,no_subtree_check,no_root_squash", f"*:{path}"],
-        check=True,
-    )
+    EXPORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    line = f"{path} *(rw,sync,no_subtree_check,no_root_squash)\n"
+    existing = EXPORTS_FILE.read_text() if EXPORTS_FILE.exists() else ""
+    lines = [l for l in existing.splitlines(keepends=True) if not l.startswith(path + " ")]
+    lines.append(line)
+    EXPORTS_FILE.write_text("".join(lines))
+    subprocess.run(["exportfs", "-ra"], check=True)
+
+
+def _unexport(path: str) -> None:
+    if EXPORTS_FILE.exists():
+        lines = [l for l in EXPORTS_FILE.read_text().splitlines(keepends=True) if not l.startswith(path + " ")]
+        EXPORTS_FILE.write_text("".join(lines))
+    subprocess.run(["exportfs", "-ra"], check=True)
 
 
 async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
@@ -234,5 +247,5 @@ async def disable_storage(body: DisableStorageRequest):
             )
         return r.json()
 
-    subprocess.run(["exportfs", "-u", f"*:{body.path}"], capture_output=True)
+    await asyncio.to_thread(_unexport, body.path)
     return {"ok": True}

@@ -15,7 +15,11 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
 
     resp = httpx.post(
         f"{PLATFORM_API}/services",
-        json={"account_token": account_token, "service_name": service_name, "wg_public_key": public_key},
+        json={
+            "account_token": account_token,
+            "service_name": service_name,
+            "wg_public_key": public_key,
+        },
         timeout=15,
     )
     resp.raise_for_status()

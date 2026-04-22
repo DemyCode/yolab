@@ -50,8 +50,13 @@ stringData:
     PrivateKey = {{ subdomain_tunnel.wg_private_key }}
     Address = {{ subdomain_tunnel.sub_ipv6 }}/128
     Table = off
+    {% if route_internet %}
+    PostUp = ip -6 route add ::/0 dev wg0 || true
+    PreDown = ip -6 route del ::/0 dev wg0 || true
+    {% else %}
     PostUp = ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
     PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true
+    {% endif %}
 
     [Peer]
     PublicKey = {{ subdomain_tunnel.wg_server_public_key }}
@@ -67,7 +72,7 @@ metadata:
 data:
   Caddyfile: |
     {{ subdomain_tunnel.domain }} {
-      reverse_proxy immich-server:2283
+      reverse_proxy immich-server.yolab-{{ instance_name }}.svc.cluster.local:2283
     }
 ---
 apiVersion: apps/v1
@@ -85,19 +90,34 @@ spec:
       labels:
         app: gateway
     spec:
+      # Wait for the WireGuard interface to be up before Caddy starts.
+      # Without this, Caddy would attempt TLS provisioning before the
+      # tunnel IP (sub_ipv6) is reachable, causing spurious ACME failures.
+      initContainers:
+      - name: wait-for-wg
+        image: alpine:3.20
+        command:
+        - /bin/sh
+        - -c
+        - |
+          apk add --no-cache iproute2 > /dev/null 2>&1
+          echo "Waiting for wg0 interface..."
+          until ip link show wg0 > /dev/null 2>&1; do sleep 1; done
+          echo "wg0 is up"
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN"]
       containers:
       - name: wireguard
-        image: lscr.io/linuxserver/wireguard:latest
+        image: lscr.io/linuxserver/wireguard:1.0.20210914
         securityContext:
-          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
         volumeMounts:
         - name: wg-secret
           mountPath: /config/wg_confs
       - name: caddy
         image: caddy:2
-        ports:
-        - containerPort: 80
-        - containerPort: 443
         volumeMounts:
         - name: data
           mountPath: /data
@@ -154,7 +174,7 @@ spec:
         - name: REDIS_PORT
           value: "6379"
         - name: IMMICH_MACHINE_LEARNING_URL
-          value: http://immich-ml:3003
+          value: http://immich-ml.yolab-{{ instance_name }}.svc.cluster.local:3003
         - name: VIPS_NOVECTOR
           value: "1"
         volumeMounts:
