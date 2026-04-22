@@ -28,19 +28,11 @@ in
         privateKey = s.tunnelCfg.wg_private_key;
         postSetup = ''
           ip -6 route del ::/0 dev wg0 2>/dev/null || true
-          ip -6 rule add from ${s.tunnelCfg.sub_ipv6} to fd00:42::/56 table main priority 98 2>/dev/null || true
-          ip -6 rule add from ${s.tunnelCfg.sub_ipv6} to fd00:43::/112 table main priority 98 2>/dev/null || true
-          ip -6 rule add from ${s.tunnelCfg.sub_ipv6_private} to fd00:42::/56 table main priority 99 2>/dev/null || true
-          ip -6 rule add from ${s.tunnelCfg.sub_ipv6_private} to fd00:43::/112 table main priority 99 2>/dev/null || true
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6_private} lookup 51820 priority 101 2>/dev/null || true
           ip -6 route add ::/0 dev wg0 table 51820
         '';
         preShutdown = ''
-          ip -6 rule del from ${s.tunnelCfg.sub_ipv6} to fd00:42::/56 table main priority 98 2>/dev/null || true
-          ip -6 rule del from ${s.tunnelCfg.sub_ipv6} to fd00:43::/112 table main priority 98 2>/dev/null || true
-          ip -6 rule del from ${s.tunnelCfg.sub_ipv6_private} to fd00:42::/56 table main priority 99 2>/dev/null || true
-          ip -6 rule del from ${s.tunnelCfg.sub_ipv6_private} to fd00:43::/112 table main priority 99 2>/dev/null || true
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6_private} lookup 51820 priority 101 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
