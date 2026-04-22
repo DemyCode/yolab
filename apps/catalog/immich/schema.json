@@ -14,12 +14,6 @@
       "title": "Storage disk",
       "format": "disk"
     },
-    "route_internet": {
-      "type": "boolean",
-      "title": "Route internet through tunnel",
-      "description": "When enabled, the gateway pod's outbound connections go through the WireGuard tunnel (useful for geo-routing or privacy). The app containers (Postgres, Redis, ML) always use the node's own internet connection.",
-      "default": false
-    },
     "db_password": {
       "type": "string",
       "x-auto": "password"
