@@ -205,8 +205,14 @@ in
     # K3s must start after WireGuard so the node-ip is reachable before K3s
     # tries to register itself with the cluster.
     systemd.services.k3s = {
-      after = [ "wireguard-wg0.service" ];
-      wants = [ "wireguard-wg0.service" ];
+      after = [
+        "wireguard-wg0.service"
+        "fix-k3s-service-route.service"
+      ];
+      wants = [
+        "wireguard-wg0.service"
+        "fix-k3s-service-route.service"
+      ];
     };
 
     # ── Caddy ─────────────────────────────────────────────────────────────
@@ -269,8 +275,7 @@ in
     services.nfs.server.enable = true;
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys =
-      lib.optional (s.rootSshKey != "") s.rootSshKey;
+    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey;
 
     users.users.homelab = {
       isNormalUser = true;
@@ -280,10 +285,21 @@ in
     };
 
     services.logind.settings.Login.HandleLidSwitchExternalPower = "ignore";
+    systemd.services.fix-k3s-service-route = {
+      before = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.iproute2}/bin/ip -6 route replace fd00:43::/112 dev lo";
+        ExecStop = "${pkgs.iproute2}/bin/ip -6 route del fd00:43::/112 dev lo 2>/dev/null || true";
+      };
+    };
 
     environment.systemPackages =
       with pkgs;
       map lib.lowPrio [
+        iptables
         curl
         gitMinimal
         just
