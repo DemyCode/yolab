@@ -201,37 +201,12 @@ in
         "--resolv-conf=/etc/k3s-resolv.conf"
       ];
     };
-    systemd.services.fix-k3s-pod-api-access = {
-      environment = {
-        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
-      };
-      description = "Allow pods to reach k3s API server (IPv6)";
-      after = [ "k3s.service" ];
-      wants = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = ''
-          ${pkgs.iproute2}/bin/ip6tables -I INPUT 1 -s fd00:42::/56 -d ${s.tunnelCfg.sub_ipv6_private} -p tcp --dport 6443 -j ACCEPT
-        '';
-        ExecStop = ''
-          ${pkgs.iproute2}/bin/ip6tables -D INPUT -s fd00:42::/56 -d ${s.tunnelCfg.sub_ipv6_private} -p tcp --dport 6443 -j ACCEPT 2>/dev/null || true
-        '';
-      };
-    };
 
     # K3s must start after WireGuard so the node-ip is reachable before K3s
     # tries to register itself with the cluster.
     systemd.services.k3s = {
-      after = [
-        "wireguard-wg0.service"
-        "fix-k3s-service-route.service"
-      ];
-      wants = [
-        "wireguard-wg0.service"
-        "fix-k3s-service-route.service"
-      ];
+      after = [ "wireguard-wg0.service" ];
+      wants = [ "wireguard-wg0.service" ];
     };
 
     # ── Caddy ─────────────────────────────────────────────────────────────
@@ -294,7 +269,8 @@ in
     services.nfs.server.enable = true;
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey;
+    users.users.root.openssh.authorizedKeys.keys =
+      lib.optional (s.rootSshKey != "") s.rootSshKey;
 
     users.users.homelab = {
       isNormalUser = true;
@@ -304,21 +280,10 @@ in
     };
 
     services.logind.settings.Login.HandleLidSwitchExternalPower = "ignore";
-    systemd.services.fix-k3s-service-route = {
-      before = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.iproute2}/bin/ip -6 route replace fd00:43::/112 dev lo";
-        ExecStop = "${pkgs.iproute2}/bin/ip -6 route del fd00:43::/112 dev lo 2>/dev/null || true";
-      };
-    };
 
     environment.systemPackages =
       with pkgs;
       map lib.lowPrio [
-        iptables
         curl
         gitMinimal
         just
