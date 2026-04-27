@@ -102,16 +102,19 @@ in
           # A. Destination route: all cluster-node IPs go through wg0
           ip -6 route replace ${s.privateSubnet} dev wg0 2>/dev/null || true
 
-          # B. Source policy: our own addresses always exit through wg0
+          # B. Source policy: sub_ipv6 (public/Caddy address) always exits through wg0.
+          #    sub_ipv6_private is NOT added here — it is a ULA address only reachable
+          #    within the fd00:cafe::/112 cluster subnet, which is already covered by
+          #    the destination route above (rule A).  Adding a source policy for
+          #    sub_ipv6_private sends API-server replies to pods via wg0 instead of
+          #    the local bridge, causing i/o timeouts for all in-cluster service traffic.
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
-          ip -6 rule add from ${s.tunnelCfg.sub_ipv6_private} lookup 51820 priority 101 2>/dev/null || true
           ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
         '';
 
         preShutdown = ''
           ip -6 route del ${s.privateSubnet} dev wg0 2>/dev/null || true
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
-          ip -6 rule del from ${s.tunnelCfg.sub_ipv6_private} lookup 51820 priority 101 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
         '';
 
