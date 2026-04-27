@@ -202,6 +202,9 @@ in
       ];
     };
     systemd.services.fix-k3s-pod-api-access = {
+      environment = {
+        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
+      };
       description = "Allow pods to reach k3s API server (IPv6)";
       after = [ "k3s.service" ];
       wants = [ "k3s.service" ];
