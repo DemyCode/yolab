@@ -201,6 +201,22 @@ in
         "--resolv-conf=/etc/k3s-resolv.conf"
       ];
     };
+    systemd.services.fix-k3s-pod-api-access = {
+      description = "Allow pods to reach k3s API server (IPv6)";
+      after = [ "k3s.service" ];
+      wants = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = ''
+          ${pkgs.iproute2}/bin/ip6tables -I INPUT 1 -s fd00:42::/56 -d ${s.tunnelCfg.sub_ipv6_private} -p tcp --dport 6443 -j ACCEPT
+        '';
+        ExecStop = ''
+          ${pkgs.iproute2}/bin/ip6tables -D INPUT -s fd00:42::/56 -d ${s.tunnelCfg.sub_ipv6_private} -p tcp --dport 6443 -j ACCEPT 2>/dev/null || true
+        '';
+      };
+    };
 
     # K3s must start after WireGuard so the node-ip is reachable before K3s
     # tries to register itself with the cluster.
