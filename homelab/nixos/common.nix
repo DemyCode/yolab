@@ -9,6 +9,21 @@ let
   s = import ../shared.nix { inherit pkgs lib inputs; };
   k3sCfg = s.nodeCfg.k3s;
 
+  wgSidecarImage =
+    let
+      entrypoint = pkgs.runCommand "wg-sidecar-entrypoint" { } ''
+        mkdir -p $out
+        cp ${../../apps/wg-sidecar/entrypoint.sh} $out/entrypoint.sh
+        chmod +x $out/entrypoint.sh
+      '';
+    in
+    pkgs.dockerTools.buildLayeredImage {
+      name = "wg-sidecar";
+      tag = "latest";
+      contents = with pkgs; [ wireguard-tools wireguard-go iproute2 busybox entrypoint ];
+      config.Entrypoint = [ "/bin/sh" "/entrypoint.sh" ];
+    };
+
   # The first node initialises the embedded-etcd cluster (--cluster-init).
   # Every other node joins as an equal server peer via serverAddr.
   # After joining, all nodes are identical: control plane + worker + UI.
@@ -305,6 +320,10 @@ in
         wget
         htop
       ];
+
+    system.activationScripts.wg-sidecar-image.text = ''
+      k3s ctr images import ${wgSidecarImage} 2>/dev/null || true
+    '';
 
     nix.settings.experimental-features = [
       "nix-command"

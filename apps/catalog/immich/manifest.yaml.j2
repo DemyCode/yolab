@@ -50,7 +50,7 @@ stringData:
     PrivateKey = {{ subdomain_tunnel.wg_private_key }}
     Address = {{ subdomain_tunnel.sub_ipv6 }}/128
     Table = off
-    PostUp = ip -6 address add {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 2>/dev/null || true; ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
+    PostUp = ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
     PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true
 
     [Peer]
@@ -87,7 +87,8 @@ spec:
     spec:
       containers:
       - name: wireguard
-        image: lscr.io/linuxserver/wireguard:latest
+        image: wg-sidecar:latest
+        imagePullPolicy: Never
         securityContext:
           privileged: true
         volumeMounts:

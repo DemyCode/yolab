@@ -8,6 +8,7 @@ if [ ! -f "$WG_CONF" ]; then
   exit 1
 fi
 
+export WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go
 wg-quick up "$WG_CONF"
 
 cleanup() {
