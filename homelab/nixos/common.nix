@@ -125,12 +125,21 @@ in
           #    the local bridge, causing i/o timeouts for all in-cluster service traffic.
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
+
+          # C. Default route in main table: allows pod traffic (fd00:42::/56) to reach
+          #    external IPv6 via wg0.  Flannel's --flannel-ipv6-masq SNATs the pod source
+          #    to sub_ipv6, which is then picked up by source policy B above.  This is
+          #    needed so app WireGuard sidecars can reach the hub to establish their tunnel.
+          #    metric 200 loses to any ISP-provided default route (single encapsulation path)
+          #    and wins only when no ISP IPv6 exists (double encapsulation path, still works).
+          ip -6 route replace ::/0 dev wg0 metric 200 2>/dev/null || true
         '';
 
         preShutdown = ''
           ip -6 route del ${s.privateSubnet} dev wg0 2>/dev/null || true
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
+          ip -6 route del ::/0 dev wg0 metric 200 2>/dev/null || true
         '';
 
         peers = [
