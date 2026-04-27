@@ -279,7 +279,7 @@ in
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
 
-    services.logind.lidSwitchExternalPower = "ignore";
+    services.logind.settings.Login.HandleLidSwitchExternalPower = "ignore";
 
     environment.systemPackages =
       with pkgs;

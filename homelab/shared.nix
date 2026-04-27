@@ -25,7 +25,7 @@ let
     version = "0.1.0";
     src = ./client-ui;
     npmDepsFetcherVersion = 2;
-    npmDepsHash = "sha256-Vge28xe0Lpft6BGzFsLwx1GKul/xTmNTzk/FAbOdckQ=";
+    npmDepsHash = "sha256-CB6dnuU5Q9UHcjAlisD6EHnQg9yT9iHenA0pfBbt3eQ=";
     npmFlags = [ "--legacy-peer-deps" ];
     installPhase = ''
       npm run build
