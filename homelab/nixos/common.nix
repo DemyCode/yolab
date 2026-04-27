@@ -322,7 +322,7 @@ in
       ];
 
     system.activationScripts.wg-sidecar-image.text = ''
-      k3s ctr images import ${wgSidecarImage} 2>/dev/null || true
+      ${pkgs.k3s}/bin/k3s ctr images import ${wgSidecarImage} 2>/dev/null || true
     '';
 
     nix.settings.experimental-features = [

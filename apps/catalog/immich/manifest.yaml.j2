@@ -93,7 +93,7 @@ spec:
           privileged: true
         volumeMounts:
         - name: wg-secret
-          mountPath: /config/wg_confs
+          mountPath: /etc/wireguard
       - name: caddy
         image: caddy:2
         ports:
