@@ -193,6 +193,11 @@ in
       serverAddr = k3sCfg.server_addr; # "" on the first node — K3s ignores it
 
       extraFlags = [
+        # Traefik is not used — YoLab exposes apps via WireGuard sidecars and
+        # Caddy handles the management UI.  Leaving Traefik enabled causes its
+        # svclb DaemonSet to bind hostPorts 80/443 on every node, which
+        # conflicts with Caddy and causes it to receive SIGTERM.
+        "--disable=traefik"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
         "--cluster-cidr=fd00:42::/56"
