@@ -1,3 +1,4 @@
+import ipaddress
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,14 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
 
     sub_ipv6_private = node_info["sub_ipv6"]
     node_id = node_info["node_id"]
+
+    # Derive the /112 subnet that covers all node cluster IPs from this
+    # node's own private address.  All nodes are allocated sequentially
+    # from the same /112 base, so masking to /112 gives the shared subnet
+    # that the NixOS WireGuard postSetup needs for destination routing.
+    sub_ipv6_private_subnet = str(
+        ipaddress.ip_network(f"{sub_ipv6_private}/112", strict=False)
+    )
 
     # Table = off: disable wg-quick's automatic route injection so the
     # installer's own outbound traffic (DNS, package downloads) is NOT
@@ -85,6 +94,7 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
         "wg_public_key": public_key,
         "sub_ipv6": sub_ipv6,
         "sub_ipv6_private": sub_ipv6_private,
+        "sub_ipv6_private_subnet": sub_ipv6_private_subnet,
         "dns_url": dns_url,
         "wg_server_endpoint": wg_server_endpoint,
         "wg_server_public_key": wg_server_public_key,
