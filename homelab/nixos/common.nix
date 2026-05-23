@@ -330,9 +330,9 @@ in
         htop
       ];
 
-    system.activationScripts.wg-sidecar-image.text = ''
-      ${pkgs.k3s}/bin/k3s ctr images import ${wgSidecarImage} 2>/dev/null || true
-    '';
+    systemd.tmpfiles.rules = [
+      "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar - - - - ${wgSidecarImage}"
+    ];
 
     nix.settings.experimental-features = [
       "nix-command"
