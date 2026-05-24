@@ -12,23 +12,27 @@ router = APIRouter()
 @router.post("/api/update")
 async def update():
     async def stream():
-        yield f"data: $ git -C {settings.yolab_repo_path} pull\n\n"
-        try:
-            proc = subprocess.Popen(
-                ["git", "-C", settings.yolab_repo_path, "pull"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            for line in proc.stdout:
-                yield f"data: {line.rstrip()}\n\n"
-            proc.wait()
-            if proc.returncode != 0:
-                yield f"data: [ERROR] git pull failed (exit {proc.returncode})\n\n"
+        for cmd in [
+            ["git", "-C", settings.yolab_repo_path, "fetch", "origin"],
+            ["git", "-C", settings.yolab_repo_path, "reset", "--hard", "origin/main"],
+        ]:
+            yield f"data: $ {' '.join(cmd)}\n\n"
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                for line in proc.stdout:
+                    yield f"data: {line.rstrip()}\n\n"
+                proc.wait()
+                if proc.returncode != 0:
+                    yield f"data: [ERROR] {cmd[2]} failed (exit {proc.returncode})\n\n"
+                    return
+            except Exception as e:
+                yield f"data: [ERROR] {e}\n\n"
                 return
-        except Exception as e:
-            yield f"data: [ERROR] {e}\n\n"
-            return
 
         flake = f"path:{settings.yolab_repo_path}#{settings.yolab_flake_target}"
         yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
