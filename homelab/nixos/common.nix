@@ -168,12 +168,10 @@ in
     # ── Kernel ────────────────────────────────────────────────────────────
     boot.kernelModules = [
       "wireguard"
-      "ip_tables"
-      "iptable_filter"
-      "iptable_nat"
       "ip6_tables"
       "ip6table_filter"
       "ip6table_nat"
+      "iptable_nat"
       "xt_conntrack"
       "br_netfilter"
       "overlay"
@@ -199,9 +197,10 @@ in
     #   encapsulation, ~2× overhead, more complex routing).  With vxlan, pod
     #   traffic is encapsulated then encrypted once by wg0 — simpler and faster.
     #
-    # --cluster-dns: 10th address of each service CIDR family (fd00:43::a for IPv6,
-    #   10.43.0.10 for IPv4).  K3s normally infers these but we set them explicitly
-    #   because auto-inference can silently pick the wrong address with custom CIDRs.
+    # --cluster-dns: the 10th address of the service CIDR (fd00:43::a).
+    #   K3s normally infers this, but we set it explicitly because the
+    #   auto-inference can silently pick the wrong address with a custom
+    #   IPv6-only CIDR.
     #
     # --tls-san: adds sub_ipv6_private to the API-server TLS certificate.
     #   Without this, joining nodes get a certificate mismatch when they
@@ -225,9 +224,9 @@ in
         "--disable=traefik"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
-        "--cluster-cidr=fd00:42::/56,10.42.0.0/16"
-        "--service-cidr=fd00:43::/112,10.43.0.0/16"
-        "--cluster-dns=fd00:43::a,10.43.0.10"
+        "--cluster-cidr=fd00:42::/56"
+        "--service-cidr=fd00:43::/112"
+        "--cluster-dns=fd00:43::a"
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
         "--tls-san=${s.tunnelCfg.sub_ipv6_private}"
         "--node-ip=${s.tunnelCfg.sub_ipv6_private}"
