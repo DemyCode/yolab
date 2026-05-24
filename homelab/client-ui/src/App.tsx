@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { AppsPage } from "./AppsPage";
 import { DisksPage } from "./DisksPage";
 import { NodesPage } from "./NodesPage";
-import { RebuildPage } from "./RebuildPage";
 import { TerminalPage } from "./TerminalPage";
 
 interface Status {
@@ -17,10 +16,13 @@ interface Status {
 function OverviewPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [updating, setUpdating] = useState(false);
-  const [log, setLog] = useState<string[]>([]);
+  const [updateLog, setUpdateLog] = useState<string[]>([]);
   const [updateDone, setUpdateDone] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
+  const [rebuildLog, setRebuildLog] = useState<string[]>([]);
+  const [rebuildRunning, setRebuildRunning] = useState(false);
+  const updateLogRef = useRef<HTMLDivElement>(null);
+  const rebuildLogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/status")
@@ -33,27 +35,57 @@ function OverviewPage() {
       .then((d) => {
         if (d.running) {
           setUpdating(true);
-          setLog(d.log ?? []);
+          setUpdateLog(d.log ?? []);
           streamUpdateLog();
         }
       })
       .catch(() => {});
+
+    loadRebuildLog();
   }, []);
+
+  useEffect(() => {
+    if (updateLogRef.current)
+      updateLogRef.current.scrollTop = updateLogRef.current.scrollHeight;
+  }, [updateLog]);
+
+  useEffect(() => {
+    if (rebuildLogRef.current)
+      rebuildLogRef.current.scrollTop = rebuildLogRef.current.scrollHeight;
+  }, [rebuildLog]);
+
+  function loadRebuildLog(poll = false) {
+    let cancelled = false;
+    async function run() {
+      try {
+        const r = await fetch("/api/rebuild-log");
+        const d = await r.json();
+        if (cancelled) return;
+        setRebuildLog(d.log ?? []);
+        setRebuildRunning(d.running);
+        if (d.running) setTimeout(run, 1500);
+        else if (poll) {
+          fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
+        }
+      } catch {
+        if (!cancelled) setTimeout(run, 3000);
+      }
+    }
+    run();
+    return () => { cancelled = true; };
+  }
 
   async function streamUpdateLog() {
     const response = await fetch("/api/update/status");
     if (!response.ok) return;
     const d = await response.json();
-    if (!d.running) {
-      setUpdating(false);
-      return;
-    }
+    if (!d.running) { setUpdating(false); return; }
     const poll = async () => {
       await new Promise((r) => setTimeout(r, 1000));
       try {
         const r = await fetch("/api/update/status");
         const d = await r.json();
-        setLog(d.log ?? []);
+        setUpdateLog(d.log ?? []);
         if (!d.running) {
           setUpdating(false);
           const sawDone = (d.log ?? []).includes("[DONE]");
@@ -71,12 +103,6 @@ function OverviewPage() {
     poll();
   }
 
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [log]);
-
   async function pollUntilAlive() {
     setReconnecting(true);
     for (let i = 0; i < 90; i++) {
@@ -87,6 +113,7 @@ function OverviewPage() {
           const s = await r.json();
           setStatus(s);
           setReconnecting(false);
+          loadRebuildLog(true);
           return;
         }
       } catch {}
@@ -96,7 +123,7 @@ function OverviewPage() {
 
   async function runUpdate() {
     setUpdating(true);
-    setLog([]);
+    setUpdateLog([]);
     setUpdateDone(false);
     setReconnecting(false);
 
@@ -123,18 +150,17 @@ function OverviewPage() {
             setUpdateDone(true);
             fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
           } else {
-            setLog((prev) => [...prev, line]);
+            setUpdateLog((prev) => [...prev, line]);
           }
         }
       }
 
-      // Stream ended without [DONE] — service restarted or machine is rebooting
       if (!sawDone) {
-        setLog((prev) => [...prev, "[INFO] Connection lost — service is restarting or machine is rebooting…"]);
+        setUpdateLog((prev) => [...prev, "[INFO] Connection lost — service is restarting…"]);
         pollUntilAlive();
       }
     } catch {
-      setLog((prev) => [...prev, "[INFO] Connection lost — service is restarting or machine is rebooting…"]);
+      setUpdateLog((prev) => [...prev, "[INFO] Connection lost — service is restarting…"]);
       pollUntilAlive();
     }
 
@@ -156,8 +182,8 @@ function OverviewPage() {
         fontSize: "0.9rem",
       }}>
         <div><strong>Platform:</strong> {status?.platform ?? "—"} ({status?.flake_target ?? "—"})</div>
-        <div><strong>Commit:</strong> {shortHash} — {status?.commit_message ?? "—"}</div>
-        <div><strong>Last built:</strong> {commitDate}</div>
+        <div><strong>Built commit:</strong> {shortHash} — {status?.commit_message ?? "—"}</div>
+        <div><strong>Built at:</strong> {commitDate}</div>
         {status?.error && <div style={{ color: "red" }}><strong>Error:</strong> {status.error}</div>}
       </div>
 
@@ -174,57 +200,102 @@ function OverviewPage() {
           borderRadius: 6,
         }}
       >
-        {updating ? "Updating…" : "Update homelab"}
+        {updating ? "Updating…" : "Update & rebuild"}
       </button>
 
-      {(log.length > 0 || updateDone || reconnecting) && (
+      {(updateLog.length > 0 || updateDone || reconnecting) && (
         <div style={{ marginTop: "1.25rem" }}>
+          <div style={{ fontSize: "0.8rem", fontWeight: "bold", color: "#555", marginBottom: "0.4rem" }}>
+            Update log
+          </div>
           {updateDone && (
-            <div style={{ color: "green", marginBottom: "0.5rem", fontWeight: "bold" }}>
-              Update complete.
+            <div style={{ color: "green", marginBottom: "0.5rem", fontWeight: "bold", fontSize: "0.85rem" }}>
+              Git update complete — rebuild running in background.
             </div>
           )}
           {reconnecting && (
-            <div style={{ color: "#facc15", marginBottom: "0.5rem", fontWeight: "bold" }}>
+            <div style={{ color: "#facc15", marginBottom: "0.5rem", fontWeight: "bold", fontSize: "0.85rem" }}>
               Waiting for service to come back online…
             </div>
           )}
           <div
-            ref={logRef}
+            ref={updateLogRef}
             style={{
               background: "#111",
               color: "#eee",
               borderRadius: 6,
               padding: "0.75rem 1rem",
               fontSize: "0.8rem",
-              maxHeight: 400,
+              maxHeight: 200,
               overflowY: "auto",
               whiteSpace: "pre-wrap",
               wordBreak: "break-all",
             }}
           >
-            {log.map((line, i) => (
-              <div
-                key={i}
-                style={{
-                  color: line.startsWith("[ERROR]")
-                    ? "#f87171"
-                    : line.startsWith("$")
-                    ? "#86efac"
-                    : "#eee",
-                }}
-              >
+            {updateLog.map((line, i) => (
+              <div key={i} style={{
+                color: line.startsWith("[ERROR]") ? "#f87171" : line.startsWith("$") ? "#86efac" : "#eee",
+              }}>
                 {line}
               </div>
             ))}
           </div>
         </div>
       )}
+
+      {(rebuildLog.length > 0 || rebuildRunning) && (
+        <div style={{ marginTop: "1.5rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.4rem" }}>
+            {rebuildRunning && (
+              <span style={{
+                display: "inline-block", width: 8, height: 8, borderRadius: "50%",
+                background: "#22c55e", boxShadow: "0 0 6px #22c55e", animation: "pulse 1.5s infinite",
+              }} />
+            )}
+            <span style={{ fontSize: "0.8rem", fontWeight: "bold", color: "#555" }}>
+              {rebuildRunning ? "Rebuild in progress…" : "Last rebuild log"}
+            </span>
+          </div>
+          <div
+            ref={rebuildLogRef}
+            style={{
+              background: "#111",
+              color: "#d1fae5",
+              borderRadius: 6,
+              padding: "0.75rem 1rem",
+              fontSize: "0.78rem",
+              maxHeight: 400,
+              overflowY: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              fontFamily: "monospace",
+            }}
+          >
+            {rebuildLog.map((line, i) => (
+              <div key={i} style={{
+                color: line.includes("error:") || line.includes("Error") ? "#f87171"
+                  : line.startsWith("warning:") ? "#fbbf24"
+                  : "#d1fae5",
+              }}>
+                {line}
+              </div>
+            ))}
+            {rebuildRunning && <div style={{ color: "#6b7280", marginTop: "0.25rem" }}>▌</div>}
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   );
 }
 
-type Tab = "overview" | "nodes" | "disks" | "rebuild" | "apps" | "terminal";
+type Tab = "overview" | "nodes" | "disks" | "apps" | "terminal";
 
 function App() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -234,7 +305,7 @@ function App() {
       <h1 style={{ fontSize: "1.6rem", marginBottom: "0.25rem" }}>YoLab</h1>
       <p style={{ color: "#666", marginTop: 0, marginBottom: "1rem" }}>Your homelab is up and running.</p>
       <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "2px solid #e5e7eb" }}>
-        {(["overview", "nodes", "disks", "rebuild", "apps", "terminal"] as Tab[]).map((t) => (
+        {(["overview", "nodes", "disks", "apps", "terminal"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -257,7 +328,6 @@ function App() {
       {tab === "overview" && <OverviewPage />}
       {tab === "nodes" && <NodesPage />}
       {tab === "disks" && <DisksPage />}
-      {tab === "rebuild" && <RebuildPage />}
       {tab === "apps" && <AppsPage />}
       {tab === "terminal" && <TerminalPage />}
     </div>

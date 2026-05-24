@@ -360,6 +360,16 @@ in
       "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar - - - - ${wgSidecarImage}"
     ];
 
+    # Write the git commit of the repo that was just activated so the UI can
+    # show the *built* version rather than the current git HEAD (which may be
+    # ahead of what was actually switched to successfully).
+    system.activationScripts.yolabVersion = ''
+      mkdir -p /var/lib/yolab
+      ${pkgs.git}/bin/git -C ${config.yolab.repoPath} rev-parse HEAD        > /var/lib/yolab/built-hash    2>/dev/null || true
+      ${pkgs.git}/bin/git -C ${config.yolab.repoPath} log -1 --pretty=%s    > /var/lib/yolab/built-message 2>/dev/null || true
+      ${pkgs.git}/bin/git -C ${config.yolab.repoPath} log -1 --pretty=%cI   > /var/lib/yolab/built-date    2>/dev/null || true
+    '';
+
     nix.settings.experimental-features = [
       "nix-command"
       "flakes"
