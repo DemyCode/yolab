@@ -227,9 +227,9 @@ in
         "--disable=traefik"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
-        "--cluster-cidr=10.42.0.0/16,fd00:42::/56"
-        "--service-cidr=10.43.0.0/16,fd00:43::/112"
-        "--cluster-dns=10.43.0.10"
+        "--cluster-cidr=fd00:42::/56,10.42.0.0/16"
+        "--service-cidr=fd00:43::/112,10.43.0.0/16"
+        "--cluster-dns=fd00:43::a"
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
         "--tls-san=${s.tunnelCfg.sub_ipv6_private}"
         "--resolv-conf=/etc/k3s-resolv.conf"
@@ -252,7 +252,7 @@ in
           IPV4=$(${pkgs.iproute2}/bin/ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || true)
           mkdir -p /etc/rancher/k3s
           if [ -n "$IPV4" ]; then
-            echo "node-ip: $IPV4,${s.tunnelCfg.sub_ipv6_private}" > /etc/rancher/k3s/config.yaml
+            echo "node-ip: ${s.tunnelCfg.sub_ipv6_private},$IPV4" > /etc/rancher/k3s/config.yaml
           else
             echo "node-ip: ${s.tunnelCfg.sub_ipv6_private}" > /etc/rancher/k3s/config.yaml
           fi
