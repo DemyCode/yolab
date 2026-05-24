@@ -14,6 +14,7 @@ from local_api.settings import settings
 router = APIRouter()
 
 SYSTEM_STORAGE_PATH = "/var/yolab-data"
+EXPORTS_FILE = Path("/etc/exports.d/yolab.exports")
 MOUNTABLE_FSTYPES = {
     "ext4",
     "ext3",
@@ -89,9 +90,37 @@ def _exported_paths() -> list[str]:
 
 
 def _export(path: str) -> None:
-    subprocess.run(
-        ["exportfs", "-o", "rw,sync,no_subtree_check,no_root_squash", f"*:{path}"],
-        check=True,
+    EXPORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    entries = _read_exports_file()
+    entries.add(path)
+    _write_exports_file(entries)
+    subprocess.run(["exportfs", "-ra"], check=True)
+
+
+def _unexport(path: str) -> None:
+    entries = _read_exports_file()
+    entries.discard(path)
+    _write_exports_file(entries)
+    subprocess.run(["exportfs", "-ra"], check=True)
+
+
+def _read_exports_file() -> set[str]:
+    if not EXPORTS_FILE.exists():
+        return set()
+    return {
+        line.split()[0]
+        for line in EXPORTS_FILE.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+
+def _write_exports_file(paths: set[str]) -> None:
+    EXPORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    EXPORTS_FILE.write_text(
+        "\n".join(
+            f"{p} *(rw,sync,no_subtree_check,no_root_squash)"
+            for p in sorted(paths)
+        ) + "\n"
     )
 
 
@@ -234,5 +263,5 @@ async def disable_storage(body: DisableStorageRequest):
             )
         return r.json()
 
-    subprocess.run(["exportfs", "-u", f"*:{body.path}"], capture_output=True)
+    await asyncio.to_thread(_unexport, body.path)
     return {"ok": True}
