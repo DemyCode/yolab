@@ -280,6 +280,7 @@ in
         "k3s-node-ip.service"
       ];
       wants = [ "wireguard-wg0.service" ];
+      serviceConfig.TimeoutStopSec = "30";
     };
 
     # ── Caddy ─────────────────────────────────────────────────────────────
