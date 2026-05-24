@@ -73,6 +73,38 @@ def _is_system_disk(device: dict) -> bool:
     return False
 
 
+def _disk_usage(path: str) -> dict:
+    """Return filesystem stats and per-app subdirectory usage for a storage path."""
+    out: dict = {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
+    p = Path(path)
+    if not p.exists():
+        return out
+    try:
+        lines = subprocess.check_output(
+            ["df", "-B1", "--output=size,used", path], text=True
+        ).splitlines()
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            out["fs_size_bytes"] = int(parts[0])
+            out["fs_used_bytes"] = int(parts[1])
+    except Exception:
+        pass
+    try:
+        subdirs = [d for d in p.iterdir() if d.is_dir()]
+        if subdirs:
+            du = subprocess.check_output(
+                ["du", "-sb"] + [str(d) for d in subdirs], text=True
+            )
+            out["app_usage"] = [
+                {"name": Path(line.split("\t", 1)[1]).name, "bytes": int(line.split("\t", 1)[0])}
+                for line in du.splitlines()
+                if "\t" in line
+            ]
+    except Exception:
+        pass
+    return out
+
+
 def _exported_paths() -> list[str]:
     try:
         out = subprocess.run(["exportfs", "-v"], capture_output=True, text=True).stdout
@@ -148,6 +180,7 @@ async def disks_local():
             storage_path = settings.system_storage_path
         else:
             storage_path = None
+        usage = _disk_usage(storage_path) if storage_path else {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
         out.append(
             {
                 "name": d["name"],
@@ -156,6 +189,9 @@ async def disks_local():
                 "host": settings.yolab_node_ipv6,
                 "storage_partition": partition["name"] if partition else None,
                 "storage_path": storage_path,
+                "fs_size_bytes": usage["fs_size_bytes"],
+                "fs_used_bytes": usage["fs_used_bytes"],
+                "app_usage": usage["app_usage"],
             }
         )
     return out

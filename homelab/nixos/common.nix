@@ -20,8 +20,17 @@ let
     pkgs.dockerTools.buildLayeredImage {
       name = "wg-sidecar";
       tag = "latest";
-      contents = with pkgs; [ wireguard-tools wireguard-go iproute2 busybox entrypoint ];
-      config.Entrypoint = [ "/bin/sh" "/entrypoint.sh" ];
+      contents = with pkgs; [
+        wireguard-tools
+        wireguard-go
+        iproute2
+        busybox
+        entrypoint
+      ];
+      config.Entrypoint = [
+        "/bin/sh"
+        "/entrypoint.sh"
+      ];
     };
 
   # The first node initialises the embedded-etcd cluster (--cluster-init).
@@ -241,7 +250,10 @@ in
     # Running before K3s and after WireGuard ensures the IPv6 address is up.
     systemd.services.k3s-node-ip = {
       description = "Write K3s dual-stack node-ip config";
-      after = [ "wireguard-wg0.service" "network-online.target" ];
+      after = [
+        "wireguard-wg0.service"
+        "network-online.target"
+      ];
       wants = [ "network-online.target" ];
       before = [ "k3s.service" ];
       wantedBy = [ "k3s.service" ];
@@ -263,7 +275,10 @@ in
     # K3s must start after WireGuard so the node-ip is reachable before K3s
     # tries to register itself with the cluster.
     systemd.services.k3s = {
-      after = [ "wireguard-wg0.service" "k3s-node-ip.service" ];
+      after = [
+        "wireguard-wg0.service"
+        "k3s-node-ip.service"
+      ];
       wants = [ "wireguard-wg0.service" ];
     };
 
@@ -327,8 +342,7 @@ in
     services.nfs.server.enable = true;
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys =
-      lib.optional (s.rootSshKey != "") s.rootSshKey;
+    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey;
 
     users.users.homelab = {
       isNormalUser = true;
@@ -360,9 +374,6 @@ in
       "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar - - - - ${wgSidecarImage}"
     ];
 
-    # Write the git commit of the repo that was just activated so the UI can
-    # show the *built* version rather than the current git HEAD (which may be
-    # ahead of what was actually switched to successfully).
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
       ${pkgs.git}/bin/git -C ${config.yolab.repoPath} rev-parse HEAD        > /var/lib/yolab/built-hash    2>/dev/null || true

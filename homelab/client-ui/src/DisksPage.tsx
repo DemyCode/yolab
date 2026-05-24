@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
 
+interface AppUsage {
+  name: string;
+  bytes: number;
+}
+
 interface Disk {
   name: string;
   model: string;
@@ -7,6 +12,9 @@ interface Disk {
   host: string;
   storage_partition: string | null;
   storage_path: string | null;
+  fs_size_bytes: number;
+  fs_used_bytes: number;
+  app_usage: AppUsage[];
 }
 
 interface StorageEntry {
@@ -14,12 +22,78 @@ interface StorageEntry {
   path: string;
 }
 
+const APP_COLORS = [
+  "#6366f1", "#f59e0b", "#10b981", "#ef4444",
+  "#8b5cf6", "#06b6d4", "#f97316", "#ec4899",
+];
+
 function fmt(bytes: number): string {
   if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = bytes, i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return `${v.toFixed(1)} ${units[i]}`;
+}
+
+function UsageBar({ disk }: { disk: Disk }) {
+  const total = disk.fs_size_bytes;
+  if (!total) return null;
+
+  const appTotal = disk.app_usage.reduce((s, a) => s + a.bytes, 0);
+  const otherUsed = Math.max(0, disk.fs_used_bytes - appTotal);
+  const free = Math.max(0, total - disk.fs_used_bytes);
+
+  const pct = (bytes: number) => `${((bytes / total) * 100).toFixed(1)}%`;
+
+  return (
+    <div style={{ marginTop: "0.6rem" }}>
+      {/* Bar */}
+      <div style={{
+        display: "flex", height: 10, borderRadius: 5, overflow: "hidden",
+        background: "#f3f4f6", width: "100%",
+      }}>
+        {disk.app_usage.map((app, i) => (
+          <div
+            key={app.name}
+            title={`${app.name}: ${fmt(app.bytes)}`}
+            style={{ width: pct(app.bytes), background: APP_COLORS[i % APP_COLORS.length], flexShrink: 0 }}
+          />
+        ))}
+        {otherUsed > 0 && (
+          <div
+            title={`Other used: ${fmt(otherUsed)}`}
+            style={{ width: pct(otherUsed), background: "#9ca3af", flexShrink: 0 }}
+          />
+        )}
+        {free > 0 && (
+          <div
+            title={`Free: ${fmt(free)}`}
+            style={{ flex: 1, background: "#e5e7eb" }}
+          />
+        )}
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 0.75rem", marginTop: "0.35rem" }}>
+        {disk.app_usage.map((app, i) => (
+          <span key={app.name} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.72rem", color: "#555" }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: APP_COLORS[i % APP_COLORS.length], display: "inline-block", flexShrink: 0 }} />
+            {app.name} {fmt(app.bytes)}
+          </span>
+        ))}
+        {otherUsed > 0 && (
+          <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.72rem", color: "#555" }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: "#9ca3af", display: "inline-block", flexShrink: 0 }} />
+            other {fmt(otherUsed)}
+          </span>
+        )}
+        <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.72rem", color: "#9ca3af" }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: "#e5e7eb", display: "inline-block", flexShrink: 0 }} />
+          free {fmt(free)}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export function DisksPage() {
@@ -98,23 +172,28 @@ export function DisksPage() {
               <td style={{ padding: "0.6rem 0.75rem", color: "#666", fontSize: "0.8rem", fontFamily: "monospace" }}>
                 {d.host}
               </td>
-              <td style={{ padding: "0.6rem 0.75rem" }}>{fmt(d.size_bytes)}</td>
+              <td style={{ padding: "0.6rem 0.75rem", whiteSpace: "nowrap" }}>
+                {fmt(d.fs_size_bytes || d.size_bytes)}
+              </td>
               <td style={{ padding: "0.6rem 0.75rem" }}>
                 {d.storage_path ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <span style={{ fontFamily: "monospace", fontSize: "0.8rem", color: exported_ ? "#22c55e" : "#aaa" }}>
-                      {exported_ ? "✓ " : ""}{d.storage_path}
-                    </span>
-                    {exported_ ? (
-                      <button onClick={() => unexportDisk(d)} disabled={isBusy} style={btnStyle("#fff", "#ef4444", "#fca5a5")}>
-                        {isBusy ? "…" : "Unexport"}
-                      </button>
-                    ) : (
-                      <button onClick={() => exportDisk(d)} disabled={isBusy} style={btnStyle("#fff", "#1a1a1a", "#d1d5db")}>
-                        {isBusy ? "Exporting…" : "Export as NFS"}
-                      </button>
-                    )}
-                    {err && <span style={{ color: "#ef4444", fontSize: "0.75rem" }}>{err}</span>}
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: "monospace", fontSize: "0.8rem", color: exported_ ? "#22c55e" : "#aaa" }}>
+                        {exported_ ? "✓ " : ""}{d.storage_path}
+                      </span>
+                      {exported_ ? (
+                        <button onClick={() => unexportDisk(d)} disabled={isBusy} style={btnStyle("#fff", "#ef4444", "#fca5a5")}>
+                          {isBusy ? "…" : "Unexport"}
+                        </button>
+                      ) : (
+                        <button onClick={() => exportDisk(d)} disabled={isBusy} style={btnStyle("#fff", "#1a1a1a", "#d1d5db")}>
+                          {isBusy ? "Exporting…" : "Export as NFS"}
+                        </button>
+                      )}
+                      {err && <span style={{ color: "#ef4444", fontSize: "0.75rem" }}>{err}</span>}
+                    </div>
+                    {exported_ && d.fs_size_bytes > 0 && <UsageBar disk={d} />}
                   </div>
                 ) : (
                   <span style={{ color: "#ccc", fontSize: "0.8rem" }}>No usable partition</span>
