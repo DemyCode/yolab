@@ -31,20 +31,6 @@ let
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 
-  # CoreDNS DNS64 config — adds the dns64 plugin inside the main .:53 block
-  # via K3s's coredns-custom ConfigMap import mechanism.
-  corednsDns64Manifest = pkgs.writeText "coredns-dns64.yaml" ''
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: coredns-custom
-      namespace: kube-system
-    data:
-      dns64.override: |
-        dns64 {
-            prefix 64:ff9b::/96
-        }
-  '';
 in
 {
   # ── Module options ────────────────────────────────────────────────────────
@@ -347,19 +333,8 @@ in
         htop
       ];
 
-    # NAT64: translate pod packets destined for 64:ff9b::/96 to IPv4,
-    # letting IPv6-only pods reach IPv4-only internet via the node's IPv4 stack.
-    networking.jool = {
-      enable = true;
-      nat64."default" = {};
-    };
-
     systemd.tmpfiles.rules = [
       "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar - - - - ${wgSidecarImage}"
-      # DNS64: K3s applies manifests from this dir on startup.
-      # Creates the coredns-custom ConfigMap that CoreDNS imports inside .:53 {}.
-      "d /var/lib/rancher/k3s/server/manifests 0755 root root -"
-      "L+ /var/lib/rancher/k3s/server/manifests/coredns-dns64.yaml - - - - ${corednsDns64Manifest}"
     ];
 
     nix.settings.experimental-features = [
