@@ -1,0 +1,18 @@
+{
+  "title": "Vaultwarden",
+  "type": "object",
+  "required": ["subdomain", "disk"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "vault"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    }
+  }
+}

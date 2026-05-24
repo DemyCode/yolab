@@ -1,0 +1,12 @@
+[app]
+id = "vaultwarden"
+name = "Vaultwarden"
+description = "Lightweight Bitwarden-compatible password manager"
+icon = "🔐"
+category = "productivity"
+subdomain = "vault"
+tunnel = true
+
+[[app.volumes]]
+name = "data"
+description = "Storage for vault data"

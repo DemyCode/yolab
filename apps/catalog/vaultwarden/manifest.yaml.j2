@@ -1,0 +1,161 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+    yolab.io/tunnel-url: "{{ subdomain_tunnel.url }}"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: yolab-{{ instance_name }}-data
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: "{{ disk.host }}"
+    path: "{{ disk.path }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: yolab-{{ instance_name }}-data
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vaultwarden-secrets
+  namespace: yolab-{{ instance_name }}
+type: Opaque
+stringData:
+  wg_config: |
+    [Interface]
+    PrivateKey = {{ subdomain_tunnel.wg_private_key }}
+    Table = off
+    PostUp = ip -6 address add {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true; ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
+    PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true
+
+    [Peer]
+    PublicKey = {{ subdomain_tunnel.wg_server_public_key }}
+    Endpoint = {{ subdomain_tunnel.wg_server_endpoint }}
+    AllowedIPs = ::/0
+    PersistentKeepalive = 25
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vaultwarden-caddy
+  namespace: yolab-{{ instance_name }}
+data:
+  Caddyfile: |
+    {{ subdomain_tunnel.domain }} {
+      reverse_proxy vaultwarden:80
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: wireguard
+        image: wg-sidecar:latest
+        imagePullPolicy: Never
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wg-secret
+          mountPath: /etc/wireguard
+      - name: caddy
+        image: caddy:2
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+      volumes:
+      - name: wg-secret
+        secret:
+          secretName: vaultwarden-secrets
+          items:
+          - key: wg_config
+            path: wg0.conf
+      - name: caddy-config
+        configMap:
+          name: vaultwarden-caddy
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vaultwarden
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vaultwarden
+  template:
+    metadata:
+      labels:
+        app: vaultwarden
+    spec:
+      containers:
+      - name: vaultwarden
+        image: vaultwarden/server:latest
+        env:
+        - name: DOMAIN
+          value: "https://{{ subdomain_tunnel.domain }}"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/vaultwarden
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vaultwarden
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: vaultwarden
+  ports:
+  - port: 80
+    targetPort: 80
