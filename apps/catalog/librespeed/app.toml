@@ -1,0 +1,12 @@
+[app]
+id = "librespeed"
+name = "LibreSpeed"
+description = "Self-hosted internet speed test"
+icon = "⚡"
+category = "utilities"
+subdomain = "speed"
+tunnel = true
+
+[[app.volumes]]
+name = "data"
+description = "Storage for config and results"

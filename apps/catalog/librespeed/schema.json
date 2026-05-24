@@ -1,0 +1,23 @@
+{
+  "title": "LibreSpeed",
+  "type": "object",
+  "required": ["subdomain", "disk"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "speed"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    },
+    "password": {
+      "type": "string",
+      "title": "Admin password",
+      "x-auto": "password"
+    }
+  }
+}
