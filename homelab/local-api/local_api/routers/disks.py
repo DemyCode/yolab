@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import subprocess
 from pathlib import Path
@@ -52,7 +53,7 @@ def _find_storage_partition(device: dict) -> dict | None:
         mountpoint = child.get("mountpoint")
         if fstype in MOUNTABLE_FSTYPES:
             if mountpoint is None or mountpoint.startswith("/mnt/"):
-                return {"name": child["name"], "mountpoint": mountpoint}
+                return {"name": child["name"], "mountpoint": mountpoint, "fstype": fstype}
         found = _find_storage_partition(child)
         if found:
             return found
@@ -254,19 +255,54 @@ async def enable_storage(body: EnableStorageRequest):
     partition = _find_storage_partition(disk)
 
     if partition:
+        fstype = partition.get("fstype", "")
+        is_ntfs = fstype in ("ntfs", "ntfs-3g")
         mount_path = partition["mountpoint"] or f"/mnt/{body.disk_name}"
         Path(mount_path).mkdir(parents=True, exist_ok=True)
         if not partition["mountpoint"]:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ["mount", f"/dev/{partition['name']}", mount_path],
-                capture_output=True,
-                text=True,
-            )
+            if is_ntfs:
+                # ntfsfix clears the Windows hibernation/dirty flag before mounting
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["ntfsfix", f"/dev/{partition['name']}"],
+                    capture_output=True,
+                )
+                mount_cmd = ["mount", "-t", "ntfs-3g", "-o", "remove_hiberfile", f"/dev/{partition['name']}", mount_path]
+            else:
+                mount_cmd = ["mount", f"/dev/{partition['name']}", mount_path]
+            result = await asyncio.to_thread(subprocess.run, mount_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise HTTPException(status_code=500, detail=result.stderr.strip())
+        elif is_ntfs:
+            # Disk already mounted — check if read-only and remount if needed
+            ro_check = subprocess.run(
+                ["findmnt", "-n", "-o", "OPTIONS", mount_path], capture_output=True, text=True
+            )
+            if "ro," in ro_check.stdout or ro_check.stdout.startswith("ro"):
+                await asyncio.to_thread(subprocess.run, ["umount", mount_path], capture_output=True)
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["ntfsfix", f"/dev/{partition['name']}"],
+                    capture_output=True,
+                )
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["mount", "-t", "ntfs-3g", "-o", "remove_hiberfile", f"/dev/{partition['name']}", mount_path],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    raise HTTPException(status_code=500, detail=f"Failed to remount NTFS read-write: {result.stderr.strip()}")
         # Create yolab/ subdir so app usage scanning only sees yolab data
-        Path(mount_path, "yolab").mkdir(exist_ok=True)
+        try:
+            Path(mount_path, "yolab").mkdir(exist_ok=True)
+        except OSError as e:
+            if e.errno == errno.EROFS:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Disk at {mount_path} is mounted read-only (Windows Fast Startup/hibernation?). "
+                           f"Click 'Export as NFS' again to remount it read-write.",
+                )
+            raise
     elif _is_system_disk(disk):
         mount_path = settings.system_storage_path
         Path(mount_path).mkdir(parents=True, exist_ok=True)

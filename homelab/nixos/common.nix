@@ -363,6 +363,7 @@ in
         wireguard-tools
         kubectl
         nfs-utils
+        ntfs3g
         dysk
         dust
         ctop

@@ -227,7 +227,14 @@ async def install_app(app_id: str, body: AppInstallRequest):
             yolab_path = str(Path(disk["path"]) / "yolab")
             template_disk = {**disk, "path": yolab_path}
             if disk.get("host") == settings.yolab_node_ipv6:
-                (Path(yolab_path) / body.instance_name).mkdir(parents=True, exist_ok=True)
+                try:
+                    (Path(yolab_path) / body.instance_name).mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    import errno as _errno
+                    if e.errno == _errno.EROFS:
+                        yield f"data: [ERROR] Disk at {disk['path']} is mounted read-only (Windows Fast Startup?). Go to the Disks page, click Unexport then Export as NFS to remount it.\n\n"
+                        return
+                    raise
 
         yield "data: Rendering manifest...\n\n"
         config_with_disk = {**body.config, "disk": template_disk} if disk else body.config
