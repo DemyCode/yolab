@@ -11,9 +11,6 @@ from local_api import kubectl
 from local_api.settings import settings
 
 router = APIRouter()
-
-SYSTEM_STORAGE_PATH = "/var/yolab-data"
-EXPORTS_FILE = Path("/etc/exports.d/yolab.exports")
 MOUNTABLE_FSTYPES = {
     "ext4",
     "ext3",
@@ -89,7 +86,7 @@ def _exported_paths() -> list[str]:
 
 
 def _export(path: str) -> None:
-    EXPORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    settings.exports_file.parent.mkdir(parents=True, exist_ok=True)
     entries = _read_exports_file()
     entries.add(path)
     _write_exports_file(entries)
@@ -104,18 +101,18 @@ def _unexport(path: str) -> None:
 
 
 def _read_exports_file() -> set[str]:
-    if not EXPORTS_FILE.exists():
+    if not settings.exports_file.exists():
         return set()
     return {
         line.split()[0]
-        for line in EXPORTS_FILE.read_text().splitlines()
+        for line in settings.exports_file.read_text().splitlines()
         if line.strip() and not line.startswith("#")
     }
 
 
 def _write_exports_file(paths: set[str]) -> None:
-    EXPORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    EXPORTS_FILE.write_text(
+    settings.exports_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.exports_file.write_text(
         "\n".join(
             f"{p} *(rw,sync,no_subtree_check,no_root_squash)"
             for p in sorted(paths)
@@ -148,7 +145,7 @@ async def disks_local():
         if partition:
             storage_path = partition["mountpoint"] or f"/mnt/{d['name']}"
         elif _is_system_disk(d):
-            storage_path = SYSTEM_STORAGE_PATH
+            storage_path = settings.system_storage_path
         else:
             storage_path = None
         out.append(
@@ -228,7 +225,7 @@ async def enable_storage(body: EnableStorageRequest):
             if result.returncode != 0:
                 raise HTTPException(status_code=500, detail=result.stderr.strip())
     elif _is_system_disk(disk):
-        mount_path = SYSTEM_STORAGE_PATH
+        mount_path = settings.system_storage_path
         Path(mount_path).mkdir(parents=True, exist_ok=True)
     else:
         raise HTTPException(

@@ -2,23 +2,22 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
-router = APIRouter()
+from local_api.settings import settings
 
-REBUILD_LOG = Path("/var/log/yolab-rebuild.log")
-REBUILD_PID = Path("/run/yolab-rebuild.pid")
+router = APIRouter()
 
 
 @router.get("/api/rebuild-log")
 async def rebuild_log():
     running = False
-    if REBUILD_PID.exists():
+    if settings.rebuild_pid.exists():
         try:
-            pid = int(REBUILD_PID.read_text().strip())
+            pid = int(settings.rebuild_pid.read_text().strip())
             running = Path(f"/proc/{pid}").exists()
         except Exception:
             pass
     try:
-        log = REBUILD_LOG.read_text(errors="replace").splitlines() if REBUILD_LOG.exists() else []
+        log = settings.rebuild_log.read_text(errors="replace").splitlines() if settings.rebuild_log.exists() else []
     except Exception:
         log = []
     return {"running": running, "log": log}

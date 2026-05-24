@@ -3,7 +3,6 @@ import subprocess
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from local_api.routers.rebuild import REBUILD_LOG, REBUILD_PID
 from local_api.settings import settings
 
 router = APIRouter()
@@ -38,8 +37,8 @@ async def update():
         yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
         yield "data: [INFO] nixos-rebuild launched — service will restart shortly\n\n"
 
-        REBUILD_LOG.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(REBUILD_LOG, "w")
+        settings.rebuild_log.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(settings.rebuild_log, "w")
         proc = subprocess.Popen(
             [
                 "nixos-rebuild",
@@ -55,6 +54,6 @@ async def update():
             start_new_session=True,
         )
         log_file.close()
-        REBUILD_PID.write_text(str(proc.pid))
+        settings.rebuild_pid.write_text(str(proc.pid))
 
     return StreamingResponse(stream(), media_type="text/event-stream")

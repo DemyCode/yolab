@@ -110,6 +110,21 @@ async def logout():
     return response
 
 
+def _is_cluster_internal(scope: Scope) -> bool:
+    """True if the request originates from another cluster node.
+
+    Browser requests arrive via Caddy's reverse proxy and appear as ::1.
+    Inter-node calls (e.g. _gather_from_nodes) go directly to port 3001
+    from the caller's WireGuard private IP (fd00:cafe::/112), which is
+    only reachable over the authenticated WireGuard tunnel.
+    """
+    client = scope.get("client")
+    if not client:
+        return False
+    ip = client[0].lower()
+    return ip.startswith("fd") or ip.startswith("fc")
+
+
 class AuthMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -123,6 +138,12 @@ class AuthMiddleware:
 
         # Login endpoint is always public
         if path == "/api/login":
+            await self.app(scope, receive, send)
+            return
+
+        # Inter-node requests come from WireGuard private IPs — already
+        # authenticated at the network level, no cookie needed
+        if _is_cluster_internal(scope):
             await self.app(scope, receive, send)
             return
 

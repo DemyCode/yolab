@@ -1,5 +1,4 @@
 import subprocess
-from pathlib import Path
 
 from fastapi import APIRouter
 
@@ -7,12 +6,9 @@ from local_api.settings import settings
 
 router = APIRouter()
 
-BUILT_DIR = Path("/var/lib/yolab")
-
-
 def _read_built(name: str) -> str:
     try:
-        return (BUILT_DIR / name).read_text().strip()
+        return (settings.built_dir / name).read_text().strip()
     except Exception:
         return ""
 
