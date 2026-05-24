@@ -88,6 +88,8 @@ spec:
         env:
         - name: EULA
           value: "TRUE"
+        - name: ONLINE_MODE
+          value: "{{ 'TRUE' if online_mode else 'FALSE' }}"
         - name: DIFFICULTY
           value: "{{ difficulty | default('normal') }}"
         - name: ENABLE_WHITELIST
