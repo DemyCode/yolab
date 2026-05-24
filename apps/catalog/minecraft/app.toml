@@ -1,0 +1,12 @@
+[app]
+id = "minecraft"
+name = "Minecraft"
+description = "Minecraft Java Edition server"
+icon = "⛏️"
+category = "gaming"
+subdomain = "mc"
+tunnel = true
+
+[[app.volumes]]
+name = "data"
+description = "Storage for world, mods and configuration"

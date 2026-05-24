@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+    yolab.io/tunnel-url: "{{ subdomain_tunnel.url }}"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: yolab-{{ instance_name }}-data
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: "{{ disk.host }}"
+    path: "{{ disk.path }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: yolab-{{ instance_name }}-data
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minecraft-secrets
+  namespace: yolab-{{ instance_name }}
+type: Opaque
+stringData:
+  wg_config: |
+    [Interface]
+    PrivateKey = {{ subdomain_tunnel.wg_private_key }}
+    Table = off
+    PostUp = ip -6 address add {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true; ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
+    PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true
+
+    [Peer]
+    PublicKey = {{ subdomain_tunnel.wg_server_public_key }}
+    Endpoint = {{ subdomain_tunnel.wg_server_endpoint }}
+    AllowedIPs = ::/0
+    PersistentKeepalive = 25
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: wireguard
+        image: wg-sidecar:latest
+        imagePullPolicy: Never
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wg-secret
+          mountPath: /etc/wireguard
+      - name: minecraft
+        image: itzg/minecraft-server:latest
+        stdin: true
+        tty: true
+        env:
+        - name: EULA
+          value: "TRUE"
+        - name: DIFFICULTY
+          value: "{{ difficulty | default('normal') }}"
+        - name: ENABLE_WHITELIST
+          value: "{{ 'true' if whitelist else 'false' }}"
+        {% if ops %}
+        - name: OPS
+          value: "{{ ops }}"
+        {% endif %}
+        {% if whitelist %}
+        - name: WHITELIST
+          value: "{{ whitelist }}"
+        - name: EXISTING_WHITELIST_FILE
+          value: "SYNCHRONIZE"
+        {% endif %}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/minecraft
+      volumes:
+      - name: wg-secret
+        secret:
+          secretName: minecraft-secrets
+          items:
+          - key: wg_config
+            path: wg0.conf
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data

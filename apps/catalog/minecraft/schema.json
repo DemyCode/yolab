@@ -1,0 +1,32 @@
+{
+  "title": "Minecraft",
+  "type": "object",
+  "required": ["subdomain", "disk"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "mc"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    },
+    "difficulty": {
+      "type": "string",
+      "title": "Difficulty",
+      "enum": ["peaceful", "easy", "normal", "hard"],
+      "default": "normal"
+    },
+    "ops": {
+      "type": "string",
+      "title": "Operators (comma-separated usernames)"
+    },
+    "whitelist": {
+      "type": "string",
+      "title": "Whitelist (comma-separated usernames)"
+    }
+  }
+}
