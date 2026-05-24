@@ -1,22 +1,24 @@
-import asyncio
-from contextlib import asynccontextmanager
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from local_api.auth import AuthMiddleware
 from local_api.routers import apps, disks, nodes, rebuild, status, terminal, update
+from local_api import auth
 from local_api.settings import settings
 
 
 app = FastAPI()
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
+app.include_router(auth.router)
 app.include_router(status.router)
 app.include_router(update.router)
 app.include_router(rebuild.router)
