@@ -82,6 +82,8 @@ in
     ];
 
     environment.etc."k3s-resolv.conf".text = ''
+      nameserver 1.1.1.1
+      nameserver 8.8.8.8
       nameserver 2606:4700:4700::1111
       nameserver 2001:4860:4860::8888
     '';
@@ -239,9 +241,9 @@ in
         "--disable=traefik"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
-        "--cluster-cidr=fd00:42::/56"
-        "--service-cidr=fd00:43::/112"
-        "--cluster-dns=fd00:43::a"
+        "--cluster-cidr=10.42.0.0/16,fd00:42::/56"
+        "--service-cidr=10.43.0.0/16,fd00:43::/112"
+        "--cluster-dns=10.43.0.10"
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
         "--tls-san=${s.tunnelCfg.sub_ipv6_private}"
         "--node-ip=${s.tunnelCfg.sub_ipv6_private}"
