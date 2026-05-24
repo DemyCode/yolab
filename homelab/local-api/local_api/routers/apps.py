@@ -109,8 +109,8 @@ def _delete_tunnels(service_ids: list[int]) -> None:
                 method="DELETE",
             )
             urllib.request.urlopen(req, timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[warn] failed to delete tunnel service {sid}: {e}")
 
 
 class AppInstallRequest(BaseModel):
@@ -182,7 +182,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
       try:
         tunnel_cfg = _tunnel_config()
         tunnel_vars = {}
-        tunnel_urls = []
+
         registered_service_ids = []
 
         for field in tunnel_fields:
@@ -218,7 +218,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
                 "wg_server_public_key": tunnel["wg_server_public_key"],
                 "wg_server_endpoint": tunnel["wg_server_endpoint"],
             }
-            tunnel_urls.append(url)
+
             yield f"data: Tunnel registered — {url}\n\n"
 
         disk = body.config.get("disk")

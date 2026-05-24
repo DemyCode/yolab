@@ -55,6 +55,7 @@ export function DisksPage() {
   }
 
   async function unexportDisk(disk: Disk) {
+    if (!disk.storage_path) return;
     const key = `${disk.host}:${disk.name}`;
     setBusy(key);
     setErrors(e => ({ ...e, [key]: "" }));
