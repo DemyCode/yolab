@@ -316,18 +316,19 @@ async def uninstall_app(instance_name: str):
         if raw:
             service_ids = json.loads(raw)
 
-    await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true"],
-        capture_output=True, text=True,
-    )
     result = await asyncio.to_thread(
         subprocess.run,
-        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true"],
+        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
+
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"],
+        capture_output=True, text=True,
+    )
 
     await asyncio.to_thread(_delete_tunnels, service_ids)
     return {"ok": True}
