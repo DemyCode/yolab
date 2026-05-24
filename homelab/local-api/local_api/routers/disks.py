@@ -74,7 +74,8 @@ def _is_system_disk(device: dict) -> bool:
 
 
 def _disk_usage(path: str) -> dict:
-    """Return filesystem stats and per-app subdirectory usage for a storage path."""
+    """Return filesystem stats and per-app subdirectory usage for a storage path.
+    App usage is read from the yolab/ subfolder only; everything else counts as 'other'."""
     out: dict = {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
     p = Path(path)
     if not p.exists():
@@ -89,19 +90,21 @@ def _disk_usage(path: str) -> dict:
             out["fs_used_bytes"] = int(parts[1])
     except Exception:
         pass
-    try:
-        subdirs = [d for d in p.iterdir() if d.is_dir()]
-        if subdirs:
-            du = subprocess.check_output(
-                ["du", "-sb"] + [str(d) for d in subdirs], text=True
-            )
-            out["app_usage"] = [
-                {"name": Path(line.split("\t", 1)[1]).name, "bytes": int(line.split("\t", 1)[0])}
-                for line in du.splitlines()
-                if "\t" in line
-            ]
-    except Exception:
-        pass
+    yolab_dir = p / "yolab"
+    if yolab_dir.is_dir():
+        try:
+            subdirs = [d for d in yolab_dir.iterdir() if d.is_dir()]
+            if subdirs:
+                du = subprocess.check_output(
+                    ["du", "-sb"] + [str(d) for d in subdirs], text=True
+                )
+                out["app_usage"] = [
+                    {"name": Path(line.split("\t", 1)[1]).name, "bytes": int(line.split("\t", 1)[0])}
+                    for line in du.splitlines()
+                    if "\t" in line
+                ]
+        except Exception:
+            pass
     return out
 
 
