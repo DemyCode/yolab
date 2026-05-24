@@ -23,6 +23,7 @@ LABEL_MANAGED = "yolab.io/managed"
 ANN_APP_ID = "yolab.io/app-id"
 ANN_TUNNEL_URL = "yolab.io/tunnel-url"
 ANN_OUTPUTS = "yolab.io/outputs"
+ANN_SERVICE_IDS = "yolab.io/service-ids"
 
 
 def _tunnel_config() -> dict:
@@ -81,7 +82,7 @@ def _list_installed() -> list[dict]:
     return apps
 
 
-def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str, outputs: list[dict]) -> None:
+def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str, outputs: list[dict], service_ids: list[int]) -> None:
     ns = f"yolab-{instance_name}"
     subprocess.run(
         ["kubectl", "label", "namespace", ns, f"{LABEL_MANAGED}=true", "--overwrite=true"],
@@ -90,9 +91,26 @@ def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str, output
     subprocess.run(
         ["kubectl", "annotate", "namespace", ns,
          f"{ANN_APP_ID}={app_id}", f"{ANN_TUNNEL_URL}={tunnel_url}",
-         f"{ANN_OUTPUTS}={json.dumps(outputs)}", "--overwrite=true"],
+         f"{ANN_OUTPUTS}={json.dumps(outputs)}",
+         f"{ANN_SERVICE_IDS}={json.dumps(service_ids)}", "--overwrite=true"],
         capture_output=True,
     )
+
+
+def _delete_tunnels(service_ids: list[int]) -> None:
+    if not service_ids:
+        return
+    tunnel_cfg = tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
+    for sid in service_ids:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{tunnel_cfg['platform_api_url']}/services/{sid}?user_token={tunnel_cfg['account_token']}",
+                method="DELETE",
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except Exception:
+            pass
 
 
 class AppInstallRequest(BaseModel):
@@ -165,6 +183,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
         tunnel_cfg = _tunnel_config()
         tunnel_vars = {}
         tunnel_urls = []
+        registered_service_ids = []
 
         for field in tunnel_fields:
             subdomain = body.config.get(field, field)
@@ -183,11 +202,13 @@ async def install_app(app_id: str, body: AppInstallRequest):
                 )
                 if resp.status_code != 200:
                     yield f"data: [ERROR] Tunnel registration failed: {resp.text}\n\n"
+                    await asyncio.to_thread(_delete_tunnels, registered_service_ids)
                     return
                 tunnel = resp.json()
 
             url = tunnel["dns_url"]
             domain = url.removeprefix("https://").removeprefix("http://")
+            registered_service_ids.append(tunnel["service_id"])
             tunnel_vars[f"{field}_tunnel"] = {
                 "url": url,
                 "domain": domain,
@@ -240,7 +261,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
             for t in tunnel_vars.values()
         ]
         primary_url = outputs[0]["url"] if outputs else ""
-        await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, primary_url, outputs)
+        await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, primary_url, outputs, registered_service_ids)
 
         yield f"data: [DONE] {app_id} installed\n\n"
         for o in outputs:
@@ -281,18 +302,34 @@ async def force_uninstall_app(instance_name: str):
 
 @router.delete("/api/apps/{instance_name}")
 async def uninstall_app(instance_name: str):
+    ns = f"yolab-{instance_name}"
+    # Read service IDs before deleting the namespace
+    ns_info = await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "get", "namespace", ns, "-o", "json", "--ignore-not-found=true"],
+        capture_output=True, text=True,
+    )
+    service_ids = []
+    if ns_info.returncode == 0 and ns_info.stdout.strip():
+        ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
+        raw = ann.get(ANN_SERVICE_IDS, "")
+        if raw:
+            service_ids = json.loads(raw)
+
     await asyncio.to_thread(
         subprocess.run,
-        ["kubectl", "delete", "pv", f"yolab-{instance_name}-data", "--ignore-not-found=true"],
+        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true"],
         capture_output=True, text=True,
     )
     result = await asyncio.to_thread(
         subprocess.run,
-        ["kubectl", "delete", "namespace", f"yolab-{instance_name}", "--ignore-not-found=true"],
+        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
+
+    await asyncio.to_thread(_delete_tunnels, service_ids)
     return {"ok": True}
 
 
