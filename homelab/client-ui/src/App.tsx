@@ -45,7 +45,7 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
         fontFamily: "monospace",
       }}>
         <h2 style={{ margin: 0, fontSize: "1.2rem" }}>YoLab</h2>
-        <p style={{ margin: 0, color: "#666", fontSize: "0.85rem" }}>Enter your password to continue.</p>
+        <p style={{ margin: 0, color: "#666", fontSize: "0.85rem" }}>Enter your homelab password to continue.</p>
         <input
           type="password"
           value={password}

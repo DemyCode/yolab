@@ -1,3 +1,5 @@
+import ctypes
+import ctypes.util
 import secrets
 import tomllib
 from pathlib import Path
@@ -15,12 +17,26 @@ router = APIRouter()
 SESSIONS: set[str] = set()
 
 
-def _get_password() -> str:
+def _get_hash() -> str:
+    """Return the homelab_password_hash from config.toml, or '' if unset."""
     try:
         cfg = tomllib.loads(Path(settings.yolab_config).read_text())
-        return cfg["homelab"].get("web_password", "")
+        return cfg["homelab"].get("homelab_password_hash", "")
     except Exception:
         return ""
+
+
+def _verify(password: str, hashed: str) -> bool:
+    """Verify a plain-text password against a Linux shadow hash via libcrypt."""
+    if not hashed:
+        return False
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library("crypt") or "libcrypt.so.2")
+        lib.crypt.restype = ctypes.c_char_p
+        result = lib.crypt(password.encode(), hashed.encode())
+        return result is not None and result.decode() == hashed
+    except Exception:
+        return False
 
 
 class LoginRequest(BaseModel):
@@ -29,8 +45,8 @@ class LoginRequest(BaseModel):
 
 @router.post("/api/login")
 async def login(body: LoginRequest):
-    password = _get_password()
-    if password and body.password != password:
+    hashed = _get_hash()
+    if hashed and not _verify(body.password, hashed):
         return JSONResponse(status_code=401, content={"detail": "Wrong password"})
     token = secrets.token_hex(32)
     SESSIONS.add(token)
@@ -70,8 +86,8 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # If no password is configured, auth is disabled
-        if not _get_password():
+        # If no password hash is configured, auth is disabled
+        if not _get_hash():
             await self.app(scope, receive, send)
             return
 
