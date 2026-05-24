@@ -73,9 +73,10 @@ def _is_system_disk(device: dict) -> bool:
     return False
 
 
-def _disk_usage(path: str) -> dict:
+def _disk_usage(path: str, scan_root: bool = False) -> dict:
     """Return filesystem stats and per-app subdirectory usage for a storage path.
-    App usage is read from the yolab/ subfolder only; everything else counts as 'other'."""
+    By default scans the yolab/ subfolder for app dirs (external disks with mixed content).
+    scan_root=True scans the path itself directly (system disk, already yolab-dedicated)."""
     out: dict = {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
     p = Path(path)
     if not p.exists():
@@ -90,10 +91,10 @@ def _disk_usage(path: str) -> dict:
             out["fs_used_bytes"] = int(parts[1])
     except Exception:
         pass
-    yolab_dir = p / "yolab"
-    if yolab_dir.is_dir():
+    scan_dir = p if scan_root else p / "yolab"
+    if scan_dir.is_dir():
         try:
-            subdirs = [d for d in yolab_dir.iterdir() if d.is_dir()]
+            subdirs = [d for d in scan_dir.iterdir() if d.is_dir()]
             if subdirs:
                 du = subprocess.check_output(
                     ["du", "-sb"] + [str(d) for d in subdirs], text=True
@@ -177,13 +178,14 @@ async def disks_local():
         if d.get("type") != "disk":
             continue
         partition = _find_storage_partition(d)
+        is_system = _is_system_disk(d)
         if partition:
             storage_path = partition["mountpoint"] or f"/mnt/{d['name']}"
-        elif _is_system_disk(d):
+        elif is_system:
             storage_path = settings.system_storage_path
         else:
             storage_path = None
-        usage = _disk_usage(storage_path) if storage_path else {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
+        usage = _disk_usage(storage_path, scan_root=is_system) if storage_path else {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
         out.append(
             {
                 "name": d["name"],
@@ -263,6 +265,8 @@ async def enable_storage(body: EnableStorageRequest):
             )
             if result.returncode != 0:
                 raise HTTPException(status_code=500, detail=result.stderr.strip())
+        # Create yolab/ subdir so app usage scanning only sees yolab data
+        Path(mount_path, "yolab").mkdir(exist_ok=True)
     elif _is_system_disk(disk):
         mount_path = settings.system_storage_path
         Path(mount_path).mkdir(parents=True, exist_ok=True)
