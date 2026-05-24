@@ -232,15 +232,38 @@ in
         "--cluster-dns=10.43.0.10"
         "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
         "--tls-san=${s.tunnelCfg.sub_ipv6_private}"
-        "--node-ip=${s.tunnelCfg.sub_ipv6_private}"
         "--resolv-conf=/etc/k3s-resolv.conf"
       ];
+    };
+
+    # Detect the node's outbound IPv4 at boot and write it to K3s's config file
+    # as node-ip alongside the private IPv6, enabling dual-stack pods.
+    # Running before K3s and after WireGuard ensures the IPv6 address is up.
+    systemd.services.k3s-node-ip = {
+      description = "Write K3s dual-stack node-ip config";
+      after = [ "wireguard-wg0.service" "network-online.target" ];
+      wants = [ "network-online.target" ];
+      before = [ "k3s.service" ];
+      wantedBy = [ "k3s.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "k3s-node-ip" ''
+          IPV4=$(${pkgs.iproute2}/bin/ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || true)
+          mkdir -p /etc/rancher/k3s
+          if [ -n "$IPV4" ]; then
+            echo "node-ip: $IPV4,${s.tunnelCfg.sub_ipv6_private}" > /etc/rancher/k3s/config.yaml
+          else
+            echo "node-ip: ${s.tunnelCfg.sub_ipv6_private}" > /etc/rancher/k3s/config.yaml
+          fi
+        '';
+      };
     };
 
     # K3s must start after WireGuard so the node-ip is reachable before K3s
     # tries to register itself with the cluster.
     systemd.services.k3s = {
-      after = [ "wireguard-wg0.service" ];
+      after = [ "wireguard-wg0.service" "k3s-node-ip.service" ];
       wants = [ "wireguard-wg0.service" ];
     };
 
