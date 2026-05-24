@@ -13,11 +13,55 @@ interface CatalogApp {
   uischema: object;
 }
 
+interface TunnelOutput {
+  url: string;
+  ipv6: string;
+}
+
 interface InstalledApp {
   app_id: string;
   instance_name: string;
   tunnel_url: string;
+  outputs: TunnelOutput[];
   status: "starting" | "running" | "uninstalling";
+}
+
+function copyText(text: string) {
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+
+function OutputList({ outputs, linkColor = "#1a1a1a" }: { outputs: TunnelOutput[]; linkColor?: string }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {outputs.map((o, i) => (
+        <div key={i} style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {o.url && (
+            <a
+              href={o.url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontSize: "0.82rem", color: linkColor, fontFamily: "monospace" }}
+            >
+              {o.url}
+            </a>
+          )}
+          {o.ipv6 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: "0.72rem", color: "#888", fontFamily: "monospace" }}>{o.ipv6}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); copyText(o.ipv6); }}
+                style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.65rem", color: "#aaa" }}
+                title="Copy IPv6"
+              >
+                copy
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function TunnelWidget({ value, onChange, registry }: WidgetProps) {
@@ -166,8 +210,8 @@ function AppDetailModal({ app, onClose }: { app: InstalledApp; onClose: () => vo
       }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
           <div>
-            <div style={{ fontWeight: "bold", fontSize: "1.1rem" }}>{app.app_id}</div>
-            <a href={app.tunnel_url} target="_blank" rel="noreferrer" style={{ fontSize: "0.8rem", color: "#7c3aed", fontFamily: "monospace" }}>{app.tunnel_url}</a>
+            <div style={{ fontWeight: "bold", fontSize: "1.1rem", marginBottom: 4 }}>{app.app_id}</div>
+            <OutputList outputs={app.outputs} linkColor="#7c3aed" />
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2rem" }}>✕</button>
         </div>
@@ -296,15 +340,7 @@ function InstalledCard({ app, onClick, onUninstall }: { app: InstalledApp; onCli
         <StatusBadge status={app.status} />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        <a
-          href={app.tunnel_url}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          style={{ fontSize: "0.82rem", color: "#1a1a1a", fontFamily: "monospace" }}
-        >
-          {app.tunnel_url}
-        </a>
+        <OutputList outputs={app.outputs} />
         <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
           <div style={{ display: "flex", gap: 6 }}>
             {app.status === "uninstalling" && (

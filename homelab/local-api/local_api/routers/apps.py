@@ -22,6 +22,7 @@ CATALOG_DIR = Path(settings.yolab_repo_path) / "apps/catalog"
 LABEL_MANAGED = "yolab.io/managed"
 ANN_APP_ID = "yolab.io/app-id"
 ANN_TUNNEL_URL = "yolab.io/tunnel-url"
+ANN_OUTPUTS = "yolab.io/outputs"
 
 
 def _tunnel_config() -> dict:
@@ -64,16 +65,23 @@ def _list_installed() -> list[dict]:
                 status = "running" if all_ready else "starting"
             else:
                 status = "starting"
+        tunnel_url = ann.get(ANN_TUNNEL_URL, "")
+        outputs_raw = ann.get(ANN_OUTPUTS, "")
+        if outputs_raw:
+            outputs = json.loads(outputs_raw)
+        else:
+            outputs = [{"url": tunnel_url, "ipv6": ""}] if tunnel_url else []
         apps.append({
             "app_id": ann.get(ANN_APP_ID, ""),
             "instance_name": name,
-            "tunnel_url": ann.get(ANN_TUNNEL_URL, ""),
+            "tunnel_url": tunnel_url,
+            "outputs": outputs,
             "status": status,
         })
     return apps
 
 
-def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str) -> None:
+def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str, outputs: list[dict]) -> None:
     ns = f"yolab-{instance_name}"
     subprocess.run(
         ["kubectl", "label", "namespace", ns, f"{LABEL_MANAGED}=true", "--overwrite=true"],
@@ -81,7 +89,8 @@ def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str) -> Non
     )
     subprocess.run(
         ["kubectl", "annotate", "namespace", ns,
-         f"{ANN_APP_ID}={app_id}", f"{ANN_TUNNEL_URL}={tunnel_url}", "--overwrite=true"],
+         f"{ANN_APP_ID}={app_id}", f"{ANN_TUNNEL_URL}={tunnel_url}",
+         f"{ANN_OUTPUTS}={json.dumps(outputs)}", "--overwrite=true"],
         capture_output=True,
     )
 
@@ -226,10 +235,17 @@ async def install_app(app_id: str, body: AppInstallRequest):
             yield f"data: [ERROR] kubectl apply failed (exit {proc.returncode})\n\n"
             return
 
-        tunnel_url = tunnel_urls[0] if tunnel_urls else ""
-        await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, tunnel_url)
+        outputs = [
+            {"url": t["url"], "ipv6": t["sub_ipv6"]}
+            for t in tunnel_vars.values()
+        ]
+        primary_url = outputs[0]["url"] if outputs else ""
+        await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, primary_url, outputs)
 
-        yield f"data: [DONE] {app_id} is live at {tunnel_url or 'cluster'}\n\n"
+        yield f"data: [DONE] {app_id} installed\n\n"
+        for o in outputs:
+            yield f"data:   URL:  {o['url']}\n\n"
+            yield f"data:   IPv6: {o['ipv6']}\n\n"
 
       except Exception as e:
         yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
