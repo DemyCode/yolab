@@ -139,6 +139,8 @@ spec:
         env:
         - name: DOMAIN
           value: "https://{{ subdomain_tunnel.domain }}"
+        - name: ROCKET_ADDRESS
+          value: "::"
         volumeMounts:
         - name: data
           mountPath: /data
