@@ -26,16 +26,56 @@ def _get_hash() -> str:
         return ""
 
 
+def _load_libcrypt() -> ctypes.CDLL:
+    """Find libcrypt on any Linux distro including NixOS."""
+    import glob
+
+    # Python's own _crypt extension (works in Python ≤ 3.12, uses same libcrypt)
+    try:
+        import crypt as _crypt  # noqa: PLC0415
+        # Wrap it so callers get the same interface as ctypes
+        class _PyCrypt:
+            def crypt(self, password: bytes, setting: bytes) -> bytes | None:
+                result = _crypt.crypt(password.decode(), setting.decode())
+                return result.encode() if result else None
+        return _PyCrypt()  # type: ignore[return-value]
+    except ImportError:
+        pass
+
+    # NixOS: libs are in the current-system profile, not in standard ld paths
+    candidates = sorted(glob.glob("/run/current-system/sw/lib/libcrypt.so*"))
+    for path in candidates:
+        try:
+            lib = ctypes.CDLL(path)
+            lib.crypt.restype = ctypes.c_char_p
+            return lib
+        except OSError:
+            continue
+
+    # Standard fallback
+    for name in [ctypes.util.find_library("crypt"), "libcrypt.so.2", "libcrypt.so.1"]:
+        if not name:
+            continue
+        try:
+            lib = ctypes.CDLL(name)
+            lib.crypt.restype = ctypes.c_char_p
+            return lib
+        except OSError:
+            continue
+
+    raise OSError("libcrypt not found — cannot verify password hash")
+
+
 def _verify(password: str, hashed: str) -> bool:
-    """Verify a plain-text password against a Linux shadow hash via libcrypt."""
+    """Verify a plain-text password against a Linux shadow hash."""
     if not hashed:
         return False
     try:
-        lib = ctypes.CDLL(ctypes.util.find_library("crypt") or "libcrypt.so.2")
-        lib.crypt.restype = ctypes.c_char_p
+        lib = _load_libcrypt()
         result = lib.crypt(password.encode(), hashed.encode())
         return result is not None and result.decode() == hashed
-    except Exception:
+    except Exception as e:
+        print(f"[auth] password verification error: {e}")
         return False
 
 
