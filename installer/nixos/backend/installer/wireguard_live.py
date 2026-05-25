@@ -14,19 +14,28 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
 
     private_key, public_key = generate_wg_keypair()
 
+    # Step 1: create the WireGuard tunnel (allocates IPv6, no DNS)
     resp = httpx.post(
-        f"{PLATFORM_API}/services",
-        json={"account_token": account_token, "service_name": service_name, "wg_public_key": public_key},
+        f"{PLATFORM_API}/tunnels",
+        json={"account_token": account_token, "wg_public_key": public_key},
         timeout=15,
     )
     resp.raise_for_status()
-    info = resp.json()
+    tunnel_data = resp.json()
 
-    sub_ipv6 = info["sub_ipv6"]
-    dns_url = info["dns_url"]
-    wg_server_endpoint = info["wg_server_endpoint"]
-    wg_server_public_key = info["wg_server_public_key"]
-    service_id = info["service_id"]
+    tunnel_id = tunnel_data["tunnel_id"]
+    sub_ipv6 = tunnel_data["sub_ipv6"]
+    wg_server_endpoint = tunnel_data["wg_server_endpoint"]
+    wg_server_public_key = tunnel_data["wg_server_public_key"]
+
+    # Step 2: attach an AAAA record so the management domain resolves
+    record_resp = httpx.post(
+        f"{PLATFORM_API}/tunnels/{tunnel_id}/records",
+        json={"account_token": account_token, "record_type": "AAAA", "name": service_name, "value": sub_ipv6},
+        timeout=15,
+    )
+    record_resp.raise_for_status()
+    dns_url = f"https://{record_resp.json()['fqdn']}"
 
     node_resp = httpx.post(
         f"{PLATFORM_API}/nodes",
@@ -87,8 +96,7 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
         "enabled": True,
         "platform_api_url": PLATFORM_API,
         "account_token": account_token,
-        "service_name": service_name,
-        "service_id": service_id,
+        "tunnel_id": tunnel_id,
         "node_id": node_id,
         "wg_private_key": private_key,
         "wg_public_key": public_key,

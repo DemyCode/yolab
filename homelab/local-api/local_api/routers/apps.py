@@ -116,20 +116,20 @@ def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str, output
     )
 
 
-def _delete_tunnels(service_ids: list[int]) -> None:
-    if not service_ids:
+def _delete_tunnels(tunnel_ids: list[int]) -> None:
+    if not tunnel_ids:
         return
     tunnel_cfg = tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
-    for sid in service_ids:
+    for tid in tunnel_ids:
         try:
             import urllib.request
             req = urllib.request.Request(
-                f"{tunnel_cfg['platform_api_url']}/services/{sid}?user_token={tunnel_cfg['account_token']}",
+                f"{tunnel_cfg['platform_api_url']}/tunnels/{tid}?account_token={tunnel_cfg['account_token']}",
                 method="DELETE",
             )
             urllib.request.urlopen(req, timeout=10)
         except Exception as e:
-            print(f"[warn] failed to delete tunnel service {sid}: {e}")
+            print(f"[warn] failed to delete tunnel {tid}: {e}")
 
 
 class AppInstallRequest(BaseModel):
@@ -211,31 +211,48 @@ async def install_app(app_id: str, body: AppInstallRequest):
 
             yield f"data: Registering tunnel '{subdomain}'...\n\n"
             async with httpx.AsyncClient(timeout=15) as client:
+                # Step 1: create the WireGuard tunnel
                 resp = await client.post(
-                    f"{tunnel_cfg['platform_api_url']}/services",
+                    f"{tunnel_cfg['platform_api_url']}/tunnels",
                     json={
                         "account_token": tunnel_cfg["account_token"],
-                        "service_name": subdomain,
                         "wg_public_key": wg_public_key,
                     },
                 )
                 if resp.status_code != 200:
-                    yield f"data: [ERROR] Tunnel registration failed: {resp.text}\n\n"
+                    yield f"data: [ERROR] Tunnel creation failed: {resp.text}\n\n"
                     await asyncio.to_thread(_delete_tunnels, registered_service_ids)
                     return
-                tunnel = resp.json()
+                tunnel_data = resp.json()
+                tunnel_id = tunnel_data["tunnel_id"]
+                sub_ipv6 = tunnel_data["sub_ipv6"]
 
-            url = tunnel["dns_url"]
-            domain = url.removeprefix("https://").removeprefix("http://")
-            registered_service_ids.append(tunnel["service_id"])
+                # Step 2: attach AAAA record for the subdomain
+                record_resp = await client.post(
+                    f"{tunnel_cfg['platform_api_url']}/tunnels/{tunnel_id}/records",
+                    json={
+                        "account_token": tunnel_cfg["account_token"],
+                        "record_type": "AAAA",
+                        "name": subdomain,
+                        "value": sub_ipv6,
+                    },
+                )
+                if record_resp.status_code != 200:
+                    yield f"data: [ERROR] DNS record creation failed: {record_resp.text}\n\n"
+                    await asyncio.to_thread(_delete_tunnels, registered_service_ids + [tunnel_id])
+                    return
+                fqdn = record_resp.json()["fqdn"]
+
+            url = f"https://{fqdn}"
+            registered_service_ids.append(tunnel_id)
             tunnel_vars[f"{field}_tunnel"] = {
                 "url": url,
-                "domain": domain,
-                "service_id": tunnel["service_id"],
-                "sub_ipv6": tunnel["sub_ipv6"],
+                "domain": fqdn,
+                "tunnel_id": tunnel_id,
+                "sub_ipv6": sub_ipv6,
                 "wg_private_key": wg_private_key,
-                "wg_server_public_key": tunnel["wg_server_public_key"],
-                "wg_server_endpoint": tunnel["wg_server_endpoint"],
+                "wg_server_public_key": tunnel_data["wg_server_public_key"],
+                "wg_server_endpoint": tunnel_data["wg_server_endpoint"],
             }
 
             yield f"data: Tunnel registered — {url}\n\n"
@@ -372,7 +389,7 @@ async def scan_outputs(instance_name: str):
         key = spec["key"]
         if key in found:
             outputs.append({"key": key, "label": spec.get("label", key), "value": found[key], "type": spec.get("type", "text")})
-            if key == "service_id":
+            if key == "tunnel_id":
                 try:
                     service_ids.append(int(found[key]))
                 except ValueError:

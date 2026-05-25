@@ -115,35 +115,52 @@ def main():
             import json
             import urllib.request
 
-            payload = json.dumps({
-                "account_token": account_token,
-                "service_name": service_name,
-                "service_type": "homelab",
-                "client_port": 80,
-                "wg_public_key": wg_public_key,
-            }).encode()
-
-            req = urllib.request.Request(
-                f"{platform_api_url}/services",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read())
-                print(f"Tunnel registered — IPv6: {result['sub_ipv6']}")
+                # Step 1: create tunnel (WireGuard peer + IPv6, no DNS)
+                payload1 = json.dumps({
+                    "account_token": account_token,
+                    "wg_public_key": wg_public_key,
+                }).encode()
+                req1 = urllib.request.Request(
+                    f"{platform_api_url}/tunnels",
+                    data=payload1,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req1, timeout=10) as resp1:
+                    tunnel_data = json.loads(resp1.read())
+
+                tunnel_id = tunnel_data["tunnel_id"]
+                sub_ipv6 = tunnel_data["sub_ipv6"]
+
+                # Step 2: attach AAAA record for the management domain
+                payload2 = json.dumps({
+                    "account_token": account_token,
+                    "record_type": "AAAA",
+                    "name": service_name,
+                    "value": sub_ipv6,
+                }).encode()
+                req2 = urllib.request.Request(
+                    f"{platform_api_url}/tunnels/{tunnel_id}/records",
+                    data=payload2,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req2, timeout=10) as resp2:
+                    record_data = json.loads(resp2.read())
+
+                print(f"Tunnel registered — IPv6: {sub_ipv6}")
                 tunnel = {
                     "enabled": True,
                     "platform_api_url": platform_api_url,
                     "account_token": account_token,
-                    "service_name": service_name,
-                    "service_id": result["service_id"],
+                    "tunnel_id": tunnel_id,
                     "wg_private_key": wg_private_key,
                     "wg_public_key": wg_public_key,
-                    "sub_ipv6": result["sub_ipv6"],
-                    "wg_server_endpoint": result["wg_server_endpoint"],
-                    "wg_server_public_key": result["wg_server_public_key"],
+                    "sub_ipv6": sub_ipv6,
+                    "dns_url": f"https://{record_data['fqdn']}",
+                    "wg_server_endpoint": tunnel_data["wg_server_endpoint"],
+                    "wg_server_public_key": tunnel_data["wg_server_public_key"],
                 }
             except Exception as e:
                 print(f"WARNING: Tunnel registration failed: {e}")
