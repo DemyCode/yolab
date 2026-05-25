@@ -65,58 +65,8 @@ metadata:
 data:
   Caddyfile: |
     {{ subdomain_tunnel.domain }} {
-      reverse_proxy anubis:3000
+      reverse_proxy localhost:3001
     }
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: gateway
-  namespace: yolab-{{ instance_name }}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: gateway
-  template:
-    metadata:
-      labels:
-        app: gateway
-    spec:
-      containers:
-      - name: wireguard
-        image: wg-sidecar:latest
-        imagePullPolicy: Never
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: wg-secret
-          mountPath: /etc/wireguard
-      - name: caddy
-        image: caddy:2
-        ports:
-        - containerPort: 80
-        - containerPort: 443
-        volumeMounts:
-        - name: data
-          mountPath: /data
-          subPath: {{ instance_name }}/caddy
-        - name: caddy-config
-          mountPath: /etc/caddy/Caddyfile
-          subPath: Caddyfile
-      volumes:
-      - name: wg-secret
-        secret:
-          secretName: gitea-secrets
-          items:
-          - key: wg_config
-            path: wg0.conf
-      - name: caddy-config
-        configMap:
-          name: gitea-caddy
-      - name: data
-        persistentVolumeClaim:
-          claimName: {{ instance_name }}-data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -134,8 +84,21 @@ spec:
         app: gitea
     spec:
       containers:
+      - name: wireguard
+        image: wg-sidecar:latest
+        imagePullPolicy: Never
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wg-secret
+          mountPath: /etc/wireguard
+
       - name: gitea
         image: docker.gitea.com/gitea:1.25.4
+        securityContext:
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
         env:
         - name: USER_UID
           value: "1000"
@@ -147,7 +110,13 @@ spec:
           value: "https://{{ subdomain_tunnel.domain }}"
         - name: GITEA__server__HTTP_PORT
           value: "3000"
-        - name: GITEA__server__DISABLE_SSH
+        - name: GITEA__server__SSH_DOMAIN
+          value: "{{ subdomain_tunnel.domain }}"
+        - name: GITEA__server__SSH_PORT
+          value: "22"
+        - name: GITEA__server__SSH_LISTEN_PORT
+          value: "22"
+        - name: GITEA__server__START_SSH_SERVER
           value: "true"
         - name: GITEA__database__DB_TYPE
           value: "sqlite3"
@@ -159,59 +128,37 @@ spec:
         - name: data
           mountPath: /data
           subPath: {{ instance_name }}/gitea
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: {{ instance_name }}-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: gitea
-  namespace: yolab-{{ instance_name }}
-spec:
-  selector:
-    app: gitea
-  ports:
-  - port: 3000
-    targetPort: 3000
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: anubis
-  namespace: yolab-{{ instance_name }}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: anubis
-  template:
-    metadata:
-      labels:
-        app: anubis
-    spec:
-      containers:
+
       - name: anubis
         image: ghcr.io/techarohq/anubis:latest
         env:
         - name: BIND
-          value: ":3000"
+          value: ":3001"
         - name: TARGET
-          value: "http://gitea:3000"
+          value: "http://localhost:3000"
         - name: OG_PASSTHROUGH
           value: "true"
-        ports:
-        - containerPort: 3000
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: anubis
-  namespace: yolab-{{ instance_name }}
-spec:
-  selector:
-    app: anubis
-  ports:
-  - port: 3000
-    targetPort: 3000
+
+      - name: caddy
+        image: caddy:2
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+
+      volumes:
+      - name: wg-secret
+        secret:
+          secretName: gitea-secrets
+          items:
+          - key: wg_config
+            path: wg0.conf
+      - name: caddy-config
+        configMap:
+          name: gitea-caddy
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
