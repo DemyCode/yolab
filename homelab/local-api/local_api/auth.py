@@ -3,6 +3,7 @@ import ctypes.util
 import secrets
 import tomllib
 from pathlib import Path
+from typing import cast
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -33,12 +34,14 @@ def _load_libcrypt() -> ctypes.CDLL:
     # Python's own _crypt extension (works in Python ≤ 3.12, uses same libcrypt)
     try:
         import crypt as _crypt  # noqa: PLC0415
+
         # Wrap it so callers get the same interface as ctypes
         class _PyCrypt:
             def crypt(self, password: bytes, setting: bytes) -> bytes | None:
                 result = _crypt.crypt(password.decode(), setting.decode())
                 return result.encode() if result else None
-        return _PyCrypt()  # type: ignore[return-value]
+
+        return cast(ctypes.CDLL, _PyCrypt())
     except ImportError:
         pass
 

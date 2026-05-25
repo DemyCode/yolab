@@ -40,7 +40,10 @@ def build_install_config(
         },
         "tunnel": tunnel,
         "swarm": {"enabled": False},
-        "node": {"node_id": generate_node_id(), "k3s": {"token": secrets.token_hex(32), "server_addr": ""}},
+        "node": {
+            "node_id": generate_node_id(),
+            "k3s": {"token": secrets.token_hex(32), "server_addr": ""},
+        },
     }
 
 
@@ -84,7 +87,15 @@ def install_system(config: dict, log: Callable[[str], None] = lambda _: None) ->
 
     log(f"Partitioning disk {config['disk']['device']} with disko…")
     disk_config = code_dir / "homelab" / "nixos" / "disk-config.nix"
-    run(["disko", "--yes-wipe-all-disks", "--mode", "destroy,format,mount", str(disk_config)])
+    run(
+        [
+            "disko",
+            "--yes-wipe-all-disks",
+            "--mode",
+            "destroy,format,mount",
+            str(disk_config),
+        ]
+    )
 
     log("Installing NixOS (this takes several minutes)…")
     run(["nixos-install", "--flake", f"path:{code_dir}#yolab", "--no-root-password"])

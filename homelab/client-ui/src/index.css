@@ -68,7 +68,9 @@ button:focus-visible {
 }
 
 /* ── RJSF form dark theme ───────────────────────────────────────────────── */
-.yolab-form .form-group { margin-bottom: 1rem; }
+.yolab-form .form-group {
+  margin-bottom: 1rem;
+}
 
 .yolab-form label {
   display: block;
@@ -110,7 +112,11 @@ button:focus-visible {
 }
 
 .yolab-form .text-danger,
-.yolab-form .errors { color: #f87171; font-size: 0.8rem; margin-top: 0.25rem; }
+.yolab-form .errors {
+  color: #f87171;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
 
 .yolab-form fieldset {
   border: 1px solid #2a2a2a;
@@ -126,6 +132,18 @@ button:focus-visible {
   font-family: monospace;
 }
 
-.yolab-form .array-item { display: flex; gap: 0.5rem; align-items: flex-start; margin-bottom: 0.5rem; }
-.yolab-form .array-item-toolbox { display: flex; gap: 0.25rem; padding-top: 0.25rem; }
-.yolab-form .btn-add { margin-top: 0.25rem; font-size: 0.8rem; }
+.yolab-form .array-item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+}
+.yolab-form .array-item-toolbox {
+  display: flex;
+  gap: 0.25rem;
+  padding-top: 0.25rem;
+}
+.yolab-form .btn-add {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+}

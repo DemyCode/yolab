@@ -64,7 +64,9 @@ def detect_disks() -> list[dict]:
     result = _run(["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINTS,TRAN"], timeout=10)
     if result.returncode != 0:
         # Fall back to older column name
-        result = _run(["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,TRAN"], timeout=10)
+        result = _run(
+            ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,TRAN"], timeout=10
+        )
         if result.returncode != 0:
             raise RuntimeError(result.stderr or "lsblk failed")
     data = json.loads(result.stdout)

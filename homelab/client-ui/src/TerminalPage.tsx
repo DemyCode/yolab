@@ -48,7 +48,10 @@ export function TerminalPage() {
           if (text.startsWith("[EXIT:")) {
             const code = text.slice(6, -1);
             if (code !== "0") {
-              setLines((l) => [...l, { text: `[exited with code ${code}]`, type: "exit" }]);
+              setLines((l) => [
+                ...l,
+                { text: `[exited with code ${code}]`, type: "exit" },
+              ]);
             }
           } else if (text.startsWith("[ERROR]")) {
             setLines((l) => [...l, { text, type: "error" }]);
@@ -77,7 +80,7 @@ export function TerminalPage() {
       e.preventDefault();
       const idx = Math.max(historyIdx - 1, -1);
       setHistoryIdx(idx);
-      setInput(idx === -1 ? "" : history[idx] ?? "");
+      setInput(idx === -1 ? "" : (history[idx] ?? ""));
     }
   }
 
@@ -98,10 +101,14 @@ export function TerminalPage() {
         <div
           key={i}
           style={{
-            color: l.type === "input" ? "#86efac"
-              : l.type === "error" ? "#f87171"
-              : l.type === "exit" ? "#facc15"
-              : "#e5e7eb",
+            color:
+              l.type === "input"
+                ? "#86efac"
+                : l.type === "error"
+                  ? "#f87171"
+                  : l.type === "exit"
+                    ? "#facc15"
+                    : "#e5e7eb",
             whiteSpace: "pre-wrap",
             wordBreak: "break-all",
             lineHeight: 1.5,
@@ -130,7 +137,9 @@ export function TerminalPage() {
             caretColor: "#86efac",
           }}
         />
-        {running && <span style={{ color: "#6b7280", marginLeft: 8 }}>running…</span>}
+        {running && (
+          <span style={{ color: "#6b7280", marginLeft: 8 }}>running…</span>
+        )}
       </div>
       <div ref={bottomRef} />
     </div>

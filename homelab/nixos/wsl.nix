@@ -1,6 +1,5 @@
-{ ... }:
-{
-  imports = [ ./common.nix ];
+{...}: {
+  imports = [./common.nix];
 
   wsl.enable = true;
   wsl.defaultUser = "homelab";

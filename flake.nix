@@ -20,60 +20,76 @@
     pyproject-build-systems.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      disko,
-      nixos-wsl,
-      nix-darwin,
-      ...
-    }@inputs:
-    let
-      mkDarwinSystem =
-        system:
-        nix-darwin.lib.darwinSystem {
-          inherit system;
-          modules = [ ./homelab/darwin/configuration.nix ];
-          specialArgs = { inherit inputs; };
-        };
-    in
-    {
-      nixosConfigurations = {
-        yolab = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            disko.nixosModules.disko
-            ./homelab/nixos/configuration.nix
-            ./homelab/nixos/disk-config.nix
-          ];
-          specialArgs = { inherit inputs; };
-        };
-        yolab-wsl = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            nixos-wsl.nixosModules.default
-            ./homelab/nixos/wsl.nix
-          ];
-          specialArgs = { inherit inputs; };
-        };
-        yolab-installer = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
-            ./installer/nixos/iso-config.nix
-          ];
-          specialArgs = { inherit inputs; };
-        };
-      };
+  outputs = {
+    self,
+    nixpkgs,
+    disko,
+    nixos-wsl,
+    nix-darwin,
+    ...
+  } @ inputs: let
+    pkgs = nixpkgs.legacyPackages.x86_64-linux;
 
-      darwinConfigurations = {
-        "yolab-mac" = mkDarwinSystem "aarch64-darwin";
-        "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
+    mkDarwinSystem = system:
+      nix-darwin.lib.darwinSystem {
+        inherit system;
+        modules = [./homelab/darwin/configuration.nix];
+        specialArgs = {inherit inputs;};
       };
-
-      packages.x86_64-linux = {
-        iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
+  in {
+    nixosConfigurations = {
+      yolab = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          disko.nixosModules.disko
+          ./homelab/nixos/configuration.nix
+          ./homelab/nixos/disk-config.nix
+        ];
+        specialArgs = {inherit inputs;};
+      };
+      yolab-wsl = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          nixos-wsl.nixosModules.default
+          ./homelab/nixos/wsl.nix
+        ];
+        specialArgs = {inherit inputs;};
+      };
+      yolab-installer = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
+          ./installer/nixos/iso-config.nix
+        ];
+        specialArgs = {inherit inputs;};
       };
     };
+
+    darwinConfigurations = {
+      "yolab-mac" = mkDarwinSystem "aarch64-darwin";
+      "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
+    };
+
+    packages.x86_64-linux = {
+      iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
+    };
+
+    devShells.x86_64-linux.default = pkgs.mkShell {
+      packages = with pkgs; [
+        # Nix
+        alejandra
+        statix
+        deadnix
+        # Shell / Docker
+        shellcheck
+        hadolint
+        # Python project manager (used by sub-pre-commit hooks via uv run)
+        uv
+        # Node.js (used by sub-pre-commit hooks for frontend)
+        nodejs
+        # Runner
+        pre-commit
+      ];
+    };
+  };
 }

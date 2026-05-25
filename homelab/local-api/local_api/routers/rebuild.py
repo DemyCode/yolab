@@ -17,7 +17,11 @@ async def rebuild_log():
         except Exception:
             pass
     try:
-        log = settings.rebuild_log.read_text(errors="replace").splitlines() if settings.rebuild_log.exists() else []
+        log = (
+            settings.rebuild_log.read_text(errors="replace").splitlines()
+            if settings.rebuild_log.exists()
+            else []
+        )
     except Exception:
         log = []
     return {"running": running, "log": log}

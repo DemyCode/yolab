@@ -15,4 +15,3 @@ def get_node_ips() -> list[str]:
                 ips.append(addr["address"])
                 break
     return ips
-

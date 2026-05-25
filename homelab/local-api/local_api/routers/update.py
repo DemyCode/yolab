@@ -23,6 +23,7 @@ async def update():
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
+                assert proc.stdout is not None
                 for line in proc.stdout:
                     yield f"data: {line.rstrip()}\n\n"
                 proc.wait()

@@ -4,15 +4,15 @@ import queue
 import threading
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-
-logging.basicConfig(level=logging.DEBUG)
 
 from installer.install_flow import build_install_config, install_system
 from installer.password import hash_password
 from installer.ssh_keygen import generate_ssh_keypair
 from installer.system import detect_disks
+
+logging.basicConfig(level=logging.DEBUG)
 
 app = FastAPI()
 
@@ -38,7 +38,7 @@ async def api_disks() -> list:
         return detect_disks()
     except Exception as e:
         logging.exception("detect_disks failed")
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/generate-ssh-key")

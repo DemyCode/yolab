@@ -20,3 +20,9 @@ local-api = "local_api.main:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["local_api"]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "ty",
+]

@@ -31,7 +31,12 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
     # Step 2: attach an AAAA record so the management domain resolves
     record_resp = httpx.post(
         f"{PLATFORM_API}/tunnels/{tunnel_id}/records",
-        json={"account_token": account_token, "record_type": "AAAA", "name": service_name, "value": sub_ipv6},
+        json={
+            "account_token": account_token,
+            "record_type": "AAAA",
+            "name": service_name,
+            "value": sub_ipv6,
+        },
         timeout=15,
     )
     record_resp.raise_for_status()

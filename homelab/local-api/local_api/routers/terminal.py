@@ -16,10 +16,13 @@ async def exec_command(req: ExecRequest):
     async def stream():
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bash", "-c", req.command,
+                "bash",
+                "-c",
+                req.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
+            assert proc.stdout is not None
             async for line in proc.stdout:
                 yield f"data: {line.decode(errors='replace').rstrip()}\n\n"
             await proc.wait()

@@ -6,7 +6,14 @@ from pathlib import Path
 
 import httpx
 
-from installer.display import console, show_error, show_info, show_step, show_success, show_header
+from installer.display import (
+    console,
+    show_error,
+    show_info,
+    show_step,
+    show_success,
+    show_header,
+)
 from installer.pairing import acquire_account_token, set_installer_url
 from installer.wireguard_live import register_and_bring_up_tunnel
 

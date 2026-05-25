@@ -2,14 +2,13 @@
   pkgs,
   lib,
   inputs,
-}:
-let
+}: let
   configPath = ./ignored/config.toml;
   homelabConfig = builtins.fromTOML (builtins.readFile configPath);
 
   cfg = homelabConfig.homelab;
-  tunnelCfg = homelabConfig.tunnel or { };
-  nodeCfg = homelabConfig.node or { };
+  tunnelCfg = homelabConfig.tunnel or {};
+  nodeCfg = homelabConfig.node or {};
 
   # Whether the tunnel section is populated (installer has run pairing).
   tunnelEnabled = (tunnelCfg.sub_ipv6 or "") != "";
@@ -26,7 +25,7 @@ let
     src = ./client-ui;
     npmDepsFetcherVersion = 2;
     npmDepsHash = "sha256-CB6dnuU5Q9UHcjAlisD6EHnQg9yT9iHenA0pfBbt3eQ=";
-    npmFlags = [ "--legacy-peer-deps" ];
+    npmFlags = ["--legacy-peer-deps"];
     installPhase = ''
       npm run build
       cp -r dist $out
@@ -37,23 +36,22 @@ let
   localApiWorkspace = inputs.uv2nix.lib.workspace.loadWorkspace {
     workspaceRoot = ./local-api;
   };
-  localApiOverlay = localApiWorkspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
+  localApiOverlay = localApiWorkspace.mkPyprojectOverlay {sourcePreference = "wheel";};
   localApiPythonSet =
-    (pkgs.callPackage inputs.pyproject-nix.build.packages { python = pkgs.python311; }).overrideScope
-      (
-        lib.composeManyExtensions [
-          inputs.pyproject-build-systems.overlays.wheel
-          localApiOverlay
-        ]
-      );
+    (pkgs.callPackage inputs.pyproject-nix.build.packages {python = pkgs.python311;}).overrideScope
+    (
+      lib.composeManyExtensions [
+        inputs.pyproject-build-systems.overlays.wheel
+        localApiOverlay
+      ]
+    );
   localApiEnv = localApiPythonSet.mkVirtualEnv "local-api-env" localApiWorkspace.deps.default;
-in
-{
-  hostname = cfg.hostname;
-  timezone = cfg.timezone;
-  locale = cfg.locale;
+in {
+  inherit (cfg) hostname;
+  inherit (cfg) timezone;
+  inherit (cfg) locale;
   sshPort = cfg.ssh_port;
-  allowedSshKeys = cfg.allowed_ssh_keys or [ ];
+  allowedSshKeys = cfg.allowed_ssh_keys or [];
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
 

@@ -1,42 +1,66 @@
-# Root pre-commit config for monorepo
-# Uses sub-pre-commit to delegate to child configs
 repos:
-  - repo: https://github.com/ddanier/sub-pre-commit
-    rev: v4.5.1
-    hooks:
-      - id: sub-pre-commit
-        alias: backend
-        name: pre-commit for backend/
-        args: ["-p", "backend"]
-        files: ^backend/
-
-      - id: sub-pre-commit
-        alias: dns_server
-        name: pre-commit for dns_server/
-        args: ["-p", "dns_server"]
-        files: ^dns_server/
-
-      - id: sub-pre-commit
-        alias: homelab
-        name: pre-commit for homelab/
-        args: ["-p", "homelab"]
-        files: ^homelab/.*\.nix$
-
-      - id: sub-pre-commit
-        alias: homelab-installer-backend
-        name: pre-commit for homelab/installer/backend/
-        args: ["-p", "homelab/installer/backend"]
-        files: ^homelab/installer/backend/
-
-      - id: sub-pre-commit
-        alias: homelab-client-ui-backend
-        name: pre-commit for homelab/client-ui/backend/
-        args: ["-p", "homelab/client-ui/backend"]
-        files: ^homelab/client-ui/backend/
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+      - id: check-json
+        exclude: tsconfig.*\.json$
+      - id: check-toml
+      - id: check-merge-conflict
       - id: check-added-large-files
+
+  - repo: https://github.com/ddanier/sub-pre-commit
+    rev: v4.5.1
+    hooks:
+      - id: sub-pre-commit
+        alias: local-api
+        name: pre-commit for homelab/local-api/
+        args: ["-p", "homelab/local-api"]
+        files: ^homelab/local-api/
+
+      - id: sub-pre-commit
+        alias: installer-backend
+        name: pre-commit for installer/nixos/backend/
+        args: ["-p", "installer/nixos/backend"]
+        files: ^installer/nixos/backend/
+
+      - id: sub-pre-commit
+        alias: client-ui
+        name: pre-commit for homelab/client-ui/
+        args: ["-p", "homelab/client-ui"]
+        files: ^homelab/client-ui/
+
+  - repo: local
+    hooks:
+      - id: alejandra
+        name: alejandra
+        entry: alejandra
+        language: system
+        files: \.nix$
+
+      - id: statix
+        name: statix
+        entry: statix fix
+        language: system
+        files: \.nix$
+        pass_filenames: false
+
+      - id: deadnix
+        name: deadnix
+        entry: deadnix --edit
+        language: system
+        files: \.nix$
+
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+
+      - id: hadolint
+        name: hadolint
+        entry: hadolint --ignore DL3018
+        language: system
+        files: Dockerfile$

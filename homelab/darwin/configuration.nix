@@ -1,7 +1,11 @@
-{ pkgs, lib, inputs, ... }:
-let
-  s = import ../shared.nix { inherit pkgs lib inputs; };
-  k3sCfg = s.nodeCfg.k3s or { };
+{
+  pkgs,
+  lib,
+  inputs,
+  ...
+}: let
+  s = import ../shared.nix {inherit pkgs lib inputs;};
+  k3sCfg = s.nodeCfg.k3s or {};
 
   wg0Conf = pkgs.writeText "wg0.conf" (lib.optionalString s.tunnelEnabled ''
     [Interface]
@@ -37,12 +41,11 @@ let
             sh -s - agent \
             --node-ip=$(ip -4 addr show lima0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
   '';
-in
-{
+in {
   networking.hostName = s.hostname;
   time.timeZone = s.timezone;
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = ["nix-command" "flakes"];
   nix.gc.automatic = true;
   services.nix-daemon.enable = true;
 
@@ -89,8 +92,10 @@ in
     serviceConfig = {
       ProgramArguments = [
         "${pkgs.nginx}/bin/nginx"
-        "-c" "/etc/yolab/nginx.conf"
-        "-g" "daemon off;"
+        "-c"
+        "/etc/yolab/nginx.conf"
+        "-g"
+        "daemon off;"
       ];
       RunAtLoad = true;
       KeepAlive = true;
@@ -101,34 +106,34 @@ in
 
   launchd.daemons.yolab-local-api = {
     serviceConfig = {
-      ProgramArguments = [ "${s.localApiEnv}/bin/local-api" ];
+      ProgramArguments = ["${s.localApiEnv}/bin/local-api"];
       RunAtLoad = true;
       KeepAlive = true;
       StandardOutPath = "/var/log/yolab-local-api.log";
       StandardErrorPath = "/var/log/yolab-local-api-error.log";
       EnvironmentVariables = {
-        YOLAB_REPO_PATH    = s.repoPath;
-        YOLAB_PLATFORM     = "darwin";
+        YOLAB_REPO_PATH = s.repoPath;
+        YOLAB_PLATFORM = "darwin";
         YOLAB_FLAKE_TARGET = s.flakeTarget;
-        PATH               = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin";
+        PATH = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin";
       };
     };
   };
 
   launchd.daemons.yolab-node-agent = {
     serviceConfig = {
-      ProgramArguments = [ "${s.nodeAgentEnv}/bin/node-agent" ];
+      ProgramArguments = ["${s.nodeAgentEnv}/bin/node-agent"];
       RunAtLoad = true;
       KeepAlive = true;
       StandardOutPath = "/var/log/yolab-node-agent.log";
       StandardErrorPath = "/var/log/yolab-node-agent-error.log";
       EnvironmentVariables = {
-        NODE_ID        = s.nodeCfg.node_id or "";
-        WG_IPV6        = lib.optionalString s.tunnelEnabled s.tunnelCfg.sub_ipv6;
-        WG_INTERFACE   = "wg0";
-        K3S_ROLE       = k3sCfg.role or "agent";
+        NODE_ID = s.nodeCfg.node_id or "";
+        WG_IPV6 = lib.optionalString s.tunnelEnabled s.tunnelCfg.sub_ipv6;
+        WG_INTERFACE = "wg0";
+        K3S_ROLE = k3sCfg.role or "agent";
         YOLAB_PLATFORM = "darwin";
-        PATH           = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin";
+        PATH = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin";
       };
     };
   };
@@ -136,7 +141,8 @@ in
   launchd.daemons.yolab-lima-k3s = lib.mkIf s.swarmEnabled {
     serviceConfig = {
       ProgramArguments = [
-        "/bin/sh" "-c"
+        "/bin/sh"
+        "-c"
         ''
           ${pkgs.lima}/bin/limactl start --name=yolab-k3s ${limaK3sTemplate} 2>/dev/null || \
           ${pkgs.lima}/bin/limactl start yolab-k3s
@@ -152,7 +158,8 @@ in
   launchd.daemons.yolab-wireguard = lib.mkIf s.tunnelEnabled {
     serviceConfig = {
       ProgramArguments = [
-        "/bin/sh" "-c"
+        "/bin/sh"
+        "-c"
         ''
           export WG_QUICK_USERSPACE_IMPLEMENTATION=${pkgs.wireguard-go}/bin/wireguard-go
           ${pkgs.wireguard-tools}/bin/wg-quick down ${wg0Conf} 2>/dev/null || true

@@ -1,0 +1,26 @@
+repos:
+  - repo: local
+    hooks:
+      - id: npm-install
+        name: npm install
+        entry: npm install --prefer-offline
+        language: system
+        pass_filenames: false
+
+      - id: eslint
+        name: eslint
+        entry: npm run lint
+        language: system
+        pass_filenames: false
+
+      - id: tsc
+        name: tsc
+        entry: npm run typecheck
+        language: system
+        pass_filenames: false
+
+      - id: prettier
+        name: prettier
+        entry: npm run format:check
+        language: system
+        pass_filenames: false

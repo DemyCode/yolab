@@ -17,7 +17,7 @@ def hash_password(password: str) -> str:
     """
     # Generate a random salt
     salt_chars = string.ascii_letters + string.digits
-    salt = ''.join(secrets.choice(salt_chars) for _ in range(16))
+    salt = "".join(secrets.choice(salt_chars) for _ in range(16))
 
     # Hash with SHA-512 (method $6$)
     hashed = crypt.crypt(password, f"$6${salt}$")

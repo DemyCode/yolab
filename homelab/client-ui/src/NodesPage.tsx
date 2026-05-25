@@ -19,10 +19,13 @@ export function NodesPage() {
   }, []);
 
   if (!nodes) return <div style={{ color: "#666" }}>Loading…</div>;
-  if (nodes.length === 0) return <div style={{ color: "#666" }}>No nodes found.</div>;
+  if (nodes.length === 0)
+    return <div style={{ color: "#666" }}>No nodes found.</div>;
 
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+    <table
+      style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}
+    >
       <thead>
         <tr style={{ textAlign: "left", borderBottom: "2px solid #e5e7eb" }}>
           <th style={{ padding: "0.5rem 0.75rem" }}>Name</th>
@@ -35,8 +38,19 @@ export function NodesPage() {
       <tbody>
         {nodes.map((n) => (
           <tr key={n.name} style={{ borderBottom: "1px solid #f3f4f6" }}>
-            <td style={{ padding: "0.5rem 0.75rem", fontWeight: "bold" }}>{n.name}</td>
-            <td style={{ padding: "0.5rem 0.75rem", fontFamily: "monospace", fontSize: "0.78rem", color: "#666" }}>{n.ip}</td>
+            <td style={{ padding: "0.5rem 0.75rem", fontWeight: "bold" }}>
+              {n.name}
+            </td>
+            <td
+              style={{
+                padding: "0.5rem 0.75rem",
+                fontFamily: "monospace",
+                fontSize: "0.78rem",
+                color: "#666",
+              }}
+            >
+              {n.ip}
+            </td>
             <td style={{ padding: "0.5rem 0.75rem" }}>
               {n.roles.map((r) => (
                 <span
@@ -55,11 +69,22 @@ export function NodesPage() {
               ))}
             </td>
             <td style={{ padding: "0.5rem 0.75rem" }}>
-              <span style={{ color: n.ready ? "#22c55e" : "#ef4444", fontWeight: "bold" }}>
+              <span
+                style={{
+                  color: n.ready ? "#22c55e" : "#ef4444",
+                  fontWeight: "bold",
+                }}
+              >
                 {n.ready ? "Ready" : "Not Ready"}
               </span>
             </td>
-            <td style={{ padding: "0.5rem 0.75rem", color: "#666", fontSize: "0.78rem" }}>
+            <td
+              style={{
+                padding: "0.5rem 0.75rem",
+                color: "#666",
+                fontSize: "0.78rem",
+              }}
+            >
               {n.joined_at ? new Date(n.joined_at).toLocaleDateString() : "—"}
             </td>
           </tr>
