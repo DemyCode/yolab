@@ -27,7 +27,7 @@ def _built_or_git(filename: str, *git_args: str) -> str:
     return _git(*git_args)
 
 
-@router.get("/api/status")
+@router.get("/status")
 async def status():
     try:
         return {

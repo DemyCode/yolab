@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from local_api.auth import AuthMiddleware
@@ -7,6 +7,16 @@ from local_api.routers import apps, disks, nodes, rebuild, status, terminal, upd
 from local_api import auth
 from local_api.settings import settings
 
+
+api = APIRouter(prefix="/api")
+api.include_router(auth.router)
+api.include_router(status.router)
+api.include_router(update.router)
+api.include_router(rebuild.router)
+api.include_router(disks.router)
+api.include_router(nodes.router)
+api.include_router(apps.router)
+api.include_router(terminal.router)
 
 app = FastAPI()
 app.add_middleware(AuthMiddleware)
@@ -17,15 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
-
-app.include_router(auth.router)
-app.include_router(status.router)
-app.include_router(update.router)
-app.include_router(rebuild.router)
-app.include_router(disks.router)
-app.include_router(nodes.router)
-app.include_router(apps.router)
-app.include_router(terminal.router)
+app.include_router(api)
 
 
 def run():

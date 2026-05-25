@@ -8,7 +8,7 @@ from local_api.settings import settings
 router = APIRouter()
 
 
-@router.post("/api/update")
+@router.post("/update")
 async def update():
     async def stream():
         for cmd in [

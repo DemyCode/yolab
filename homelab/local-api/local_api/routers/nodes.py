@@ -33,7 +33,7 @@ def _parse_node(item: dict) -> dict:
     }
 
 
-@router.get("/api/nodes")
+@router.get("/nodes")
 async def nodes():
     try:
         items = await asyncio.to_thread(kubectl.get_nodes)

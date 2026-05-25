@@ -7,7 +7,7 @@ from local_api.settings import settings
 router = APIRouter()
 
 
-@router.get("/api/rebuild-log")
+@router.get("/rebuild-log")
 async def rebuild_log():
     running = False
     if settings.rebuild_pid.exists():

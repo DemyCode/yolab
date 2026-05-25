@@ -86,7 +86,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@router.post("/api/login")
+@router.post("/login")
 async def login(body: LoginRequest):
     hashed = _get_hash()
     if hashed and not _verify(body.password, hashed):
@@ -106,7 +106,7 @@ async def login(body: LoginRequest):
     return response
 
 
-@router.post("/api/logout")
+@router.post("/logout")
 async def logout():
     response = JSONResponse({"ok": True})
     response.delete_cookie("yolab_session", path="/")

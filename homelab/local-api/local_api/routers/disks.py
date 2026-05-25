@@ -178,7 +178,7 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
     ]
 
 
-@router.get("/api/disks/local")
+@router.get("/disks/local")
 async def disks_local():
     devices = await asyncio.to_thread(_lsblk)
     out = []
@@ -214,7 +214,7 @@ async def disks_local():
     return out
 
 
-@router.get("/api/disks")
+@router.get("/disks")
 async def disks():
     return [
         disk
@@ -223,13 +223,13 @@ async def disks():
     ]
 
 
-@router.get("/api/storage/local")
+@router.get("/storage/local")
 async def storage_local():
     paths = await asyncio.to_thread(_exported_paths)
     return [{"host": settings.yolab_node_ipv6, "path": p} for p in paths]
 
 
-@router.get("/api/storage")
+@router.get("/storage")
 async def storage():
     """All NFS-exported storage locations across the swarm."""
     return [
@@ -244,7 +244,7 @@ class EnableStorageRequest(BaseModel):
     host: str
 
 
-@router.post("/api/disks/enable-storage")
+@router.post("/disks/enable-storage")
 async def enable_storage(body: EnableStorageRequest):
     if body.host != settings.yolab_node_ipv6:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -361,7 +361,7 @@ class DisableStorageRequest(BaseModel):
     host: str
 
 
-@router.post("/api/disks/disable-storage")
+@router.post("/disks/disable-storage")
 async def disable_storage(body: DisableStorageRequest):
     if body.host != settings.yolab_node_ipv6:
         async with httpx.AsyncClient(timeout=30) as client:

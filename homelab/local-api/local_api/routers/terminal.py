@@ -11,7 +11,7 @@ class ExecRequest(BaseModel):
     command: str
 
 
-@router.post("/api/terminal/exec")
+@router.post("/terminal/exec")
 async def exec_command(req: ExecRequest):
     async def stream():
         try:

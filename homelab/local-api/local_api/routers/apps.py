@@ -108,7 +108,7 @@ class AppInstallRequest(BaseModel):
     config: dict
 
 
-@router.get("/api/tunnel/domain")
+@router.get("/tunnel/domain")
 async def tunnel_domain():
     cfg = _tunnel_config()
     host = cfg["dns_url"].removeprefix("https://").removeprefix("http://").rstrip("/")
@@ -120,7 +120,7 @@ async def tunnel_domain():
     return {"domain": host}
 
 
-@router.get("/api/apps/catalog")
+@router.get("/apps/catalog")
 async def catalog():
     apps = []
     for app_dir in CATALOG_DIR.iterdir():
@@ -147,12 +147,12 @@ async def catalog():
     return apps
 
 
-@router.get("/api/apps")
+@router.get("/apps")
 async def list_apps():
     return await asyncio.to_thread(_list_installed)
 
 
-@router.post("/api/apps/{app_id}")
+@router.post("/apps/{app_id}")
 async def install_app(app_id: str, body: AppInstallRequest):
     if not re.match(r"^[a-z0-9-]+$", body.instance_name):
         raise HTTPException(
@@ -263,7 +263,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@router.post("/api/apps/{instance_name}/scan-outputs")
+@router.post("/apps/{instance_name}/scan-outputs")
 async def scan_outputs(instance_name: str):
     ns = f"yolab-{instance_name}"
 
@@ -370,7 +370,7 @@ async def scan_outputs(instance_name: str):
 
 
 
-@router.delete("/api/apps/{instance_name}")
+@router.delete("/apps/{instance_name}")
 async def uninstall_app(instance_name: str):
     ns = f"yolab-{instance_name}"
     ns_info = await asyncio.to_thread(
@@ -436,7 +436,7 @@ async def uninstall_app(instance_name: str):
     return {"ok": True}
 
 
-@router.get("/api/apps/{instance_name}/pods")
+@router.get("/apps/{instance_name}/pods")
 async def list_pods(instance_name: str):
     result = await asyncio.to_thread(
         subprocess.run,
@@ -460,7 +460,7 @@ async def list_pods(instance_name: str):
     ]
 
 
-@router.get("/api/apps/{instance_name}/describe/{pod_name}")
+@router.get("/apps/{instance_name}/describe/{pod_name}")
 async def describe_pod(instance_name: str, pod_name: str):
     result = await asyncio.to_thread(
         subprocess.run,
@@ -471,7 +471,7 @@ async def describe_pod(instance_name: str, pod_name: str):
     return {"output": str(result.stdout) + str(result.stderr)}
 
 
-@router.get("/api/apps/{instance_name}/logs/{pod_name}")
+@router.get("/apps/{instance_name}/logs/{pod_name}")
 async def pod_logs(instance_name: str, pod_name: str):
     async def stream():
         proc = await asyncio.create_subprocess_exec(
