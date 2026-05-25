@@ -13,6 +13,6 @@
       "type": "object",
       "title": "Storage disk",
       "format": "disk"
-    },
+    }
   }
 }
