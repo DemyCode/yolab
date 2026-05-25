@@ -6,7 +6,6 @@ metadata:
     yolab.io/managed: "true"
   annotations:
     yolab.io/app-id: "{{ app_id }}"
-    yolab.io/tunnel-url: "{{ subdomain_tunnel.url }}"
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -46,14 +45,14 @@ type: Opaque
 stringData:
   wg_config: |
     [Interface]
-    PrivateKey = {{ subdomain_tunnel.wg_private_key }}
+    PrivateKey = {{ tunnel.wg_private_key }}
     Table = off
-    PostUp = ip -6 address add {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true; ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
-    PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true
+    PostUp = ip -6 address add {{ tunnel.sub_ipv6 }}/128 dev wg0 || true; ip -6 rule add from {{ tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
+    PreDown = ip -6 rule del from {{ tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del {{ tunnel.sub_ipv6 }}/128 dev wg0 || true
 
     [Peer]
-    PublicKey = {{ subdomain_tunnel.wg_server_public_key }}
-    Endpoint = {{ subdomain_tunnel.wg_server_endpoint }}
+    PublicKey = {{ tunnel.wg_server_public_key }}
+    Endpoint = {{ tunnel.wg_server_endpoint }}
     AllowedIPs = ::/0
     PersistentKeepalive = 25
 ---
@@ -81,6 +80,7 @@ spec:
         volumeMounts:
         - name: wg-secret
           mountPath: /etc/wireguard
+
       - name: minecraft
         image: itzg/minecraft-server:latest
         stdin: true
@@ -106,6 +106,7 @@ spec:
         - name: data
           mountPath: /data
           subPath: {{ instance_name }}/minecraft
+
       volumes:
       - name: wg-secret
         secret:

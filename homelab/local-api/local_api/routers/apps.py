@@ -192,7 +192,9 @@ async def install_app(app_id: str, body: AppInstallRequest):
     schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
     properties = schema.get("properties", {})
 
+    app_meta = tomllib.loads((app_dir / "app.toml").read_text())["app"]
     tunnel_fields = [k for k, v in properties.items() if v.get("format") == "tunnel"]
+    auto_tunnel = app_meta.get("tunnel", False) and not tunnel_fields
     auto_fields = {k: secrets.token_urlsafe(32) for k, v in properties.items() if v.get("x-auto") == "password"}
 
     manifest_template = (app_dir / "manifest.yaml.j2").read_text()
@@ -257,6 +259,32 @@ async def install_app(app_id: str, body: AppInstallRequest):
 
             yield f"data: Tunnel registered — {url}\n\n"
 
+        # Apps that need WireGuard but no DNS record (e.g. Minecraft)
+        if auto_tunnel:
+            yield "data: Generating WireGuard keypair...\n\n"
+            wg_private_key, wg_public_key = await asyncio.to_thread(_generate_wg_keypair)
+            yield "data: Registering WireGuard tunnel...\n\n"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{tunnel_cfg['platform_api_url']}/tunnels",
+                    json={"account_token": tunnel_cfg["account_token"], "wg_public_key": wg_public_key},
+                )
+                if resp.status_code != 200:
+                    yield f"data: [ERROR] Tunnel creation failed: {resp.text}\n\n"
+                    return
+                tunnel_data = resp.json()
+            tunnel_id = tunnel_data["tunnel_id"]
+            sub_ipv6 = tunnel_data["sub_ipv6"]
+            registered_service_ids.append(tunnel_id)
+            tunnel_vars["tunnel"] = {
+                "tunnel_id": tunnel_id,
+                "sub_ipv6": sub_ipv6,
+                "wg_private_key": wg_private_key,
+                "wg_server_public_key": tunnel_data["wg_server_public_key"],
+                "wg_server_endpoint": tunnel_data["wg_server_endpoint"],
+            }
+            yield f"data: WireGuard tunnel up — IPv6: {sub_ipv6}\n\n"
+
         disk = body.config.get("disk")
         template_disk = disk
         if isinstance(disk, dict):
@@ -313,11 +341,13 @@ async def install_app(app_id: str, body: AppInstallRequest):
             capture_output=True,
         )
 
-        outputs = [
-            {"key": "url", "label": "Web URL", "value": t["url"], "type": "url"}
-            for t in tunnel_vars.values()
-        ]
-        primary_url = tunnel_vars[list(tunnel_vars.keys())[0]]["url"] if tunnel_vars else ""
+        outputs = []
+        for t in tunnel_vars.values():
+            if t.get("url"):
+                outputs.append({"key": "url", "label": "Web URL", "value": t["url"], "type": "url"})
+            elif t.get("sub_ipv6"):
+                outputs.append({"key": "ipv6", "label": "IPv6 Address", "value": t["sub_ipv6"], "type": "text"})
+        primary_url = next((t["url"] for t in tunnel_vars.values() if t.get("url")), "")
         await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, primary_url, outputs, registered_service_ids)
 
         yield f"data: [DONE] {app_id} installed\n\n"
