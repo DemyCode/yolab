@@ -1,7 +1,6 @@
 import asyncio
 import json
 import re
-import secrets
 import subprocess
 import tempfile
 import tomllib
@@ -129,6 +128,11 @@ class AppInstallRequest(BaseModel):
 async def tunnel_domain():
     cfg = _tunnel_config()
     host = cfg["dns_url"].removeprefix("https://").removeprefix("http://").rstrip("/")
+    # dns_url may be username.accountid.base (e.g. yolab.20.demycode.ovh).
+    # Records are created under accountid.base, so strip the non-numeric username prefix.
+    parts = host.split(".")
+    if parts and not parts[0].isdigit():
+        host = ".".join(parts[1:])
     return {"domain": host}
 
 
@@ -143,18 +147,6 @@ async def catalog():
             continue
         meta = tomllib.loads(toml_path.read_text())["app"]
         schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
-        auto_keys = {
-            k for k, v in schema.get("properties", {}).items() if v.get("x-auto")
-        }
-        user_schema = {
-            **schema,
-            "properties": {
-                k: v
-                for k, v in schema.get("properties", {}).items()
-                if k not in auto_keys
-            },
-            "required": [r for r in schema.get("required", []) if r not in auto_keys],
-        }
         apps.append(
             {
                 "id": meta["id"],
@@ -162,7 +154,7 @@ async def catalog():
                 "description": meta["description"],
                 "icon": meta.get("icon", ""),
                 "category": meta.get("category", ""),
-                "schema": user_schema,
+                "schema": schema,
                 "uischema": json.loads(uischema_path.read_text())
                 if uischema_path.exists()
                 else {},
@@ -200,11 +192,6 @@ async def install_app(app_id: str, body: AppInstallRequest):
     )
     service_name = body.config.get(tunnel_field, "") if tunnel_field else ""
 
-    auto_fields = {
-        k: secrets.token_urlsafe(32)
-        for k, v in properties.items()
-        if v.get("x-auto") == "password"
-    }
     manifest_template = (app_dir / "manifest.yaml.j2").read_text()
 
     async def stream():
@@ -240,7 +227,6 @@ async def install_app(app_id: str, body: AppInstallRequest):
                 account_token=tunnel_cfg["account_token"],
                 service_name=service_name,
                 **config_with_disk,
-                **auto_fields,
             )
 
             yield "data: Applying manifests to cluster...\n\n"
@@ -271,8 +257,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
                 yield f"data: [ERROR] kubectl apply failed (exit {proc.returncode})\n\n"
                 return
 
-            # Store user config (excluding auto-generated secrets) in namespace annotation
-            user_config = {k: v for k, v in body.config.items() if k not in auto_fields}
+            user_config = body.config
             await asyncio.to_thread(
                 subprocess.run,
                 [
