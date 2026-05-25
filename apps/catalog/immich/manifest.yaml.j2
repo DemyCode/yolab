@@ -52,7 +52,7 @@ metadata:
   namespace: yolab-{{ instance_name }}
 data:
   Caddyfile: |
-    {env.YOLAB_FQDN} {
+    {$YOLAB_FQDN} {
       reverse_proxy immich-server:2283
     }
 ---

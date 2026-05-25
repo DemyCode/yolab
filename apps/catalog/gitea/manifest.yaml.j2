@@ -43,7 +43,7 @@ metadata:
   namespace: yolab-{{ instance_name }}
 data:
   Caddyfile: |
-    {env.YOLAB_FQDN} {
+    {$YOLAB_FQDN} {
       reverse_proxy localhost:3001
     }
 ---
