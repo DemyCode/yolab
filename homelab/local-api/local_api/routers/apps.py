@@ -90,12 +90,26 @@ def _list_installed() -> list[dict]:
         config_raw = ann.get(ANN_CONFIG, "")
         config = json.loads(config_raw) if config_raw else {}
 
+        app_id = ann.get(ANN_APP_ID, "")
+        outputs_spec_path = CATALOG_DIR / app_id / "outputs.json" if app_id else None
+        outputs_spec = []
+        if outputs_spec_path and outputs_spec_path.exists():
+            try:
+                outputs_spec = [
+                    {"key": o["key"], "label": o.get("label", o["key"]), "type": o.get("type", "text")}
+                    for o in json.loads(outputs_spec_path.read_text())
+                    if o.get("type") != "hidden"
+                ]
+            except Exception:
+                pass
+
         apps.append(
             {
-                "app_id": ann.get(ANN_APP_ID, ""),
+                "app_id": app_id,
                 "instance_name": name,
                 "status": status,
                 "outputs": _normalize_outputs(ann),
+                "outputs_spec": outputs_spec,
                 "config": config,
             }
         )

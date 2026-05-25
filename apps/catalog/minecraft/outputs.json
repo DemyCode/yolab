@@ -1,4 +1,4 @@
 [
   {"key": "ipv6", "label": "IPv6 Address", "type": "text", "pattern": "YOLAB_OUTPUT ipv6 (\\S+)"},
-  {"key": "tunnel_id", "label": "Tunnel ID", "type": "text", "pattern": "YOLAB_OUTPUT tunnel_id (\\d+)"}
+  {"key": "tunnel_id", "label": "Tunnel ID", "type": "hidden", "pattern": "YOLAB_OUTPUT tunnel_id (\\d+)"}
 ]

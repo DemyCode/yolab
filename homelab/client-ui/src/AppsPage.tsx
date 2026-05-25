@@ -22,11 +22,18 @@ interface AppOutput {
   type: "url" | "text" | "hidden";
 }
 
+interface OutputSpec {
+  key: string;
+  label: string;
+  type: "url" | "text" | "hidden";
+}
+
 interface InstalledApp {
   app_id: string;
   instance_name: string;
   status: "starting" | "running" | "uninstalling";
   outputs: AppOutput[];
+  outputs_spec: OutputSpec[];
   config: Record<string, unknown>;
 }
 
@@ -632,12 +639,13 @@ function InstalledDetailPage({
   useEffect(() => {
     loadApp();
     loadPods();
+    scanOutputs();
     const id = setInterval(() => {
       loadApp();
       loadPods();
     }, 3000);
     return () => clearInterval(id);
-  }, [instanceName]);
+  }, [instanceName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (outputRef.current)
@@ -729,7 +737,6 @@ if (!app)
       </div>
     );
 
-  const visibleOutputs = app.outputs.filter((o) => o.type !== "hidden");
   const configEntries = Object.entries(app.config).filter(
     ([, v]) => v !== null && v !== undefined && v !== "",
   );
@@ -828,52 +835,47 @@ if (!app)
           marginBottom: "0.75rem",
         }}
       >
-        {visibleOutputs.length === 0 && (
-          <div style={{ fontSize: "0.82rem", color: "#999" }}>
-            No outputs scanned yet.
-          </div>
-        )}
-        {visibleOutputs.map((o) => (
-          <div
-            key={o.key}
-            style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}
-          >
-            <span style={{ fontSize: "0.72rem", color: "#888", minWidth: 80 }}>
-              {o.label || o.key}
-            </span>
-            {o.type === "url" ? (
-              <a
-                href={o.value}
-                target="_blank"
-                rel="noreferrer"
-                style={{
-                  fontSize: "0.83rem",
-                  color: "#7c3aed",
-                  fontFamily: "monospace",
-                }}
-              >
-                {o.value}
-              </a>
-            ) : (
-              <span style={{ fontSize: "0.83rem", fontFamily: "monospace" }}>
-                {o.value}
-              </span>
-            )}
-            <button
-              onClick={() => copyText(o.value)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                fontSize: "0.65rem",
-                color: "#bbb",
-                padding: 0,
-              }}
+        {app.outputs_spec.map((spec) => {
+          const scanned = app.outputs.find((o) => o.key === spec.key);
+          return (
+            <div
+              key={spec.key}
+              style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}
             >
-              copy
-            </button>
-          </div>
-        ))}
+              <span style={{ fontSize: "0.72rem", color: "#888", minWidth: 80 }}>
+                {spec.label}
+              </span>
+              {scanned ? (
+                <>
+                  {spec.type === "url" ? (
+                    <a
+                      href={scanned.value}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: "0.83rem", color: "#7c3aed", fontFamily: "monospace" }}
+                    >
+                      {scanned.value}
+                    </a>
+                  ) : (
+                    <span style={{ fontSize: "0.83rem", fontFamily: "monospace" }}>
+                      {scanned.value}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => copyText(scanned.value)}
+                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.65rem", color: "#bbb", padding: 0 }}
+                  >
+                    copy
+                  </button>
+                </>
+              ) : (
+                <span style={{ fontSize: "0.83rem", color: "#ccc" }}>
+                  {scanning ? "Scanning…" : "Not scanned"}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
       <button
         onClick={scanOutputs}
