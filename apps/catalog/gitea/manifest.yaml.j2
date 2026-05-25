@@ -64,8 +64,7 @@ spec:
     spec:
       initContainers:
       - name: wg-register
-        image: wg-register:latest
-        imagePullPolicy: Never
+        image: ghcr.io/demycode/wg-register:latest
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -125,8 +124,7 @@ spec:
 
       containers:
       - name: wireguard
-        image: wg-sidecar:latest
-        imagePullPolicy: Never
+        image: ghcr.io/demycode/wg-sidecar:latest
         securityContext:
           privileged: true
         volumeMounts:

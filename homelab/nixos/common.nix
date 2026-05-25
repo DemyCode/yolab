@@ -9,54 +9,6 @@ let
   s = import ../shared.nix { inherit pkgs lib inputs; };
   k3sCfg = s.nodeCfg.k3s;
 
-  wgRegisterImage =
-    let
-      script = pkgs.runCommand "wg-register-script" { } ''
-        mkdir -p $out
-        cp ${../../apps/wg-register/setup.sh} $out/setup.sh
-        chmod +x $out/setup.sh
-      '';
-    in
-    pkgs.dockerTools.buildLayeredImage {
-      name = "wg-register";
-      tag = "latest";
-      contents = with pkgs; [
-        wireguard-tools
-        curl
-        jq
-        busybox
-        script
-      ];
-      config.Entrypoint = [
-        "/bin/sh"
-        "/setup.sh"
-      ];
-    };
-
-  wgSidecarImage =
-    let
-      entrypoint = pkgs.runCommand "wg-sidecar-entrypoint" { } ''
-        mkdir -p $out
-        cp ${../../apps/wg-sidecar/entrypoint.sh} $out/entrypoint.sh
-        chmod +x $out/entrypoint.sh
-      '';
-    in
-    pkgs.dockerTools.buildLayeredImage {
-      name = "wg-sidecar";
-      tag = "latest";
-      contents = with pkgs; [
-        wireguard-tools
-        wireguard-go
-        iproute2
-        busybox
-        entrypoint
-      ];
-      config.Entrypoint = [
-        "/bin/sh"
-        "/entrypoint.sh"
-      ];
-    };
-
   # The first node initialises the embedded-etcd cluster (--cluster-init).
   # Every other node joins as an equal server peer via serverAddr.
   # After joining, all nodes are identical: control plane + worker + UI.
@@ -395,11 +347,6 @@ in
         wget
         htop
       ];
-
-    systemd.tmpfiles.rules = [
-      "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar    - - - - ${wgSidecarImage}"
-      "L+ /var/lib/rancher/k3s/agent/images/wg-register   - - - - ${wgRegisterImage}"
-    ];
 
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
