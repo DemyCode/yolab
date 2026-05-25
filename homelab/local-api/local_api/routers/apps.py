@@ -128,9 +128,8 @@ class AppInstallRequest(BaseModel):
 @router.get("/api/tunnel/domain")
 async def tunnel_domain():
     cfg = _tunnel_config()
-    host = cfg["dns_url"].removeprefix("https://").removeprefix("http://")
-    suffix = host.split(".", 1)[1] if "." in host else host
-    return {"domain": suffix}
+    host = cfg["dns_url"].removeprefix("https://").removeprefix("http://").rstrip("/")
+    return {"domain": host}
 
 
 @router.get("/api/apps/catalog")

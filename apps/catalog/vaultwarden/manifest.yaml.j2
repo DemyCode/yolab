@@ -64,7 +64,7 @@ spec:
     spec:
       initContainers:
       - name: wg-register
-        image: ghcr.io/demycode/wg-register:latest
+        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -83,7 +83,7 @@ spec:
 
       containers:
       - name: wireguard
-        image: ghcr.io/demycode/wg-sidecar:latest
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
         securityContext:
           privileged: true
         volumeMounts:
@@ -91,7 +91,7 @@ spec:
           mountPath: /etc/wireguard
 
       - name: caddy
-        image: caddy:2
+        image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
         command:
         - /bin/sh
         - -c
@@ -139,7 +139,7 @@ spec:
     spec:
       containers:
       - name: vaultwarden
-        image: vaultwarden/server:latest
+        image: vaultwarden/server:latest@sha256:d626d04934cd1192ad8ced1adb975099fca78cec33ab467d2d3c923cde7f3b0c
         env:
         - name: ROCKET_ADDRESS
           value: "::"

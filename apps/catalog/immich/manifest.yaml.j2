@@ -73,7 +73,7 @@ spec:
     spec:
       initContainers:
       - name: wg-register
-        image: ghcr.io/demycode/wg-register:latest
+        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -92,7 +92,7 @@ spec:
 
       containers:
       - name: wireguard
-        image: ghcr.io/demycode/wg-sidecar:latest
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
         securityContext:
           privileged: true
         volumeMounts:
@@ -100,7 +100,7 @@ spec:
           mountPath: /etc/wireguard
 
       - name: caddy
-        image: caddy:2
+        image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
         command:
         - /bin/sh
         - -c
@@ -148,7 +148,7 @@ spec:
     spec:
       containers:
       - name: immich-server
-        image: ghcr.io/immich-app/immich-server:release
+        image: ghcr.io/immich-app/immich-server:release@sha256:c15bff75068effb03f4355997d03dc7e0fc58720c2b54ad6f7f10d1bc57efaa5
         env:
         - name: DB_HOSTNAME
           value: postgres.yolab-{{ instance_name }}.svc.cluster.local
@@ -207,7 +207,7 @@ spec:
     spec:
       containers:
       - name: immich-ml
-        image: ghcr.io/immich-app/immich-machine-learning:release
+        image: ghcr.io/immich-app/immich-machine-learning:release@sha256:a2501141440f10516d329fdfba2c68082e19eb9ba6016c061ac80d23beadf7f3
         volumeMounts:
         - name: data
           mountPath: /cache
@@ -246,7 +246,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: docker.io/valkey/valkey:8-bookworm
+        image: docker.io/valkey/valkey:8-bookworm@sha256:fea8b3e67b15729d4bb70589eb03367bab9ad1ee89c876f54327fc7c6e618571
         livenessProbe:
           exec:
             command: ["redis-cli", "ping"]
@@ -282,7 +282,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+        image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
         env:
         - name: POSTGRES_USER
           value: postgres
