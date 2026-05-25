@@ -1,0 +1,12 @@
+[app]
+id = "gitea"
+name = "Gitea"
+description = "Lightweight self-hosted Git service"
+icon = "🐙"
+category = "development"
+subdomain = "git"
+tunnel = true
+
+[[app.volumes]]
+name = "data"
+description = "Storage for repositories and database"
