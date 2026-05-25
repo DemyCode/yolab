@@ -1,0 +1,4 @@
+[
+  {"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"},
+  {"key": "tunnel_id", "label": "Tunnel ID", "type": "text", "pattern": "YOLAB_OUTPUT tunnel_id (\\d+)"}
+]

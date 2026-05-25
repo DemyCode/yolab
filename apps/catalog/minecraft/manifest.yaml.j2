@@ -36,26 +36,6 @@ spec:
     requests:
       storage: 20Gi
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: minecraft-secrets
-  namespace: yolab-{{ instance_name }}
-type: Opaque
-stringData:
-  wg_config: |
-    [Interface]
-    PrivateKey = {{ tunnel.wg_private_key }}
-    Table = off
-    PostUp = ip -6 address add {{ tunnel.sub_ipv6 }}/128 dev wg0 || true; ip -6 rule add from {{ tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
-    PreDown = ip -6 rule del from {{ tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del {{ tunnel.sub_ipv6 }}/128 dev wg0 || true
-
-    [Peer]
-    PublicKey = {{ tunnel.wg_server_public_key }}
-    Endpoint = {{ tunnel.wg_server_endpoint }}
-    AllowedIPs = ::/0
-    PersistentKeepalive = 25
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -71,6 +51,26 @@ spec:
       labels:
         app: server
     spec:
+      initContainers:
+      - name: wg-register
+        image: wg-register:latest
+        imagePullPolicy: Never
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: ""
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
       containers:
       - name: wireguard
         image: wg-sidecar:latest
@@ -78,7 +78,7 @@ spec:
         securityContext:
           privileged: true
         volumeMounts:
-        - name: wg-secret
+        - name: wireguard
           mountPath: /etc/wireguard
 
       - name: minecraft
@@ -108,12 +108,10 @@ spec:
           subPath: {{ instance_name }}/minecraft
 
       volumes:
-      - name: wg-secret
-        secret:
-          secretName: minecraft-secrets
-          items:
-          - key: wg_config
-            path: wg0.conf
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data

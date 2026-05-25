@@ -6,7 +6,6 @@ metadata:
     yolab.io/managed: "true"
   annotations:
     yolab.io/app-id: "{{ app_id }}"
-    yolab.io/tunnel-url: "{{ subdomain_tunnel.url }}"
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -38,33 +37,13 @@ spec:
       storage: 50Gi
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: gitea-secrets
-  namespace: yolab-{{ instance_name }}
-type: Opaque
-stringData:
-  wg_config: |
-    [Interface]
-    PrivateKey = {{ subdomain_tunnel.wg_private_key }}
-    Table = off
-    PostUp = ip -6 address add {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true; ip -6 rule add from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
-    PreDown = ip -6 rule del from {{ subdomain_tunnel.sub_ipv6 }} lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del {{ subdomain_tunnel.sub_ipv6 }}/128 dev wg0 || true
-
-    [Peer]
-    PublicKey = {{ subdomain_tunnel.wg_server_public_key }}
-    Endpoint = {{ subdomain_tunnel.wg_server_endpoint }}
-    AllowedIPs = ::/0
-    PersistentKeepalive = 25
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: gitea-caddy
   namespace: yolab-{{ instance_name }}
 data:
   Caddyfile: |
-    {{ subdomain_tunnel.domain }} {
+    {env.YOLAB_FQDN} {
       reverse_proxy localhost:3001
     }
 ---
@@ -84,6 +63,25 @@ spec:
         app: gitea
     spec:
       initContainers:
+      - name: wg-register
+        image: wg-register:latest
+        imagePullPolicy: Never
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: "{{ service_name }}"
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
       - name: ssh-host-keys
         image: docker.gitea.com/gitea:1.25.4
         command:
@@ -132,24 +130,27 @@ spec:
         securityContext:
           privileged: true
         volumeMounts:
-        - name: wg-secret
+        - name: wireguard
           mountPath: /etc/wireguard
 
       - name: gitea
         image: docker.gitea.com/gitea:1.25.4
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env
+          export GITEA__server__DOMAIN=$YOLAB_FQDN
+          export GITEA__server__ROOT_URL=https://$YOLAB_FQDN
+          export GITEA__server__SSH_DOMAIN=$YOLAB_FQDN
+          exec /usr/bin/entrypoint
         env:
         - name: USER_UID
           value: "1000"
         - name: USER_GID
           value: "1000"
-        - name: GITEA__server__DOMAIN
-          value: "{{ subdomain_tunnel.domain }}"
-        - name: GITEA__server__ROOT_URL
-          value: "https://{{ subdomain_tunnel.domain }}"
         - name: GITEA__server__HTTP_PORT
           value: "3000"
-        - name: GITEA__server__SSH_DOMAIN
-          value: "{{ subdomain_tunnel.domain }}"
         - name: GITEA__server__SSH_PORT
           value: "22"
         - name: GITEA__database__DB_TYPE
@@ -166,6 +167,8 @@ spec:
           mountPath: /data/ssh
         - name: git-home
           mountPath: /data/git
+        - name: yolab
+          mountPath: /yolab
 
       - name: anubis
         image: ghcr.io/techarohq/anubis:latest
@@ -179,6 +182,11 @@ spec:
 
       - name: caddy
         image: caddy:2
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
         volumeMounts:
         - name: data
           mountPath: /data
@@ -186,14 +194,14 @@ spec:
         - name: caddy-config
           mountPath: /etc/caddy/Caddyfile
           subPath: Caddyfile
+        - name: yolab
+          mountPath: /yolab
 
       volumes:
-      - name: wg-secret
-        secret:
-          secretName: gitea-secrets
-          items:
-          - key: wg_config
-            path: wg0.conf
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
       - name: caddy-config
         configMap:
           name: gitea-caddy

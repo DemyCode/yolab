@@ -5,9 +5,9 @@ import secrets
 import subprocess
 import tempfile
 import tomllib
+import urllib.request
 from pathlib import Path
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from jinja2 import Template
@@ -19,42 +19,32 @@ router = APIRouter()
 
 CATALOG_DIR = Path(settings.yolab_repo_path) / "apps/catalog"
 
-LABEL_MANAGED = "yolab.io/managed"
-ANN_APP_ID    = "yolab.io/app-id"
-ANN_TUNNEL_URL = "yolab.io/tunnel-url"
-ANN_OUTPUTS   = "yolab.io/outputs"
+LABEL_MANAGED   = "yolab.io/managed"
+ANN_APP_ID      = "yolab.io/app-id"
+ANN_OUTPUTS     = "yolab.io/outputs"
 ANN_SERVICE_IDS = "yolab.io/service-ids"
-ANN_CONFIG    = "yolab.io/config"
+ANN_CONFIG      = "yolab.io/config"
 
 
 def _tunnel_config() -> dict:
     return tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
 
 
-def _generate_wg_keypair() -> tuple[str, str]:
-    private = subprocess.check_output(["wg", "genkey"], text=True).strip()
-    public = subprocess.check_output(["wg", "pubkey"], input=private, text=True).strip()
-    return private, public
-
-
 def _normalize_outputs(ann: dict) -> list[dict]:
     raw = ann.get(ANN_OUTPUTS, "")
-    if raw:
-        outputs = json.loads(raw)
-        # Convert old format [{url, ipv6}] to new AppOutput format
-        if outputs and isinstance(outputs[0], dict) and ("url" in outputs[0] or "ipv6" in outputs[0]):
-            result = []
-            for o in outputs:
-                if o.get("url"):
-                    result.append({"key": "url", "label": "Web URL", "value": o["url"], "type": "url"})
-                if o.get("ipv6"):
-                    result.append({"key": "ipv6", "label": "IPv6", "value": o["ipv6"], "type": "text"})
-            return result
-        return outputs
-    tunnel_url = ann.get(ANN_TUNNEL_URL, "")
-    if tunnel_url:
-        return [{"key": "url", "label": "Web URL", "value": tunnel_url, "type": "url"}]
-    return []
+    if not raw:
+        return []
+    outputs = json.loads(raw)
+    # Convert old format [{url, ipv6}] to new AppOutput format
+    if outputs and isinstance(outputs[0], dict) and ("url" in outputs[0] or "ipv6" in outputs[0]):
+        result = []
+        for o in outputs:
+            if o.get("url"):
+                result.append({"key": "url", "label": "Web URL", "value": o["url"], "type": "url"})
+            if o.get("ipv6"):
+                result.append({"key": "ipv6", "label": "IPv6", "value": o["ipv6"], "type": "text"})
+        return result
+    return outputs
 
 
 def _list_installed() -> list[dict]:
@@ -101,28 +91,12 @@ def _list_installed() -> list[dict]:
     return apps
 
 
-def _annotate_namespace(instance_name: str, app_id: str, tunnel_url: str, outputs: list[dict], service_ids: list[int]) -> None:
-    ns = f"yolab-{instance_name}"
-    subprocess.run(
-        ["kubectl", "label", "namespace", ns, f"{LABEL_MANAGED}=true", "--overwrite=true"],
-        capture_output=True,
-    )
-    subprocess.run(
-        ["kubectl", "annotate", "namespace", ns,
-         f"{ANN_APP_ID}={app_id}", f"{ANN_TUNNEL_URL}={tunnel_url}",
-         f"{ANN_OUTPUTS}={json.dumps(outputs)}",
-         f"{ANN_SERVICE_IDS}={json.dumps(service_ids)}", "--overwrite=true"],
-        capture_output=True,
-    )
-
-
 def _delete_tunnels(tunnel_ids: list[int]) -> None:
     if not tunnel_ids:
         return
     tunnel_cfg = tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
     for tid in tunnel_ids:
         try:
-            import urllib.request
             req = urllib.request.Request(
                 f"{tunnel_cfg['platform_api_url']}/tunnels/{tid}?account_token={tunnel_cfg['account_token']}",
                 method="DELETE",
@@ -192,98 +166,16 @@ async def install_app(app_id: str, body: AppInstallRequest):
     schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
     properties = schema.get("properties", {})
 
-    app_meta = tomllib.loads((app_dir / "app.toml").read_text())["app"]
-    tunnel_fields = [k for k, v in properties.items() if v.get("format") == "tunnel"]
-    auto_tunnel = app_meta.get("tunnel", False) and not tunnel_fields
-    auto_fields = {k: secrets.token_urlsafe(32) for k, v in properties.items() if v.get("x-auto") == "password"}
+    # service_name = user-provided subdomain for apps with a DNS tunnel field; "" for WireGuard-only apps
+    tunnel_field = next((k for k, v in properties.items() if v.get("format") == "tunnel"), None)
+    service_name = body.config.get(tunnel_field, "") if tunnel_field else ""
 
+    auto_fields = {k: secrets.token_urlsafe(32) for k, v in properties.items() if v.get("x-auto") == "password"}
     manifest_template = (app_dir / "manifest.yaml.j2").read_text()
 
     async def stream():
       try:
         tunnel_cfg = _tunnel_config()
-        tunnel_vars = {}
-
-        registered_service_ids = []
-
-        for field in tunnel_fields:
-            subdomain = body.config.get(field, field)
-            yield f"data: Generating WireGuard keypair for '{subdomain}'...\n\n"
-            wg_private_key, wg_public_key = await asyncio.to_thread(_generate_wg_keypair)
-
-            yield f"data: Registering tunnel '{subdomain}'...\n\n"
-            async with httpx.AsyncClient(timeout=15) as client:
-                # Step 1: create the WireGuard tunnel
-                resp = await client.post(
-                    f"{tunnel_cfg['platform_api_url']}/tunnels",
-                    json={
-                        "account_token": tunnel_cfg["account_token"],
-                        "wg_public_key": wg_public_key,
-                    },
-                )
-                if resp.status_code != 200:
-                    yield f"data: [ERROR] Tunnel creation failed: {resp.text}\n\n"
-                    await asyncio.to_thread(_delete_tunnels, registered_service_ids)
-                    return
-                tunnel_data = resp.json()
-                tunnel_id = tunnel_data["tunnel_id"]
-                sub_ipv6 = tunnel_data["sub_ipv6"]
-
-                # Step 2: attach AAAA record for the subdomain
-                record_resp = await client.post(
-                    f"{tunnel_cfg['platform_api_url']}/tunnels/{tunnel_id}/records",
-                    json={
-                        "account_token": tunnel_cfg["account_token"],
-                        "record_type": "AAAA",
-                        "name": subdomain,
-                        "value": sub_ipv6,
-                    },
-                )
-                if record_resp.status_code != 200:
-                    yield f"data: [ERROR] DNS record creation failed: {record_resp.text}\n\n"
-                    await asyncio.to_thread(_delete_tunnels, registered_service_ids + [tunnel_id])
-                    return
-                fqdn = record_resp.json()["fqdn"]
-
-            url = f"https://{fqdn}"
-            registered_service_ids.append(tunnel_id)
-            tunnel_vars[f"{field}_tunnel"] = {
-                "url": url,
-                "domain": fqdn,
-                "tunnel_id": tunnel_id,
-                "sub_ipv6": sub_ipv6,
-                "wg_private_key": wg_private_key,
-                "wg_server_public_key": tunnel_data["wg_server_public_key"],
-                "wg_server_endpoint": tunnel_data["wg_server_endpoint"],
-            }
-
-            yield f"data: Tunnel registered — {url}\n\n"
-
-        # Apps that need WireGuard but no DNS record (e.g. Minecraft)
-        if auto_tunnel:
-            yield "data: Generating WireGuard keypair...\n\n"
-            wg_private_key, wg_public_key = await asyncio.to_thread(_generate_wg_keypair)
-            yield "data: Registering WireGuard tunnel...\n\n"
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    f"{tunnel_cfg['platform_api_url']}/tunnels",
-                    json={"account_token": tunnel_cfg["account_token"], "wg_public_key": wg_public_key},
-                )
-                if resp.status_code != 200:
-                    yield f"data: [ERROR] Tunnel creation failed: {resp.text}\n\n"
-                    return
-                tunnel_data = resp.json()
-            tunnel_id = tunnel_data["tunnel_id"]
-            sub_ipv6 = tunnel_data["sub_ipv6"]
-            registered_service_ids.append(tunnel_id)
-            tunnel_vars["tunnel"] = {
-                "tunnel_id": tunnel_id,
-                "sub_ipv6": sub_ipv6,
-                "wg_private_key": wg_private_key,
-                "wg_server_public_key": tunnel_data["wg_server_public_key"],
-                "wg_server_endpoint": tunnel_data["wg_server_endpoint"],
-            }
-            yield f"data: WireGuard tunnel up — IPv6: {sub_ipv6}\n\n"
 
         disk = body.config.get("disk")
         template_disk = disk
@@ -305,9 +197,11 @@ async def install_app(app_id: str, body: AppInstallRequest):
         rendered = Template(manifest_template).render(
             instance_name=body.instance_name,
             app_id=app_id,
+            platform_api_url=tunnel_cfg["platform_api_url"],
+            account_token=tunnel_cfg["account_token"],
+            service_name=service_name,
             **config_with_disk,
             **auto_fields,
-            **tunnel_vars,
         )
 
         yield "data: Applying manifests to cluster...\n\n"
@@ -341,16 +235,7 @@ async def install_app(app_id: str, body: AppInstallRequest):
             capture_output=True,
         )
 
-        outputs = []
-        for t in tunnel_vars.values():
-            if t.get("url"):
-                outputs.append({"key": "url", "label": "Web URL", "value": t["url"], "type": "url"})
-            elif t.get("sub_ipv6"):
-                outputs.append({"key": "ipv6", "label": "IPv6 Address", "value": t["sub_ipv6"], "type": "text"})
-        primary_url = next((t["url"] for t in tunnel_vars.values() if t.get("url")), "")
-        await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, primary_url, outputs, registered_service_ids)
-
-        yield f"data: [DONE] {app_id} installed\n\n"
+        yield f"data: [DONE] {app_id} installed — run 'Scan outputs' once the pod is ready\n\n"
 
       except Exception as e:
         yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
@@ -374,17 +259,13 @@ async def scan_outputs(instance_name: str):
     ann = ns_data.get("metadata", {}).get("annotations", {})
     app_id = ann.get(ANN_APP_ID, "")
 
-    # Try outputs.json spec for this app
-    outputs_spec = []
     outputs_json_path = CATALOG_DIR / app_id / "outputs.json"
-    if outputs_json_path.exists():
-        outputs_spec = json.loads(outputs_json_path.read_text())
-
-    if not outputs_spec:
-        # No spec: return existing annotation outputs
+    if not outputs_json_path.exists():
         return {"outputs": _normalize_outputs(ann)}
 
-    # Scan all pod logs for YOLAB_OUTPUT lines
+    outputs_spec = json.loads(outputs_json_path.read_text())
+
+    # Scan all init container + container logs for pattern matches
     pods_result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "pods", "-n", ns, "-o", "json"],
@@ -404,30 +285,34 @@ async def scan_outputs(instance_name: str):
                     ["kubectl", "logs", "-n", ns, pod_name, "-c", container, "--tail=500"],
                     capture_output=True, text=True,
                 )
-                if logs_result.returncode == 0:
-                    for line in logs_result.stdout.splitlines():
-                        m = re.match(r"^YOLAB_OUTPUT (\S+) (.+)$", line.strip())
-                        if m:
-                            found[m.group(1)] = m.group(2).strip()
+                if logs_result.returncode != 0:
+                    continue
+                for line in logs_result.stdout.splitlines():
+                    for spec in outputs_spec:
+                        key = spec["key"]
+                        if key not in found:
+                            m = re.search(spec["pattern"], line)
+                            if m:
+                                found[key] = m.group(1)
 
     if not found:
         return {"outputs": _normalize_outputs(ann)}
 
     outputs = []
-    service_ids = []
+    tunnel_ids = []
     for spec in outputs_spec:
         key = spec["key"]
         if key in found:
             outputs.append({"key": key, "label": spec.get("label", key), "value": found[key], "type": spec.get("type", "text")})
             if key == "tunnel_id":
                 try:
-                    service_ids.append(int(found[key]))
+                    tunnel_ids.append(int(found[key]))
                 except ValueError:
                     pass
 
     annotations_to_set = [f"{ANN_OUTPUTS}={json.dumps(outputs)}"]
-    if service_ids:
-        annotations_to_set.append(f"{ANN_SERVICE_IDS}={json.dumps(service_ids)}")
+    if tunnel_ids:
+        annotations_to_set.append(f"{ANN_SERVICE_IDS}={json.dumps(tunnel_ids)}")
     await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "annotate", "namespace", ns, *annotations_to_set, "--overwrite=true"],
@@ -451,19 +336,19 @@ async def force_uninstall_app(instance_name: str):
 async def uninstall_app(instance_name: str):
     ns = f"yolab-{instance_name}"
     ns_info = await asyncio.to_thread(subprocess.run, ["kubectl", "get", "namespace", ns, "-o", "json", "--ignore-not-found=true"], capture_output=True, text=True)
-    service_ids = []
+    tunnel_ids = []
     if ns_info.returncode == 0 and ns_info.stdout.strip():
         ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
         raw = ann.get(ANN_SERVICE_IDS, "")
         if raw:
-            service_ids = json.loads(raw)
+            tunnel_ids = json.loads(raw)
 
     result = await asyncio.to_thread(subprocess.run, ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"], capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
 
     await asyncio.to_thread(subprocess.run, ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"], capture_output=True, text=True)
-    await asyncio.to_thread(_delete_tunnels, service_ids)
+    await asyncio.to_thread(_delete_tunnels, tunnel_ids)
     return {"ok": True}
 
 

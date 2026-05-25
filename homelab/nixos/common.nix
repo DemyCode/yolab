@@ -9,6 +9,30 @@ let
   s = import ../shared.nix { inherit pkgs lib inputs; };
   k3sCfg = s.nodeCfg.k3s;
 
+  wgRegisterImage =
+    let
+      script = pkgs.runCommand "wg-register-script" { } ''
+        mkdir -p $out
+        cp ${../../apps/wg-register/setup.sh} $out/setup.sh
+        chmod +x $out/setup.sh
+      '';
+    in
+    pkgs.dockerTools.buildLayeredImage {
+      name = "wg-register";
+      tag = "latest";
+      contents = with pkgs; [
+        wireguard-tools
+        curl
+        jq
+        busybox
+        script
+      ];
+      config.Entrypoint = [
+        "/bin/sh"
+        "/setup.sh"
+      ];
+    };
+
   wgSidecarImage =
     let
       entrypoint = pkgs.runCommand "wg-sidecar-entrypoint" { } ''
@@ -373,7 +397,8 @@ in
       ];
 
     systemd.tmpfiles.rules = [
-      "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar - - - - ${wgSidecarImage}"
+      "L+ /var/lib/rancher/k3s/agent/images/wg-sidecar    - - - - ${wgSidecarImage}"
+      "L+ /var/lib/rancher/k3s/agent/images/wg-register   - - - - ${wgRegisterImage}"
     ];
 
     system.activationScripts.yolabVersion = ''
