@@ -1,6 +1,3 @@
-import asyncio
-from contextlib import asynccontextmanager
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,18 +8,7 @@ from local_api import auth
 from local_api.settings import settings
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    task = asyncio.create_task(disks.auto_enable_loop())
-    yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
