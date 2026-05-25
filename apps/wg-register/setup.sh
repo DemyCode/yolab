@@ -35,22 +35,34 @@ if [ "$REUSE" = "0" ]; then
     PUBLIC_KEY=$(printf '%s' "$PRIVATE_KEY" | wg pubkey)
 
     echo "Registering tunnel..."
-    TUNNEL_RESP=$(curl -sf -X POST "$PLATFORM_API_URL/tunnels" \
+    TUNNEL_RESP=$(curl -s -w "\n%{http_code}" -X POST "$PLATFORM_API_URL/tunnels" \
         -H "Content-Type: application/json" \
         -d "{\"account_token\":\"$ACCOUNT_TOKEN\",\"wg_public_key\":\"$PUBLIC_KEY\"}")
+    TUNNEL_HTTP=$(printf '%s' "$TUNNEL_RESP" | tail -1)
+    TUNNEL_BODY=$(printf '%s' "$TUNNEL_RESP" | head -n -1)
+    if [ "$TUNNEL_HTTP" -lt 200 ] || [ "$TUNNEL_HTTP" -ge 300 ]; then
+        echo "ERROR: POST /tunnels returned HTTP $TUNNEL_HTTP: $TUNNEL_BODY" >&2
+        exit 1
+    fi
 
-    TUNNEL_ID=$(printf '%s' "$TUNNEL_RESP" | jq -r .tunnel_id)
-    SUB_IPV6=$(printf '%s' "$TUNNEL_RESP" | jq -r .sub_ipv6)
-    WG_SERVER_ENDPOINT=$(printf '%s' "$TUNNEL_RESP" | jq -r .wg_server_endpoint)
-    WG_SERVER_PUBLIC_KEY=$(printf '%s' "$TUNNEL_RESP" | jq -r .wg_server_public_key)
+    TUNNEL_ID=$(printf '%s' "$TUNNEL_BODY" | jq -r .tunnel_id)
+    SUB_IPV6=$(printf '%s' "$TUNNEL_BODY" | jq -r .sub_ipv6)
+    WG_SERVER_ENDPOINT=$(printf '%s' "$TUNNEL_BODY" | jq -r .wg_server_endpoint)
+    WG_SERVER_PUBLIC_KEY=$(printf '%s' "$TUNNEL_BODY" | jq -r .wg_server_public_key)
     FQDN=""
 
     if [ -n "$SERVICE_NAME" ]; then
         echo "Creating DNS record '$SERVICE_NAME'..."
-        RECORD_RESP=$(curl -sf -X POST "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/records" \
+        RECORD_RESP=$(curl -s -w "\n%{http_code}" -X POST "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/records" \
             -H "Content-Type: application/json" \
             -d "{\"account_token\":\"$ACCOUNT_TOKEN\",\"record_type\":\"AAAA\",\"name\":\"$SERVICE_NAME\",\"value\":\"$SUB_IPV6\"}")
-        FQDN=$(printf '%s' "$RECORD_RESP" | jq -r .fqdn)
+        RECORD_HTTP=$(printf '%s' "$RECORD_RESP" | tail -1)
+        RECORD_BODY=$(printf '%s' "$RECORD_RESP" | head -n -1)
+        if [ "$RECORD_HTTP" -lt 200 ] || [ "$RECORD_HTTP" -ge 300 ]; then
+            echo "ERROR: POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" >&2
+            exit 1
+        fi
+        FQDN=$(printf '%s' "$RECORD_BODY" | jq -r .fqdn)
     fi
 
     jq -n \
