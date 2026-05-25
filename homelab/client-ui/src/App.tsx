@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppsPage } from "./AppsPage";
 import { DisksPage } from "./DisksPage";
 import { NodesPage } from "./NodesPage";
+import { OverviewPage } from "./OverviewPage";
 import { TerminalPage } from "./TerminalPage";
 
 function LoginPage({ onLogin }: { onLogin: () => void }) {
@@ -11,71 +12,23 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-    setError("");
-    const r = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
+    setLoading(true); setError("");
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
     setLoading(false);
-    if (r.ok) {
-      onLogin();
-    } else {
-      const d = await r.json().catch(() => ({}));
-      setError(d.detail ?? "Login failed");
-    }
+    if (r.ok) onLogin();
+    else { const d = await r.json().catch(() => ({})); setError(d.detail ?? "Login failed"); }
   }
 
   return (
-    <div style={{
-      position: "fixed", inset: 0,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      background: "#f9fafb",
-    }}>
-      <form onSubmit={submit} style={{
-        background: "#fff",
-        border: "1px solid #e5e7eb",
-        borderRadius: 10,
-        padding: "2rem 2.5rem",
-        display: "flex",
-        flexDirection: "column",
-        gap: "1rem",
-        minWidth: 300,
-        fontFamily: "monospace",
-      }}>
+    <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#f9fafb" }}>
+      <form onSubmit={submit} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: "2rem 2.5rem", display: "flex", flexDirection: "column", gap: "1rem", minWidth: 300, fontFamily: "monospace" }}>
         <h2 style={{ margin: 0, fontSize: "1.2rem" }}>YoLab</h2>
         <p style={{ margin: 0, color: "#666", fontSize: "0.85rem" }}>Enter your homelab password to continue.</p>
-        <input
-          type="password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          placeholder="Password"
-          autoFocus
-          style={{
-            padding: "0.5rem 0.75rem",
-            fontSize: "0.95rem",
-            border: "1px solid #d1d5db",
-            borderRadius: 6,
-            fontFamily: "monospace",
-            outline: "none",
-          }}
-        />
+        <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" autoFocus
+          style={{ padding: "0.5rem 0.75rem", fontSize: "0.95rem", border: "1px solid #d1d5db", borderRadius: 6, fontFamily: "monospace", outline: "none" }} />
         {error && <div style={{ color: "#ef4444", fontSize: "0.8rem" }}>{error}</div>}
-        <button
-          type="submit"
-          disabled={loading || !password}
-          style={{
-            padding: "0.55rem 1.2rem",
-            background: loading ? "#999" : "#1a1a1a",
-            color: "#fff",
-            border: "none",
-            borderRadius: 6,
-            fontSize: "0.95rem",
-            cursor: loading ? "not-allowed" : "pointer",
-            fontFamily: "monospace",
-          }}
-        >
+        <button type="submit" disabled={loading || !password}
+          style={{ padding: "0.55rem 1.2rem", background: loading ? "#999" : "#1a1a1a", color: "#fff", border: "none", borderRadius: 6, fontSize: "0.95rem", cursor: loading ? "not-allowed" : "pointer", fontFamily: "monospace" }}>
           {loading ? "…" : "Login"}
         </button>
       </form>
@@ -83,307 +36,39 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
   );
 }
 
-interface Status {
-  commit_hash: string;
-  commit_message: string;
-  commit_date: string;
-  platform: string;
-  flake_target: string;
-  error?: string;
-}
-
-function OverviewPage() {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [updating, setUpdating] = useState(false);
-  const [updateLog, setUpdateLog] = useState<string[]>([]);
-  const [updateDone, setUpdateDone] = useState(false);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [rebuildLog, setRebuildLog] = useState<string[]>([]);
-  const [rebuildRunning, setRebuildRunning] = useState(false);
-  const updateLogRef = useRef<HTMLDivElement>(null);
-  const rebuildLogRef = useRef<HTMLDivElement>(null);
-
+function useRouter() {
+  const [path, setPath] = useState(() => window.location.hash.slice(1) || "/overview");
   useEffect(() => {
-    fetch("/api/status")
-      .then((r) => r.json())
-      .then(setStatus)
-      .catch(() => setStatus(null));
-
-    fetch("/api/update/status")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.running) {
-          setUpdating(true);
-          setUpdateLog(d.log ?? []);
-          streamUpdateLog();
-        }
-      })
-      .catch(() => {});
-
-    loadRebuildLog();
+    const handler = () => setPath(window.location.hash.slice(1) || "/overview");
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
   }, []);
-
-  useEffect(() => {
-    if (updateLogRef.current)
-      updateLogRef.current.scrollTop = updateLogRef.current.scrollHeight;
-  }, [updateLog]);
-
-  useEffect(() => {
-    if (rebuildLogRef.current)
-      rebuildLogRef.current.scrollTop = rebuildLogRef.current.scrollHeight;
-  }, [rebuildLog]);
-
-  function loadRebuildLog(poll = false) {
-    let cancelled = false;
-    async function run() {
-      try {
-        const r = await fetch("/api/rebuild-log");
-        const d = await r.json();
-        if (cancelled) return;
-        setRebuildLog(d.log ?? []);
-        setRebuildRunning(d.running);
-        if (d.running) setTimeout(run, 1500);
-        else if (poll) {
-          fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
-        }
-      } catch {
-        if (!cancelled) setTimeout(run, 3000);
-      }
-    }
-    run();
-    return () => { cancelled = true; };
-  }
-
-  async function streamUpdateLog() {
-    const response = await fetch("/api/update/status");
-    if (!response.ok) return;
-    const d = await response.json();
-    if (!d.running) { setUpdating(false); return; }
-    const poll = async () => {
-      await new Promise((r) => setTimeout(r, 1000));
-      try {
-        const r = await fetch("/api/update/status");
-        const d = await r.json();
-        setUpdateLog(d.log ?? []);
-        if (!d.running) {
-          setUpdating(false);
-          const sawDone = (d.log ?? []).includes("[DONE]");
-          if (sawDone) setUpdateDone(true);
-          else pollUntilAlive();
-          return;
-        }
-      } catch {
-        setUpdating(false);
-        pollUntilAlive();
-        return;
-      }
-      poll();
-    };
-    poll();
-  }
-
-  async function pollUntilAlive() {
-    setReconnecting(true);
-    for (let i = 0; i < 90; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        const r = await fetch("/api/status");
-        if (r.ok) {
-          const s = await r.json();
-          setStatus(s);
-          setReconnecting(false);
-          loadRebuildLog(true);
-          return;
-        }
-      } catch {}
-    }
-    setReconnecting(false);
-  }
-
-  async function runUpdate() {
-    setUpdating(true);
-    setUpdateLog([]);
-    setUpdateDone(false);
-    setReconnecting(false);
-
-    try {
-      const response = await fetch("/api/update", { method: "POST" });
-      if (!response.body) return;
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let sawDone = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop() ?? "";
-        for (const part of parts) {
-          const line = part.startsWith("data: ") ? part.slice(6) : part;
-          if (!line.trim()) continue;
-          if (line === "[DONE]") {
-            sawDone = true;
-            setUpdateDone(true);
-            fetch("/api/status").then((r) => r.json()).then(setStatus).catch(() => {});
-          } else {
-            setUpdateLog((prev) => [...prev, line]);
-          }
-        }
-      }
-
-      if (!sawDone) {
-        setUpdateLog((prev) => [...prev, "[INFO] Connection lost — service is restarting…"]);
-        pollUntilAlive();
-      }
-    } catch {
-      setUpdateLog((prev) => [...prev, "[INFO] Connection lost — service is restarting…"]);
-      pollUntilAlive();
-    }
-
-    setUpdating(false);
-  }
-
-  const shortHash = status?.commit_hash?.slice(0, 8) ?? "—";
-  const commitDate = status?.commit_date
-    ? new Date(status.commit_date).toLocaleString()
-    : "—";
-
-  return (
-    <div>
-      <div style={{
-        background: "#f5f5f5",
-        borderRadius: 8,
-        padding: "1rem 1.25rem",
-        marginBottom: "1.5rem",
-        fontSize: "0.9rem",
-      }}>
-        <div><strong>Platform:</strong> {status?.platform ?? "—"} ({status?.flake_target ?? "—"})</div>
-        <div><strong>Built commit:</strong> {shortHash} — {status?.commit_message ?? "—"}</div>
-        <div><strong>Built at:</strong> {commitDate}</div>
-        {status?.error && <div style={{ color: "red" }}><strong>Error:</strong> {status.error}</div>}
-      </div>
-
-      <button
-        onClick={runUpdate}
-        disabled={updating}
-        style={{
-          padding: "0.6rem 1.4rem",
-          fontSize: "0.95rem",
-          cursor: updating ? "not-allowed" : "pointer",
-          background: updating ? "#999" : "#1a1a1a",
-          color: "#fff",
-          border: "none",
-          borderRadius: 6,
-        }}
-      >
-        {updating ? "Updating…" : "Update & rebuild"}
-      </button>
-
-      {(updateLog.length > 0 || updateDone || reconnecting) && (
-        <div style={{ marginTop: "1.25rem" }}>
-          <div style={{ fontSize: "0.8rem", fontWeight: "bold", color: "#555", marginBottom: "0.4rem" }}>
-            Update log
-          </div>
-          {updateDone && (
-            <div style={{ color: "green", marginBottom: "0.5rem", fontWeight: "bold", fontSize: "0.85rem" }}>
-              Git update complete — rebuild running in background.
-            </div>
-          )}
-          {reconnecting && (
-            <div style={{ color: "#facc15", marginBottom: "0.5rem", fontWeight: "bold", fontSize: "0.85rem" }}>
-              Waiting for service to come back online…
-            </div>
-          )}
-          <div
-            ref={updateLogRef}
-            style={{
-              background: "#111",
-              color: "#eee",
-              borderRadius: 6,
-              padding: "0.75rem 1rem",
-              fontSize: "0.8rem",
-              maxHeight: 200,
-              overflowY: "auto",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-            }}
-          >
-            {updateLog.map((line, i) => (
-              <div key={i} style={{
-                color: line.startsWith("[ERROR]") ? "#f87171" : line.startsWith("$") ? "#86efac" : "#eee",
-              }}>
-                {line}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(rebuildLog.length > 0 || rebuildRunning) && (
-        <div style={{ marginTop: "1.5rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.4rem" }}>
-            {rebuildRunning && (
-              <span style={{
-                display: "inline-block", width: 8, height: 8, borderRadius: "50%",
-                background: "#22c55e", boxShadow: "0 0 6px #22c55e", animation: "pulse 1.5s infinite",
-              }} />
-            )}
-            <span style={{ fontSize: "0.8rem", fontWeight: "bold", color: "#555" }}>
-              {rebuildRunning ? "Rebuild in progress…" : "Last rebuild log"}
-            </span>
-          </div>
-          <div
-            ref={rebuildLogRef}
-            style={{
-              background: "#111",
-              color: "#d1fae5",
-              borderRadius: 6,
-              padding: "0.75rem 1rem",
-              fontSize: "0.78rem",
-              maxHeight: 400,
-              overflowY: "auto",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              fontFamily: "monospace",
-            }}
-          >
-            {rebuildLog.map((line, i) => (
-              <div key={i} style={{
-                color: line.includes("error:") || line.includes("Error") ? "#f87171"
-                  : line.startsWith("warning:") ? "#fbbf24"
-                  : "#d1fae5",
-              }}>
-                {line}
-              </div>
-            ))}
-            {rebuildRunning && <div style={{ color: "#6b7280", marginTop: "0.25rem" }}>▌</div>}
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}</style>
-    </div>
-  );
+  function navigate(to: string) { window.location.hash = to; }
+  return { path, navigate };
 }
 
-type Tab = "overview" | "nodes" | "disks" | "apps" | "terminal";
+function activeSection(path: string): string {
+  if (path.startsWith("/nodes")) return "nodes";
+  if (path.startsWith("/disks")) return "disks";
+  if (path.startsWith("/apps") || path.startsWith("/installed")) return "apps";
+  if (path.startsWith("/terminal")) return "terminal";
+  return "overview";
+}
+
+const TABS = [
+  { id: "overview", label: "Overview", href: "/overview" },
+  { id: "nodes",    label: "Nodes",    href: "/nodes" },
+  { id: "disks",    label: "Disks",    href: "/disks" },
+  { id: "apps",     label: "Apps",     href: "/apps" },
+  { id: "terminal", label: "Terminal", href: "/terminal" },
+];
 
 function App() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const { path, navigate } = useRouter();
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch("/api/status").then(r => {
-      setLoggedIn(r.status !== 401);
-    }).catch(() => setLoggedIn(true));
+    fetch("/api/status").then(r => setLoggedIn(r.status !== 401)).catch(() => setLoggedIn(true));
   }, []);
 
   async function logout() {
@@ -394,47 +79,33 @@ function App() {
   if (loggedIn === null) return null;
   if (!loggedIn) return <LoginPage onLogin={() => setLoggedIn(true)} />;
 
+  const section = activeSection(path);
+
   return (
-    <div style={{ fontFamily: "monospace", maxWidth: 900, margin: "3rem auto", padding: "0 1rem" }}>
+    <div style={{ fontFamily: "monospace", maxWidth: 960, margin: "3rem auto", padding: "0 1rem" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "0.25rem" }}>
-        <h1 style={{ fontSize: "1.6rem", margin: 0 }}>YoLab</h1>
-        <button
-          onClick={logout}
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            fontSize: "0.8rem", color: "#999", fontFamily: "monospace",
-          }}
-        >
-          Logout
-        </button>
+        <h1 style={{ fontSize: "1.6rem", margin: 0, cursor: "pointer" }} onClick={() => navigate("/overview")}>YoLab</h1>
+        <button onClick={logout} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8rem", color: "#999", fontFamily: "monospace" }}>Logout</button>
       </div>
       <p style={{ color: "#666", marginTop: 0, marginBottom: "1rem" }}>Your homelab is up and running.</p>
+
       <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", borderBottom: "2px solid #e5e7eb" }}>
-        {(["overview", "nodes", "disks", "apps", "terminal"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              background: "none",
-              border: "none",
-              borderBottom: tab === t ? "2px solid #1a1a1a" : "2px solid transparent",
-              marginBottom: -2,
-              padding: "0.5rem 0.75rem",
-              cursor: "pointer",
-              fontFamily: "monospace",
-              fontSize: "0.9rem",
-              fontWeight: tab === t ? "bold" : "normal",
-            }}
-          >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
-          </button>
+        {TABS.map(({ id, label, href }) => (
+          <button key={id} onClick={() => navigate(href)} style={{
+            background: "none", border: "none",
+            borderBottom: section === id ? "2px solid #1a1a1a" : "2px solid transparent",
+            marginBottom: -2, padding: "0.5rem 0.75rem",
+            cursor: "pointer", fontFamily: "monospace", fontSize: "0.9rem",
+            fontWeight: section === id ? "bold" : "normal",
+          }}>{label}</button>
         ))}
       </div>
-      {tab === "overview" && <OverviewPage />}
-      {tab === "nodes" && <NodesPage />}
-      {tab === "disks" && <DisksPage />}
-      {tab === "apps" && <AppsPage />}
-      {tab === "terminal" && <TerminalPage />}
+
+      {section === "overview" && <OverviewPage />}
+      {section === "nodes"    && <NodesPage />}
+      {section === "disks"    && <DisksPage />}
+      {section === "apps"     && <AppsPage path={path} navigate={navigate} />}
+      {section === "terminal" && <TerminalPage />}
     </div>
   );
 }

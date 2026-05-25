@@ -20,10 +20,11 @@ router = APIRouter()
 CATALOG_DIR = Path(settings.yolab_repo_path) / "apps/catalog"
 
 LABEL_MANAGED = "yolab.io/managed"
-ANN_APP_ID = "yolab.io/app-id"
+ANN_APP_ID    = "yolab.io/app-id"
 ANN_TUNNEL_URL = "yolab.io/tunnel-url"
-ANN_OUTPUTS = "yolab.io/outputs"
+ANN_OUTPUTS   = "yolab.io/outputs"
 ANN_SERVICE_IDS = "yolab.io/service-ids"
+ANN_CONFIG    = "yolab.io/config"
 
 
 def _tunnel_config() -> dict:
@@ -34,6 +35,26 @@ def _generate_wg_keypair() -> tuple[str, str]:
     private = subprocess.check_output(["wg", "genkey"], text=True).strip()
     public = subprocess.check_output(["wg", "pubkey"], input=private, text=True).strip()
     return private, public
+
+
+def _normalize_outputs(ann: dict) -> list[dict]:
+    raw = ann.get(ANN_OUTPUTS, "")
+    if raw:
+        outputs = json.loads(raw)
+        # Convert old format [{url, ipv6}] to new AppOutput format
+        if outputs and isinstance(outputs[0], dict) and ("url" in outputs[0] or "ipv6" in outputs[0]):
+            result = []
+            for o in outputs:
+                if o.get("url"):
+                    result.append({"key": "url", "label": "Web URL", "value": o["url"], "type": "url"})
+                if o.get("ipv6"):
+                    result.append({"key": "ipv6", "label": "IPv6", "value": o["ipv6"], "type": "text"})
+            return result
+        return outputs
+    tunnel_url = ann.get(ANN_TUNNEL_URL, "")
+    if tunnel_url:
+        return [{"key": "url", "label": "Web URL", "value": tunnel_url, "type": "url"}]
+    return []
 
 
 def _list_installed() -> list[dict]:
@@ -66,18 +87,16 @@ def _list_installed() -> list[dict]:
                 status = "running" if all_ready else "starting"
             else:
                 status = "starting"
-        tunnel_url = ann.get(ANN_TUNNEL_URL, "")
-        outputs_raw = ann.get(ANN_OUTPUTS, "")
-        if outputs_raw:
-            outputs = json.loads(outputs_raw)
-        else:
-            outputs = [{"url": tunnel_url, "ipv6": ""}] if tunnel_url else []
+
+        config_raw = ann.get(ANN_CONFIG, "")
+        config = json.loads(config_raw) if config_raw else {}
+
         apps.append({
             "app_id": ann.get(ANN_APP_ID, ""),
             "instance_name": name,
-            "tunnel_url": tunnel_url,
-            "outputs": outputs,
             "status": status,
+            "outputs": _normalize_outputs(ann),
+            "config": config,
         })
     return apps
 
@@ -268,17 +287,23 @@ async def install_app(app_id: str, body: AppInstallRequest):
             yield f"data: [ERROR] kubectl apply failed (exit {proc.returncode})\n\n"
             return
 
+        # Store user config (excluding auto-generated secrets) in namespace annotation
+        user_config = {k: v for k, v in body.config.items() if k not in auto_fields}
+        await asyncio.to_thread(
+            subprocess.run,
+            ["kubectl", "annotate", "namespace", f"yolab-{body.instance_name}",
+             f"{ANN_CONFIG}={json.dumps(user_config)}", "--overwrite=true"],
+            capture_output=True,
+        )
+
         outputs = [
-            {"url": t["url"], "ipv6": t["sub_ipv6"]}
+            {"key": "url", "label": "Web URL", "value": t["url"], "type": "url"}
             for t in tunnel_vars.values()
         ]
-        primary_url = outputs[0]["url"] if outputs else ""
+        primary_url = tunnel_vars[list(tunnel_vars.keys())[0]]["url"] if tunnel_vars else ""
         await asyncio.to_thread(_annotate_namespace, body.instance_name, app_id, primary_url, outputs, registered_service_ids)
 
         yield f"data: [DONE] {app_id} installed\n\n"
-        for o in outputs:
-            yield f"data:   URL:  {o['url']}\n\n"
-            yield f"data:   IPv6: {o['ipv6']}\n\n"
 
       except Exception as e:
         yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
@@ -286,41 +311,99 @@ async def install_app(app_id: str, body: AppInstallRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.post("/api/apps/{instance_name}/scan-outputs")
+async def scan_outputs(instance_name: str):
+    ns = f"yolab-{instance_name}"
+
+    ns_info = await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "get", "namespace", ns, "-o", "json"],
+        capture_output=True, text=True,
+    )
+    if ns_info.returncode != 0:
+        raise HTTPException(status_code=404, detail="Instance not found")
+
+    ns_data = json.loads(ns_info.stdout)
+    ann = ns_data.get("metadata", {}).get("annotations", {})
+    app_id = ann.get(ANN_APP_ID, "")
+
+    # Try outputs.json spec for this app
+    outputs_spec = []
+    outputs_json_path = CATALOG_DIR / app_id / "outputs.json"
+    if outputs_json_path.exists():
+        outputs_spec = json.loads(outputs_json_path.read_text())
+
+    if not outputs_spec:
+        # No spec: return existing annotation outputs
+        return {"outputs": _normalize_outputs(ann)}
+
+    # Scan all pod logs for YOLAB_OUTPUT lines
+    pods_result = await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "get", "pods", "-n", ns, "-o", "json"],
+        capture_output=True, text=True,
+    )
+
+    found: dict[str, str] = {}
+    if pods_result.returncode == 0:
+        pod_items = json.loads(pods_result.stdout).get("items", [])
+        for pod in pod_items:
+            pod_name = pod["metadata"]["name"]
+            init_containers = [c["name"] for c in pod.get("spec", {}).get("initContainers", [])]
+            containers = [c["name"] for c in pod.get("spec", {}).get("containers", [])]
+            for container in init_containers + containers:
+                logs_result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["kubectl", "logs", "-n", ns, pod_name, "-c", container, "--tail=500"],
+                    capture_output=True, text=True,
+                )
+                if logs_result.returncode == 0:
+                    for line in logs_result.stdout.splitlines():
+                        m = re.match(r"^YOLAB_OUTPUT (\S+) (.+)$", line.strip())
+                        if m:
+                            found[m.group(1)] = m.group(2).strip()
+
+    if not found:
+        return {"outputs": _normalize_outputs(ann)}
+
+    outputs = []
+    service_ids = []
+    for spec in outputs_spec:
+        key = spec["key"]
+        if key in found:
+            outputs.append({"key": key, "label": spec.get("label", key), "value": found[key], "type": spec.get("type", "text")})
+            if key == "service_id":
+                try:
+                    service_ids.append(int(found[key]))
+                except ValueError:
+                    pass
+
+    annotations_to_set = [f"{ANN_OUTPUTS}={json.dumps(outputs)}"]
+    if service_ids:
+        annotations_to_set.append(f"{ANN_SERVICE_IDS}={json.dumps(service_ids)}")
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "annotate", "namespace", ns, *annotations_to_set, "--overwrite=true"],
+        capture_output=True,
+    )
+
+    return {"outputs": outputs}
+
+
 @router.post("/api/apps/{instance_name}/force-uninstall")
 async def force_uninstall_app(instance_name: str):
     ns = f"yolab-{instance_name}"
-    await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "patch", "namespace", ns, "-p", '{"metadata":{"finalizers":[]}}', "--type=merge"],
-        capture_output=True, text=True,
-    )
-    await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "delete", "namespace", ns, "--force", "--grace-period=0", "--ignore-not-found=true"],
-        capture_output=True, text=True,
-    )
-    await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "patch", "pv", f"{ns}-data", "-p", '{"metadata":{"finalizers":[]}}', "--type=merge"],
-        capture_output=True, text=True,
-    )
-    await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "delete", "pv", f"{ns}-data", "--force", "--grace-period=0", "--ignore-not-found=true"],
-        capture_output=True, text=True,
-    )
+    await asyncio.to_thread(subprocess.run, ["kubectl", "patch", "namespace", ns, "-p", '{"metadata":{"finalizers":[]}}', "--type=merge"], capture_output=True, text=True)
+    await asyncio.to_thread(subprocess.run, ["kubectl", "delete", "namespace", ns, "--force", "--grace-period=0", "--ignore-not-found=true"], capture_output=True, text=True)
+    await asyncio.to_thread(subprocess.run, ["kubectl", "patch", "pv", f"{ns}-data", "-p", '{"metadata":{"finalizers":[]}}', "--type=merge"], capture_output=True, text=True)
+    await asyncio.to_thread(subprocess.run, ["kubectl", "delete", "pv", f"{ns}-data", "--force", "--grace-period=0", "--ignore-not-found=true"], capture_output=True, text=True)
     return {"ok": True}
 
 
 @router.delete("/api/apps/{instance_name}")
 async def uninstall_app(instance_name: str):
     ns = f"yolab-{instance_name}"
-    # Read service IDs before deleting the namespace
-    ns_info = await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "get", "namespace", ns, "-o", "json", "--ignore-not-found=true"],
-        capture_output=True, text=True,
-    )
+    ns_info = await asyncio.to_thread(subprocess.run, ["kubectl", "get", "namespace", ns, "-o", "json", "--ignore-not-found=true"], capture_output=True, text=True)
     service_ids = []
     if ns_info.returncode == 0 and ns_info.stdout.strip():
         ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
@@ -328,54 +411,31 @@ async def uninstall_app(instance_name: str):
         if raw:
             service_ids = json.loads(raw)
 
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"],
-        capture_output=True, text=True,
-    )
+    result = await asyncio.to_thread(subprocess.run, ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"], capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
 
-    await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"],
-        capture_output=True, text=True,
-    )
-
+    await asyncio.to_thread(subprocess.run, ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"], capture_output=True, text=True)
     await asyncio.to_thread(_delete_tunnels, service_ids)
     return {"ok": True}
 
 
 @router.get("/api/apps/{instance_name}/pods")
 async def list_pods(instance_name: str):
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "get", "pods", "-n", f"yolab-{instance_name}", "-o", "json"],
-        capture_output=True, text=True,
-    )
+    result = await asyncio.to_thread(subprocess.run, ["kubectl", "get", "pods", "-n", f"yolab-{instance_name}", "-o", "json"], capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=result.stderr)
     items = json.loads(result.stdout).get("items", [])
     return [
-        {
-            "name": p["metadata"]["name"],
-            "phase": p["status"].get("phase", "Unknown"),
-            "ready": any(
-                c["type"] == "Ready" and c["status"] == "True"
-                for c in p["status"].get("conditions", [])
-            ),
-        }
+        {"name": p["metadata"]["name"], "phase": p["status"].get("phase", "Unknown"),
+         "ready": any(c["type"] == "Ready" and c["status"] == "True" for c in p["status"].get("conditions", []))}
         for p in items
     ]
 
 
 @router.get("/api/apps/{instance_name}/describe/{pod_name}")
 async def describe_pod(instance_name: str, pod_name: str):
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["kubectl", "describe", "pod", pod_name, "-n", f"yolab-{instance_name}"],
-        capture_output=True, text=True,
-    )
+    result = await asyncio.to_thread(subprocess.run, ["kubectl", "describe", "pod", pod_name, "-n", f"yolab-{instance_name}"], capture_output=True, text=True)
     return {"output": result.stdout + result.stderr}
 
 
@@ -385,8 +445,7 @@ async def pod_logs(instance_name: str, pod_name: str):
         proc = await asyncio.create_subprocess_exec(
             "kubectl", "logs", "-n", f"yolab-{instance_name}", pod_name,
             "--all-containers=true", "--follow", "--prefix=true", "--tail=100",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
         while True:
             line = await proc.stdout.readline()
