@@ -721,21 +721,7 @@ function InstalledDetailPage({
     }
   }
 
-  async function doForceUninstall() {
-    setUninstalling(true);
-    setUninstallError("");
-    const r = await fetch(`/api/apps/${instanceName}/force-uninstall`, {
-      method: "POST",
-    });
-    if (r.ok) navigate("/apps");
-    else {
-      const d = await r.json().catch(() => ({}));
-      setUninstallError(d.detail ?? "Force uninstall failed");
-      setUninstalling(false);
-    }
-  }
-
-  if (!app)
+if (!app)
     return (
       <div>
         <BackButton onClick={() => navigate("/apps")} />
@@ -766,24 +752,7 @@ function InstalledDetailPage({
           <StatusBadge status={app.status} />
         </div>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          {app.status === "uninstalling" && (
-            <button
-              onClick={doForceUninstall}
-              disabled={uninstalling}
-              style={{
-                fontSize: "0.75rem",
-                padding: "0.3rem 0.7rem",
-                borderRadius: 5,
-                cursor: "pointer",
-                border: "1px solid #dc2626",
-                background: "#dc2626",
-                color: "#fff",
-              }}
-            >
-              {uninstalling ? "Forcing…" : "Force uninstall"}
-            </button>
-          )}
-          <button
+<button
             onClick={doUninstall}
             disabled={uninstalling || app.status === "uninstalling"}
             style={{
