@@ -4,7 +4,6 @@ import re
 import subprocess
 import tempfile
 import tomllib
-import urllib.request
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -21,7 +20,6 @@ CATALOG_DIR = Path(settings.yolab_repo_path) / "apps/catalog"
 LABEL_MANAGED = "yolab.io/managed"
 ANN_APP_ID = "yolab.io/app-id"
 ANN_OUTPUTS = "yolab.io/outputs"
-ANN_SERVICE_IDS = "yolab.io/service-ids"
 ANN_CONFIG = "yolab.io/config"
 
 
@@ -103,20 +101,6 @@ def _list_installed() -> list[dict]:
         )
     return apps
 
-
-def _delete_tunnels(tunnel_ids: list[int]) -> None:
-    if not tunnel_ids:
-        return
-    tunnel_cfg = tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
-    for tid in tunnel_ids:
-        try:
-            req = urllib.request.Request(
-                f"{tunnel_cfg['platform_api_url']}/tunnels/{tid}?account_token={tunnel_cfg['account_token']}",
-                method="DELETE",
-            )
-            urllib.request.urlopen(req, timeout=10)
-        except Exception as e:
-            print(f"[warn] failed to delete tunnel {tid}: {e}")
 
 
 class AppInstallRequest(BaseModel):
@@ -368,8 +352,6 @@ async def scan_outputs(instance_name: str):
                     pass
 
     annotations_to_set = [f"{ANN_OUTPUTS}={json.dumps(outputs)}"]
-    if tunnel_ids:
-        annotations_to_set.append(f"{ANN_SERVICE_IDS}={json.dumps(tunnel_ids)}")
     await asyncio.to_thread(
         subprocess.run,
         [
@@ -397,23 +379,48 @@ async def uninstall_app(instance_name: str):
         capture_output=True,
         text=True,
     )
-    tunnel_ids = []
+
     if ns_info.returncode == 0 and ns_info.stdout.strip():
         ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
-        raw = ann.get(ANN_SERVICE_IDS, "")
-        if raw:
-            tunnel_ids = json.loads(raw)
+        app_id = ann.get(ANN_APP_ID, "")
+        uninstall_j2 = CATALOG_DIR / app_id / "uninstall.yaml.j2" if app_id else None
+
+        if uninstall_j2 and uninstall_j2.exists():
+            try:
+                config = json.loads(ann.get(ANN_CONFIG, "{}") or "{}")
+                outputs = _normalize_outputs(ann)
+                output_vars = {f"output_{o['key']}": o["value"] for o in outputs}
+                tunnel_cfg = _tunnel_config()
+                rendered = Template(uninstall_j2.read_text()).render(
+                    instance_name=instance_name,
+                    app_id=app_id,
+                    platform_api_url=tunnel_cfg["platform_api_url"],
+                    account_token=tunnel_cfg["account_token"],
+                    **config,
+                    **output_vars,
+                )
+                with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+                    f.write(rendered)
+                    manifest_path = f.name
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["kubectl", "apply", "-f", manifest_path],
+                    capture_output=True,
+                )
+                Path(manifest_path).unlink(missing_ok=True)
+                # Wait for cleanup to finish; proceed regardless of outcome
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["kubectl", "wait", "job/uninstall", "-n", ns,
+                     "--for=condition=complete", "--timeout=120s"],
+                    capture_output=True,
+                )
+            except Exception as e:
+                print(f"[warn] uninstall job for {instance_name} failed: {e}")
 
     result = await asyncio.to_thread(
         subprocess.run,
-        [
-            "kubectl",
-            "delete",
-            "namespace",
-            ns,
-            "--ignore-not-found=true",
-            "--wait=false",
-        ],
+        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"],
         capture_output=True,
         text=True,
     )
@@ -422,18 +429,10 @@ async def uninstall_app(instance_name: str):
 
     await asyncio.to_thread(
         subprocess.run,
-        [
-            "kubectl",
-            "delete",
-            "pv",
-            f"{ns}-data",
-            "--ignore-not-found=true",
-            "--wait=false",
-        ],
+        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"],
         capture_output=True,
         text=True,
     )
-    await asyncio.to_thread(_delete_tunnels, tunnel_ids)
     return {"ok": True}
 
 
