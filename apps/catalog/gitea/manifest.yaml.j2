@@ -115,10 +115,6 @@ spec:
 
       - name: gitea
         image: docker.gitea.com/gitea:1.25.4
-        securityContext:
-          capabilities:
-            add:
-            - NET_BIND_SERVICE
         env:
         - name: USER_UID
           value: "1000"
@@ -134,12 +130,6 @@ spec:
           value: "{{ subdomain_tunnel.domain }}"
         - name: GITEA__server__SSH_PORT
           value: "22"
-        - name: GITEA__server__SSH_LISTEN_PORT
-          value: "22"
-        - name: GITEA__server__START_SSH_SERVER
-          value: "true"
-        - name: GITEA__server__SSH_SERVER_HOST_KEYS
-          value: "/run/gitea-ssh/ssh_host_ed25519_key"
         - name: GITEA__database__DB_TYPE
           value: "sqlite3"
         - name: GITEA__database__PATH
@@ -151,8 +141,7 @@ spec:
           mountPath: /data
           subPath: {{ instance_name }}/gitea
         - name: ssh-host-keys
-          mountPath: /run/gitea-ssh
-          readOnly: true
+          mountPath: /data/ssh
 
       - name: anubis
         image: ghcr.io/techarohq/anubis:latest
