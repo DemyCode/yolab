@@ -39,13 +39,11 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: Build ISO
-        working-directory: homelab
         run: |
-          nix build .#iso --print-build-logs
+          nix build path:.#iso --print-build-logs --print-out-paths --verbose
 
       - name: Get ISO info
         id: iso_info
-        working-directory: homelab
         run: |
           ISO_PATH=$(readlink -f result/iso/*.iso)
           ISO_NAME=$(basename "$ISO_PATH")
