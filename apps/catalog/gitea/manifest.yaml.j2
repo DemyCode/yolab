@@ -83,6 +83,26 @@ spec:
       labels:
         app: gitea
     spec:
+      initContainers:
+      - name: ssh-host-keys
+        image: docker.gitea.com/gitea:1.25.4
+        command:
+        - sh
+        - -c
+        - |
+          mkdir -p /ssh-store
+          if [ ! -f /ssh-store/ssh_host_ed25519_key ]; then
+            ssh-keygen -t ed25519 -f /ssh-store/ssh_host_ed25519_key -N ""
+          fi
+          cp /ssh-store/ssh_host_ed25519_key /ssh-live/ssh_host_ed25519_key
+          chmod 600 /ssh-live/ssh_host_ed25519_key
+        volumeMounts:
+        - name: data
+          mountPath: /ssh-store
+          subPath: {{ instance_name }}/gitea-ssh
+        - name: ssh-host-keys
+          mountPath: /ssh-live
+
       containers:
       - name: wireguard
         image: wg-sidecar:latest
@@ -118,6 +138,8 @@ spec:
           value: "22"
         - name: GITEA__server__START_SSH_SERVER
           value: "true"
+        - name: GITEA__server__SSH_SERVER_HOST_KEYS
+          value: "/run/gitea-ssh/ssh_host_ed25519_key"
         - name: GITEA__database__DB_TYPE
           value: "sqlite3"
         - name: GITEA__database__PATH
@@ -128,6 +150,9 @@ spec:
         - name: data
           mountPath: /data
           subPath: {{ instance_name }}/gitea
+        - name: ssh-host-keys
+          mountPath: /run/gitea-ssh
+          readOnly: true
 
       - name: anubis
         image: ghcr.io/techarohq/anubis:latest
@@ -159,6 +184,8 @@ spec:
       - name: caddy-config
         configMap:
           name: gitea-caddy
+      - name: ssh-host-keys
+        emptyDir: {}
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data
