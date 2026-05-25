@@ -103,6 +103,28 @@ spec:
         - name: ssh-host-keys
           mountPath: /ssh-live
 
+      - name: regenerate-auth-keys
+        image: docker.gitea.com/gitea:1.25.4
+        command:
+        - sh
+        - -c
+        - |
+          mkdir -p /data/git/.ssh
+          gitea admin regenerate keys || true
+        env:
+        - name: GITEA__database__DB_TYPE
+          value: "sqlite3"
+        - name: GITEA__database__PATH
+          value: "/data/gitea/gitea.db"
+        - name: GITEA__server__SSH_KEY_PATH
+          value: "/data/git/.ssh/authorized_keys"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/gitea
+        - name: git-home
+          mountPath: /data/git
+
       containers:
       - name: wireguard
         image: wg-sidecar:latest
@@ -142,6 +164,8 @@ spec:
           subPath: {{ instance_name }}/gitea
         - name: ssh-host-keys
           mountPath: /data/ssh
+        - name: git-home
+          mountPath: /data/git
 
       - name: anubis
         image: ghcr.io/techarohq/anubis:latest
@@ -174,6 +198,8 @@ spec:
         configMap:
           name: gitea-caddy
       - name: ssh-host-keys
+        emptyDir: {}
+      - name: git-home
         emptyDir: {}
       - name: data
         persistentVolumeClaim:
