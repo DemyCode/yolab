@@ -96,7 +96,11 @@ def _list_installed() -> list[dict]:
         if outputs_spec_path and outputs_spec_path.exists():
             try:
                 outputs_spec = [
-                    {"key": o["key"], "label": o.get("label", o["key"]), "type": o.get("type", "text")}
+                    {
+                        "key": o["key"],
+                        "label": o.get("label", o["key"]),
+                        "type": o.get("type", "text"),
+                    }
                     for o in json.loads(outputs_spec_path.read_text())
                     if o.get("type") != "hidden"
                 ]
@@ -114,7 +118,6 @@ def _list_installed() -> list[dict]:
             }
         )
     return apps
-
 
 
 class AppInstallRequest(BaseModel):
@@ -382,8 +385,6 @@ async def scan_outputs(instance_name: str):
     return {"outputs": outputs}
 
 
-
-
 @router.delete("/apps/{instance_name}")
 async def uninstall_app(instance_name: str):
     ns = f"yolab-{instance_name}"
@@ -413,7 +414,9 @@ async def uninstall_app(instance_name: str):
                     **config,
                     **output_vars,
                 )
-                with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+                with tempfile.NamedTemporaryFile(
+                    suffix=".yaml", mode="w", delete=False
+                ) as f:
                     f.write(rendered)
                     manifest_path = f.name
                 await asyncio.to_thread(
@@ -425,8 +428,15 @@ async def uninstall_app(instance_name: str):
                 # Wait for cleanup to finish; proceed regardless of outcome
                 await asyncio.to_thread(
                     subprocess.run,
-                    ["kubectl", "wait", "job/uninstall", "-n", ns,
-                     "--for=condition=complete", "--timeout=120s"],
+                    [
+                        "kubectl",
+                        "wait",
+                        "job/uninstall",
+                        "-n",
+                        ns,
+                        "--for=condition=complete",
+                        "--timeout=120s",
+                    ],
                     capture_output=True,
                 )
             except Exception as e:
@@ -434,7 +444,14 @@ async def uninstall_app(instance_name: str):
 
     result = await asyncio.to_thread(
         subprocess.run,
-        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"],
+        [
+            "kubectl",
+            "delete",
+            "namespace",
+            ns,
+            "--ignore-not-found=true",
+            "--wait=false",
+        ],
         capture_output=True,
         text=True,
     )
@@ -443,7 +460,14 @@ async def uninstall_app(instance_name: str):
 
     await asyncio.to_thread(
         subprocess.run,
-        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"],
+        [
+            "kubectl",
+            "delete",
+            "pv",
+            f"{ns}-data",
+            "--ignore-not-found=true",
+            "--wait=false",
+        ],
         capture_output=True,
         text=True,
     )

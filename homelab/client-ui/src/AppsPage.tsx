@@ -636,6 +636,15 @@ function InstalledDetailPage({
       .catch(() => {});
   }
 
+  function scanOutputs(): Promise<void> {
+    return fetch(`/api/apps/${instanceName}/scan-outputs`, { method: "POST" })
+      .then((r) => r.json())
+      .then((data) =>
+        setApp((prev) => (prev ? { ...prev, outputs: data.outputs } : prev)),
+      )
+      .catch(() => {});
+  }
+
   useEffect(() => {
     loadApp();
     loadPods();
@@ -700,18 +709,6 @@ function InstalledDetailPage({
     [],
   );
 
-  async function scanOutputs() {
-    setScanning(true);
-    const r = await fetch(`/api/apps/${instanceName}/scan-outputs`, {
-      method: "POST",
-    }).catch(() => null);
-    if (r?.ok) {
-      const data = await r.json();
-      setApp((prev) => (prev ? { ...prev, outputs: data.outputs } : prev));
-    }
-    setScanning(false);
-  }
-
   async function doUninstall() {
     if (!confirming) {
       setConfirming(true);
@@ -729,7 +726,7 @@ function InstalledDetailPage({
     }
   }
 
-if (!app)
+  if (!app)
     return (
       <div>
         <BackButton onClick={() => navigate("/apps")} />
@@ -759,7 +756,7 @@ if (!app)
           <StatusBadge status={app.status} />
         </div>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-<button
+          <button
             onClick={doUninstall}
             disabled={uninstalling || app.status === "uninstalling"}
             style={{
@@ -842,7 +839,9 @@ if (!app)
               key={spec.key}
               style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}
             >
-              <span style={{ fontSize: "0.72rem", color: "#888", minWidth: 80 }}>
+              <span
+                style={{ fontSize: "0.72rem", color: "#888", minWidth: 80 }}
+              >
                 {spec.label}
               </span>
               {scanned ? (
@@ -852,18 +851,31 @@ if (!app)
                       href={scanned.value}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: "0.83rem", color: "#7c3aed", fontFamily: "monospace" }}
+                      style={{
+                        fontSize: "0.83rem",
+                        color: "#7c3aed",
+                        fontFamily: "monospace",
+                      }}
                     >
                       {scanned.value}
                     </a>
                   ) : (
-                    <span style={{ fontSize: "0.83rem", fontFamily: "monospace" }}>
+                    <span
+                      style={{ fontSize: "0.83rem", fontFamily: "monospace" }}
+                    >
                       {scanned.value}
                     </span>
                   )}
                   <button
                     onClick={() => copyText(scanned.value)}
-                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.65rem", color: "#bbb", padding: 0 }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "0.65rem",
+                      color: "#bbb",
+                      padding: 0,
+                    }}
                   >
                     copy
                   </button>
@@ -878,7 +890,10 @@ if (!app)
         })}
       </div>
       <button
-        onClick={scanOutputs}
+        onClick={() => {
+          setScanning(true);
+          scanOutputs().finally(() => setScanning(false));
+        }}
         disabled={scanning}
         style={{
           fontSize: "0.78rem",
