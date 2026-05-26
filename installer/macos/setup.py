@@ -116,15 +116,17 @@ def main():
             import urllib.request
 
             try:
+                auth_headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {account_token}",
+                }
+
                 # Step 1: create tunnel (WireGuard peer + IPv6, no DNS)
-                payload1 = json.dumps({
-                    "account_token": account_token,
-                    "wg_public_key": wg_public_key,
-                }).encode()
+                payload1 = json.dumps({"wg_public_key": wg_public_key}).encode()
                 req1 = urllib.request.Request(
                     f"{platform_api_url}/tunnels",
                     data=payload1,
-                    headers={"Content-Type": "application/json"},
+                    headers=auth_headers,
                     method="POST",
                 )
                 with urllib.request.urlopen(req1, timeout=10) as resp1:
@@ -135,7 +137,6 @@ def main():
 
                 # Step 2: attach AAAA record for the management domain
                 payload2 = json.dumps({
-                    "account_token": account_token,
                     "record_type": "AAAA",
                     "name": service_name,
                     "value": sub_ipv6,
@@ -143,7 +144,7 @@ def main():
                 req2 = urllib.request.Request(
                     f"{platform_api_url}/tunnels/{tunnel_id}/records",
                     data=payload2,
-                    headers={"Content-Type": "application/json"},
+                    headers=auth_headers,
                     method="POST",
                 )
                 with urllib.request.urlopen(req2, timeout=10) as resp2:

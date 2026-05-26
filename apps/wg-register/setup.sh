@@ -37,7 +37,8 @@ if [ "$REUSE" = "0" ]; then
     echo "Registering tunnel..."
     TUNNEL_RESP=$(curl -s -w "\n%{http_code}" -X POST "$PLATFORM_API_URL/tunnels" \
         -H "Content-Type: application/json" \
-        -d "{\"account_token\":\"$ACCOUNT_TOKEN\",\"wg_public_key\":\"$PUBLIC_KEY\"}")
+        -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+        -d "{\"wg_public_key\":\"$PUBLIC_KEY\"}")
     TUNNEL_HTTP=$(printf '%s' "$TUNNEL_RESP" | tail -1)
     TUNNEL_BODY=$(printf '%s' "$TUNNEL_RESP" | head -n -1)
     if [ "$TUNNEL_HTTP" -lt 200 ] || [ "$TUNNEL_HTTP" -ge 300 ]; then
@@ -55,7 +56,8 @@ if [ "$REUSE" = "0" ]; then
         echo "Creating DNS record '$SERVICE_NAME'..."
         RECORD_RESP=$(curl -s -w "\n%{http_code}" -X POST "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/records" \
             -H "Content-Type: application/json" \
-            -d "{\"account_token\":\"$ACCOUNT_TOKEN\",\"record_type\":\"AAAA\",\"name\":\"$SERVICE_NAME\",\"value\":\"$SUB_IPV6\"}")
+            -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+            -d "{\"record_type\":\"AAAA\",\"name\":\"$SERVICE_NAME\",\"value\":\"$SUB_IPV6\"}")
         RECORD_HTTP=$(printf '%s' "$RECORD_RESP" | tail -1)
         RECORD_BODY=$(printf '%s' "$RECORD_RESP" | head -n -1)
         if [ "$RECORD_HTTP" -lt 200 ] || [ "$RECORD_HTTP" -ge 300 ]; then

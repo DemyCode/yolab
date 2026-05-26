@@ -14,10 +14,13 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
 
     private_key, public_key = generate_wg_keypair()
 
+    headers = {"Authorization": f"Bearer {account_token}"}
+
     # Step 1: create the WireGuard tunnel (allocates IPv6, no DNS)
     resp = httpx.post(
         f"{PLATFORM_API}/tunnels",
-        json={"account_token": account_token, "wg_public_key": public_key},
+        headers=headers,
+        json={"wg_public_key": public_key},
         timeout=15,
     )
     resp.raise_for_status()
@@ -31,8 +34,8 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
     # Step 2: attach an AAAA record so the management domain resolves
     record_resp = httpx.post(
         f"{PLATFORM_API}/tunnels/{tunnel_id}/records",
+        headers=headers,
         json={
-            "account_token": account_token,
             "record_type": "AAAA",
             "name": service_name,
             "value": sub_ipv6,
@@ -44,7 +47,8 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
 
     node_resp = httpx.post(
         f"{PLATFORM_API}/nodes",
-        json={"account_token": account_token, "wg_public_key": public_key},
+        headers=headers,
+        json={"wg_public_key": public_key},
         timeout=15,
     )
     node_resp.raise_for_status()
