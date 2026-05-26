@@ -1,3 +1,0 @@
-librespeed2.1.demycode.ovh {
-    reverse_proxy librespeed:80
-}
