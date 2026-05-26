@@ -1,0 +1,23 @@
+{
+  "title": "2FAuth",
+  "type": "object",
+  "required": ["subdomain", "disk", "app_key"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "2fauth"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    },
+    "app_key": {
+      "type": "string",
+      "title": "App Key",
+      "description": "Encryption key for stored 2FA secrets. Generate: echo \"base64:$(openssl rand -base64 32)\". Save it — losing it makes stored codes unrecoverable."
+    }
+  }
+}

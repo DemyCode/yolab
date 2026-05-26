@@ -1,0 +1,6 @@
+[app]
+id = "2fauth"
+name = "2FAuth"
+description = "Web app for managing two-factor authentication codes"
+icon = "🔑"
+category = "security"

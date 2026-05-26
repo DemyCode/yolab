@@ -1,0 +1,6 @@
+[app]
+id = "strfry"
+name = "Strfry"
+description = "Nostr relay"
+icon = "📡"
+category = "communication"
