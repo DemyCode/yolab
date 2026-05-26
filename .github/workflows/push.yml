@@ -1,0 +1,125 @@
+name: push
+
+on:
+  push:
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}-${{ hashFiles('flake.lock') }}
+
+      - name: Run pre-commit
+        run: nix develop path:. --command pre-commit run --all-files --show-diff-on-failure
+        env:
+          UV_PYTHON_PREFERENCE: only-system
+
+  build-images:
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set branch tag
+        id: tag
+        run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >> $GITHUB_OUTPUT
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push wg-sidecar
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/wg-sidecar
+          push: true
+          tags: ghcr.io/demycode/wg-sidecar:${{ steps.tag.outputs.value }}-latest
+
+      - name: Build and push wg-register
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/wg-register
+          push: true
+          tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
+
+  build-iso:
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set branch tag
+        id: tag
+        run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >> $GITHUB_OUTPUT
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build ISO
+        run: nix build path:.#iso --print-build-logs --print-out-paths --verbose
+
+      - name: Get ISO info
+        id: iso_info
+        run: |
+          ISO_PATH=$(readlink -f result/iso/*.iso)
+          ISO_NAME=$(basename "$ISO_PATH")
+          echo "iso_path=$ISO_PATH" >> $GITHUB_OUTPUT
+          echo "iso_name=$ISO_NAME" >> $GITHUB_OUTPUT
+          echo "ISO built: $ISO_NAME"
+          ls -lh "$ISO_PATH"
+
+      - name: Create/Update Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}-latest
+          name: NixOS Homelab Installer — ${{ steps.tag.outputs.value }}
+          files: ${{ steps.iso_info.outputs.iso_path }}
+          body: |
+            ## NixOS Homelab Installer ISO
+
+            This ISO can be used to install the homelab configuration.
+
+            **Usage:**
+            - Download the ISO file
+            - Write to USB drive using Rufus (Windows) or dd (Linux/macOS):
+              ```bash
+              sudo dd if=${{ steps.iso_info.outputs.iso_name }} of=/dev/sdX bs=4M status=progress && sync
+              ```
+            - Boot from USB and follow installation instructions
+
+            **Branch:** `${{ github.ref_name }}`
+            **Built from:** `${{ github.sha }}`
+            **Built at:** ${{ github.event.head_commit.timestamp }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-homelab-installer-${{ steps.tag.outputs.value }}-${{ github.sha }}
+          path: ${{ steps.iso_info.outputs.iso_path }}
+          retention-days: 7
