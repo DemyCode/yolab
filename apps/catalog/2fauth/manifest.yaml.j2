@@ -81,6 +81,26 @@ spec:
           mountPath: /state
           subPath: "{{ instance_name }}/yolab-state"
 
+      - name: gen-secrets
+        image: busybox:1.37
+        command:
+        - /bin/sh
+        - -c
+        - |
+          SECRETS=/state/secrets.env
+          if [ ! -f "$SECRETS" ]; then
+            TMP=$(mktemp "${SECRETS}.XXXXXX")
+            printf 'APP_KEY=base64:%s\n' "$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | base64 | tr -d '\n')" > "$TMP"
+            mv "$TMP" "$SECRETS"
+          fi
+          cp "$SECRETS" /yolab/secrets.env
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+        - name: yolab
+          mountPath: /yolab
+
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
@@ -110,8 +130,6 @@ spec:
       - name: 2fauth
         image: 2fauth/2fauth:latest
         env:
-        - name: APP_KEY
-          value: "{{ app_key }}"
         - name: APP_ENV
           value: production
         - name: DB_CONNECTION
@@ -127,6 +145,7 @@ spec:
         - -c
         - |
           . /yolab/env
+          . /yolab/secrets.env
           export APP_URL="https://$YOLAB_FQDN"
           exec /entrypoint.sh
         volumeMounts:

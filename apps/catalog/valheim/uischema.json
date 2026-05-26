@@ -1,5 +1,8 @@
 {
   "disk": {
     "ui:field": "DiskField"
+  },
+  "server_pass": {
+    "ui:widget": "PasswordWidget"
   }
 }

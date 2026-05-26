@@ -1,7 +1,7 @@
 {
   "title": "Reactive Resume",
   "type": "object",
-  "required": ["subdomain", "disk", "auth_secret"],
+  "required": ["subdomain", "disk"],
   "properties": {
     "subdomain": {
       "type": "string",
@@ -13,11 +13,6 @@
       "type": "object",
       "title": "Storage disk",
       "format": "disk"
-    },
-    "auth_secret": {
-      "type": "string",
-      "title": "Auth secret",
-      "description": "Random secret for signing tokens. Generate: openssl rand -hex 32"
     }
   }
 }

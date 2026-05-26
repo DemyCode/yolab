@@ -1,7 +1,7 @@
 {
   "title": "Dawarich",
   "type": "object",
-  "required": ["subdomain", "disk", "secret_key_base"],
+  "required": ["subdomain", "disk"],
   "properties": {
     "subdomain": {
       "type": "string",
@@ -13,11 +13,6 @@
       "type": "object",
       "title": "Storage disk",
       "format": "disk"
-    },
-    "secret_key_base": {
-      "type": "string",
-      "title": "Secret key base",
-      "description": "Random secret for Rails. Generate: openssl rand -hex 64"
     },
     "time_zone": {
       "type": "string",

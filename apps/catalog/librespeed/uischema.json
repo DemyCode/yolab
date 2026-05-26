@@ -4,5 +4,8 @@
   },
   "disk": {
     "ui:field": "DiskField"
+  },
+  "password": {
+    "ui:widget": "PasswordWidget"
   }
 }

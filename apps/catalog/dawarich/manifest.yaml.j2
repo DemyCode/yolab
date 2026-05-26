@@ -81,6 +81,26 @@ spec:
           mountPath: /state
           subPath: "{{ instance_name }}/yolab-state"
 
+      - name: gen-secrets
+        image: busybox:1.37
+        command:
+        - /bin/sh
+        - -c
+        - |
+          SECRETS=/state/secrets.env
+          if [ ! -f "$SECRETS" ]; then
+            TMP=$(mktemp "${SECRETS}.XXXXXX")
+            printf 'SECRET_KEY_BASE=%s\n' "$(tr -dc a-f0-9 </dev/urandom | head -c 128)" > "$TMP"
+            mv "$TMP" "$SECRETS"
+          fi
+          cp "$SECRETS" /yolab/secrets.env
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+        - name: yolab
+          mountPath: /yolab
+
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
@@ -113,6 +133,7 @@ spec:
         args:
         - |
           . /yolab/env
+          . /yolab/secrets.env
           export APPLICATION_HOSTS="localhost,$YOLAB_FQDN,127.0.0.1,::1"
           exec web-entrypoint.sh bin/rails server -p 3000 -b ::
         env:
@@ -134,8 +155,6 @@ spec:
           value: https
         - name: TIME_ZONE
           value: "{{ time_zone | default('UTC') }}"
-        - name: SECRET_KEY_BASE
-          value: "{{ secret_key_base }}"
         - name: RAILS_LOG_TO_STDOUT
           value: "true"
         - name: SELF_HOSTED
@@ -185,7 +204,13 @@ spec:
       containers:
       - name: sidekiq
         image: freikin/dawarich:latest
-        command: ["sidekiq-entrypoint.sh", "sidekiq"]
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until [ -f /state/secrets.env ]; do sleep 2; done
+          . /state/secrets.env
+          exec sidekiq-entrypoint.sh sidekiq
         env:
         - name: RAILS_ENV
           value: production
@@ -201,8 +226,6 @@ spec:
           value: dawarich
         - name: DATABASE_NAME
           value: dawarich
-        - name: SECRET_KEY_BASE
-          value: "{{ secret_key_base }}"
         - name: RAILS_LOG_TO_STDOUT
           value: "true"
         - name: SELF_HOSTED
@@ -221,6 +244,9 @@ spec:
         - name: data
           mountPath: /var/app/storage
           subPath: {{ instance_name }}/dawarich/storage
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
       volumes:
       - name: data
         persistentVolumeClaim:

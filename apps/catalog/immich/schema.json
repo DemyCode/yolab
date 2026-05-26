@@ -1,7 +1,7 @@
 {
   "title": "Immich",
   "type": "object",
-  "required": ["subdomain", "disk", "db_password"],
+  "required": ["subdomain", "disk"],
   "properties": {
     "subdomain": {
       "type": "string",
@@ -13,10 +13,6 @@
       "type": "object",
       "title": "Storage disk",
       "format": "disk"
-    },
-    "db_password": {
-      "type": "string",
-      "title": "Database password"
     }
   }
 }

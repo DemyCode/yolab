@@ -96,6 +96,26 @@ spec:
           mountPath: /state
           subPath: "{{ instance_name }}/yolab-state"
 
+      - name: gen-secrets
+        image: busybox:1.37
+        command:
+        - /bin/sh
+        - -c
+        - |
+          SECRETS=/state/secrets.env
+          if [ ! -f "$SECRETS" ]; then
+            TMP=$(mktemp "${SECRETS}.XXXXXX")
+            printf 'APPFLOWY_JWT_SECRET=%s\n' "$(tr -dc a-f0-9 </dev/urandom | head -c 64)" > "$TMP"
+            mv "$TMP" "$SECRETS"
+          fi
+          cp "$SECRETS" /yolab/secrets.env
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+        - name: yolab
+          mountPath: /yolab
+
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
@@ -160,6 +180,14 @@ spec:
       containers:
       - name: cloud
         image: appflowyinc/appflowy_cloud:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until [ -f /state/secrets.env ]; do sleep 2; done
+          . /state/secrets.env
+          export APPFLOWY_GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
+          exec /app/appflowy_cloud
         env:
         - name: RUST_LOG
           value: info
@@ -167,8 +195,6 @@ spec:
           value: "postgres://appflowy:appflowy@postgres.yolab-{{ instance_name }}.svc.cluster.local:5432/appflowy"
         - name: APPFLOWY_REDIS_URI
           value: "redis://redis.yolab-{{ instance_name }}.svc.cluster.local:6379"
-        - name: APPFLOWY_GOTRUE_JWT_SECRET
-          value: "{{ jwt_secret }}"
         - name: APPFLOWY_GOTRUE_JWT_EXP
           value: "7200"
         - name: APPFLOWY_GOTRUE_BASE_URL
@@ -193,6 +219,9 @@ spec:
         - name: data
           mountPath: /app/data
           subPath: {{ instance_name }}/cloud
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -266,13 +295,19 @@ spec:
       containers:
       - name: gotrue
         image: appflowyinc/gotrue:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until [ -f /state/secrets.env ]; do sleep 2; done
+          . /state/secrets.env
+          export GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
+          exec gotrue
         env:
         - name: GOTRUE_SITE_URL
           value: "appflowy-flutter://"
         - name: URI_ALLOW_LIST
           value: "*"
-        - name: GOTRUE_JWT_SECRET
-          value: "{{ jwt_secret }}"
         - name: GOTRUE_JWT_EXP
           value: "7200"
         - name: GOTRUE_DB_DRIVER
@@ -293,6 +328,14 @@ spec:
           value: "100"
         - name: GOTRUE_LOG_LEVEL
           value: info
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
 ---
 apiVersion: v1
 kind: Service

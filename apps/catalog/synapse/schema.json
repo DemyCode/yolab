@@ -1,7 +1,7 @@
 {
   "title": "Matrix Synapse",
   "type": "object",
-  "required": ["subdomain", "disk", "registration_shared_secret"],
+  "required": ["subdomain", "disk"],
   "properties": {
     "subdomain": {
       "type": "string",
@@ -13,11 +13,6 @@
       "type": "object",
       "title": "Storage disk",
       "format": "disk"
-    },
-    "registration_shared_secret": {
-      "type": "string",
-      "title": "Registration shared secret",
-      "description": "Secret for admin user registration. Generate: openssl rand -hex 32"
     }
   }
 }

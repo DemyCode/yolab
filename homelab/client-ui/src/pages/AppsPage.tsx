@@ -213,6 +213,53 @@ function DiskField({ formData, onChange }: FieldProps) {
   );
 }
 
+function PasswordWidget({ value, onChange }: WidgetProps) {
+  const [password, setPassword] = useState<string>(value ?? "");
+  const [confirm, setConfirm] = useState<string>("");
+  const [confirmTouched, setConfirmTouched] = useState(false);
+  const showMismatch = confirmTouched && confirm !== "" && password !== confirm;
+
+  function handlePasswordChange(newVal: string) {
+    setPassword(newVal);
+    onChange(confirm && newVal === confirm ? newVal : "");
+  }
+
+  function handleConfirmChange(newVal: string) {
+    setConfirmTouched(true);
+    setConfirm(newVal);
+    onChange(newVal && newVal === password ? password : "");
+  }
+
+  return (
+    <div className="space-y-2">
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => handlePasswordChange(e.target.value)}
+        autoComplete="new-password"
+        className="w-full rounded-md border border-[#27272a] bg-[#09090b] px-3 py-2 text-sm text-[#fafafa] outline-none focus:border-[#a78bfa] focus:ring-2 focus:ring-[#a78bfa]/15 transition-colors"
+        placeholder="Password"
+      />
+      <input
+        type="password"
+        value={confirm}
+        onChange={(e) => handleConfirmChange(e.target.value)}
+        autoComplete="new-password"
+        className={cn(
+          "w-full rounded-md border px-3 py-2 text-sm text-[#fafafa] outline-none focus:ring-2 transition-colors bg-[#09090b]",
+          showMismatch
+            ? "border-[#f87171] focus:border-[#f87171] focus:ring-[#f87171]/15"
+            : "border-[#27272a] focus:border-[#a78bfa] focus:ring-[#a78bfa]/15",
+        )}
+        placeholder="Confirm password"
+      />
+      {showMismatch && (
+        <p className="text-xs text-[#f87171]">Passwords do not match</p>
+      )}
+    </div>
+  );
+}
+
 // ─── Main apps list ───────────────────────────────────────────────────────────
 
 export function AppsPage() {
@@ -460,7 +507,7 @@ export function AppInstallPage() {
             formData={formData}
             onChange={({ formData: d }) => setFormData(d ?? {})}
             onSubmit={() => void install()}
-            widgets={{ TunnelWidget }}
+            widgets={{ TunnelWidget, PasswordWidget }}
             fields={{ DiskField } as never}
             formContext={{ tunnelDomain }}
           >

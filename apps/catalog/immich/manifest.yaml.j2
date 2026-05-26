@@ -37,15 +37,6 @@ spec:
       storage: 100Gi
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: immich-secrets
-  namespace: yolab-{{ instance_name }}
-type: Opaque
-stringData:
-  db_password: "{{ db_password }}"
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: immich-caddy
@@ -86,6 +77,23 @@ spec:
           mountPath: /wireguard
         - name: yolab
           mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
+      - name: gen-secrets
+        image: busybox:1.37
+        command:
+        - /bin/sh
+        - -c
+        - |
+          SECRETS=/state/secrets.env
+          if [ ! -f "$SECRETS" ]; then
+            TMP=$(mktemp "${SECRETS}.XXXXXX")
+            printf 'DB_PASSWORD=%s\n' "$(tr -dc a-f0-9 </dev/urandom | head -c 32)" > "$TMP"
+            mv "$TMP" "$SECRETS"
+          fi
+        volumeMounts:
         - name: data
           mountPath: /state
           subPath: "{{ instance_name }}/yolab-state"
@@ -149,16 +157,18 @@ spec:
       containers:
       - name: immich-server
         image: ghcr.io/immich-app/immich-server:release@sha256:c15bff75068effb03f4355997d03dc7e0fc58720c2b54ad6f7f10d1bc57efaa5
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until [ -f /state/secrets.env ]; do sleep 2; done
+          . /state/secrets.env
+          exec node /usr/src/app/dist/main.js
         env:
         - name: DB_HOSTNAME
           value: postgres.yolab-{{ instance_name }}.svc.cluster.local
         - name: DB_USERNAME
           value: postgres
-        - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: immich-secrets
-              key: db_password
         - name: DB_DATABASE_NAME
           value: immich
         - name: REDIS_HOSTNAME
@@ -173,6 +183,9 @@ spec:
         - name: data
           mountPath: /usr/src/app/upload
           subPath: {{ instance_name }}/uploads
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -283,14 +296,17 @@ spec:
       containers:
       - name: postgres
         image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until [ -f /state/secrets.env ]; do sleep 2; done
+          . /state/secrets.env
+          export POSTGRES_PASSWORD="$DB_PASSWORD"
+          exec docker-entrypoint.sh postgres
         env:
         - name: POSTGRES_USER
           value: postgres
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: immich-secrets
-              key: db_password
         - name: POSTGRES_DB
           value: immich
         - name: POSTGRES_INITDB_ARGS
@@ -299,6 +315,9 @@ spec:
         - name: data
           mountPath: /var/lib/postgresql/data
           subPath: {{ instance_name }}/postgres
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
       volumes:
       - name: data
         persistentVolumeClaim:

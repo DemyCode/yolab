@@ -1,7 +1,7 @@
 {
   "title": "AppFlowy",
   "type": "object",
-  "required": ["subdomain", "disk", "jwt_secret", "admin_email", "admin_password"],
+  "required": ["subdomain", "disk", "admin_email", "admin_password"],
   "properties": {
     "subdomain": {
       "type": "string",
@@ -13,11 +13,6 @@
       "type": "object",
       "title": "Storage disk",
       "format": "disk"
-    },
-    "jwt_secret": {
-      "type": "string",
-      "title": "JWT secret",
-      "description": "Secret for signing JWTs. Generate: openssl rand -hex 32"
     },
     "admin_email": {
       "type": "string",
