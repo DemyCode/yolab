@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: yolab-{{ instance_name }}-data
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: "{{ disk.host }}"
+    path: "{{ disk.path }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: yolab-{{ instance_name }}-data
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      initContainers:
+      - name: wg-register
+        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: ""
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
+      containers:
+      - name: wireguard
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wireguard
+          mountPath: /etc/wireguard
+
+      - name: valheim
+        image: ghcr.io/community-valheim-tools/valheim-server:latest
+        env:
+        - name: SERVER_NAME
+          value: "{{ server_name }}"
+        - name: WORLD_NAME
+          value: "{{ world_name | default('Dedicated') }}"
+        - name: SERVER_PASS
+          value: "{{ server_pass }}"
+        - name: SERVER_PUBLIC
+          value: "{{ 'true' if server_public else 'false' }}"
+        - name: BACKUPS
+          value: "true"
+        - name: TZ
+          value: "Etc/UTC"
+        volumeMounts:
+        - name: data
+          mountPath: /config
+          subPath: {{ instance_name }}/valheim/config
+        - name: data
+          mountPath: /opt/valheim
+          subPath: {{ instance_name }}/valheim/game
+
+      volumes:
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data

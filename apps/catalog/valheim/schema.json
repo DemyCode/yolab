@@ -1,0 +1,32 @@
+{
+  "title": "Valheim",
+  "type": "object",
+  "required": ["server_name", "server_pass", "disk"],
+  "properties": {
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    },
+    "server_name": {
+      "type": "string",
+      "title": "Server name",
+      "default": "My Valheim Server"
+    },
+    "world_name": {
+      "type": "string",
+      "title": "World name",
+      "default": "Dedicated"
+    },
+    "server_pass": {
+      "type": "string",
+      "title": "Server password",
+      "description": "Minimum 5 characters"
+    },
+    "server_public": {
+      "type": "boolean",
+      "title": "List on public server browser",
+      "default": false
+    }
+  }
+}

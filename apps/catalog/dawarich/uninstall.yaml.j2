@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: uninstall
+  namespace: yolab-{{ instance_name }}
+spec:
+  ttlSecondsAfterFinished: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cleanup
+        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          TUNNEL_ID=$(jq -r '.tunnel_id // empty' /state/wg-state.json 2>/dev/null || true)
+          if [ -z "$TUNNEL_ID" ]; then
+            echo "No tunnel state found, nothing to clean up"
+            exit 0
+          fi
+          echo "Deleting tunnel $TUNNEL_ID..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+            -H "Authorization: Bearer {{ account_token }}" \
+            "{{ platform_api_url }}/tunnels/$TUNNEL_ID")
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
+            echo "Tunnel $TUNNEL_ID deleted (HTTP $STATUS)"
+          else
+            echo "Warning: DELETE /tunnels/$TUNNEL_ID returned HTTP $STATUS"
+          fi
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data

@@ -1,0 +1,1 @@
+[{"key": "ipv6", "label": "IPv6 Address", "type": "text", "pattern": "YOLAB_OUTPUT ipv6 (\\S+)"}]

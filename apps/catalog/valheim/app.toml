@@ -1,0 +1,6 @@
+[app]
+id = "valheim"
+name = "Valheim"
+description = "Valheim dedicated game server"
+icon = "⚔️"
+category = "gaming"

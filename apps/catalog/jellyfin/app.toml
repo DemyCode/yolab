@@ -1,0 +1,6 @@
+[app]
+id = "jellyfin"
+name = "Jellyfin"
+description = "Free and open source media server"
+icon = "🎬"
+category = "media"

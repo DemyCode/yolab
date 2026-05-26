@@ -1,0 +1,6 @@
+[app]
+id = "open-webui"
+name = "Open WebUI"
+description = "AI chat interface powered by Ollama — run LLMs locally"
+icon = "🤖"
+category = "ai"

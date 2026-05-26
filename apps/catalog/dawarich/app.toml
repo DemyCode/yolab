@@ -1,0 +1,6 @@
+[app]
+id = "dawarich"
+name = "Dawarich"
+description = "Self-hosted location history and travel tracking"
+icon = "🗺️"
+category = "productivity"

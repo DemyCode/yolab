@@ -1,0 +1,6 @@
+[app]
+id = "reactive-resume"
+name = "Reactive Resume"
+description = "Free and open source resume builder"
+icon = "📄"
+category = "productivity"

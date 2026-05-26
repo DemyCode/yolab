@@ -1,0 +1,8 @@
+{
+  "subdomain": {
+    "ui:widget": "TunnelWidget"
+  },
+  "disk": {
+    "ui:field": "DiskField"
+  }
+}

@@ -1,0 +1,6 @@
+[app]
+id = "synapse"
+name = "Matrix Synapse"
+description = "Self-hosted Matrix homeserver with Element Web client. Federated, encrypted messaging."
+icon = "https://matrix.org/images/matrix-logo.svg"
+category = "communication"

@@ -1,0 +1,6 @@
+[app]
+id = "appflowy"
+name = "AppFlowy"
+description = "Open-source alternative to Notion. Docs, wikis, and projects in one place."
+icon = "https://raw.githubusercontent.com/AppFlowy-IO/AppFlowy/main/frontend/resources/flowy_icons/ic_appflowy.png"
+category = "productivity"

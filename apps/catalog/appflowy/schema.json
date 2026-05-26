@@ -1,0 +1,33 @@
+{
+  "title": "AppFlowy",
+  "type": "object",
+  "required": ["subdomain", "disk", "jwt_secret", "admin_email", "admin_password"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "appflowy"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    },
+    "jwt_secret": {
+      "type": "string",
+      "title": "JWT secret",
+      "description": "Secret for signing JWTs. Generate: openssl rand -hex 32"
+    },
+    "admin_email": {
+      "type": "string",
+      "title": "Admin email",
+      "default": "admin@example.com"
+    },
+    "admin_password": {
+      "type": "string",
+      "title": "Admin password",
+      "description": "Initial admin account password"
+    }
+  }
+}

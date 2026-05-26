@@ -1,0 +1,286 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: yolab-{{ instance_name }}-data
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: "{{ disk.host }}"
+    path: "{{ disk.path }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: yolab-{{ instance_name }}-data
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reactive-resume-caddy
+  namespace: yolab-{{ instance_name }}
+data:
+  Caddyfile: |
+    {$YOLAB_FQDN} {
+      reverse_proxy localhost:3000
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      - name: wg-register
+        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: "{{ service_name }}"
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
+      containers:
+      - name: wireguard
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wireguard
+          mountPath: /etc/wireguard
+
+      - name: caddy
+        image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+        - name: yolab
+          mountPath: /yolab
+
+      - name: app
+        image: amruthpillai/reactive-resume:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env
+          export APP_URL="https://$YOLAB_FQDN"
+          export STORAGE_URL="https://$YOLAB_FQDN/minio/default"
+          exec node apps/server/dist/main.js
+        env:
+        - name: NODE_ENV
+          value: production
+        - name: DATABASE_URL
+          value: "postgresql://rxresume:rxresume@postgres.yolab-{{ instance_name }}.svc.cluster.local:5432/rxresume"
+        - name: AUTH_SECRET
+          value: "{{ auth_secret }}"
+        - name: PRINTER_ENDPOINT
+          value: "ws://chrome.yolab-{{ instance_name }}.svc.cluster.local:3000"
+        - name: S3_ENDPOINT
+          value: "http://minio.yolab-{{ instance_name }}.svc.cluster.local:9000"
+        - name: S3_BUCKET
+          value: "default"
+        - name: S3_REGION
+          value: "us-east-1"
+        - name: S3_ACCESS_KEY
+          value: "minioadmin"
+        - name: S3_SECRET_KEY
+          value: "minioadmin"
+        - name: S3_FORCE_PATH_STYLE
+          value: "true"
+        - name: DISABLE_SIGNUPS
+          value: "false"
+        volumeMounts:
+        - name: yolab
+          mountPath: /yolab
+
+      volumes:
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
+      - name: caddy-config
+        configMap:
+          name: reactive-resume-caddy
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - name: POSTGRES_USER
+          value: rxresume
+        - name: POSTGRES_PASSWORD
+          value: rxresume
+        - name: POSTGRES_DB
+          value: rxresume
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ instance_name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        command: ["server", "/data"]
+        env:
+        - name: MINIO_ROOT_USER
+          value: minioadmin
+        - name: MINIO_ROOT_PASSWORD
+          value: minioadmin
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/minio
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: minio
+  ports:
+  - port: 9000
+    targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chrome
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chrome
+  template:
+    metadata:
+      labels:
+        app: chrome
+    spec:
+      containers:
+      - name: chrome
+        image: ghcr.io/browserless/chromium:v2.18.0
+        env:
+        - name: TIMEOUT
+          value: "10000"
+        - name: CONCURRENT
+          value: "10"
+        - name: TOKEN
+          value: "chrome_token"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chrome
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: chrome
+  ports:
+  - port: 3000
+    targetPort: 3000

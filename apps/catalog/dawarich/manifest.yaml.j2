@@ -1,0 +1,313 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: yolab-{{ instance_name }}-data
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: "{{ disk.host }}"
+    path: "{{ disk.path }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: yolab-{{ instance_name }}-data
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dawarich-caddy
+  namespace: yolab-{{ instance_name }}
+data:
+  Caddyfile: |
+    {$YOLAB_FQDN} {
+      reverse_proxy localhost:3000
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      - name: wg-register
+        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: "{{ service_name }}"
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
+      containers:
+      - name: wireguard
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wireguard
+          mountPath: /etc/wireguard
+
+      - name: caddy
+        image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+        - name: yolab
+          mountPath: /yolab
+
+      - name: app
+        image: freikin/dawarich:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          . /yolab/env
+          export APPLICATION_HOSTS="localhost,$YOLAB_FQDN,127.0.0.1,::1"
+          exec web-entrypoint.sh bin/rails server -p 3000 -b ::
+        env:
+        - name: RAILS_ENV
+          value: production
+        - name: REDIS_URL
+          value: "redis://redis.yolab-{{ instance_name }}.svc.cluster.local:6379"
+        - name: DATABASE_HOST
+          value: "postgres.yolab-{{ instance_name }}.svc.cluster.local"
+        - name: DATABASE_PORT
+          value: "5432"
+        - name: DATABASE_USERNAME
+          value: dawarich
+        - name: DATABASE_PASSWORD
+          value: dawarich
+        - name: DATABASE_NAME
+          value: dawarich
+        - name: APPLICATION_PROTOCOL
+          value: https
+        - name: TIME_ZONE
+          value: "{{ time_zone | default('UTC') }}"
+        - name: SECRET_KEY_BASE
+          value: "{{ secret_key_base }}"
+        - name: RAILS_LOG_TO_STDOUT
+          value: "true"
+        - name: SELF_HOSTED
+          value: "true"
+        - name: STORE_GEODATA
+          value: "true"
+        volumeMounts:
+        - name: data
+          mountPath: /var/app/public
+          subPath: {{ instance_name }}/dawarich/public
+        - name: data
+          mountPath: /var/app/tmp/imports/watched
+          subPath: {{ instance_name }}/dawarich/imports
+        - name: data
+          mountPath: /var/app/storage
+          subPath: {{ instance_name }}/dawarich/storage
+        - name: yolab
+          mountPath: /yolab
+
+      volumes:
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
+      - name: caddy-config
+        configMap:
+          name: dawarich-caddy
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sidekiq
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sidekiq
+  template:
+    metadata:
+      labels:
+        app: sidekiq
+    spec:
+      containers:
+      - name: sidekiq
+        image: freikin/dawarich:latest
+        command: ["sidekiq-entrypoint.sh", "sidekiq"]
+        env:
+        - name: RAILS_ENV
+          value: production
+        - name: REDIS_URL
+          value: "redis://redis.yolab-{{ instance_name }}.svc.cluster.local:6379"
+        - name: DATABASE_HOST
+          value: "postgres.yolab-{{ instance_name }}.svc.cluster.local"
+        - name: DATABASE_PORT
+          value: "5432"
+        - name: DATABASE_USERNAME
+          value: dawarich
+        - name: DATABASE_PASSWORD
+          value: dawarich
+        - name: DATABASE_NAME
+          value: dawarich
+        - name: SECRET_KEY_BASE
+          value: "{{ secret_key_base }}"
+        - name: RAILS_LOG_TO_STDOUT
+          value: "true"
+        - name: SELF_HOSTED
+          value: "true"
+        - name: STORE_GEODATA
+          value: "true"
+        - name: BACKGROUND_PROCESSING_CONCURRENCY
+          value: "10"
+        volumeMounts:
+        - name: data
+          mountPath: /var/app/public
+          subPath: {{ instance_name }}/dawarich/public
+        - name: data
+          mountPath: /var/app/tmp/imports/watched
+          subPath: {{ instance_name }}/dawarich/imports
+        - name: data
+          mountPath: /var/app/storage
+          subPath: {{ instance_name }}/dawarich/storage
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgis/postgis:17-3.5-alpine
+        env:
+        - name: POSTGRES_USER
+          value: dawarich
+        - name: POSTGRES_PASSWORD
+          value: dawarich
+        - name: POSTGRES_DB
+          value: dawarich
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ instance_name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        command: ["redis-server"]
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/redis
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379

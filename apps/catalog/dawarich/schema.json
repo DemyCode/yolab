@@ -1,0 +1,29 @@
+{
+  "title": "Dawarich",
+  "type": "object",
+  "required": ["subdomain", "disk", "secret_key_base"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "dawarich"
+    },
+    "disk": {
+      "type": "object",
+      "title": "Storage disk",
+      "format": "disk"
+    },
+    "secret_key_base": {
+      "type": "string",
+      "title": "Secret key base",
+      "description": "Random secret for Rails. Generate: openssl rand -hex 64"
+    },
+    "time_zone": {
+      "type": "string",
+      "title": "Time zone",
+      "default": "UTC",
+      "description": "e.g. Europe/Paris, America/New_York"
+    }
+  }
+}
