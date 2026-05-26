@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AnimatePresence, motion } from "framer-motion";
-import { useLocation } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { LoginPage } from "@/pages/LoginPage";
 import { OverviewPage } from "@/pages/OverviewPage";
@@ -14,39 +12,23 @@ import {
 } from "@/pages/AppsPage";
 import { TerminalPage } from "@/pages/TerminalPage";
 
-const pageTransition = {
-  initial: { opacity: 0, y: 6 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -6 },
-  transition: { duration: 0.18 },
-} as const;
-
-function AnimatedRoutes({ onLogout }: { onLogout: () => void }) {
-  const location = useLocation();
+function AppRoutes({ onLogout }: { onLogout: () => void }) {
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={location.pathname}
-        {...pageTransition}
-        className="h-full"
-      >
-        <Routes location={location}>
-          <Route path="/" element={<Navigate to="/overview" replace />} />
-          <Route element={<Layout onLogout={onLogout} />}>
-            <Route path="/overview" element={<OverviewPage />} />
-            <Route path="/nodes" element={<NodesPage />} />
-            <Route path="/disks" element={<DisksPage />} />
-            <Route path="/apps" element={<AppsPage />} />
-            <Route path="/apps/:appId" element={<AppInstallPage />} />
-            <Route
-              path="/installed/:instanceName"
-              element={<InstalledDetailPage />}
-            />
-            <Route path="/terminal" element={<TerminalPage />} />
-          </Route>
-        </Routes>
-      </motion.div>
-    </AnimatePresence>
+    <Routes>
+      <Route path="/" element={<Navigate to="/overview" replace />} />
+      <Route element={<Layout onLogout={onLogout} />}>
+        <Route path="/overview" element={<OverviewPage />} />
+        <Route path="/nodes" element={<NodesPage />} />
+        <Route path="/disks" element={<DisksPage />} />
+        <Route path="/apps" element={<AppsPage />} />
+        <Route path="/apps/:appId" element={<AppInstallPage />} />
+        <Route
+          path="/installed/:instanceName"
+          element={<InstalledDetailPage />}
+        />
+        <Route path="/terminal" element={<TerminalPage />} />
+      </Route>
+    </Routes>
   );
 }
 
@@ -67,7 +49,7 @@ export default function App() {
 
   return (
     <HashRouter>
-      <AnimatedRoutes onLogout={() => setLoggedIn(false)} />
+      <AppRoutes onLogout={() => setLoggedIn(false)} />
     </HashRouter>
   );
 }
