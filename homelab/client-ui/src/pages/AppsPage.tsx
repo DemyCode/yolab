@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Trash2,
   ChevronRight,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -580,6 +581,8 @@ export function InstalledDetailPage() {
   const [describe, setDescribe] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [updateLog, setUpdateLog] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallError, setUninstallError] = useState("");
@@ -672,6 +675,28 @@ export function InstalledDetailPage() {
     }
   }
 
+  async function doUpdate() {
+    setUpdating(true);
+    setUpdateLog([]);
+    const response = await fetch(`/api/apps/${instanceName}/update`, { method: "POST" });
+    if (!response.body) { setUpdating(false); return; }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.startsWith("data: ") ? part.slice(6) : part;
+        if (line.trim()) setUpdateLog((l) => [...l, line]);
+      }
+    }
+    setUpdating(false);
+  }
+
   async function doUninstall() {
     if (!confirming) {
       setConfirming(true);
@@ -736,20 +761,46 @@ export function InstalledDetailPage() {
           )}
         </div>
 
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={() => void doUninstall()}
-          disabled={uninstalling || app.status === "uninstalling"}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          {uninstalling
-            ? "Removing…"
-            : confirming
-              ? "Confirm uninstall"
-              : "Uninstall"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void doUpdate()}
+            disabled={updating || uninstalling || app.status === "uninstalling"}
+          >
+            <RotateCcw className={cn("h-3.5 w-3.5", updating && "animate-spin")} />
+            {updating ? "Updating…" : "Update"}
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => void doUninstall()}
+            disabled={uninstalling || updating || app.status === "uninstalling"}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {uninstalling
+              ? "Removing…"
+              : confirming
+                ? "Confirm uninstall"
+                : "Uninstall"}
+          </Button>
+        </div>
       </div>
+
+      {updateLog.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Update log</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg bg-[#09090b] border border-[#27272a] p-3 max-h-48 overflow-y-auto space-y-0.5">
+              {updateLog.map((l, i) => (
+                <LogLine key={i} line={l} />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Outputs */}
       <Card>

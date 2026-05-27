@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
+from typing import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -120,6 +121,72 @@ def _list_installed() -> list[dict]:
     return apps
 
 
+# ─── Shared helpers ───────────────────────────────────────────────────────────
+
+def _render_manifest(
+    app_id: str,
+    instance_name: str,
+    config: dict,
+    tunnel_cfg: dict,
+    template_file: str = "manifest.yaml.j2",
+    extra_vars: dict | None = None,
+) -> str:
+    """Render a manifest template for an app, handling disk path and service_name."""
+    app_dir = CATALOG_DIR / app_id
+    schema_path = app_dir / "schema.json"
+    schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
+    properties = schema.get("properties", {})
+    tunnel_field = next(
+        (k for k, v in properties.items() if v.get("format") == "tunnel"), None
+    )
+    service_name = config.get(tunnel_field, "") if tunnel_field else ""
+
+    disk = config.get("disk")
+    if isinstance(disk, dict):
+        config = {**config, "disk": {**disk, "path": str(Path(disk["path"]) / "yolab")}}
+
+    return Template((app_dir / template_file).read_text()).render(
+        instance_name=instance_name,
+        app_id=app_id,
+        platform_api_url=tunnel_cfg["platform_api_url"],
+        account_token=tunnel_cfg["account_token"],
+        service_name=service_name,
+        **(extra_vars or {}),
+        **config,
+    )
+
+
+async def _stream_proc(*cmd: str) -> AsyncGenerator[tuple[str | None, int | None], None]:
+    """Run a command, yielding (line, None) for each output line then (None, returncode)."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        yield line.decode().rstrip(), None
+    await proc.wait()
+    yield None, proc.returncode
+
+
+async def _apply_manifest(rendered: str) -> AsyncGenerator[tuple[str | None, int | None], None]:
+    """Write rendered YAML to a temp file, kubectl apply it, and stream output."""
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        f.write(rendered)
+        path = f.name
+    try:
+        async for item in _stream_proc("kubectl", "apply", "-f", path):
+            yield item
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
 class AppInstallRequest(BaseModel):
     instance_name: str
     config: dict
@@ -129,8 +196,6 @@ class AppInstallRequest(BaseModel):
 async def tunnel_domain():
     cfg = _tunnel_config()
     host = cfg["dns_url"].removeprefix("https://").removeprefix("http://").rstrip("/")
-    # dns_url may be username.accountid.base (e.g. yolab.20.demycode.ovh).
-    # Records are created under accountid.base, so strip the non-numeric username prefix.
     parts = host.split(".")
     if parts and not parts[0].isdigit():
         host = ".".join(parts[1:])
@@ -177,33 +242,16 @@ async def install_app(app_id: str, body: AppInstallRequest):
             detail="instance_name must be lowercase alphanumeric and hyphens only",
         )
 
-    app_dir = CATALOG_DIR / app_id
-    if not app_dir.exists():
-        raise HTTPException(
-            status_code=404, detail=f"App '{app_id}' not found in catalog"
-        )
-
-    schema_path = app_dir / "schema.json"
-    schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
-    properties = schema.get("properties", {})
-
-    # service_name = user-provided subdomain for apps with a DNS tunnel field; "" for WireGuard-only apps
-    tunnel_field = next(
-        (k for k, v in properties.items() if v.get("format") == "tunnel"), None
-    )
-    service_name = body.config.get(tunnel_field, "") if tunnel_field else ""
-
-    manifest_template = (app_dir / "manifest.yaml.j2").read_text()
+    if not (CATALOG_DIR / app_id).exists():
+        raise HTTPException(status_code=404, detail=f"App '{app_id}' not found in catalog")
 
     async def stream():
         try:
             tunnel_cfg = _tunnel_config()
 
             disk = body.config.get("disk")
-            template_disk = disk
             if isinstance(disk, dict):
                 yolab_path = str(Path(disk["path"]) / "yolab")
-                template_disk = {**disk, "path": yolab_path}
                 if disk.get("host") == settings.yolab_node_ipv6:
                     try:
                         (Path(yolab_path) / body.instance_name).mkdir(
@@ -211,68 +259,91 @@ async def install_app(app_id: str, body: AppInstallRequest):
                         )
                     except OSError as e:
                         import errno as _errno
-
                         if e.errno == _errno.EROFS:
                             yield f"data: [ERROR] Disk at {disk['path']} is mounted read-only (Windows Fast Startup?). Go to the Disks page, click Unexport then Export as NFS to remount it.\n\n"
                             return
                         raise
 
             yield "data: Rendering manifest...\n\n"
-            config_with_disk = (
-                {**body.config, "disk": template_disk} if disk else body.config
-            )
-            rendered = Template(manifest_template).render(
-                instance_name=body.instance_name,
-                app_id=app_id,
-                platform_api_url=tunnel_cfg["platform_api_url"],
-                account_token=tunnel_cfg["account_token"],
-                service_name=service_name,
-                **config_with_disk,
-            )
+            rendered = _render_manifest(app_id, body.instance_name, body.config, tunnel_cfg)
 
             yield "data: Applying manifests to cluster...\n\n"
-            with tempfile.NamedTemporaryFile(
-                suffix=".yaml", mode="w", delete=False
-            ) as f:
-                f.write(rendered)
-                manifest_path = f.name
-
-            proc = await asyncio.create_subprocess_exec(
-                "kubectl",
-                "apply",
-                "-f",
-                manifest_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            assert proc.stdout is not None
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                yield f"data: {line.decode().rstrip()}\n\n"
-            await proc.wait()
-            Path(manifest_path).unlink(missing_ok=True)
-
-            if proc.returncode != 0:
-                yield f"data: [ERROR] kubectl apply failed (exit {proc.returncode})\n\n"
+            rc = None
+            async for line, code in _apply_manifest(rendered):
+                if code is not None:
+                    rc = code
+                elif line:
+                    yield f"data: {line}\n\n"
+            if rc != 0:
+                yield f"data: [ERROR] kubectl apply failed (exit {rc})\n\n"
                 return
 
-            user_config = body.config
             await asyncio.to_thread(
                 subprocess.run,
                 [
-                    "kubectl",
-                    "annotate",
-                    "namespace",
-                    f"yolab-{body.instance_name}",
-                    f"{ANN_CONFIG}={json.dumps(user_config)}",
+                    "kubectl", "annotate", "namespace", f"yolab-{body.instance_name}",
+                    f"{ANN_CONFIG}={json.dumps(body.config)}",
                     "--overwrite=true",
                 ],
                 capture_output=True,
             )
 
             yield f"data: [DONE] {app_id} installed — run 'Scan outputs' once the pod is ready\n\n"
+
+        except Exception as e:
+            yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.post("/apps/{instance_name}/update")
+async def update_app(instance_name: str):
+    ns = f"yolab-{instance_name}"
+
+    ns_info = await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "get", "namespace", ns, "-o", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if ns_info.returncode != 0:
+        raise HTTPException(status_code=404, detail="Instance not found")
+
+    ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
+    app_id = ann.get(ANN_APP_ID, "")
+    config = json.loads(ann.get(ANN_CONFIG, "{}") or "{}")
+
+    if not app_id:
+        raise HTTPException(status_code=400, detail="No app ID found on namespace")
+    if not (CATALOG_DIR / app_id).exists():
+        raise HTTPException(status_code=404, detail=f"App '{app_id}' not found in catalog")
+
+    async def stream():
+        try:
+            tunnel_cfg = _tunnel_config()
+
+            yield "data: Rendering manifest...\n\n"
+            rendered = _render_manifest(app_id, instance_name, config, tunnel_cfg)
+
+            yield "data: Applying updated manifests...\n\n"
+            rc = None
+            async for line, code in _apply_manifest(rendered):
+                if code is not None:
+                    rc = code
+                elif line:
+                    yield f"data: {line}\n\n"
+            if rc != 0:
+                yield f"data: [ERROR] kubectl apply failed (exit {rc})\n\n"
+                return
+
+            yield "data: Restarting deployments...\n\n"
+            async for line, _ in _stream_proc(
+                "kubectl", "rollout", "restart", "deployment", "-n", ns
+            ):
+                if line:
+                    yield f"data: {line}\n\n"
+
+            yield f"data: [DONE] {app_id} updated\n\n"
 
         except Exception as e:
             yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
@@ -323,16 +394,7 @@ async def scan_outputs(instance_name: str):
             for container in init_containers + containers:
                 logs_result = await asyncio.to_thread(
                     subprocess.run,
-                    [
-                        "kubectl",
-                        "logs",
-                        "-n",
-                        ns,
-                        pod_name,
-                        "-c",
-                        container,
-                        "--tail=500",
-                    ],
+                    ["kubectl", "logs", "-n", ns, pod_name, "-c", container, "--tail=500"],
                     capture_output=True,
                     text=True,
                 )
@@ -350,7 +412,6 @@ async def scan_outputs(instance_name: str):
         return {"outputs": _normalize_outputs(ann)}
 
     outputs = []
-    tunnel_ids = []
     for spec in outputs_spec:
         key = spec["key"]
         if key in found:
@@ -362,21 +423,12 @@ async def scan_outputs(instance_name: str):
                     "type": spec.get("type", "text"),
                 }
             )
-            if key == "tunnel_id":
-                try:
-                    tunnel_ids.append(int(found[key]))
-                except ValueError:
-                    pass
 
-    annotations_to_set = [f"{ANN_OUTPUTS}={json.dumps(outputs)}"]
     await asyncio.to_thread(
         subprocess.run,
         [
-            "kubectl",
-            "annotate",
-            "namespace",
-            ns,
-            *annotations_to_set,
+            "kubectl", "annotate", "namespace", ns,
+            f"{ANN_OUTPUTS}={json.dumps(outputs)}",
             "--overwrite=true",
         ],
         capture_output=True,
@@ -406,17 +458,12 @@ async def uninstall_app(instance_name: str):
                 outputs = _normalize_outputs(ann)
                 output_vars = {f"output_{o['key']}": o["value"] for o in outputs}
                 tunnel_cfg = _tunnel_config()
-                rendered = Template(uninstall_j2.read_text()).render(
-                    instance_name=instance_name,
-                    app_id=app_id,
-                    platform_api_url=tunnel_cfg["platform_api_url"],
-                    account_token=tunnel_cfg["account_token"],
-                    **config,
-                    **output_vars,
+                rendered = _render_manifest(
+                    app_id, instance_name, config, tunnel_cfg,
+                    template_file="uninstall.yaml.j2",
+                    extra_vars=output_vars,
                 )
-                with tempfile.NamedTemporaryFile(
-                    suffix=".yaml", mode="w", delete=False
-                ) as f:
+                with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
                     f.write(rendered)
                     manifest_path = f.name
                 await asyncio.to_thread(
@@ -425,17 +472,11 @@ async def uninstall_app(instance_name: str):
                     capture_output=True,
                 )
                 Path(manifest_path).unlink(missing_ok=True)
-                # Wait for cleanup to finish; proceed regardless of outcome
                 await asyncio.to_thread(
                     subprocess.run,
                     [
-                        "kubectl",
-                        "wait",
-                        "job/uninstall",
-                        "-n",
-                        ns,
-                        "--for=condition=complete",
-                        "--timeout=120s",
+                        "kubectl", "wait", "job/uninstall", "-n", ns,
+                        "--for=condition=complete", "--timeout=120s",
                     ],
                     capture_output=True,
                 )
@@ -444,14 +485,7 @@ async def uninstall_app(instance_name: str):
 
     result = await asyncio.to_thread(
         subprocess.run,
-        [
-            "kubectl",
-            "delete",
-            "namespace",
-            ns,
-            "--ignore-not-found=true",
-            "--wait=false",
-        ],
+        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"],
         capture_output=True,
         text=True,
     )
@@ -460,14 +494,7 @@ async def uninstall_app(instance_name: str):
 
     await asyncio.to_thread(
         subprocess.run,
-        [
-            "kubectl",
-            "delete",
-            "pv",
-            f"{ns}-data",
-            "--ignore-not-found=true",
-            "--wait=false",
-        ],
+        ["kubectl", "delete", "pv", f"{ns}-data", "--ignore-not-found=true", "--wait=false"],
         capture_output=True,
         text=True,
     )
@@ -512,24 +539,11 @@ async def describe_pod(instance_name: str, pod_name: str):
 @router.get("/apps/{instance_name}/logs/{pod_name}")
 async def pod_logs(instance_name: str, pod_name: str):
     async def stream():
-        proc = await asyncio.create_subprocess_exec(
-            "kubectl",
-            "logs",
-            "-n",
-            f"yolab-{instance_name}",
-            pod_name,
-            "--all-containers=true",
-            "--follow",
-            "--prefix=true",
-            "--tail=100",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        assert proc.stdout is not None
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            yield f"data: {line.decode().rstrip()}\n\n"
+        async for line, _ in _stream_proc(
+            "kubectl", "logs", "-n", f"yolab-{instance_name}", pod_name,
+            "--all-containers=true", "--follow", "--prefix=true", "--tail=100",
+        ):
+            if line:
+                yield f"data: {line}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
