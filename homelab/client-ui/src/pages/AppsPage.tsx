@@ -678,8 +678,13 @@ export function InstalledDetailPage() {
   async function doUpdate() {
     setUpdating(true);
     setUpdateLog([]);
-    const response = await fetch(`/api/apps/${instanceName}/update`, { method: "POST" });
-    if (!response.body) { setUpdating(false); return; }
+    const response = await fetch(`/api/apps/${instanceName}/update`, {
+      method: "POST",
+    });
+    if (!response.body) {
+      setUpdating(false);
+      return;
+    }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -768,7 +773,9 @@ export function InstalledDetailPage() {
             onClick={() => void doUpdate()}
             disabled={updating || uninstalling || app.status === "uninstalling"}
           >
-            <RotateCcw className={cn("h-3.5 w-3.5", updating && "animate-spin")} />
+            <RotateCcw
+              className={cn("h-3.5 w-3.5", updating && "animate-spin")}
+            />
             {updating ? "Updating…" : "Update"}
           </Button>
           <Button
