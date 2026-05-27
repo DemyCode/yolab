@@ -314,7 +314,7 @@ spec:
           until [ -f /state/secrets.env ]; do sleep 2; done
           . /state/secrets.env
           export GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
-          exec /usr/local/bin/gotrue
+          exec /start.sh
         env:
         - name: GOTRUE_SITE_URL
           value: "appflowy-flutter://"
