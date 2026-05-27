@@ -108,6 +108,7 @@ spec:
             printf 'APPFLOWY_JWT_SECRET=%s\n' "$(tr -dc a-f0-9 </dev/urandom | head -c 64)" > "$TMP"
             mv "$TMP" "$SECRETS"
           fi
+          chmod 644 "$SECRETS"
           cp "$SECRETS" /yolab/secrets.env
         volumeMounts:
         - name: data
@@ -144,9 +145,13 @@ spec:
 
       - name: app
         image: appflowyinc/appflowy_web:latest
-        env:
-        - name: AF_BASE_URL
-          value: ""
+        command:
+        - /bin/sh
+        - -c
+        - '. /yolab/env && export APPFLOWY_BASE_URL="$YOLAB_URL" && exec node /app/server.js'
+        volumeMounts:
+        - name: yolab
+          mountPath: /yolab
         ports:
         - containerPort: 3000
 
@@ -187,7 +192,7 @@ spec:
           until [ -f /state/secrets.env ]; do sleep 2; done
           . /state/secrets.env
           export APPFLOWY_GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
-          exec /app/appflowy_cloud
+          exec appflowy_cloud
         env:
         - name: RUST_LOG
           value: info
@@ -260,9 +265,11 @@ spec:
         env:
         - name: RUST_LOG
           value: info
-        - name: APPFLOWY_DATABASE_URL
+        - name: APPFLOWY_WORKER_DATABASE_URL
           value: "postgres://appflowy:appflowy@postgres.yolab-{{ instance_name }}.svc.cluster.local:5432/appflowy"
-        - name: APPFLOWY_REDIS_URI
+        - name: APPFLOWY_WORKER_DATABASE_NAME
+          value: appflowy
+        - name: APPFLOWY_WORKER_REDIS_URL
           value: "redis://redis.yolab-{{ instance_name }}.svc.cluster.local:6379"
         - name: APPFLOWY_S3_USE_MINIO
           value: "true"
