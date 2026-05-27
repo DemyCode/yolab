@@ -110,6 +110,10 @@ spec:
           fi
           chmod 644 "$SECRETS"
           cp "$SECRETS" /yolab/secrets.env
+          if [ -f /state/wg-state.json ]; then
+            FQDN=$(awk -F'"' '/"fqdn"/{print $4; exit}' /state/wg-state.json)
+            [ -n "$FQDN" ] && printf 'APPFLOWY_WEB_URL=https://%s\n' "$FQDN" > /state/app-env.sh
+          fi
         volumeMounts:
         - name: data
           mountPath: /state
@@ -192,6 +196,7 @@ spec:
           until [ -f /state/secrets.env ]; do sleep 2; done
           . /state/secrets.env
           export APPFLOWY_GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
+          [ -f /state/app-env.sh ] && . /state/app-env.sh && export APPFLOWY_WEB_URL
           exec appflowy_cloud
         env:
         - name: RUST_LOG
@@ -309,7 +314,7 @@ spec:
           until [ -f /state/secrets.env ]; do sleep 2; done
           . /state/secrets.env
           export GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
-          exec gotrue
+          exec /usr/local/bin/gotrue
         env:
         - name: GOTRUE_SITE_URL
           value: "appflowy-flutter://"
