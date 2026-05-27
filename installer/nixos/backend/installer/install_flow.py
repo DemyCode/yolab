@@ -22,6 +22,8 @@ def build_install_config(
     homelab_password_hash: str,
     git_remote: str = GIT_REMOTE,
     tunnel: dict | None = None,
+    server_addr: str = "",
+    k3s_token: str | None = None,
 ) -> dict:
     return {
         "homelab": {
@@ -42,7 +44,10 @@ def build_install_config(
         "swarm": {"enabled": False},
         "node": {
             "node_id": generate_node_id(),
-            "k3s": {"token": secrets.token_hex(32), "server_addr": ""},
+            "k3s": {
+                "token": k3s_token or secrets.token_hex(32),
+                "server_addr": server_addr,
+            },
         },
     }
 

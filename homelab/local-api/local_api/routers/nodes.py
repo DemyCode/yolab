@@ -1,8 +1,12 @@
 import asyncio
+import tomllib
+from pathlib import Path
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from local_api import kubectl
+from local_api.settings import settings
 
 router = APIRouter()
 
@@ -40,3 +44,17 @@ async def nodes():
         return [_parse_node(item) for item in items]
     except Exception:
         return []
+
+
+@router.get("/cluster/join-info")
+async def cluster_join_info():
+    try:
+        cfg = tomllib.loads(Path(settings.yolab_config).read_text())
+        k3s_token = cfg["node"]["k3s"]["token"]
+        sub_ipv6_private = cfg["tunnel"]["sub_ipv6_private"]
+        return {
+            "k3s_token": k3s_token,
+            "server_addr": f"https://[{sub_ipv6_private}]:6443",
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})

@@ -3,6 +3,7 @@ import logging
 import queue
 import threading
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -27,6 +28,47 @@ _install_started = threading.Event()
 async def api_set_tunnel(body: dict) -> dict:
     _state["tunnel"] = body
     return {"ok": True}
+
+
+# ── Cluster join helpers ───────────────────────────────────────────────────────
+
+
+@app.post("/api/join-info")
+async def api_join_info(body: dict) -> dict:
+    """Authenticate against an existing yolab node and fetch its k3s join info.
+
+    Body: {"url": "https://yolab.example.com", "password": "..."}
+    Returns: {"k3s_token": "...", "server_addr": "https://[fd00:cafe::1]:6443"}
+    """
+    url = body.get("url", "").rstrip("/")
+    password = body.get("password", "")
+    if not url:
+        raise HTTPException(status_code=422, detail="url is required")
+
+    login_resp = httpx.post(
+        f"{url}/api/login",
+        json={"password": password},
+        timeout=10,
+        follow_redirects=True,
+    )
+    if login_resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Authentication failed on existing node")
+
+    session_cookie = login_resp.cookies.get("yolab_session")
+    if not session_cookie:
+        raise HTTPException(status_code=401, detail="No session cookie received from existing node")
+
+    info_resp = httpx.get(
+        f"{url}/api/cluster/join-info",
+        cookies={"yolab_session": session_cookie},
+        timeout=10,
+    )
+    if info_resp.status_code != 200:
+        raise HTTPException(
+            status_code=info_resp.status_code,
+            detail="Failed to fetch join info from existing node",
+        )
+    return info_resp.json()
 
 
 # ── Disk & SSH helpers ─────────────────────────────────────────────────────────
@@ -62,6 +104,8 @@ async def api_install(body: dict) -> JSONResponse:
     timezone = body.get("timezone", "UTC")
     password = body.get("password", "")
     ssh_key = body.get("ssh_key", "")
+    server_addr = body.get("server_addr", "")
+    k3s_token = body.get("k3s_token") or None
 
     if not disk:
         return JSONResponse(status_code=422, content={"detail": "Disk is required"})
@@ -78,6 +122,8 @@ async def api_install(body: dict) -> JSONResponse:
         root_ssh_key=ssh_key,
         homelab_password_hash=hash_password(password),
         tunnel=_state.get("tunnel"),
+        server_addr=server_addr,
+        k3s_token=k3s_token,
     )
 
     _install_started.set()

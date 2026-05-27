@@ -69,19 +69,24 @@ def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:
     # installer's own outbound traffic (DNS, package downloads) is NOT
     # routed through the tunnel.
     #
-    # PostUp adds a policy rule: packets *sourced from* sub_ipv6 (i.e.
-    # return traffic for inbound connections) use routing table 51820,
-    # which sends everything through wg0. This keeps the return path
-    # working without hijacking the installer's own internet traffic.
+    # PostUp adds:
+    #   1. A source-policy rule: return traffic from sub_ipv6 exits via wg0.
+    #   2. A destination route: traffic to any cluster-node private IP
+    #      (fd00:cafe::/112) exits via wg0, enabling the installer to reach
+    #      existing nodes for cluster join-info.  sub_ipv6_private is also
+    #      added as an Interface address so the installer appears as a
+    #      cluster peer to those nodes (passes _is_cluster_internal auth).
     conf = (
         f"[Interface]\n"
         f"PrivateKey = {private_key}\n"
-        f"Address = {sub_ipv6}/128\n"
+        f"Address = {sub_ipv6}/128, {sub_ipv6_private}/128\n"
         f"Table = off\n"
         f"PostUp = ip -6 rule add from {sub_ipv6} lookup 51820 priority 100; "
-        f"ip -6 route add ::/0 dev wg0 table 51820\n"
+        f"ip -6 route add ::/0 dev wg0 table 51820; "
+        f"ip -6 route add {sub_ipv6_private_subnet} dev wg0\n"
         f"PreDown = ip -6 rule del from {sub_ipv6} lookup 51820 priority 100; "
-        f"ip -6 route del ::/0 dev wg0 table 51820\n\n"
+        f"ip -6 route del ::/0 dev wg0 table 51820; "
+        f"ip -6 route del {sub_ipv6_private_subnet} dev wg0\n\n"
         f"[Peer]\n"
         f"PublicKey = {wg_server_public_key}\n"
         f"Endpoint = {wg_server_endpoint}\n"
