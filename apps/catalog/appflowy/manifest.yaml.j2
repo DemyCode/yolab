@@ -79,7 +79,7 @@ spec:
     spec:
       initContainers:
       - name: wg-register
-        image: ghcr.io/demycode/wg-register:latest@sha256:e44c383ee410952cb87beb3c35531f35fa2ca10a2ae2ad5818862cdd48640872
+        image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
