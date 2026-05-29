@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { HardDrive, Eraser } from "lucide-react";
+import { HardDrive, Eraser, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -123,6 +123,156 @@ function statusBadge(disk: Disk) {
   }
 }
 
+interface SystemOsd {
+  exists: boolean;
+  size_bytes: number | null;
+  vg_free_bytes: number;
+  ceph_osd_id: number | null;
+}
+
+function SystemOsdCard() {
+  const [osd, setOsd] = useState<SystemOsd | null>(null);
+  const [sizeInput, setSizeInput] = useState("");
+  const [resizeInput, setResizeInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function load() {
+    fetch("/api/disks/system-osd")
+      .then((r) => r.json())
+      .then((d) => setOsd(d as SystemOsd))
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function create() {
+    if (!sizeInput.trim()) return;
+    setBusy(true);
+    setError("");
+    const r = await fetch("/api/disks/system-osd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ size: sizeInput.trim() }),
+    });
+    setBusy(false);
+    if (r.ok) {
+      setSizeInput("");
+      load();
+    } else {
+      const d = (await r.json()) as { detail?: string };
+      setError(d.detail ?? "Failed");
+    }
+  }
+
+  async function resize() {
+    if (!resizeInput.trim()) return;
+    setBusy(true);
+    setError("");
+    const r = await fetch("/api/disks/system-osd", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ size: resizeInput.trim() }),
+    });
+    setBusy(false);
+    if (r.ok) {
+      setResizeInput("");
+      load();
+    } else {
+      const d = (await r.json()) as { detail?: string };
+      setError(d.detail ?? "Failed");
+    }
+  }
+
+  async function remove() {
+    if (!confirm("Remove the system-disk OSD? Data on this OSD will be lost if it is the only copy.")) return;
+    setBusy(true);
+    setError("");
+    const r = await fetch("/api/disks/system-osd", { method: "DELETE" });
+    setBusy(false);
+    if (r.ok) {
+      load();
+    } else {
+      const d = (await r.json()) as { detail?: string };
+      setError(d.detail ?? "Failed");
+    }
+  }
+
+  if (!osd) return null;
+
+  return (
+    <Card>
+      <CardContent className="pt-5">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-md bg-[#27272a] p-1.5 flex-shrink-0">
+            <Server className="h-4 w-4 text-[#a1a1aa]" strokeWidth={1.75} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium text-[#fafafa] text-sm">System disk</span>
+              <span className="text-xs text-[#52525b]">/dev/pool/ceph</span>
+            </div>
+            <p className="text-xs text-[#71717a] mt-0.5">
+              Allocate space on the system disk as a Ceph OSD — no repartitioning needed.
+            </p>
+
+            <div className="mt-3 space-y-3">
+              {osd.exists ? (
+                <>
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-[#4ade80]">
+                      {osd.ceph_osd_id !== null ? `OSD #${osd.ceph_osd_id} active` : "LV created, OSD pending…"}
+                    </span>
+                    <span className="text-[#52525b]">·</span>
+                    <span className="text-[#71717a]">{fmt(osd.size_bytes ?? 0)} allocated</span>
+                    <span className="text-[#52525b]">·</span>
+                    <span className="text-[#71717a]">{fmt(osd.vg_free_bytes)} free on disk</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="w-28 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#fafafa] outline-none focus:border-[#a78bfa]"
+                      placeholder="e.g. 500G"
+                      value={resizeInput}
+                      onChange={(e) => setResizeInput(e.target.value)}
+                    />
+                    <Button variant="outline" size="sm" onClick={() => void resize()} disabled={busy || !resizeInput.trim()}>
+                      {busy ? "Extending…" : "Extend to"}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => void remove()} disabled={busy}
+                      className="text-[#f87171] border-[#7f1d1d] hover:border-[#f87171]">
+                      Remove
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-xs text-[#71717a]">
+                    No OSD allocated · {fmt(osd.vg_free_bytes)} free on system disk
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="w-28 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#fafafa] outline-none focus:border-[#a78bfa]"
+                      placeholder="e.g. 200G"
+                      value={sizeInput}
+                      onChange={(e) => setSizeInput(e.target.value)}
+                    />
+                    <Button variant="outline" size="sm" onClick={() => void create()} disabled={busy || !sizeInput.trim()}>
+                      {busy ? "Creating…" : "Create OSD"}
+                    </Button>
+                  </div>
+                </>
+              )}
+              {error && <p className="text-xs text-[#f87171]">{error}</p>}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function DisksPage() {
   const [disks, setDisks] = useState<Disk[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
@@ -173,6 +323,8 @@ export function DisksPage() {
       </div>
 
       {ceph && <CephHealthBar status={ceph} />}
+
+      <SystemOsdCard />
 
       {disks.length === 0 ? (
         <p className="text-sm text-[#71717a]">No disks found.</p>

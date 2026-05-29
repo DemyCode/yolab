@@ -170,6 +170,62 @@ class FormatRequest(BaseModel):
     host: str
 
 
+# ── System-disk OSD (LVM LV in the 'pool' VG) ─────────────────────────────────
+
+VG_NAME = "pool"
+LV_NAME = "ceph"
+LV_PATH = f"/dev/{VG_NAME}/{LV_NAME}"
+
+
+def _vg_free_bytes() -> int:
+    """Return free bytes in the pool VG."""
+    result = subprocess.run(
+        ["vgs", VG_NAME, "--reportformat", "json", "--units", "b", "--nosuffix"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip())
+    data = json.loads(result.stdout)
+    vg = data["report"][0]["vg"][0]
+    return int(vg["vg_free"])
+
+
+def _lv_size_bytes() -> int | None:
+    """Return the size of the ceph LV in bytes, or None if it doesn't exist."""
+    result = subprocess.run(
+        ["lvs", LV_PATH, "--reportformat", "json", "--units", "b", "--nosuffix"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        return None
+    data = json.loads(result.stdout)
+    try:
+        return int(data["report"][0]["lv"][0]["lv_size"])
+    except (KeyError, IndexError):
+        return None
+
+
+def _ceph_osd_id_for_lv() -> int | None:
+    """Find the Ceph OSD ID that is backed by the system-disk LV, if any."""
+    try:
+        result = subprocess.run(
+            [
+                "kubectl", "exec", "-n", CEPH_NAMESPACE, _mgr_pod(), "--",
+                "ceph", "osd", "metadata", "--format", "json",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        for osd in json.loads(result.stdout):
+            for dev in osd.get("devices", "").split(","):
+                if LV_NAME in dev or "pool-ceph" in dev or "pool/ceph" in dev:
+                    return int(osd["id"])
+    except Exception:
+        pass
+    return None
+
+
 @router.post("/disks/format")
 async def format_disk(body: FormatRequest):
     if body.host != settings.yolab_node_ipv6:
@@ -210,5 +266,106 @@ async def format_disk(body: FormatRequest):
         ["partprobe", f"/dev/{body.disk_name}"],
         capture_output=True,
     )
+
+    return {"ok": True}
+
+
+@router.get("/disks/system-osd")
+async def system_osd_status():
+    lv_bytes, free_bytes = await asyncio.gather(
+        asyncio.to_thread(_lv_size_bytes),
+        asyncio.to_thread(_vg_free_bytes),
+    )
+    osd_id = await asyncio.to_thread(_ceph_osd_id_for_lv) if lv_bytes is not None else None
+    return {
+        "exists": lv_bytes is not None,
+        "size_bytes": lv_bytes,
+        "vg_free_bytes": free_bytes,
+        "ceph_osd_id": osd_id,
+    }
+
+
+class SystemOsdCreate(BaseModel):
+    size: str  # LVM size string: "200G", "1T", etc.
+
+
+@router.post("/disks/system-osd")
+async def system_osd_create(body: SystemOsdCreate):
+    existing = await asyncio.to_thread(_lv_size_bytes)
+    if existing is not None:
+        raise HTTPException(400, "System OSD LV already exists — delete it first or extend it")
+
+    import re
+    if not re.fullmatch(r"\d+(\.\d+)?[KMGTPE]i?", body.size, re.IGNORECASE):
+        raise HTTPException(422, "Invalid size format — use e.g. 200G, 1T")
+
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["lvcreate", "-L", body.size, "-n", LV_NAME, VG_NAME],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(500, f"lvcreate failed: {result.stderr.strip()}")
+
+    return {"ok": True, "path": LV_PATH}
+
+
+class SystemOsdResize(BaseModel):
+    size: str  # new total size: "500G", "1T", etc.
+
+
+@router.patch("/disks/system-osd")
+async def system_osd_resize(body: SystemOsdResize):
+    existing = await asyncio.to_thread(_lv_size_bytes)
+    if existing is None:
+        raise HTTPException(404, "System OSD LV does not exist")
+
+    import re
+    if not re.fullmatch(r"\d+(\.\d+)?[KMGTPE]i?", body.size, re.IGNORECASE):
+        raise HTTPException(422, "Invalid size format — use e.g. 500G, 1T")
+
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["lvextend", "-L", body.size, LV_PATH],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(500, f"lvextend failed: {result.stderr.strip()}")
+
+    return {"ok": True}
+
+
+@router.delete("/disks/system-osd")
+async def system_osd_delete():
+    existing = await asyncio.to_thread(_lv_size_bytes)
+    if existing is None:
+        raise HTTPException(404, "System OSD LV does not exist")
+
+    osd_id = await asyncio.to_thread(_ceph_osd_id_for_lv)
+
+    # Best-effort Ceph OSD removal — cluster must be healthy enough to accept it
+    if osd_id is not None:
+        try:
+            mgr = await asyncio.to_thread(_mgr_pod)
+            for cmd in [
+                ["ceph", "osd", "out", str(osd_id)],
+                ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
+                ["ceph", "auth", "del", f"osd.{osd_id}"],
+                ["ceph", "osd", "rm", str(osd_id)],
+            ]:
+                subprocess.run(
+                    ["kubectl", "exec", "-n", CEPH_NAMESPACE, mgr, "--"] + cmd,
+                    capture_output=True, timeout=20,
+                )
+        except Exception:
+            pass  # Proceed with LV removal even if Ceph commands fail
+
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["lvremove", "-f", LV_PATH],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(500, f"lvremove failed: {result.stderr.strip()}")
 
     return {"ok": True}

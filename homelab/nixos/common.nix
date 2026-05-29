@@ -14,6 +14,12 @@
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
+
+  # /dev/pool/ceph is an LVM LV the user can create at any time from the
+  # Disks page in the homelab UI.  We pre-register it here so Rook picks it
+  # up automatically when it appears.  Rook silently skips the device when
+  # the LV doesn't exist yet.
+  cephDevicesYaml = "    devices:\n      - name: /dev/pool/ceph\n";
 in {
   # ── Module options ────────────────────────────────────────────────────────
   # Consumed by platform overlays (wsl.nix, darwin/configuration.nix …).
@@ -372,7 +378,7 @@ in {
                 cephFSFUSEClient: true
         '';
 
-        rookCluster = pkgs.writeText "rook-ceph-cluster.yaml" ''
+        rookCluster = pkgs.writeText "rook-ceph-cluster.yaml" (''
           apiVersion: ceph.rook.io/v1
           kind: CephCluster
           metadata:
@@ -397,6 +403,7 @@ in {
             storage:
               useAllNodes: true
               useAllDevices: true
+        '' + cephDevicesYaml + ''
             resources:
               mgr:
                 limits:
@@ -465,7 +472,7 @@ in {
           allowVolumeExpansion: true
           reclaimPolicy: Delete
           volumeBindingMode: Immediate
-        '';
+        '');
       in [
         "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml - - - - ${rookOperator}"
         "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml  - - - - ${rookCluster}"
