@@ -1,18 +1,13 @@
 {
   "title": "Dawarich",
   "type": "object",
-  "required": ["subdomain", "storage"],
+  "required": ["subdomain"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "dawarich"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
     },
     "time_zone": {
       "type": "string",

@@ -1,18 +1,13 @@
 {
   "title": "AppFlowy",
   "type": "object",
-  "required": ["subdomain", "storage", "admin_email", "admin_password"],
+  "required": ["subdomain", "admin_email", "admin_password"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "appflowy"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
     },
     "admin_email": {
       "type": "string",

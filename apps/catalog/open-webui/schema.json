@@ -1,19 +1,13 @@
 {
   "title": "Open WebUI",
   "type": "object",
-  "required": ["subdomain", "storage"],
+  "required": ["subdomain"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "ai"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage",
-      "description": "Models can be several GB each — allocate generously"
     }
   }
 }

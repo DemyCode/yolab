@@ -67,13 +67,24 @@ def _first_fstype(device: dict) -> str | None:
     return None
 
 
+def _mgr_pod() -> str:
+    result = subprocess.run(
+        ["kubectl", "get", "pod", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-mgr",
+         "-o", "jsonpath={.items[0].metadata.name}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    name = result.stdout.strip()
+    if result.returncode != 0 or not name:
+        raise RuntimeError("No rook-ceph-mgr pod found")
+    return name
+
+
 def _ceph_osd_map() -> dict[str, int]:
     """Returns {device_name: osd_id} from Ceph OSD metadata."""
     try:
         result = subprocess.run(
             [
-                "kubectl", "exec", "-n", CEPH_NAMESPACE,
-                "-l", "app=rook-ceph-mgr", "--",
+                "kubectl", "exec", "-n", CEPH_NAMESPACE, _mgr_pod(), "--",
                 "ceph", "osd", "metadata", "--format", "json",
             ],
             capture_output=True, text=True, timeout=15,
@@ -192,5 +203,12 @@ async def format_disk(body: FormatRequest):
         raise HTTPException(500, f"wipefs failed: {r1.stderr.strip()}")
     if r2.returncode != 0:
         raise HTTPException(500, f"sgdisk failed: {r2.stderr.strip()}")
+
+    # Flush kernel partition table cache so Rook's udev discovery sees the clean disk immediately
+    await asyncio.to_thread(
+        subprocess.run,
+        ["partprobe", f"/dev/{body.disk_name}"],
+        capture_output=True,
+    )
 
     return {"ok": True}

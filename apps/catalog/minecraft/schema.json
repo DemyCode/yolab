@@ -1,13 +1,8 @@
 {
   "title": "Minecraft",
   "type": "object",
-  "required": ["storage"],
+  "required": [],
   "properties": {
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
-    },
     "difficulty": {
       "type": "string",
       "title": "Difficulty",

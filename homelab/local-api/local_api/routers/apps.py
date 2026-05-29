@@ -252,16 +252,6 @@ async def install_app(app_id: str, body: AppInstallRequest):
         try:
             tunnel_cfg = _tunnel_config()
 
-            storage = body.config.get("storage", {})
-            redundancy = storage.get("redundancy", "none") if isinstance(storage, dict) else "none"
-
-            yield "data: Creating storage pool...\n\n"
-            from local_api.routers.ceph import create_pool, CreatePoolRequest
-            await create_pool(CreatePoolRequest(
-                instance_name=body.instance_name,
-                redundancy=redundancy,
-            ))
-
             yield "data: Rendering manifest...\n\n"
             rendered = _render_manifest(
                 app_id, body.instance_name, body.config, tunnel_cfg
@@ -525,9 +515,6 @@ async def uninstall_app(instance_name: str):
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
-
-    from local_api.routers.ceph import delete_pool
-    await delete_pool(instance_name)
 
     return {"ok": True}
 

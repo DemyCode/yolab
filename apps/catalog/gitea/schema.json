@@ -1,18 +1,13 @@
 {
   "title": "Gitea",
   "type": "object",
-  "required": ["subdomain", "storage"],
+  "required": ["subdomain"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "git"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
     }
   }
 }

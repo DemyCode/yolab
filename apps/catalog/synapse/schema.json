@@ -1,18 +1,13 @@
 {
   "title": "Matrix Synapse",
   "type": "object",
-  "required": ["subdomain", "storage"],
+  "required": ["subdomain"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "matrix"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
     }
   }
 }

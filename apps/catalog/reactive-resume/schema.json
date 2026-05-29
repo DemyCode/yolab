@@ -1,18 +1,13 @@
 {
   "title": "Reactive Resume",
   "type": "object",
-  "required": ["subdomain", "storage"],
+  "required": ["subdomain"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "resume"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
     }
   }
 }

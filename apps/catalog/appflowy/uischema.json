@@ -2,9 +2,6 @@
   "subdomain": {
     "ui:widget": "TunnelWidget"
   },
-  "storage": {
-    "ui:field": "StorageField"
-  },
   "admin_password": {
     "ui:widget": "PasswordWidget"
   }

@@ -1,18 +1,13 @@
 {
   "title": "LibreSpeed",
   "type": "object",
-  "required": ["subdomain", "storage", "password"],
+  "required": ["subdomain", "password"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "speed"
-    },
-    "storage": {
-      "type": "object",
-      "title": "Storage",
-      "format": "storage"
     },
     "password": {
       "type": "string",

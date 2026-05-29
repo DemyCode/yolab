@@ -162,6 +162,7 @@ in {
       "overlay"
       "nf_nat"
       "rbd"        # Ceph RADOS Block Device — required by Rook/Ceph CSI driver
+      "fuse"       # Required by cephFSFUSEClient — CSI mounts CephFS via ceph-fuse
     ];
 
     boot.kernel.sysctl = {

@@ -1,7 +1,4 @@
 {
-  "storage": {
-    "ui:field": "StorageField"
-  },
   "server_pass": {
     "ui:widget": "PasswordWidget"
   }

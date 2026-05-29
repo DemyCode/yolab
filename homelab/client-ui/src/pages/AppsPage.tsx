@@ -1,5 +1,5 @@
 import Form from "@rjsf/core";
-import type { FieldProps, WidgetProps } from "@rjsf/utils";
+import type { WidgetProps } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -80,11 +80,7 @@ function podColor(pod: Pod) {
 
 function formatConfigValue(value: unknown): string {
   if (value === null || value === undefined) return "";
-  if (typeof value === "object") {
-    const o = value as Record<string, string>;
-    if (o.redundancy) return `Storage · ${o.redundancy}`;
-    return JSON.stringify(value);
-  }
+  if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 
@@ -160,50 +156,6 @@ function TunnelWidget({ value, onChange, registry }: WidgetProps) {
   );
 }
 
-type Redundancy = "none" | "mirror" | "ec";
-
-interface StorageValue {
-  redundancy: Redundancy;
-}
-
-const REDUNDANCY_OPTIONS: { value: Redundancy; label: string; description: string }[] = [
-  { value: "none", label: "None", description: "Full capacity · no protection" },
-  { value: "mirror", label: "Mirror (2×)", description: "50% capacity · 1 disk failure ok" },
-  { value: "ec", label: "EC (k=2 m=1)", description: "67% capacity · 1 node failure ok" },
-];
-
-function StorageField({ formData, onChange }: FieldProps) {
-  const value: StorageValue = formData ?? { redundancy: "none" };
-
-  return (
-    <div className="space-y-2">
-      <label className="block text-xs font-medium text-[#a1a1aa]">
-        Redundancy
-      </label>
-      <div className="space-y-1.5">
-        {REDUNDANCY_OPTIONS.map((opt) => (
-          <label
-            key={opt.value}
-            className="flex items-center gap-3 rounded-md border border-[#27272a] bg-[#09090b] px-3 py-2.5 cursor-pointer hover:border-[#3f3f46] transition-colors"
-          >
-            <input
-              type="radio"
-              name="redundancy"
-              value={opt.value}
-              checked={value.redundancy === opt.value}
-              onChange={() => onChange({ ...value, redundancy: opt.value })}
-              className="accent-[#a78bfa]"
-            />
-            <div>
-              <span className="text-sm text-[#fafafa]">{opt.label}</span>
-              <span className="text-xs text-[#52525b] ml-2">{opt.description}</span>
-            </div>
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function PasswordWidget({ value, onChange }: WidgetProps) {
   const [password, setPassword] = useState<string>(value ?? "");
@@ -500,7 +452,6 @@ export function AppInstallPage() {
             onChange={({ formData: d }) => setFormData(d ?? {})}
             onSubmit={() => void install()}
             widgets={{ TunnelWidget, PasswordWidget }}
-            fields={{ StorageField } as never}
             formContext={{ tunnelDomain }}
           >
             <Button

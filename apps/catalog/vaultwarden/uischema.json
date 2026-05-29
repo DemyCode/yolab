@@ -1,8 +1,5 @@
 {
   "subdomain": {
     "ui:widget": "TunnelWidget"
-  },
-  "storage": {
-    "ui:field": "StorageField"
   }
 }
