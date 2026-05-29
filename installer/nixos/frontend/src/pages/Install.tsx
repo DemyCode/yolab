@@ -9,7 +9,13 @@ type Disk = {
   recommended?: boolean
 }
 
-type Step = 1 | 2 | 3 | 4
+type Step = 1 | 2 | 3 | 4 | 5
+
+type JoinInfo = {
+  server_addr: string
+  k3s_token: string
+  nodeUrl: string
+}
 
 // ── Shared UI ──────────────────────────────────────────────────────────────────
 
@@ -86,14 +92,108 @@ function StepHeader({ step, title }: { step: Step; title: string }) {
         {step}
       </div>
       <h2 className="font-bold">{title}</h2>
-      <span className="ml-auto text-xs text-muted">Step {step} / 4</span>
+      <span className="ml-auto text-xs text-muted">Step {step} / 5</span>
     </div>
   )
 }
 
-// ── Step 1: Disk ───────────────────────────────────────────────────────────────
+// ── Step 1: Cluster mode ───────────────────────────────────────────────────────
 
-function StepDisk({ onNext }: { onNext: (disk: string) => void }) {
+function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: JoinInfo) => void }) {
+  const [mode, setMode] = useState<'new' | 'join' | null>(null)
+  const [url, setUrl] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function fetchJoinInfo() {
+    setError('')
+    if (!url.trim()) { setError('Node URL is required'); return }
+    if (!password) { setError('Password is required'); return }
+    setLoading(true)
+    try {
+      const res = await fetch('/api/join-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim(), password }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.detail ?? `Server error ${res.status}`)
+        return
+      }
+      onJoin({ server_addr: data.server_addr, k3s_token: data.k3s_token, nodeUrl: url.trim() })
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Card>
+      <StepHeader step={1} title="Cluster setup" />
+
+      <div className="flex flex-col gap-3">
+        <button
+          onClick={() => { setMode('new'); setError('') }}
+          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${
+            mode === 'new' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
+          }`}
+        >
+          <span className="text-sm font-semibold text-[#e5e7eb]">New cluster</span>
+          <span className="text-xs text-muted">First node — creates a fresh single-node cluster</span>
+        </button>
+
+        <button
+          onClick={() => { setMode('join'); setError('') }}
+          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${
+            mode === 'join' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
+          }`}
+        >
+          <span className="text-sm font-semibold text-[#e5e7eb]">Join existing cluster</span>
+          <span className="text-xs text-muted">Additional node — joins a running YoLab cluster</span>
+        </button>
+      </div>
+
+      {mode === 'join' && (
+        <div>
+          <Field label="Existing node URL">
+            <Input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://my-homelab.example.com"
+              type="url"
+            />
+          </Field>
+          <Field label="Homelab password">
+            <Input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              placeholder="Password of the existing node"
+            />
+          </Field>
+          <ErrorMsg msg={error} />
+          <PrimaryBtn onClick={fetchJoinInfo} disabled={loading}>
+            {loading ? 'Connecting…' : 'Connect & Continue →'}
+          </PrimaryBtn>
+        </div>
+      )}
+
+      {mode === 'new' && (
+        <>
+          <ErrorMsg msg={error} />
+          <PrimaryBtn onClick={onNew}>Continue →</PrimaryBtn>
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ── Step 2: Disk ───────────────────────────────────────────────────────────────
+
+function StepDisk({ onNext, onBack }: { onNext: (disk: string) => void; onBack: () => void }) {
   const [disks, setDisks] = useState<Disk[] | null>(null)
   const [selected, setSelected] = useState('')
   const [error, setError] = useState('')
@@ -119,7 +219,7 @@ function StepDisk({ onNext }: { onNext: (disk: string) => void }) {
 
   return (
     <Card>
-      <StepHeader step={1} title="Select installation disk" />
+      <StepHeader step={2} title="Select installation disk" />
       <p className="text-[#f87171] text-xs mb-4">⚠ The selected disk will be completely erased.</p>
 
       {disks === null && !error && <p className="text-muted text-sm">Detecting disks…</p>}
@@ -166,11 +266,12 @@ function StepDisk({ onNext }: { onNext: (disk: string) => void }) {
 
       <ErrorMsg msg={error} />
       <PrimaryBtn onClick={proceed} disabled={!selected}>Continue →</PrimaryBtn>
+      <SecondaryBtn onClick={onBack}>← Back</SecondaryBtn>
     </Card>
   )
 }
 
-// ── Step 2: Config ─────────────────────────────────────────────────────────────
+// ── Step 3: Config ─────────────────────────────────────────────────────────────
 
 type Config = {
   hostname: string
@@ -221,7 +322,7 @@ function StepConfig({ onNext, onBack }: { onNext: (c: Config) => void; onBack: (
 
   return (
     <Card>
-      <StepHeader step={2} title="System configuration" />
+      <StepHeader step={3} title="System configuration" />
 
       <Field label="Hostname">
         <Input value={form.hostname} onChange={set('hostname')} maxLength={20} />
@@ -264,24 +365,36 @@ function StepConfig({ onNext, onBack }: { onNext: (c: Config) => void; onBack: (
   )
 }
 
-// ── Step 3: Confirm ────────────────────────────────────────────────────────────
+// ── Step 4: Confirm ────────────────────────────────────────────────────────────
 
 function StepConfirm({
   disk,
   config,
+  joinInfo,
   onInstall,
   onBack,
 }: {
   disk: string
   config: Config
+  joinInfo: JoinInfo | null
   onInstall: () => void
   onBack: () => void
 }) {
   return (
     <Card>
-      <StepHeader step={3} title="Confirm & Install" />
+      <StepHeader step={4} title="Confirm & Install" />
 
       <div className="text-sm text-muted space-y-2">
+        <div className="flex justify-between">
+          <span>Mode</span>
+          <span className="text-[#e5e7eb]">{joinInfo ? 'Join existing cluster' : 'New cluster'}</span>
+        </div>
+        {joinInfo && (
+          <div className="flex justify-between">
+            <span>Joining</span>
+            <span className="text-[#e5e7eb] font-mono text-xs truncate max-w-[60%]">{joinInfo.nodeUrl}</span>
+          </div>
+        )}
         <div className="flex justify-between"><span>Disk</span><span className="text-[#f87171] font-mono">{disk}</span></div>
         <div className="flex justify-between"><span>Hostname</span><span className="text-[#e5e7eb]">{config.hostname}</span></div>
         <div className="flex justify-between"><span>Timezone</span><span className="text-[#e5e7eb]">{config.timezone}</span></div>
@@ -298,7 +411,7 @@ function StepConfirm({
   )
 }
 
-// ── Step 4: Progress ───────────────────────────────────────────────────────────
+// ── Step 5: Progress ───────────────────────────────────────────────────────────
 
 function StepProgress() {
   const [lines, setLines] = useState<string[]>([])
@@ -322,7 +435,7 @@ function StepProgress() {
 
   return (
     <Card>
-      <StepHeader step={4} title="Installing…" />
+      <StepHeader step={5} title="Installing…" />
       <p className="text-xs text-muted mb-3">This takes 5–15 minutes. Keep this page open.</p>
 
       <div
@@ -355,9 +468,9 @@ function StepProgress() {
 
 export default function Install() {
   const [step, setStep] = useState<Step>(1)
+  const [joinInfo, setJoinInfo] = useState<JoinInfo | null>(null)
   const [disk, setDisk] = useState('')
   const [config, setConfig] = useState<Config | null>(null)
-
   const [installError, setInstallError] = useState('')
 
   async function startInstall() {
@@ -373,10 +486,14 @@ export default function Install() {
           timezone: config.timezone,
           password: config.password,
           ssh_key: config.sshKey,
+          ...(joinInfo && {
+            server_addr: joinInfo.server_addr,
+            k3s_token: joinInfo.k3s_token,
+          }),
         }),
       })
       if (res.ok) {
-        setStep(4)
+        setStep(5)
       } else {
         const body = await res.json().catch(() => ({}))
         setInstallError(body.detail ?? `Server error ${res.status}`)
@@ -394,28 +511,38 @@ export default function Install() {
       </div>
 
       {step === 1 && (
-        <StepDisk onNext={(d) => { setDisk(d); setStep(2) }} />
+        <StepCluster
+          onNew={() => { setJoinInfo(null); setStep(2) }}
+          onJoin={(info) => { setJoinInfo(info); setStep(2) }}
+        />
       )}
       {step === 2 && (
-        <StepConfig
-          onNext={(c) => { setConfig(c); setStep(3) }}
+        <StepDisk
+          onNext={(d) => { setDisk(d); setStep(3) }}
           onBack={() => setStep(1)}
         />
       )}
-      {step === 3 && config && (
+      {step === 3 && (
+        <StepConfig
+          onNext={(c) => { setConfig(c); setStep(4) }}
+          onBack={() => setStep(2)}
+        />
+      )}
+      {step === 4 && config && (
         <>
           {installError && (
             <p className="text-[#f87171] text-sm">{installError}</p>
           )}
-        <StepConfirm
-          disk={disk}
-          config={config}
-          onInstall={startInstall}
-          onBack={() => setStep(2)}
-        />
+          <StepConfirm
+            disk={disk}
+            config={config}
+            joinInfo={joinInfo}
+            onInstall={startInstall}
+            onBack={() => setStep(3)}
+          />
         </>
       )}
-      {step === 4 && <StepProgress />}
+      {step === 5 && <StepProgress />}
     </div>
   )
 }
