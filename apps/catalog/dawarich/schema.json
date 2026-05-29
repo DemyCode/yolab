@@ -1,7 +1,7 @@
 {
   "title": "Dawarich",
   "type": "object",
-  "required": ["subdomain", "disk"],
+  "required": ["subdomain", "storage"],
   "properties": {
     "subdomain": {
       "type": "string",
@@ -9,10 +9,10 @@
       "format": "tunnel",
       "default": "dawarich"
     },
-    "disk": {
+    "storage": {
       "type": "object",
-      "title": "Storage disk",
-      "format": "disk"
+      "title": "Storage",
+      "format": "storage"
     },
     "time_zone": {
       "type": "string",

@@ -1,12 +1,12 @@
 {
   "title": "Valheim",
   "type": "object",
-  "required": ["server_name", "server_pass", "disk"],
+  "required": ["server_name", "server_pass", "storage"],
   "properties": {
-    "disk": {
+    "storage": {
       "type": "object",
-      "title": "Storage disk",
-      "format": "disk"
+      "title": "Storage",
+      "format": "storage"
     },
     "server_name": {
       "type": "string",

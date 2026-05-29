@@ -1,12 +1,12 @@
 {
   "title": "Minecraft",
   "type": "object",
-  "required": ["disk"],
+  "required": ["storage"],
   "properties": {
-    "disk": {
+    "storage": {
       "type": "object",
-      "title": "Storage disk",
-      "format": "disk"
+      "title": "Storage",
+      "format": "storage"
     },
     "difficulty": {
       "type": "string",

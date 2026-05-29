@@ -132,7 +132,6 @@ def _render_manifest(
     template_file: str = "manifest.yaml.j2",
     extra_vars: dict | None = None,
 ) -> str:
-    """Render a manifest template for an app, handling disk path and service_name."""
     app_dir = CATALOG_DIR / app_id
     schema_path = app_dir / "schema.json"
     schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
@@ -141,10 +140,6 @@ def _render_manifest(
         (k for k, v in properties.items() if v.get("format") == "tunnel"), None
     )
     service_name = config.get(tunnel_field, "") if tunnel_field else ""
-
-    disk = config.get("disk")
-    if isinstance(disk, dict):
-        config = {**config, "disk": {**disk, "path": str(Path(disk["path"]) / "yolab")}}
 
     return Template((app_dir / template_file).read_text()).render(
         instance_name=instance_name,
@@ -257,21 +252,15 @@ async def install_app(app_id: str, body: AppInstallRequest):
         try:
             tunnel_cfg = _tunnel_config()
 
-            disk = body.config.get("disk")
-            if isinstance(disk, dict):
-                yolab_path = str(Path(disk["path"]) / "yolab")
-                if disk.get("host") == settings.yolab_node_ipv6:
-                    try:
-                        (Path(yolab_path) / body.instance_name).mkdir(
-                            parents=True, exist_ok=True
-                        )
-                    except OSError as e:
-                        import errno as _errno
+            storage = body.config.get("storage", {})
+            redundancy = storage.get("redundancy", "none") if isinstance(storage, dict) else "none"
 
-                        if e.errno == _errno.EROFS:
-                            yield f"data: [ERROR] Disk at {disk['path']} is mounted read-only (Windows Fast Startup?). Go to the Disks page, click Unexport then Export as NFS to remount it.\n\n"
-                            return
-                        raise
+            yield "data: Creating storage pool...\n\n"
+            from local_api.routers.ceph import create_pool, CreatePoolRequest
+            await create_pool(CreatePoolRequest(
+                instance_name=body.instance_name,
+                redundancy=redundancy,
+            ))
 
             yield "data: Rendering manifest...\n\n"
             rendered = _render_manifest(
@@ -537,19 +526,9 @@ async def uninstall_app(instance_name: str):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
 
-    await asyncio.to_thread(
-        subprocess.run,
-        [
-            "kubectl",
-            "delete",
-            "pv",
-            f"{ns}-data",
-            "--ignore-not-found=true",
-            "--wait=false",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    from local_api.routers.ceph import delete_pool
+    await delete_pool(instance_name)
+
     return {"ok": True}
 
 

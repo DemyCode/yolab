@@ -3,7 +3,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from local_api.auth import AuthMiddleware
-from local_api.routers import apps, disks, nodes, rebuild, status, terminal, update
+from local_api.routers import apps, ceph, disks, nodes, rebuild, status, terminal, update
 from local_api import auth
 from local_api.settings import settings
 
@@ -14,6 +14,7 @@ api.include_router(status.router)
 api.include_router(update.router)
 api.include_router(rebuild.router)
 api.include_router(disks.router)
+api.include_router(ceph.router)
 api.include_router(nodes.router)
 api.include_router(apps.router)
 api.include_router(terminal.router)

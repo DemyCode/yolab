@@ -82,7 +82,7 @@ function formatConfigValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "object") {
     const o = value as Record<string, string>;
-    if (o.host && o.path) return `${o.host} — ${o.path}`;
+    if (o.redundancy) return `Storage · ${o.redundancy}`;
     return JSON.stringify(value);
   }
   return String(value);
@@ -160,56 +160,47 @@ function TunnelWidget({ value, onChange, registry }: WidgetProps) {
   );
 }
 
-interface StorageLocation {
-  host: string;
-  path: string;
+type Redundancy = "none" | "mirror" | "ec";
+
+interface StorageValue {
+  redundancy: Redundancy;
 }
 
-function DiskField({ formData, onChange }: FieldProps) {
-  const [locations, setLocations] = useState<StorageLocation[] | null>(null);
-  useEffect(() => {
-    fetch("/api/storage")
-      .then((r) => r.json())
-      .then((l) => setLocations(l as StorageLocation[]))
-      .catch(() => setLocations([]));
-  }, []);
+const REDUNDANCY_OPTIONS: { value: Redundancy; label: string; description: string }[] = [
+  { value: "none", label: "None", description: "Full capacity · no protection" },
+  { value: "mirror", label: "Mirror (2×)", description: "50% capacity · 1 disk failure ok" },
+  { value: "ec", label: "EC (k=2 m=1)", description: "67% capacity · 1 node failure ok" },
+];
 
-  if (locations === null)
-    return <p className="text-xs text-[#71717a]">Loading storage…</p>;
-  if (locations.length === 0)
-    return (
-      <p className="text-xs text-[#f87171]">
-        No storage available. Export a disk as NFS on the Disks page first.
-      </p>
-    );
-
-  const currentKey = formData?.host
-    ? JSON.stringify({ host: formData.host, path: formData.path })
-    : "";
+function StorageField({ formData, onChange }: FieldProps) {
+  const value: StorageValue = formData ?? { redundancy: "none" };
 
   return (
-    <div>
-      <label className="block text-xs font-medium text-[#a1a1aa] mb-1.5">
-        Storage
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-[#a1a1aa]">
+        Redundancy
       </label>
-      <select
-        value={currentKey}
-        onChange={(e) => {
-          if (e.target.value)
-            onChange(JSON.parse(e.target.value) as StorageLocation);
-        }}
-        className="w-full rounded-md border border-[#27272a] bg-[#09090b] px-3 py-2 text-sm text-[#fafafa] outline-none focus:border-[#a78bfa] appearance-none"
-      >
-        <option value="">Select storage…</option>
-        {locations.map((loc) => {
-          const key = JSON.stringify({ host: loc.host, path: loc.path });
-          return (
-            <option key={key} value={key}>
-              {loc.host} — {loc.path}
-            </option>
-          );
-        })}
-      </select>
+      <div className="space-y-1.5">
+        {REDUNDANCY_OPTIONS.map((opt) => (
+          <label
+            key={opt.value}
+            className="flex items-center gap-3 rounded-md border border-[#27272a] bg-[#09090b] px-3 py-2.5 cursor-pointer hover:border-[#3f3f46] transition-colors"
+          >
+            <input
+              type="radio"
+              name="redundancy"
+              value={opt.value}
+              checked={value.redundancy === opt.value}
+              onChange={() => onChange({ ...value, redundancy: opt.value })}
+              className="accent-[#a78bfa]"
+            />
+            <div>
+              <span className="text-sm text-[#fafafa]">{opt.label}</span>
+              <span className="text-xs text-[#52525b] ml-2">{opt.description}</span>
+            </div>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }
@@ -509,7 +500,7 @@ export function AppInstallPage() {
             onChange={({ formData: d }) => setFormData(d ?? {})}
             onSubmit={() => void install()}
             widgets={{ TunnelWidget, PasswordWidget }}
-            fields={{ DiskField } as never}
+            fields={{ StorageField } as never}
             formContext={{ tunnelDomain }}
           >
             <Button

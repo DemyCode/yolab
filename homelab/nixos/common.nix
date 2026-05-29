@@ -161,6 +161,7 @@ in {
       "br_netfilter"
       "overlay"
       "nf_nat"
+      "rbd"        # Ceph RADOS Block Device — required by Rook/Ceph CSI driver
     ];
 
     boot.kernel.sysctl = {
@@ -311,10 +312,6 @@ in {
       };
     };
 
-    # NFS: every node can export its local disks.
-    # App PersistentVolumes are served via NFS so workloads can run on any node.
-    services.nfs.server.enable = true;
-
     # ── Users ─────────────────────────────────────────────────────────────
     users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey;
 
@@ -334,14 +331,143 @@ in {
         just
         wireguard-tools
         kubectl
-        nfs-utils
-        ntfs3g
+        gptfdisk   # sgdisk — wipes disks before Rook claims them
         dysk
         dust
         ctop
         vim
         wget
         htop
+      ];
+
+    # ── Rook / Ceph ───────────────────────────────────────────────────────────
+    # K3s watches /var/lib/rancher/k3s/server/manifests/ and auto-applies
+    # any YAML placed there.  We symlink Nix-store-managed files so updates
+    # propagate on nixos-rebuild without manual kubectl apply.
+    systemd.tmpfiles.rules =
+      let
+        rookOperator = pkgs.writeText "rook-ceph-operator.yaml" ''
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChart
+          metadata:
+            name: rook-ceph
+            namespace: kube-system
+          spec:
+            repo: https://charts.rook.io/release
+            chart: rook-ceph
+            version: v1.16.3
+            targetNamespace: rook-ceph
+            createNamespace: true
+            valuesContent: |-
+              resources:
+                limits:
+                  memory: 512Mi
+                requests:
+                  memory: 256Mi
+                  cpu: 100m
+              csi:
+                enableCephfsDriver: true
+                enableRbdDriver: true
+                cephFSFUSEClient: true
+        '';
+
+        rookCluster = pkgs.writeText "rook-ceph-cluster.yaml" ''
+          apiVersion: ceph.rook.io/v1
+          kind: CephCluster
+          metadata:
+            name: rook-ceph
+            namespace: rook-ceph
+          spec:
+            cephVersion:
+              image: quay.io/ceph/ceph:v18.2.2
+            dataDirHostPath: /var/lib/rook
+            mon:
+              count: 3
+              allowMultiplePerNode: true
+            mgr:
+              count: 1
+              allowMultiplePerNode: true
+            dashboard:
+              enabled: false
+            crashCollector:
+              disable: true
+            logCollector:
+              enabled: false
+            storage:
+              useAllNodes: true
+              useAllDevices: true
+            resources:
+              mgr:
+                limits:
+                  memory: "512Mi"
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+              mon:
+                limits:
+                  memory: "512Mi"
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+              osd:
+                limits:
+                  memory: "1Gi"
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+              prepareosd:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  memory: "1Gi"
+          ---
+          apiVersion: ceph.rook.io/v1
+          kind: CephFilesystem
+          metadata:
+            name: yolab-cephfs
+            namespace: rook-ceph
+          spec:
+            metadataPool:
+              replicated:
+                size: 1
+                requireSafeReplicaSize: false
+            dataPools:
+              - name: default
+                replicated:
+                  size: 1
+                  requireSafeReplicaSize: false
+            preserveFilesystemOnDelete: false
+            metadataServer:
+              activeCount: 1
+              activeStandby: false
+              resources:
+                limits:
+                  memory: "512Mi"
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+          ---
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: yolab-cephfs
+          provisioner: rook-ceph.cephfs.csi.ceph.com
+          parameters:
+            clusterID: rook-ceph
+            fsName: yolab-cephfs
+            pool: yolab-cephfs-default
+            csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+            csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+          allowVolumeExpansion: true
+          reclaimPolicy: Delete
+          volumeBindingMode: Immediate
+        '';
+      in [
+        "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml - - - - ${rookOperator}"
+        "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml  - - - - ${rookCluster}"
       ];
 
     system.activationScripts.yolabVersion = ''

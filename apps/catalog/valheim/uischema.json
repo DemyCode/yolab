@@ -1,6 +1,6 @@
 {
-  "disk": {
-    "ui:field": "DiskField"
+  "storage": {
+    "ui:field": "StorageField"
   },
   "server_pass": {
     "ui:widget": "PasswordWidget"

@@ -8,21 +8,6 @@ metadata:
     yolab.io/app-id: "{{ app_id }}"
 ---
 apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: yolab-{{ instance_name }}-data
-spec:
-  capacity:
-    storage: 50Gi
-  accessModes:
-    - ReadWriteMany
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
-  nfs:
-    server: "{{ disk.host }}"
-    path: "{{ disk.path }}"
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ instance_name }}-data
@@ -30,8 +15,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: ""
-  volumeName: yolab-{{ instance_name }}-data
+  storageClassName: "yolab-{{ instance_name }}"
   resources:
     requests:
       storage: 50Gi

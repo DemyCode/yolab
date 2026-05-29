@@ -1,8 +1,7 @@
 import asyncio
-import errno
 import json
 import subprocess
-from pathlib import Path
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -12,17 +11,10 @@ from local_api import kubectl
 from local_api.settings import settings
 
 router = APIRouter()
-MOUNTABLE_FSTYPES = {
-    "ext4",
-    "ext3",
-    "ext2",
-    "xfs",
-    "btrfs",
-    "f2fs",
-    "ntfs",
-    "vfat",
-    "exfat",
-}
+
+DiskStatus = Literal["osd", "pending_osd", "needs_format", "system"]
+
+CEPH_NAMESPACE = "rook-ceph"
 
 
 def _node_ips() -> list[str]:
@@ -45,27 +37,7 @@ def _lsblk() -> list[dict]:
     return json.loads(out)["blockdevices"]
 
 
-def _find_storage_partition(device: dict) -> dict | None:
-    """Return first child partition usable for storage.
-    Skips partitions mounted at system paths — only accepts unmounted ones or those under /mnt/."""
-    for child in device.get("children") or []:
-        fstype = child.get("fstype") or ""
-        mountpoint = child.get("mountpoint")
-        if fstype in MOUNTABLE_FSTYPES:
-            if mountpoint is None or mountpoint.startswith("/mnt/"):
-                return {
-                    "name": child["name"],
-                    "mountpoint": mountpoint,
-                    "fstype": fstype,
-                }
-        found = _find_storage_partition(child)
-        if found:
-            return found
-    return None
-
-
 def _is_system_disk(device: dict) -> bool:
-    """True if this disk hosts the OS — has /boot, LVM2_member, or system mountpoints."""
     for child in device.get("children") or []:
         mp = child.get("mountpoint") or ""
         fstype = child.get("fstype") or ""
@@ -78,90 +50,49 @@ def _is_system_disk(device: dict) -> bool:
     return False
 
 
-def _disk_usage(path: str, scan_root: bool = False) -> dict:
-    """Return filesystem stats and per-app subdirectory usage for a storage path.
-    By default scans the yolab/ subfolder for app dirs (external disks with mixed content).
-    scan_root=True scans the path itself directly (system disk, already yolab-dedicated)."""
-    out: dict = {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
-    p = Path(path)
-    if not p.exists():
-        return out
+def _has_content(device: dict) -> bool:
+    """True if the disk has partitions or a filesystem Rook won't auto-claim."""
+    if device.get("fstype"):
+        return True
+    return bool(device.get("children"))
+
+
+def _first_fstype(device: dict) -> str | None:
+    if device.get("fstype"):
+        return device["fstype"]
+    for child in device.get("children") or []:
+        fstype = child.get("fstype")
+        if fstype:
+            return fstype
+    return None
+
+
+def _ceph_osd_map() -> dict[str, int]:
+    """Returns {device_name: osd_id} from Ceph OSD metadata."""
     try:
-        lines = subprocess.check_output(
-            ["df", "-B1", "--output=size,used", path], text=True
-        ).splitlines()
-        if len(lines) >= 2:
-            parts = lines[1].split()
-            out["fs_size_bytes"] = int(parts[0])
-            out["fs_used_bytes"] = int(parts[1])
-    except Exception:
-        pass
-    scan_dir = p if scan_root else p / "yolab"
-    if scan_dir.is_dir():
-        try:
-            subdirs = [d for d in scan_dir.iterdir() if d.is_dir()]
-            if subdirs:
-                du = subprocess.check_output(
-                    ["du", "-sb"] + [str(d) for d in subdirs], text=True
-                )
-                out["app_usage"] = [
-                    {
-                        "name": Path(line.split("\t", 1)[1]).name,
-                        "bytes": int(line.split("\t", 1)[0]),
-                    }
-                    for line in du.splitlines()
-                    if "\t" in line
-                ]
-        except Exception:
-            pass
-    return out
-
-
-def _exported_paths() -> list[str]:
-    try:
-        out = subprocess.run(["exportfs", "-v"], capture_output=True, text=True).stdout
-        return [
-            line.split()[0]
-            for line in out.splitlines()
-            if line.split() and line.split()[0].startswith("/")
-        ]
-    except Exception:
-        return []
-
-
-def _export(path: str) -> None:
-    settings.exports_file.parent.mkdir(parents=True, exist_ok=True)
-    entries = _read_exports_file()
-    entries.add(path)
-    _write_exports_file(entries)
-    subprocess.run(["exportfs", "-ra"], check=True)
-
-
-def _unexport(path: str) -> None:
-    entries = _read_exports_file()
-    entries.discard(path)
-    _write_exports_file(entries)
-    subprocess.run(["exportfs", "-ra"], check=True)
-
-
-def _read_exports_file() -> set[str]:
-    if not settings.exports_file.exists():
-        return set()
-    return {
-        line.split()[0]
-        for line in settings.exports_file.read_text().splitlines()
-        if line.strip() and not line.startswith("#")
-    }
-
-
-def _write_exports_file(paths: set[str]) -> None:
-    settings.exports_file.parent.mkdir(parents=True, exist_ok=True)
-    settings.exports_file.write_text(
-        "\n".join(
-            f"{p} *(rw,sync,no_subtree_check,no_root_squash)" for p in sorted(paths)
+        result = subprocess.run(
+            [
+                "kubectl", "exec", "-n", CEPH_NAMESPACE,
+                "-l", "app=rook-ceph-mgr", "--",
+                "ceph", "osd", "metadata", "--format", "json",
+            ],
+            capture_output=True, text=True, timeout=15,
         )
-        + "\n"
-    )
+        if result.returncode != 0:
+            return {}
+        data = json.loads(result.stdout)
+        mapping: dict[str, int] = {}
+        for osd in data:
+            osd_id = osd.get("id")
+            if osd_id is None:
+                continue
+            for dev in osd.get("devices", "").split(","):
+                dev = dev.strip().replace("/dev/", "")
+                if dev:
+                    mapping[dev] = int(osd_id)
+        return mapping
+    except Exception:
+        return {}
 
 
 async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
@@ -180,37 +111,37 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
 
 @router.get("/disks/local")
 async def disks_local():
-    devices = await asyncio.to_thread(_lsblk)
+    devices, osd_map = await asyncio.gather(
+        asyncio.to_thread(_lsblk),
+        asyncio.to_thread(_ceph_osd_map),
+    )
     out = []
     for d in devices:
         if d.get("type") != "disk":
             continue
-        partition = _find_storage_partition(d)
-        is_system = _is_system_disk(d)
-        if partition:
-            storage_path = partition["mountpoint"] or f"/mnt/{d['name']}"
-        elif is_system:
-            storage_path = settings.system_storage_path
+        name = d["name"]
+        if _is_system_disk(d):
+            status: DiskStatus = "system"
+            osd_id = None
+        elif name in osd_map:
+            status = "osd"
+            osd_id = osd_map[name]
+        elif _has_content(d):
+            status = "needs_format"
+            osd_id = None
         else:
-            storage_path = None
-        usage = (
-            _disk_usage(storage_path, scan_root=is_system)
-            if storage_path
-            else {"fs_size_bytes": 0, "fs_used_bytes": 0, "app_usage": []}
-        )
-        out.append(
-            {
-                "name": d["name"],
-                "model": (d.get("model") or "").strip(),
-                "size_bytes": int(d.get("size") or 0),
-                "host": settings.yolab_node_ipv6,
-                "storage_partition": partition["name"] if partition else None,
-                "storage_path": storage_path,
-                "fs_size_bytes": usage["fs_size_bytes"],
-                "fs_used_bytes": usage["fs_used_bytes"],
-                "app_usage": usage["app_usage"],
-            }
-        )
+            status = "pending_osd"
+            osd_id = None
+
+        out.append({
+            "name": name,
+            "model": (d.get("model") or "").strip(),
+            "size_bytes": int(d.get("size") or 0),
+            "host": settings.yolab_node_ipv6,
+            "status": status,
+            "ceph_osd_id": osd_id,
+            "fs_type": _first_fstype(d),
+        })
     return out
 
 
@@ -223,157 +154,43 @@ async def disks():
     ]
 
 
-@router.get("/storage/local")
-async def storage_local():
-    paths = await asyncio.to_thread(_exported_paths)
-    return [{"host": settings.yolab_node_ipv6, "path": p} for p in paths]
-
-
-@router.get("/storage")
-async def storage():
-    """All NFS-exported storage locations across the swarm."""
-    return [
-        entry
-        for _ip, entries in await _gather_from_nodes("/api/storage/local")
-        for entry in entries
-    ]
-
-
-class EnableStorageRequest(BaseModel):
+class FormatRequest(BaseModel):
     disk_name: str
     host: str
 
 
-@router.post("/disks/enable-storage")
-async def enable_storage(body: EnableStorageRequest):
+@router.post("/disks/format")
+async def format_disk(body: FormatRequest):
     if body.host != settings.yolab_node_ipv6:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
-                f"http://[{body.host}]:{settings.port}/api/disks/enable-storage",
+                f"http://[{body.host}]:{settings.port}/api/disks/format",
                 json=body.model_dump(),
             )
         if r.status_code != 200:
-            raise HTTPException(
-                status_code=r.status_code, detail=r.json().get("detail", "Failed")
-            )
+            raise HTTPException(r.status_code, r.json().get("detail", "Failed"))
         return r.json()
 
     devices = await asyncio.to_thread(_lsblk)
     disk = next((d for d in devices if d["name"] == body.disk_name), None)
     if not disk:
-        raise HTTPException(status_code=404, detail="Disk not found")
+        raise HTTPException(404, "Disk not found")
+    if _is_system_disk(disk):
+        raise HTTPException(400, "Cannot format system disk")
 
-    partition = _find_storage_partition(disk)
+    r1 = await asyncio.to_thread(
+        subprocess.run,
+        ["wipefs", "--all", "--force", f"/dev/{body.disk_name}"],
+        capture_output=True, text=True,
+    )
+    r2 = await asyncio.to_thread(
+        subprocess.run,
+        ["sgdisk", "--zap-all", f"/dev/{body.disk_name}"],
+        capture_output=True, text=True,
+    )
+    if r1.returncode != 0:
+        raise HTTPException(500, f"wipefs failed: {r1.stderr.strip()}")
+    if r2.returncode != 0:
+        raise HTTPException(500, f"sgdisk failed: {r2.stderr.strip()}")
 
-    if partition:
-        fstype = partition.get("fstype", "")
-        is_ntfs = fstype in ("ntfs", "ntfs-3g")
-        mount_path = partition["mountpoint"] or f"/mnt/{body.disk_name}"
-        Path(mount_path).mkdir(parents=True, exist_ok=True)
-        if not partition["mountpoint"]:
-            if is_ntfs:
-                # ntfsfix clears the Windows hibernation/dirty flag before mounting
-                await asyncio.to_thread(
-                    subprocess.run,
-                    ["ntfsfix", f"/dev/{partition['name']}"],
-                    capture_output=True,
-                )
-                mount_cmd = [
-                    "mount",
-                    "-t",
-                    "ntfs-3g",
-                    "-o",
-                    "remove_hiberfile",
-                    f"/dev/{partition['name']}",
-                    mount_path,
-                ]
-            else:
-                mount_cmd = ["mount", f"/dev/{partition['name']}", mount_path]
-            result = await asyncio.to_thread(
-                subprocess.run, mount_cmd, capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                raise HTTPException(status_code=500, detail=result.stderr.strip())
-        elif is_ntfs:
-            # Disk already mounted — check if read-only and remount if needed
-            ro_check = subprocess.run(
-                ["findmnt", "-n", "-o", "OPTIONS", mount_path],
-                capture_output=True,
-                text=True,
-            )
-            if "ro," in ro_check.stdout or ro_check.stdout.startswith("ro"):
-                await asyncio.to_thread(
-                    subprocess.run, ["umount", mount_path], capture_output=True
-                )
-                await asyncio.to_thread(
-                    subprocess.run,
-                    ["ntfsfix", f"/dev/{partition['name']}"],
-                    capture_output=True,
-                )
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    [
-                        "mount",
-                        "-t",
-                        "ntfs-3g",
-                        "-o",
-                        "remove_hiberfile",
-                        f"/dev/{partition['name']}",
-                        mount_path,
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to remount NTFS read-write: {result.stderr.strip()}",
-                    )
-        # Create yolab/ subdir so app usage scanning only sees yolab data
-        try:
-            Path(mount_path, "yolab").mkdir(exist_ok=True)
-        except OSError as e:
-            if e.errno == errno.EROFS:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Disk at {mount_path} is mounted read-only (Windows Fast Startup/hibernation?). "
-                    f"Click 'Export as NFS' again to remount it read-write.",
-                )
-            raise
-    elif _is_system_disk(disk):
-        mount_path = settings.system_storage_path
-        Path(mount_path).mkdir(parents=True, exist_ok=True)
-    else:
-        raise HTTPException(
-            status_code=400, detail="No usable partition found on this disk"
-        )
-
-    try:
-        await asyncio.to_thread(_export, mount_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"exportfs failed: {e}")
-
-    return {"ok": True, "path": mount_path}
-
-
-class DisableStorageRequest(BaseModel):
-    path: str
-    host: str
-
-
-@router.post("/disks/disable-storage")
-async def disable_storage(body: DisableStorageRequest):
-    if body.host != settings.yolab_node_ipv6:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                f"http://[{body.host}]:{settings.port}/api/disks/disable-storage",
-                json=body.model_dump(),
-            )
-        if r.status_code != 200:
-            raise HTTPException(
-                status_code=r.status_code, detail=r.json().get("detail", "Failed")
-            )
-        return r.json()
-
-    await asyncio.to_thread(_unexport, body.path)
     return {"ok": True}

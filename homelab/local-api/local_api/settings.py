@@ -23,8 +23,6 @@ class Settings(BaseSettings):
     rebuild_log: Path = Path("/var/log/yolab-rebuild.log")
     rebuild_pid: Path = Path("/run/yolab-rebuild.pid")
     built_dir: Path = Path("/var/lib/yolab")
-    system_storage_path: str = "/var/yolab-data"
-    exports_file: Path = Path("/etc/exports.d/yolab.exports")
 
 
 settings = Settings()
