@@ -10,6 +10,7 @@ spec:
   targetNamespace: rook-ceph
   createNamespace: true
   valuesContent: |-
+    allowLoopDevices: true
     resources:
       limits:
         memory: 512Mi
