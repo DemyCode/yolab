@@ -19,12 +19,6 @@ spec:
     disable: true
   logCollector:
     enabled: false
-  # Pre-set use_random_nonce so that parse_env finds it already set at higher
-  # priority and returns 0 instead of asserting (Rook 1.16 sets CEPH_USE_RANDOM_NONCE=true
-  # as an OSD env var which triggers a ceph_assert failure in Reef's parse_env).
-  configFileOverride: |
-    [global]
-    use_random_nonce = true
   cephConfig:
     global:
       osd_pool_default_min_size: "1"

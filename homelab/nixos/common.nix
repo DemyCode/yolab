@@ -387,8 +387,9 @@ in {
     # any YAML placed there.  Symlinks into the Nix store so updates
     # propagate on nixos-rebuild without manual kubectl apply.
     systemd.tmpfiles.rules = [
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml - - - - ${./rook/operator.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml  - - - - ${./rook/cluster.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml  - - - - ${./rook/operator.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml   - - - - ${./rook/cluster.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-osd-env-fix.yaml - - - - ${./rook/osd-env-fix.yaml}"
     ];
 
     system.activationScripts.yolabVersion = ''
