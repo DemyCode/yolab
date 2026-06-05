@@ -71,5 +71,3 @@ async def ceph_osds():
         ]
     except Exception:
         return []
-
-

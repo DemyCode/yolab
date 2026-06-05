@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import subprocess
 from typing import Literal
 
@@ -170,43 +171,42 @@ class FormatRequest(BaseModel):
     host: str
 
 
-# ── System-disk OSD (LVM LV in the 'pool' VG) ─────────────────────────────────
+# ── System-disk OSD (sparse loop-file on root filesystem) ─────────────────────
 
-VG_NAME = "pool"
-LV_NAME = "ceph"
-LV_PATH = f"/dev/{VG_NAME}/{LV_NAME}"
-
-
-def _vg_free_bytes() -> int:
-    """Return free bytes in the pool VG."""
-    result = subprocess.run(
-        ["vgs", VG_NAME, "--reportformat", "json", "--units", "b", "--nosuffix"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    data = json.loads(result.stdout)
-    vg = data["report"][0]["vg"][0]
-    return int(vg["vg_free"])
+OSD_IMG = "/var/lib/rook/system-osd.img"
+OSD_LINK = "/dev/ceph-system-osd"
 
 
-def _lv_size_bytes() -> int | None:
-    """Return the size of the ceph LV in bytes, or None if it doesn't exist."""
-    result = subprocess.run(
-        ["lvs", LV_PATH, "--reportformat", "json", "--units", "b", "--nosuffix"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode != 0:
-        return None
-    data = json.loads(result.stdout)
+def _img_size_bytes() -> int | None:
+    """Return the size of the OSD image file in bytes, or None if absent."""
     try:
-        return int(data["report"][0]["lv"][0]["lv_size"])
-    except (KeyError, IndexError):
+        return os.path.getsize(OSD_IMG)
+    except OSError:
         return None
 
 
-def _ceph_osd_id_for_lv() -> int | None:
-    """Find the Ceph OSD ID that is backed by the system-disk LV, if any."""
+def _fs_free_bytes() -> int:
+    """Free bytes on the root filesystem (space available to extend the image)."""
+    import shutil
+    return shutil.disk_usage("/").free
+
+
+def _loop_device() -> str | None:
+    """Return the loop device currently backing the OSD image, if any."""
+    result = subprocess.run(
+        ["losetup", "-j", OSD_IMG],
+        capture_output=True, text=True, timeout=5,
+    )
+    line = result.stdout.strip()
+    return line.split(":")[0] if line else None
+
+
+def _ceph_osd_id_for_img() -> int | None:
+    """Find the Ceph OSD ID backed by the system-disk loop device, if any."""
+    loop = _loop_device()
+    if loop is None:
+        return None
+    loop_name = os.path.basename(loop)  # e.g. "loop0"
     try:
         result = subprocess.run(
             [
@@ -219,7 +219,7 @@ def _ceph_osd_id_for_lv() -> int | None:
             return None
         for osd in json.loads(result.stdout):
             for dev in osd.get("devices", "").split(","):
-                if LV_NAME in dev or "pool-ceph" in dev or "pool/ceph" in dev:
+                if loop_name in dev.strip():
                     return int(osd["id"])
     except Exception:
         pass
@@ -272,100 +272,108 @@ async def format_disk(body: FormatRequest):
 
 @router.get("/disks/system-osd")
 async def system_osd_status():
-    lv_bytes, free_bytes = await asyncio.gather(
-        asyncio.to_thread(_lv_size_bytes),
-        asyncio.to_thread(_vg_free_bytes),
+    img_bytes, free_bytes = await asyncio.gather(
+        asyncio.to_thread(_img_size_bytes),
+        asyncio.to_thread(_fs_free_bytes),
     )
-    osd_id = await asyncio.to_thread(_ceph_osd_id_for_lv) if lv_bytes is not None else None
+    osd_id = await asyncio.to_thread(_ceph_osd_id_for_img) if img_bytes is not None else None
     return {
-        "exists": lv_bytes is not None,
-        "size_bytes": lv_bytes,
-        "vg_free_bytes": free_bytes,
+        "exists": img_bytes is not None,
+        "size_bytes": img_bytes,
+        "fs_free_bytes": free_bytes,
         "ceph_osd_id": osd_id,
     }
 
 
-class SystemOsdCreate(BaseModel):
-    size: str  # LVM size string: "200G", "1T", etc.
+_SIZE_UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
 
 
-@router.post("/disks/system-osd")
-async def system_osd_create(body: SystemOsdCreate):
-    existing = await asyncio.to_thread(_lv_size_bytes)
-    if existing is not None:
-        raise HTTPException(400, "System OSD LV already exists — delete it first or extend it")
+def _parse_lvm_size(s: str) -> int:
+    """Parse an LVM size string like '400G' or '1.5T' to bytes (1024-based)."""
+    s = s.strip().upper().rstrip("I")  # strip trailing 'i' (GiB → G)
+    for unit, mult in _SIZE_UNITS.items():
+        if s.endswith(unit):
+            return int(float(s[:-len(unit)]) * mult)
+    raise ValueError(f"Unrecognised size: {s!r}")
 
-    import re
-    if not re.fullmatch(r"\d+(\.\d+)?[KMGTPE]i?", body.size, re.IGNORECASE):
-        raise HTTPException(422, "Invalid size format — use e.g. 200G, 1T")
 
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["lvcreate", "-L", body.size, "-n", LV_NAME, VG_NAME],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise HTTPException(500, f"lvcreate failed: {result.stderr.strip()}")
-
-    return {"ok": True, "path": LV_PATH}
+async def _purge_osd(osd_id: int) -> None:
+    """Best-effort Ceph OSD removal before shrinking the backing file."""
+    try:
+        mgr = await asyncio.to_thread(_mgr_pod)
+        for cmd in [
+            ["ceph", "osd", "out", str(osd_id)],
+            ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
+            ["ceph", "auth", "del", f"osd.{osd_id}"],
+            ["ceph", "osd", "rm", str(osd_id)],
+        ]:
+            subprocess.run(
+                ["kubectl", "exec", "-n", CEPH_NAMESPACE, mgr, "--"] + cmd,
+                capture_output=True, timeout=20,
+            )
+    except Exception:
+        pass
 
 
 class SystemOsdResize(BaseModel):
-    size: str  # new total size: "500G", "1T", etc.
+    size: str  # new total size: "400G", "1.5T", etc.
 
 
 @router.patch("/disks/system-osd")
 async def system_osd_resize(body: SystemOsdResize):
-    existing = await asyncio.to_thread(_lv_size_bytes)
-    if existing is None:
-        raise HTTPException(404, "System OSD LV does not exist")
-
     import re
     if not re.fullmatch(r"\d+(\.\d+)?[KMGTPE]i?", body.size, re.IGNORECASE):
-        raise HTTPException(422, "Invalid size format — use e.g. 500G, 1T")
+        raise HTTPException(422, "Invalid size — use e.g. 200G, 1.5T")
 
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["lvextend", "-L", body.size, LV_PATH],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise HTTPException(500, f"lvextend failed: {result.stderr.strip()}")
+    current = await asyncio.to_thread(_img_size_bytes)
+    if current is None:
+        raise HTTPException(404, "System OSD image not found")
 
-    return {"ok": True}
+    try:
+        target = _parse_lvm_size(body.size)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
+    if target > current:
+        # Extend: grow sparse file, notify the loop device
+        r = await asyncio.to_thread(
+            subprocess.run, ["truncate", "-s", body.size, OSD_IMG],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise HTTPException(500, f"truncate failed: {r.stderr.strip()}")
+        loop = await asyncio.to_thread(_loop_device)
+        if loop:
+            await asyncio.to_thread(
+                subprocess.run, ["losetup", "-c", loop], capture_output=True,
+            )
+        return {"ok": True, "operation": "extended"}
 
-@router.delete("/disks/system-osd")
-async def system_osd_delete():
-    existing = await asyncio.to_thread(_lv_size_bytes)
-    if existing is None:
-        raise HTTPException(404, "System OSD LV does not exist")
+    if target < current:
+        # Shrink: purge OSD, detach loop, truncate file, re-attach
+        osd_id = await asyncio.to_thread(_ceph_osd_id_for_img)
+        if osd_id is not None:
+            await _purge_osd(osd_id)
+        loop = await asyncio.to_thread(_loop_device)
+        if loop:
+            await asyncio.to_thread(
+                subprocess.run, ["losetup", "-d", loop], capture_output=True,
+            )
+        r = await asyncio.to_thread(
+            subprocess.run, ["truncate", "-s", body.size, OSD_IMG],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise HTTPException(500, f"truncate failed: {r.stderr.strip()}")
+        r2 = await asyncio.to_thread(
+            subprocess.run, ["losetup", "-f", "--show", OSD_IMG],
+            capture_output=True, text=True,
+        )
+        if r2.returncode == 0:
+            new_loop = r2.stdout.strip()
+            await asyncio.to_thread(
+                subprocess.run, ["ln", "-sf", new_loop, OSD_LINK], capture_output=True,
+            )
+        return {"ok": True, "operation": "shrunk"}
 
-    osd_id = await asyncio.to_thread(_ceph_osd_id_for_lv)
-
-    # Best-effort Ceph OSD removal — cluster must be healthy enough to accept it
-    if osd_id is not None:
-        try:
-            mgr = await asyncio.to_thread(_mgr_pod)
-            for cmd in [
-                ["ceph", "osd", "out", str(osd_id)],
-                ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
-                ["ceph", "auth", "del", f"osd.{osd_id}"],
-                ["ceph", "osd", "rm", str(osd_id)],
-            ]:
-                subprocess.run(
-                    ["kubectl", "exec", "-n", CEPH_NAMESPACE, mgr, "--"] + cmd,
-                    capture_output=True, timeout=20,
-                )
-        except Exception:
-            pass  # Proceed with LV removal even if Ceph commands fail
-
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["lvremove", "-f", LV_PATH],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise HTTPException(500, f"lvremove failed: {result.stderr.strip()}")
-
-    return {"ok": True}
+    return {"ok": True, "operation": "unchanged"}

@@ -1,0 +1,21 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rook-ceph
+  namespace: kube-system
+spec:
+  repo: https://charts.rook.io/release
+  chart: rook-ceph
+  version: v1.16.3
+  targetNamespace: rook-ceph
+  createNamespace: true
+  valuesContent: |-
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        memory: 256Mi
+        cpu: 100m
+    csi:
+      enableCephfsDriver: false
+      enableRbdDriver: true

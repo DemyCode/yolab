@@ -14,12 +14,6 @@
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
-
-  # /dev/pool/ceph is an LVM LV the user can create at any time from the
-  # Disks page in the homelab UI.  We pre-register it here so Rook picks it
-  # up automatically when it appears.  Rook silently skips the device when
-  # the LV doesn't exist yet.
-  cephDevicesYaml = "    devices:\n      - name: /dev/pool/ceph\n";
 in {
   # ── Module options ────────────────────────────────────────────────────────
   # Consumed by platform overlays (wsl.nix, darwin/configuration.nix …).
@@ -167,8 +161,7 @@ in {
       "br_netfilter"
       "overlay"
       "nf_nat"
-      "rbd"        # Ceph RADOS Block Device — required by Rook/Ceph CSI driver
-      "fuse"       # Required by cephFSFUSEClient — CSI mounts CephFS via ceph-fuse
+      "rbd" # Ceph RADOS Block Device — required by Rook/Ceph RBD CSI driver
     ];
 
     boot.kernel.sysctl = {
@@ -290,6 +283,51 @@ in {
       wants = ["wireguard-wg0.service"];
     };
 
+    # ── System-disk OSD ───────────────────────────────────────────────────────
+    # Creates a sparse file on the root filesystem (no partitioning) and
+    # attaches it as a loop device.  A stable symlink /dev/ceph-system-osd
+    # points at the loop device so Rook always finds it under a fixed path.
+    # On first boot the file is sized to 50 % of the root filesystem capacity.
+    systemd.services.yolab-system-osd = {
+      description = "System-disk Ceph OSD (loop-file)";
+      wantedBy = ["multi-user.target"];
+      after = ["local-fs.target"];
+      before = ["k3s.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "system-osd-start" ''
+          set -euo pipefail
+          IMG=/var/lib/rook/system-osd.img
+          LINK=/dev/ceph-system-osd
+
+          # Create sparse image at 50 % of root-filesystem capacity on first run.
+          # 'truncate' makes a sparse file — blocks are only allocated on write.
+          if [ ! -f "$IMG" ]; then
+            mkdir -p /var/lib/rook
+            set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
+            HALF=$(( $2 / 2 ))
+            ${pkgs.coreutils}/bin/truncate -s "$HALF" "$IMG"
+          fi
+
+          # Attach to a loop device if not already attached
+          LOOP=$(${pkgs.util-linux}/bin/losetup -j "$IMG" | ${pkgs.coreutils}/bin/cut -d: -f1)
+          if [ -z "$LOOP" ]; then
+            LOOP=$(${pkgs.util-linux}/bin/losetup -f --show "$IMG")
+          fi
+
+          # Stable symlink for Rook to reference across reboots
+          ln -sf "$LOOP" "$LINK"
+        '';
+        ExecStop = pkgs.writeShellScript "system-osd-stop" ''
+          LOOP=$(${pkgs.util-linux}/bin/losetup -j /var/lib/rook/system-osd.img 2>/dev/null \
+                 | ${pkgs.coreutils}/bin/cut -d: -f1)
+          [ -n "$LOOP" ] && ${pkgs.util-linux}/bin/losetup -d "$LOOP" || true
+          rm -f /dev/ceph-system-osd
+        '';
+      };
+    };
+
     # ── Local API ──────────────────────────────────────────────────────────
     # Runs on every node.  The node the user opens in their browser queries
     # its own local-api, which fans out disk / storage / node requests to
@@ -338,7 +376,7 @@ in {
         just
         wireguard-tools
         kubectl
-        gptfdisk   # sgdisk — wipes disks before Rook claims them
+        gptfdisk # sgdisk — wipes disks before Rook claims them
         dysk
         dust
         ctop
@@ -349,134 +387,12 @@ in {
 
     # ── Rook / Ceph ───────────────────────────────────────────────────────────
     # K3s watches /var/lib/rancher/k3s/server/manifests/ and auto-applies
-    # any YAML placed there.  We symlink Nix-store-managed files so updates
+    # any YAML placed there.  Symlinks into the Nix store so updates
     # propagate on nixos-rebuild without manual kubectl apply.
-    systemd.tmpfiles.rules =
-      let
-        rookOperator = pkgs.writeText "rook-ceph-operator.yaml" ''
-          apiVersion: helm.cattle.io/v1
-          kind: HelmChart
-          metadata:
-            name: rook-ceph
-            namespace: kube-system
-          spec:
-            repo: https://charts.rook.io/release
-            chart: rook-ceph
-            version: v1.16.3
-            targetNamespace: rook-ceph
-            createNamespace: true
-            valuesContent: |-
-              resources:
-                limits:
-                  memory: 512Mi
-                requests:
-                  memory: 256Mi
-                  cpu: 100m
-              csi:
-                enableCephfsDriver: true
-                enableRbdDriver: true
-                cephFSFUSEClient: true
-        '';
-
-        rookCluster = pkgs.writeText "rook-ceph-cluster.yaml" (''
-          apiVersion: ceph.rook.io/v1
-          kind: CephCluster
-          metadata:
-            name: rook-ceph
-            namespace: rook-ceph
-          spec:
-            cephVersion:
-              image: quay.io/ceph/ceph:v18.2.2
-            dataDirHostPath: /var/lib/rook
-            mon:
-              count: 3
-              allowMultiplePerNode: true
-            mgr:
-              count: 1
-              allowMultiplePerNode: true
-            dashboard:
-              enabled: false
-            crashCollector:
-              disable: true
-            logCollector:
-              enabled: false
-            storage:
-              useAllNodes: true
-              useAllDevices: true
-        '' + cephDevicesYaml + ''
-            resources:
-              mgr:
-                limits:
-                  memory: "512Mi"
-                requests:
-                  memory: "128Mi"
-                  cpu: "100m"
-              mon:
-                limits:
-                  memory: "512Mi"
-                requests:
-                  memory: "128Mi"
-                  cpu: "100m"
-              osd:
-                limits:
-                  memory: "1Gi"
-                requests:
-                  memory: "256Mi"
-                  cpu: "100m"
-              prepareosd:
-                requests:
-                  cpu: "100m"
-                  memory: "128Mi"
-                limits:
-                  memory: "1Gi"
-          ---
-          apiVersion: ceph.rook.io/v1
-          kind: CephFilesystem
-          metadata:
-            name: yolab-cephfs
-            namespace: rook-ceph
-          spec:
-            metadataPool:
-              replicated:
-                size: 1
-                requireSafeReplicaSize: false
-            dataPools:
-              - name: default
-                replicated:
-                  size: 1
-                  requireSafeReplicaSize: false
-            preserveFilesystemOnDelete: false
-            metadataServer:
-              activeCount: 1
-              activeStandby: false
-              resources:
-                limits:
-                  memory: "512Mi"
-                requests:
-                  cpu: "100m"
-                  memory: "128Mi"
-          ---
-          apiVersion: storage.k8s.io/v1
-          kind: StorageClass
-          metadata:
-            name: yolab-cephfs
-          provisioner: rook-ceph.cephfs.csi.ceph.com
-          parameters:
-            clusterID: rook-ceph
-            fsName: yolab-cephfs
-            pool: yolab-cephfs-default
-            csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
-            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
-            csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
-            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
-          allowVolumeExpansion: true
-          reclaimPolicy: Delete
-          volumeBindingMode: Immediate
-        '');
-      in [
-        "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml - - - - ${rookOperator}"
-        "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml  - - - - ${rookCluster}"
-      ];
+    systemd.tmpfiles.rules = [
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml - - - - ${./rook/operator.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml  - - - - ${./rook/cluster.yaml}"
+    ];
 
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
