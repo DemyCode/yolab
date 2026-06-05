@@ -190,7 +190,7 @@ function SystemOsdCard() {
           <div className="flex-1 min-w-0">
             <div className="flex items-baseline gap-2">
               <span className="font-medium text-[#fafafa] text-sm">System disk</span>
-              <span className="text-xs text-[#52525b]">/dev/pool/ceph</span>
+              <span className="text-xs text-[#52525b]">/dev/ceph-system-osd</span>
             </div>
 
             <div className="flex items-center gap-3 mt-1.5 text-xs flex-wrap">
