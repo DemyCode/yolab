@@ -310,14 +310,11 @@ in {
             ${pkgs.coreutils}/bin/truncate -s "$HALF" "$IMG"
           fi
 
-          # Attach to a loop device if not already attached
-          LOOP=$(${pkgs.util-linux}/bin/losetup -j "$IMG" | ${pkgs.coreutils}/bin/cut -d: -f1)
-          if [ -z "$LOOP" ]; then
-            LOOP=$(${pkgs.util-linux}/bin/losetup -f --show "$IMG")
-          fi
-
-          # Stable symlink for Rook to reference across reboots
-          ln -sf "$LOOP" "$LINK"
+          # Always claim /dev/loop0 so the device name is stable across reboots.
+          # Detach any stale attachment first, then attach to the fixed slot.
+          ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
+          ${pkgs.util-linux}/bin/losetup /dev/loop0 "$IMG"
+          ln -sf /dev/loop0 "$LINK"
         '';
         ExecStop = pkgs.writeShellScript "system-osd-stop" ''
           LOOP=$(${pkgs.util-linux}/bin/losetup -j /var/lib/rook/system-osd.img 2>/dev/null \

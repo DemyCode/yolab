@@ -25,6 +25,8 @@ spec:
   storage:
     useAllNodes: true
     useAllDevices: true
+    devices:
+      - name: /dev/loop0
   resources:
     mgr:
       limits:
