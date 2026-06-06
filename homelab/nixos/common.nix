@@ -404,6 +404,11 @@ in {
       "flakes"
     ];
     nix.gc.automatic = true;
+
+    swapDevices = [{
+      device = "/var/lib/swapfile";
+      size = 8192;
+    }];
     services.swapspace.enable = true;
   };
 }
