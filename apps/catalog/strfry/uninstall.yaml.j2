@@ -21,7 +21,8 @@ spec:
           fi
           echo "Deleting tunnel $TUNNEL_ID..."
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-            "{{ platform_api_url }}/tunnels/$TUNNEL_ID?account_token={{ account_token }}")
+            -H "Authorization: Bearer {{ account_token }}" \
+            "{{ platform_api_url }}/tunnels/$TUNNEL_ID")
           if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
             echo "Tunnel $TUNNEL_ID deleted (HTTP $STATUS)"
           else

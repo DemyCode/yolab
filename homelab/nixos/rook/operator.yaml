@@ -18,5 +18,5 @@ spec:
         memory: 256Mi
         cpu: 100m
     csi:
-      enableCephfsDriver: false
+      enableCephfsDriver: true
       enableRbdDriver: true
