@@ -28,7 +28,6 @@ spec:
       # Loop device is on a USB drive — very slow random writes.
       # Extend all heartbeat/grace timeouts to avoid spurious OSD/MDS flapping.
       osd_heartbeat_grace: "60"
-      osd_mon_heartbeat_grace: "60"
       mon_osd_report_timeout: "90"
       mds_beacon_grace: "60"
   priorityClassNames:
