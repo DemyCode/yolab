@@ -1,6 +1,5 @@
 import asyncio
 import json
-import subprocess
 
 from fastapi import APIRouter
 
@@ -8,21 +7,8 @@ from local_api import kubectl
 
 router = APIRouter()
 
-NAMESPACE = "rook-ceph"
-
-
-def _mgr_exec(*args: str) -> str:
-    result = subprocess.run(
-        ["kubectl", "exec", "-n", NAMESPACE, kubectl.ceph_mgr_pod(), "--", *args],
-        capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    return result.stdout
-
-
 def _ceph(*args: str) -> dict | list:
-    return json.loads(_mgr_exec("ceph", *args, "--format", "json"))
+    return json.loads(kubectl.ceph_exec(*args, "--format", "json"))
 
 
 @router.get("/ceph/status")

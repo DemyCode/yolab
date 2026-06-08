@@ -69,16 +69,7 @@ def _first_fstype(device: dict) -> str | None:
 
 def _ceph_osd_map() -> dict[str, int]:
     try:
-        result = subprocess.run(
-            [
-                "kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
-                "ceph", "osd", "metadata", "--format", "json",
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode != 0:
-            return {}
-        data = json.loads(result.stdout)
+        data = json.loads(kubectl.ceph_exec("osd", "metadata", "--format", "json"))
         mapping: dict[str, int] = {}
         for osd in data:
             osd_id = osd.get("id")
@@ -187,16 +178,7 @@ def _ceph_osd_id_for_img() -> int | None:
         return None
     loop_name = os.path.basename(loop)
     try:
-        result = subprocess.run(
-            [
-                "kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
-                "ceph", "osd", "metadata", "--format", "json",
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        for osd in json.loads(result.stdout):
+        for osd in json.loads(kubectl.ceph_exec("osd", "metadata", "--format", "json")):
             for dev in osd.get("devices", "").split(","):
                 if loop_name in dev.strip():
                     return int(osd["id"])
@@ -207,16 +189,7 @@ def _ceph_osd_id_for_img() -> int | None:
 
 def _ceph_osd_count() -> int:
     try:
-        result = subprocess.run(
-            [
-                "kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
-                "ceph", "osd", "stat", "--format", "json",
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode != 0:
-            return 0
-        return int(json.loads(result.stdout).get("num_osds", 0))
+        return int(json.loads(kubectl.ceph_exec("osd", "stat", "--format", "json")).get("num_osds", 0))
     except Exception:
         return 0
 
