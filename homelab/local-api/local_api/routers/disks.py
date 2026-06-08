@@ -242,6 +242,27 @@ async def format_disk(body: FormatRequest):
         capture_output=True,
     )
 
+    # Rook ignores deviceFilter when an explicit devices[] list is present.
+    # Patch the CephCluster to add the newly formatted disk so the next prepare
+    # job will claim it.  The patch is transient — K3s will revert it on the
+    # next manifest reconcile — but the OSD deployment persists independently
+    # once Rook has provisioned it.
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "patch", "cephcluster", "-n", "rook-ceph", "rook-ceph",
+         "--type", "json",
+         "-p", json.dumps([{"op": "add", "path": "/spec/storage/devices/-",
+                            "value": {"name": body.disk_name}}])],
+        capture_output=True,
+    )
+    # Delete stale prepare job so Rook starts a fresh one immediately.
+    await asyncio.to_thread(
+        subprocess.run,
+        ["kubectl", "delete", "job", "-n", "rook-ceph", "rook-ceph-osd-prepare-homelab",
+         "--ignore-not-found"],
+        capture_output=True,
+    )
+
     return {"ok": True}
 
 
