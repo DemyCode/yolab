@@ -29,7 +29,8 @@ spec:
     mgr: system-cluster-critical
     osd: system-cluster-critical
   storage:
-    useAllNodes: false
+    useAllNodes: true
+    useAllDevices: true
     nodes:
       - name: "homelab"
         devices:
