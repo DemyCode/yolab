@@ -19,6 +19,8 @@ spec:
     disable: true
   logCollector:
     enabled: false
+  skipUpgradeChecks: true
+  continueUpgradeAfterChecksEvenIfNotHealthy: true
   cephConfig:
     global:
       osd_pool_default_min_size: "1"
