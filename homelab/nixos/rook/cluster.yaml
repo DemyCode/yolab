@@ -30,11 +30,8 @@ spec:
     osd: system-cluster-critical
   storage:
     useAllNodes: true
-    useAllDevices: true
-    nodes:
-      - name: "homelab"
-        devices:
-          - name: "loop0"
+    useAllDevices: false
+    deviceFilter: "^(loop[0-9]+|sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|hd[a-z]+)"
   resources:
     mgr:
       limits:
