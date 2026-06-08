@@ -53,6 +53,7 @@ spec:
                 - |
                   for dep in $(kubectl get deployments -n rook-ceph -l app=rook-ceph-osd -o name); do
                     kubectl set env -n rook-ceph "$dep" \
+                      CEPH_OSD_FLAVOR=classic \
                       CEPH_USE_RANDOM_NONCE- \
                       CEPH_VOLUME_DEBUG- \
                       CEPH_VOLUME_SKIP_RESTORECON-
