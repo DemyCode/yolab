@@ -46,7 +46,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: fix
-              image: bitnami/kubectl:1.31.0
+              image: bitnami/kubectl:1.31
               command:
                 - /bin/sh
                 - -c
