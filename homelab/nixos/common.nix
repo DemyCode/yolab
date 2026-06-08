@@ -284,9 +284,8 @@ in {
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
     # Creates a sparse file on the root filesystem (no partitioning) and
-    # attaches it as a loop device.  A stable symlink /dev/ceph-system-osd
-    # points at the loop device so Rook always finds it under a fixed path.
-    # On first boot the file is sized to 50 % of the root filesystem capacity.
+    # attaches it as a loop device.  On first boot the file is sized to 25%
+    # of the root filesystem capacity.
     systemd.services.yolab-system-osd = {
       description = "System-disk Ceph OSD (loop-file)";
       wantedBy = ["multi-user.target"];
@@ -299,7 +298,7 @@ in {
           set -euo pipefail
           IMG=/var/lib/rook/system-osd.img
 
-          # Create sparse image at 50 % of root-filesystem capacity on first run.
+          # Create sparse image at 25% of root-filesystem capacity on first run.
           # 'truncate' makes a sparse file — blocks are only allocated on write.
           if [ ! -f "$IMG" ]; then
             mkdir -p /var/lib/rook
