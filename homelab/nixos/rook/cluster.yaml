@@ -21,6 +21,8 @@ spec:
     enabled: false
   skipUpgradeChecks: true
   continueUpgradeAfterChecksEvenIfNotHealthy: true
+  network:
+    ipFamily: IPv6
   cephConfig:
     global:
       osd_pool_default_min_size: "1"
@@ -30,6 +32,9 @@ spec:
       osd_heartbeat_grace: "60"
       mon_osd_report_timeout: "90"
       mds_beacon_grace: "60"
+      # Force IPv6 binding — pod network is IPv6, OSD must not default to IPv4
+      ms_bind_ipv6: "true"
+      ms_bind_ipv4: "false"
   priorityClassNames:
     mon: system-cluster-critical
     mgr: system-cluster-critical
