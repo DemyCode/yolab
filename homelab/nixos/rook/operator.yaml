@@ -13,10 +13,11 @@ spec:
     allowLoopDevices: true
     resources:
       limits:
-        memory: 512Mi
-      requests:
         memory: 256Mi
+      requests:
+        memory: 128Mi
         cpu: 100m
     csi:
       enableCephfsDriver: true
-      enableRbdDriver: true
+      enableRbdDriver: false
+      provisionerReplicas: 1

@@ -161,7 +161,6 @@ in {
       "br_netfilter"
       "overlay"
       "nf_nat"
-      "rbd" # Ceph RADOS Block Device — required by Rook/Ceph RBD CSI driver
     ];
 
     boot.kernel.sysctl = {
@@ -305,8 +304,7 @@ in {
           if [ ! -f "$IMG" ]; then
             mkdir -p /var/lib/rook
             set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
-            HALF=$(( $2 / 2 ))
-            ${pkgs.coreutils}/bin/truncate -s "$HALF" "$IMG"
+            ${pkgs.coreutils}/bin/truncate -s "$(( $2 / 4 ))" "$IMG"
           fi
 
           # Always claim /dev/loop0 so the device name is stable across reboots.

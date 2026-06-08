@@ -22,64 +22,46 @@ spec:
   cephConfig:
     global:
       osd_pool_default_min_size: "1"
+      osd_memory_target: "268435456"
+      bluestore_cache_autotune: "true"
+  priorityClassNames:
+    mon: system-cluster-critical
+    mgr: system-cluster-critical
+    osd: system-cluster-critical
   storage:
     useAllNodes: true
     useAllDevices: true
   resources:
     mgr:
       limits:
-        memory: "512Mi"
+        memory: "256Mi"
       requests:
-        memory: "128Mi"
-        cpu: "100m"
+        memory: "64Mi"
+        cpu: "50m"
+    mgr-sidecar:
+      limits:
+        memory: "64Mi"
+      requests:
+        memory: "32Mi"
+        cpu: "10m"
     mon:
       limits:
-        memory: "512Mi"
+        memory: "256Mi"
       requests:
-        memory: "128Mi"
-        cpu: "100m"
+        memory: "64Mi"
+        cpu: "50m"
     osd:
       limits:
-        memory: "1Gi"
+        memory: "512Mi"
       requests:
         memory: "256Mi"
         cpu: "100m"
     prepareosd:
-      requests:
-        cpu: "100m"
-        memory: "128Mi"
       limits:
-        memory: "1Gi"
----
-apiVersion: ceph.rook.io/v1
-kind: CephBlockPool
-metadata:
-  name: yolab-block
-  namespace: rook-ceph
-spec:
-  replicated:
-    size: 3
-    requireSafeReplicaSize: false
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: yolab-storage
-provisioner: rook-ceph.rbd.csi.ceph.com
-parameters:
-  clusterID: rook-ceph
-  pool: yolab-block
-  imageFormat: "2"
-  imageFeatures: layering
-  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
-  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
-  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
-  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
-  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
-  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
-allowVolumeExpansion: true
-reclaimPolicy: Delete
-volumeBindingMode: Immediate
+        memory: "256Mi"
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
 ---
 apiVersion: ceph.rook.io/v1
 kind: CephFilesystem
@@ -96,13 +78,14 @@ spec:
       replicated:
         size: 1
         requireSafeReplicaSize: false
-  preserveFilesystemOnDelete: false
+  preserveFilesystemOnDelete: true
   metadataServer:
     activeCount: 1
     activeStandby: false
+    priorityClassName: system-cluster-critical
     resources:
       requests:
-        cpu: "100m"
+        cpu: "50m"
         memory: "128Mi"
       limits:
         memory: "512Mi"
