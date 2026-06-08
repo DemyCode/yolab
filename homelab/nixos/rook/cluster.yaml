@@ -24,6 +24,7 @@ spec:
   cephConfig:
     global:
       osd_pool_default_min_size: "1"
+      osd_pool_default_size: "1"
   priorityClassNames:
     mon: system-cluster-critical
     mgr: system-cluster-critical
