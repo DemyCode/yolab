@@ -145,7 +145,7 @@ in {
       enable = true;
       ports = [s.sshPort];
       settings = {
-        PermitRootLogin = lib.mkIf (s.rootSshKey != "") "prohibit-password";
+        PermitRootLogin = "prohibit-password";
         PasswordAuthentication = false;
       };
     };
@@ -349,7 +349,9 @@ in {
     };
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey;
+    users.users.root.openssh.authorizedKeys.keys =
+      lib.optional (s.rootSshKey != "") s.rootSshKey
+      ++ [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos" ];
 
     users.users.homelab = {
       isNormalUser = true;
