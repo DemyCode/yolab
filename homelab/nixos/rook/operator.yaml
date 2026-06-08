@@ -17,7 +17,9 @@ spec:
       requests:
         memory: 128Mi
         cpu: 100m
+    cephCommandsTimeoutSeconds: "60"
     csi:
       enableCephfsDriver: true
       enableRbdDriver: false
       provisionerReplicas: 1
+      grpcTimeoutInSeconds: 300
