@@ -52,7 +52,6 @@ def _is_system_disk(device: dict) -> bool:
 
 
 def _has_content(device: dict) -> bool:
-    """True if the disk has partitions or a filesystem Rook won't auto-claim."""
     if device.get("fstype"):
         return True
     return bool(device.get("children"))
@@ -68,24 +67,11 @@ def _first_fstype(device: dict) -> str | None:
     return None
 
 
-def _mgr_pod() -> str:
-    result = subprocess.run(
-        ["kubectl", "get", "pod", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-mgr",
-         "-o", "jsonpath={.items[0].metadata.name}"],
-        capture_output=True, text=True, timeout=10,
-    )
-    name = result.stdout.strip()
-    if result.returncode != 0 or not name:
-        raise RuntimeError("No rook-ceph-mgr pod found")
-    return name
-
-
 def _ceph_osd_map() -> dict[str, int]:
-    """Returns {device_name: osd_id} from Ceph OSD metadata."""
     try:
         result = subprocess.run(
             [
-                "kubectl", "exec", "-n", CEPH_NAMESPACE, _mgr_pod(), "--",
+                "kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
                 "ceph", "osd", "metadata", "--format", "json",
             ],
             capture_output=True, text=True, timeout=15,
@@ -171,14 +157,10 @@ class FormatRequest(BaseModel):
     host: str
 
 
-# ── System-disk OSD (sparse loop-file on root filesystem) ─────────────────────
-
 OSD_IMG = "/var/lib/rook/system-osd.img"
-OSD_LINK = "/dev/ceph-system-osd"
 
 
 def _img_size_bytes() -> int | None:
-    """Return the size of the OSD image file in bytes, or None if absent."""
     try:
         return os.path.getsize(OSD_IMG)
     except OSError:
@@ -186,13 +168,11 @@ def _img_size_bytes() -> int | None:
 
 
 def _fs_free_bytes() -> int:
-    """Free bytes on the root filesystem (space available to extend the image)."""
     import shutil
     return shutil.disk_usage("/").free
 
 
 def _loop_device() -> str | None:
-    """Return the loop device currently backing the OSD image, if any."""
     result = subprocess.run(
         ["losetup", "-j", OSD_IMG],
         capture_output=True, text=True, timeout=5,
@@ -202,15 +182,14 @@ def _loop_device() -> str | None:
 
 
 def _ceph_osd_id_for_img() -> int | None:
-    """Find the Ceph OSD ID backed by the system-disk loop device, if any."""
     loop = _loop_device()
     if loop is None:
         return None
-    loop_name = os.path.basename(loop)  # e.g. "loop0"
+    loop_name = os.path.basename(loop)
     try:
         result = subprocess.run(
             [
-                "kubectl", "exec", "-n", CEPH_NAMESPACE, _mgr_pod(), "--",
+                "kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
                 "ceph", "osd", "metadata", "--format", "json",
             ],
             capture_output=True, text=True, timeout=15,
@@ -224,6 +203,22 @@ def _ceph_osd_id_for_img() -> int | None:
     except Exception:
         pass
     return None
+
+
+def _ceph_osd_count() -> int:
+    try:
+        result = subprocess.run(
+            [
+                "kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
+                "ceph", "osd", "stat", "--format", "json",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return 0
+        return int(json.loads(result.stdout).get("num_osds", 0))
+    except Exception:
+        return 0
 
 
 @router.post("/disks/format")
@@ -244,6 +239,9 @@ async def format_disk(body: FormatRequest):
         raise HTTPException(404, "Disk not found")
     if _is_system_disk(disk):
         raise HTTPException(400, "Cannot format system disk")
+    osd_map = await asyncio.to_thread(_ceph_osd_map)
+    if body.disk_name in osd_map:
+        raise HTTPException(400, "Disk is already a Ceph OSD")
 
     r1 = await asyncio.to_thread(
         subprocess.run,
@@ -260,7 +258,6 @@ async def format_disk(body: FormatRequest):
     if r2.returncode != 0:
         raise HTTPException(500, f"sgdisk failed: {r2.stderr.strip()}")
 
-    # Flush kernel partition table cache so Rook's udev discovery sees the clean disk immediately
     await asyncio.to_thread(
         subprocess.run,
         ["partprobe", f"/dev/{body.disk_name}"],
@@ -289,8 +286,7 @@ _SIZE_UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5
 
 
 def _parse_lvm_size(s: str) -> int:
-    """Parse an LVM size string like '400G' or '1.5T' to bytes (1024-based)."""
-    s = s.strip().upper().rstrip("I")  # strip trailing 'i' (GiB → G)
+    s = s.strip().upper().rstrip("I")
     for unit, mult in _SIZE_UNITS.items():
         if s.endswith(unit):
             return int(float(s[:-len(unit)]) * mult)
@@ -298,9 +294,8 @@ def _parse_lvm_size(s: str) -> int:
 
 
 async def _purge_osd(osd_id: int) -> None:
-    """Best-effort Ceph OSD removal before shrinking the backing file."""
     try:
-        mgr = await asyncio.to_thread(_mgr_pod)
+        mgr = await asyncio.to_thread(kubectl.ceph_mgr_pod)
         for cmd in [
             ["ceph", "osd", "out", str(osd_id)],
             ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
@@ -316,7 +311,7 @@ async def _purge_osd(osd_id: int) -> None:
 
 
 class SystemOsdResize(BaseModel):
-    size: str  # new total size: "400G", "1.5T", etc.
+    size: str
 
 
 @router.patch("/disks/system-osd")
@@ -335,7 +330,6 @@ async def system_osd_resize(body: SystemOsdResize):
         raise HTTPException(422, str(e))
 
     if target > current:
-        # Extend: grow sparse file, notify the loop device
         r = await asyncio.to_thread(
             subprocess.run, ["truncate", "-s", body.size, OSD_IMG],
             capture_output=True, text=True,
@@ -350,9 +344,11 @@ async def system_osd_resize(body: SystemOsdResize):
         return {"ok": True, "operation": "extended"}
 
     if target < current:
-        # Shrink: purge OSD, detach loop, truncate file, re-attach
         osd_id = await asyncio.to_thread(_ceph_osd_id_for_img)
         if osd_id is not None:
+            osd_count = await asyncio.to_thread(_ceph_osd_count)
+            if osd_count <= 1:
+                raise HTTPException(400, "Cannot shrink: this is the only Ceph OSD — all data would be lost")
             await _purge_osd(osd_id)
         loop = await asyncio.to_thread(_loop_device)
         if loop:
@@ -365,15 +361,9 @@ async def system_osd_resize(body: SystemOsdResize):
         )
         if r.returncode != 0:
             raise HTTPException(500, f"truncate failed: {r.stderr.strip()}")
-        r2 = await asyncio.to_thread(
-            subprocess.run, ["losetup", "-f", "--show", OSD_IMG],
-            capture_output=True, text=True,
+        await asyncio.to_thread(
+            subprocess.run, ["losetup", "/dev/loop0", OSD_IMG], capture_output=True,
         )
-        if r2.returncode == 0:
-            new_loop = r2.stdout.strip()
-            await asyncio.to_thread(
-                subprocess.run, ["ln", "-sf", new_loop, OSD_LINK], capture_output=True,
-            )
         return {"ok": True, "operation": "shrunk"}
 
     return {"ok": True, "operation": "unchanged"}

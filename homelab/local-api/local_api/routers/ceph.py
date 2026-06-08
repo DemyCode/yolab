@@ -4,26 +4,16 @@ import subprocess
 
 from fastapi import APIRouter
 
+from local_api import kubectl
+
 router = APIRouter()
 
 NAMESPACE = "rook-ceph"
 
 
-def _mgr_pod() -> str:
-    result = subprocess.run(
-        ["kubectl", "get", "pod", "-n", NAMESPACE, "-l", "app=rook-ceph-mgr",
-         "-o", "jsonpath={.items[0].metadata.name}"],
-        capture_output=True, text=True, timeout=10,
-    )
-    name = result.stdout.strip()
-    if result.returncode != 0 or not name:
-        raise RuntimeError("No rook-ceph-mgr pod found")
-    return name
-
-
 def _mgr_exec(*args: str) -> str:
     result = subprocess.run(
-        ["kubectl", "exec", "-n", NAMESPACE, _mgr_pod(), "--", *args],
+        ["kubectl", "exec", "-n", NAMESPACE, kubectl.ceph_mgr_pod(), "--", *args],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
@@ -33,9 +23,6 @@ def _mgr_exec(*args: str) -> str:
 
 def _ceph(*args: str) -> dict | list:
     return json.loads(_mgr_exec("ceph", *args, "--format", "json"))
-
-
-# ─── Routes ───────────────────────────────────────────────────────────────────
 
 
 @router.get("/ceph/status")

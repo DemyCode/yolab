@@ -299,7 +299,6 @@ in {
         ExecStart = pkgs.writeShellScript "system-osd-start" ''
           set -euo pipefail
           IMG=/var/lib/rook/system-osd.img
-          LINK=/dev/ceph-system-osd
 
           # Create sparse image at 50 % of root-filesystem capacity on first run.
           # 'truncate' makes a sparse file — blocks are only allocated on write.
@@ -314,13 +313,11 @@ in {
           # Detach any stale attachment first, then attach to the fixed slot.
           ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
           ${pkgs.util-linux}/bin/losetup /dev/loop0 "$IMG"
-          ln -sf /dev/loop0 "$LINK"
         '';
         ExecStop = pkgs.writeShellScript "system-osd-stop" ''
           LOOP=$(${pkgs.util-linux}/bin/losetup -j /var/lib/rook/system-osd.img 2>/dev/null \
                  | ${pkgs.coreutils}/bin/cut -d: -f1)
           [ -n "$LOOP" ] && ${pkgs.util-linux}/bin/losetup -d "$LOOP" || true
-          rm -f /dev/ceph-system-osd
         '';
       };
     };
