@@ -11,19 +11,53 @@ def _ceph(*args: str) -> dict | list:
     return json.loads(kubectl.ceph_exec(*args, "--format", "json"))
 
 
+def _cluster_status_from_k8s() -> dict:
+    """Read CephCluster status from K8s CR — no exec or auth needed."""
+    r = subprocess.run(
+        ["kubectl", "get", "cephcluster", "-n", "rook-ceph", "rook-ceph",
+         "-o", "jsonpath={.status}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return json.loads(r.stdout)
+
+
+def _osd_counts() -> tuple[int, int]:
+    """Returns (total, ready) from OSD deployments."""
+    r = subprocess.run(
+        ["kubectl", "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
+         "-o", "jsonpath={.items[*].status.readyReplicas}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode != 0:
+        return 0, 0
+    ready = sum(int(x) for x in r.stdout.split() if x.isdigit())
+    total_r = subprocess.run(
+        ["kubectl", "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
+         "-o", "jsonpath={.items}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    total = len(json.loads(total_r.stdout or "[]"))
+    return total, ready
+
+
 @router.get("/ceph/status")
 async def ceph_status():
     try:
-        data = await asyncio.to_thread(_ceph, "status")
-        pg = data.get("pgmap", {})
-        osd = data.get("osdmap", {})
+        status, (osd_total, osd_ready) = await asyncio.gather(
+            asyncio.to_thread(_cluster_status_from_k8s),
+            asyncio.to_thread(_osd_counts),
+        )
+        ceph = status.get("ceph", {})
+        cap = ceph.get("capacity", {})
         return {
-            "available": True,
-            "health": data.get("health", {}).get("status", "HEALTH_UNKNOWN"),
-            "osd_count": osd.get("num_osds", 0),
-            "osd_up": osd.get("num_up_osds", 0),
-            "total_bytes": pg.get("bytes_total", 0),
-            "used_bytes": pg.get("bytes_used", 0),
+            "available": status.get("phase") == "Ready",
+            "health": ceph.get("health", "HEALTH_UNKNOWN"),
+            "osd_count": osd_total,
+            "osd_up": osd_ready,
+            "total_bytes": cap.get("bytesTotal", 0),
+            "used_bytes": cap.get("bytesUsed", 0),
         }
     except Exception as e:
         return {"available": False, "error": str(e)}

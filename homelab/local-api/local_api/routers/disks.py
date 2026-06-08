@@ -173,23 +173,28 @@ def _loop_device() -> str | None:
 
 
 def _ceph_osd_id_for_img() -> int | None:
-    loop = _loop_device()
-    if loop is None:
+    if _loop_device() is None:
         return None
-    loop_name = os.path.basename(loop)
     try:
-        for osd in json.loads(kubectl.ceph_exec("osd", "metadata", "--format", "json")):
-            for dev in osd.get("devices", "").split(","):
-                if loop_name in dev.strip():
-                    return int(osd["id"])
+        r = subprocess.run(
+            ["kubectl", "get", "deploy", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-osd",
+             "-o", "jsonpath={.items[0].metadata.labels.ceph-osd-id}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        val = r.stdout.strip()
+        return int(val) if r.returncode == 0 and val.isdigit() else None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _ceph_osd_count() -> int:
     try:
-        return int(json.loads(kubectl.ceph_exec("osd", "stat", "--format", "json")).get("num_osds", 0))
+        r = subprocess.run(
+            ["kubectl", "get", "deploy", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-osd",
+             "-o", "jsonpath={.items[*].status.readyReplicas}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return sum(int(x) for x in r.stdout.split() if x.isdigit()) if r.returncode == 0 else 0
     except Exception:
         return 0
 

@@ -35,9 +35,9 @@ def ceph_mgr_pod() -> str:
 def ceph_exec(*args: str) -> str:
     """Run a ceph CLI command inside the mgr pod with admin credentials.
 
-    The mgr container only has its own keyring, not the admin keyring.
-    We read the admin keyring from the K8s secret and inject it via a
-    shell one-liner so the standalone ceph CLI can authenticate.
+    The mgr container has no ceph.conf and only its own keyring. We read
+    the admin keyring + mon address from K8s and inject a minimal ceph.conf
+    with ms_client_mode=secure to match the server's msgr2 requirement.
     """
     key_result = subprocess.run(
         ["kubectl", "get", "secret", "-n", _CEPH_NS, "rook-ceph-admin-keyring",
@@ -47,9 +47,21 @@ def ceph_exec(*args: str) -> str:
     if key_result.returncode != 0:
         raise RuntimeError(f"Cannot read admin keyring: {key_result.stderr.strip()}")
     keyring_b64 = key_result.stdout.strip()
+
+    mon_result = subprocess.run(
+        ["kubectl", "get", "svc", "-n", _CEPH_NS, "-l", "app=rook-ceph-mon",
+         "-o", "jsonpath={.items[0].spec.clusterIP}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if mon_result.returncode != 0 or not mon_result.stdout.strip():
+        raise RuntimeError("Cannot find rook-ceph-mon service")
+    mon_ip = mon_result.stdout.strip()
+
     shell_cmd = (
         f"echo {keyring_b64} | base64 -d > /tmp/k && "
-        "ceph --keyring /tmp/k " + " ".join(shlex.quote(a) for a in args)
+        f"printf '[global]\\nms_client_mode = secure\\nms_cluster_mode = secure\\nms_service_mode = secure\\n' > /tmp/ceph.conf && "
+        f"ceph -c /tmp/ceph.conf --keyring /tmp/k -m {mon_ip}:3300 "
+        + " ".join(shlex.quote(a) for a in args)
     )
     result = subprocess.run(
         ["kubectl", "exec", "-n", _CEPH_NS, ceph_mgr_pod(), "--", "bash", "-c", shell_cmd],
