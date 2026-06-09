@@ -161,6 +161,7 @@ in {
       "br_netfilter"
       "overlay"
       "nf_nat"
+      "ceph"
     ];
 
     boot.kernel.sysctl = {
