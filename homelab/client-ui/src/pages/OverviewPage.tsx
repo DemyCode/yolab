@@ -3,7 +3,7 @@ import { RefreshCw, GitCommit, Cpu, Calendar, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { StatusInfoInfo, RebuildLog } from "@/types/status";
+import type { StatusInfo, RebuildLog } from "@/types/status";
 
 function LogLine({ line }: { line: string }) {
   const isError = line.startsWith("[ERROR]") || line.includes("error:");
@@ -28,7 +28,7 @@ function LogLine({ line }: { line: string }) {
 }
 
 export function OverviewPage() {
-  const [status, setStatusInfo] = useState<StatusInfo | null>(null);
+  const [status, setStatus] = useState<StatusInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [updateLog, setUpdateLog] = useState<string[]>([]);
   const [updateDone, setUpdateDone] = useState(false);
@@ -51,7 +51,7 @@ export function OverviewPage() {
         else if (poll)
           fetch("/api/status")
             .then((r) => r.json())
-            .then((s) => setStatusInfo(s as StatusInfo))
+            .then((s) => setStatus(s as StatusInfo))
             .catch(() => {});
       } catch {
         if (!cancelled) setTimeout(run, 3000);
@@ -70,7 +70,7 @@ export function OverviewPage() {
       try {
         const r = await fetch("/api/status");
         if (r.ok) {
-          setStatusInfo((await r.json()) as StatusInfo);
+          setStatus((await r.json()) as StatusInfo);
           setReconnecting(false);
           loadRebuildLog(true);
           return;
@@ -115,8 +115,8 @@ export function OverviewPage() {
   useEffect(() => {
     fetch("/api/status")
       .then((r) => r.json())
-      .then((s) => setStatusInfo(s as StatusInfo))
-      .catch(() => setStatusInfo(null));
+      .then((s) => setStatus(s as StatusInfo))
+      .catch(() => setStatus(null));
     fetch("/api/update/status")
       .then((r) => r.json())
       .then((d: RebuildLog) => {
@@ -166,7 +166,7 @@ export function OverviewPage() {
             setUpdateDone(true);
             fetch("/api/status")
               .then((r) => r.json())
-              .then((s) => setStatusInfo(s as StatusInfo))
+              .then((s) => setStatus(s as StatusInfo))
               .catch(() => {});
           } else setUpdateLog((prev) => [...prev, line]);
         }
