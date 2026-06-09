@@ -356,20 +356,10 @@ function UnformattedDiskCard({ disk, onAdded }: { disk: DiskInfo; onAdded: () =>
 
 // ── system OSD card ───────────────────────────────────────────────────────────
 
-function SystemOsdCard() {
-  const [osd, setOsd] = useState<SystemOsdInfo | null>(null)
+function SystemOsdCard({ osd, onResize }: { osd: SystemOsdInfo | null; onResize: () => void }) {
   const [sizeInput, setSizeInput] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
-
-  function load() {
-    fetch("/api/disks/system-osd")
-      .then((r) => r.json())
-      .then((d) => setOsd(d as SystemOsdInfo))
-      .catch(() => { })
-  }
-
-  useEffect(() => { load() }, [])
 
   const targetBytes = parseBytes(sizeInput)
   const isShrink = osd?.size_bytes != null && !isNaN(targetBytes) && targetBytes < osd.size_bytes
@@ -388,7 +378,7 @@ function SystemOsdCard() {
       body: JSON.stringify({ size: sizeInput.trim() }),
     })
     setBusy(false)
-    if (r.ok) { setSizeInput(""); load() }
+    if (r.ok) { setSizeInput(""); onResize() }
     else {
       const d = (await r.json()) as { detail?: string }
       setError(d.detail ?? "Failed")
@@ -410,7 +400,14 @@ function SystemOsdCard() {
               <div className="flex items-center gap-2">
                 {osd.ceph_osd_id !== null
                   ? <span className="text-xs text-[#4ade80]">Active</span>
-                  : <span className="text-xs text-[#fbbf24]">Starting…</span>}
+                  : (
+                    <div className="relative group inline-flex">
+                      <span className="text-xs text-[#fbbf24] cursor-default">Starting…</span>
+                      <div className="absolute bottom-full mb-2 right-0 w-64 bg-[#27272a] border border-[#3f3f46] rounded-lg px-3 py-2 text-xs text-[#a1a1aa] hidden group-hover:block z-10">
+                        Storage is initializing. This is normal on first boot — it usually takes 1–2 minutes.
+                      </div>
+                    </div>
+                  )}
                 <span className="text-xs text-[#52525b]">·</span>
                 <span className="text-xs text-[#71717a]">{fmt(osd.size_bytes ?? 0)} allocated</span>
               </div>
@@ -450,6 +447,7 @@ function SystemOsdCard() {
 export function DisksPage() {
   const [disks, setDisks] = useState<DiskInfo[]>([])
   const [ceph, setCeph] = useState<CephStatus | null>(null)
+  const [osd, setOsd] = useState<SystemOsdInfo | null>(null)
 
   function load() {
     fetch("/api/disks")
@@ -460,9 +458,18 @@ export function DisksPage() {
       .then((r) => r.json())
       .then((d) => setCeph(d as CephStatus))
       .catch(() => { })
+    fetch("/api/disks/system-osd")
+      .then((r) => r.json())
+      .then((d) => setOsd(d as SystemOsdInfo))
+      .catch(() => { })
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    // Poll faster when cluster is still initializing
+    const interval = setInterval(load, 10_000)
+    return () => clearInterval(interval)
+  }, [])
 
   const usagePct = (d: DiskInfo) =>
     d.used_bytes && d.size_bytes ? d.used_bytes / d.size_bytes : 0
@@ -507,7 +514,7 @@ export function DisksPage() {
         </div>
       )}
 
-      <SystemOsdCard />
+      <SystemOsdCard osd={osd} onResize={load} />
 
       {system.map((d) => (
         <Card key={`${d.host}:${d.name}`} className="border-dashed border-[#3f3f46]">
