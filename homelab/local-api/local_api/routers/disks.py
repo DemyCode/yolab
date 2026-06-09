@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException
 
 from local_api import kubectl
 from local_api import queue as queue_module
+from local_api.constants import CEPH_CLUSTER_NAME, CEPH_NAMESPACE, LOOP_DEVICE
+from local_api.models.common import OkResponse
 from local_api.models.disk import (
     AddToStorageRequest,
     DiskInfo,
@@ -23,9 +25,6 @@ from local_api.models.disk import (
 from local_api.settings import settings
 
 router = APIRouter()
-
-CEPH_NAMESPACE = "rook-ceph"
-OSD_IMG = "/var/lib/rook/system-osd.img"
 
 # In-memory ejection state — ejection is fast enough that a restart resets gracefully
 _ejecting: dict[str, int] = {}       # disk_name -> osd_id
@@ -310,7 +309,7 @@ async def add_disk(body: AddToStorageRequest):
     # Activate immediately if cluster is already above threshold
     await _maybe_activate()
 
-    return {"ok": True}
+    return OkResponse()
 
 
 # ── queue management ──────────────────────────────────────────────────────────
@@ -318,14 +317,14 @@ async def add_disk(body: AddToStorageRequest):
 @router.delete("/disks/queue/{disk_name}")
 async def remove_from_queue(disk_name: str, host: str):
     await asyncio.to_thread(queue_module.remove_entry, disk_name, host)
-    return {"ok": True}
+    return OkResponse()
 
 
 # ── activation ────────────────────────────────────────────────────────────────
 
 def _do_activate_local(disk_name: str) -> None:
     subprocess.run(
-        ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, "rook-ceph",
+        ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
          "--type", "json",
          "-p", json.dumps([{"op": "add", "path": "/spec/storage/devices/-",
                             "value": {"name": disk_name}}])],
@@ -342,7 +341,7 @@ def _do_activate_local(disk_name: str) -> None:
 async def activate_local(body: AddToStorageRequest):
     """Internal endpoint — called by primary node to activate a disk on this node."""
     await asyncio.to_thread(_do_activate_local, body.disk_name)
-    return {"ok": True}
+    return OkResponse()
 
 
 async def _activate_disk(entry: QueueEntry) -> None:
@@ -366,7 +365,7 @@ async def _maybe_activate() -> None:
         cap = status.get("ceph", {}).get("capacity", {})
         total = cap.get("bytesTotal", 0)
         used = cap.get("bytesUsed", 0)
-        if total == 0 or (used / total) < 0.80:
+        if total == 0 or (used / total) < settings.disk_activation_threshold:
             return
     except Exception:
         return
@@ -408,7 +407,7 @@ async def eject_disk(body: EjectRequest):
     _ejecting[body.disk_name] = osd_id
     _eject_done.discard(body.disk_name)
     asyncio.create_task(_drain_osd(body.disk_name, osd_id))
-    return {"ok": True}
+    return OkResponse()
 
 
 async def _drain_osd(disk_name: str, osd_id: int) -> None:
@@ -458,7 +457,7 @@ async def eject_status(disk_name: str):
 
 def _img_size_bytes() -> int | None:
     try:
-        return os.path.getsize(OSD_IMG)
+        return os.path.getsize(settings.osd_img_path)
     except OSError:
         return None
 
@@ -470,7 +469,7 @@ def _fs_free_bytes() -> int:
 
 def _loop_device() -> str | None:
     result = subprocess.run(
-        ["losetup", "-j", OSD_IMG], capture_output=True, text=True, timeout=5,
+        ["losetup", "-j", settings.osd_img_path], capture_output=True, text=True, timeout=5,
     )
     line = result.stdout.strip()
     return line.split(":")[0] if line else None
@@ -563,7 +562,7 @@ async def system_osd_resize(body: SystemOsdResize):
 
     if target > current:
         r = await asyncio.to_thread(
-            subprocess.run, ["truncate", "-s", body.size, OSD_IMG],
+            subprocess.run, ["truncate", "-s", body.size, settings.osd_img_path],
             capture_output=True, text=True,
         )
         if r.returncode != 0:
@@ -585,13 +584,13 @@ async def system_osd_resize(body: SystemOsdResize):
         if loop:
             await asyncio.to_thread(subprocess.run, ["losetup", "-d", loop], capture_output=True)
         r = await asyncio.to_thread(
-            subprocess.run, ["truncate", "-s", body.size, OSD_IMG],
+            subprocess.run, ["truncate", "-s", body.size, settings.osd_img_path],
             capture_output=True, text=True,
         )
         if r.returncode != 0:
             raise HTTPException(500, f"truncate failed: {r.stderr.strip()}")
         await asyncio.to_thread(
-            subprocess.run, ["losetup", "/dev/loop0", OSD_IMG], capture_output=True,
+            subprocess.run, ["losetup", LOOP_DEVICE, settings.osd_img_path], capture_output=True,
         )
         return {"ok": True, "operation": "shrunk"}
 

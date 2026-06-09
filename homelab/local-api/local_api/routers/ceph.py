@@ -5,7 +5,8 @@ import subprocess
 from fastapi import APIRouter
 
 from local_api import kubectl
-from local_api.models.ceph import CephStatus
+from local_api.constants import CEPH_NAMESPACE
+from local_api.models.ceph import CephStatus, OsdInfo
 
 router = APIRouter()
 
@@ -17,7 +18,7 @@ def _ceph(*args: str) -> dict | list:
 def _cluster_status_from_k8s() -> dict:
     """Read CephCluster status from K8s CR — no exec or auth needed."""
     r = subprocess.run(
-        ["kubectl", "get", "cephcluster", "-n", "rook-ceph", "rook-ceph",
+        ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, "rook-ceph",
          "-o", "jsonpath={.status}"],
         capture_output=True, text=True, timeout=10,
     )
@@ -29,7 +30,7 @@ def _cluster_status_from_k8s() -> dict:
 def _osd_counts() -> tuple[int, int]:
     """Returns (total, ready) OSD deployment counts."""
     r = subprocess.run(
-        ["kubectl", "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
+        ["kubectl", "get", "deploy", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-osd",
          "-o", "jsonpath={.items[*].status.readyReplicas}"],
         capture_output=True, text=True, timeout=10,
     )
@@ -37,7 +38,7 @@ def _osd_counts() -> tuple[int, int]:
         return 0, 0
     ready = sum(int(x) for x in r.stdout.split() if x.isdigit())
     total_r = subprocess.run(
-        ["kubectl", "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
+        ["kubectl", "get", "deploy", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-osd",
          "-o", "jsonpath={.items}"],
         capture_output=True, text=True, timeout=10,
     )
@@ -66,17 +67,17 @@ async def ceph_status():
         return CephStatus(available=False, error=str(e))
 
 
-@router.get("/ceph/osds")
+@router.get("/ceph/osds", response_model=list[OsdInfo])
 async def ceph_osds():
     try:
         data = await asyncio.to_thread(_ceph, "osd", "metadata")
         return [
-            {
-                "id": osd.get("id"),
-                "hostname": osd.get("hostname"),
-                "devices": osd.get("devices", ""),
-                "size_bytes": int(osd.get("bluestore_bdev_size", 0)),
-            }
+            OsdInfo(
+                id=osd.get("id", 0),
+                hostname=osd.get("hostname", ""),
+                devices=osd.get("devices", ""),
+                size_bytes=int(osd.get("bluestore_bdev_size", 0)),
+            )
             for osd in data
         ]
     except Exception:
