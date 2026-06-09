@@ -200,6 +200,24 @@ async def disks_local() -> list[DiskInfo]:
     waiting_names = set(queued)
     queue_positions = {name: i + 1 for i, name in enumerate(queued)}
 
+    # Auto-enqueue blank disks the user hasn't explicitly rejected.
+    # This makes adding storage invisible: plug in a blank disk, it queues itself.
+    newly_queued = [
+        d["name"] for d in devices
+        if d.get("type") == "disk"
+        and not _is_system_disk(d)
+        and d["name"] not in osd_map
+        and _first_fstype(d) is None
+        and d["name"] not in waiting_names
+        and not queue_module.is_rejected(d["name"])
+    ]
+    for name in newly_queued:
+        queue_module.enqueue(name)
+    if newly_queued:
+        queued = queue_module.get_all()
+        waiting_names = set(queued)
+        queue_positions = {n: i + 1 for i, n in enumerate(queued)}
+
     hostname = socket.gethostname()
     raw: list[dict] = []
     for d in devices:
@@ -280,24 +298,27 @@ async def add_disk(body: AddToStorageRequest) -> OkResponse:
     if body.disk_name in osd_map:
         raise HTTPException(400, "Disk is already active storage")
 
-    r1 = await asyncio.to_thread(
-        subprocess.run,
-        ["wipefs", "--all", "--force", f"/dev/{body.disk_name}"],
-        capture_output=True, text=True,
-    )
-    r2 = await asyncio.to_thread(
-        subprocess.run,
-        ["sgdisk", "--zap-all", f"/dev/{body.disk_name}"],
-        capture_output=True, text=True,
-    )
-    if r1.returncode != 0:
-        raise HTTPException(500, f"Wipe failed: {r1.stderr.strip()}")
-    if r2.returncode != 0:
-        raise HTTPException(500, f"Partition table clear failed: {r2.stderr.strip()}")
+    # Only wipe if the disk has existing data — blank disks need no wipe.
+    if _first_fstype(disk) is not None:
+        r1 = await asyncio.to_thread(
+            subprocess.run,
+            ["wipefs", "--all", "--force", f"/dev/{body.disk_name}"],
+            capture_output=True, text=True,
+        )
+        r2 = await asyncio.to_thread(
+            subprocess.run,
+            ["sgdisk", "--zap-all", f"/dev/{body.disk_name}"],
+            capture_output=True, text=True,
+        )
+        if r1.returncode != 0:
+            raise HTTPException(500, f"Wipe failed: {r1.stderr.strip()}")
+        if r2.returncode != 0:
+            raise HTTPException(500, f"Partition table clear failed: {r2.stderr.strip()}")
+        await asyncio.to_thread(
+            subprocess.run, ["partprobe", f"/dev/{body.disk_name}"], capture_output=True,
+        )
 
-    await asyncio.to_thread(
-        subprocess.run, ["partprobe", f"/dev/{body.disk_name}"], capture_output=True,
-    )
+    await asyncio.to_thread(queue_module.unreject, body.disk_name)
     await asyncio.to_thread(queue_module.enqueue, body.disk_name)
 
     # Activate immediately if cluster is already above threshold
@@ -318,6 +339,7 @@ async def remove_from_queue(disk_name: str, host: str) -> OkResponse:
             )
         return OkResponse()
     await asyncio.to_thread(queue_module.dequeue, disk_name)
+    await asyncio.to_thread(queue_module.reject, disk_name)
     return OkResponse()
 
 
@@ -332,8 +354,8 @@ def _do_activate_local(disk_name: str) -> None:
         capture_output=True,
     )
     subprocess.run(
-        ["kubectl", "delete", "job", "-n", CEPH_NAMESPACE, "rook-ceph-osd-prepare-homelab",
-         "--ignore-not-found"],
+        ["kubectl", "delete", "job", "-n", CEPH_NAMESPACE,
+         f"rook-ceph-osd-prepare-{socket.gethostname()}", "--ignore-not-found"],
         capture_output=True,
     )
     queue_module.dequeue(disk_name)
@@ -439,6 +461,8 @@ async def _drain_osd(disk_name: str, osd_id: int) -> None:
             subprocess.run, ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
             capture_output=True,
         )
+        # Reject so the wiped disk doesn't auto-re-queue — user explicitly ejected it
+        queue_module.reject(disk_name)
     except Exception:
         pass
     finally:
