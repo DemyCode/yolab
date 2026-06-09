@@ -58,3 +58,26 @@ class SystemOsdResize(BaseModel):
 class SystemOsdResizeResponse(BaseModel):
     ok: bool = True
     operation: str  # "extended" | "shrunk" | "unchanged"
+
+
+class PriorityItem(BaseModel):
+    host: str
+    disk_name: str
+    position: int
+    model: str = ""
+    size_bytes: int = 0
+    state: str = "offline"
+    hostname: str = ""
+    used_bytes: int | None = None
+    free_bytes: int | None = None
+    can_eject: bool = False
+    ceph_osd_id: int | None = None
+
+
+class PriorityEntryRequest(BaseModel):
+    host: str
+    disk_name: str
+
+
+class PriorityUpdateRequest(BaseModel):
+    entries: list[PriorityEntryRequest]
