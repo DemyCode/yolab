@@ -104,9 +104,11 @@ def _ceph_osd_map() -> dict[str, int]:
     if mapping:
         # Detect phantom entries: mapped device name no longer exists (disk renamed).
         # Find ceph_bluestore disks not yet claimed by a valid mapping and re-map.
+        # NOTE: use /dev/ existence, not lsblk type="disk", so loop devices like
+        # loop0 are not mistakenly treated as phantoms.
         try:
             devices = _lsblk()
-            known = {d["name"] for d in devices if d.get("type") == "disk"}
+            known = {d["name"] for d in devices if pathlib.Path(f"/dev/{d['name']}").exists()}
             valid = {dev for dev in mapping if dev in known}
             phantoms = {dev: oid for dev, oid in mapping.items() if dev not in known}
             if phantoms:
