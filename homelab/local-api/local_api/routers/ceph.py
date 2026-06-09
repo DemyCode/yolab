@@ -5,8 +5,10 @@ import subprocess
 from fastapi import APIRouter
 
 from local_api import kubectl
+from local_api.models.ceph import CephStatus
 
 router = APIRouter()
+
 
 def _ceph(*args: str) -> dict | list:
     return json.loads(kubectl.ceph_exec(*args, "--format", "json"))
@@ -25,7 +27,7 @@ def _cluster_status_from_k8s() -> dict:
 
 
 def _osd_counts() -> tuple[int, int]:
-    """Returns (total, ready) from OSD deployments."""
+    """Returns (total, ready) OSD deployment counts."""
     r = subprocess.run(
         ["kubectl", "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
          "-o", "jsonpath={.items[*].status.readyReplicas}"],
@@ -43,7 +45,7 @@ def _osd_counts() -> tuple[int, int]:
     return total, ready
 
 
-@router.get("/ceph/status")
+@router.get("/ceph/status", response_model=CephStatus)
 async def ceph_status():
     try:
         status, (osd_total, osd_ready) = await asyncio.gather(
@@ -52,16 +54,16 @@ async def ceph_status():
         )
         ceph = status.get("ceph", {})
         cap = ceph.get("capacity", {})
-        return {
-            "available": status.get("phase") == "Ready",
-            "health": ceph.get("health", "HEALTH_UNKNOWN"),
-            "osd_count": osd_total,
-            "osd_up": osd_ready,
-            "total_bytes": cap.get("bytesTotal", 0),
-            "used_bytes": cap.get("bytesUsed", 0),
-        }
+        return CephStatus(
+            available=status.get("phase") == "Ready",
+            health=ceph.get("health", "HEALTH_UNKNOWN"),
+            osd_count=osd_total,
+            osd_up=osd_ready,
+            total_bytes=cap.get("bytesTotal", 0),
+            used_bytes=cap.get("bytesUsed", 0),
+        )
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        return CephStatus(available=False, error=str(e))
 
 
 @router.get("/ceph/osds")
