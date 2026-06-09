@@ -38,7 +38,7 @@ def _parse_node(item: dict) -> NodeInfo:
 
 
 @router.get("/nodes", response_model=list[NodeInfo])
-async def nodes():
+async def nodes() -> list[NodeInfo]:
     try:
         items = await asyncio.to_thread(kubectl.get_nodes)
         return [_parse_node(item) for item in items]
@@ -47,7 +47,7 @@ async def nodes():
 
 
 @router.get("/cluster/join-info", response_model=JoinInfo)
-async def cluster_join_info():
+async def cluster_join_info() -> JoinInfo:
     try:
         cfg = tomllib.loads(Path(settings.yolab_config).read_text())
         k3s_token = cfg["node"]["k3s"]["token"]

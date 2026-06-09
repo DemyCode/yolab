@@ -8,8 +8,8 @@ from local_api.settings import settings
 router = APIRouter()
 
 
-@router.post("/update")
-async def update():
+@router.post("/update", response_class=StreamingResponse)
+async def update() -> StreamingResponse:
     async def stream():
         for cmd in [
             ["git", "-C", settings.yolab_repo_path, "fetch", "origin"],
@@ -35,7 +35,7 @@ async def update():
                 return
 
         flake = f"path:{settings.yolab_repo_path}#{settings.yolab_flake_target}"
-        yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
+        yield f"data: $ nixos-rebuild switch --flake {flake} --impure --verbose --print-build-logs\n\n"
         yield "data: [INFO] nixos-rebuild launched — service will restart shortly\n\n"
 
         settings.rebuild_log.parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +46,7 @@ async def update():
                 "switch",
                 "--flake",
                 flake,
+                "--impure",
                 "--verbose",
                 "--print-build-logs",
             ],

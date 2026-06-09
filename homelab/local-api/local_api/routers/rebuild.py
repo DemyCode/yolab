@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.get("/rebuild-log", response_model=RebuildLog)
-async def rebuild_log():
+async def rebuild_log() -> RebuildLog:
     running = False
     if settings.rebuild_pid.exists():
         try:

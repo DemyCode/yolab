@@ -2,6 +2,8 @@ import json
 import shlex
 import subprocess
 
+from local_api.models.ceph import OsdUsage
+
 _CEPH_NS = "rook-ceph"
 
 
@@ -67,9 +69,8 @@ def ceph_exec(*args: str) -> str:
     return result.stdout
 
 
-def ceph_osd_df() -> dict:
+def ceph_osd_df() -> dict[int, OsdUsage]:
     """Returns per-OSD usage as {osd_id: OsdUsage}."""
-    from local_api.models.ceph import OsdUsage
     try:
         raw = ceph_exec("osd", "df", "--format", "json")
         data = json.loads(raw)

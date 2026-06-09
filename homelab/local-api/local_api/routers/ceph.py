@@ -47,7 +47,7 @@ def _osd_counts() -> tuple[int, int]:
 
 
 @router.get("/ceph/status", response_model=CephStatus)
-async def ceph_status():
+async def ceph_status() -> CephStatus:
     try:
         status, (osd_total, osd_ready) = await asyncio.gather(
             asyncio.to_thread(_cluster_status_from_k8s),
@@ -68,7 +68,7 @@ async def ceph_status():
 
 
 @router.get("/ceph/osds", response_model=list[OsdInfo])
-async def ceph_osds():
+async def ceph_osds() -> list[OsdInfo]:
     try:
         data = await asyncio.to_thread(_ceph, "osd", "metadata")
         return [
