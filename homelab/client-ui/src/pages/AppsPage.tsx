@@ -250,7 +250,7 @@ export function AppsPage() {
           </h2>
           <div className="space-y-2">
             {installed.map((app) => {
-              const primaryOutput = app.outputs.find((o) => o.type === "url");
+              const primaryOutput = app.outputs.find((o) => o.type !== "hidden");
               return (
                 <Card
                   key={app.instance_name}
@@ -275,16 +275,25 @@ export function AppsPage() {
                     </div>
                     <div className="flex items-center gap-3 flex-shrink-0">
                       {primaryOutput && (
-                        <a
-                          href={primaryOutput.value}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-xs font-mono text-[#a78bfa] hover:text-[#c4b5fd] flex items-center gap-1 transition-colors max-w-[200px] truncate"
-                        >
-                          {primaryOutput.value}
-                          <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                        </a>
+                        primaryOutput.type === "url" ? (
+                          <a
+                            href={primaryOutput.value}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-xs font-mono text-[#a78bfa] hover:text-[#c4b5fd] flex items-center gap-1 transition-colors max-w-[200px] truncate"
+                          >
+                            {primaryOutput.value}
+                            <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                          </a>
+                        ) : (
+                          <span
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-xs font-mono text-[#71717a] max-w-[200px] truncate"
+                          >
+                            {primaryOutput.value}
+                          </span>
+                        )
                       )}
                       <ChevronRight className="h-4 w-4 text-[#52525b]" />
                     </div>
