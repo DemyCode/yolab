@@ -46,3 +46,4 @@ result-*
 *~
 
 node_modules
+installer/nixos/frontend/node_modules
