@@ -63,9 +63,9 @@ function Modal({ title, children, confirmLabel, confirmDestructive, onConfirm, o
   )
 }
 
-// ── capacity bar ──────────────────────────────────────────────────────────────
+// ── storage overview ──────────────────────────────────────────────────────────
 
-function CapacityHeader({ status }: { status: CephStatus | null }) {
+function StorageOverview({ status }: { status: CephStatus | null }) {
   if (!status?.available || !status.total_bytes) return null
   const { used_bytes: used, total_bytes: total } = status
   const pct = Math.round((used / total) * 100)
@@ -80,6 +80,113 @@ function CapacityHeader({ status }: { status: CephStatus | null }) {
           </div>
           <div className="h-2 rounded-full bg-[#27272a] overflow-hidden">
             <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── system disk card (OS drive + built-in OSD merged) ─────────────────────────
+
+function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOsdInfo | null; onResize: () => void }) {
+  const [sizeInput, setSizeInput] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+
+  const targetBytes = parseBytes(sizeInput)
+  const isShrink = osd?.size_bytes != null && !isNaN(targetBytes) && targetBytes < osd.size_bytes
+
+  async function resize() {
+    if (!sizeInput.trim()) return
+    if (isShrink && !confirm(
+      "Shrinking removes the built-in OSD and recreates it at the new size.\n" +
+      "Ceph will rebalance data to other disks first — this may take time.\n\nContinue?"
+    )) return
+    setBusy(true)
+    setError("")
+    const r = await fetch("/api/disks/system-osd", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ size: sizeInput.trim() }),
+    })
+    setBusy(false)
+    if (r.ok) { setSizeInput(""); onResize() }
+    else {
+      const d = (await r.json()) as { detail?: string }
+      setError(d.detail ?? "Failed")
+    }
+  }
+
+  const osdStatus = !osd ? null : osd.ceph_osd_id !== null ? "active" : "starting"
+
+  return (
+    <Card className="border-[#27272a]">
+      <CardContent className="pt-5">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-md bg-[#27272a] p-1.5 flex-shrink-0">
+            <Server className="h-4 w-4 text-[#71717a]" strokeWidth={1.75} />
+          </div>
+          <div className="flex-1 min-w-0">
+
+            {/* header row */}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-baseline gap-2">
+                <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
+                {disk.model && <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[#52525b]">System · {fmt(disk.size_bytes)}</span>
+              </div>
+            </div>
+
+            <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
+
+            {/* built-in OSD row */}
+            {osd && (
+              <div className="mt-3 pt-3 border-t border-[#27272a]">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-[#71717a]">Built-in storage</span>
+                    <span className="text-xs text-[#3f3f46]">·</span>
+                    <span className="text-xs text-[#52525b]">{fmt(osd.size_bytes ?? 0)} allocated</span>
+                    {osdStatus === "active" && <span className="text-xs text-[#4ade80]">Active</span>}
+                    {osdStatus === "starting" && (
+                      <div className="relative group inline-flex">
+                        <span className="text-xs text-[#fbbf24] cursor-default">Starting…</span>
+                        <div className="absolute bottom-full mb-2 left-0 w-64 bg-[#27272a] border border-[#3f3f46] rounded-lg px-3 py-2 text-xs text-[#a1a1aa] hidden group-hover:block z-10">
+                          Storage is initializing. This is normal on first boot — usually takes 1–2 minutes.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="w-24 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#fafafa] outline-none focus:border-[#a78bfa]"
+                      placeholder="e.g. 400G"
+                      value={sizeInput}
+                      onChange={(e) => setSizeInput(e.target.value)}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void resize()}
+                      disabled={busy || !sizeInput.trim()}
+                      className={isShrink ? "text-[#fbbf24] border-[#78350f] hover:border-[#fbbf24]" : ""}
+                    >
+                      {busy ? "Resizing…" : isShrink ? "Shrink" : "Extend"}
+                    </Button>
+                  </div>
+                </div>
+                {isShrink && (
+                  <p className="text-xs text-[#fbbf24] mt-1.5">
+                    Shrinking moves data to other disks first — requires at least one other active disk.
+                  </p>
+                )}
+                {error && <p className="text-xs text-[#f87171] mt-1.5">{error}</p>}
+              </div>
+            )}
+
           </div>
         </div>
       </CardContent>
@@ -173,9 +280,7 @@ function ActiveDiskCard({ disk, onEjected }: { disk: DiskInfo; onEjected: () => 
               {disk.used_bytes != null && disk.size_bytes > 0 && (
                 <div className="mt-2 space-y-1">
                   <UsageBar used={disk.used_bytes} total={disk.size_bytes} />
-                  <span className="text-xs text-[#71717a]">
-                    {fmt(disk.used_bytes)} used · {usedPct}%
-                  </span>
+                  <span className="text-xs text-[#71717a]">{fmt(disk.used_bytes)} used · {usedPct}%</span>
                 </div>
               )}
 
@@ -265,7 +370,7 @@ function WaitingDiskCard({ disk, onRemoved }: { disk: DiskInfo; onRemoved: () =>
             </div>
             <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
             <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
-              <span className="text-xs text-[#52525b]">Activates when storage reaches 80%</span>
+              <span className="text-xs text-[#52525b]">Will activate when storage reaches 80%</span>
               <Button variant="outline" size="sm" onClick={() => void remove()} disabled={busy}>
                 {busy ? "Removing…" : "Remove from queue"}
               </Button>
@@ -316,7 +421,9 @@ function UnformattedDiskCard({ disk, onAdded }: { disk: DiskInfo; onAdded: () =>
                   <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
                   {disk.model && <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>}
                 </div>
-                <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[#52525b]">Available · {fmt(disk.size_bytes)}</span>
+                </div>
               </div>
               <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
               <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
@@ -354,94 +461,6 @@ function UnformattedDiskCard({ disk, onAdded }: { disk: DiskInfo; onAdded: () =>
   )
 }
 
-// ── system OSD card ───────────────────────────────────────────────────────────
-
-function SystemOsdCard({ osd, onResize }: { osd: SystemOsdInfo | null; onResize: () => void }) {
-  const [sizeInput, setSizeInput] = useState("")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState("")
-
-  const targetBytes = parseBytes(sizeInput)
-  const isShrink = osd?.size_bytes != null && !isNaN(targetBytes) && targetBytes < osd.size_bytes
-
-  async function resize() {
-    if (!sizeInput.trim()) return
-    if (isShrink && !confirm(
-      "Shrinking removes the built-in OSD and recreates it at the new size.\n" +
-      "Ceph will rebalance data to other disks first — this may take time.\n\nContinue?"
-    )) return
-    setBusy(true)
-    setError("")
-    const r = await fetch("/api/disks/system-osd", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ size: sizeInput.trim() }),
-    })
-    setBusy(false)
-    if (r.ok) { setSizeInput(""); onResize() }
-    else {
-      const d = (await r.json()) as { detail?: string }
-      setError(d.detail ?? "Failed")
-    }
-  }
-
-  if (!osd) return null
-
-  return (
-    <Card className="border-dashed border-[#3f3f46]">
-      <CardContent className="pt-5">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-md bg-[#27272a] p-1.5 flex-shrink-0">
-            <Server className="h-4 w-4 text-[#71717a]" strokeWidth={1.75} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="font-medium text-[#a1a1aa] text-sm">Built-in storage</span>
-              <div className="flex items-center gap-2">
-                {osd.ceph_osd_id !== null
-                  ? <span className="text-xs text-[#4ade80]">Active</span>
-                  : (
-                    <div className="relative group inline-flex">
-                      <span className="text-xs text-[#fbbf24] cursor-default">Starting…</span>
-                      <div className="absolute bottom-full mb-2 right-0 w-64 bg-[#27272a] border border-[#3f3f46] rounded-lg px-3 py-2 text-xs text-[#a1a1aa] hidden group-hover:block z-10">
-                        Storage is initializing. This is normal on first boot — it usually takes 1–2 minutes.
-                      </div>
-                    </div>
-                  )}
-                <span className="text-xs text-[#52525b]">·</span>
-                <span className="text-xs text-[#71717a]">{fmt(osd.size_bytes ?? 0)} allocated</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 mt-3">
-              <input
-                className="w-28 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#fafafa] outline-none focus:border-[#a78bfa]"
-                placeholder="e.g. 400G, 1T"
-                value={sizeInput}
-                onChange={(e) => setSizeInput(e.target.value)}
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void resize()}
-                disabled={busy || !sizeInput.trim()}
-                className={isShrink ? "text-[#fbbf24] border-[#78350f] hover:border-[#fbbf24]" : ""}
-              >
-                {busy ? "Resizing…" : isShrink ? "Shrink" : "Extend"}
-              </Button>
-            </div>
-            {isShrink && (
-              <p className="text-xs text-[#fbbf24] mt-1.5">
-                Shrinking moves data to other disks first — requires at least one other active disk.
-              </p>
-            )}
-            {error && <p className="text-xs text-[#f87171] mt-1.5">{error}</p>}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export function DisksPage() {
@@ -466,7 +485,6 @@ export function DisksPage() {
 
   useEffect(() => {
     load()
-    // Poll faster when cluster is still initializing
     const interval = setInterval(load, 10_000)
     return () => clearInterval(interval)
   }, [])
@@ -474,64 +492,42 @@ export function DisksPage() {
   const usagePct = (d: DiskInfo) =>
     d.used_bytes && d.size_bytes ? d.used_bytes / d.size_bytes : 0
 
-  const active = disks
-    .filter((d) => d.state === "active" || d.state === "ejecting")
-    .sort((a, b) => usagePct(b) - usagePct(a))
-  const waiting = disks.filter((d) => d.state === "waiting")
+  const system     = disks.filter((d) => d.state === "system")
+  const active     = disks.filter((d) => d.state === "active" || d.state === "ejecting").sort((a, b) => usagePct(b) - usagePct(a))
+  const waiting    = disks.filter((d) => d.state === "waiting")
   const unformatted = disks.filter((d) => d.state === "unformatted")
-  const system = disks.filter((d) => d.state === "system")
+
+  const allDisks = [...system, ...active, ...waiting, ...unformatted]
 
   return (
     <div className="space-y-6 max-w-3xl">
+
+      {/* Storage overview */}
       <div>
         <h1 className="text-xl font-semibold text-[#fafafa]">Storage</h1>
-        <p className="text-sm text-[#71717a] mt-0.5">Disks fill up one at a time. Next disk activates automatically at 80%.</p>
+        <p className="text-sm text-[#71717a] mt-0.5">Total capacity across all active disks.</p>
+      </div>
+      <StorageOverview status={ceph} />
+
+      {/* Disk list */}
+      <div>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b] mb-3">Disks</h2>
+        <div className="space-y-3">
+          {allDisks.map((d) => {
+            if (d.state === "system") {
+              return <SystemDiskCard key={`${d.host}:${d.name}`} disk={d} osd={osd} onResize={load} />
+            }
+            if (d.state === "active" || d.state === "ejecting") {
+              return <ActiveDiskCard key={`${d.host}:${d.name}`} disk={d} onEjected={load} />
+            }
+            if (d.state === "waiting") {
+              return <WaitingDiskCard key={`${d.host}:${d.name}`} disk={d} onRemoved={load} />
+            }
+            return <UnformattedDiskCard key={`${d.host}:${d.name}`} disk={d} onAdded={load} />
+          })}
+        </div>
       </div>
 
-      <CapacityHeader status={ceph} />
-
-      {active.length > 0 && (
-        <div className="space-y-3">
-          {active.map((d) => (
-            <ActiveDiskCard key={`${d.host}:${d.name}`} disk={d} onEjected={load} />
-          ))}
-        </div>
-      )}
-
-      {waiting.length > 0 && (
-        <div className="space-y-3">
-          {waiting.map((d) => (
-            <WaitingDiskCard key={`${d.host}:${d.name}`} disk={d} onRemoved={load} />
-          ))}
-        </div>
-      )}
-
-      {unformatted.length > 0 && (
-        <div className="space-y-3">
-          {unformatted.map((d) => (
-            <UnformattedDiskCard key={`${d.host}:${d.name}`} disk={d} onAdded={load} />
-          ))}
-        </div>
-      )}
-
-      <SystemOsdCard osd={osd} onResize={load} />
-
-      {system.map((d) => (
-        <Card key={`${d.host}:${d.name}`} className="border-dashed border-[#3f3f46]">
-          <CardContent className="pt-5">
-            <div className="flex items-center gap-3">
-              <div className="rounded-md bg-[#27272a] p-1.5 flex-shrink-0">
-                <Server className="h-4 w-4 text-[#52525b]" strokeWidth={1.75} />
-              </div>
-              <div className="flex items-baseline gap-2 flex-1">
-                <span className="text-sm text-[#71717a]">{d.model || d.name}</span>
-                {d.model && <span className="text-xs text-[#3f3f46] font-mono">{d.name}</span>}
-              </div>
-              <span className="text-xs text-[#52525b]">System disk · {fmt(d.size_bytes)}</span>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
     </div>
   )
 }
