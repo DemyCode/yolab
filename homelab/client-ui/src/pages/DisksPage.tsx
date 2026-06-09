@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react"
-import { HardDrive, Server, CheckCircle, Clock, AlertCircle } from "lucide-react"
+import { HardDrive, Server, CheckCircle, Clock, AlertCircle, Lock, ChevronUp, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import type { CephStatus, DiskInfo, EjectStatus, SystemOsdInfo } from "@/types/disk"
+import type { CephStatus, DiskInfo, EjectStatus, PriorityItem, PriorityUpdateRequest, SystemOsdInfo } from "@/types/disk"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ function StorageOverview({ status }: { status: CephStatus | null }) {
   )
 }
 
-// ── system disk card (OS drive + built-in OSD merged) ─────────────────────────
+// ── system disk card ──────────────────────────────────────────────────────────
 
 function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOsdInfo | null; onResize: () => void }) {
   const [sizeInput, setSizeInput] = useState("")
@@ -128,8 +128,6 @@ function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOs
             <Server className="h-4 w-4 text-[#71717a]" strokeWidth={1.75} />
           </div>
           <div className="flex-1 min-w-0">
-
-            {/* header row */}
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-baseline gap-2">
                 <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
@@ -139,10 +137,7 @@ function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOs
                 <span className="text-xs text-[#52525b]">System · {fmt(disk.size_bytes)}</span>
               </div>
             </div>
-
             <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
-
-            {/* built-in OSD row */}
             {osd && (
               <div className="mt-3 pt-3 border-t border-[#27272a]">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -186,7 +181,6 @@ function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOs
                 {error && <p className="text-xs text-[#f87171] mt-1.5">{error}</p>}
               </div>
             )}
-
           </div>
         </div>
       </CardContent>
@@ -194,32 +188,46 @@ function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOs
   )
 }
 
-// ── active disk card ──────────────────────────────────────────────────────────
+// ── priority row (active or waiting disk in the ordered list) ─────────────────
 
-function ActiveDiskCard({ disk, onEjected }: { disk: DiskInfo; onEjected: () => void }) {
+interface PriorityRowProps {
+  item: PriorityItem
+  isFirst: boolean
+  isLast: boolean
+  isOnlyWaiting: boolean
+  onMove: (direction: "up" | "down") => void
+  onEjected: () => void
+  onRemoved: () => void
+}
+
+function PriorityRow({ item, isFirst, isLast, onMove, onEjected, onRemoved }: PriorityRowProps) {
   const [confirming, setConfirming] = useState(false)
-  const [ejecting, setEjecting] = useState(disk.state === "ejecting")
-  const [done, setDone] = useState(false)
-  const [error, setError] = useState("")
+  const [ejecting, setEjecting] = useState(item.state === "ejecting")
+  const [ejectDone, setEjectDone] = useState(false)
+  const [ejectError, setEjectError] = useState("")
+  const [removeConfirming, setRemoveConfirming] = useState(false)
+  const [removeBusy, setRemoveBusy] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    if (disk.state === "ejecting" && !ejecting) {
+    if (item.state === "ejecting" && !ejecting) {
       setEjecting(true)
-      startPolling()
+      startEjectPolling()
     }
-  }, [disk.state])
+  }, [item.state])
 
-  function startPolling() {
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+
+  function startEjectPolling() {
     pollRef.current = setInterval(async () => {
       try {
-        const r = await fetch(`/api/disks/eject/${disk.name}/status`)
+        const r = await fetch(`/api/disks/eject/${item.disk_name}/status`)
         if (!r.ok) return
         const s = (await r.json()) as EjectStatus
         if (s.safe_to_unplug) {
           clearInterval(pollRef.current!)
           setEjecting(false)
-          setDone(true)
+          setEjectDone(true)
           setTimeout(onEjected, 3000)
         }
       } catch { /* keep polling */ }
@@ -228,91 +236,158 @@ function ActiveDiskCard({ disk, onEjected }: { disk: DiskInfo; onEjected: () => 
 
   async function confirmEject() {
     setConfirming(false)
-    setError("")
+    setEjectError("")
     const r = await fetch("/api/disks/eject", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
+      body: JSON.stringify({ disk_name: item.disk_name, host: item.host }),
     })
     if (!r.ok) {
       const d = (await r.json()) as { detail?: { reason?: string; used_bytes?: number; other_free_bytes?: number } | string }
       const detail = d.detail
       if (typeof detail === "object" && detail?.reason === "not_enough_space") {
-        setError(`Not enough space — need ${fmt(detail.used_bytes)} free, only ${fmt(detail.other_free_bytes)} available`)
+        setEjectError(`Not enough space — need ${fmt(detail.used_bytes)} free, only ${fmt(detail.other_free_bytes)} available`)
       } else {
-        setError(typeof detail === "string" ? detail : "Failed to start ejection")
+        setEjectError(typeof detail === "string" ? detail : "Failed to start ejection")
       }
       return
     }
     setEjecting(true)
-    startPolling()
+    startEjectPolling()
   }
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+  async function confirmRemove() {
+    setRemoveConfirming(false)
+    setRemoveBusy(true)
+    await fetch(`/api/disks/queue/${item.disk_name}?host=${encodeURIComponent(item.host)}`, { method: "DELETE" })
+    setRemoveBusy(false)
+    onRemoved()
+  }
 
-  const usedPct = disk.used_bytes && disk.size_bytes
-    ? Math.round((disk.used_bytes / disk.size_bytes) * 100)
-    : null
+  const isActive = item.state === "active" || item.state === "ejecting"
+  const isWaiting = item.state === "waiting"
+  const usedPct = item.used_bytes && item.size_bytes ? Math.round((item.used_bytes / item.size_bytes) * 100) : null
+
+  const iconBg = isActive ? "#1a2e1a" : "#2d2a1a"
+  const iconColor = isActive ? "#4ade80" : "#fbbf24"
+  const stateLabel = isActive ? (
+    item.state === "ejecting" ? <span className="text-xs text-[#fbbf24]">Ejecting…</span>
+    : <span className="text-xs text-[#4ade80]">Active</span>
+  ) : (
+    <span className="text-xs text-[#fbbf24]">Waiting #{item.position}</span>
+  )
 
   return (
     <>
       <Card>
         <CardContent className="pt-5">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-md bg-[#1a2e1a] p-1.5 flex-shrink-0">
-              <HardDrive className="h-4 w-4 text-[#4ade80]" strokeWidth={1.75} />
+
+            {/* position controls */}
+            <div className="flex flex-col items-center gap-0.5 mt-0.5 flex-shrink-0">
+              {isActive ? (
+                <div className="p-1">
+                  <Lock className="h-3.5 w-3.5 text-[#3f3f46]" strokeWidth={1.75} />
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => onMove("up")}
+                    disabled={isFirst}
+                    className="p-0.5 rounded hover:bg-[#27272a] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                    title="Move up"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={2} />
+                  </button>
+                  <button
+                    onClick={() => onMove("down")}
+                    disabled={isLast}
+                    className="p-0.5 rounded hover:bg-[#27272a] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                    title="Move down"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={2} />
+                  </button>
+                </>
+              )}
             </div>
+
+            {/* disk icon */}
+            <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0" style={{ background: iconBg }}>
+              <HardDrive className="h-4 w-4" style={{ color: iconColor }} strokeWidth={1.75} />
+            </div>
+
+            {/* content */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-baseline gap-2">
-                  <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
-                  {disk.model && <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>}
+                  <span className="font-medium text-[#fafafa] text-sm">{item.model || item.disk_name}</span>
+                  {item.model && <span className="text-xs text-[#52525b] font-mono">{item.disk_name}</span>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-[#4ade80]">Active</span>
+                  {stateLabel}
                   <span className="text-xs text-[#52525b]">·</span>
-                  <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
+                  <span className="text-xs text-[#71717a]">{fmt(item.size_bytes)}</span>
                 </div>
               </div>
 
-              <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
+              <div className="text-xs text-[#52525b] mt-0.5">{item.hostname}</div>
 
-              {disk.used_bytes != null && disk.size_bytes > 0 && (
+              {isActive && item.used_bytes != null && item.size_bytes > 0 && (
                 <div className="mt-2 space-y-1">
-                  <UsageBar used={disk.used_bytes} total={disk.size_bytes} />
-                  <span className="text-xs text-[#71717a]">{fmt(disk.used_bytes)} used · {usedPct}%</span>
+                  <UsageBar used={item.used_bytes} total={item.size_bytes} />
+                  <span className="text-xs text-[#71717a]">{fmt(item.used_bytes)} used · {usedPct}%</span>
                 </div>
               )}
 
-              {done ? (
-                <div className="flex items-center gap-2 mt-3 text-sm text-[#4ade80]">
-                  <CheckCircle className="h-4 w-4" />
-                  Safe to unplug
-                </div>
-              ) : ejecting ? (
-                <div className="flex items-center gap-2 mt-3 text-sm text-[#fbbf24]">
-                  <Clock className="h-4 w-4 animate-spin" />
-                  Clearing disk data…
-                </div>
-              ) : (
+              {/* active disk actions */}
+              {isActive && (
                 <div className="flex items-center gap-2 mt-3 flex-wrap">
-                  {error && <span className="text-xs text-[#f87171]">{error}</span>}
-                  <div className="relative group">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => disk.can_eject && setConfirming(true)}
-                      disabled={!disk.can_eject}
-                      className={!disk.can_eject ? "opacity-40 cursor-not-allowed" : ""}
-                    >
-                      Eject
-                    </Button>
-                    {!disk.can_eject && (
-                      <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 bg-[#27272a] border border-[#3f3f46] rounded-lg px-3 py-2 text-xs text-[#a1a1aa] hidden group-hover:block z-10 text-center">
-                        Not enough free space on other disks to absorb this disk's data
+                  {ejectDone ? (
+                    <div className="flex items-center gap-2 text-sm text-[#4ade80]">
+                      <CheckCircle className="h-4 w-4" />
+                      Safe to unplug
+                    </div>
+                  ) : ejecting ? (
+                    <div className="flex items-center gap-2 text-sm text-[#fbbf24]">
+                      <Clock className="h-4 w-4 animate-spin" />
+                      Clearing disk data…
+                    </div>
+                  ) : (
+                    <>
+                      {ejectError && <span className="text-xs text-[#f87171]">{ejectError}</span>}
+                      <div className="relative group">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => item.can_eject && setConfirming(true)}
+                          disabled={!item.can_eject}
+                          className={!item.can_eject ? "opacity-40 cursor-not-allowed" : ""}
+                        >
+                          Eject
+                        </Button>
+                        {!item.can_eject && (
+                          <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 bg-[#27272a] border border-[#3f3f46] rounded-lg px-3 py-2 text-xs text-[#a1a1aa] hidden group-hover:block z-10 text-center">
+                            Not enough free space on other disks to absorb this disk's data
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* waiting disk actions */}
+              {isWaiting && (
+                <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
+                  <span className="text-xs text-[#52525b]">Will activate when storage reaches 80%</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRemoveConfirming(true)}
+                    disabled={removeBusy}
+                  >
+                    {removeBusy ? "Removing…" : "Remove"}
+                  </Button>
                 </div>
               )}
             </div>
@@ -322,63 +397,31 @@ function ActiveDiskCard({ disk, onEjected }: { disk: DiskInfo; onEjected: () => 
 
       {confirming && (
         <Modal
-          title={`Eject ${disk.model || disk.name}?`}
+          title={`Eject ${item.model || item.disk_name}?`}
           confirmLabel="Start ejection"
           onConfirm={() => void confirmEject()}
           onCancel={() => setConfirming(false)}
         >
           <p>
-            {disk.used_bytes
-              ? <>Your apps will keep running. <strong className="text-[#fafafa]">{fmt(disk.used_bytes)}</strong> of data will be moved to other disks first. This may take a few minutes.</>
+            {item.used_bytes
+              ? <>Your apps will keep running. <strong className="text-[#fafafa]">{fmt(item.used_bytes)}</strong> of data will be moved to other disks first. This may take a few minutes.</>
               : <>The disk will be safely removed. Your apps will keep running.</>}
           </p>
         </Modal>
       )}
+
+      {removeConfirming && (
+        <Modal
+          title={`Remove ${item.model || item.disk_name} from queue?`}
+          confirmLabel="Remove"
+          confirmDestructive
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => setRemoveConfirming(false)}
+        >
+          <p>This disk will be removed from the priority list. Plug it back in and it will be detected again.</p>
+        </Modal>
+      )}
     </>
-  )
-}
-
-// ── waiting disk card ─────────────────────────────────────────────────────────
-
-function WaitingDiskCard({ disk, onRemoved }: { disk: DiskInfo; onRemoved: () => void }) {
-  const [busy, setBusy] = useState(false)
-
-  async function remove() {
-    setBusy(true)
-    await fetch(`/api/disks/queue/${disk.name}?host=${encodeURIComponent(disk.host)}`, { method: "DELETE" })
-    onRemoved()
-  }
-
-  return (
-    <Card>
-      <CardContent className="pt-5">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-md bg-[#2d2a1a] p-1.5 flex-shrink-0">
-            <HardDrive className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.75} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-baseline gap-2">
-                <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
-                {disk.model && <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[#fbbf24]">Queued #{disk.queue_position}</span>
-                <span className="text-xs text-[#52525b]">·</span>
-                <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
-              </div>
-            </div>
-            <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
-            <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
-              <span className="text-xs text-[#52525b]">Will activate when storage reaches 80%</span>
-              <Button variant="outline" size="sm" onClick={() => void remove()} disabled={busy}>
-                {busy ? "Removing…" : "Remove from queue"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -464,14 +507,20 @@ function UnformattedDiskCard({ disk, onAdded }: { disk: DiskInfo; onAdded: () =>
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export function DisksPage() {
-  const [disks, setDisks] = useState<DiskInfo[]>([])
+  const [flatDisks, setFlatDisks] = useState<DiskInfo[]>([])
+  const [priority, setPriority] = useState<PriorityItem[]>([])
   const [ceph, setCeph] = useState<CephStatus | null>(null)
   const [osd, setOsd] = useState<SystemOsdInfo | null>(null)
+  const [savingOrder, setSavingOrder] = useState(false)
 
   function load() {
     fetch("/api/disks")
       .then((r) => r.json())
-      .then((d) => setDisks(d as DiskInfo[]))
+      .then((d) => setFlatDisks(d as DiskInfo[]))
+      .catch(() => { })
+    fetch("/api/disks/priority")
+      .then((r) => r.json())
+      .then((d) => setPriority(d as PriorityItem[]))
       .catch(() => { })
     fetch("/api/ceph/status")
       .then((r) => r.json())
@@ -489,45 +538,95 @@ export function DisksPage() {
     return () => clearInterval(interval)
   }, [])
 
-  const usagePct = (d: DiskInfo) =>
-    d.used_bytes && d.size_bytes ? d.used_bytes / d.size_bytes : 0
+  async function moveItem(index: number, direction: "up" | "down") {
+    const next = [...priority]
+    const target = direction === "up" ? index - 1 : index + 1
+    if (target < 0 || target >= next.length) return
+    // Can't move above an active disk or below an active disk boundary
+    if (next[target].state === "active" || next[target].state === "ejecting") return
+    ;[next[index], next[target]] = [next[target], next[index]]
+    // Optimistic update
+    setPriority(next.map((item, i) => ({ ...item, position: i + 1 })))
+    setSavingOrder(true)
+    try {
+      const body: PriorityUpdateRequest = { entries: next.map((item) => ({ host: item.host, disk_name: item.disk_name })) }
+      await fetch("/api/disks/priority", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    } finally {
+      setSavingOrder(false)
+      load()
+    }
+  }
 
-  const system     = disks.filter((d) => d.state === "system")
-  const active     = disks.filter((d) => d.state === "active" || d.state === "ejecting").sort((a, b) => usagePct(b) - usagePct(a))
-  const waiting    = disks.filter((d) => d.state === "waiting")
-  const unformatted = disks.filter((d) => d.state === "unformatted")
+  const systemDisks = flatDisks.filter((d) => d.state === "system")
+  const unformatted = flatDisks.filter((d) => d.state === "unformatted")
 
-  const allDisks = [...system, ...active, ...waiting, ...unformatted]
+  // Waiting items in the priority list (for up/down boundary detection)
+  const waitingIndices = priority
+    .map((item, i) => ({ item, i }))
+    .filter(({ item }) => item.state === "waiting")
 
   return (
     <div className="space-y-6 max-w-3xl">
-
-      {/* Storage overview */}
       <div>
         <h1 className="text-xl font-semibold text-[#fafafa]">Storage</h1>
         <p className="text-sm text-[#71717a] mt-0.5">Total capacity across all active disks.</p>
       </div>
+
       <StorageOverview status={ceph} />
 
-      {/* Disk list */}
-      <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b] mb-3">Disks</h2>
-        <div className="space-y-3">
-          {allDisks.map((d) => {
-            if (d.state === "system") {
-              return <SystemDiskCard key={`${d.host}:${d.name}`} disk={d} osd={osd} onResize={load} />
-            }
-            if (d.state === "active" || d.state === "ejecting") {
-              return <ActiveDiskCard key={`${d.host}:${d.name}`} disk={d} onEjected={load} />
-            }
-            if (d.state === "waiting") {
-              return <WaitingDiskCard key={`${d.host}:${d.name}`} disk={d} onRemoved={load} />
-            }
-            return <UnformattedDiskCard key={`${d.host}:${d.name}`} disk={d} onAdded={load} />
-          })}
-        </div>
-      </div>
+      {/* System disk */}
+      {systemDisks.map((d) => (
+        <SystemDiskCard key={`${d.host}:${d.name}`} disk={d} osd={osd} onResize={load} />
+      ))}
 
+      {/* Priority list — active + waiting in order */}
+      {priority.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
+              Storage disks
+            </h2>
+            {savingOrder && <span className="text-xs text-[#52525b]">Saving…</span>}
+          </div>
+          <div className="space-y-3">
+            {priority.map((item, i) => {
+              const isWaiting = item.state === "waiting"
+              // For up/down: find position among waiting items only
+              const waitingIdx = waitingIndices.findIndex(({ i: wi }) => wi === i)
+              const isFirstWaiting = isWaiting && waitingIdx === 0
+              const isLastWaiting = isWaiting && waitingIdx === waitingIndices.length - 1
+              return (
+                <PriorityRow
+                  key={`${item.host}:${item.disk_name}`}
+                  item={item}
+                  isFirst={isFirstWaiting}
+                  isLast={isLastWaiting}
+                  isOnlyWaiting={waitingIndices.length === 1}
+                  onMove={(dir) => void moveItem(i, dir)}
+                  onEjected={load}
+                  onRemoved={load}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Unformatted / available disks */}
+      {unformatted.length > 0 && (
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b] mb-3">Available disks</h2>
+          <div className="space-y-3">
+            {unformatted.map((d) => (
+              <UnformattedDiskCard key={`${d.host}:${d.name}`} disk={d} onAdded={load} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

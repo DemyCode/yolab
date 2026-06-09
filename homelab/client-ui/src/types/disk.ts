@@ -47,6 +47,24 @@ export interface OkResponse {
   ok: boolean
 }
 
+export interface PriorityItem {
+  host: string
+  disk_name: string
+  position: number
+  model: string
+  size_bytes: number
+  state: DiskState | "offline"
+  hostname: string
+  used_bytes: number | null
+  free_bytes: number | null
+  can_eject: boolean
+  ceph_osd_id: number | null
+}
+
+export interface PriorityUpdateRequest {
+  entries: { host: string; disk_name: string }[]
+}
+
 export interface AddToStorageRequest {
   disk_name: string
   host: string
