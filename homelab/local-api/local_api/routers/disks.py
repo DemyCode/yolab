@@ -68,9 +68,35 @@ def _first_fstype(device: dict) -> str | None:
 
 
 def _ceph_osd_map() -> dict[str, int]:
+    # Primary: read directly from running OSD pod specs (no ceph auth needed).
+    # ROOK_BLOCK_PATH env on each OSD pod carries the block device path.
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "pods", "-n", CEPH_NAMESPACE,
+             "-l", "app=rook-ceph-osd", "-o", "json"],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        pods = json.loads(result.stdout).get("items", [])
+        mapping: dict[str, int] = {}
+        for pod in pods:
+            osd_id_str = pod["metadata"]["labels"].get("ceph-osd-id")
+            if osd_id_str is None:
+                continue
+            for container in pod["spec"]["containers"]:
+                for env in container.get("env", []):
+                    if env["name"] == "ROOK_BLOCK_PATH":
+                        dev = env["value"].replace("/dev/", "").strip()
+                        if dev:
+                            mapping[dev] = int(osd_id_str)
+        if mapping:
+            return mapping
+    except Exception:
+        pass
+
+    # Fallback: ceph osd metadata via mgr pod.
     try:
         data = json.loads(kubectl.ceph_exec("osd", "metadata", "--format", "json"))
-        mapping: dict[str, int] = {}
+        mapping = {}
         for osd in data:
             osd_id = osd.get("id")
             if osd_id is None:
