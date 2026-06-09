@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from local_api import kubectl
-from local_api import queue as queue_module
+from local_api import priority as priority_module
 from local_api.constants import CEPH_CLUSTER_NAME, CEPH_NAMESPACE, LOOP_DEVICE
 from local_api.models.common import OkResponse
 from local_api.models.disk import (
@@ -18,6 +18,8 @@ from local_api.models.disk import (
     DiskState,
     EjectRequest,
     EjectStatus,
+    PriorityItem,
+    PriorityUpdateRequest,
     SystemOsdInfo,
     SystemOsdResize,
     SystemOsdResizeResponse,
@@ -194,29 +196,34 @@ async def disks_local() -> list[DiskInfo]:
         asyncio.to_thread(_lsblk),
         asyncio.to_thread(_ceph_osd_map),
         asyncio.to_thread(kubectl.ceph_osd_df),
-        asyncio.to_thread(queue_module.get_all),
+        asyncio.to_thread(priority_module.read),
     )
 
-    waiting_names = set(queued)
-    queue_positions = {name: i + 1 for i, name in enumerate(queued)}
+    my_host = settings.yolab_node_ipv6
+    waiting_names = {e.disk_name for e in queued if e.host == my_host}
+    # Global priority position per disk name (for this node's disks)
+    queue_positions = {
+        e.disk_name: i + 1
+        for i, e in enumerate(queued)
+        if e.host == my_host
+    }
 
-    # Auto-enqueue blank disks the user hasn't explicitly rejected.
-    # This makes adding storage invisible: plug in a blank disk, it queues itself.
-    newly_queued = [
+    # Auto-append blank disks to the priority list (invisible storage expansion).
+    newly_found = [
         d["name"] for d in devices
         if d.get("type") == "disk"
         and not _is_system_disk(d)
         and d["name"] not in osd_map
         and _first_fstype(d) is None
         and d["name"] not in waiting_names
-        and not queue_module.is_rejected(d["name"])
+        and not priority_module.is_rejected(my_host, d["name"])
     ]
-    for name in newly_queued:
-        queue_module.enqueue(name)
-    if newly_queued:
-        queued = queue_module.get_all()
-        waiting_names = set(queued)
-        queue_positions = {n: i + 1 for i, n in enumerate(queued)}
+    for name in newly_found:
+        priority_module.append(my_host, name)
+    if newly_found:
+        queued = priority_module.read()
+        waiting_names = {e.disk_name for e in queued if e.host == my_host}
+        queue_positions = {e.disk_name: i + 1 for i, e in enumerate(queued) if e.host == my_host}
 
     hostname = socket.gethostname()
     raw: list[dict] = []
@@ -318,8 +325,8 @@ async def add_disk(body: AddToStorageRequest) -> OkResponse:
             subprocess.run, ["partprobe", f"/dev/{body.disk_name}"], capture_output=True,
         )
 
-    await asyncio.to_thread(queue_module.unreject, body.disk_name)
-    await asyncio.to_thread(queue_module.enqueue, body.disk_name)
+    await asyncio.to_thread(priority_module.unreject, body.host, body.disk_name)
+    await asyncio.to_thread(priority_module.append, body.host, body.disk_name)
 
     # Activate immediately if cluster is already above threshold
     await _maybe_activate()
@@ -338,8 +345,49 @@ async def remove_from_queue(disk_name: str, host: str) -> OkResponse:
                 params={"host": host},
             )
         return OkResponse()
-    await asyncio.to_thread(queue_module.dequeue, disk_name)
-    await asyncio.to_thread(queue_module.reject, disk_name)
+    await asyncio.to_thread(priority_module.remove, host, disk_name)
+    return OkResponse()
+
+
+# ── priority endpoints ────────────────────────────────────────────────────────
+
+@router.get("/disks/priority", response_model=list[PriorityItem])
+async def get_priority() -> list[PriorityItem]:
+    priority_list, node_results = await asyncio.gather(
+        asyncio.to_thread(priority_module.read),
+        _gather_from_nodes("/api/disks/local"),
+    )
+    disk_map = {
+        (d["host"], d["name"]): d
+        for _, disks in node_results
+        for d in disks
+    }
+    result = []
+    for i, entry in enumerate(priority_list):
+        disk = disk_map.get((entry.host, entry.disk_name), {})
+        result.append(PriorityItem(
+            host=entry.host,
+            disk_name=entry.disk_name,
+            position=i + 1,
+            model=disk.get("model", ""),
+            size_bytes=disk.get("size_bytes", 0),
+            state=disk.get("state", "offline"),
+            hostname=disk.get("hostname", ""),
+            used_bytes=disk.get("used_bytes"),
+            free_bytes=disk.get("free_bytes"),
+            can_eject=disk.get("can_eject", False),
+            ceph_osd_id=disk.get("ceph_osd_id"),
+        ))
+    return result
+
+
+@router.put("/disks/priority", response_model=OkResponse)
+async def put_priority(body: PriorityUpdateRequest) -> OkResponse:
+    entries = [
+        priority_module.PriorityEntry(host=e.host, disk_name=e.disk_name)
+        for e in body.entries
+    ]
+    await asyncio.to_thread(priority_module.write, entries)
     return OkResponse()
 
 
@@ -358,7 +406,6 @@ def _do_activate_local(disk_name: str) -> None:
          f"rook-ceph-osd-prepare-{socket.gethostname()}", "--ignore-not-found"],
         capture_output=True,
     )
-    queue_module.dequeue(disk_name)
 
 
 @router.post("/disks/activate-local", response_model=OkResponse)
@@ -380,13 +427,24 @@ async def _activate_disk(disk_name: str, host: str) -> None:
 
 
 async def _maybe_activate() -> None:
-    node_results = await _gather_from_nodes("/api/disks/local")
-    waiting = [
-        disk for _, disks in node_results
-        for disk in disks
-        if disk.get("state") == DiskState.WAITING
-    ]
-    if not waiting:
+    priority, node_results = await asyncio.gather(
+        asyncio.to_thread(priority_module.read),
+        _gather_from_nodes("/api/disks/local"),
+    )
+    disk_map = {
+        (d["host"], d["name"]): d
+        for _, disks in node_results
+        for d in disks
+    }
+    # Find the first WAITING disk in priority order
+    next_disk = next(
+        (disk_map[(e.host, e.disk_name)]
+         for e in priority
+         if (e.host, e.disk_name) in disk_map
+         and disk_map[(e.host, e.disk_name)].get("state") == DiskState.WAITING),
+        None,
+    )
+    if not next_disk:
         return
     try:
         from local_api.routers.ceph import _cluster_status_from_k8s
@@ -398,7 +456,6 @@ async def _maybe_activate() -> None:
             return
     except Exception:
         return
-    next_disk = min(waiting, key=lambda d: (d.get("queue_position") or 999, d.get("name", "")))
     await _activate_disk(next_disk["name"], next_disk["host"])
 
 
@@ -462,7 +519,7 @@ async def _drain_osd(disk_name: str, osd_id: int) -> None:
             capture_output=True,
         )
         # Reject so the wiped disk doesn't auto-re-queue — user explicitly ejected it
-        queue_module.reject(disk_name)
+        priority_module.remove(settings.yolab_node_ipv6, disk_name)
     except Exception:
         pass
     finally:
