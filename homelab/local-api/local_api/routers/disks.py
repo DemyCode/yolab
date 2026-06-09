@@ -18,7 +18,6 @@ from local_api.models.disk import (
     DiskState,
     EjectRequest,
     EjectStatus,
-    QueueEntry,
     SystemOsdInfo,
     SystemOsdResize,
     SystemOsdResizeResponse,
@@ -27,10 +26,9 @@ from local_api.settings import settings
 
 router = APIRouter()
 
-# In-memory ejection state — ejection is fast enough that a restart resets gracefully
-_ejecting: dict[str, int] = {}       # disk_name -> osd_id
-_eject_pg_counts: dict[str, int] = {}  # disk_name -> last known PG count
-_eject_done: set[str] = set()         # disk_names that finished draining
+# Ejection-done signals live in /run (tmpfs) so they survive FastAPI restarts
+# within the same boot but are cleaned up on reboot.
+_EJECT_DONE_DIR = pathlib.Path("/run/yolab/eject-done")
 
 
 # ── lsblk / disk detection ────────────────────────────────────────────────────
@@ -192,19 +190,15 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
 
 @router.get("/disks/local", response_model=list[DiskInfo])
 async def disks_local() -> list[DiskInfo]:
-    devices, osd_map, osd_usage, queue = await asyncio.gather(
+    devices, osd_map, osd_usage, queued = await asyncio.gather(
         asyncio.to_thread(_lsblk),
         asyncio.to_thread(_ceph_osd_map),
         asyncio.to_thread(kubectl.ceph_osd_df),
-        asyncio.to_thread(queue_module.read_queue),
+        asyncio.to_thread(queue_module.get_all),
     )
 
-    waiting_names = {e.disk_name for e in queue.entries if e.host == settings.yolab_node_ipv6}
-    queue_positions = {
-        e.disk_name: i + 1
-        for i, e in enumerate(queue.entries)
-        if e.host == settings.yolab_node_ipv6
-    }
+    waiting_names = set(queued)
+    queue_positions = {name: i + 1 for i, name in enumerate(queued)}
 
     hostname = socket.gethostname()
     raw: list[dict] = []
@@ -222,16 +216,13 @@ async def disks_local() -> list[DiskInfo]:
 
         if _is_system_disk(d):
             raw.append({**base, "state": DiskState.SYSTEM, "fs_type": _first_fstype(d)})
-        elif name in _ejecting:
-            osd_id = _ejecting[name]
-            usage = osd_usage.get(osd_id)
-            raw.append({**base, "state": DiskState.EJECTING, "ceph_osd_id": osd_id,
-                        "used_bytes": usage.used_bytes if usage else None,
-                        "free_bytes": usage.free_bytes if usage else None})
         elif name in osd_map:
             osd_id = osd_map[name]
             usage = osd_usage.get(osd_id)
-            raw.append({**base, "state": DiskState.ACTIVE, "ceph_osd_id": osd_id,
+            is_ejecting = usage is not None and usage.reweight == 0.0
+            raw.append({**base,
+                        "state": DiskState.EJECTING if is_ejecting else DiskState.ACTIVE,
+                        "ceph_osd_id": osd_id,
                         "used_bytes": usage.used_bytes if usage else None,
                         "free_bytes": usage.free_bytes if usage else None})
         elif name in waiting_names:
@@ -307,7 +298,7 @@ async def add_disk(body: AddToStorageRequest) -> OkResponse:
     await asyncio.to_thread(
         subprocess.run, ["partprobe", f"/dev/{body.disk_name}"], capture_output=True,
     )
-    await asyncio.to_thread(queue_module.enqueue, body.disk_name, body.host)
+    await asyncio.to_thread(queue_module.enqueue, body.disk_name)
 
     # Activate immediately if cluster is already above threshold
     await _maybe_activate()
@@ -319,7 +310,14 @@ async def add_disk(body: AddToStorageRequest) -> OkResponse:
 
 @router.delete("/disks/queue/{disk_name}", response_model=OkResponse)
 async def remove_from_queue(disk_name: str, host: str) -> OkResponse:
-    await asyncio.to_thread(queue_module.remove_entry, disk_name, host)
+    if host != settings.yolab_node_ipv6:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.delete(
+                f"http://[{host}]:{settings.port}/api/disks/queue/{disk_name}",
+                params={"host": host},
+            )
+        return OkResponse()
+    await asyncio.to_thread(queue_module.dequeue, disk_name)
     return OkResponse()
 
 
@@ -338,6 +336,7 @@ def _do_activate_local(disk_name: str) -> None:
          "--ignore-not-found"],
         capture_output=True,
     )
+    queue_module.dequeue(disk_name)
 
 
 @router.post("/disks/activate-local", response_model=OkResponse)
@@ -347,20 +346,25 @@ async def activate_local(body: AddToStorageRequest) -> OkResponse:
     return OkResponse()
 
 
-async def _activate_disk(entry: QueueEntry) -> None:
-    if entry.host != settings.yolab_node_ipv6:
+async def _activate_disk(disk_name: str, host: str) -> None:
+    if host != settings.yolab_node_ipv6:
         async with httpx.AsyncClient(timeout=60) as client:
             await client.post(
-                f"http://[{entry.host}]:{settings.port}/api/disks/activate-local",
-                json=entry.model_dump(mode="json"),
+                f"http://[{host}]:{settings.port}/api/disks/activate-local",
+                json={"disk_name": disk_name, "host": host},
             )
         return
-    await asyncio.to_thread(_do_activate_local, entry.disk_name)
+    await asyncio.to_thread(_do_activate_local, disk_name)
 
 
 async def _maybe_activate() -> None:
-    next_entry = await asyncio.to_thread(queue_module.peek_next)
-    if next_entry is None:
+    node_results = await _gather_from_nodes("/api/disks/local")
+    waiting = [
+        disk for _, disks in node_results
+        for disk in disks
+        if disk.get("state") == DiskState.WAITING
+    ]
+    if not waiting:
         return
     try:
         from local_api.routers.ceph import _cluster_status_from_k8s
@@ -372,9 +376,8 @@ async def _maybe_activate() -> None:
             return
     except Exception:
         return
-    entry = await asyncio.to_thread(queue_module.pop_next)
-    if entry:
-        await _activate_disk(entry)
+    next_disk = min(waiting, key=lambda d: (d.get("queue_position") or 999, d.get("name", "")))
+    await _activate_disk(next_disk["name"], next_disk["host"])
 
 
 # ── eject ─────────────────────────────────────────────────────────────────────
@@ -407,8 +410,6 @@ async def eject_disk(body: EjectRequest) -> OkResponse:
                 "other_free_bytes": other_free,
             })
 
-    _ejecting[body.disk_name] = osd_id
-    _eject_done.discard(body.disk_name)
     asyncio.create_task(_drain_osd(body.disk_name, osd_id))
     return OkResponse()
 
@@ -424,36 +425,42 @@ async def _drain_osd(disk_name: str, osd_id: int) -> None:
         await asyncio.to_thread(ceph_cmd, "ceph", "osd", "reweight", str(osd_id), "0")
         await asyncio.to_thread(ceph_cmd, "ceph", "osd", "out", str(osd_id))
 
-        # Poll until no PGs remain on this OSD (up to ~17 minutes)
         for _ in range(200):
             await asyncio.sleep(5)
-            pg_count = await asyncio.to_thread(_pg_count_for_osd, osd_id)
-            _eject_pg_counts[disk_name] = pg_count
-            if pg_count == 0:
+            if await asyncio.to_thread(_pg_count_for_osd, osd_id) == 0:
                 break
 
         await asyncio.to_thread(ceph_cmd, "ceph", "osd", "crush", "remove", f"osd.{osd_id}")
         await asyncio.to_thread(ceph_cmd, "ceph", "auth", "del", f"osd.{osd_id}")
         await asyncio.to_thread(ceph_cmd, "ceph", "osd", "rm", str(osd_id))
+
+        # Wipe disk so it shows as blank (no stale bluestore signature)
+        await asyncio.to_thread(
+            subprocess.run, ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+            capture_output=True,
+        )
     except Exception:
         pass
     finally:
-        _ejecting.pop(disk_name, None)
-        _eject_pg_counts.pop(disk_name, None)
-        _eject_done.add(disk_name)
+        # Signal completion in /run (tmpfs — survives FastAPI restart, cleared on reboot)
+        _EJECT_DONE_DIR.mkdir(parents=True, exist_ok=True)
+        (_EJECT_DONE_DIR / disk_name).touch()
 
 
 @router.get("/disks/eject/{disk_name}/status", response_model=EjectStatus)
 async def eject_status(disk_name: str) -> EjectStatus:
-    if disk_name in _eject_done:
+    done_file = _EJECT_DONE_DIR / disk_name
+    if done_file.exists():
+        done_file.unlink(missing_ok=True)
         return EjectStatus(pg_count=0, done=True, safe_to_unplug=True)
-    if disk_name not in _ejecting:
+
+    osd_map = await asyncio.to_thread(_ceph_osd_map)
+    if disk_name not in osd_map:
         raise HTTPException(404, "No ejection in progress for this disk")
-    return EjectStatus(
-        pg_count=_eject_pg_counts.get(disk_name, -1),
-        done=False,
-        safe_to_unplug=False,
-    )
+
+    osd_id = osd_map[disk_name]
+    pg_count = await asyncio.to_thread(_pg_count_for_osd, osd_id)
+    return EjectStatus(pg_count=pg_count, done=False, safe_to_unplug=False)
 
 
 # ── system OSD (loop device) ──────────────────────────────────────────────────
@@ -481,16 +488,7 @@ def _loop_device() -> str | None:
 def _ceph_osd_id_for_img() -> int | None:
     if _loop_device() is None:
         return None
-    try:
-        r = subprocess.run(
-            ["kubectl", "get", "deploy", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-osd",
-             "-o", "jsonpath={.items[0].metadata.labels.ceph-osd-id}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        val = r.stdout.strip()
-        return int(val) if r.returncode == 0 and val.isdigit() else None
-    except Exception:
-        return None
+    return _ceph_osd_map().get("loop0")
 
 
 def _ceph_osd_count() -> int:

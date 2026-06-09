@@ -84,6 +84,7 @@ def ceph_osd_df() -> dict[int, OsdUsage]:
                 used_bytes=node.get("kb_used", 0) * 1024,
                 free_bytes=node.get("kb_avail", 0) * 1024,
                 total_bytes=node.get("kb", 0) * 1024,
+                reweight=float(node.get("reweight", 1.0)),
             )
         return result
     except Exception:
