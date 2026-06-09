@@ -2,6 +2,7 @@ import subprocess
 
 from fastapi import APIRouter
 
+from local_api.models.status import StatusInfo
 from local_api.settings import settings
 
 router = APIRouter()
@@ -27,24 +28,22 @@ def _built_or_git(filename: str, *git_args: str) -> str:
     return _git(*git_args)
 
 
-@router.get("/status")
+@router.get("/status", response_model=StatusInfo)
 async def status():
     try:
-        return {
-            "commit_hash": _built_or_git("built-hash", "rev-parse", "HEAD"),
-            "commit_message": _built_or_git(
-                "built-message", "log", "-1", "--pretty=%s"
-            ),
-            "commit_date": _built_or_git("built-date", "log", "-1", "--pretty=%cI"),
-            "platform": settings.yolab_platform,
-            "flake_target": settings.yolab_flake_target,
-        }
+        return StatusInfo(
+            commit_hash=_built_or_git("built-hash", "rev-parse", "HEAD"),
+            commit_message=_built_or_git("built-message", "log", "-1", "--pretty=%s"),
+            commit_date=_built_or_git("built-date", "log", "-1", "--pretty=%cI"),
+            platform=settings.yolab_platform,
+            flake_target=settings.yolab_flake_target,
+        )
     except Exception as e:
-        return {
-            "commit_hash": "",
-            "commit_message": "",
-            "commit_date": "",
-            "platform": settings.yolab_platform,
-            "flake_target": settings.yolab_flake_target,
-            "error": str(e),
-        }
+        return StatusInfo(
+            commit_hash="",
+            commit_message="",
+            commit_date="",
+            platform=settings.yolab_platform,
+            flake_target=settings.yolab_flake_target,
+            error=str(e),
+        )

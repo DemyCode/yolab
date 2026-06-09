@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     rebuild_log: Path = Path("/var/log/yolab-rebuild.log")
     rebuild_pid: Path = Path("/run/yolab-rebuild.pid")
     built_dir: Path = Path("/var/lib/yolab")
+    osd_img_path: Path = Path("/var/lib/rook/system-osd.img")
+    k3s_server_dir: Path = Path("/etc/rancher/k3s/server")
+
+    # Storage behaviour
+    disk_activation_threshold: float = 0.80
 
 
 settings = Settings()

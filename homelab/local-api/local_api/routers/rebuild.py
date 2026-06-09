@@ -2,12 +2,13 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from local_api.models.apps import RebuildLog
 from local_api.settings import settings
 
 router = APIRouter()
 
 
-@router.get("/rebuild-log")
+@router.get("/rebuild-log", response_model=RebuildLog)
 async def rebuild_log():
     running = False
     if settings.rebuild_pid.exists():
@@ -24,4 +25,4 @@ async def rebuild_log():
         )
     except Exception:
         log = []
-    return {"running": running, "log": log}
+    return RebuildLog(running=running, log=log)

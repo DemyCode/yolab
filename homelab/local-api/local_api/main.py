@@ -1,5 +1,4 @@
 import asyncio
-import os
 
 import uvicorn
 from fastapi import APIRouter, FastAPI
@@ -34,7 +33,7 @@ app.include_router(api)
 
 
 def _is_primary_node() -> bool:
-    return os.path.isdir("/etc/rancher/k3s/server")
+    return settings.k3s_server_dir.is_dir()
 
 
 async def _activation_loop() -> None:

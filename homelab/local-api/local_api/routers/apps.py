@@ -5,59 +5,59 @@ import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from jinja2 import Template
 from pydantic import BaseModel
 
+from local_api.constants import ANN_APP_ID, ANN_CONFIG, ANN_OUTPUTS, LABEL_MANAGED
+from local_api.models.apps import (
+    AppInfo,
+    AppOutput,
+    CatalogApp,
+    DescribeResponse,
+    DomainResponse,
+    OutputSpec,
+    PodInfo,
+    ScanOutputsResponse,
+)
+from local_api.models.common import OkResponse
 from local_api.settings import settings
 
 router = APIRouter()
 
 CATALOG_DIR = Path(settings.yolab_repo_path) / "apps/catalog"
-
-LABEL_MANAGED = "yolab.io/managed"
-ANN_APP_ID = "yolab.io/app-id"
-ANN_OUTPUTS = "yolab.io/outputs"
-ANN_CONFIG = "yolab.io/config"
+_LOGS_SCAN_TAIL = 500
+_LOGS_FOLLOW_TAIL = 100
 
 
 def _tunnel_config() -> dict:
     return tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
 
 
-def _normalize_outputs(ann: dict) -> list[dict]:
+def _normalize_outputs(ann: dict) -> list[AppOutput]:
     raw = ann.get(ANN_OUTPUTS, "")
     if not raw:
         return []
     outputs = json.loads(raw)
     # Convert old format [{url, ipv6}] to new AppOutput format
-    if (
-        outputs
-        and isinstance(outputs[0], dict)
-        and ("url" in outputs[0] or "ipv6" in outputs[0])
-    ):
+    if outputs and isinstance(outputs[0], dict) and ("url" in outputs[0] or "ipv6" in outputs[0]):
         result = []
         for o in outputs:
             if o.get("url"):
-                result.append(
-                    {"key": "url", "label": "Web URL", "value": o["url"], "type": "url"}
-                )
+                result.append(AppOutput(key="url", label="Web URL", value=o["url"], type="url"))
             if o.get("ipv6"):
-                result.append(
-                    {"key": "ipv6", "label": "IPv6", "value": o["ipv6"], "type": "text"}
-                )
+                result.append(AppOutput(key="ipv6", label="IPv6", value=o["ipv6"], type="text"))
         return result
-    return outputs
+    return [AppOutput(**o) for o in outputs]
 
 
-def _list_installed() -> list[dict]:
+def _list_installed() -> list[AppInfo]:
     result = subprocess.run(
         ["kubectl", "get", "namespaces", "-l", f"{LABEL_MANAGED}=true", "-o", "json"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
         return []
@@ -72,8 +72,7 @@ def _list_installed() -> list[dict]:
         else:
             pods = subprocess.run(
                 ["kubectl", "get", "pods", "-n", f"yolab-{name}", "-o", "json"],
-                capture_output=True,
-                text=True,
+                capture_output=True, text=True,
             )
             if pods.returncode == 0:
                 pod_items = json.loads(pods.stdout).get("items", [])
@@ -89,40 +88,37 @@ def _list_installed() -> list[dict]:
                 status = "starting"
 
         config_raw = ann.get(ANN_CONFIG, "")
-        config = json.loads(config_raw) if config_raw else {}
+        config: dict[str, Any] = json.loads(config_raw) if config_raw else {}
 
         app_id = ann.get(ANN_APP_ID, "")
         outputs_spec_path = CATALOG_DIR / app_id / "outputs.json" if app_id else None
-        outputs_spec = []
+        outputs_spec: list[OutputSpec] = []
         if outputs_spec_path and outputs_spec_path.exists():
             try:
                 outputs_spec = [
-                    {
-                        "key": o["key"],
-                        "label": o.get("label", o["key"]),
-                        "type": o.get("type", "text"),
-                    }
+                    OutputSpec(
+                        key=o["key"],
+                        label=o.get("label", o["key"]),
+                        type=o.get("type", "text"),
+                    )
                     for o in json.loads(outputs_spec_path.read_text())
                     if o.get("type") != "hidden"
                 ]
             except Exception:
                 pass
 
-        apps.append(
-            {
-                "app_id": app_id,
-                "instance_name": name,
-                "status": status,
-                "outputs": _normalize_outputs(ann),
-                "outputs_spec": outputs_spec,
-                "config": config,
-            }
-        )
+        apps.append(AppInfo(
+            app_id=app_id,
+            instance_name=name,
+            status=status,
+            outputs=_normalize_outputs(ann),
+            outputs_spec=outputs_spec,
+            config=config,
+        ))
     return apps
 
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────
-
 
 def _render_manifest(
     app_id: str,
@@ -152,9 +148,7 @@ def _render_manifest(
     )
 
 
-async def _stream_proc(
-    *cmd: str,
-) -> AsyncGenerator[tuple[str | None, int | None], None]:
+async def _stream_proc(*cmd: str) -> AsyncGenerator[tuple[str | None, int | None], None]:
     """Run a command, yielding (line, None) for each output line then (None, returncode)."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -171,9 +165,7 @@ async def _stream_proc(
     yield None, proc.returncode
 
 
-async def _apply_manifest(
-    rendered: str,
-) -> AsyncGenerator[tuple[str | None, int | None], None]:
+async def _apply_manifest(rendered: str) -> AsyncGenerator[tuple[str | None, int | None], None]:
     """Write rendered YAML to a temp file, kubectl apply it, and stream output."""
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
         f.write(rendered)
@@ -187,23 +179,22 @@ async def _apply_manifest(
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
-
 class AppInstallRequest(BaseModel):
     instance_name: str
-    config: dict
+    config: dict[str, Any]
 
 
-@router.get("/tunnel/domain")
+@router.get("/tunnel/domain", response_model=DomainResponse)
 async def tunnel_domain():
     cfg = _tunnel_config()
     host = cfg["dns_url"].removeprefix("https://").removeprefix("http://").rstrip("/")
     parts = host.split(".")
     if parts and not parts[0].isdigit():
         host = ".".join(parts[1:])
-    return {"domain": host}
+    return DomainResponse(domain=host)
 
 
-@router.get("/apps/catalog")
+@router.get("/apps/catalog", response_model=list[CatalogApp])
 async def catalog():
     apps = []
     for app_dir in CATALOG_DIR.iterdir():
@@ -213,24 +204,19 @@ async def catalog():
         if not toml_path.exists():
             continue
         meta = tomllib.loads(toml_path.read_text())["app"]
-        schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
-        apps.append(
-            {
-                "id": meta["id"],
-                "name": meta["name"],
-                "description": meta["description"],
-                "icon": meta.get("icon", ""),
-                "category": meta.get("category", ""),
-                "schema": schema,
-                "uischema": json.loads(uischema_path.read_text())
-                if uischema_path.exists()
-                else {},
-            }
-        )
+        apps.append(CatalogApp(
+            id=meta["id"],
+            name=meta["name"],
+            description=meta["description"],
+            icon=meta.get("icon", ""),
+            category=meta.get("category", ""),
+            schema=json.loads(schema_path.read_text()) if schema_path.exists() else {},
+            uischema=json.loads(uischema_path.read_text()) if uischema_path.exists() else {},
+        ))
     return apps
 
 
-@router.get("/apps")
+@router.get("/apps", response_model=list[AppInfo])
 async def list_apps():
     return await asyncio.to_thread(_list_installed)
 
@@ -242,20 +228,14 @@ async def install_app(app_id: str, body: AppInstallRequest):
             status_code=400,
             detail="instance_name must be lowercase alphanumeric and hyphens only",
         )
-
     if not (CATALOG_DIR / app_id).exists():
-        raise HTTPException(
-            status_code=404, detail=f"App '{app_id}' not found in catalog"
-        )
+        raise HTTPException(status_code=404, detail=f"App '{app_id}' not found in catalog")
 
     async def stream():
         try:
             tunnel_cfg = _tunnel_config()
-
             yield "data: Rendering manifest...\n\n"
-            rendered = _render_manifest(
-                app_id, body.instance_name, body.config, tunnel_cfg
-            )
+            rendered = _render_manifest(app_id, body.instance_name, body.config, tunnel_cfg)
 
             yield "data: Applying manifests to cluster...\n\n"
             rc = None
@@ -270,19 +250,11 @@ async def install_app(app_id: str, body: AppInstallRequest):
 
             await asyncio.to_thread(
                 subprocess.run,
-                [
-                    "kubectl",
-                    "annotate",
-                    "namespace",
-                    f"yolab-{body.instance_name}",
-                    f"{ANN_CONFIG}={json.dumps(body.config)}",
-                    "--overwrite=true",
-                ],
+                ["kubectl", "annotate", "namespace", f"yolab-{body.instance_name}",
+                 f"{ANN_CONFIG}={json.dumps(body.config)}", "--overwrite=true"],
                 capture_output=True,
             )
-
             yield f"data: [DONE] {app_id} installed — run 'Scan outputs' once the pod is ready\n\n"
-
         except Exception as e:
             yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
 
@@ -292,31 +264,26 @@ async def install_app(app_id: str, body: AppInstallRequest):
 @router.post("/apps/{instance_name}/update")
 async def update_app(instance_name: str):
     ns = f"yolab-{instance_name}"
-
     ns_info = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "namespace", ns, "-o", "json"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
     if ns_info.returncode != 0:
         raise HTTPException(status_code=404, detail="Instance not found")
 
     ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
     app_id = ann.get(ANN_APP_ID, "")
-    config = json.loads(ann.get(ANN_CONFIG, "{}") or "{}")
+    config: dict[str, Any] = json.loads(ann.get(ANN_CONFIG, "{}") or "{}")
 
     if not app_id:
         raise HTTPException(status_code=400, detail="No app ID found on namespace")
     if not (CATALOG_DIR / app_id).exists():
-        raise HTTPException(
-            status_code=404, detail=f"App '{app_id}' not found in catalog"
-        )
+        raise HTTPException(status_code=404, detail=f"App '{app_id}' not found in catalog")
 
     async def stream():
         try:
             tunnel_cfg = _tunnel_config()
-
             yield "data: Rendering manifest...\n\n"
             rendered = _render_manifest(app_id, instance_name, config, tunnel_cfg)
 
@@ -332,49 +299,40 @@ async def update_app(instance_name: str):
                 return
 
             yield "data: Restarting deployments...\n\n"
-            async for line, _ in _stream_proc(
-                "kubectl", "rollout", "restart", "deployment", "-n", ns
-            ):
+            async for line, _ in _stream_proc("kubectl", "rollout", "restart", "deployment", "-n", ns):
                 if line:
                     yield f"data: {line}\n\n"
-
             yield f"data: [DONE] {app_id} updated\n\n"
-
         except Exception as e:
             yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@router.post("/apps/{instance_name}/scan-outputs")
+@router.post("/apps/{instance_name}/scan-outputs", response_model=ScanOutputsResponse)
 async def scan_outputs(instance_name: str):
     ns = f"yolab-{instance_name}"
-
     ns_info = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "namespace", ns, "-o", "json"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
     if ns_info.returncode != 0:
         raise HTTPException(status_code=404, detail="Instance not found")
 
-    ns_data = json.loads(ns_info.stdout)
-    ann = ns_data.get("metadata", {}).get("annotations", {})
+    ann = json.loads(ns_info.stdout).get("metadata", {}).get("annotations", {})
     app_id = ann.get(ANN_APP_ID, "")
 
     outputs_json_path = CATALOG_DIR / app_id / "outputs.json"
     if not outputs_json_path.exists():
-        return {"outputs": _normalize_outputs(ann)}
+        return ScanOutputsResponse(outputs=_normalize_outputs(ann))
 
     outputs_spec = json.loads(outputs_json_path.read_text())
 
-    # Scan all init container + container logs for pattern matches
     pods_result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "pods", "-n", ns, "-o", "json"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
 
     found: dict[str, str] = {}
@@ -382,25 +340,14 @@ async def scan_outputs(instance_name: str):
         pod_items = json.loads(pods_result.stdout).get("items", [])
         for pod in pod_items:
             pod_name = pod["metadata"]["name"]
-            init_containers = [
-                c["name"] for c in pod.get("spec", {}).get("initContainers", [])
-            ]
+            init_containers = [c["name"] for c in pod.get("spec", {}).get("initContainers", [])]
             containers = [c["name"] for c in pod.get("spec", {}).get("containers", [])]
             for container in init_containers + containers:
                 logs_result = await asyncio.to_thread(
                     subprocess.run,
-                    [
-                        "kubectl",
-                        "logs",
-                        "-n",
-                        ns,
-                        pod_name,
-                        "-c",
-                        container,
-                        "--tail=500",
-                    ],
-                    capture_output=True,
-                    text=True,
+                    ["kubectl", "logs", "-n", ns, pod_name, "-c", container,
+                     f"--tail={_LOGS_SCAN_TAIL}"],
+                    capture_output=True, text=True,
                 )
                 if logs_result.returncode != 0:
                     continue
@@ -413,45 +360,36 @@ async def scan_outputs(instance_name: str):
                                 found[key] = str(m.group(1))
 
     if not found:
-        return {"outputs": _normalize_outputs(ann)}
+        return ScanOutputsResponse(outputs=_normalize_outputs(ann))
 
-    outputs = []
-    for spec in outputs_spec:
-        key = spec["key"]
-        if key in found:
-            outputs.append(
-                {
-                    "key": key,
-                    "label": spec.get("label", key),
-                    "value": found[key],
-                    "type": spec.get("type", "text"),
-                }
-            )
+    outputs = [
+        AppOutput(
+            key=spec["key"],
+            label=spec.get("label", spec["key"]),
+            value=found[spec["key"]],
+            type=spec.get("type", "text"),
+        )
+        for spec in outputs_spec
+        if spec["key"] in found
+    ]
 
     await asyncio.to_thread(
         subprocess.run,
-        [
-            "kubectl",
-            "annotate",
-            "namespace",
-            ns,
-            f"{ANN_OUTPUTS}={json.dumps(outputs)}",
-            "--overwrite=true",
-        ],
+        ["kubectl", "annotate", "namespace", ns,
+         f"{ANN_OUTPUTS}={json.dumps([o.model_dump() for o in outputs])}", "--overwrite=true"],
         capture_output=True,
     )
 
-    return {"outputs": outputs}
+    return ScanOutputsResponse(outputs=outputs)
 
 
-@router.delete("/apps/{instance_name}")
+@router.delete("/apps/{instance_name}", response_model=OkResponse)
 async def uninstall_app(instance_name: str):
     ns = f"yolab-{instance_name}"
     ns_info = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "namespace", ns, "-o", "json", "--ignore-not-found=true"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
 
     if ns_info.returncode == 0 and ns_info.stdout.strip():
@@ -461,21 +399,16 @@ async def uninstall_app(instance_name: str):
 
         if uninstall_j2 and uninstall_j2.exists():
             try:
-                config = json.loads(ann.get(ANN_CONFIG, "{}") or "{}")
+                config: dict[str, Any] = json.loads(ann.get(ANN_CONFIG, "{}") or "{}")
                 outputs = _normalize_outputs(ann)
-                output_vars = {f"output_{o['key']}": o["value"] for o in outputs}
+                output_vars = {f"output_{o.key}": o.value for o in outputs}
                 tunnel_cfg = _tunnel_config()
                 rendered = _render_manifest(
-                    app_id,
-                    instance_name,
-                    config,
-                    tunnel_cfg,
+                    app_id, instance_name, config, tunnel_cfg,
                     template_file="uninstall.yaml.j2",
                     extra_vars=output_vars,
                 )
-                with tempfile.NamedTemporaryFile(
-                    suffix=".yaml", mode="w", delete=False
-                ) as f:
+                with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
                     f.write(rendered)
                     manifest_path = f.name
                 await asyncio.to_thread(
@@ -486,15 +419,8 @@ async def uninstall_app(instance_name: str):
                 Path(manifest_path).unlink(missing_ok=True)
                 await asyncio.to_thread(
                     subprocess.run,
-                    [
-                        "kubectl",
-                        "wait",
-                        "job/uninstall",
-                        "-n",
-                        ns,
-                        "--for=condition=complete",
-                        "--timeout=120s",
-                    ],
+                    ["kubectl", "wait", "job/uninstall", "-n", ns,
+                     "--for=condition=complete", "--timeout=120s"],
                     capture_output=True,
                 )
             except Exception as e:
@@ -502,71 +428,54 @@ async def uninstall_app(instance_name: str):
 
     result = await asyncio.to_thread(
         subprocess.run,
-        [
-            "kubectl",
-            "delete",
-            "namespace",
-            ns,
-            "--ignore-not-found=true",
-            "--wait=false",
-        ],
-        capture_output=True,
-        text=True,
+        ["kubectl", "delete", "namespace", ns, "--ignore-not-found=true", "--wait=false"],
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip())
+    return OkResponse()
 
-    return {"ok": True}
 
-
-@router.get("/apps/{instance_name}/pods")
+@router.get("/apps/{instance_name}/pods", response_model=list[PodInfo])
 async def list_pods(instance_name: str):
     result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "pods", "-n", f"yolab-{instance_name}", "-o", "json"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=result.stderr)
     items = json.loads(result.stdout).get("items", [])
     return [
-        {
-            "name": p["metadata"]["name"],
-            "phase": p["status"].get("phase", "Unknown"),
-            "ready": any(
+        PodInfo(
+            name=p["metadata"]["name"],
+            phase=p["status"].get("phase", "Unknown"),
+            ready=any(
                 c["type"] == "Ready" and c["status"] == "True"
                 for c in p["status"].get("conditions", [])
             ),
-        }
+        )
         for p in items
     ]
 
 
-@router.get("/apps/{instance_name}/describe/{pod_name}")
+@router.get("/apps/{instance_name}/describe/{pod_name}", response_model=DescribeResponse)
 async def describe_pod(instance_name: str, pod_name: str):
     result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "describe", "pod", pod_name, "-n", f"yolab-{instance_name}"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
-    return {"output": str(result.stdout) + str(result.stderr)}
+    return DescribeResponse(output=str(result.stdout) + str(result.stderr))
 
 
 @router.get("/apps/{instance_name}/logs/{pod_name}")
 async def pod_logs(instance_name: str, pod_name: str):
     async def stream():
         async for line, _ in _stream_proc(
-            "kubectl",
-            "logs",
-            "-n",
-            f"yolab-{instance_name}",
-            pod_name,
-            "--all-containers=true",
-            "--follow",
-            "--prefix=true",
-            "--tail=100",
+            "kubectl", "logs", "-n", f"yolab-{instance_name}", pod_name,
+            "--all-containers=true", "--follow", "--prefix=true",
+            f"--tail={_LOGS_FOLLOW_TAIL}",
         ):
             if line:
                 yield f"data: {line}\n\n"
