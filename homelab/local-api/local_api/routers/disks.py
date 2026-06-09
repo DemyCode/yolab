@@ -68,8 +68,9 @@ def _first_fstype(device: dict) -> str | None:
 
 
 def _ceph_osd_map() -> dict[str, int]:
-    # Primary: read directly from running OSD pod specs (no ceph auth needed).
-    # ROOK_BLOCK_PATH env on each OSD pod carries the block device path.
+    # Primary: read the OSD data-dir block symlink via the activate-osd
+    # volume hostPath in each OSD pod spec.  No ceph auth needed.
+    #   Pod label ceph-osd-id  →  activate-osd hostPath  →  block symlink  →  /dev/XXX
     try:
         result = subprocess.run(
             ["kubectl", "get", "pods", "-n", CEPH_NAMESPACE,
@@ -82,12 +83,19 @@ def _ceph_osd_map() -> dict[str, int]:
             osd_id_str = pod["metadata"]["labels"].get("ceph-osd-id")
             if osd_id_str is None:
                 continue
-            for container in pod["spec"]["containers"]:
-                for env in container.get("env", []):
-                    if env["name"] == "ROOK_BLOCK_PATH":
-                        dev = env["value"].replace("/dev/", "").strip()
-                        if dev:
-                            mapping[dev] = int(osd_id_str)
+            for vol in pod["spec"].get("volumes", []):
+                if vol.get("name") == "activate-osd":
+                    data_dir = (vol.get("hostPath") or {}).get("path", "")
+                    if not data_dir:
+                        continue
+                    import pathlib
+                    block_link = pathlib.Path(data_dir) / "block"
+                    try:
+                        device = block_link.resolve().name
+                        if device:
+                            mapping[device] = int(osd_id_str)
+                    except Exception:
+                        pass
         if mapping:
             return mapping
     except Exception:
