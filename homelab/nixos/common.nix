@@ -311,13 +311,19 @@ in {
             CURRENT=$(${pkgs.coreutils}/bin/stat -c%s "$IMG")
             if [ "$CURRENT" -lt "$TARGET" ]; then
               ${pkgs.coreutils}/bin/truncate -s "$TARGET" "$IMG"
+              # Notify the running loop driver of the new size (no-op if not attached).
+              ${pkgs.util-linux}/bin/losetup -c /dev/loop0 2>/dev/null || true
             fi
           fi
 
-          # Always claim /dev/loop0 so the device name is stable across reboots.
-          # Detach any stale attachment first, then attach to the fixed slot.
-          ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
-          ${pkgs.util-linux}/bin/losetup /dev/loop0 "$IMG"
+          # Attach to /dev/loop0 so the device name is stable across reboots.
+          # Skip if already correctly attached (e.g. during nixos-rebuild switch
+          # while Ceph has the device open — detaching would fail anyway).
+          ATTACHED=$(${pkgs.util-linux}/bin/losetup -j "$IMG" 2>/dev/null | grep "^/dev/loop0:" || true)
+          if [ -z "$ATTACHED" ]; then
+            ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
+            ${pkgs.util-linux}/bin/losetup /dev/loop0 "$IMG"
+          fi
         '';
         ExecStop = pkgs.writeShellScript "system-osd-stop" ''
           LOOP=$(${pkgs.util-linux}/bin/losetup -j /var/lib/rook/system-osd.img 2>/dev/null \
