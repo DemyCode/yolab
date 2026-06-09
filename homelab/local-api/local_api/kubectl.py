@@ -33,12 +33,7 @@ def ceph_mgr_pod() -> str:
 
 
 def ceph_exec(*args: str) -> str:
-    """Run a ceph CLI command inside the mgr pod with admin credentials.
-
-    The mgr container has no ceph.conf and only its own keyring. We read
-    the admin keyring + mon address from K8s and inject a minimal ceph.conf
-    with ms_client_mode=secure to match the server's msgr2 requirement.
-    """
+    """Run a ceph CLI command inside the mgr pod with admin credentials."""
     key_result = subprocess.run(
         ["kubectl", "get", "secret", "-n", _CEPH_NS, "rook-ceph-admin-keyring",
          "-o", "jsonpath={.data.keyring}"],
@@ -70,3 +65,25 @@ def ceph_exec(*args: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())
     return result.stdout
+
+
+def ceph_osd_df() -> dict:
+    """Returns per-OSD usage as {osd_id: OsdUsage}."""
+    from local_api.models.ceph import OsdUsage
+    try:
+        raw = ceph_exec("osd", "df", "--format", "json")
+        data = json.loads(raw)
+        result: dict[int, OsdUsage] = {}
+        for node in data.get("nodes", []):
+            osd_id = node.get("id")
+            if osd_id is None:
+                continue
+            result[int(osd_id)] = OsdUsage(
+                osd_id=int(osd_id),
+                used_bytes=node.get("kb_used", 0) * 1024,
+                free_bytes=node.get("kb_avail", 0) * 1024,
+                total_bytes=node.get("kb", 0) * 1024,
+            )
+        return result
+    except Exception:
+        return {}
