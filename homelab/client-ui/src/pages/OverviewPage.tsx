@@ -3,15 +3,7 @@ import { RefreshCw, GitCommit, Cpu, Calendar, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-interface Status {
-  commit_hash: string;
-  commit_message: string;
-  commit_date: string;
-  platform: string;
-  flake_target: string;
-  error?: string;
-}
+import type { StatusInfoInfo, RebuildLog } from "@/types/status";
 
 function LogLine({ line }: { line: string }) {
   const isError = line.startsWith("[ERROR]") || line.includes("error:");
@@ -36,7 +28,7 @@ function LogLine({ line }: { line: string }) {
 }
 
 export function OverviewPage() {
-  const [status, setStatus] = useState<Status | null>(null);
+  const [status, setStatusInfo] = useState<StatusInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [updateLog, setUpdateLog] = useState<string[]>([]);
   const [updateDone, setUpdateDone] = useState(false);
@@ -51,7 +43,7 @@ export function OverviewPage() {
     async function run() {
       try {
         const r = await fetch("/api/rebuild-log");
-        const d = (await r.json()) as { log?: string[]; running: boolean };
+        const d = (await r.json()) as RebuildLog;
         if (cancelled) return;
         setRebuildLog(d.log ?? []);
         setRebuildRunning(d.running);
@@ -59,7 +51,7 @@ export function OverviewPage() {
         else if (poll)
           fetch("/api/status")
             .then((r) => r.json())
-            .then((s) => setStatus(s as Status))
+            .then((s) => setStatusInfo(s as StatusInfo))
             .catch(() => {});
       } catch {
         if (!cancelled) setTimeout(run, 3000);
@@ -78,7 +70,7 @@ export function OverviewPage() {
       try {
         const r = await fetch("/api/status");
         if (r.ok) {
-          setStatus((await r.json()) as Status);
+          setStatusInfo((await r.json()) as StatusInfo);
           setReconnecting(false);
           loadRebuildLog(true);
           return;
@@ -102,7 +94,7 @@ export function OverviewPage() {
       await new Promise((r) => setTimeout(r, 1000));
       try {
         const r = await fetch("/api/update/status");
-        const d = (await r.json()) as { running: boolean; log?: string[] };
+        const d = (await r.json()) as RebuildLog;
         setUpdateLog(d.log ?? []);
         if (!d.running) {
           setUpdating(false);
@@ -123,11 +115,11 @@ export function OverviewPage() {
   useEffect(() => {
     fetch("/api/status")
       .then((r) => r.json())
-      .then((s) => setStatus(s as Status))
-      .catch(() => setStatus(null));
+      .then((s) => setStatusInfo(s as StatusInfo))
+      .catch(() => setStatusInfo(null));
     fetch("/api/update/status")
       .then((r) => r.json())
-      .then((d: { running: boolean; log?: string[] }) => {
+      .then((d: RebuildLog) => {
         if (d.running) {
           setUpdating(true);
           setUpdateLog(d.log ?? []);
@@ -174,7 +166,7 @@ export function OverviewPage() {
             setUpdateDone(true);
             fetch("/api/status")
               .then((r) => r.json())
-              .then((s) => setStatus(s as Status))
+              .then((s) => setStatusInfo(s as StatusInfo))
               .catch(() => {});
           } else setUpdateLog((prev) => [...prev, line]);
         }
@@ -217,7 +209,7 @@ export function OverviewPage() {
         </p>
       </div>
 
-      {/* Status cards */}
+      {/* StatusInfo cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">

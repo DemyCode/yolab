@@ -17,62 +17,32 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface CatalogApp {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  category: string;
-  schema: object;
-  uischema: object;
-}
-
-interface AppOutput {
-  key: string;
-  label: string;
-  value: string;
-  type: "url" | "text" | "hidden";
-}
-
-interface OutputSpec {
-  key: string;
-  label: string;
-  type: "url" | "text" | "hidden";
-}
-
-interface InstalledApp {
-  app_id: string;
-  instance_name: string;
-  status: "starting" | "running" | "uninstalling";
-  outputs: AppOutput[];
-  outputs_spec: OutputSpec[];
-  config: Record<string, unknown>;
-}
-
-interface Pod {
-  name: string;
-  phase: string;
-  ready: boolean;
-}
+import type {
+  AppInfo,
+  AppOutput,
+  CatalogApp,
+  DescribeResponse,
+  DomainResponse,
+  OutputSpec,
+  PodInfo,
+  ScanOutputsResponse,
+} from "@/types/apps";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function statusVariant(status: InstalledApp["status"]) {
+function statusVariant(status: AppInfo["status"]) {
   if (status === "running") return "success" as const;
   if (status === "uninstalling") return "destructive" as const;
   return "warning" as const;
 }
 
-function statusLabel(status: InstalledApp["status"]) {
+function statusLabel(status: AppInfo["status"]) {
   if (status === "running") return "Running";
   if (status === "uninstalling") return "Uninstalling…";
   return "Starting…";
 }
 
-function podColor(pod: Pod) {
+function podColor(pod: PodInfo) {
   if (pod.ready) return "#4ade80";
   if (pod.phase === "Pending" || pod.phase === "Running") return "#fbbf24";
   return "#f87171";
@@ -209,12 +179,12 @@ function PasswordWidget({ value, onChange }: WidgetProps) {
 export function AppsPage() {
   const navigate = useNavigate();
   const [catalog, setCatalog] = useState<CatalogApp[]>([]);
-  const [installed, setInstalled] = useState<InstalledApp[]>([]);
+  const [installed, setInstalled] = useState<AppInfo[]>([]);
 
   function loadInstalled() {
     fetch("/api/apps")
       .then((r) => r.json())
-      .then((a) => setInstalled(a as InstalledApp[]))
+      .then((a) => setInstalled(a as AppInfo[]))
       .catch(() => {});
   }
 
@@ -372,7 +342,7 @@ export function AppInstallPage() {
       .catch(() => {});
     fetch("/api/tunnel/domain")
       .then((r) => r.json())
-      .then((d: { domain: string }) => setTunnelDomain(d.domain))
+      .then((d: DomainResponse) => setTunnelDomain(d.domain))
       .catch(() => {});
   }, [appId]);
 
@@ -525,8 +495,8 @@ export function AppInstallPage() {
 export function InstalledDetailPage() {
   const { instanceName } = useParams<{ instanceName: string }>();
   const navigate = useNavigate();
-  const [app, setApp] = useState<InstalledApp | null>(null);
-  const [pods, setPods] = useState<Pod[]>([]);
+  const [app, setApp] = useState<AppInfo | null>(null);
+  const [pods, setPods] = useState<PodInfo[]>([]);
   const [selectedPod, setSelectedPod] = useState<string | null>(null);
   const [view, setView] = useState<"describe" | "logs">("describe");
   const [describe, setDescribe] = useState("");
@@ -543,7 +513,7 @@ export function InstalledDetailPage() {
   function loadApp() {
     fetch("/api/apps")
       .then((r) => r.json())
-      .then((apps: InstalledApp[]) => {
+      .then((apps: AppInfo[]) => {
         const found = apps.find((a) => a.instance_name === instanceName);
         if (found) setApp(found);
       })
@@ -553,14 +523,14 @@ export function InstalledDetailPage() {
   function loadPods() {
     fetch(`/api/apps/${instanceName}/pods`)
       .then((r) => r.json())
-      .then((p) => setPods(p as Pod[]))
+      .then((p) => setPods(p as PodInfo[]))
       .catch(() => {});
   }
 
   function scanOutputs(): Promise<void> {
     return fetch(`/api/apps/${instanceName}/scan-outputs`, { method: "POST" })
       .then((r) => r.json())
-      .then((data: { outputs: AppOutput[] }) =>
+      .then((data: ScanOutputsResponse) =>
         setApp((prev) => (prev ? { ...prev, outputs: data.outputs } : prev)),
       )
       .catch(() => {});
@@ -599,7 +569,7 @@ export function InstalledDetailPage() {
     const r = await fetch(
       `/api/apps/${instanceName}/describe/${podName}`,
     ).catch(() => null);
-    if (r?.ok) setDescribe(((await r.json()) as { output: string }).output);
+    if (r?.ok) setDescribe(((await r.json()) as DescribeResponse).output);
   }
 
   async function showLogs(podName: string) {

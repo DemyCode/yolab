@@ -7,22 +7,15 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
-
-interface Node {
-  name: string;
-  ip: string;
-  ready: boolean;
-  roles: string[];
-  joined_at: string;
-}
+import type { NodeInfo } from "@/types/nodes";
 
 export function NodesPage() {
-  const [nodes, setNodes] = useState<Node[] | null>(null);
+  const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
 
   useEffect(() => {
     fetch("/api/nodes")
       .then((r) => r.json())
-      .then((n) => setNodes(n as Node[]))
+      .then((n) => setNodes(n as NodeInfo[]))
       .catch(() => setNodes([]));
   }, []);
 

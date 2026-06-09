@@ -37,3 +37,22 @@ export interface SystemOsdInfo {
   fs_free_bytes: number
   ceph_osd_id: number | null
 }
+
+export interface SystemOsdResizeResponse {
+  ok: boolean
+  operation: "extended" | "shrunk" | "unchanged"
+}
+
+export interface OkResponse {
+  ok: boolean
+}
+
+export interface AddToStorageRequest {
+  disk_name: string
+  host: string
+}
+
+export interface EjectRequest {
+  disk_name: string
+  host: string
+}
