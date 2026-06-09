@@ -46,24 +46,15 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: fix
-              image: alpine:3.21
+              image: docker.io/rook/ceph:v1.16.3
               command:
                 - /bin/sh
                 - -c
                 - |
-                  for dep in $(/kubectl get deployments -n rook-ceph -l app=rook-ceph-osd -o name); do
-                    /kubectl set env -n rook-ceph "$dep" \
+                  for dep in $(kubectl get deployments -n rook-ceph -l app=rook-ceph-osd -o name); do
+                    kubectl set env -n rook-ceph "$dep" \
                       CEPH_OSD_FLAVOR=classic \
                       CEPH_USE_RANDOM_NONCE- \
                       CEPH_VOLUME_DEBUG- \
                       CEPH_VOLUME_SKIP_RESTORECON-
                   done
-              volumeMounts:
-                - name: kubectl
-                  mountPath: /kubectl
-                  readOnly: true
-          volumes:
-            - name: kubectl
-              hostPath:
-                path: /run/current-system/sw/bin/kubectl
-                type: File
