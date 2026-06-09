@@ -5,6 +5,7 @@ export interface DiskInfo {
   model: string
   size_bytes: number
   host: string
+  hostname: string
   state: DiskState
   ceph_osd_id: number | null
   used_bytes: number | null

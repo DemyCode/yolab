@@ -19,6 +19,7 @@ class DiskInfo(BaseModel):
     model: str
     size_bytes: int
     host: str
+    hostname: str
     state: DiskState
     ceph_osd_id: int | None = None
     used_bytes: int | None = None
