@@ -90,13 +90,11 @@ spec:
     replicated:
       size: 1
       requireSafeReplicaSize: false
-    deviceClass: ssd
   dataPools:
     - name: data0
       replicated:
         size: 1
         requireSafeReplicaSize: false
-      deviceClass: ssd
   preserveFilesystemOnDelete: true
   metadataServer:
     activeCount: 1
