@@ -35,7 +35,7 @@ async def update() -> StreamingResponse:
                 return
 
         flake = f"path:{settings.yolab_repo_path}#{settings.yolab_flake_target}"
-        yield f"data: $ nixos-rebuild switch --flake {flake} --impure --verbose --print-build-logs\n\n"
+        yield f"data: $ nixos-rebuild switch --flake {flake} --verbose --print-build-logs\n\n"
         yield "data: [INFO] nixos-rebuild launched — service will restart shortly\n\n"
 
         settings.rebuild_log.parent.mkdir(parents=True, exist_ok=True)
@@ -46,7 +46,6 @@ async def update() -> StreamingResponse:
                 "switch",
                 "--flake",
                 flake,
-                "--impure",
                 "--verbose",
                 "--print-build-logs",
             ],
