@@ -29,7 +29,7 @@ def _built_or_git(filename: str, *git_args: str) -> str:
 
 
 @router.get("/status", response_model=StatusInfo)
-async def status():
+async def status() -> StatusInfo:
     try:
         return StatusInfo(
             commit_hash=_built_or_git("built-hash", "rev-parse", "HEAD"),

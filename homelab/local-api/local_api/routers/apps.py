@@ -33,7 +33,7 @@ _LOGS_SCAN_TAIL = 500
 _LOGS_FOLLOW_TAIL = 100
 
 
-def _tunnel_config() -> dict:
+def _tunnel_config() -> dict[str, Any]:
     return tomllib.loads(Path(settings.yolab_config).read_text())["tunnel"]
 
 
@@ -185,7 +185,7 @@ class AppInstallRequest(BaseModel):
 
 
 @router.get("/tunnel/domain", response_model=DomainResponse)
-async def tunnel_domain():
+async def tunnel_domain() -> DomainResponse:
     cfg = _tunnel_config()
     host = cfg["dns_url"].removeprefix("https://").removeprefix("http://").rstrip("/")
     parts = host.split(".")
@@ -195,7 +195,7 @@ async def tunnel_domain():
 
 
 @router.get("/apps/catalog", response_model=list[CatalogApp])
-async def catalog():
+async def catalog() -> list[CatalogApp]:
     apps = []
     for app_dir in CATALOG_DIR.iterdir():
         toml_path = app_dir / "app.toml"
@@ -217,12 +217,12 @@ async def catalog():
 
 
 @router.get("/apps", response_model=list[AppInfo])
-async def list_apps():
+async def list_apps() -> list[AppInfo]:
     return await asyncio.to_thread(_list_installed)
 
 
-@router.post("/apps/{app_id}")
-async def install_app(app_id: str, body: AppInstallRequest):
+@router.post("/apps/{app_id}", response_class=StreamingResponse)
+async def install_app(app_id: str, body: AppInstallRequest) -> StreamingResponse:
     if not re.match(r"^[a-z0-9-]+$", body.instance_name):
         raise HTTPException(
             status_code=400,
@@ -261,8 +261,8 @@ async def install_app(app_id: str, body: AppInstallRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@router.post("/apps/{instance_name}/update")
-async def update_app(instance_name: str):
+@router.post("/apps/{instance_name}/update", response_class=StreamingResponse)
+async def update_app(instance_name: str) -> StreamingResponse:
     ns = f"yolab-{instance_name}"
     ns_info = await asyncio.to_thread(
         subprocess.run,
@@ -310,7 +310,7 @@ async def update_app(instance_name: str):
 
 
 @router.post("/apps/{instance_name}/scan-outputs", response_model=ScanOutputsResponse)
-async def scan_outputs(instance_name: str):
+async def scan_outputs(instance_name: str) -> ScanOutputsResponse:
     ns = f"yolab-{instance_name}"
     ns_info = await asyncio.to_thread(
         subprocess.run,
@@ -384,7 +384,7 @@ async def scan_outputs(instance_name: str):
 
 
 @router.delete("/apps/{instance_name}", response_model=OkResponse)
-async def uninstall_app(instance_name: str):
+async def uninstall_app(instance_name: str) -> OkResponse:
     ns = f"yolab-{instance_name}"
     ns_info = await asyncio.to_thread(
         subprocess.run,
@@ -437,7 +437,7 @@ async def uninstall_app(instance_name: str):
 
 
 @router.get("/apps/{instance_name}/pods", response_model=list[PodInfo])
-async def list_pods(instance_name: str):
+async def list_pods(instance_name: str) -> list[PodInfo]:
     result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "get", "pods", "-n", f"yolab-{instance_name}", "-o", "json"],
@@ -460,7 +460,7 @@ async def list_pods(instance_name: str):
 
 
 @router.get("/apps/{instance_name}/describe/{pod_name}", response_model=DescribeResponse)
-async def describe_pod(instance_name: str, pod_name: str):
+async def describe_pod(instance_name: str, pod_name: str) -> DescribeResponse:
     result = await asyncio.to_thread(
         subprocess.run,
         ["kubectl", "describe", "pod", pod_name, "-n", f"yolab-{instance_name}"],
@@ -469,8 +469,8 @@ async def describe_pod(instance_name: str, pod_name: str):
     return DescribeResponse(output=str(result.stdout) + str(result.stderr))
 
 
-@router.get("/apps/{instance_name}/logs/{pod_name}")
-async def pod_logs(instance_name: str, pod_name: str):
+@router.get("/apps/{instance_name}/logs/{pod_name}", response_class=StreamingResponse)
+async def pod_logs(instance_name: str, pod_name: str) -> StreamingResponse:
     async def stream():
         async for line, _ in _stream_proc(
             "kubectl", "logs", "-n", f"yolab-{instance_name}", pod_name,

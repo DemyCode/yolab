@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from starlette.responses import JSONResponse as StarletteJSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from local_api.models.common import OkResponse
 from local_api.settings import settings
 
 router = APIRouter()
@@ -86,8 +87,8 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@router.post("/login")
-async def login(body: LoginRequest):
+@router.post("/login", response_model=OkResponse)
+async def login(body: LoginRequest) -> JSONResponse:
     hashed = _get_hash()
     if hashed and not _verify(body.password, hashed):
         return JSONResponse(status_code=401, content={"detail": "Wrong password"})
@@ -106,8 +107,8 @@ async def login(body: LoginRequest):
     return response
 
 
-@router.post("/logout")
-async def logout():
+@router.post("/logout", response_model=OkResponse)
+async def logout() -> JSONResponse:
     response = JSONResponse({"ok": True})
     response.delete_cookie("yolab_session", path="/")
     return response

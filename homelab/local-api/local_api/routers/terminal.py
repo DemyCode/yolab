@@ -11,8 +11,8 @@ class ExecRequest(BaseModel):
     command: str
 
 
-@router.post("/terminal/exec")
-async def exec_command(req: ExecRequest):
+@router.post("/terminal/exec", response_class=StreamingResponse)
+async def exec_command(req: ExecRequest) -> StreamingResponse:
     async def stream():
         try:
             proc = await asyncio.create_subprocess_exec(

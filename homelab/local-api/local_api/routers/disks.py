@@ -21,6 +21,7 @@ from local_api.models.disk import (
     QueueEntry,
     SystemOsdInfo,
     SystemOsdResize,
+    SystemOsdResizeResponse,
 )
 from local_api.settings import settings
 
@@ -188,7 +189,7 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
 # ── disk list endpoints ───────────────────────────────────────────────────────
 
 @router.get("/disks/local", response_model=list[DiskInfo])
-async def disks_local():
+async def disks_local() -> list[DiskInfo]:
     devices, osd_map, osd_usage, queue = await asyncio.gather(
         asyncio.to_thread(_lsblk),
         asyncio.to_thread(_ceph_osd_map),
@@ -254,7 +255,7 @@ async def disks_local():
 
 
 @router.get("/disks", response_model=list[DiskInfo])
-async def disks():
+async def disks() -> list[DiskInfo]:
     return [
         DiskInfo(**disk) if isinstance(disk, dict) else DiskInfo.model_validate(disk)
         for _, node_disks in await _gather_from_nodes("/api/disks/local")
@@ -264,8 +265,8 @@ async def disks():
 
 # ── add to storage ────────────────────────────────────────────────────────────
 
-@router.post("/disks/add")
-async def add_disk(body: AddToStorageRequest):
+@router.post("/disks/add", response_model=OkResponse)
+async def add_disk(body: AddToStorageRequest) -> OkResponse:
     if body.host != settings.yolab_node_ipv6:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
@@ -274,7 +275,7 @@ async def add_disk(body: AddToStorageRequest):
             )
         if r.status_code != 200:
             raise HTTPException(r.status_code, r.json().get("detail", "Failed"))
-        return r.json()
+        return OkResponse.model_validate(r.json())
 
     devices = await asyncio.to_thread(_lsblk)
     disk = next((d for d in devices if d["name"] == body.disk_name), None)
@@ -314,8 +315,8 @@ async def add_disk(body: AddToStorageRequest):
 
 # ── queue management ──────────────────────────────────────────────────────────
 
-@router.delete("/disks/queue/{disk_name}")
-async def remove_from_queue(disk_name: str, host: str):
+@router.delete("/disks/queue/{disk_name}", response_model=OkResponse)
+async def remove_from_queue(disk_name: str, host: str) -> OkResponse:
     await asyncio.to_thread(queue_module.remove_entry, disk_name, host)
     return OkResponse()
 
@@ -337,8 +338,8 @@ def _do_activate_local(disk_name: str) -> None:
     )
 
 
-@router.post("/disks/activate-local")
-async def activate_local(body: AddToStorageRequest):
+@router.post("/disks/activate-local", response_model=OkResponse)
+async def activate_local(body: AddToStorageRequest) -> OkResponse:
     """Internal endpoint — called by primary node to activate a disk on this node."""
     await asyncio.to_thread(_do_activate_local, body.disk_name)
     return OkResponse()
@@ -376,8 +377,8 @@ async def _maybe_activate() -> None:
 
 # ── eject ─────────────────────────────────────────────────────────────────────
 
-@router.post("/disks/eject")
-async def eject_disk(body: EjectRequest):
+@router.post("/disks/eject", response_model=OkResponse)
+async def eject_disk(body: EjectRequest) -> OkResponse:
     if body.host != settings.yolab_node_ipv6:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
@@ -386,7 +387,7 @@ async def eject_disk(body: EjectRequest):
             )
         if r.status_code != 200:
             raise HTTPException(r.status_code, r.json().get("detail", "Failed"))
-        return r.json()
+        return OkResponse.model_validate(r.json())
 
     osd_map = await asyncio.to_thread(_ceph_osd_map)
     if body.disk_name not in osd_map:
@@ -441,7 +442,7 @@ async def _drain_osd(disk_name: str, osd_id: int) -> None:
 
 
 @router.get("/disks/eject/{disk_name}/status", response_model=EjectStatus)
-async def eject_status(disk_name: str):
+async def eject_status(disk_name: str) -> EjectStatus:
     if disk_name in _eject_done:
         return EjectStatus(pg_count=0, done=True, safe_to_unplug=True)
     if disk_name not in _ejecting:
@@ -503,7 +504,7 @@ def _ceph_osd_count() -> int:
 
 
 @router.get("/disks/system-osd", response_model=SystemOsdInfo)
-async def system_osd_status():
+async def system_osd_status() -> SystemOsdInfo:
     img_bytes, free_bytes = await asyncio.gather(
         asyncio.to_thread(_img_size_bytes),
         asyncio.to_thread(_fs_free_bytes),
@@ -545,8 +546,8 @@ async def _purge_osd(osd_id: int) -> None:
         pass
 
 
-@router.patch("/disks/system-osd")
-async def system_osd_resize(body: SystemOsdResize):
+@router.patch("/disks/system-osd", response_model=SystemOsdResizeResponse)
+async def system_osd_resize(body: SystemOsdResize) -> SystemOsdResizeResponse:
     import re
     if not re.fullmatch(r"\d+(\.\d+)?[KMGTPE]i?", body.size, re.IGNORECASE):
         raise HTTPException(422, "Invalid size — use e.g. 200G, 1.5T")
@@ -570,7 +571,7 @@ async def system_osd_resize(body: SystemOsdResize):
         loop = await asyncio.to_thread(_loop_device)
         if loop:
             await asyncio.to_thread(subprocess.run, ["losetup", "-c", loop], capture_output=True)
-        return {"ok": True, "operation": "extended"}
+        return SystemOsdResizeResponse(operation="extended")
 
     if target < current:
         osd_id = await asyncio.to_thread(_ceph_osd_id_for_img)
@@ -592,6 +593,6 @@ async def system_osd_resize(body: SystemOsdResize):
         await asyncio.to_thread(
             subprocess.run, ["losetup", LOOP_DEVICE, settings.osd_img_path], capture_output=True,
         )
-        return {"ok": True, "operation": "shrunk"}
+        return SystemOsdResizeResponse(operation="shrunk")
 
-    return {"ok": True, "operation": "unchanged"}
+    return SystemOsdResizeResponse(operation="unchanged")

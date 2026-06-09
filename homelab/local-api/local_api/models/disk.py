@@ -64,3 +64,8 @@ class SystemOsdInfo(BaseModel):
 
 class SystemOsdResize(BaseModel):
     size: str
+
+
+class SystemOsdResizeResponse(BaseModel):
+    ok: bool = True
+    operation: str  # "extended" | "shrunk" | "unchanged"
