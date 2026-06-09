@@ -3,6 +3,8 @@ from pathlib import Path
 # Each node manages its own queue as plain files.
 # File presence = disk is queued. mtime = enqueue order.
 _QUEUE_DIR = Path("/var/lib/yolab/disk-queue")
+# Disks the user explicitly removed from queue — don't auto-re-enqueue.
+_REJECT_DIR = Path("/var/lib/yolab/disk-rejected")
 
 
 def _entries() -> list[Path]:
@@ -32,6 +34,19 @@ def enqueue(disk_name: str) -> None:
 
 def dequeue(disk_name: str) -> None:
     (_QUEUE_DIR / disk_name).unlink(missing_ok=True)
+
+
+def is_rejected(disk_name: str) -> bool:
+    return (_REJECT_DIR / disk_name).exists()
+
+
+def reject(disk_name: str) -> None:
+    _REJECT_DIR.mkdir(parents=True, exist_ok=True)
+    (_REJECT_DIR / disk_name).touch()
+
+
+def unreject(disk_name: str) -> None:
+    (_REJECT_DIR / disk_name).unlink(missing_ok=True)
 
 
 def peek_next() -> str | None:

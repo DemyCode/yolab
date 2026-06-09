@@ -447,14 +447,14 @@ function UnformattedDiskCard({ disk, onAdded }: { disk: DiskInfo; onAdded: () =>
         <Modal
           title={`Add ${disk.model || disk.name} to storage?`}
           confirmLabel="Add to storage"
-          confirmDestructive
+          confirmDestructive={disk.fs_type !== null}
           onConfirm={() => void confirmAdd()}
           onCancel={() => setConfirming(false)}
         >
-          <p>
-            All existing data on this disk will be <strong className="text-[#fafafa]">permanently erased</strong>.
-            The disk will be added to your storage pool and activated when your current storage reaches 80%.
-          </p>
+          {disk.fs_type !== null
+            ? <p>All existing data on this disk will be <strong className="text-[#fafafa]">permanently erased</strong>. It will join the storage pool automatically when needed.</p>
+            : <p>This disk is blank and will be added to the storage pool. It will activate automatically when your storage gets full.</p>
+          }
         </Modal>
       )}
     </>
