@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import pathlib
+import socket
 import subprocess
 
 import httpx
@@ -67,7 +68,13 @@ def _first_fstype(device: dict) -> str | None:
 # ── Ceph OSD mapping ──────────────────────────────────────────────────────────
 
 def _ceph_osd_map() -> dict[str, int]:
-    """Returns {device_name: osd_id} by reading pod volumes. No ceph auth needed."""
+    """Returns {device_name: osd_id} by reading pod volumes. No ceph auth needed.
+
+    If a disk was renamed after Rook provisioned it (e.g. sdc → sdb on reconnect),
+    the block symlink in the OSD data dir will point to the old name. We detect this
+    and re-map to the real ceph_bluestore disk.
+    """
+    mapping: dict[str, int] = {}
     try:
         result = subprocess.run(
             ["kubectl", "get", "pods", "-n", CEPH_NAMESPACE,
@@ -75,7 +82,6 @@ def _ceph_osd_map() -> dict[str, int]:
             capture_output=True, text=True, timeout=10, check=True,
         )
         pods = json.loads(result.stdout).get("items", [])
-        mapping: dict[str, int] = {}
         for pod in pods:
             osd_id_str = pod["metadata"]["labels"].get("ceph-osd-id")
             if osd_id_str is None:
@@ -92,14 +98,38 @@ def _ceph_osd_map() -> dict[str, int]:
                             mapping[device] = int(osd_id_str)
                     except Exception:
                         pass
-        if mapping:
-            return mapping
     except Exception:
         pass
+
+    if mapping:
+        # Detect phantom entries: mapped device name no longer exists (disk renamed).
+        # Find ceph_bluestore disks not yet claimed by a valid mapping and re-map.
+        try:
+            devices = _lsblk()
+            known = {d["name"] for d in devices if d.get("type") == "disk"}
+            valid = {dev for dev in mapping if dev in known}
+            phantoms = {dev: oid for dev, oid in mapping.items() if dev not in known}
+            if phantoms:
+                # Disks with bluestore content that aren't already correctly mapped
+                orphaned_bluestore = [
+                    d["name"] for d in devices
+                    if d.get("type") == "disk"
+                    and _first_fstype(d) == "ceph_bluestore"
+                    and d["name"] not in valid
+                ]
+                for (_, osd_id), real_dev in zip(
+                    sorted(phantoms.items()), sorted(orphaned_bluestore)
+                ):
+                    mapping[real_dev] = osd_id
+                for old_dev in phantoms:
+                    mapping.pop(old_dev, None)
+        except Exception:
+            pass
+        return mapping
+
     # Fallback via ceph osd metadata
     try:
         data = json.loads(kubectl.ceph_exec("osd", "metadata", "--format", "json"))
-        mapping = {}
         for osd in data:
             osd_id = osd.get("id")
             if osd_id is None:
@@ -174,6 +204,7 @@ async def disks_local():
         if e.host == settings.yolab_node_ipv6
     }
 
+    hostname = socket.gethostname()
     raw: list[dict] = []
     for d in devices:
         if d.get("type") != "disk":
@@ -184,6 +215,7 @@ async def disks_local():
             model=(d.get("model") or "").strip(),
             size_bytes=int(d.get("size") or 0),
             host=settings.yolab_node_ipv6,
+            hostname=hostname,
         )
 
         if _is_system_disk(d):

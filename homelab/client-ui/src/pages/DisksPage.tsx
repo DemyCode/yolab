@@ -66,18 +66,24 @@ function Modal({ title, children, confirmLabel, confirmDestructive, onConfirm, o
 // ── capacity bar ──────────────────────────────────────────────────────────────
 
 function CapacityHeader({ status }: { status: CephStatus | null }) {
-  if (!status?.available) return null
+  if (!status?.available || !status.total_bytes) return null
   const { used_bytes: used, total_bytes: total } = status
-  if (!total) return null
   const pct = Math.round((used / total) * 100)
+  const color = pct > 85 ? "#f87171" : pct > 65 ? "#fbbf24" : "#a78bfa"
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between text-xs text-[#71717a]">
-        <span>{fmt(used)} used</span>
-        <span>{fmt(total - used)} free · {pct}%</span>
-      </div>
-      <UsageBar used={used} total={total} />
-    </div>
+    <Card>
+      <CardContent className="pt-4 pb-4">
+        <div className="space-y-2">
+          <div className="flex justify-between text-xs">
+            <span className="text-[#fafafa] font-medium">{fmt(used)} used</span>
+            <span className="text-[#71717a]">{fmt(total - used)} free · {pct}%</span>
+          </div>
+          <div className="h-2 rounded-full bg-[#27272a] overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -161,6 +167,8 @@ function ActiveDiskCard({ disk, onEjected }: { disk: DiskInfo; onEjected: () => 
                   <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
                 </div>
               </div>
+
+              <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
 
               {disk.used_bytes != null && disk.size_bytes > 0 && (
                 <div className="mt-2 space-y-1">
@@ -255,8 +263,9 @@ function WaitingDiskCard({ disk, onRemoved }: { disk: DiskInfo; onRemoved: () =>
                 <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
               </div>
             </div>
+            <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
             <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
-              <span className="text-xs text-[#52525b]">Will activate when storage reaches 80%</span>
+              <span className="text-xs text-[#52525b]">Activates when storage reaches 80%</span>
               <Button variant="outline" size="sm" onClick={() => void remove()} disabled={busy}>
                 {busy ? "Removing…" : "Remove from queue"}
               </Button>
@@ -307,12 +316,9 @@ function UnformattedDiskCard({ disk, onAdded }: { disk: DiskInfo; onAdded: () =>
                   <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
                   {disk.model && <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>}
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-[#52525b]">New disk</span>
-                  <span className="text-xs text-[#52525b]">·</span>
-                  <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
-                </div>
+                <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
               </div>
+              <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
               <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
                 {error && (
                   <span className="flex items-center gap-1 text-xs text-[#f87171]">
@@ -458,7 +464,12 @@ export function DisksPage() {
 
   useEffect(() => { load() }, [])
 
-  const active = disks.filter((d) => d.state === "active" || d.state === "ejecting")
+  const usagePct = (d: DiskInfo) =>
+    d.used_bytes && d.size_bytes ? d.used_bytes / d.size_bytes : 0
+
+  const active = disks
+    .filter((d) => d.state === "active" || d.state === "ejecting")
+    .sort((a, b) => usagePct(b) - usagePct(a))
   const waiting = disks.filter((d) => d.state === "waiting")
   const unformatted = disks.filter((d) => d.state === "unformatted")
   const system = disks.filter((d) => d.state === "system")

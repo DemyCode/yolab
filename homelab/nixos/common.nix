@@ -299,12 +299,19 @@ in {
           set -euo pipefail
           IMG=/var/lib/rook/system-osd.img
 
-          # Create sparse image at 25% of root-filesystem capacity on first run.
+          # Size the image to 75% of root-filesystem capacity.
+          # Creates it on first run; extends it on subsequent runs if smaller than target.
           # 'truncate' makes a sparse file — blocks are only allocated on write.
+          mkdir -p /var/lib/rook
+          set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
+          TARGET=$(( $2 * 3 / 4 ))
           if [ ! -f "$IMG" ]; then
-            mkdir -p /var/lib/rook
-            set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
-            ${pkgs.coreutils}/bin/truncate -s "$(( $2 / 4 ))" "$IMG"
+            ${pkgs.coreutils}/bin/truncate -s "$TARGET" "$IMG"
+          else
+            CURRENT=$(${pkgs.coreutils}/bin/stat -c%s "$IMG")
+            if [ "$CURRENT" -lt "$TARGET" ]; then
+              ${pkgs.coreutils}/bin/truncate -s "$TARGET" "$IMG"
+            fi
           fi
 
           # Always claim /dev/loop0 so the device name is stable across reboots.
