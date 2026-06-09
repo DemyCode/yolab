@@ -6,6 +6,7 @@ class OsdUsage(BaseModel):
     used_bytes: int
     free_bytes: int
     total_bytes: int
+    reweight: float = 1.0
 
 
 class CephStatus(BaseModel):

@@ -1,75 +1,39 @@
-import json
-import subprocess
-from datetime import datetime, timezone
+from pathlib import Path
 
-from local_api.models.disk import DiskQueue, QueueEntry
-
-_CM_NAME = "yolab-disk-queue"
-_CM_NS = "rook-ceph"
+# Each node manages its own queue as plain files.
+# File presence = disk is queued. mtime = enqueue order.
+_QUEUE_DIR = Path("/var/lib/yolab/disk-queue")
 
 
-def read_queue() -> DiskQueue:
-    r = subprocess.run(
-        ["kubectl", "get", "configmap", "-n", _CM_NS, _CM_NAME, "-o", "json"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if r.returncode != 0:
-        return DiskQueue()
-    try:
-        cm = json.loads(r.stdout)
-        raw = json.loads(cm.get("data", {}).get("queue", "[]"))
-        return DiskQueue(entries=[QueueEntry(**e) for e in raw])
-    except Exception:
-        return DiskQueue()
+def _entries() -> list[Path]:
+    _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    return sorted(_QUEUE_DIR.iterdir(), key=lambda p: p.stat().st_mtime)
 
 
-def write_queue(queue: DiskQueue) -> None:
-    payload = json.dumps(
-        [e.model_dump(mode="json") for e in queue.entries],
-        default=str,
-    )
-    manifest = {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": _CM_NAME, "namespace": _CM_NS},
-        "data": {"queue": payload},
-    }
-    subprocess.run(
-        ["kubectl", "apply", "-f", "-"],
-        input=json.dumps(manifest),
-        capture_output=True, text=True, timeout=10,
-        check=True,
-    )
+def get_all() -> list[str]:
+    return [p.name for p in _entries()]
 
 
-def enqueue(disk_name: str, host: str) -> None:
-    queue = read_queue()
-    queue.entries = [e for e in queue.entries
-                     if not (e.disk_name == disk_name and e.host == host)]
-    queue.entries.append(QueueEntry(
-        disk_name=disk_name,
-        host=host,
-        queued_at=datetime.now(timezone.utc),
-    ))
-    write_queue(queue)
+def is_queued(disk_name: str) -> bool:
+    return (_QUEUE_DIR / disk_name).exists()
 
 
-def remove_entry(disk_name: str, host: str) -> None:
-    queue = read_queue()
-    queue.entries = [e for e in queue.entries
-                     if not (e.disk_name == disk_name and e.host == host)]
-    write_queue(queue)
+def position(disk_name: str) -> int | None:
+    for i, p in enumerate(_entries(), 1):
+        if p.name == disk_name:
+            return i
+    return None
 
 
-def pop_next() -> QueueEntry | None:
-    queue = read_queue()
-    if not queue.entries:
-        return None
-    entry = queue.entries.pop(0)
-    write_queue(queue)
-    return entry
+def enqueue(disk_name: str) -> None:
+    _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    (_QUEUE_DIR / disk_name).touch()
 
 
-def peek_next() -> QueueEntry | None:
-    queue = read_queue()
-    return queue.entries[0] if queue.entries else None
+def dequeue(disk_name: str) -> None:
+    (_QUEUE_DIR / disk_name).unlink(missing_ok=True)
+
+
+def peek_next() -> str | None:
+    entries = _entries()
+    return entries[0].name if entries else None

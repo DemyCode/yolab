@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
@@ -27,16 +26,6 @@ class DiskInfo(BaseModel):
     can_eject: bool = False
     queue_position: int | None = None
     fs_type: str | None = None
-
-
-class QueueEntry(BaseModel):
-    disk_name: str
-    host: str
-    queued_at: datetime
-
-
-class DiskQueue(BaseModel):
-    entries: list[QueueEntry] = []
 
 
 class AddToStorageRequest(BaseModel):
