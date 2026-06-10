@@ -42,11 +42,6 @@ spec:
   storage:
     useAllNodes: true
     useAllDevices: false
-    # Rook hardcodes a check that rejects loop devices from deviceFilter.
-    # The only way to claim a loop device is via the explicit devices list,
-    # which applies globally to every node when set here (not under nodes[]).
-    devices:
-      - name: "loop0"
     deviceFilter: "^(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|hd[a-z]+)"
   resources:
     mgr:

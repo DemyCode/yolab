@@ -38,7 +38,7 @@ def _is_primary_node() -> bool:
 
 async def _activation_loop() -> None:
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
         try:
             from local_api.routers.disks import _reconcile_storage
             await _reconcile_storage()
