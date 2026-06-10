@@ -170,11 +170,10 @@ def _do_activate_local(disk_name: str) -> None:
 
 
 def _do_deactivate_local(disk_name: str) -> None:
-    if not disk_name.startswith("loop"):
-        subprocess.run(
-            ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
-            capture_output=True,
-        )
+    subprocess.run(
+        ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+        capture_output=True,
+    )
     r = subprocess.run(
         ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
          "-o", "jsonpath={.spec.storage.devices}"],
@@ -209,31 +208,28 @@ async def _activate_disk(disk_name: str, host: str) -> None:
 
 async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
     def ceph_reweight() -> bool:
-        r = subprocess.run(
-            ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
-             "ceph", "osd", "reweight", str(osd_id), "0"],
-            capture_output=True, timeout=30,
-        )
-        return r.returncode == 0
+        try:
+            kubectl.ceph_exec("osd", "reweight", str(osd_id), "0")
+            return True
+        except Exception:
+            return False
 
     def ceph_out() -> None:
-        subprocess.run(
-            ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
-             "ceph", "osd", "out", str(osd_id)],
-            capture_output=True, timeout=30,
-        )
+        try:
+            kubectl.ceph_exec("osd", "out", str(osd_id))
+        except Exception:
+            pass
 
     def ceph_purge() -> None:
-        mgr = kubectl.ceph_mgr_pod()
-        for args in [
-            ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
-            ["ceph", "osd", "auth", "del", f"osd.{osd_id}"],
-            ["ceph", "osd", "rm", str(osd_id)],
+        for cmd in [
+            ("osd", "crush", "remove", f"osd.{osd_id}"),
+            ("osd", "auth", "del", f"osd.{osd_id}"),
+            ("osd", "rm", str(osd_id)),
         ]:
-            subprocess.run(
-                ["kubectl", "exec", "-n", CEPH_NAMESPACE, mgr, "--"] + args,
-                capture_output=True, timeout=30,
-            )
+            try:
+                kubectl.ceph_exec(*cmd)
+            except Exception:
+                pass
 
     try:
         reweighted = await asyncio.to_thread(ceph_reweight)
@@ -250,6 +246,12 @@ async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
             return
 
         await asyncio.to_thread(ceph_purge)
+
+        subprocess.run(
+            ["kubectl", "delete", "deploy", "-n", CEPH_NAMESPACE,
+             f"rook-ceph-osd-{osd_id}", "--ignore-not-found"],
+            capture_output=True,
+        )
 
         if host != settings.yolab_node_ipv6:
             async with httpx.AsyncClient(timeout=30) as client:
