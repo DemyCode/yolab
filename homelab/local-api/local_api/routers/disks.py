@@ -176,7 +176,7 @@ def _node_ips() -> list[str]:
 
 async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
     ips = await asyncio.to_thread(_node_ips)
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         results = await asyncio.gather(
             *[client.get(f"http://[{ip}]:{settings.port}{path}") for ip in ips],
             return_exceptions=True,
