@@ -114,15 +114,7 @@ def _ceph_osd_map() -> dict[str, int]:
 
 def _pg_count_for_osd(osd_id: int) -> int:
     try:
-        r = subprocess.run(
-            ["kubectl", "exec", "-n", CEPH_NAMESPACE,
-             kubectl.ceph_mgr_pod(), "--",
-             "ceph", "pg", "ls-by-osd", str(osd_id), "--format", "json"],
-            capture_output=True, text=True, timeout=20,
-        )
-        if r.returncode != 0:
-            return 0
-        return len(json.loads(r.stdout).get("pg_stats", []))
+        return kubectl.ceph_osd_numpg().get(osd_id, 0)
     except Exception:
         return 0
 
@@ -230,24 +222,48 @@ async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
         return
     _draining.add(key)
 
-    def ceph_cmd(*args: str) -> None:
+    def ceph_reweight() -> bool:
+        r = subprocess.run(
+            ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
+             "ceph", "osd", "reweight", str(osd_id), "0"],
+            capture_output=True, timeout=30,
+        )
+        return r.returncode == 0
+
+    def ceph_out() -> None:
         subprocess.run(
-            ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--"] + list(args),
+            ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
+             "ceph", "osd", "out", str(osd_id)],
             capture_output=True, timeout=30,
         )
 
+    def ceph_purge() -> None:
+        mgr = kubectl.ceph_mgr_pod()
+        for args in [
+            ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
+            ["ceph", "osd", "auth", "del", f"osd.{osd_id}"],
+            ["ceph", "osd", "rm", str(osd_id)],
+        ]:
+            subprocess.run(
+                ["kubectl", "exec", "-n", CEPH_NAMESPACE, mgr, "--"] + args,
+                capture_output=True, timeout=30,
+            )
+
     try:
-        await asyncio.to_thread(ceph_cmd, "ceph", "osd", "reweight", str(osd_id), "0")
-        await asyncio.to_thread(ceph_cmd, "ceph", "osd", "out", str(osd_id))
+        reweighted = await asyncio.to_thread(ceph_reweight)
+        if not reweighted:
+            return
+
+        await asyncio.to_thread(ceph_out)
 
         for _ in range(200):
             await asyncio.sleep(5)
             if await asyncio.to_thread(_pg_count_for_osd, osd_id) == 0:
                 break
+        else:
+            return
 
-        await asyncio.to_thread(ceph_cmd, "ceph", "osd", "crush", "remove", f"osd.{osd_id}")
-        await asyncio.to_thread(ceph_cmd, "ceph", "osd", "auth", "del", f"osd.{osd_id}")
-        await asyncio.to_thread(ceph_cmd, "ceph", "osd", "rm", str(osd_id))
+        await asyncio.to_thread(ceph_purge)
 
         if host != settings.yolab_node_ipv6:
             async with httpx.AsyncClient(timeout=30) as client:

@@ -69,23 +69,66 @@ def ceph_exec(*args: str) -> str:
     return result.stdout
 
 
+def _ceph_exporter_url() -> str:
+    result = subprocess.run(
+        ["kubectl", "get", "svc", "-n", _CEPH_NS, "rook-ceph-exporter",
+         "-o", "jsonpath={.spec.clusterIP}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    ip = result.stdout.strip()
+    return f"http://[{ip}]:9926/metrics" if ip else ""
+
+
 def ceph_osd_df() -> dict[int, OsdUsage]:
-    """Returns per-OSD usage as {osd_id: OsdUsage}."""
+    """Returns per-OSD usage as {osd_id: OsdUsage} via Prometheus exporter."""
+    import urllib.request
     try:
-        raw = ceph_exec("osd", "df", "--format", "json")
-        data = json.loads(raw)
+        url = _ceph_exporter_url()
+        if not url:
+            return {}
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            text = resp.read().decode()
+
+        total: dict[int, int] = {}
+        used: dict[int, int] = {}
+        for line in text.splitlines():
+            if line.startswith("ceph_osd_stat_bytes{"):
+                osd_id = int(line.split('"osd.')[1].split('"')[0])
+                total[osd_id] = int(float(line.split("} ")[1]))
+            elif line.startswith("ceph_osd_stat_bytes_used{"):
+                osd_id = int(line.split('"osd.')[1].split('"')[0])
+                used[osd_id] = int(float(line.split("} ")[1]))
+
         result: dict[int, OsdUsage] = {}
-        for node in data.get("nodes", []):
-            osd_id = node.get("id")
-            if osd_id is None:
-                continue
-            result[int(osd_id)] = OsdUsage(
-                osd_id=int(osd_id),
-                used_bytes=node.get("kb_used", 0) * 1024,
-                free_bytes=node.get("kb_avail", 0) * 1024,
-                total_bytes=node.get("kb", 0) * 1024,
-                reweight=float(node.get("reweight", 1.0)),
+        for osd_id in total:
+            t = total[osd_id]
+            u = used.get(osd_id, 0)
+            result[osd_id] = OsdUsage(
+                osd_id=osd_id,
+                used_bytes=u,
+                free_bytes=max(0, t - u),
+                total_bytes=t,
+                reweight=1.0,
             )
+        return result
+    except Exception:
+        return {}
+
+
+def ceph_osd_numpg() -> dict[int, int]:
+    """Returns {osd_id: pg_count} via Prometheus exporter."""
+    import urllib.request
+    try:
+        url = _ceph_exporter_url()
+        if not url:
+            return {}
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            text = resp.read().decode()
+        result: dict[int, int] = {}
+        for line in text.splitlines():
+            if line.startswith("ceph_osd_numpg{"):
+                osd_id = int(line.split('"osd.')[1].split('"')[0])
+                result[osd_id] = int(float(line.split("} ")[1]))
         return result
     except Exception:
         return {}
