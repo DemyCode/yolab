@@ -56,8 +56,8 @@ def ceph_exec(*args: str) -> str:
 
     shell_cmd = (
         f"echo {keyring_b64} | base64 -d > /tmp/k && "
-        f"printf '[global]\\nms_client_mode = secure\\nms_cluster_mode = secure\\nms_service_mode = secure\\n' > /tmp/ceph.conf && "
-        f"ceph -c /tmp/ceph.conf --keyring /tmp/k -m {mon_ip}:3300 "
+        f"printf '[global]\\nmon_host = v2:[{mon_ip}]:3300\\n' > /tmp/ceph.conf && "
+        f"ceph -c /tmp/ceph.conf --keyring /tmp/k --name client.admin "
         + " ".join(shlex.quote(a) for a in args)
     )
     result = subprocess.run(
