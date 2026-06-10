@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { HardDrive, Server, CheckCircle, Clock, AlertCircle, Lock, ChevronUp, ChevronDown } from "lucide-react"
+import { HardDrive, Server, CheckCircle, Clock, AlertCircle, ChevronUp, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import type { CephStatus, DiskInfo, EjectStatus, PriorityItem, PriorityUpdateRequest, SystemOsdInfo } from "@/types/disk"
@@ -118,8 +118,6 @@ function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOs
     }
   }
 
-  const osdStatus = !osd ? null : osd.ceph_osd_id !== null ? "active" : "starting"
-
   return (
     <Card className="border-[#27272a]">
       <CardContent className="pt-5">
@@ -133,28 +131,13 @@ function SystemDiskCard({ disk, osd, onResize }: { disk: DiskInfo; osd: SystemOs
                 <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
                 {disk.model && <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[#52525b]">System · {fmt(disk.size_bytes)}</span>
-              </div>
+              <span className="text-xs text-[#52525b]">System · {fmt(disk.size_bytes)}</span>
             </div>
             <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
             {osd && (
               <div className="mt-3 pt-3 border-t border-[#27272a]">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-[#71717a]">Built-in storage</span>
-                    <span className="text-xs text-[#3f3f46]">·</span>
-                    <span className="text-xs text-[#52525b]">{fmt(osd.size_bytes ?? 0)} allocated</span>
-                    {osdStatus === "active" && <span className="text-xs text-[#4ade80]">Active</span>}
-                    {osdStatus === "starting" && (
-                      <div className="relative group inline-flex">
-                        <span className="text-xs text-[#fbbf24] cursor-default">Starting…</span>
-                        <div className="absolute bottom-full mb-2 left-0 w-64 bg-[#27272a] border border-[#3f3f46] rounded-lg px-3 py-2 text-xs text-[#a1a1aa] hidden group-hover:block z-10">
-                          Storage is initializing. This is normal on first boot — usually takes 1–2 minutes.
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <span className="text-xs text-[#71717a]">Built-in storage · {fmt(osd.size_bytes ?? 0)} allocated</span>
                   <div className="flex items-center gap-2">
                     <input
                       className="w-24 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#fafafa] outline-none focus:border-[#a78bfa]"
@@ -285,30 +268,22 @@ function PriorityRow({ item, isFirst, isLast, onMove, onEjected, onRemoved }: Pr
 
             {/* position controls */}
             <div className="flex flex-col items-center gap-0.5 mt-0.5 flex-shrink-0">
-              {isActive ? (
-                <div className="p-1">
-                  <Lock className="h-3.5 w-3.5 text-[#3f3f46]" strokeWidth={1.75} />
-                </div>
-              ) : (
-                <>
-                  <button
-                    onClick={() => onMove("up")}
-                    disabled={isFirst}
-                    className="p-0.5 rounded hover:bg-[#27272a] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-                    title="Move up"
-                  >
-                    <ChevronUp className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={2} />
-                  </button>
-                  <button
-                    onClick={() => onMove("down")}
-                    disabled={isLast}
-                    className="p-0.5 rounded hover:bg-[#27272a] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-                    title="Move down"
-                  >
-                    <ChevronDown className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={2} />
-                  </button>
-                </>
-              )}
+              <button
+                onClick={() => onMove("up")}
+                disabled={isFirst}
+                className="p-0.5 rounded hover:bg-[#27272a] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                title="Move up"
+              >
+                <ChevronUp className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={2} />
+              </button>
+              <button
+                onClick={() => onMove("down")}
+                disabled={isLast}
+                className="p-0.5 rounded hover:bg-[#27272a] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                title="Move down"
+              >
+                <ChevronDown className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={2} />
+              </button>
             </div>
 
             {/* disk icon */}
@@ -542,8 +517,6 @@ export function DisksPage() {
     const next = [...priority]
     const target = direction === "up" ? index - 1 : index + 1
     if (target < 0 || target >= next.length) return
-    // Can't move above an active disk or below an active disk boundary
-    if (next[target].state === "active" || next[target].state === "ejecting") return
     ;[next[index], next[target]] = [next[target], next[index]]
     // Optimistic update
     setPriority(next.map((item, i) => ({ ...item, position: i + 1 })))
@@ -563,11 +536,6 @@ export function DisksPage() {
 
   const systemDisks = flatDisks.filter((d) => d.state === "system")
   const unformatted = flatDisks.filter((d) => d.state === "unformatted")
-
-  // Waiting items in the priority list (for up/down boundary detection)
-  const waitingIndices = priority
-    .map((item, i) => ({ item, i }))
-    .filter(({ item }) => item.state === "waiting")
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -593,25 +561,18 @@ export function DisksPage() {
             {savingOrder && <span className="text-xs text-[#52525b]">Saving…</span>}
           </div>
           <div className="space-y-3">
-            {priority.map((item, i) => {
-              const isWaiting = item.state === "waiting"
-              // For up/down: find position among waiting items only
-              const waitingIdx = waitingIndices.findIndex(({ i: wi }) => wi === i)
-              const isFirstWaiting = isWaiting && waitingIdx === 0
-              const isLastWaiting = isWaiting && waitingIdx === waitingIndices.length - 1
-              return (
-                <PriorityRow
-                  key={`${item.host}:${item.disk_name}`}
-                  item={item}
-                  isFirst={isFirstWaiting}
-                  isLast={isLastWaiting}
-                  isOnlyWaiting={waitingIndices.length === 1}
-                  onMove={(dir) => void moveItem(i, dir)}
-                  onEjected={load}
-                  onRemoved={load}
-                />
-              )
-            })}
+            {priority.map((item, i) => (
+              <PriorityRow
+                key={`${item.host}:${item.disk_name}`}
+                item={item}
+                isFirst={i === 0}
+                isLast={i === priority.length - 1}
+                isOnlyWaiting={priority.filter((x) => x.state === "waiting").length === 1}
+                onMove={(dir) => void moveItem(i, dir)}
+                onEjected={load}
+                onRemoved={load}
+              />
+            ))}
           </div>
         </div>
       )}

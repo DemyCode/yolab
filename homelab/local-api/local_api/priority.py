@@ -63,6 +63,19 @@ def write(entries: list[PriorityEntry]) -> None:
     _write_cm(data)
 
 
+def prepend(host: str, disk_name: str) -> None:
+    """Insert at the front of the list if not already present and not rejected."""
+    key = f"{host}:{disk_name}"
+    data = _read_cm()
+    if key in _parse_lines(data.get("rejected", "")):
+        return
+    existing = _parse_lines(data.get("priority", ""))
+    if key in existing:
+        return
+    data["priority"] = "\n".join([key] + existing)
+    _write_cm(data)
+
+
 def append(host: str, disk_name: str) -> None:
     """Append to end of list if not already present and not rejected."""
     key = f"{host}:{disk_name}"
