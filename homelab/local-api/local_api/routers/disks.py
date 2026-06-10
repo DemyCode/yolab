@@ -323,6 +323,11 @@ async def _reconcile_storage() -> None:
 
     osd_map = await asyncio.to_thread(_ceph_osd_map)
 
+    # Only drain if every disk in `needed` is already an active OSD.
+    # If any needed disk isn't ready yet, draining an existing OSD would leave
+    # data with nowhere to migrate.
+    needed_all_ready = all(disk_map.get(k, {}).get("is_osd", False) for k in needed)
+
     for entry in priority:
         key = (entry.host, entry.disk_name)
         disk = disk_map.get(key)
@@ -331,7 +336,7 @@ async def _reconcile_storage() -> None:
         is_osd = disk.get("is_osd", False)
         if key in needed and not is_osd:
             await _activate_disk(entry.disk_name, entry.host)
-        elif key not in needed and is_osd:
+        elif key not in needed and is_osd and needed_all_ready:
             osd_id = osd_map.get(disk["name"])
             if osd_id is not None:
                 asyncio.create_task(_drain_osd(entry.disk_name, osd_id, entry.host))
