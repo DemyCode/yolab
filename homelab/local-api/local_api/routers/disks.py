@@ -17,8 +17,6 @@ from local_api.settings import settings
 
 router = APIRouter()
 
-_draining: set[str] = set()
-
 
 def _lsblk() -> list[dict]:
     out = subprocess.check_output(
@@ -39,15 +37,6 @@ def _is_system_disk(device: dict) -> bool:
         if _is_system_disk(child):
             return True
     return False
-
-
-def _first_fstype(device: dict) -> str | None:
-    if device.get("fstype"):
-        return device["fstype"]
-    for child in device.get("children") or []:
-        if child.get("fstype"):
-            return child["fstype"]
-    return None
 
 
 def _ceph_osd_map() -> dict[str, int]:
@@ -77,24 +66,6 @@ def _ceph_osd_map() -> dict[str, int]:
         pass
 
     if mapping:
-        try:
-            devices = _lsblk()
-            known = {d["name"] for d in devices if pathlib.Path(f"/dev/{d['name']}").exists()}
-            valid = {dev for dev in mapping if dev in known}
-            phantoms = {dev: oid for dev, oid in mapping.items() if dev not in known}
-            if phantoms:
-                orphaned = [
-                    d["name"] for d in devices
-                    if d.get("type") == "disk"
-                    and _first_fstype(d) == "ceph_bluestore"
-                    and d["name"] not in valid
-                ]
-                for (_, osd_id), real_dev in zip(sorted(phantoms.items()), sorted(orphaned)):
-                    mapping[real_dev] = osd_id
-                for old_dev in phantoms:
-                    mapping.pop(old_dev, None)
-        except Exception:
-            pass
         return mapping
 
     try:
@@ -131,8 +102,9 @@ def _node_ips() -> list[str]:
     try:
         for node in kubectl.get_nodes():
             for addr in node["status"]["addresses"]:
-                if ":" in addr["address"]:
+                if addr["type"] == "InternalIP" and ":" in addr["address"]:
                     ips.add(addr["address"])
+                    break
     except Exception:
         pass
     return list(ips)
@@ -180,10 +152,11 @@ def _do_activate_local(disk_name: str) -> None:
 
 
 def _do_deactivate_local(disk_name: str) -> None:
-    subprocess.run(
-        ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
-        capture_output=True,
-    )
+    if not disk_name.startswith("loop"):
+        subprocess.run(
+            ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+            capture_output=True,
+        )
     r = subprocess.run(
         ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
          "-o", "jsonpath={.spec.storage.devices}"],
@@ -217,11 +190,6 @@ async def _activate_disk(disk_name: str, host: str) -> None:
 
 
 async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
-    key = f"{host}:{disk_name}"
-    if key in _draining:
-        return
-    _draining.add(key)
-
     def ceph_reweight() -> bool:
         r = subprocess.run(
             ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--",
@@ -275,8 +243,6 @@ async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
             await asyncio.to_thread(_do_deactivate_local, disk_name)
     except Exception:
         pass
-    finally:
-        _draining.discard(key)
 
 
 async def _reconcile_storage() -> None:
@@ -333,8 +299,7 @@ async def _reconcile_storage() -> None:
             continue
         if running_space < demanded_space:
             needed.add((entry.host, entry.disk_name))
-            if disk.get("is_osd"):
-                running_space += disk.get("size_bytes", 0)
+            running_space += disk.get("size_bytes", 0)
 
     osd_map = await asyncio.to_thread(_ceph_osd_map)
 
@@ -344,10 +309,9 @@ async def _reconcile_storage() -> None:
         if disk is None:
             continue
         is_osd = disk.get("is_osd", False)
-        drain_key = f"{entry.host}:{entry.disk_name}"
         if key in needed and not is_osd:
             await _activate_disk(entry.disk_name, entry.host)
-        elif key not in needed and is_osd and drain_key not in _draining:
+        elif key not in needed and is_osd:
             osd_id = osd_map.get(disk["name"])
             if osd_id is not None:
                 asyncio.create_task(_drain_osd(entry.disk_name, osd_id, entry.host))
