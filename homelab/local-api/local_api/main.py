@@ -40,8 +40,8 @@ async def _activation_loop() -> None:
     while True:
         await asyncio.sleep(60)
         try:
-            from local_api.routers.disks import _maybe_activate
-            await _maybe_activate()
+            from local_api.routers.disks import _reconcile_storage
+            await _reconcile_storage()
         except Exception:
             pass
 

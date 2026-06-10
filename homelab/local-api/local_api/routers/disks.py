@@ -208,6 +208,19 @@ async def disks_local() -> list[DiskInfo]:
         if e.host == my_host
     }
 
+    # Bootstrap loop0 into the front of the priority list if it's an active OSD
+    # but not yet tracked (happens once on first boot).
+    all_queued_names = {e.disk_name for e in queued if e.host == my_host}
+    for d in devices:
+        if d.get("type") == "loop" and d["name"] in osd_map:
+            loop_name = d["name"]
+            if loop_name not in all_queued_names and not priority_module.is_rejected(my_host, loop_name):
+                priority_module.prepend(my_host, loop_name)
+                queued = priority_module.read()
+                waiting_names = {e.disk_name for e in queued if e.host == my_host}
+                queue_positions = {e.disk_name: i + 1 for i, e in enumerate(queued) if e.host == my_host}
+                all_queued_names = {e.disk_name for e in queued if e.host == my_host}
+
     # Auto-append blank disks to the priority list (invisible storage expansion).
     newly_found = [
         d["name"] for d in devices
@@ -228,12 +241,17 @@ async def disks_local() -> list[DiskInfo]:
     hostname = socket.gethostname()
     raw: list[dict] = []
     for d in devices:
-        if d.get("type") != "disk":
+        # Include real disks and loop devices that are active OSDs
+        is_loop_osd = d.get("type") == "loop" and d["name"] in osd_map
+        if d.get("type") != "disk" and not is_loop_osd:
             continue
         name = d["name"]
+        model = (d.get("model") or "").strip()
+        if d.get("type") == "loop":
+            model = "Built-in storage"
         base = dict(
             name=name,
-            model=(d.get("model") or "").strip(),
+            model=model,
             size_bytes=int(d.get("size") or 0),
             host=settings.yolab_node_ipv6,
             hostname=hostname,
@@ -256,12 +274,15 @@ async def disks_local() -> list[DiskInfo]:
         else:
             raw.append({**base, "state": DiskState.UNFORMATTED, "fs_type": _first_fstype(d)})
 
-    # Compute can_eject: disk's used data must fit in the free space of all other active disks
+    # Compute can_eject: disk's used data must fit in the free space of all other active disks.
+    # Loop devices (loop0) are never ejectable — requires special handling not yet implemented.
     active = [d for d in raw if d["state"] == DiskState.ACTIVE]
     result = []
     for d in raw:
         can_eject = False
-        if d["state"] == DiskState.ACTIVE and d.get("used_bytes") is not None:
+        if (d["state"] == DiskState.ACTIVE
+                and d.get("used_bytes") is not None
+                and not d["name"].startswith("loop")):
             other_free = sum(
                 o["free_bytes"] for o in active
                 if o["name"] != d["name"] and o.get("free_bytes") is not None
@@ -394,6 +415,15 @@ async def put_priority(body: PriorityUpdateRequest) -> OkResponse:
 # ── activation ────────────────────────────────────────────────────────────────
 
 def _do_activate_local(disk_name: str) -> None:
+    # Idempotency: only patch if disk not already in spec
+    r = subprocess.run(
+        ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
+         "-o", "jsonpath={.spec.storage.devices[*].name}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    existing = r.stdout.split() if r.returncode == 0 else []
+    if disk_name in existing:
+        return
     subprocess.run(
         ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
          "--type", "json",
@@ -426,7 +456,15 @@ async def _activate_disk(disk_name: str, host: str) -> None:
     await asyncio.to_thread(_do_activate_local, disk_name)
 
 
-async def _maybe_activate() -> None:
+async def _reconcile_storage() -> None:
+    """Reconcile actual OSD state against the priority list.
+
+    Walks the priority list in order, accumulating capacity into running_space.
+    While running_space < demanded_space: activate WAITING disks.
+    Once running_space >= demanded_space: eject ACTIVE disks that can safely be removed.
+    """
+    from local_api.routers.ceph import _cluster_status_from_k8s
+
     priority, node_results = await asyncio.gather(
         asyncio.to_thread(priority_module.read),
         _gather_from_nodes("/api/disks/local"),
@@ -436,27 +474,38 @@ async def _maybe_activate() -> None:
         for _, disks in node_results
         for d in disks
     }
-    # Find the first WAITING disk in priority order
-    next_disk = next(
-        (disk_map[(e.host, e.disk_name)]
-         for e in priority
-         if (e.host, e.disk_name) in disk_map
-         and disk_map[(e.host, e.disk_name)].get("state") == DiskState.WAITING),
-        None,
-    )
-    if not next_disk:
-        return
+
     try:
-        from local_api.routers.ceph import _cluster_status_from_k8s
         status = await asyncio.to_thread(_cluster_status_from_k8s)
-        cap = status.get("ceph", {}).get("capacity", {})
-        total = cap.get("bytesTotal", 0)
-        used = cap.get("bytesUsed", 0)
-        if total == 0 or (used / total) < settings.disk_activation_threshold:
-            return
+        current_used = status.get("ceph", {}).get("capacity", {}).get("bytesUsed", 0)
     except Exception:
         return
-    await _activate_disk(next_disk["name"], next_disk["host"])
+
+    if current_used == 0:
+        return  # cluster not ready or empty — don't make decisions
+
+    demanded_space = current_used * 1.2
+    running_space = 0
+
+    for entry in priority:
+        disk = disk_map.get((entry.host, entry.disk_name))
+        if disk is None:
+            continue  # offline — skip without counting capacity
+
+        state = disk.get("state")
+
+        if running_space < demanded_space:
+            if state == DiskState.WAITING:
+                await _activate_disk(entry.disk_name, entry.host)
+            # Count ACTIVE and WAITING disks toward the running total
+            if state in (DiskState.ACTIVE, DiskState.WAITING):
+                running_space += disk.get("size_bytes", 0)
+            # EJECTING disks: don't count, don't touch
+        else:
+            if state == DiskState.ACTIVE and disk.get("can_eject"):
+                osd_id = disk.get("ceph_osd_id")
+                if osd_id is not None:
+                    asyncio.create_task(_drain_osd(entry.disk_name, osd_id))
 
 
 # ── eject ─────────────────────────────────────────────────────────────────────
