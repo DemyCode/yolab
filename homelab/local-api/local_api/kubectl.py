@@ -22,20 +22,22 @@ def get_node_ips() -> list[str]:
     return ips
 
 
-def ceph_mgr_pod() -> str:
+def _ceph_exec_pod() -> str:
+    """Find a running OSD pod to exec ceph commands into."""
     result = subprocess.run(
-        ["kubectl", "get", "pod", "-n", _CEPH_NS, "-l", "app=rook-ceph-mgr",
+        ["kubectl", "get", "pod", "-n", _CEPH_NS, "-l", "app=rook-ceph-osd",
+         "--field-selector=status.phase=Running",
          "-o", "jsonpath={.items[0].metadata.name}"],
         capture_output=True, text=True, timeout=10,
     )
     name = result.stdout.strip()
     if result.returncode != 0 or not name:
-        raise RuntimeError("No rook-ceph-mgr pod found")
+        raise RuntimeError("No running rook-ceph-osd pod found")
     return name
 
 
 def ceph_exec(*args: str) -> str:
-    """Run a ceph CLI command inside the mgr pod with admin credentials."""
+    """Run a ceph CLI command inside an OSD pod with admin credentials."""
     key_result = subprocess.run(
         ["kubectl", "get", "secret", "-n", _CEPH_NS, "rook-ceph-admin-keyring",
          "-o", "jsonpath={.data.keyring}"],
@@ -56,12 +58,14 @@ def ceph_exec(*args: str) -> str:
 
     shell_cmd = (
         f"echo {keyring_b64} | base64 -d > /tmp/k && "
-        f"printf '[global]\\nmon_host = v2:[{mon_ip}]:3300\\n' > /tmp/ceph.conf && "
-        f"ceph -c /tmp/ceph.conf --keyring /tmp/k --name client.admin "
+        f"printf '[global]\\nmon_host = v2:[{mon_ip}]:3300\\n"
+        f"ms_cluster_mode = crc\\nms_service_mode = crc\\nms_client_mode = crc\\n"
+        f"[client.admin]\\nkeyring = /tmp/k\\n' > /tmp/ceph.conf && "
+        f"ceph -c /tmp/ceph.conf --name client.admin "
         + " ".join(shlex.quote(a) for a in args)
     )
     result = subprocess.run(
-        ["kubectl", "exec", "-n", _CEPH_NS, ceph_mgr_pod(), "--", "bash", "-c", shell_cmd],
+        ["kubectl", "exec", "-n", _CEPH_NS, _ceph_exec_pod(), "--", "bash", "-c", shell_cmd],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
