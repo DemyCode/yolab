@@ -26,8 +26,4 @@ class Settings(BaseSettings):
     osd_img_path: Path = Path("/var/lib/rook/system-osd.img")
     k3s_server_dir: Path = Path("/var/lib/rancher/k3s/server")
 
-    # Storage behaviour
-    disk_activation_threshold: float = 0.80
-
-
 settings = Settings()
