@@ -27,12 +27,9 @@ spec:
     global:
       osd_pool_default_min_size: "1"
       osd_pool_default_size: "1"
-      # Loop device is on a USB drive — very slow random writes.
-      # Extend all heartbeat/grace timeouts to avoid spurious OSD/MDS flapping.
       osd_heartbeat_grace: "60"
       mon_osd_report_timeout: "90"
       mds_beacon_grace: "60"
-      # Force IPv6 binding — pod network is IPv6, OSD must not default to IPv4
       ms_bind_ipv6: "true"
       ms_bind_ipv4: "false"
   priorityClassNames:
