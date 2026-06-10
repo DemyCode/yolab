@@ -1,39 +1,24 @@
 import asyncio
 import json
-import os
 import pathlib
 import socket
 import subprocess
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from local_api import kubectl
 from local_api import priority as priority_module
-from local_api.constants import CEPH_CLUSTER_NAME, CEPH_NAMESPACE, LOOP_DEVICE
+from local_api.constants import CEPH_CLUSTER_NAME, CEPH_NAMESPACE
+from local_api.models.ceph import OsdUsage
 from local_api.models.common import OkResponse
-from local_api.models.disk import (
-    AddToStorageRequest,
-    DiskInfo,
-    DiskState,
-    EjectRequest,
-    EjectStatus,
-    PriorityItem,
-    PriorityUpdateRequest,
-    SystemOsdInfo,
-    SystemOsdResize,
-    SystemOsdResizeResponse,
-)
+from local_api.models.disk import DiskItem, DiskOrderEntry, DiskOrderRequest
 from local_api.settings import settings
 
 router = APIRouter()
 
-# Ejection-done signals live in /run (tmpfs) so they survive FastAPI restarts
-# within the same boot but are cleaned up on reboot.
-_EJECT_DONE_DIR = pathlib.Path("/run/yolab/eject-done")
+_draining: set[str] = set()
 
-
-# ── lsblk / disk detection ────────────────────────────────────────────────────
 
 def _lsblk() -> list[dict]:
     out = subprocess.check_output(
@@ -65,15 +50,7 @@ def _first_fstype(device: dict) -> str | None:
     return None
 
 
-# ── Ceph OSD mapping ──────────────────────────────────────────────────────────
-
 def _ceph_osd_map() -> dict[str, int]:
-    """Returns {device_name: osd_id} by reading pod volumes. No ceph auth needed.
-
-    If a disk was renamed after Rook provisioned it (e.g. sdc → sdb on reconnect),
-    the block symlink in the OSD data dir will point to the old name. We detect this
-    and re-map to the real ceph_bluestore disk.
-    """
     mapping: dict[str, int] = {}
     try:
         result = subprocess.run(
@@ -81,8 +58,7 @@ def _ceph_osd_map() -> dict[str, int]:
              "-l", "app=rook-ceph-osd", "-o", "json"],
             capture_output=True, text=True, timeout=10, check=True,
         )
-        pods = json.loads(result.stdout).get("items", [])
-        for pod in pods:
+        for pod in json.loads(result.stdout).get("items", []):
             osd_id_str = pod["metadata"]["labels"].get("ceph-osd-id")
             if osd_id_str is None:
                 continue
@@ -91,9 +67,8 @@ def _ceph_osd_map() -> dict[str, int]:
                     data_dir = (vol.get("hostPath") or {}).get("path", "")
                     if not data_dir:
                         continue
-                    block_link = pathlib.Path(data_dir) / "block"
                     try:
-                        device = block_link.resolve().name
+                        device = pathlib.Path(data_dir, "block").resolve().name
                         if device:
                             mapping[device] = int(osd_id_str)
                     except Exception:
@@ -102,26 +77,19 @@ def _ceph_osd_map() -> dict[str, int]:
         pass
 
     if mapping:
-        # Detect phantom entries: mapped device name no longer exists (disk renamed).
-        # Find ceph_bluestore disks not yet claimed by a valid mapping and re-map.
-        # NOTE: use /dev/ existence, not lsblk type="disk", so loop devices like
-        # loop0 are not mistakenly treated as phantoms.
         try:
             devices = _lsblk()
             known = {d["name"] for d in devices if pathlib.Path(f"/dev/{d['name']}").exists()}
             valid = {dev for dev in mapping if dev in known}
             phantoms = {dev: oid for dev, oid in mapping.items() if dev not in known}
             if phantoms:
-                # Disks with bluestore content that aren't already correctly mapped
-                orphaned_bluestore = [
+                orphaned = [
                     d["name"] for d in devices
                     if d.get("type") == "disk"
                     and _first_fstype(d) == "ceph_bluestore"
                     and d["name"] not in valid
                 ]
-                for (_, osd_id), real_dev in zip(
-                    sorted(phantoms.items()), sorted(orphaned_bluestore)
-                ):
+                for (_, osd_id), real_dev in zip(sorted(phantoms.items()), sorted(orphaned)):
                     mapping[real_dev] = osd_id
                 for old_dev in phantoms:
                     mapping.pop(old_dev, None)
@@ -129,7 +97,6 @@ def _ceph_osd_map() -> dict[str, int]:
             pass
         return mapping
 
-    # Fallback via ceph osd metadata
     try:
         data = json.loads(kubectl.ceph_exec("osd", "metadata", "--format", "json"))
         for osd in data:
@@ -140,9 +107,9 @@ def _ceph_osd_map() -> dict[str, int]:
                 dev = dev.strip().replace("/dev/", "")
                 if dev:
                     mapping[dev] = int(osd_id)
-        return mapping
     except Exception:
-        return {}
+        pass
+    return mapping
 
 
 def _pg_count_for_osd(osd_id: int) -> int:
@@ -160,7 +127,12 @@ def _pg_count_for_osd(osd_id: int) -> int:
         return 0
 
 
-# ── multi-node fan-out ────────────────────────────────────────────────────────
+async def _osd_usage_safe() -> dict[int, OsdUsage]:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(kubectl.ceph_osd_df), timeout=5.0)
+    except Exception:
+        return {}
+
 
 def _node_ips() -> list[str]:
     ips = {settings.yolab_node_ipv6}
@@ -176,7 +148,7 @@ def _node_ips() -> list[str]:
 
 async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
     ips = await asyncio.to_thread(_node_ips)
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         results = await asyncio.gather(
             *[client.get(f"http://[{ip}]:{settings.port}{path}") for ip in ips],
             return_exceptions=True,
@@ -188,253 +160,24 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
     ]
 
 
-# ── disk list endpoints ───────────────────────────────────────────────────────
-
-@router.get("/disks/local", response_model=list[DiskInfo])
-async def disks_local() -> list[DiskInfo]:
-    async def _osd_df_safe() -> dict:
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(kubectl.ceph_osd_df), timeout=8.0)
-        except (asyncio.TimeoutError, Exception):
-            return {}
-
-    devices, osd_map, osd_usage, queued = await asyncio.gather(
-        asyncio.to_thread(_lsblk),
-        asyncio.to_thread(_ceph_osd_map),
-        _osd_df_safe(),
-        asyncio.to_thread(priority_module.read),
-    )
-
-    my_host = settings.yolab_node_ipv6
-    waiting_names = {e.disk_name for e in queued if e.host == my_host}
-    # Global priority position per disk name (for this node's disks)
-    queue_positions = {
-        e.disk_name: i + 1
-        for i, e in enumerate(queued)
-        if e.host == my_host
-    }
-
-    # Bootstrap loop0 into the front of the priority list if it's an active OSD
-    # but not yet tracked (happens once on first boot).
-    all_queued_names = {e.disk_name for e in queued if e.host == my_host}
-    for d in devices:
-        if d.get("type") == "loop" and d["name"] in osd_map:
-            loop_name = d["name"]
-            if loop_name not in all_queued_names and not priority_module.is_rejected(my_host, loop_name):
-                priority_module.prepend(my_host, loop_name)
-                queued = priority_module.read()
-                waiting_names = {e.disk_name for e in queued if e.host == my_host}
-                queue_positions = {e.disk_name: i + 1 for i, e in enumerate(queued) if e.host == my_host}
-                all_queued_names = {e.disk_name for e in queued if e.host == my_host}
-
-    # Auto-append blank disks to the priority list (invisible storage expansion).
-    newly_found = [
-        d["name"] for d in devices
-        if d.get("type") == "disk"
-        and not _is_system_disk(d)
-        and d["name"] not in osd_map
-        and _first_fstype(d) is None
-        and d["name"] not in waiting_names
-        and not priority_module.is_rejected(my_host, d["name"])
-    ]
-    for name in newly_found:
-        priority_module.append(my_host, name)
-    if newly_found:
-        queued = priority_module.read()
-        waiting_names = {e.disk_name for e in queued if e.host == my_host}
-        queue_positions = {e.disk_name: i + 1 for i, e in enumerate(queued) if e.host == my_host}
-
-    hostname = socket.gethostname()
-    raw: list[dict] = []
-    for d in devices:
-        # Include real disks and loop devices that are active OSDs
-        is_loop_osd = d.get("type") == "loop" and d["name"] in osd_map
-        if d.get("type") != "disk" and not is_loop_osd:
-            continue
-        name = d["name"]
-        model = (d.get("model") or "").strip()
-        if d.get("type") == "loop":
-            model = "Built-in storage"
-        base = dict(
-            name=name,
-            model=model,
-            size_bytes=int(d.get("size") or 0),
-            host=settings.yolab_node_ipv6,
-            hostname=hostname,
-        )
-
-        if _is_system_disk(d):
-            raw.append({**base, "state": DiskState.SYSTEM, "fs_type": _first_fstype(d)})
-        elif name in osd_map:
-            osd_id = osd_map[name]
-            usage = osd_usage.get(osd_id)
-            is_ejecting = usage is not None and usage.reweight == 0.0
-            raw.append({**base,
-                        "state": DiskState.EJECTING if is_ejecting else DiskState.ACTIVE,
-                        "ceph_osd_id": osd_id,
-                        "used_bytes": usage.used_bytes if usage else None,
-                        "free_bytes": usage.free_bytes if usage else None})
-        elif name in waiting_names:
-            raw.append({**base, "state": DiskState.WAITING,
-                        "queue_position": queue_positions[name]})
-        else:
-            raw.append({**base, "state": DiskState.UNFORMATTED, "fs_type": _first_fstype(d)})
-
-    # Compute can_eject: disk's used data must fit in the free space of all other active disks.
-    # Loop devices (loop0) are never ejectable — requires special handling not yet implemented.
-    active = [d for d in raw if d["state"] == DiskState.ACTIVE]
-    result = []
-    for d in raw:
-        can_eject = False
-        if (d["state"] == DiskState.ACTIVE
-                and d.get("used_bytes") is not None
-                and not d["name"].startswith("loop")):
-            other_free = sum(
-                o["free_bytes"] for o in active
-                if o["name"] != d["name"] and o.get("free_bytes") is not None
-            )
-            can_eject = d["used_bytes"] <= other_free
-        result.append(DiskInfo(**d, can_eject=can_eject))
-
-    return result
-
-
-@router.get("/disks", response_model=list[DiskInfo])
-async def disks() -> list[DiskInfo]:
-    return [
-        DiskInfo(**disk) if isinstance(disk, dict) else DiskInfo.model_validate(disk)
-        for _, node_disks in await _gather_from_nodes("/api/disks/local")
-        for disk in node_disks
-    ]
-
-
-# ── add to storage ────────────────────────────────────────────────────────────
-
-@router.post("/disks/add", response_model=OkResponse)
-async def add_disk(body: AddToStorageRequest) -> OkResponse:
-    if body.host != settings.yolab_node_ipv6:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                f"http://[{body.host}]:{settings.port}/api/disks/add",
-                json=body.model_dump(),
-            )
-        if r.status_code != 200:
-            raise HTTPException(r.status_code, r.json().get("detail", "Failed"))
-        return OkResponse.model_validate(r.json())
-
-    devices = await asyncio.to_thread(_lsblk)
-    disk = next((d for d in devices if d["name"] == body.disk_name), None)
-    if not disk:
-        raise HTTPException(404, "Disk not found")
-    if _is_system_disk(disk):
-        raise HTTPException(400, "Cannot add system disk to storage")
-    osd_map = await asyncio.to_thread(_ceph_osd_map)
-    if body.disk_name in osd_map:
-        raise HTTPException(400, "Disk is already active storage")
-
-    # Only wipe if the disk has existing data — blank disks need no wipe.
-    if _first_fstype(disk) is not None:
-        r1 = await asyncio.to_thread(
-            subprocess.run,
-            ["wipefs", "--all", "--force", f"/dev/{body.disk_name}"],
-            capture_output=True, text=True,
-        )
-        r2 = await asyncio.to_thread(
-            subprocess.run,
-            ["sgdisk", "--zap-all", f"/dev/{body.disk_name}"],
-            capture_output=True, text=True,
-        )
-        if r1.returncode != 0:
-            raise HTTPException(500, f"Wipe failed: {r1.stderr.strip()}")
-        if r2.returncode != 0:
-            raise HTTPException(500, f"Partition table clear failed: {r2.stderr.strip()}")
-        await asyncio.to_thread(
-            subprocess.run, ["partprobe", f"/dev/{body.disk_name}"], capture_output=True,
-        )
-
-    await asyncio.to_thread(priority_module.unreject, body.host, body.disk_name)
-    await asyncio.to_thread(priority_module.append, body.host, body.disk_name)
-
-    # Activate immediately if cluster is already above threshold
-    await _maybe_activate()
-
-    return OkResponse()
-
-
-# ── queue management ──────────────────────────────────────────────────────────
-
-@router.delete("/disks/queue/{disk_name}", response_model=OkResponse)
-async def remove_from_queue(disk_name: str, host: str) -> OkResponse:
-    if host != settings.yolab_node_ipv6:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.delete(
-                f"http://[{host}]:{settings.port}/api/disks/queue/{disk_name}",
-                params={"host": host},
-            )
-        return OkResponse()
-    await asyncio.to_thread(priority_module.remove, host, disk_name)
-    return OkResponse()
-
-
-# ── priority endpoints ────────────────────────────────────────────────────────
-
-@router.get("/disks/priority", response_model=list[PriorityItem])
-async def get_priority() -> list[PriorityItem]:
-    priority_list, node_results = await asyncio.gather(
-        asyncio.to_thread(priority_module.read),
-        _gather_from_nodes("/api/disks/local"),
-    )
-    disk_map = {
-        (d["host"], d["name"]): d
-        for _, disks in node_results
-        for d in disks
-    }
-    result = []
-    for i, entry in enumerate(priority_list):
-        disk = disk_map.get((entry.host, entry.disk_name), {})
-        result.append(PriorityItem(
-            host=entry.host,
-            disk_name=entry.disk_name,
-            position=i + 1,
-            model=disk.get("model", ""),
-            size_bytes=disk.get("size_bytes", 0),
-            state=disk.get("state", "offline"),
-            hostname=disk.get("hostname", ""),
-            used_bytes=disk.get("used_bytes"),
-            free_bytes=disk.get("free_bytes"),
-            can_eject=disk.get("can_eject", False),
-            ceph_osd_id=disk.get("ceph_osd_id"),
-        ))
-    return result
-
-
-@router.put("/disks/priority", response_model=OkResponse)
-async def put_priority(body: PriorityUpdateRequest) -> OkResponse:
-    entries = [
-        priority_module.PriorityEntry(host=e.host, disk_name=e.disk_name)
-        for e in body.entries
-    ]
-    await asyncio.to_thread(priority_module.write, entries)
-    return OkResponse()
-
-
-# ── activation ────────────────────────────────────────────────────────────────
-
 def _do_activate_local(disk_name: str) -> None:
-    # Idempotency: only patch if disk not already in spec
     r = subprocess.run(
         ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
-         "-o", "jsonpath={.spec.storage.devices[*].name}"],
+         "-o", "jsonpath={.spec.storage.devices}"],
         capture_output=True, text=True, timeout=10,
     )
-    existing = r.stdout.split() if r.returncode == 0 else []
-    if disk_name in existing:
+    raw = r.stdout.strip() if r.returncode == 0 else ""
+    try:
+        existing = json.loads(raw) if raw else []
+    except Exception:
+        existing = []
+    if any(d.get("name") == disk_name for d in existing):
         return
+    new_devices = existing + [{"name": disk_name}]
     subprocess.run(
         ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
-         "--type", "json",
-         "-p", json.dumps([{"op": "add", "path": "/spec/storage/devices/-",
-                            "value": {"name": disk_name}}])],
+         "--type", "merge",
+         "-p", json.dumps({"spec": {"storage": {"devices": new_devices}}})],
         capture_output=True,
     )
     subprocess.run(
@@ -444,111 +187,49 @@ def _do_activate_local(disk_name: str) -> None:
     )
 
 
-@router.post("/disks/activate-local", response_model=OkResponse)
-async def activate_local(body: AddToStorageRequest) -> OkResponse:
-    """Internal endpoint — called by primary node to activate a disk on this node."""
-    await asyncio.to_thread(_do_activate_local, body.disk_name)
-    return OkResponse()
+def _do_deactivate_local(disk_name: str) -> None:
+    subprocess.run(
+        ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+        capture_output=True,
+    )
+    r = subprocess.run(
+        ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
+         "-o", "jsonpath={.spec.storage.devices}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    raw = r.stdout.strip() if r.returncode == 0 else ""
+    try:
+        devices = json.loads(raw) if raw else []
+    except Exception:
+        return
+    new_devices = [d for d in devices if d.get("name") != disk_name]
+    if len(new_devices) == len(devices):
+        return
+    subprocess.run(
+        ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
+         "--type", "merge",
+         "-p", json.dumps({"spec": {"storage": {"devices": new_devices}}})],
+        capture_output=True,
+    )
 
 
 async def _activate_disk(disk_name: str, host: str) -> None:
     if host != settings.yolab_node_ipv6:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             await client.post(
                 f"http://[{host}]:{settings.port}/api/disks/activate-local",
-                json={"disk_name": disk_name, "host": host},
+                json={"host": host, "disk_name": disk_name},
             )
         return
     await asyncio.to_thread(_do_activate_local, disk_name)
 
 
-async def _reconcile_storage() -> None:
-    """Reconcile actual OSD state against the priority list.
-
-    Walks the priority list in order, accumulating capacity into running_space.
-    While running_space < demanded_space: activate WAITING disks.
-    Once running_space >= demanded_space: eject ACTIVE disks that can safely be removed.
-    """
-    from local_api.routers.ceph import _cluster_status_from_k8s
-
-    priority, node_results = await asyncio.gather(
-        asyncio.to_thread(priority_module.read),
-        _gather_from_nodes("/api/disks/local"),
-    )
-    disk_map = {
-        (d["host"], d["name"]): d
-        for _, disks in node_results
-        for d in disks
-    }
-
-    try:
-        status = await asyncio.to_thread(_cluster_status_from_k8s)
-        current_used = status.get("ceph", {}).get("capacity", {}).get("bytesUsed", 0)
-    except Exception:
+async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
+    key = f"{host}:{disk_name}"
+    if key in _draining:
         return
+    _draining.add(key)
 
-    if current_used == 0:
-        return  # cluster not ready or empty — don't make decisions
-
-    demanded_space = current_used * 1.2
-    running_space = 0
-
-    for entry in priority:
-        disk = disk_map.get((entry.host, entry.disk_name))
-        if disk is None:
-            continue  # offline — skip without counting capacity
-
-        state = disk.get("state")
-
-        if running_space < demanded_space:
-            if state == DiskState.WAITING:
-                await _activate_disk(entry.disk_name, entry.host)
-            # Count ACTIVE and WAITING disks toward the running total
-            if state in (DiskState.ACTIVE, DiskState.WAITING):
-                running_space += disk.get("size_bytes", 0)
-            # EJECTING disks: don't count, don't touch
-        else:
-            if state == DiskState.ACTIVE and disk.get("can_eject"):
-                osd_id = disk.get("ceph_osd_id")
-                if osd_id is not None:
-                    asyncio.create_task(_drain_osd(entry.disk_name, osd_id))
-
-
-# ── eject ─────────────────────────────────────────────────────────────────────
-
-@router.post("/disks/eject", response_model=OkResponse)
-async def eject_disk(body: EjectRequest) -> OkResponse:
-    if body.host != settings.yolab_node_ipv6:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                f"http://[{body.host}]:{settings.port}/api/disks/eject",
-                json=body.model_dump(),
-            )
-        if r.status_code != 200:
-            raise HTTPException(r.status_code, r.json().get("detail", "Failed"))
-        return OkResponse.model_validate(r.json())
-
-    osd_map = await asyncio.to_thread(_ceph_osd_map)
-    if body.disk_name not in osd_map:
-        raise HTTPException(404, "Disk is not active storage")
-    osd_id = osd_map[body.disk_name]
-
-    osd_usage = await asyncio.to_thread(kubectl.ceph_osd_df)
-    usage = osd_usage.get(osd_id)
-    if usage:
-        other_free = sum(u.free_bytes for oid, u in osd_usage.items() if oid != osd_id)
-        if usage.used_bytes > other_free:
-            raise HTTPException(400, {
-                "reason": "not_enough_space",
-                "used_bytes": usage.used_bytes,
-                "other_free_bytes": other_free,
-            })
-
-    asyncio.create_task(_drain_osd(body.disk_name, osd_id))
-    return OkResponse()
-
-
-async def _drain_osd(disk_name: str, osd_id: int) -> None:
     def ceph_cmd(*args: str) -> None:
         subprocess.run(
             ["kubectl", "exec", "-n", CEPH_NAMESPACE, kubectl.ceph_mgr_pod(), "--"] + list(args),
@@ -565,170 +246,194 @@ async def _drain_osd(disk_name: str, osd_id: int) -> None:
                 break
 
         await asyncio.to_thread(ceph_cmd, "ceph", "osd", "crush", "remove", f"osd.{osd_id}")
-        await asyncio.to_thread(ceph_cmd, "ceph", "auth", "del", f"osd.{osd_id}")
+        await asyncio.to_thread(ceph_cmd, "ceph", "osd", "auth", "del", f"osd.{osd_id}")
         await asyncio.to_thread(ceph_cmd, "ceph", "osd", "rm", str(osd_id))
 
-        # Wipe disk so it shows as blank (no stale bluestore signature)
-        await asyncio.to_thread(
-            subprocess.run, ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
-            capture_output=True,
-        )
-        # Reject so the wiped disk doesn't auto-re-queue — user explicitly ejected it
-        priority_module.remove(settings.yolab_node_ipv6, disk_name)
+        if host != settings.yolab_node_ipv6:
+            async with httpx.AsyncClient(timeout=30) as client:
+                await client.post(
+                    f"http://[{host}]:{settings.port}/api/disks/deactivate-local",
+                    json={"host": host, "disk_name": disk_name},
+                )
+        else:
+            await asyncio.to_thread(_do_deactivate_local, disk_name)
     except Exception:
         pass
     finally:
-        # Signal completion in /run (tmpfs — survives FastAPI restart, cleared on reboot)
-        _EJECT_DONE_DIR.mkdir(parents=True, exist_ok=True)
-        (_EJECT_DONE_DIR / disk_name).touch()
+        _draining.discard(key)
 
 
-@router.get("/disks/eject/{disk_name}/status", response_model=EjectStatus)
-async def eject_status(disk_name: str) -> EjectStatus:
-    done_file = _EJECT_DONE_DIR / disk_name
-    if done_file.exists():
-        done_file.unlink(missing_ok=True)
-        return EjectStatus(pg_count=0, done=True, safe_to_unplug=True)
+async def _reconcile_storage() -> None:
+    from local_api.routers.ceph import _cluster_status_from_k8s
+
+    node_results = await _gather_from_nodes("/api/disks/local")
+    disk_map: dict[tuple[str, str], dict] = {
+        (d["host"], d["name"]): d
+        for _, node_disks in node_results
+        for d in node_disks
+    }
+
+    priority = await asyncio.to_thread(priority_module.read)
+    known = {(e.host, e.disk_name) for e in priority}
+    updated = False
+    for (host, name), disk in disk_map.items():
+        if (host, name) not in known:
+            if disk.get("is_builtin"):
+                await asyncio.to_thread(priority_module.prepend, host, name)
+            else:
+                await asyncio.to_thread(priority_module.append, host, name)
+            updated = True
+    if updated:
+        priority = await asyncio.to_thread(priority_module.read)
+
+    if not priority:
+        return
+
+    any_osd = any(d.get("is_osd") for d in disk_map.values())
+    if not any_osd:
+        for entry in priority:
+            disk = disk_map.get((entry.host, entry.disk_name))
+            if disk is not None:
+                await _activate_disk(entry.disk_name, entry.host)
+                return
+        return
+
+    try:
+        status = await asyncio.to_thread(_cluster_status_from_k8s)
+        current_used = status.get("ceph", {}).get("capacity", {}).get("bytesUsed", 0)
+    except Exception:
+        return
+
+    if current_used == 0:
+        return
+
+    demanded_space = current_used * 1.2
+    running_space = 0
+    needed: set[tuple[str, str]] = set()
+
+    for entry in priority:
+        disk = disk_map.get((entry.host, entry.disk_name))
+        if disk is None:
+            continue
+        if running_space < demanded_space:
+            needed.add((entry.host, entry.disk_name))
+            if disk.get("is_osd"):
+                running_space += disk.get("size_bytes", 0)
 
     osd_map = await asyncio.to_thread(_ceph_osd_map)
-    if disk_name not in osd_map:
-        raise HTTPException(404, "No ejection in progress for this disk")
 
-    osd_id = osd_map[disk_name]
-    pg_count = await asyncio.to_thread(_pg_count_for_osd, osd_id)
-    return EjectStatus(pg_count=pg_count, done=False, safe_to_unplug=False)
-
-
-# ── system OSD (loop device) ──────────────────────────────────────────────────
-
-def _img_size_bytes() -> int | None:
-    try:
-        return os.path.getsize(settings.osd_img_path)
-    except OSError:
-        return None
-
-
-def _fs_free_bytes() -> int:
-    import shutil
-    return shutil.disk_usage("/").free
+    for entry in priority:
+        key = (entry.host, entry.disk_name)
+        disk = disk_map.get(key)
+        if disk is None:
+            continue
+        is_osd = disk.get("is_osd", False)
+        drain_key = f"{entry.host}:{entry.disk_name}"
+        if key in needed and not is_osd:
+            await _activate_disk(entry.disk_name, entry.host)
+        elif key not in needed and is_osd and drain_key not in _draining:
+            osd_id = osd_map.get(disk["name"])
+            if osd_id is not None:
+                asyncio.create_task(_drain_osd(entry.disk_name, osd_id, entry.host))
 
 
-def _loop_device() -> str | None:
-    result = subprocess.run(
-        ["losetup", "-j", settings.osd_img_path], capture_output=True, text=True, timeout=5,
-    )
-    line = result.stdout.strip()
-    return line.split(":")[0] if line else None
-
-
-def _ceph_osd_id_for_img() -> int | None:
-    if _loop_device() is None:
-        return None
-    return _ceph_osd_map().get("loop0")
-
-
-def _ceph_osd_count() -> int:
-    try:
-        r = subprocess.run(
-            ["kubectl", "get", "deploy", "-n", CEPH_NAMESPACE, "-l", "app=rook-ceph-osd",
-             "-o", "jsonpath={.items[*].status.readyReplicas}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return sum(int(x) for x in r.stdout.split() if x.isdigit()) if r.returncode == 0 else 0
-    except Exception:
-        return 0
-
-
-@router.get("/disks/system-osd", response_model=SystemOsdInfo)
-async def system_osd_status() -> SystemOsdInfo:
-    img_bytes, free_bytes = await asyncio.gather(
-        asyncio.to_thread(_img_size_bytes),
-        asyncio.to_thread(_fs_free_bytes),
-    )
-    osd_id = await asyncio.to_thread(_ceph_osd_id_for_img) if img_bytes is not None else None
-    return SystemOsdInfo(
-        exists=img_bytes is not None,
-        size_bytes=img_bytes,
-        fs_free_bytes=free_bytes,
-        ceph_osd_id=osd_id,
+@router.get("/disks/local", response_model=list[DiskItem])
+async def disks_local() -> list[DiskItem]:
+    devices, osd_map, osd_usage = await asyncio.gather(
+        asyncio.to_thread(_lsblk),
+        asyncio.to_thread(_ceph_osd_map),
+        _osd_usage_safe(),
     )
 
+    hostname = socket.gethostname()
+    result = []
 
-_SIZE_UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
+    for d in devices:
+        name = d["name"]
+        dtype = d.get("type")
+        is_loop = dtype == "loop"
+        is_disk = dtype == "disk"
+
+        if not is_disk and not is_loop:
+            continue
+        if is_disk and _is_system_disk(d):
+            continue
+
+        model = (d.get("model") or "").strip()
+        if is_loop:
+            model = "Built-in storage"
+
+        osd_id = osd_map.get(name)
+        usage = osd_usage.get(osd_id) if osd_id is not None else None
+
+        result.append(DiskItem(
+            name=name,
+            model=model,
+            size_bytes=int(d.get("size") or 0),
+            host=settings.yolab_node_ipv6,
+            hostname=hostname,
+            is_osd=osd_id is not None,
+            is_builtin=is_loop,
+            used_bytes=usage.used_bytes if usage else None,
+            free_bytes=usage.free_bytes if usage else None,
+        ))
+
+    return result
 
 
-def _parse_lvm_size(s: str) -> int:
-    s = s.strip().upper().rstrip("I")
-    for unit, mult in _SIZE_UNITS.items():
-        if s.endswith(unit):
-            return int(float(s[:-len(unit)]) * mult)
-    raise ValueError(f"Unrecognised size: {s!r}")
+@router.get("/disks", response_model=list[DiskItem])
+async def disks() -> list[DiskItem]:
+    node_results, priority = await asyncio.gather(
+        _gather_from_nodes("/api/disks/local"),
+        asyncio.to_thread(priority_module.read),
+    )
+
+    disk_map: dict[tuple[str, str], dict] = {
+        (d["host"], d["name"]): d
+        for _, node_disks in node_results
+        for d in node_disks
+    }
+
+    known = {(e.host, e.disk_name) for e in priority}
+    updated = False
+    for (host, name), disk in disk_map.items():
+        if (host, name) not in known:
+            if disk.get("is_builtin"):
+                await asyncio.to_thread(priority_module.prepend, host, name)
+            else:
+                await asyncio.to_thread(priority_module.append, host, name)
+            updated = True
+    if updated:
+        priority = await asyncio.to_thread(priority_module.read)
+
+    result = []
+    for entry in priority:
+        disk = disk_map.get((entry.host, entry.disk_name))
+        if disk is None:
+            continue
+        result.append(DiskItem(**disk))
+
+    return result
 
 
-async def _purge_osd(osd_id: int) -> None:
-    try:
-        mgr = await asyncio.to_thread(kubectl.ceph_mgr_pod)
-        for cmd in [
-            ["ceph", "osd", "out", str(osd_id)],
-            ["ceph", "osd", "crush", "remove", f"osd.{osd_id}"],
-            ["ceph", "auth", "del", f"osd.{osd_id}"],
-            ["ceph", "osd", "rm", str(osd_id)],
-        ]:
-            subprocess.run(
-                ["kubectl", "exec", "-n", CEPH_NAMESPACE, mgr, "--"] + cmd,
-                capture_output=True, timeout=20,
-            )
-    except Exception:
-        pass
+@router.put("/disks/order", response_model=OkResponse)
+async def update_order(body: DiskOrderRequest) -> OkResponse:
+    entries = [
+        priority_module.PriorityEntry(host=e.host, disk_name=e.disk_name)
+        for e in body.entries
+    ]
+    await asyncio.to_thread(priority_module.write, entries)
+    asyncio.create_task(_reconcile_storage())
+    return OkResponse()
 
 
-@router.patch("/disks/system-osd", response_model=SystemOsdResizeResponse)
-async def system_osd_resize(body: SystemOsdResize) -> SystemOsdResizeResponse:
-    import re
-    if not re.fullmatch(r"\d+(\.\d+)?[KMGTPE]i?", body.size, re.IGNORECASE):
-        raise HTTPException(422, "Invalid size — use e.g. 200G, 1.5T")
+@router.post("/disks/activate-local", response_model=OkResponse)
+async def activate_local(body: DiskOrderEntry) -> OkResponse:
+    await asyncio.to_thread(_do_activate_local, body.disk_name)
+    return OkResponse()
 
-    current = await asyncio.to_thread(_img_size_bytes)
-    if current is None:
-        raise HTTPException(404, "System OSD image not found")
 
-    try:
-        target = _parse_lvm_size(body.size)
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-
-    if target > current:
-        r = await asyncio.to_thread(
-            subprocess.run, ["truncate", "-s", body.size, settings.osd_img_path],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            raise HTTPException(500, f"truncate failed: {r.stderr.strip()}")
-        loop = await asyncio.to_thread(_loop_device)
-        if loop:
-            await asyncio.to_thread(subprocess.run, ["losetup", "-c", loop], capture_output=True)
-        return SystemOsdResizeResponse(operation="extended")
-
-    if target < current:
-        osd_id = await asyncio.to_thread(_ceph_osd_id_for_img)
-        if osd_id is not None:
-            if await asyncio.to_thread(_ceph_osd_count) <= 1:
-                raise HTTPException(
-                    400, "Cannot shrink: this is the only storage disk — all data would be lost"
-                )
-            await _purge_osd(osd_id)
-        loop = await asyncio.to_thread(_loop_device)
-        if loop:
-            await asyncio.to_thread(subprocess.run, ["losetup", "-d", loop], capture_output=True)
-        r = await asyncio.to_thread(
-            subprocess.run, ["truncate", "-s", body.size, settings.osd_img_path],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            raise HTTPException(500, f"truncate failed: {r.stderr.strip()}")
-        await asyncio.to_thread(
-            subprocess.run, ["losetup", LOOP_DEVICE, settings.osd_img_path], capture_output=True,
-        )
-        return SystemOsdResizeResponse(operation="shrunk")
-
-    return SystemOsdResizeResponse(operation="unchanged")
+@router.post("/disks/deactivate-local", response_model=OkResponse)
+async def deactivate_local(body: DiskOrderEntry) -> OkResponse:
+    await asyncio.to_thread(_do_deactivate_local, body.disk_name)
+    return OkResponse()
