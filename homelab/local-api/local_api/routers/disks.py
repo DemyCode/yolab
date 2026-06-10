@@ -176,7 +176,7 @@ def _node_ips() -> list[str]:
 
 async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
     ips = await asyncio.to_thread(_node_ips)
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         results = await asyncio.gather(
             *[client.get(f"http://[{ip}]:{settings.port}{path}") for ip in ips],
             return_exceptions=True,
@@ -192,10 +192,16 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
 
 @router.get("/disks/local", response_model=list[DiskInfo])
 async def disks_local() -> list[DiskInfo]:
+    async def _osd_df_safe() -> dict:
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(kubectl.ceph_osd_df), timeout=8.0)
+        except (asyncio.TimeoutError, Exception):
+            return {}
+
     devices, osd_map, osd_usage, queued = await asyncio.gather(
         asyncio.to_thread(_lsblk),
         asyncio.to_thread(_ceph_osd_map),
-        asyncio.to_thread(kubectl.ceph_osd_df),
+        _osd_df_safe(),
         asyncio.to_thread(priority_module.read),
     )
 
