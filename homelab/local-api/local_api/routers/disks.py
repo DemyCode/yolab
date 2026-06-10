@@ -125,6 +125,25 @@ async def _gather_from_nodes(path: str) -> list[tuple[str, list]]:
 
 
 def _do_activate_local(disk_name: str) -> None:
+    # If Rook is currently running a prepare job, don't interfere.
+    job_r = subprocess.run(
+        ["kubectl", "get", "job", "-n", CEPH_NAMESPACE,
+         f"rook-ceph-osd-prepare-{socket.gethostname()}",
+         "-o", "jsonpath={.status.active}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if job_r.returncode == 0 and job_r.stdout.strip() == "1":
+        return
+
+    # Wipe stale ceph signatures so Rook can claim the device cleanly.
+    # This handles reinstalls where the disk has data from a previous cluster.
+    # Skip loop devices — those back the built-in sparse-file OSD.
+    if not disk_name.startswith("loop"):
+        subprocess.run(
+            ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+            capture_output=True,
+        )
+
     r = subprocess.run(
         ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
          "-o", "jsonpath={.spec.storage.devices}"],
@@ -135,15 +154,14 @@ def _do_activate_local(disk_name: str) -> None:
         existing = json.loads(raw) if raw else []
     except Exception:
         existing = []
-    if any(d.get("name") == disk_name for d in existing):
-        return
-    new_devices = existing + [{"name": disk_name}]
-    subprocess.run(
-        ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
-         "--type", "merge",
-         "-p", json.dumps({"spec": {"storage": {"devices": new_devices}}})],
-        capture_output=True,
-    )
+    if not any(d.get("name") == disk_name for d in existing):
+        new_devices = existing + [{"name": disk_name}]
+        subprocess.run(
+            ["kubectl", "patch", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
+             "--type", "merge",
+             "-p", json.dumps({"spec": {"storage": {"devices": new_devices}}})],
+            capture_output=True,
+        )
     subprocess.run(
         ["kubectl", "delete", "job", "-n", CEPH_NAMESPACE,
          f"rook-ceph-osd-prepare-{socket.gethostname()}", "--ignore-not-found"],
