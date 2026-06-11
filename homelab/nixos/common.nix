@@ -169,6 +169,10 @@ in {
       "net.bridge.bridge-nf-call-ip6tables" = 1;
       "net.ipv4.ip_forward" = 1;
       "net.ipv6.conf.all.forwarding" = 1;
+      # Keep Ceph daemons in RAM — they perform poorly when swapped out.
+      "vm.swappiness" = 10;
+      "vm.dirty_ratio" = 40;
+      "vm.dirty_background_ratio" = 10;
     };
 
     # ── K3s ───────────────────────────────────────────────────────────────
