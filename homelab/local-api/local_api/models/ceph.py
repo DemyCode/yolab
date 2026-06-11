@@ -17,10 +17,3 @@ class CephStatus(BaseModel):
     total_bytes: int = 0
     used_bytes: int = 0
     error: str | None = None
-
-
-class OsdInfo(BaseModel):
-    id: int
-    hostname: str
-    devices: str
-    size_bytes: int

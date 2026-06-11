@@ -83,7 +83,7 @@ export function OverviewPage() {
   }
 
   async function streamUpdateLog() {
-    const response = await fetch("/api/update/status");
+    const response = await fetch("/api/rebuild-log");
     if (!response.ok) return;
     const d = (await response.json()) as { running: boolean };
     if (!d.running) {
@@ -93,7 +93,7 @@ export function OverviewPage() {
     const poll = async () => {
       await new Promise((r) => setTimeout(r, 1000));
       try {
-        const r = await fetch("/api/update/status");
+        const r = await fetch("/api/rebuild-log");
         const d = (await r.json()) as RebuildLog;
         setUpdateLog(d.log ?? []);
         if (!d.running) {
@@ -117,7 +117,7 @@ export function OverviewPage() {
       .then((r) => r.json())
       .then((s) => setStatus(s as StatusInfo))
       .catch(() => setStatus(null));
-    fetch("/api/update/status")
+    fetch("/api/rebuild-log")
       .then((r) => r.json())
       .then((d: RebuildLog) => {
         if (d.running) {
