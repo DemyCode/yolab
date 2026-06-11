@@ -1,0 +1,13 @@
+{
+  "title": "File Browser",
+  "type": "object",
+  "required": ["subdomain"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "files"
+    }
+  }
+}

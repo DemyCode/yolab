@@ -1,0 +1,12 @@
+[app]
+id = "filebrowser"
+name = "File Browser"
+description = "Web-based file manager for your storage"
+icon = "🗂️"
+category = "utilities"
+subdomain = "files"
+tunnel = true
+
+[[app.volumes]]
+name = "data"
+description = "Files and database"
