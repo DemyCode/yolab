@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
 
-type Phase = "idle" | "git" | "reconnecting" | "rebuild" | "done";
+type Phase = "idle" | "git" | "rebuild" | "done";
 
 function LogLine({ line }: { line: string }) {
   const isError = line.startsWith("[ERROR]") || line.includes("error:");
@@ -54,11 +54,12 @@ export function OverviewPage() {
       setLog((prev) => [...prev, ...lines]);
   }
 
-  // Poll rebuild-log, appending only new lines past the current offset.
-  // Calls itself until the rebuild finishes.
+  // Poll /api/rebuild-log every 2 s. Handles service restarts transparently —
+  // errors just retry. Stops when running=false (PID gone on the server).
   function pollRebuildLog() {
     let cancelled = false;
     async function tick() {
+      if (cancelled) return;
       try {
         const r = await fetch("/api/rebuild-log");
         const d = (await r.json()) as RebuildLog;
@@ -67,36 +68,18 @@ export function OverviewPage() {
         rebuildOffsetRef.current = (d.log ?? []).length;
         appendLines(newLines);
         if (d.running) {
-          setTimeout(tick, 1500);
+          setTimeout(tick, 2000);
         } else {
           setPhase("done");
           fetch("/api/status").then((r) => r.json()).then((s) => setStatus(s as StatusInfo)).catch(() => {});
         }
       } catch {
-        if (!cancelled) setTimeout(tick, 3000);
+        // Service is restarting — retry silently
+        if (!cancelled) setTimeout(tick, 2000);
       }
     }
     tick();
     return () => { cancelled = true; };
-  }
-
-  async function waitForService() {
-    setPhase("reconnecting");
-    for (let i = 0; i < 90; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        const r = await fetch("/api/status");
-        if (r.ok) {
-          setStatus((await r.json()) as StatusInfo);
-          appendLines(["[INFO] Service back online — rebuild output below"]);
-          setPhase("rebuild");
-          rebuildOffsetRef.current = 0;
-          pollRebuildLog();
-          return;
-        }
-      } catch { /* retry */ }
-    }
-    setPhase("done");
   }
 
   function loadChannel() {
@@ -129,23 +112,28 @@ export function OverviewPage() {
     rebuildOffsetRef.current = 0;
     try {
       const response = await fetch("/api/update", { method: "POST" });
-      if (!response.body) { void waitForService(); return; }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop() ?? "";
-        for (const part of parts) {
-          const line = part.startsWith("data: ") ? part.slice(6) : part;
-          if (line.trim()) appendLines([line]);
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.startsWith("data: ") ? part.slice(6) : part;
+            if (line.trim()) appendLines([line]);
+          }
         }
       }
-    } catch { /* stream ended — service is restarting */ }
-    void waitForService();
+    } catch { /* service is restarting — handled by pollRebuildLog */ }
+    // Switch to rebuild phase and poll the PID-backed log directly.
+    // Works whether the service restarted or not.
+    setPhase("rebuild");
+    rebuildOffsetRef.current = 0;
+    pollRebuildLog();
   }
 
   async function saveChannelAndUpdate() {
@@ -186,7 +174,7 @@ export function OverviewPage() {
     loadChannel();
   }
 
-  const updating = phase === "git" || phase === "reconnecting" || phase === "rebuild";
+  const updating = phase === "git" || phase === "rebuild";
   const shortHash = status?.commit_hash?.slice(0, 8) ?? "—";
   const commitDate = status?.commit_date
     ? new Date(status.commit_date).toLocaleString(undefined, {
@@ -197,7 +185,6 @@ export function OverviewPage() {
 
   const logTitle =
     phase === "git" ? "Fetching & resetting…"
-    : phase === "reconnecting" ? "Restarting service…"
     : phase === "rebuild" ? "Building…"
     : "Last build";
 
@@ -354,7 +341,6 @@ export function OverviewPage() {
                 <CardTitle>{logTitle}</CardTitle>
               </div>
               {phase === "done" && <span className="text-xs text-[#4ade80] font-medium">✓ Done</span>}
-              {phase === "reconnecting" && <span className="text-xs text-[#fbbf24] font-medium">Waiting for service…</span>}
             </div>
           </CardHeader>
           <CardContent>
