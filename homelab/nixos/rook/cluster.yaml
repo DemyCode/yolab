@@ -33,9 +33,10 @@ spec:
       ms_bind_ipv6: "true"
       ms_bind_ipv4: "false"
       # Cap OSD bluestore cache so it stays within its container limit instead
-      # of greedily targeting 4 GB by default. 768 MB is the target; the 2 Gi
+      # of greedily targeting 4 GB by default. 1 GB is the target; the 2 Gi
       # container limit gives headroom for the OSD process itself.
-      osd_memory_target: "805306368"
+      # (Ceph Squid minimum is ~896 MB, so 1 GB is the safe floor.)
+      osd_memory_target: "1073741824"
       # Cap MDS metadata cache so it stays within its 512 Mi container limit.
       mds_cache_memory_limit: "268435456"
   priorityClassNames:
