@@ -32,20 +32,15 @@
     '';
   };
 
-  # ── Local API (Python / FastAPI management daemon) ───────────────────────
-  localApiWorkspace = inputs.uv2nix.lib.workspace.loadWorkspace {
-    workspaceRoot = ./local-api;
+  # ── Local API (Rust / Axum management daemon) ────────────────────────────
+  localApiEnv = pkgs.rustPlatform.buildRustPackage {
+    pname = "local-api";
+    version = "0.1.0";
+    src = ./local-api;
+    cargoLock.lockFile = ./local-api/Cargo.lock;
+    nativeBuildInputs = [pkgs.pkg-config];
+    buildInputs = [pkgs.openssl];
   };
-  localApiOverlay = localApiWorkspace.mkPyprojectOverlay {sourcePreference = "wheel";};
-  localApiPythonSet =
-    (pkgs.callPackage inputs.pyproject-nix.build.packages {python = pkgs.python311;}).overrideScope
-    (
-      lib.composeManyExtensions [
-        inputs.pyproject-build-systems.overlays.wheel
-        localApiOverlay
-      ]
-    );
-  localApiEnv = localApiPythonSet.mkVirtualEnv "local-api-env" localApiWorkspace.deps.default;
 in {
   inherit (cfg) hostname;
   inherit (cfg) timezone;
