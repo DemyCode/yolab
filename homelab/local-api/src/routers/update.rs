@@ -213,7 +213,7 @@ pub async fn update(
         if let Ok(log_file) = std::fs::File::create(&cfg.rebuild_log) {
             let log2 = log_file.try_clone().unwrap_or_else(|_| std::fs::File::create(&cfg.rebuild_log).unwrap());
             if let Ok(child) = std::process::Command::new("nixos-rebuild")
-                .args(["switch", "--flake", &flake, "--print-build-logs"])
+                .args(["switch", "--flake", &flake, "--no-update-lock-file", "--print-build-logs"])
                 .stdin(std::process::Stdio::null())
                 .stdout(log_file)
                 .stderr(log2)
