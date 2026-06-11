@@ -316,9 +316,12 @@ pub async fn install_app(
             return;
         };
         yield Ok(Event::default().data("Rendering manifest..."));
-        let Ok(rendered) = render_manifest(&state.config.catalog_dir(), &id, &body.instance_name, &body.config, &tunnel_cfg, "manifest.yaml.j2", None) else {
-            yield Ok(Event::default().data("[ERROR] template render failed"));
-            return;
+        let rendered = match render_manifest(&state.config.catalog_dir(), &id, &body.instance_name, &body.config, &tunnel_cfg, "manifest.yaml.j2", None) {
+            Ok(r) => r,
+            Err(e) => {
+                yield Ok(Event::default().data(format!("[ERROR] template render failed: {e}")));
+                return;
+            }
         };
         yield Ok(Event::default().data("Applying manifests to cluster..."));
         let apply_stream = apply_manifest_stream(&rendered).await;
@@ -367,9 +370,12 @@ pub async fn update_app(
             return;
         };
         yield Ok(Event::default().data("Rendering manifest..."));
-        let Ok(rendered) = render_manifest(&state.config.catalog_dir(), &id, &instance_name, &config, &tunnel_cfg, "manifest.yaml.j2", None) else {
-            yield Ok(Event::default().data("[ERROR] template render failed"));
-            return;
+        let rendered = match render_manifest(&state.config.catalog_dir(), &id, &instance_name, &config, &tunnel_cfg, "manifest.yaml.j2", None) {
+            Ok(r) => r,
+            Err(e) => {
+                yield Ok(Event::default().data(format!("[ERROR] template render failed: {e}")));
+                return;
+            }
         };
         yield Ok(Event::default().data("Applying updated manifests..."));
         let apply_stream = apply_manifest_stream(&rendered).await;
