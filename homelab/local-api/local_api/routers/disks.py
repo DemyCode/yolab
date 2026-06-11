@@ -136,13 +136,18 @@ def _do_activate_local(disk_name: str) -> None:
         return
 
     # Wipe stale ceph signatures so Rook can claim the device cleanly.
-    # This handles reinstalls where the disk has data from a previous cluster.
-    # Skip loop devices — those back the built-in sparse-file OSD.
-    if not disk_name.startswith("loop"):
+    # Loop devices need dd first because bluestore embeds a UUID deeper than
+    # wipefs can reach — without zeroing it ceph-volume passes the stale UUID
+    # to `osd new` which fails with EEXIST if an old auth entry still exists.
+    if disk_name.startswith("loop"):
         subprocess.run(
-            ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+            ["dd", "if=/dev/zero", f"of=/dev/{disk_name}", "bs=1M", "count=100"],
             capture_output=True,
         )
+    subprocess.run(
+        ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
+        capture_output=True,
+    )
 
     r = subprocess.run(
         ["kubectl", "get", "cephcluster", "-n", CEPH_NAMESPACE, CEPH_CLUSTER_NAME,
@@ -170,6 +175,11 @@ def _do_activate_local(disk_name: str) -> None:
 
 
 def _do_deactivate_local(disk_name: str) -> None:
+    if disk_name.startswith("loop"):
+        subprocess.run(
+            ["dd", "if=/dev/zero", f"of=/dev/{disk_name}", "bs=1M", "count=100"],
+            capture_output=True,
+        )
     subprocess.run(
         ["wipefs", "--all", "--force", f"/dev/{disk_name}"],
         capture_output=True,
