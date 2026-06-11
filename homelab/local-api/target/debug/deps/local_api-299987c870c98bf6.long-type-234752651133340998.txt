@@ -1,2 +1,0 @@
-fn(axum::extract::Path<(std::string::String, std::string::String)>) -> impl futures::Future<Output = Sse<impl Stream<Item = std::result::Result<axum::response::sse::Event, AppError>>>> {pod_logs}
-fn(axum::extract::Path<(std::string::String, std::string::String)>) -> impl futures::Future<Output = Sse<impl Stream<Item = std::result::Result<axum::response::sse::Event, AppError>>>> {pod_logs}: Handler<_, _>
