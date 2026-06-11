@@ -119,14 +119,14 @@ fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
 
 fn render_manifest(
     catalog_dir: &PathBuf,
-    app_id: &str,
+    id: &str,
     instance_name: &str,
     config: &serde_json::Map<String, Value>,
     tunnel_cfg: &toml::Table,
     template_file: &str,
     extra_vars: Option<&serde_json::Map<String, Value>>,
 ) -> anyhow::Result<String> {
-    let app_dir = catalog_dir.join(app_id);
+    let app_dir = catalog_dir.join(id);
     let schema_path = app_dir.join("schema.json");
     let schema: Value = if schema_path.exists() {
         serde_json::from_str(&std::fs::read_to_string(&schema_path)?)?
@@ -154,7 +154,7 @@ fn render_manifest(
 
     let mut ctx = tera::Context::new();
     ctx.insert("instance_name", instance_name);
-    ctx.insert("app_id", app_id);
+    ctx.insert("app_id", id);
     ctx.insert("platform_api_url", tunnel_cfg.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or(""));
     ctx.insert("account_token", tunnel_cfg.get("account_token").and_then(|v| v.as_str()).unwrap_or(""));
     ctx.insert("service_name", service_name);
@@ -272,13 +272,13 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             status
         };
 
-        let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
             .and_then(|v| v.as_str())
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
 
-        let outputs_spec_path = if !app_id.is_empty() { Some(catalog_dir.join(&app_id).join("outputs.json")) } else { None };
+        let outputs_spec_path = if !id.is_empty() { Some(catalog_dir.join(&id).join("outputs.json")) } else { None };
         let outputs_spec = outputs_spec_path
             .filter(|p| p.exists())
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -293,21 +293,21 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             }))
             .collect();
 
-        apps.push(AppInfo { app_id, instance_name: name, status, outputs: normalize_outputs(&ann), outputs_spec, config });
+        apps.push(AppInfo { app_id: id, instance_name: name, status, outputs: normalize_outputs(&ann), outputs_spec, config });
     }
     Ok(Json(apps))
 }
 
 pub async fn install_app(
     State(state): State<AppState>,
-    Path(app_id): Path<String>,
+    Path(id): Path<String>,
     Json(body): Json<InstallRequest>,
 ) -> impl IntoResponse {
     if !body.instance_name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
         return (StatusCode::BAD_REQUEST, "instance_name must be lowercase alphanumeric and hyphens").into_response();
     }
-    if !state.config.catalog_dir().join(&app_id).exists() {
-        return (StatusCode::NOT_FOUND, format!("App '{app_id}' not found")).into_response();
+    if !state.config.catalog_dir().join(&id).exists() {
+        return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
     }
 
     let stream = async_stream::stream! {
@@ -316,7 +316,7 @@ pub async fn install_app(
             return;
         };
         yield Ok(Event::default().data("Rendering manifest..."));
-        let Ok(rendered) = render_manifest(&state.config.catalog_dir(), &app_id, &body.instance_name, &body.config, &tunnel_cfg, "manifest.yaml.j2", None) else {
+        let Ok(rendered) = render_manifest(&state.config.catalog_dir(), &id, &body.instance_name, &body.config, &tunnel_cfg, "manifest.yaml.j2", None) else {
             yield Ok(Event::default().data("[ERROR] template render failed"));
             return;
         };
@@ -330,7 +330,7 @@ pub async fn install_app(
                    &format!("{ANN_CONFIG}={}", serde_json::to_string(&body.config).unwrap()),
                    "--overwrite=true"])
             .output().await;
-        yield Ok(Event::default().data(format!("[DONE] {app_id} installed — run 'Scan outputs' once the pod is ready")));
+        yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));
     };
 
     Sse::new(stream).into_response()
@@ -351,13 +351,13 @@ pub async fn update_app(
         return (StatusCode::NOT_FOUND, "Instance not found").into_response();
     };
     let ann = ns_v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-    let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
         .and_then(|v| v.as_str())
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
-    if app_id.is_empty() || !state.config.catalog_dir().join(&app_id).exists() {
+    if id.is_empty() || !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
     }
 
@@ -367,7 +367,7 @@ pub async fn update_app(
             return;
         };
         yield Ok(Event::default().data("Rendering manifest..."));
-        let Ok(rendered) = render_manifest(&state.config.catalog_dir(), &app_id, &instance_name, &config, &tunnel_cfg, "manifest.yaml.j2", None) else {
+        let Ok(rendered) = render_manifest(&state.config.catalog_dir(), &id, &instance_name, &config, &tunnel_cfg, "manifest.yaml.j2", None) else {
             yield Ok(Event::default().data("[ERROR] template render failed"));
             return;
         };
@@ -392,7 +392,7 @@ pub async fn update_app(
                 }
             }
         }
-        yield Ok(Event::default().data(format!("[DONE] {app_id} updated")));
+        yield Ok(Event::default().data(format!("[DONE] {id} updated")));
     };
 
     Sse::new(stream).into_response()
@@ -408,8 +408,8 @@ pub async fn scan_outputs(
         .output().await?;
     let ns_v: Value = serde_json::from_slice(&ns_out.stdout)?;
     let ann = ns_v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-    let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let outputs_json = state.config.catalog_dir().join(&app_id).join("outputs.json");
+    let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let outputs_json = state.config.catalog_dir().join(&id).join("outputs.json");
     if !outputs_json.exists() {
         return Ok(Json(ScanOutputsResponse { outputs: normalize_outputs(&ann) }));
     }
@@ -488,9 +488,9 @@ pub async fn uninstall_app(
     {
         if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) {
             let ann = v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-            let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let uninstall_j2 = state.config.catalog_dir().join(&app_id).join("uninstall.yaml.j2");
-            if !app_id.is_empty() && uninstall_j2.exists() {
+            let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let uninstall_j2 = state.config.catalog_dir().join(&id).join("uninstall.yaml.j2");
+            if !id.is_empty() && uninstall_j2.exists() {
                 let config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
                     .and_then(|v| v.as_str())
                     .and_then(|s| serde_json::from_str(s).ok())
@@ -502,7 +502,7 @@ pub async fn uninstall_app(
                 }
                 if let Ok(tunnel_cfg) = tunnel_config(&state.config) {
                     if let Ok(rendered) = render_manifest(
-                        &state.config.catalog_dir(), &app_id, &instance_name,
+                        &state.config.catalog_dir(), &id, &instance_name,
                         &config, &tunnel_cfg, "uninstall.yaml.j2", Some(&extra),
                     ) {
                         let tmp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
