@@ -1,0 +1,11 @@
+/home/nixos/yolab-all/yolab/homelab/local-api/target/debug/deps/writeable-c6736d9f77e4e3f0.d: /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/lib.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/cmp.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/concat.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/impls.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/ops.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/parts_write_adapter.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/try_writeable.rs
+
+/home/nixos/yolab-all/yolab/homelab/local-api/target/debug/deps/libwriteable-c6736d9f77e4e3f0.rmeta: /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/lib.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/cmp.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/concat.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/impls.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/ops.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/parts_write_adapter.rs /home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/try_writeable.rs
+
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/lib.rs:
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/cmp.rs:
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/concat.rs:
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/impls.rs:
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/ops.rs:
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/parts_write_adapter.rs:
+/home/nixos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3/src/try_writeable.rs:

@@ -49,3 +49,4 @@ node_modules
 installer/nixos/frontend/node_modules
 installer/nixos/frontend/dist
 *.tsbuildinfo
+homelab/local-api/target

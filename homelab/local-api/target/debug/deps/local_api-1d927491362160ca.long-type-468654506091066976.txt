@@ -1,0 +1,2 @@
+fn(State<Arc<config::Config>>) -> impl futures::Future<Output = Sse<impl Stream<Item = std::result::Result<axum::response::sse::Event, AppError>>>> {update}
+fn(State<Arc<config::Config>>) -> impl futures::Future<Output = Sse<impl Stream<Item = std::result::Result<axum::response::sse::Event, AppError>>>> {update}: Handler<_, _>
