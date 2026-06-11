@@ -32,15 +32,22 @@
     '';
   };
 
-  # ── Local API (Rust / Axum management daemon) ────────────────────────────
-  localApiEnv = pkgs.rustPlatform.buildRustPackage {
-    pname = "local-api";
-    version = "0.1.0";
-    src = ./local-api;
-    cargoLock.lockFile = ./local-api/Cargo.lock;
+  # ── Local API (Rust / Axum via crane) ────────────────────────────────────
+  # crane splits the build into two derivations:
+  #   localApiDeps — all crate dependencies, cached until Cargo.toml/Cargo.lock changes
+  #   localApiEnv  — only your source code, rebuilt on each code change (fast)
+  craneLib = inputs.crane.mkLib pkgs;
+  localApiSrc = craneLib.cleanCargoSource (craneLib.path ./local-api);
+  localApiArgs = {
+    src = localApiSrc;
+    strictDeps = true;
     nativeBuildInputs = [pkgs.pkg-config];
     buildInputs = [pkgs.openssl];
   };
+  localApiDeps = craneLib.buildDepsOnly localApiArgs;
+  localApiEnv = craneLib.buildPackage (localApiArgs // {
+    cargoArtifacts = localApiDeps;
+  });
 in {
   inherit (cfg) hostname;
   inherit (cfg) timezone;
