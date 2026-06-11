@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 from local_api import kubectl
 from local_api.constants import CEPH_NAMESPACE
-from local_api.models.ceph import CephStatus, OsdInfo
+from local_api.models.ceph import CephStatus
 
 router = APIRouter()
 
@@ -65,20 +65,3 @@ async def ceph_status() -> CephStatus:
         )
     except Exception as e:
         return CephStatus(available=False, error=str(e))
-
-
-@router.get("/ceph/osds", response_model=list[OsdInfo])
-async def ceph_osds() -> list[OsdInfo]:
-    try:
-        data = await asyncio.to_thread(_ceph, "osd", "metadata")
-        return [
-            OsdInfo(
-                id=osd.get("id", 0),
-                hostname=osd.get("hostname", ""),
-                devices=osd.get("devices", ""),
-                size_bytes=int(osd.get("bluestore_bdev_size", 0)),
-            )
-            for osd in data
-        ]
-    except Exception:
-        return []

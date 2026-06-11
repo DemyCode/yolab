@@ -16,7 +16,5 @@
   networking.networkmanager.enable = true;
   users.users.homelab.extraGroups = ["networkmanager"];
 
-  services.swapspace.enable = true;
-
   system.stateVersion = "24.05";
 }
