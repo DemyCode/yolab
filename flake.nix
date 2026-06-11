@@ -9,15 +9,7 @@
     nixos-wsl.inputs.nixpkgs.follows = "nixpkgs";
     nix-darwin.url = "github:LnL7/nix-darwin";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
-    pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
-    pyproject-nix.inputs.nixpkgs.follows = "nixpkgs";
-    uv2nix.url = "github:pyproject-nix/uv2nix";
-    uv2nix.inputs.pyproject-nix.follows = "pyproject-nix";
-    uv2nix.inputs.nixpkgs.follows = "nixpkgs";
-    pyproject-build-systems.url = "github:pyproject-nix/build-system-pkgs";
-    pyproject-build-systems.inputs.pyproject-nix.follows = "pyproject-nix";
-    pyproject-build-systems.inputs.uv2nix.follows = "uv2nix";
-    pyproject-build-systems.inputs.nixpkgs.follows = "nixpkgs";
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs = {
@@ -83,9 +75,12 @@
         # Shell / Docker
         shellcheck
         hadolint
-        # Python project manager (used by sub-pre-commit hooks via uv run)
-        uv
-        # Node.js (used by sub-pre-commit hooks for frontend)
+        # Rust
+        cargo
+        rustc
+        pkg-config
+        openssl
+        # Node.js
         nodejs
         # Runner
         pre-commit
