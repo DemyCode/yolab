@@ -73,12 +73,12 @@ spec:
         - name: DIFFICULTY
           value: "{{ difficulty | default('normal') }}"
         - name: ENABLE_WHITELIST
-          value: "{{ 'true' if whitelist else 'false' }}"
-        {% if ops %}
+          value: "{{ 'true' if whitelist is defined and whitelist else 'false' }}"
+        {% if ops is defined and ops %}
         - name: OPS
           value: "{{ ops }}"
         {% endif %}
-        {% if whitelist %}
+        {% if whitelist is defined and whitelist %}
         - name: WHITELIST
           value: "{{ whitelist }}"
         - name: EXISTING_WHITELIST_FILE
