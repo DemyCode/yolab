@@ -30,31 +30,28 @@ subjects:
     namespace: rook-ceph
 ---
 apiVersion: batch/v1
-kind: CronJob
+kind: Job
 metadata:
   name: osd-env-fix
   namespace: rook-ceph
 spec:
-  schedule: "*/2 * * * *"
-  concurrencyPolicy: Forbid
-  jobTemplate:
+  # No ttlSecondsAfterFinished — the completed Job object stays so that
+  # subsequent kubectl applies are no-ops. This Job runs exactly once.
+  template:
     spec:
-      ttlSecondsAfterFinished: 30
-      template:
-        spec:
-          serviceAccountName: osd-env-fix
-          restartPolicy: OnFailure
-          containers:
-            - name: fix
-              image: docker.io/rook/ceph:v1.16.3
-              command:
-                - /bin/sh
-                - -c
-                - |
-                  for dep in $(kubectl get deployments -n rook-ceph -l app=rook-ceph-osd -o name); do
-                    kubectl set env -n rook-ceph "$dep" \
-                      CEPH_OSD_FLAVOR=classic \
-                      CEPH_USE_RANDOM_NONCE- \
-                      CEPH_VOLUME_DEBUG- \
-                      CEPH_VOLUME_SKIP_RESTORECON-
-                  done
+      serviceAccountName: osd-env-fix
+      restartPolicy: OnFailure
+      containers:
+        - name: fix
+          image: docker.io/rook/ceph:v1.16.3
+          command:
+            - /bin/sh
+            - -c
+            - |
+              for dep in $(kubectl get deployments -n rook-ceph -l app=rook-ceph-osd -o name); do
+                kubectl set env -n rook-ceph "$dep" \
+                  CEPH_OSD_FLAVOR=classic \
+                  CEPH_USE_RANDOM_NONCE- \
+                  CEPH_VOLUME_DEBUG- \
+                  CEPH_VOLUME_SKIP_RESTORECON-
+              done
