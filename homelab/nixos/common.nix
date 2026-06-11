@@ -304,29 +304,32 @@ in {
           IMG=/var/lib/rook/system-osd.img
 
           # Size the image to 75% of root-filesystem capacity.
-          # Creates it on first run; extends it on subsequent runs if smaller than target.
-          # 'truncate' makes a sparse file — blocks are only allocated on write.
+          # fallocate pre-allocates real disk blocks (no sparse regions) so
+          # BlueStore label writes always land on already-allocated blocks.
+          # This prevents the partial-write corruption that sparse files cause
+          # when block allocation is interrupted mid-write.
           mkdir -p /var/lib/rook
           set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
           TARGET=$(( $2 * 3 / 4 ))
           if [ ! -f "$IMG" ]; then
-            ${pkgs.coreutils}/bin/truncate -s "$TARGET" "$IMG"
+            ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
           else
             CURRENT=$(${pkgs.coreutils}/bin/stat -c%s "$IMG")
             if [ "$CURRENT" -lt "$TARGET" ]; then
-              ${pkgs.coreutils}/bin/truncate -s "$TARGET" "$IMG"
+              ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
               # Notify the running loop driver of the new size (no-op if not attached).
               ${pkgs.util-linux}/bin/losetup -c /dev/loop0 2>/dev/null || true
             fi
           fi
 
           # Attach to /dev/loop0 so the device name is stable across reboots.
-          # Skip if already correctly attached (e.g. during nixos-rebuild switch
-          # while Ceph has the device open — detaching would fail anyway).
+          # --direct-io=on bypasses the page cache for the loop device — Ceph
+          # manages its own cache, so OS-level caching only adds overhead and
+          # creates double-buffering consistency risks with the backing filesystem.
           ATTACHED=$(${pkgs.util-linux}/bin/losetup -j "$IMG" 2>/dev/null | grep "^/dev/loop0:" || true)
           if [ -z "$ATTACHED" ]; then
             ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
-            ${pkgs.util-linux}/bin/losetup /dev/loop0 "$IMG"
+            ${pkgs.util-linux}/bin/losetup --direct-io=on /dev/loop0 "$IMG"
           fi
         '';
         ExecStop = pkgs.writeShellScript "system-osd-stop" ''
@@ -403,7 +406,6 @@ in {
     systemd.tmpfiles.rules = [
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml  - - - - ${./rook/operator.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml   - - - - ${./rook/cluster.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-osd-env-fix.yaml - - - - ${./rook/osd-env-fix.yaml}"
     ];
 
     system.activationScripts.yolabVersion = ''

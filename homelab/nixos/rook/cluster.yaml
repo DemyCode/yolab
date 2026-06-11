@@ -32,6 +32,11 @@ spec:
       mds_beacon_grace: "60"
       ms_bind_ipv6: "true"
       ms_bind_ipv4: "false"
+    osd:
+      # Cap BlueStore's block cache so the OSD process stays well within its
+      # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)
+      # can leave the BlueStore label half-written and unrecoverable.
+      bluestore_cache_size_ssd: "1073741824"
   priorityClassNames:
     mon: system-cluster-critical
     mgr: system-cluster-critical
@@ -61,7 +66,7 @@ spec:
         cpu: "50m"
     osd:
       limits:
-        memory: "2Gi"
+        memory: "3Gi"
       requests:
         memory: "512Mi"
         cpu: "100m"
