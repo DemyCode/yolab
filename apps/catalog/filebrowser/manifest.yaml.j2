@@ -121,6 +121,17 @@ spec:
       labels:
         app: filebrowser
     spec:
+      initContainers:
+      - name: fix-perms
+        image: busybox:1
+        command: ['sh', '-c', 'chown -R 1000:1000 /db /srv']
+        volumeMounts:
+        - name: data
+          mountPath: /db
+          subPath: {{ instance_name }}/db
+        - name: data
+          mountPath: /srv
+          subPath: {{ instance_name }}/files
       containers:
       - name: filebrowser
         image: filebrowser/filebrowser:v2
