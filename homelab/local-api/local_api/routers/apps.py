@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import re
 import subprocess
@@ -156,13 +157,21 @@ async def _stream_proc(*cmd: str) -> AsyncGenerator[tuple[str | None, int | None
         stderr=asyncio.subprocess.STDOUT,
     )
     assert proc.stdout is not None
-    while True:
-        line = await proc.stdout.readline()
-        if not line:
-            break
-        yield line.decode().rstrip(), None
-    await proc.wait()
-    yield None, proc.returncode
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            yield line.decode().rstrip(), None
+        await proc.wait()
+        yield None, proc.returncode
+    finally:
+        # Kill the subprocess when the client disconnects mid-stream so kubectl
+        # log-follow processes don't accumulate and hit the concurrency limit.
+        if proc.returncode is None:
+            proc.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
 
 
 async def _apply_manifest(rendered: str) -> AsyncGenerator[tuple[str | None, int | None], None]:
@@ -475,7 +484,7 @@ async def pod_logs(instance_name: str, pod_name: str) -> StreamingResponse:
         async for line, _ in _stream_proc(
             "kubectl", "logs", "-n", f"yolab-{instance_name}", pod_name,
             "--all-containers=true", "--follow", "--prefix=true",
-            f"--tail={_LOGS_FOLLOW_TAIL}",
+            f"--tail={_LOGS_FOLLOW_TAIL}", "--max-log-requests=20",
         ):
             if line:
                 yield f"data: {line}\n\n"
