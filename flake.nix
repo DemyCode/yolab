@@ -10,6 +10,8 @@
     nix-darwin.url = "github:LnL7/nix-darwin";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
     crane.url = "github:ipetkov/crane";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -66,7 +68,11 @@
       iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
     };
 
-    devShells.x86_64-linux.default = pkgs.mkShell {
+    devShells.x86_64-linux.default = let
+      pkgsWithOverlay = pkgs.extend inputs.rust-overlay.overlays.default;
+      rustToolchain = pkgsWithOverlay.rust-bin.fromRustupToolchainFile
+        ./homelab/local-api/rust-toolchain.toml;
+    in pkgs.mkShell {
       packages = with pkgs; [
         # Nix
         alejandra
@@ -75,9 +81,8 @@
         # Shell / Docker
         shellcheck
         hadolint
-        # Rust
-        cargo
-        rustc
+        # Rust (version from rust-toolchain.toml)
+        rustToolchain
         pkg-config
         openssl
         # Node.js

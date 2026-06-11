@@ -36,7 +36,12 @@
   # crane splits the build into two derivations:
   #   localApiDeps — all crate dependencies, cached until Cargo.toml/Cargo.lock changes
   #   localApiEnv  — only your source code, rebuilt on each code change (fast)
-  craneLib = inputs.crane.mkLib pkgs;
+  #
+  # The toolchain is read from rust-toolchain.toml so pinning/upgrading Rust
+  # only requires editing that file — no Nix changes needed.
+  rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
+    .rust-bin.fromRustupToolchainFile ./local-api/rust-toolchain.toml;
+  craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
   localApiSrc = craneLib.cleanCargoSource (craneLib.path ./local-api);
   localApiArgs = {
     src = localApiSrc;
