@@ -132,6 +132,23 @@ spec:
         - name: data
           mountPath: /srv
           subPath: {{ instance_name }}/files
+      - name: init-db
+        image: filebrowser/filebrowser:v2
+        command:
+        - /bin/sh
+        - -c
+        - |
+          DB=/db/filebrowser.db
+          if [ ! -f "$DB" ]; then
+            filebrowser config init --database "$DB"
+            filebrowser users add admin "{{ password }}" --perm.admin --database "$DB"
+          else
+            filebrowser users update admin --password "{{ password }}" --database "$DB"
+          fi
+        volumeMounts:
+        - name: data
+          mountPath: /db
+          subPath: {{ instance_name }}/db
       containers:
       - name: filebrowser
         image: filebrowser/filebrowser:v2

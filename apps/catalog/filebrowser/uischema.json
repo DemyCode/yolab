@@ -1,5 +1,8 @@
 {
   "subdomain": {
     "ui:widget": "TunnelWidget"
+  },
+  "password": {
+    "ui:widget": "PasswordWidget"
   }
 }

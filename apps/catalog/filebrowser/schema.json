@@ -1,13 +1,17 @@
 {
   "title": "File Browser",
   "type": "object",
-  "required": ["subdomain"],
+  "required": ["subdomain", "password"],
   "properties": {
     "subdomain": {
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
       "default": "files"
+    },
+    "password": {
+      "type": "string",
+      "title": "Admin password"
     }
   }
 }
