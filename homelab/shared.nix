@@ -46,7 +46,7 @@
   localApiArgs = {
     src = localApiSrc;
     strictDeps = true;
-    nativeBuildInputs = [pkgs.pkg-config];
+    nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
     buildInputs = [pkgs.openssl];
   };
   localApiDeps = craneLib.buildDepsOnly localApiArgs;
