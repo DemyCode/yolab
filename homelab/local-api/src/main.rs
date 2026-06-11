@@ -55,8 +55,7 @@ async fn main() {
         .route("/api/status", get(status::handler))
         // Update / channel
         .route("/api/update", post(update::update))
-        .route("/api/update/channel", get(update::get_channel))
-        .route("/api/update/channel", put(update::set_channel))
+        .route("/api/update/channel", get(update::get_channel).put(update::set_channel))
         .route("/api/update/remotes", post(update::add_remote))
         .route("/api/update/remotes/:name", delete(update::remove_remote))
         // Rebuild log
@@ -76,13 +75,13 @@ async fn main() {
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
         .route("/api/apps", get(apps::list_apps))
-        .route("/api/apps/:app_id", post(apps::install_app))
-        .route("/api/apps/:instance_name/update", post(apps::update_app))
-        .route("/api/apps/:instance_name/scan-outputs", post(apps::scan_outputs))
-        .route("/api/apps/:instance_name", delete(apps::uninstall_app))
-        .route("/api/apps/:instance_name/pods", get(apps::list_pods))
-        .route("/api/apps/:instance_name/describe/:pod_name", get(apps::describe_pod))
-        .route("/api/apps/:instance_name/logs/:pod_name", get(apps::pod_logs))
+        // POST installs (uses app_id), DELETE uninstalls (uses instance_name) — same slot
+        .route("/api/apps/:id", post(apps::install_app).delete(apps::uninstall_app))
+        .route("/api/apps/:id/update", post(apps::update_app))
+        .route("/api/apps/:id/scan-outputs", post(apps::scan_outputs))
+        .route("/api/apps/:id/pods", get(apps::list_pods))
+        .route("/api/apps/:id/describe/:pod_name", get(apps::describe_pod))
+        .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
