@@ -233,7 +233,7 @@ async def _drain_osd(disk_name: str, osd_id: int, host: str) -> None:
     def ceph_purge() -> None:
         for cmd in [
             ("osd", "crush", "remove", f"osd.{osd_id}"),
-            ("osd", "auth", "del", f"osd.{osd_id}"),
+            ("auth", "del", f"osd.{osd_id}"),
             ("osd", "rm", str(osd_id)),
         ]:
             try:
