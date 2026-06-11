@@ -420,15 +420,5 @@ in {
       size = 8192;
     }];
     services.swapspace.enable = true;
-
-    # Keep Ceph daemons in RAM — they perform very poorly when swapped out.
-    # swappiness=10 means "only swap under real pressure" (default is 60).
-    # dirty_ratio/dirty_background_ratio tune writeback to avoid IO stalls
-    # when the OSD is flushing large bluestore writes.
-    boot.kernel.sysctl = {
-      "vm.swappiness" = 10;
-      "vm.dirty_ratio" = 40;
-      "vm.dirty_background_ratio" = 10;
-    };
   };
 }
