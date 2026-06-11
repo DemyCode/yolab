@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebrowser-caddy
+  namespace: yolab-{{ instance_name }}
+data:
+  Caddyfile: |
+    {$YOLAB_FQDN} {
+      reverse_proxy filebrowser:80
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      - name: wg-register
+        image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: "{{ service_name }}"
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
+      containers:
+      - name: wireguard
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wireguard
+          mountPath: /etc/wireguard
+
+      - name: caddy
+        image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+        - name: yolab
+          mountPath: /yolab
+
+      volumes:
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
+      - name: caddy-config
+        configMap:
+          name: filebrowser-caddy
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebrowser
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filebrowser
+  template:
+    metadata:
+      labels:
+        app: filebrowser
+    spec:
+      containers:
+      - name: filebrowser
+        image: filebrowser/filebrowser:v2
+        env:
+        - name: FB_DATABASE
+          value: /db/filebrowser.db
+        - name: FB_ROOT
+          value: /srv
+        - name: FB_PORT
+          value: "80"
+        - name: FB_ADDRESS
+          value: "0.0.0.0"
+        volumeMounts:
+        - name: data
+          mountPath: /srv
+          subPath: {{ instance_name }}/files
+        - name: data
+          mountPath: /db
+          subPath: {{ instance_name }}/db
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filebrowser
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: filebrowser
+  ports:
+  - port: 80
+    targetPort: 80
