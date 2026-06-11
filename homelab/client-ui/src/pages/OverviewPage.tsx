@@ -5,23 +5,22 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
 
+type Phase = "idle" | "git" | "reconnecting" | "rebuild" | "done";
+
 function LogLine({ line }: { line: string }) {
   const isError = line.startsWith("[ERROR]") || line.includes("error:");
   const isCmd = line.startsWith("$");
   const isWarning = line.startsWith("warning:");
+  const isDim = line.startsWith("[INFO]");
   return (
-    <div
-      className={cn(
-        "font-mono text-xs leading-5 whitespace-pre-wrap break-all",
-        isError
-          ? "text-[#f87171]"
-          : isCmd
-            ? "text-[#86efac]"
-            : isWarning
-              ? "text-[#fbbf24]"
-              : "text-[#a1a1aa]",
-      )}
-    >
+    <div className={cn(
+      "font-mono text-xs leading-5 whitespace-pre-wrap break-all",
+      isError ? "text-[#f87171]"
+      : isCmd ? "text-[#86efac]"
+      : isWarning ? "text-[#fbbf24]"
+      : isDim ? "text-[#52525b]"
+      : "text-[#a1a1aa]",
+    )}>
       {line}
     </div>
   );
@@ -29,14 +28,11 @@ function LogLine({ line }: { line: string }) {
 
 export function OverviewPage() {
   const [status, setStatus] = useState<StatusInfo | null>(null);
-  const [updating, setUpdating] = useState(false);
-  const [updateLog, setUpdateLog] = useState<string[]>([]);
-  const [updateDone, setUpdateDone] = useState(false);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [rebuildLog, setRebuildLog] = useState<string[]>([]);
-  const [rebuildRunning, setRebuildRunning] = useState(false);
-  const updateLogRef = useRef<HTMLDivElement>(null);
-  const rebuildLogRef = useRef<HTMLDivElement>(null);
+  const [log, setLog] = useState<string[]>([]);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const logRef = useRef<HTMLDivElement>(null);
+  // Tracks how many rebuild-log lines we've already shown so we only append deltas
+  const rebuildOffsetRef = useRef(0);
 
   // Channel state
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
@@ -48,126 +44,95 @@ export function OverviewPage() {
   const [addingRemote, setAddingRemote] = useState(false);
   const [channelSaving, setChannelSaving] = useState(false);
 
-  function loadChannel() {
-    fetch("/api/update/channel")
-      .then((r) => r.json())
-      .then((d: ChannelInfo) => {
-        setChannel(d);
-        setEditRemote(d.remote);
-        setEditRef(d.ref);
-      })
-      .catch(() => {});
+  useEffect(() => {
+    if (logRef.current)
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [log]);
+
+  function appendLines(lines: string[]) {
+    if (lines.length > 0)
+      setLog((prev) => [...prev, ...lines]);
   }
 
-  function loadRebuildLog(poll = false) {
+  // Poll rebuild-log, appending only new lines past the current offset.
+  // Calls itself until the rebuild finishes.
+  function pollRebuildLog() {
     let cancelled = false;
-    async function run() {
+    async function tick() {
       try {
         const r = await fetch("/api/rebuild-log");
         const d = (await r.json()) as RebuildLog;
         if (cancelled) return;
-        setRebuildLog(d.log ?? []);
-        setRebuildRunning(d.running);
-        if (d.running) setTimeout(run, 1500);
-        else if (poll)
-          fetch("/api/status")
-            .then((r) => r.json())
-            .then((s) => setStatus(s as StatusInfo))
-            .catch(() => {});
+        const newLines = (d.log ?? []).slice(rebuildOffsetRef.current);
+        rebuildOffsetRef.current = (d.log ?? []).length;
+        appendLines(newLines);
+        if (d.running) {
+          setTimeout(tick, 1500);
+        } else {
+          setPhase("done");
+          fetch("/api/status").then((r) => r.json()).then((s) => setStatus(s as StatusInfo)).catch(() => {});
+        }
       } catch {
-        if (!cancelled) setTimeout(run, 3000);
+        if (!cancelled) setTimeout(tick, 3000);
       }
     }
-    run();
+    tick();
     return () => { cancelled = true; };
   }
 
-  async function pollUntilAlive() {
-    setReconnecting(true);
+  async function waitForService() {
+    setPhase("reconnecting");
     for (let i = 0; i < 90; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
         const r = await fetch("/api/status");
         if (r.ok) {
           setStatus((await r.json()) as StatusInfo);
-          setReconnecting(false);
-          loadRebuildLog(true);
+          appendLines(["[INFO] Service back online — rebuild output below"]);
+          setPhase("rebuild");
+          rebuildOffsetRef.current = 0;
+          pollRebuildLog();
           return;
         }
-      } catch {
-        // retry
-      }
+      } catch { /* retry */ }
     }
-    setReconnecting(false);
+    setPhase("done");
   }
 
-  async function streamUpdateLog() {
-    const response = await fetch("/api/rebuild-log");
-    if (!response.ok) return;
-    const d = (await response.json()) as { running: boolean };
-    if (!d.running) { setUpdating(false); return; }
-    const poll = async () => {
-      await new Promise((r) => setTimeout(r, 1000));
-      try {
-        const r = await fetch("/api/rebuild-log");
-        const d = (await r.json()) as RebuildLog;
-        setUpdateLog(d.log ?? []);
-        if (!d.running) {
-          setUpdating(false);
-          if ((d.log ?? []).includes("[DONE]")) setUpdateDone(true);
-          else void pollUntilAlive();
-          return;
-        }
-      } catch {
-        setUpdating(false);
-        void pollUntilAlive();
-        return;
-      }
-      void poll();
-    };
-    void poll();
-  }
-
-  useEffect(() => {
-    fetch("/api/status")
+  function loadChannel() {
+    fetch("/api/update/channel")
       .then((r) => r.json())
-      .then((s) => setStatus(s as StatusInfo))
-      .catch(() => setStatus(null));
-    fetch("/api/rebuild-log")
-      .then((r) => r.json())
-      .then((d: RebuildLog) => {
-        if (d.running) {
-          setUpdating(true);
-          setUpdateLog(d.log ?? []);
-          streamUpdateLog();
-        }
-      })
+      .then((d: ChannelInfo) => { setChannel(d); setEditRemote(d.remote); setEditRef(d.ref); })
       .catch(() => {});
-    loadRebuildLog();
+  }
+
+  // On mount: check if a rebuild is already running from a previous session
+  useEffect(() => {
+    fetch("/api/status").then((r) => r.json()).then((s) => setStatus(s as StatusInfo)).catch(() => setStatus(null));
+    fetch("/api/rebuild-log").then((r) => r.json()).then((d: RebuildLog) => {
+      if (d.running) {
+        setLog(d.log ?? []);
+        rebuildOffsetRef.current = (d.log ?? []).length;
+        setPhase("rebuild");
+        pollRebuildLog();
+      } else if ((d.log ?? []).length > 0) {
+        setLog(d.log ?? []);
+        setPhase("done");
+      }
+    }).catch(() => {});
     loadChannel();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    if (updateLogRef.current)
-      updateLogRef.current.scrollTop = updateLogRef.current.scrollHeight;
-  }, [updateLog]);
-
-  useEffect(() => {
-    if (rebuildLogRef.current)
-      rebuildLogRef.current.scrollTop = rebuildLogRef.current.scrollHeight;
-  }, [rebuildLog]);
-
   async function runUpdate() {
-    setUpdating(true);
-    setUpdateLog([]);
-    setUpdateDone(false);
-    setReconnecting(false);
+    setLog([]);
+    setPhase("git");
+    rebuildOffsetRef.current = 0;
     try {
       const response = await fetch("/api/update", { method: "POST" });
-      if (!response.body) return;
+      if (!response.body) { void waitForService(); return; }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buf = "", sawDone = false;
+      let buf = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -176,23 +141,11 @@ export function OverviewPage() {
         buf = parts.pop() ?? "";
         for (const part of parts) {
           const line = part.startsWith("data: ") ? part.slice(6) : part;
-          if (!line.trim()) continue;
-          if (line === "[DONE]") {
-            sawDone = true;
-            setUpdateDone(true);
-            fetch("/api/status").then((r) => r.json()).then((s) => setStatus(s as StatusInfo)).catch(() => {});
-          } else setUpdateLog((prev) => [...prev, line]);
+          if (line.trim()) appendLines([line]);
         }
       }
-      if (!sawDone) {
-        setUpdateLog((prev) => [...prev, "[INFO] Connection lost — service is restarting…"]);
-        void pollUntilAlive();
-      }
-    } catch {
-      setUpdateLog((prev) => [...prev, "[INFO] Connection lost — service is restarting…"]);
-      void pollUntilAlive();
-    }
-    setUpdating(false);
+    } catch { /* stream ended — service is restarting */ }
+    void waitForService();
   }
 
   async function saveChannelAndUpdate() {
@@ -221,11 +174,7 @@ export function OverviewPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newRemoteName.trim(), url: newRemoteUrl.trim() }),
       });
-      if (r.ok) {
-        setNewRemoteName("");
-        setNewRemoteUrl("");
-        loadChannel();
-      }
+      if (r.ok) { setNewRemoteName(""); setNewRemoteUrl(""); loadChannel(); }
     } finally {
       setAddingRemote(false);
     }
@@ -237,17 +186,20 @@ export function OverviewPage() {
     loadChannel();
   }
 
+  const updating = phase === "git" || phase === "reconnecting" || phase === "rebuild";
   const shortHash = status?.commit_hash?.slice(0, 8) ?? "—";
   const commitDate = status?.commit_date
     ? new Date(status.commit_date).toLocaleString(undefined, {
-        month: "short", day: "numeric", year: "numeric",
-        hour: "2-digit", minute: "2-digit",
+        month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit",
       })
     : "—";
+  const channelLabel = channel ? `${channel.remote} / ${channel.ref}` : "origin / main";
 
-  const channelLabel = channel
-    ? `${channel.remote} / ${channel.ref}`
-    : "origin / main";
+  const logTitle =
+    phase === "git" ? "Fetching & resetting…"
+    : phase === "reconnecting" ? "Restarting service…"
+    : phase === "rebuild" ? "Building…"
+    : "Last build";
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -270,7 +222,6 @@ export function OverviewPage() {
             </div>
           </CardContent>
         </Card>
-
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
             <div className="mt-0.5 rounded-md bg-[#a78bfa]/10 p-1.5">
@@ -283,7 +234,6 @@ export function OverviewPage() {
             </div>
           </CardContent>
         </Card>
-
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
             <div className="mt-0.5 rounded-md bg-[#a78bfa]/10 p-1.5">
@@ -312,7 +262,6 @@ export function OverviewPage() {
               <RefreshCw className={cn("h-4 w-4", updating && "animate-spin")} strokeWidth={2} />
               {updating ? "Updating…" : "Update & rebuild"}
             </Button>
-
             <button
               onClick={() => setChannelOpen((o) => !o)}
               className="flex items-center gap-1.5 text-xs text-[#71717a] hover:text-[#a1a1aa] transition-colors"
@@ -325,7 +274,6 @@ export function OverviewPage() {
 
           {channelOpen && (
             <div className="border-t border-[#27272a] pt-4 space-y-4">
-              {/* Remote + ref selectors */}
               <div className="flex gap-2 flex-wrap">
                 <div className="flex-1 min-w-[120px]">
                   <label className="text-xs text-[#71717a] mb-1 block">Remote</label>
@@ -359,7 +307,6 @@ export function OverviewPage() {
                 </div>
               </div>
 
-              {/* Remotes list */}
               {(channel?.remotes ?? []).length > 0 && (
                 <div className="space-y-1">
                   <p className="text-xs text-[#52525b] uppercase tracking-wider font-semibold">Remotes</p>
@@ -368,10 +315,7 @@ export function OverviewPage() {
                       <span className="font-mono text-[#a78bfa] w-24 truncate">{r.name}</span>
                       <span className="text-[#52525b] truncate flex-1">{r.url}</span>
                       {r.name !== "origin" && (
-                        <button
-                          onClick={() => void handleRemoveRemote(r.name)}
-                          className="text-[#52525b] hover:text-[#f87171] transition-colors flex-shrink-0"
-                        >
+                        <button onClick={() => void handleRemoveRemote(r.name)} className="text-[#52525b] hover:text-[#f87171] transition-colors flex-shrink-0">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       )}
@@ -380,31 +324,16 @@ export function OverviewPage() {
                 </div>
               )}
 
-              {/* Add remote */}
               <div className="space-y-2">
                 <p className="text-xs text-[#52525b] uppercase tracking-wider font-semibold">Add remote</p>
                 <div className="flex gap-2 flex-wrap">
-                  <input
-                    value={newRemoteName}
-                    onChange={(e) => setNewRemoteName(e.target.value)}
-                    placeholder="name"
-                    className="w-28 rounded-md border border-[#27272a] bg-[#09090b] text-[#fafafa] text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#a78bfa] font-mono"
-                  />
-                  <input
-                    value={newRemoteUrl}
-                    onChange={(e) => setNewRemoteUrl(e.target.value)}
-                    placeholder="https://github.com/user/yolab"
-                    className="flex-1 min-w-[200px] rounded-md border border-[#27272a] bg-[#09090b] text-[#fafafa] text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void handleAddRemote()}
-                    disabled={addingRemote || !newRemoteName.trim() || !newRemoteUrl.trim()}
-                    className="gap-1.5"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Add
+                  <input value={newRemoteName} onChange={(e) => setNewRemoteName(e.target.value)} placeholder="name"
+                    className="w-28 rounded-md border border-[#27272a] bg-[#09090b] text-[#fafafa] text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#a78bfa] font-mono" />
+                  <input value={newRemoteUrl} onChange={(e) => setNewRemoteUrl(e.target.value)} placeholder="https://github.com/user/yolab"
+                    className="flex-1 min-w-[200px] rounded-md border border-[#27272a] bg-[#09090b] text-[#fafafa] text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#a78bfa]" />
+                  <Button size="sm" variant="outline" onClick={() => void handleAddRemote()}
+                    disabled={addingRemote || !newRemoteName.trim() || !newRemoteUrl.trim()} className="gap-1.5">
+                    <Plus className="h-3.5 w-3.5" />Add
                   </Button>
                 </div>
               </div>
@@ -413,45 +342,25 @@ export function OverviewPage() {
         </CardContent>
       </Card>
 
-      {/* Update log */}
-      {(updateLog.length > 0 || updateDone || reconnecting) && (
+      {/* Unified build log */}
+      {phase !== "idle" && (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle>Update log</CardTitle>
-              {updateDone && <span className="text-xs text-[#4ade80] font-medium">✓ Git update complete</span>}
-              {reconnecting && <span className="text-xs text-[#fbbf24] font-medium">Waiting for service…</span>}
+              <div className="flex items-center gap-2">
+                {updating && (
+                  <span className="inline-block w-2 h-2 rounded-full bg-[#4ade80] shadow-[0_0_6px_#4ade80] animate-pulse-dot" />
+                )}
+                <CardTitle>{logTitle}</CardTitle>
+              </div>
+              {phase === "done" && <span className="text-xs text-[#4ade80] font-medium">✓ Done</span>}
+              {phase === "reconnecting" && <span className="text-xs text-[#fbbf24] font-medium">Waiting for service…</span>}
             </div>
           </CardHeader>
           <CardContent>
-            <div
-              ref={updateLogRef}
-              className="rounded-lg bg-[#09090b] border border-[#27272a] p-3 max-h-52 overflow-y-auto space-y-0.5"
-            >
-              {updateLog.map((line, i) => <LogLine key={i} line={line} />)}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Rebuild log */}
-      {(rebuildLog.length > 0 || rebuildRunning) && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              {rebuildRunning && (
-                <span className="inline-block w-2 h-2 rounded-full bg-[#4ade80] shadow-[0_0_6px_#4ade80] animate-pulse-dot" />
-              )}
-              <CardTitle>{rebuildRunning ? "Rebuild in progress…" : "Last rebuild log"}</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div
-              ref={rebuildLogRef}
-              className="rounded-lg bg-[#09090b] border border-[#27272a] p-3 max-h-96 overflow-y-auto space-y-0.5"
-            >
-              {rebuildLog.map((line, i) => <LogLine key={i} line={line} />)}
-              {rebuildRunning && <div className="font-mono text-xs text-[#52525b]">▌</div>}
+            <div ref={logRef} className="rounded-lg bg-[#09090b] border border-[#27272a] p-3 max-h-96 overflow-y-auto space-y-0.5">
+              {log.map((line, i) => <LogLine key={i} line={line} />)}
+              {updating && <div className="font-mono text-xs text-[#52525b]">▌</div>}
             </div>
           </CardContent>
         </Card>
