@@ -32,6 +32,48 @@ function fmt(bytes: number | null | undefined): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+function Shimmer({ className }: { className?: string }) {
+  return (
+    <div className={`animate-pulse rounded bg-[#27272a] ${className ?? ""}`} />
+  );
+}
+
+function StorageOverviewSkeleton() {
+  return (
+    <Card>
+      <CardContent className="pt-4 pb-4">
+        <div className="space-y-2">
+          <div className="flex justify-between">
+            <Shimmer className="h-3 w-24" />
+            <Shimmer className="h-3 w-28" />
+          </div>
+          <Shimmer className="h-2 w-full" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiskRowSkeleton() {
+  return (
+    <Card>
+      <CardContent className="pt-5 pb-5">
+        <div className="flex items-start gap-3">
+          <Shimmer className="mt-1 h-5 w-5 flex-shrink-0" />
+          <Shimmer className="mt-0.5 h-7 w-7 rounded-md flex-shrink-0" />
+          <div className="flex-1 space-y-2.5">
+            <div className="flex items-center justify-between gap-4">
+              <Shimmer className="h-3.5 w-40" />
+              <Shimmer className="h-3 w-24" />
+            </div>
+            <Shimmer className="h-3 w-20" />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function StorageOverview({ status }: { status: CephStatus | null }) {
   if (!status?.available || !status.total_bytes) return null;
   const { used_bytes: used, total_bytes: total } = status;
@@ -178,28 +220,35 @@ function DiskRow({ disk }: { disk: DiskItem }) {
 export function DisksPage() {
   const [disks, setDisks] = useState<DiskItem[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const draggingRef = useRef(false);
 
-  function load() {
-    // Skip refresh while user is dragging or saving — avoids flickering the list mid-interaction
-    if (savingRef.current || draggingRef.current) return;
-    fetch("/api/disks")
-      .then((r) => r.json())
-      .then((d: DiskItem[]) => {
-        // Never replace a populated list with an empty one — the API can return [] briefly
-        // during reconcile or when a pod is restarting, which would make the list disappear
-        if (d.length > 0) setDisks(d);
-      })
-      .catch(() => {});
-    fetch("/api/ceph/status")
-      .then((r) => r.json())
-      .then((d) => setCeph(d as CephStatus))
-      .catch(() => {});
-  }
-
   useEffect(() => {
+    let first = true;
+
+    function load() {
+      if (savingRef.current || draggingRef.current) return;
+
+      const disksP = fetch("/api/disks")
+        .then((r) => r.json())
+        .then((d: DiskItem[]) => {
+          if (d.length > 0) setDisks(d);
+        })
+        .catch(() => {});
+
+      const cephP = fetch("/api/ceph/status")
+        .then((r) => r.json())
+        .then((d) => setCeph(d as CephStatus))
+        .catch(() => {});
+
+      if (first) {
+        first = false;
+        void Promise.all([disksP, cephP]).finally(() => setLoading(false));
+      }
+    }
+
     load();
     const interval = setInterval(load, 10_000);
     return () => clearInterval(interval);
@@ -257,9 +306,26 @@ export function DisksPage() {
         </p>
       </div>
 
-      <StorageOverview status={ceph} />
+      {loading ? (
+        <StorageOverviewSkeleton />
+      ) : (
+        <StorageOverview status={ceph} />
+      )}
 
-      {disks.length > 0 && (
+      {loading && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <Shimmer className="h-3 w-10" />
+          </div>
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <DiskRowSkeleton key={i} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && disks.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
@@ -287,10 +353,25 @@ export function DisksPage() {
         </div>
       )}
 
-      {disks.length === 0 && (
-        <p className="text-sm text-[#52525b] text-center py-8">
-          No storage disks detected
-        </p>
+      {!loading && disks.length === 0 && (
+        <Card>
+          <CardContent className="py-12 flex flex-col items-center gap-4 text-center">
+            <div className="rounded-full bg-[#27272a] p-4">
+              <HardDrive
+                className="h-7 w-7 text-[#52525b]"
+                strokeWidth={1.5}
+              />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-[#71717a]">
+                No storage disks detected
+              </p>
+              <p className="text-xs text-[#52525b] mt-1">
+                Disks appear here once the local API can reach the node
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
