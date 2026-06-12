@@ -316,14 +316,11 @@ in {
           mkdir -p /var/lib/rook
           set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
           TARGET=$(( $2 * 3 / 4 ))
+          # Only create on first boot. Never resize an existing image: enlarging
+          # the file shifts the BlueStore backup-label offsets so expand_devices
+          # reads zeroes, decodes a malformed label, and aborts the OSD.
           if [ ! -f "$IMG" ]; then
             ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
-          else
-            CURRENT=$(${pkgs.coreutils}/bin/stat -c%s "$IMG")
-            if [ "$CURRENT" -lt "$TARGET" ]; then
-              ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
-              ${pkgs.util-linux}/bin/losetup -c /dev/loop0 2>/dev/null || true
-            fi
           fi
 
           # Attach to /dev/loop0 so the device name is stable across reboots.
