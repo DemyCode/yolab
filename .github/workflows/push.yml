@@ -88,10 +88,13 @@ jobs:
           nix build path:.#homelab-api --print-build-logs --print-out-paths --verbose
 
       - name: Push to Nix cache
-        if: ${{ secrets.HARMONIA_SIGN_KEY != '' }}
         env:
           HARMONIA_SIGN_KEY: ${{ secrets.HARMONIA_SIGN_KEY }}
         run: |
+          if [ -z "$HARMONIA_SIGN_KEY" ]; then
+            echo "HARMONIA_SIGN_KEY not set, skipping cache push"
+            exit 0
+          fi
           printf '%s' "$HARMONIA_SIGN_KEY" > /tmp/harmonia-priv.pem
           nix copy --to 'https://cache.demycode.ovh?secret-key=/tmp/harmonia-priv.pem' path:.#iso path:.#homelab-ui path:.#homelab-api
           rm /tmp/harmonia-priv.pem
