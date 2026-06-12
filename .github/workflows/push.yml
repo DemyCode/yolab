@@ -97,7 +97,7 @@ jobs:
             echo "ATTIC_TOKEN not set, skipping cache push"
             exit 0
           fi
-          nix run nixpkgs#attic-client -- login local https://cache.demycode.ovh --token "$ATTIC_TOKEN"
+          nix run nixpkgs#attic-client -- login local https://cache.demycode.ovh "$ATTIC_TOKEN"
           nix run nixpkgs#attic-client -- cache create local:yolab --public 2>/dev/null || true
           nix run nixpkgs#attic-client -- push local:yolab \
             path:.#iso path:.#homelab-ui path:.#homelab-api
