@@ -79,26 +79,28 @@
 
     devShells.x86_64-linux.default = let
       pkgsWithOverlay = pkgs.extend inputs.rust-overlay.overlays.default;
-      rustToolchain = pkgsWithOverlay.rust-bin.fromRustupToolchainFile
+      rustToolchain =
+        pkgsWithOverlay.rust-bin.fromRustupToolchainFile
         ./homelab/local-api/rust-toolchain.toml;
-    in pkgs.mkShell {
-      packages = with pkgs; [
-        # Nix
-        alejandra
-        statix
-        deadnix
-        # Shell / Docker
-        shellcheck
-        hadolint
-        # Rust (version from rust-toolchain.toml)
-        rustToolchain
-        pkg-config
-        openssl
-        # Node.js
-        nodejs
-        # Runner
-        pre-commit
-      ];
-    };
+    in
+      pkgs.mkShell {
+        packages = with pkgs; [
+          # Nix
+          alejandra
+          statix
+          deadnix
+          # Shell / Docker
+          shellcheck
+          hadolint
+          # Rust (version from rust-toolchain.toml)
+          rustToolchain
+          pkg-config
+          openssl
+          # Node.js
+          nodejs
+          # Runner
+          pre-commit
+        ];
+      };
   };
 }

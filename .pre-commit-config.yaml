@@ -5,6 +5,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        args: [--allow-multiple-documents]
       - id: check-json
         exclude: tsconfig.*\.json$
       - id: check-toml
@@ -14,12 +15,6 @@ repos:
   - repo: https://github.com/ddanier/sub-pre-commit
     rev: v4.5.1
     hooks:
-      - id: sub-pre-commit
-        alias: local-api
-        name: pre-commit for homelab/local-api/
-        args: ["-p", "homelab/local-api"]
-        files: ^homelab/local-api/
-
       - id: sub-pre-commit
         alias: installer-backend
         name: pre-commit for installer/nixos/backend/

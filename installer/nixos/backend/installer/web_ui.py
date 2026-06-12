@@ -52,11 +52,15 @@ async def api_join_info(body: dict) -> dict:
         follow_redirects=True,
     )
     if login_resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Authentication failed on existing node")
+        raise HTTPException(
+            status_code=401, detail="Authentication failed on existing node"
+        )
 
     session_cookie = login_resp.cookies.get("yolab_session")
     if not session_cookie:
-        raise HTTPException(status_code=401, detail="No session cookie received from existing node")
+        raise HTTPException(
+            status_code=401, detail="No session cookie received from existing node"
+        )
 
     info_resp = httpx.get(
         f"{url}/api/cluster/join-info",

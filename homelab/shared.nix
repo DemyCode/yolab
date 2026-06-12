@@ -1,6 +1,5 @@
 {
   pkgs,
-  lib,
   inputs,
 }: let
   configPath = ./ignored/config.toml;
@@ -50,9 +49,10 @@
     buildInputs = [pkgs.openssl];
   };
   localApiDeps = craneLib.buildDepsOnly localApiArgs;
-  localApiEnv = craneLib.buildPackage (localApiArgs // {
-    cargoArtifacts = localApiDeps;
-  });
+  localApiEnv = craneLib.buildPackage (localApiArgs
+    // {
+      cargoArtifacts = localApiDeps;
+    });
 in {
   inherit (cfg) hostname;
   inherit (cfg) timezone;
