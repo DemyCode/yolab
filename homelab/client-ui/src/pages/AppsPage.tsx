@@ -171,34 +171,80 @@ function PasswordWidget({ value, onChange }: WidgetProps) {
   );
 }
 
+// ─── Skeletons ────────────────────────────────────────────────────────────────
+
+function Shimmer({ className }: { className?: string }) {
+  return (
+    <div className={`animate-pulse rounded bg-[#27272a] ${className ?? ""}`} />
+  );
+}
+
+function InstalledRowSkeleton() {
+  return (
+    <Card>
+      <CardContent className="flex items-center justify-between gap-4 py-4">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Shimmer className="h-3.5 w-28" />
+            <Shimmer className="h-5 w-16 rounded-full" />
+          </div>
+          <Shimmer className="h-3 w-40" />
+        </div>
+        <Shimmer className="h-4 w-4 flex-shrink-0" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function CatalogCardSkeleton() {
+  return (
+    <Card>
+      <CardContent className="pt-5 pb-4">
+        <div className="flex items-start gap-3">
+          <Shimmer className="flex-shrink-0 w-9 h-9 rounded-md" />
+          <div className="flex-1 space-y-2">
+            <Shimmer className="h-3.5 w-24" />
+            <Shimmer className="h-3 w-full" />
+            <Shimmer className="h-3 w-3/4" />
+            <Shimmer className="h-2.5 w-14 mt-1" />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Main apps list ───────────────────────────────────────────────────────────
 
 export function AppsPage() {
   const navigate = useNavigate();
   const [catalog, setCatalog] = useState<CatalogApp[]>([]);
   const [installed, setInstalled] = useState<AppInfo[]>([]);
+  const [loading, setLoading] = useState(true);
 
   function loadInstalled() {
-    fetch("/api/apps")
+    return fetch("/api/apps")
       .then((r) => r.json())
       .then((a) => setInstalled(a as AppInfo[]))
       .catch(() => {});
   }
 
   useEffect(() => {
-    fetch("/api/apps/catalog")
+    const catalogP = fetch("/api/apps/catalog")
       .then((r) => r.json())
       .then((c) => setCatalog(c as CatalogApp[]))
       .catch(() => {});
-    loadInstalled();
-  }, []);
+    void Promise.all([catalogP, loadInstalled()]).finally(() =>
+      setLoading(false),
+    );
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const needsRefresh = installed.some((a) => a.status !== "running");
     if (!needsRefresh) return;
-    const id = setInterval(loadInstalled, 3000);
+    const id = setInterval(() => void loadInstalled(), 3000);
     return () => clearInterval(id);
-  }, [installed]);
+  }, [installed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -210,67 +256,78 @@ export function AppsPage() {
       </div>
 
       {/* Installed */}
-      {installed.length > 0 && (
+      {loading ? (
         <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
-            Installed
-          </h2>
+          <Shimmer className="h-3 w-16" />
           <div className="space-y-2">
-            {installed.map((app) => {
-              const primaryOutput = app.outputs.find(
-                (o) => o.type !== "hidden",
-              );
-              return (
-                <Card
-                  key={app.instance_name}
-                  className="cursor-pointer hover:bg-[#1f1f23] transition-colors"
-                  onClick={() => navigate(`/installed/${app.instance_name}`)}
-                >
-                  <CardContent className="flex items-center justify-between gap-4 py-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-[#fafafa]">
-                            {app.app_id}
-                          </span>
-                          <Badge variant={statusVariant(app.status)}>
-                            {statusLabel(app.status)}
-                          </Badge>
-                        </div>
-                        <span className="text-xs text-[#52525b] font-mono">
-                          {app.instance_name}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 flex-shrink-0">
-                      {primaryOutput &&
-                        (primaryOutput.type === "url" ? (
-                          <a
-                            href={primaryOutput.value}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-xs font-mono text-[#a78bfa] hover:text-[#c4b5fd] flex items-center gap-1 transition-colors max-w-[200px] truncate"
-                          >
-                            {primaryOutput.value}
-                            <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                          </a>
-                        ) : (
-                          <span
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-xs font-mono text-[#71717a] max-w-[200px] truncate"
-                          >
-                            {primaryOutput.value}
-                          </span>
-                        ))}
-                      <ChevronRight className="h-4 w-4 text-[#52525b]" />
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
+            {[1, 2].map((i) => (
+              <InstalledRowSkeleton key={i} />
+            ))}
           </div>
         </section>
+      ) : (
+        installed.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
+              Installed
+            </h2>
+            <div className="space-y-2">
+              {installed.map((app) => {
+                const primaryOutput = app.outputs.find(
+                  (o) => o.type !== "hidden",
+                );
+                return (
+                  <Card
+                    key={app.instance_name}
+                    className="cursor-pointer hover:bg-[#1f1f23] transition-colors"
+                    onClick={() => navigate(`/installed/${app.instance_name}`)}
+                  >
+                    <CardContent className="flex items-center justify-between gap-4 py-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-[#fafafa]">
+                              {app.app_id}
+                            </span>
+                            <Badge variant={statusVariant(app.status)}>
+                              {statusLabel(app.status)}
+                            </Badge>
+                          </div>
+                          <span className="text-xs text-[#52525b] font-mono">
+                            {app.instance_name}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        {primaryOutput &&
+                          (primaryOutput.type === "url" ? (
+                            <a
+                              href={primaryOutput.value}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-xs font-mono text-[#a78bfa] hover:text-[#c4b5fd] flex items-center gap-1 transition-colors max-w-[200px] truncate"
+                            >
+                              {primaryOutput.value}
+                              <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                            </a>
+                          ) : (
+                            <span
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-xs font-mono text-[#71717a] max-w-[200px] truncate"
+                            >
+                              {primaryOutput.value}
+                            </span>
+                          ))}
+                        <ChevronRight className="h-4 w-4 text-[#52525b]" />
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </section>
+        )
       )}
 
       {/* Catalog */}
@@ -278,8 +335,14 @@ export function AppsPage() {
         <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
           Available
         </h2>
-        {catalog.length === 0 ? (
-          <p className="text-sm text-[#71717a]">Loading catalog…</p>
+        {loading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <CatalogCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : catalog.length === 0 ? (
+          <p className="text-sm text-[#71717a]">No apps available.</p>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {catalog.map((app) => (
@@ -505,6 +568,9 @@ export function InstalledDetailPage() {
   const [confirming, setConfirming] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallError, setUninstallError] = useState("");
+  const [reconfiguring, setReconfiguring] = useState(false);
+  const [reconfData, setReconfData] = useState<object>({});
+  const [catalogApp, setCatalogApp] = useState<CatalogApp | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<ReadableStreamDefaultReader | null>(null);
 
@@ -513,7 +579,10 @@ export function InstalledDetailPage() {
       .then((r) => r.json())
       .then((apps: AppInfo[]) => {
         const found = apps.find((a) => a.instance_name === instanceName);
-        if (found) setApp(found);
+        if (found) {
+          setApp(found);
+          setReconfData(found.config as object);
+        }
       })
       .catch(() => {});
   }
@@ -544,6 +613,17 @@ export function InstalledDetailPage() {
     }, 3000);
     return () => clearInterval(id);
   }, [instanceName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!app) return;
+    fetch("/api/apps/catalog")
+      .then((r) => r.json())
+      .then((c: CatalogApp[]) => {
+        const found = c.find((a) => a.id === app.app_id);
+        if (found) setCatalogApp(found);
+      })
+      .catch(() => {});
+  }, [app?.app_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (outputRef.current)
@@ -636,6 +716,35 @@ export function InstalledDetailPage() {
       setUninstalling(false);
       setConfirming(false);
     }
+  }
+
+  async function doReconfigure() {
+    setReconfiguring(true);
+    setUpdateLog([]);
+    const response = await fetch(`/api/apps/${instanceName}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: reconfData }),
+    });
+    if (!response.body) {
+      setReconfiguring(false);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.startsWith("data: ") ? part.slice(6) : part;
+        if (line.trim()) setUpdateLog((l) => [...l, line]);
+      }
+    }
+    setReconfiguring(false);
   }
 
   if (!app)
@@ -822,6 +931,45 @@ export function InstalledDetailPage() {
                 </>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Reconfigure */}
+      {catalogApp && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Reconfigure</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Form
+              className="yolab-form"
+              schema={catalogApp.schema as never}
+              uiSchema={catalogApp.uischema as never}
+              validator={validator}
+              formData={reconfData}
+              onChange={({ formData: d }) => setReconfData(d ?? {})}
+              onSubmit={() => void doReconfigure()}
+              widgets={{ TunnelWidget, PasswordWidget }}
+              formContext={{ tunnelDomain: "" }}
+            >
+              <Button
+                type="submit"
+                variant="outline"
+                size="sm"
+                disabled={reconfiguring || app.status === "uninstalling"}
+                className="mt-2"
+              >
+                {reconfiguring ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    Applying…
+                  </>
+                ) : (
+                  "Apply"
+                )}
+              </Button>
+            </Form>
           </CardContent>
         </Card>
       )}
