@@ -82,12 +82,18 @@ jobs:
       - name: Build ISO
         run: nix build path:.#iso --print-build-logs --print-out-paths --verbose
 
+      - name: Build homelab packages
+        run: |
+          nix build path:.#homelab-ui --print-build-logs --print-out-paths --verbose
+          nix build path:.#homelab-api --print-build-logs --print-out-paths --verbose
+
       - name: Push to Nix cache
+        if: ${{ secrets.HARMONIA_SIGN_KEY != '' }}
         env:
           HARMONIA_SIGN_KEY: ${{ secrets.HARMONIA_SIGN_KEY }}
         run: |
           printf '%s' "$HARMONIA_SIGN_KEY" > /tmp/harmonia-priv.pem
-          nix copy --to 'https://cache.demycode.ovh?secret-key=/tmp/harmonia-priv.pem' path:.#iso
+          nix copy --to 'https://cache.demycode.ovh?secret-key=/tmp/harmonia-priv.pem' path:.#iso path:.#homelab-ui path:.#homelab-api
           rm /tmp/harmonia-priv.pem
 
       - name: Get ISO info

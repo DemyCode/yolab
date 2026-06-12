@@ -73,8 +73,12 @@
       "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
     };
 
-    packages.x86_64-linux = {
+    packages.x86_64-linux = let
+      builds = import ./homelab/builds.nix {inherit pkgs inputs;};
+    in {
       iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
+      homelab-ui = builds.clientUi;
+      homelab-api = builds.localApiEnv;
     };
 
     devShells.x86_64-linux.default = let
