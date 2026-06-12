@@ -417,6 +417,8 @@ in {
       "nix-command"
       "flakes"
     ];
+    nix.settings.extra-substituters = [ "https://cache.demycode.ovh/yolab" ];
+    nix.settings.extra-trusted-public-keys = lib.optionals (s.cachePubKey != "") [ s.cachePubKey ];
     nix.gc.automatic = true;
 
     swapDevices = [

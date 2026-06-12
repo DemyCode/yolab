@@ -1,6 +1,8 @@
 {
   pkgs,
+  lib,
   inputs,
+  ...
 }: let
   configPath = ./ignored/config.toml;
   homelabConfig = builtins.fromTOML (builtins.readFile configPath);
@@ -27,6 +29,7 @@ in {
   allowedSshKeys = cfg.allowed_ssh_keys or [];
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
+  cachePubKey = cfg.cache_pub_key or "";
 
   inherit
     tunnelCfg

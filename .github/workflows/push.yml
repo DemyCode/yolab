@@ -89,15 +89,16 @@ jobs:
 
       - name: Push to Nix cache
         env:
-          HARMONIA_SIGN_KEY: ${{ secrets.HARMONIA_SIGN_KEY }}
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
-          if [ -z "$HARMONIA_SIGN_KEY" ]; then
-            echo "HARMONIA_SIGN_KEY not set, skipping cache push"
+          if [ -z "$ATTIC_TOKEN" ]; then
+            echo "ATTIC_TOKEN not set, skipping cache push"
             exit 0
           fi
-          printf '%s' "$HARMONIA_SIGN_KEY" > /tmp/harmonia-priv.pem
-          nix copy --to 'https://cache.demycode.ovh?secret-key=/tmp/harmonia-priv.pem' path:.#iso path:.#homelab-ui path:.#homelab-api
-          rm /tmp/harmonia-priv.pem
+          nix run nixpkgs#attic-client -- login local https://cache.demycode.ovh --token "$ATTIC_TOKEN"
+          nix run nixpkgs#attic-client -- cache create local:yolab --public 2>/dev/null || true
+          nix run nixpkgs#attic-client -- push local:yolab \
+            path:.#iso path:.#homelab-ui path:.#homelab-api
 
       - name: Get ISO info
         id: iso_info
