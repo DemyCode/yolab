@@ -115,7 +115,7 @@ function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: Join
       const res = await fetch('/api/join-info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), password }),
+        body: JSON.stringify({ url: url.trim(), password  }),
       })
       const data = await res.json()
       if (!res.ok) {
