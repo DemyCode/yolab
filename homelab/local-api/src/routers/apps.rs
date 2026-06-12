@@ -339,9 +339,15 @@ pub async fn install_app(
     Sse::new(stream).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct UpdateRequest {
+    pub config: Option<serde_json::Map<String, Value>>,
+}
+
 pub async fn update_app(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
+    body: Option<Json<UpdateRequest>>,
 ) -> impl IntoResponse {
     let ns = format!("yolab-{instance_name}");
     let Ok(ns_out) = tokio::process::Command::new("kubectl")
@@ -355,10 +361,13 @@ pub async fn update_app(
     };
     let ann = ns_v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
     let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
+    let stored_config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
         .and_then(|v| v.as_str())
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
+
+    // Caller may supply a new config; fall back to the stored one.
+    let config = body.and_then(|b| b.0.config).unwrap_or(stored_config);
 
     if id.is_empty() || !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
@@ -382,6 +391,12 @@ pub async fn update_app(
         tokio::pin!(apply_stream);
         use futures::StreamExt;
         while let Some(ev) = apply_stream.next().await { yield ev; }
+        // Persist updated config so future updates stay consistent.
+        let _ = tokio::process::Command::new("kubectl")
+            .args(["annotate", "namespace", &ns,
+                   &format!("{ANN_CONFIG}={}", serde_json::to_string(&config).unwrap()),
+                   "--overwrite=true"])
+            .output().await;
         yield Ok(Event::default().data("Restarting deployments..."));
         let child = tokio::process::Command::new("kubectl")
             .args(["rollout", "restart", "deployment", "-n", &ns])
@@ -591,3 +606,4 @@ pub async fn pod_logs(
     };
     Sse::new(stream)
 }
+

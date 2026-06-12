@@ -212,14 +212,31 @@ pub async fn update(
         let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
         if let Ok(log_file) = std::fs::File::create(&cfg.rebuild_log) {
             let log2 = log_file.try_clone().unwrap_or_else(|_| std::fs::File::create(&cfg.rebuild_log).unwrap());
-            if let Ok(child) = std::process::Command::new("nixos-rebuild")
-                .args(["switch", "--flake", &flake, "--no-update-lock-file", "--print-build-logs"])
+            if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
+                .args(["switch", "--flake", &flake, "--no-update-lock-file", "--print-build-logs", "--accept-flake-config"])
                 .stdin(std::process::Stdio::null())
                 .stdout(log_file)
                 .stderr(log2)
                 .spawn()
             {
-                let _ = std::fs::write(&cfg.rebuild_pid, child.id().to_string());
+                let pid = child.id();
+                let _ = std::fs::write(&cfg.rebuild_pid, pid.to_string());
+                let pid_file = cfg.rebuild_pid.clone();
+                // Reap the child so it doesn't stay as a zombie in /proc/{pid}
+                // after nixos-rebuild exits. If this service is restarted by the
+                // rebuild itself, the thread dies but the child is adopted by init
+                // which will reap it — the fallback zombie check in rebuild.rs
+                // covers that race.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    if std::fs::read_to_string(&pid_file)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        == Some(pid)
+                    {
+                        let _ = std::fs::remove_file(&pid_file);
+                    }
+                });
             }
         }
     };
