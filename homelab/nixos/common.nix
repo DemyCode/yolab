@@ -370,7 +370,7 @@ in {
     # ── Users ─────────────────────────────────────────────────────────────
     users.users.root.openssh.authorizedKeys.keys =
       lib.optional (s.rootSshKey != "") s.rootSshKey
-      ++ [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos" ];
+      ++ ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"];
 
     users.users.homelab = {
       isNormalUser = true;
@@ -419,10 +419,12 @@ in {
     ];
     nix.gc.automatic = true;
 
-    swapDevices = [{
-      device = "/var/lib/swapfile";
-      size = 8192;
-    }];
+    swapDevices = [
+      {
+        device = "/var/lib/swapfile";
+        size = 8192;
+      }
+    ];
     services.swapspace.enable = true;
   };
 }

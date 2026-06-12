@@ -124,7 +124,6 @@ function TunnelWidget({ value, onChange, registry }: WidgetProps) {
   );
 }
 
-
 function PasswordWidget({ value, onChange }: WidgetProps) {
   const [password, setPassword] = useState<string>(value ?? "");
   const [confirm, setConfirm] = useState<string>("");
@@ -218,7 +217,9 @@ export function AppsPage() {
           </h2>
           <div className="space-y-2">
             {installed.map((app) => {
-              const primaryOutput = app.outputs.find((o) => o.type !== "hidden");
+              const primaryOutput = app.outputs.find(
+                (o) => o.type !== "hidden",
+              );
               return (
                 <Card
                   key={app.instance_name}
@@ -242,8 +243,8 @@ export function AppsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3 flex-shrink-0">
-                      {primaryOutput && (
-                        primaryOutput.type === "url" ? (
+                      {primaryOutput &&
+                        (primaryOutput.type === "url" ? (
                           <a
                             href={primaryOutput.value}
                             target="_blank"
@@ -261,8 +262,7 @@ export function AppsPage() {
                           >
                             {primaryOutput.value}
                           </span>
-                        )
-                      )}
+                        ))}
                       <ChevronRight className="h-4 w-4 text-[#52525b]" />
                     </div>
                   </CardContent>

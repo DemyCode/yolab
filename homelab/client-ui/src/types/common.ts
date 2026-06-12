@@ -1,3 +1,3 @@
 export interface OkResponse {
-  ok: boolean
+  ok: boolean;
 }
