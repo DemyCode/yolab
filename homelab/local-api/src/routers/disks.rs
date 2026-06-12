@@ -52,6 +52,13 @@ fn is_system_disk(device: &serde_json::Value) -> bool {
     false
 }
 
+/// Strip a trailing partition number from a device name so that e.g. "sdb1"
+/// maps back to "sdb". This lets callers match the whole-disk name shown in
+/// the UI even when Ceph is running on a partition.
+fn disk_base_name(dev: &str) -> &str {
+    dev.trim_end_matches(|c: char| c.is_ascii_digit())
+}
+
 async fn ceph_osd_map() -> HashMap<String, u32> {
     let mut mapping = HashMap::new();
     if let Ok(v) = kubectl::get_json(&["get", "pods", "-n", CEPH_NS, "-l", "app=rook-ceph-osd", "-o", "json"]).await {
@@ -64,7 +71,14 @@ async fn ceph_osd_map() -> HashMap<String, u32> {
                         let block = std::path::Path::new(path).join("block");
                         if let Ok(resolved) = std::fs::read_link(&block).or_else(|_| Ok::<_, std::io::Error>(block)) {
                             let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                            if !name.is_empty() { mapping.insert(name, osd_id); }
+                            if !name.is_empty() {
+                                // Map both the exact device (e.g. sdb1) and its
+                                // parent disk (e.g. sdb) so the UI sees the disk
+                                // as an OSD regardless of whether a partition is used.
+                                let base = disk_base_name(&name).to_string();
+                                mapping.insert(name, osd_id);
+                                if !base.is_empty() { mapping.entry(base).or_insert(osd_id); }
+                            }
                         }
                     }
                 }
@@ -78,7 +92,11 @@ async fn ceph_osd_map() -> HashMap<String, u32> {
                 let Some(id) = osd["id"].as_u64() else { continue };
                 for dev in osd["devices"].as_str().unwrap_or("").split(',') {
                     let dev = dev.trim().trim_start_matches("/dev/");
-                    if !dev.is_empty() { mapping.insert(dev.to_string(), id as u32); }
+                    if !dev.is_empty() {
+                        let base = disk_base_name(dev).to_string();
+                        mapping.insert(dev.to_string(), id as u32);
+                        if !base.is_empty() { mapping.entry(base).or_insert(id as u32); }
+                    }
                 }
             }
         }
@@ -120,6 +138,18 @@ async fn gather_from_nodes(cfg: &Config, path: &str) -> Vec<(String, Vec<serde_j
     futures::future::join_all(futs).await.into_iter().flatten().collect()
 }
 
+/// Return the block device name that Ceph should use for the given disk.
+/// Loop devices are used directly; real disks get a GPT partition so the
+/// BlueStore label lands at partition-start (sector 2048+) rather than at
+/// absolute sector 0, where some firmware/USB bridges silently discard writes.
+fn ceph_device_for(disk_name: &str) -> String {
+    if disk_name.starts_with("loop") {
+        disk_name.to_string()
+    } else {
+        format!("{disk_name}1")
+    }
+}
+
 fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
     let job_active = std::process::Command::new("kubectl")
@@ -134,11 +164,35 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
         let _ = std::process::Command::new("dd")
             .args(["if=/dev/zero", &format!("of=/dev/{disk_name}"), "bs=1M", "count=100"])
             .output();
+        let _ = std::process::Command::new("wipefs")
+            .args(["--all", "--force", &format!("/dev/{disk_name}")])
+            .output();
+    } else {
+        // Real disk: destroy existing partition table, then create a single GPT
+        // partition. The BlueStore label will be written at the partition start
+        // (typically sector 2048), not at disk sector 0, which is unreliable on
+        // some USB bridges and SMR drives.
+        let dev = format!("/dev/{disk_name}");
+        let _ = std::process::Command::new("sgdisk").args(["-Z", &dev]).output();
+        let _ = std::process::Command::new("sgdisk")
+            .args(["-n", "1:0:0", "-t", "1:8300", &dev])
+            .output();
+        // Ask kernel to re-read the partition table.
+        let _ = std::process::Command::new("blockdev")
+            .args(["--rereadpt", &dev])
+            .output();
+        // Wait up to 5 s for the partition device to appear.
+        let part_dev = format!("/dev/{disk_name}1");
+        for _ in 0..10u8 {
+            if std::path::Path::new(&part_dev).exists() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let _ = std::process::Command::new("wipefs")
+            .args(["--all", "--force", &part_dev])
+            .output();
     }
-    let _ = std::process::Command::new("wipefs")
-        .args(["--all", "--force", &format!("/dev/{disk_name}")])
-        .output();
 
+    let ceph_dev = ceph_device_for(disk_name);
     let raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
                "-o", "jsonpath={.spec.storage.devices}"])
@@ -146,14 +200,17 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     let mut devices: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
-    if !devices.iter().any(|d| d["name"].as_str() == Some(disk_name)) {
-        devices.push(serde_json::json!({"name": disk_name}));
-        let patch = serde_json::json!({"spec": {"storage": {"devices": devices}}});
-        let _ = std::process::Command::new("kubectl")
-            .args(["patch", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
-                   "--type", "merge", "-p", &patch.to_string()])
-            .output();
-    }
+    // Remove any stale entry for either the raw disk or the partition.
+    devices.retain(|d| {
+        let n = d["name"].as_str().unwrap_or("");
+        n != disk_name && n != ceph_dev
+    });
+    devices.push(serde_json::json!({"name": ceph_dev}));
+    let patch = serde_json::json!({"spec": {"storage": {"devices": devices}}});
+    let _ = std::process::Command::new("kubectl")
+        .args(["patch", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
+               "--type", "merge", "-p", &patch.to_string()])
+        .output();
     let _ = std::process::Command::new("kubectl")
         .args(["delete", "job", "-n", CEPH_NS,
                &format!("rook-ceph-osd-prepare-{hostname}"), "--ignore-not-found"])
@@ -162,14 +219,25 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
 }
 
 fn do_deactivate_local(disk_name: &str) -> anyhow::Result<()> {
+    let ceph_dev = ceph_device_for(disk_name);
     if disk_name.starts_with("loop") {
         let _ = std::process::Command::new("dd")
             .args(["if=/dev/zero", &format!("of=/dev/{disk_name}"), "bs=1M", "count=100"])
             .output();
+        let _ = std::process::Command::new("wipefs")
+            .args(["--all", "--force", &format!("/dev/{disk_name}")])
+            .output();
+    } else {
+        // Wipe the partition, then destroy the partition table so the disk is
+        // fully blank and ready for future activation.
+        let part_dev = format!("/dev/{ceph_dev}");
+        let _ = std::process::Command::new("wipefs")
+            .args(["--all", "--force", &part_dev])
+            .output();
+        let _ = std::process::Command::new("sgdisk")
+            .args(["-Z", &format!("/dev/{disk_name}")])
+            .output();
     }
-    let _ = std::process::Command::new("wipefs")
-        .args(["--all", "--force", &format!("/dev/{disk_name}")])
-        .output();
     let raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
                "-o", "jsonpath={.spec.storage.devices}"])
@@ -177,8 +245,12 @@ fn do_deactivate_local(disk_name: &str) -> anyhow::Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     let devices: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+    // Remove both the raw-disk name and the partition name in case either was stored.
     let new_devices: Vec<_> = devices.into_iter()
-        .filter(|d| d["name"].as_str() != Some(disk_name)).collect();
+        .filter(|d| {
+            let n = d["name"].as_str().unwrap_or("");
+            n != disk_name && n != ceph_dev
+        }).collect();
     let patch = serde_json::json!({"spec": {"storage": {"devices": new_devices}}});
     let _ = std::process::Command::new("kubectl")
         .args(["patch", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
