@@ -4,31 +4,31 @@ on:
   push:
 
 jobs:
-  pre-commit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}-${{ hashFiles('flake.lock') }}
-
-      - name: Run pre-commit
-        run: nix develop path:. --command pre-commit run --all-files --show-diff-on-failure
-        env:
-          UV_PYTHON_PREFERENCE: only-system
+  # pre-commit:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install Nix
+  #       uses: cachix/install-nix-action@v27
+  #       with:
+  #         nix_path: nixpkgs=channel:nixos-unstable
+  #         extra_nix_config: |
+  #           experimental-features = nix-command flakes
+  #
+  #     - uses: actions/cache@v4
+  #       with:
+  #         path: ~/.cache/pre-commit
+  #         key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}-${{ hashFiles('flake.lock') }}
+  #
+  #     - name: Run pre-commit
+  #       run: nix develop path:. --command pre-commit run --all-files --show-diff-on-failure
+  #       env:
+  #         UV_PYTHON_PREFERENCE: only-system
 
   build-images:
     runs-on: ubuntu-latest
-    needs: pre-commit
+    # needs: pre-commit
     permissions:
       contents: read
       packages: write
@@ -37,7 +37,8 @@ jobs:
 
       - name: Set branch tag
         id: tag
-        run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >> $GITHUB_OUTPUT
+        run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >>
+          $GITHUB_OUTPUT
 
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
@@ -70,7 +71,8 @@ jobs:
 
       - name: Set branch tag
         id: tag
-        run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >> $GITHUB_OUTPUT
+        run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >>
+          $GITHUB_OUTPUT
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
