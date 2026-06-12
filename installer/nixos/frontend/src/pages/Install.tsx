@@ -137,9 +137,8 @@ function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: Join
       <div className="flex flex-col gap-3">
         <button
           onClick={() => { setMode('new'); setError('') }}
-          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${
-            mode === 'new' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
-          }`}
+          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${mode === 'new' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
+            }`}
         >
           <span className="text-sm font-semibold text-[#e5e7eb]">New cluster</span>
           <span className="text-xs text-muted">First node — creates a fresh single-node cluster</span>
@@ -147,9 +146,8 @@ function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: Join
 
         <button
           onClick={() => { setMode('join'); setError('') }}
-          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${
-            mode === 'join' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
-          }`}
+          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${mode === 'join' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
+            }`}
         >
           <span className="text-sm font-semibold text-[#e5e7eb]">Join existing cluster</span>
           <span className="text-xs text-muted">Additional node — joins a running YoLab cluster</span>
@@ -231,9 +229,8 @@ function StepDisk({ onNext, onBack }: { onNext: (disk: string) => void; onBack: 
         {(disks ?? []).map((d) => (
           <label
             key={d.name}
-            className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
-              selected === d.name ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
-            } ${d.mounted ? 'opacity-40 cursor-not-allowed' : ''}`}
+            className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${selected === d.name ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
+              } ${d.mounted ? 'opacity-40 cursor-not-allowed' : ''}`}
           >
             <input
               type="radio"
