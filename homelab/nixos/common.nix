@@ -4,8 +4,9 @@
   config,
   inputs,
   ...
-}: let
-  s = import ../shared.nix {inherit pkgs lib inputs;};
+}:
+let
+  s = import ../shared.nix { inherit pkgs lib inputs; };
   k3sCfg = s.nodeCfg.k3s;
 
   # The first node initialises the embedded-etcd cluster (--cluster-init).
@@ -14,7 +15,8 @@
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
-in {
+in
+{
   # ── Module options ────────────────────────────────────────────────────────
   # Consumed by platform overlays (wsl.nix, darwin/configuration.nix …).
   # Defaults cover the standard bare-metal / QEMU case.
@@ -133,7 +135,7 @@ in {
             # It knows about all registered nodes and relays traffic between them.
             publicKey = s.tunnelCfg.wg_server_public_key;
             endpoint = s.tunnelCfg.wg_server_endpoint;
-            allowedIPs = ["::/0"];
+            allowedIPs = [ "::/0" ];
             persistentKeepalive = 25;
           }
         ];
@@ -143,7 +145,7 @@ in {
     # ── SSH ───────────────────────────────────────────────────────────────
     services.openssh = {
       enable = true;
-      ports = [s.sshPort];
+      ports = [ s.sshPort ];
       settings = {
         PermitRootLogin = "prohibit-password";
         PasswordAuthentication = false;
@@ -232,9 +234,9 @@ in {
         "wireguard-wg0.service"
         "network-online.target"
       ];
-      wants = ["network-online.target"];
-      before = ["k3s.service"];
-      wantedBy = ["k3s.service"];
+      wants = [ "network-online.target" ];
+      before = [ "k3s.service" ];
+      wantedBy = [ "k3s.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -257,7 +259,7 @@ in {
         "wireguard-wg0.service"
         "k3s-node-ip.service"
       ];
-      wants = ["wireguard-wg0.service"];
+      wants = [ "wireguard-wg0.service" ];
       serviceConfig.TimeoutStopSec = "30";
     };
 
@@ -283,8 +285,8 @@ in {
     };
 
     systemd.services.caddy = {
-      after = ["wireguard-wg0.service"];
-      wants = ["wireguard-wg0.service"];
+      after = [ "wireguard-wg0.service" ];
+      wants = [ "wireguard-wg0.service" ];
     };
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
@@ -303,9 +305,9 @@ in {
     # this service but the loop must stay attached for as long as the OS runs.
     systemd.services.yolab-system-osd = {
       description = "System-disk Ceph OSD (loop-file)";
-      wantedBy = ["multi-user.target"];
-      after = ["local-fs.target"];
-      before = ["k3s.service"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" ];
+      before = [ "k3s.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -344,8 +346,8 @@ in {
         "network.target"
         "k3s.service"
       ];
-      wants = ["k3s.service"];
-      wantedBy = ["multi-user.target"];
+      wants = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
       environment = {
         PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
         YOLAB_REPO_PATH = config.yolab.repoPath;
@@ -365,20 +367,21 @@ in {
     };
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys =
-      lib.optional (s.rootSshKey != "") s.rootSshKey
-      ++ ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"];
+    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey ++ [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
+    ];
 
     users.users.homelab = {
       isNormalUser = true;
-      extraGroups = ["wheel"];
+      extraGroups = [ "wheel" ];
       openssh.authorizedKeys.keys = s.allowedSshKeys;
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
 
     services.logind.settings.Login.HandleLidSwitchExternalPower = "ignore";
 
-    environment.systemPackages = with pkgs;
+    environment.systemPackages =
+      with pkgs;
       map lib.lowPrio [
         curl
         gitMinimal
@@ -414,8 +417,8 @@ in {
       "nix-command"
       "flakes"
     ];
-    nix.settings.extra-substituters = ["https://cache.demycode.ovh/yolab"];
-    nix.settings.extra-trusted-public-keys = ["yolab:p/dOzQU8mPkD7kCCU9J7isVtBUT2gjq0RJror0uzkEo="];
+    nix.settings.extra-substituters = [ "https://cache.demycode.ovh/yolab" ];
+    nix.settings.extra-trusted-public-keys = [ "yolab:p/dOzQU8mPkD7kCCU9J7isVtBUT2gjq0RJror0uzkEo=" ];
     nix.gc.automatic = true;
 
     swapDevices = [
