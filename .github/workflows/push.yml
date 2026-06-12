@@ -93,6 +93,7 @@ jobs:
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
+          ATTIC_TOKEN="$(printf '%s' "$ATTIC_TOKEN" | tr -d '[:space:]')"
           if [ -z "$ATTIC_TOKEN" ]; then
             echo "ATTIC_TOKEN not set, skipping cache push"
             exit 0
