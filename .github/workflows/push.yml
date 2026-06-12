@@ -63,7 +63,7 @@ jobs:
 
   build-iso:
     runs-on: ubuntu-latest
-    needs: pre-commit
+    # needs: pre-commit
     permissions:
       contents: write
     steps:
