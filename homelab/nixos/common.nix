@@ -288,9 +288,19 @@ in {
     };
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
-    # Creates a sparse file on the root filesystem (no partitioning) and
-    # attaches it as a loop device.  On first boot the file is sized to 25%
-    # of the root filesystem capacity.
+    # Creates a loop-file image on the root filesystem (no partitioning) and
+    # attaches it as /dev/loop0 on every boot.
+    #
+    # Image creation is idempotent: fallocate runs only when the file does not
+    # exist, so a fresh install allocates once and subsequent reboots are a
+    # no-op.  fallocate pre-allocates real disk blocks (no sparse regions) so
+    # BlueStore label writes always land on already-allocated blocks — sparse
+    # files can be interrupted mid-allocation, leaving a half-written label.
+    #
+    # There is intentionally NO ExecStop.  Detaching the loop device while
+    # the Ceph OSD pod is running causes the OSD to lose its block device
+    # mid-operation and corrupt the BlueStore label.  nixos-rebuild restarts
+    # this service but the loop must stay attached for as long as the OS runs.
     systemd.services.yolab-system-osd = {
       description = "System-disk Ceph OSD (loop-file)";
       wantedBy = ["multi-user.target"];
@@ -303,11 +313,6 @@ in {
           set -euo pipefail
           IMG=/var/lib/rook/system-osd.img
 
-          # Size the image to 75% of root-filesystem capacity.
-          # fallocate pre-allocates real disk blocks (no sparse regions) so
-          # BlueStore label writes always land on already-allocated blocks.
-          # This prevents the partial-write corruption that sparse files cause
-          # when block allocation is interrupted mid-write.
           mkdir -p /var/lib/rook
           set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
           TARGET=$(( $2 * 3 / 4 ))
@@ -317,25 +322,18 @@ in {
             CURRENT=$(${pkgs.coreutils}/bin/stat -c%s "$IMG")
             if [ "$CURRENT" -lt "$TARGET" ]; then
               ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
-              # Notify the running loop driver of the new size (no-op if not attached).
               ${pkgs.util-linux}/bin/losetup -c /dev/loop0 2>/dev/null || true
             fi
           fi
 
           # Attach to /dev/loop0 so the device name is stable across reboots.
-          # --direct-io=on bypasses the page cache for the loop device — Ceph
-          # manages its own cache, so OS-level caching only adds overhead and
-          # creates double-buffering consistency risks with the backing filesystem.
+          # --direct-io=on bypasses the page cache — Ceph manages its own cache
+          # and double-buffering against the backing file creates coherence risks.
           ATTACHED=$(${pkgs.util-linux}/bin/losetup -j "$IMG" 2>/dev/null | grep "^/dev/loop0:" || true)
           if [ -z "$ATTACHED" ]; then
             ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
             ${pkgs.util-linux}/bin/losetup --direct-io=on /dev/loop0 "$IMG"
           fi
-        '';
-        ExecStop = pkgs.writeShellScript "system-osd-stop" ''
-          LOOP=$(${pkgs.util-linux}/bin/losetup -j /var/lib/rook/system-osd.img 2>/dev/null \
-                 | ${pkgs.coreutils}/bin/cut -d: -f1)
-          [ -n "$LOOP" ] && ${pkgs.util-linux}/bin/losetup -d "$LOOP" || true
         '';
       };
     };
