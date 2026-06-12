@@ -44,7 +44,7 @@ spec:
   storage:
     useAllNodes: true
     useAllDevices: false
-    deviceFilter: "^(loop[0-9]+|sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|hd[a-z]+)"
+    deviceFilter: "^(loop0|sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|hd[a-z]+)"
   resources:
     mgr:
       limits:
