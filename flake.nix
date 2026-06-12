@@ -96,6 +96,8 @@
           rustToolchain
           pkg-config
           openssl
+          # Python tooling (for installer/nixos/backend/)
+          uv
           # Node.js
           nodejs
           # Runner
