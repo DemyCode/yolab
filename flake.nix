@@ -1,6 +1,11 @@
 {
   description = "Yolab";
 
+  nixConfig = {
+    extra-substituters = ["https://cache.demycode.ovh/yolab"];
+    extra-trusted-public-keys = ["yolab:p/dOzQU8mPkD7kCCU9J7isVtBUT2gjq0RJror0uzkEo="];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     disko.url = "github:nix-community/disko";
