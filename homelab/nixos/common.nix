@@ -658,7 +658,9 @@ in
           fi
 
           TMPENV=$(mktemp)
-          trap 'rm -f "$TMPENV"' EXIT
+          PASSFILE=$(mktemp)
+          chmod 600 "$PASSFILE"
+          trap 'rm -f "$TMPENV" "$PASSFILE"' EXIT
           echo "$SFTP_JSON" | ${pkgs.python3}/bin/python3 ${parseSftpCredsFromJson} > "$TMPENV"
           . "$TMPENV"
 
@@ -669,8 +671,6 @@ in
             exit 0
           fi
 
-          PASSFILE=$(mktemp)
-          chmod 600 "$PASSFILE"
           printf '%s' "$SFTP_PASS" > "$PASSFILE"
 
           ${pkgs.sshfs}/bin/sshfs \
@@ -682,7 +682,6 @@ in
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 \
             < "$PASSFILE"
-          rm -f "$PASSFILE"
           echo "SFTP drive mounted at /mnt/yolab-sftp."
         '';
         ExecStop = pkgs.writeShellScript "sftp-unmount" ''

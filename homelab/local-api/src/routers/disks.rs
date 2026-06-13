@@ -607,7 +607,7 @@ pub async fn add_virtual(
 ) -> Result<Json<serde_json::Value>> {
     let host = body.host.clone().unwrap_or_else(|| state.config.node_ipv6.clone());
     if host != state.config.node_ipv6 {
-        let resp = node_client()
+        let json: serde_json::Value = node_client()
             .post(format!(
                 "http://[{}]:{}/api/disks/add-virtual-local",
                 host, state.config.port
@@ -615,8 +615,12 @@ pub async fn add_virtual(
             .json(&body)
             .send()
             .await
+            .map_err(|e| anyhow::anyhow!(e))?
+            .error_for_status()
+            .map_err(|e| anyhow::anyhow!(e))?
+            .json()
+            .await
             .map_err(|e| anyhow::anyhow!(e))?;
-        let json: serde_json::Value = resp.json().await.map_err(|e| anyhow::anyhow!(e))?;
         return Ok(Json(json));
     }
     let size_gb = body.size_gb;
