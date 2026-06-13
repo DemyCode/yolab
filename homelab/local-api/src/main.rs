@@ -88,17 +88,16 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
-    // Reconcile loop on primary node
+    // Reconcile loop on primary node — runs serially; each invocation completes before the next
+    // starts to prevent kubectl process accumulation under load.
     if cfg.is_primary_node() {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let cfg2 = Arc::clone(&state.config);
-                tokio::spawn(async move {
-                    disks::reconcile_storage(cfg2).await;
-                });
+                disks::reconcile_storage(Arc::clone(&state.config)).await;
             }
         });
     }
