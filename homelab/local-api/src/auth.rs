@@ -78,19 +78,24 @@ async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
         r#"{{"apiVersion":"v1","kind":"Secret","metadata":{{"name":"{SECRET_NAME}","namespace":"{SECRET_NS}"}},"stringData":{{"sessions":{}}}}}"#,
         serde_json::to_string(&json).unwrap_or_default()
     );
-    let _ = tokio::process::Command::new("kubectl")
-        .args(["apply", "-f", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .and_then(|mut c| {
-            use std::io::Write;
-            if let Some(stdin) = c.stdin.as_mut() {
-                let _ = stdin.write_all(manifest.as_bytes());
-            }
-            Ok(c)
-        });
+    // Use spawn_blocking + std::process::Command so we can write to stdin synchronously.
+    // tokio::process::ChildStdin only implements AsyncWrite, not std::io::Write.
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let Ok(mut child) = std::process::Command::new("kubectl")
+            .args(["apply", "-f", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(manifest.as_bytes());
+        }
+        let _ = child.wait();
+    });
 }
 
 // ── Public init ───────────────────────────────────────────────────────────────
