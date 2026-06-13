@@ -1,9 +1,19 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::{config::Config, error::Result, kubectl, priority, AppState};
+
+// Tracks OSD IDs currently being drained so reconcile_storage (which fires
+// every 30 s) never spawns a second task for the same OSD.
+static DRAINING_OSDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+fn draining_osds() -> &'static Mutex<HashSet<u32>> {
+    DRAINING_OSDS.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 const CEPH_NS: &str = "rook-ceph";
 const CEPH_CLUSTER: &str = "rook-ceph";
@@ -274,14 +284,25 @@ async fn activate_disk(cfg: &Config, disk_name: &str, host: &str) {
 async fn drain_osd(cfg: Arc<Config>, disk_name: String, osd_id: u32, host: String) {
     let id_str = osd_id.to_string();
     if kubectl::ceph_exec(&["osd", "reweight", &id_str, "0"]).await.is_err() {
-        tracing::warn!("failed to reweight osd.{osd_id}");
+        tracing::warn!("drain osd.{osd_id}: failed to reweight, aborting");
+        draining_osds().lock().unwrap().remove(&osd_id);
         return;
     }
     let _ = kubectl::ceph_exec(&["osd", "out", &id_str]).await;
+    tracing::info!("drain osd.{osd_id} ({disk_name}): marked out, waiting for PGs to migrate");
 
-    for _ in 0..200u32 {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        if kubectl::osd_numpg().await.get(&osd_id).copied().unwrap_or(0) == 0 { break; }
+    // Wait without any timeout until every PG has migrated off this OSD.
+    // This is intentional: removing an OSD before its PGs are gone causes
+    // permanent data loss when running single-replica pools.  It is safe to
+    // wait indefinitely — the OSD stays up and serving data the whole time.
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let numpg = kubectl::osd_numpg().await.get(&osd_id).copied().unwrap_or(0);
+        if numpg == 0 {
+            tracing::info!("drain osd.{osd_id}: 0 PGs remaining, proceeding to remove");
+            break;
+        }
+        tracing::info!("drain osd.{osd_id} ({disk_name}): {numpg} PGs still present, waiting...");
     }
 
     for cmd in [
@@ -290,7 +311,7 @@ async fn drain_osd(cfg: Arc<Config>, disk_name: String, osd_id: u32, host: Strin
         vec!["osd", "rm", &id_str],
     ] {
         if let Err(e) = kubectl::ceph_exec(&cmd).await {
-            tracing::warn!("ceph purge {:?}: {e}", cmd);
+            tracing::warn!("drain osd.{osd_id}: ceph {:?} failed: {e}", cmd);
         }
     }
 
@@ -306,6 +327,9 @@ async fn drain_osd(cfg: Arc<Config>, disk_name: String, osd_id: u32, host: Strin
         let name = disk_name.clone();
         tokio::task::spawn_blocking(move || { let _ = do_deactivate_local(&name); }).await.ok();
     }
+
+    draining_osds().lock().unwrap().remove(&osd_id);
+    tracing::info!("drain osd.{osd_id} ({disk_name}): complete");
 }
 
 pub async fn reconcile_storage(cfg: Arc<Config>) {
@@ -381,6 +405,11 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
             activate_disk(&cfg, &entry.disk_name, &entry.host).await;
         } else if !needed.contains(&key) && is_osd && needed_all_ready {
             if let Some(&osd_id) = osd_map.get(&entry.disk_name) {
+                // Guard against spawning a second drain task if one is already running.
+                let mut draining = draining_osds().lock().unwrap();
+                if draining.contains(&osd_id) { continue; }
+                draining.insert(osd_id);
+                drop(draining);
                 let (cfg2, dn, host) = (Arc::clone(&cfg), entry.disk_name.clone(), entry.host.clone());
                 tokio::spawn(async move { drain_osd(cfg2, dn, osd_id, host).await });
             }
