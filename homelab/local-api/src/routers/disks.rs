@@ -269,9 +269,16 @@ fn do_deactivate_local(disk_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn node_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 async fn activate_disk(cfg: &Config, disk_name: &str, host: &str) {
     if host != cfg.node_ipv6 {
-        let _ = reqwest::Client::new()
+        let _ = node_client()
             .post(format!("http://[{}]:{}/api/disks/activate-local", host, cfg.port))
             .json(&serde_json::json!({"host": host, "disk_name": disk_name}))
             .send().await;
@@ -295,9 +302,25 @@ async fn drain_osd(cfg: Arc<Config>, disk_name: String, osd_id: u32, host: Strin
     // This is intentional: removing an OSD before its PGs are gone causes
     // permanent data loss when running single-replica pools.  It is safe to
     // wait indefinitely — the OSD stays up and serving data the whole time.
+    //
+    // Safety: if the Prometheus exporter is unavailable, osd_numpg() returns
+    // an empty map.  We must NOT treat that as "0 PGs" (which would cause
+    // immediate data-loss wipe).  Instead we fall back to asking Ceph directly
+    // via `ceph pg ls-by-osd`, and if that also fails we keep waiting.
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        let numpg = kubectl::osd_numpg().await.get(&osd_id).copied().unwrap_or(0);
+        let numpg_map = kubectl::osd_numpg().await;
+        let numpg = if numpg_map.is_empty() {
+            match kubectl::ceph_osd_numpg_direct(osd_id).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!("drain osd.{osd_id}: exporter and direct Ceph query both unavailable ({e}), keeping OSD safe");
+                    u32::MAX
+                }
+            }
+        } else {
+            numpg_map.get(&osd_id).copied().unwrap_or(0)
+        };
         if numpg == 0 {
             tracing::info!("drain osd.{osd_id}: 0 PGs remaining, proceeding to remove");
             break;
@@ -319,7 +342,7 @@ async fn drain_osd(cfg: Arc<Config>, disk_name: String, osd_id: u32, host: Strin
         &format!("rook-ceph-osd-{osd_id}"), "--ignore-not-found"]).await;
 
     if host != cfg.node_ipv6 {
-        let _ = reqwest::Client::new()
+        let _ = node_client()
             .post(format!("http://[{}]:{}/api/disks/deactivate-local", host, cfg.port))
             .json(&serde_json::json!({"host": host, "disk_name": disk_name}))
             .send().await;
@@ -489,7 +512,15 @@ pub async fn update_order(
         .map(|e| priority::PriorityEntry { host: e.host, disk_name: e.disk_name })
         .collect();
     priority::write(&entries).await?;
-    tokio::spawn(reconcile_storage(Arc::clone(&state.config)));
+    let cfg2 = Arc::clone(&state.config);
+    tokio::spawn(async move {
+        let handle = tokio::spawn(reconcile_storage(cfg2));
+        match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!("reconcile_storage panicked in update_order: {:?}", e),
+            Err(_) => tracing::error!("reconcile_storage timed out in update_order"),
+        }
+    });
     Ok(Json(serde_json::json!({"ok": true})))
 }
 

@@ -1,8 +1,17 @@
 use anyhow::Result;
 use serde_json::json;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 
 const CM_NAME: &str = "yolab-disk-priority";
 const CM_NS: &str = "rook-ceph";
+
+// Serialise all ConfigMap read-modify-write operations so concurrent calls
+// (reconcile_storage + HTTP handler) cannot interleave and lose writes.
+static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+fn write_lock() -> &'static Mutex<()> {
+    WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PriorityEntry {
@@ -73,6 +82,7 @@ pub async fn read() -> Vec<PriorityEntry> {
 }
 
 pub async fn write(entries: &[PriorityEntry]) -> Result<()> {
+    let _lock = write_lock().lock().await;
     let mut data = read_cm().await;
     data.insert(
         "priority".into(),
@@ -82,6 +92,7 @@ pub async fn write(entries: &[PriorityEntry]) -> Result<()> {
 }
 
 pub async fn prepend(host: &str, disk_name: &str) -> Result<()> {
+    let _lock = write_lock().lock().await;
     let key = format!("{host}:{disk_name}");
     let mut data = read_cm().await;
     if parse_lines(data.get("rejected").and_then(|v| v.as_str()).unwrap_or(""))
@@ -99,6 +110,7 @@ pub async fn prepend(host: &str, disk_name: &str) -> Result<()> {
 }
 
 pub async fn append(host: &str, disk_name: &str) -> Result<()> {
+    let _lock = write_lock().lock().await;
     let key = format!("{host}:{disk_name}");
     let mut data = read_cm().await;
     let mut existing = parse_lines(data.get("priority").and_then(|v| v.as_str()).unwrap_or(""));

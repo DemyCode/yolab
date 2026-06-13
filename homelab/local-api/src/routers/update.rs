@@ -1,14 +1,23 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}};
 
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{sse::Event, IntoResponse, Sse},
+    response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{config::Config, proc::KillOnDrop, AppState};
+
+static IS_UPDATING: AtomicBool = AtomicBool::new(false);
+
+struct UpdateGuard;
+impl Drop for UpdateGuard {
+    fn drop(&mut self) {
+        IS_UPDATING.store(false, Ordering::SeqCst);
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Channel {
@@ -126,9 +135,13 @@ pub async fn remove_remote(
 
 pub async fn update(
     State(state): State<AppState>,
-) -> Sse<impl futures::Stream<Item = std::result::Result<Event, Infallible>>> {
+) -> Response {
+    if IS_UPDATING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Update already in progress"}))).into_response();
+    }
     let cfg = state.config;
     let stream = async_stream::stream! {
+        let _guard = UpdateGuard;
         let ch = read_channel(&cfg);
 
         // Fetch
@@ -241,5 +254,5 @@ pub async fn update(
         }
     };
 
-    Sse::new(stream)
+    Sse::new(stream).into_response()
 }

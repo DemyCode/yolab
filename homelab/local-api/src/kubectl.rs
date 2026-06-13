@@ -98,12 +98,17 @@ pub async fn ceph_exec(args: &[&str]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" ");
 
+    // Use a process-unique path so concurrent ceph_exec calls in the same
+    // binary never overwrite each other's keyring file.
+    let key_path = format!("/tmp/ceph-key-{}.keyring", std::process::id());
+
     let shell_cmd = format!(
-        "echo {keyring_b64} | base64 -d > /tmp/k && \
+        "echo {keyring_b64} | base64 -d > {key_path} && \
          printf '[global]\\nmon_host = v2:[{mon_ip}]:3300\\n\
          ms_cluster_mode = crc\\nms_service_mode = crc\\nms_client_mode = crc\\n\
-         [client.admin]\\nkeyring = /tmp/k\\n' > /tmp/ceph.conf && \
-         ceph -c /tmp/ceph.conf --name client.admin {quoted_args}"
+         [client.admin]\\nkeyring = {key_path}\\n' > /tmp/ceph.conf && \
+         ceph -c /tmp/ceph.conf --name client.admin {quoted_args}; \
+         RC=$?; rm -f {key_path}; exit $RC"
     );
 
     let pod = ceph_exec_pod().await?;
@@ -141,14 +146,13 @@ async fn exporter_url() -> Option<String> {
 
 async fn exporter_metrics() -> String {
     let Some(url) = exporter_url().await else { return String::new() };
-    reqwest::Client::new()
+    let Ok(resp) = reqwest::Client::new()
         .get(&url)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
-        .ok()
-        .and_then(|r| futures::executor::block_on(r.text()).ok())
-        .unwrap_or_default()
+    else { return String::new() };
+    resp.text().await.unwrap_or_default()
 }
 
 pub async fn osd_df() -> std::collections::HashMap<u32, OsdUsage> {
@@ -186,6 +190,16 @@ pub async fn osd_numpg() -> std::collections::HashMap<u32, u32> {
         }
     }
     result
+}
+
+/// Direct Ceph query for the number of PGs on an OSD.
+/// Used as fallback ground truth when the Prometheus exporter is unavailable —
+/// the exporter returning an empty map must NOT be treated as "0 PGs" since
+/// that would cause drain_osd to wipe a disk with live data.
+pub async fn ceph_osd_numpg_direct(osd_id: u32) -> Result<u32> {
+    let out = ceph_exec(&["pg", "ls-by-osd", &osd_id.to_string(), "--format", "json"]).await?;
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap_or(serde_json::json!([]));
+    Ok(v.as_array().map(|a| a.len() as u32).unwrap_or(0))
 }
 
 fn parse_osd_metric(rest: &str) -> Option<(u32, u64)> {
