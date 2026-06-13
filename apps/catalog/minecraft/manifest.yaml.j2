@@ -67,6 +67,17 @@ spec:
         image: itzg/minecraft-server:latest@sha256:bb1cf73b342bdf6fa03b9d689b699bd1f8c6989f81ea07d520985eb2f18e6f30
         stdin: true
         tty: true
+        readinessProbe:
+          tcpSocket:
+            port: 25565
+          initialDelaySeconds: 60
+          periodSeconds: 15
+        livenessProbe:
+          tcpSocket:
+            port: 25565
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          failureThreshold: 3
         env:
         - name: EULA
           value: "TRUE"

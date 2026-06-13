@@ -96,6 +96,17 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -113,6 +124,19 @@ spec:
 
       - name: app
         image: amruthpillai/reactive-resume:latest
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -177,6 +201,17 @@ spec:
       containers:
       - name: postgres
         image: postgres:16-alpine
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "rxresume"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "rxresume"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         env:
         - name: POSTGRES_USER
           value: rxresume
@@ -223,6 +258,19 @@ spec:
       containers:
       - name: minio
         image: minio/minio:latest
+        readinessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 20
+          periodSeconds: 20
+          failureThreshold: 3
         command: ["server", "/data"]
         env:
         - name: MINIO_ROOT_USER

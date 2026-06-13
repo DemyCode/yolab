@@ -15,6 +15,111 @@ let
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
+
+  # Python helpers for parsing velero config at runtime (credentials never touch Nix store).
+  parseVeleroEnv = pkgs.writeText "parse-velero-env.py" ''
+    import tomllib, sys, shlex
+    with open(sys.argv[1], 'rb') as f:
+        c = tomllib.load(f)
+    v = c.get('velero', {})
+    E = str()
+    def q(s): return shlex.quote(str(s))
+    print(f"S3_ENDPOINT={q(v.get('s3_endpoint', 'https://s3.amazonaws.com'))}")
+    print(f"S3_BUCKET={q(v.get('s3_bucket', E))}")
+    print(f"S3_REGION={q(v.get('s3_region', 'us-east-1'))}")
+    print(f"S3_ACCESS_KEY={q(v.get('s3_access_key', E))}")
+    print(f"S3_SECRET_KEY={q(v.get('s3_secret_key', E))}")
+  '';
+
+  # Outputs K3s config.yaml YAML stanza for etcd → S3 shipping.
+  # Tries yolab-external API first (if [yolab_external] is configured),
+  # falls back to the manual [velero] section.  Credentials never touch the Nix store.
+  parseK3sEtcdS3Config = pkgs.writeText "parse-k3s-etcd-s3.py" ''
+    import tomllib, sys, json, re
+    from urllib import request as urlreq
+
+    with open(sys.argv[1], 'rb') as f:
+        c = tomllib.load(f)
+
+    E = str()
+    s3 = None
+    ye = c.get('yolab_external', {})
+    ye_url = ye.get('url', E).rstrip('/')
+    ye_token = ye.get('account_token', E)
+    if ye_url and ye_token:
+        try:
+            req = urlreq.Request(
+                f"{ye_url}/storage/s3",
+                headers={"Authorization": f"Bearer {ye_token}"}
+            )
+            with urlreq.urlopen(req, timeout=10) as r:
+                d = json.loads(r.read())
+                s3 = {
+                    "endpoint": d["endpoint"], "bucket": d["bucket_name"],
+                    "region": d["region"], "access_key": d["access_key_id"],
+                    "secret_key": d["secret_access_key"],
+                }
+        except Exception:
+            pass
+
+    if s3 is None:
+        v = c.get('velero', {})
+        if not v.get('enabled', False):
+            sys.exit(0)
+        s3 = {
+            "endpoint": v.get('s3_endpoint', 's3.amazonaws.com'),
+            "bucket": v.get('s3_bucket', E),
+            "region": v.get('s3_region', 'us-east-1'),
+            "access_key": v.get('s3_access_key', E),
+            "secret_key": v.get('s3_secret_key', E),
+        }
+
+    endpoint_host = re.sub(r'^https?://', E, s3["endpoint"])
+    def y(s): return '"' + str(s).replace('"', '\\"') + '"'
+    print('etcd-s3: "true"')
+    print(f'etcd-s3-endpoint: {y(endpoint_host)}')
+    print(f'etcd-s3-bucket: {y(s3["bucket"])}')
+    print(f'etcd-s3-region: {y(s3["region"])}')
+    print(f'etcd-s3-access-key: {y(s3["access_key"])}')
+    print(f'etcd-s3-secret-key: {y(s3["secret_key"])}')
+    print('etcd-s3-folder: "etcd-snapshots"')
+    print('etcd-snapshot-retention: 30')
+  '';
+
+  # Reads [yolab_external] from config.toml and emits YE_URL / YE_TOKEN shell vars.
+  parseYolabExternalCreds = pkgs.writeText "parse-ye-creds.py" ''
+    import tomllib, sys, shlex
+    with open(sys.argv[1], 'rb') as f:
+        c = tomllib.load(f)
+    ye = c.get('yolab_external', {})
+    E = str()
+    def q(s): return shlex.quote(str(s))
+    print(f"YE_URL={q(ye.get('url', E).rstrip('/'))}")
+    print(f"YE_TOKEN={q(ye.get('account_token', E))}")
+  '';
+
+  # Reads S3 JSON (from yolab-external /storage/s3) on stdin and emits S3_* shell vars.
+  parseS3CredsFromJson = pkgs.writeText "parse-s3-json.py" ''
+    import json, sys, shlex
+    d = json.load(sys.stdin)
+    def q(s): return shlex.quote(str(s))
+    print(f"S3_ENDPOINT={q(d['endpoint'])}")
+    print(f"S3_BUCKET={q(d['bucket_name'])}")
+    print(f"S3_REGION={q(d['region'])}")
+    print(f"S3_ACCESS_KEY={q(d['access_key_id'])}")
+    print(f"S3_SECRET_KEY={q(d['secret_access_key'])}")
+  '';
+
+  # Reads SFTP JSON (from yolab-external /storage/sftp) on stdin and emits SFTP_* shell vars.
+  parseSftpCredsFromJson = pkgs.writeText "parse-sftp-json.py" ''
+    import json, sys, shlex
+    d = json.load(sys.stdin)
+    def q(s): return shlex.quote(str(s))
+    print(f"SFTP_HOST={q(d['host'])}")
+    print(f"SFTP_PORT={q(d['port'])}")
+    print(f"SFTP_USER={q(d['username'])}")
+    print(f"SFTP_PASS={q(d['password'])}")
+  '';
 in
 {
   # ── Module options ────────────────────────────────────────────────────────
@@ -242,12 +347,17 @@ in
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "k3s-node-ip" ''
           IPV4=$(${pkgs.iproute2}/bin/ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || true)
+          CONFIG="${config.yolab.repoPath}/homelab/ignored/config.toml"
           mkdir -p /etc/rancher/k3s
-          if [ -n "$IPV4" ]; then
-            echo "node-ip: ${s.tunnelCfg.sub_ipv6_private},$IPV4" > /etc/rancher/k3s/config.yaml
-          else
-            echo "node-ip: ${s.tunnelCfg.sub_ipv6_private}" > /etc/rancher/k3s/config.yaml
-          fi
+          {
+            if [ -n "$IPV4" ]; then
+              echo "node-ip: ${s.tunnelCfg.sub_ipv6_private},$IPV4"
+            else
+              echo "node-ip: ${s.tunnelCfg.sub_ipv6_private}"
+            fi
+            ${pkgs.python3}/bin/python3 ${parseK3sEtcdS3Config} "$CONFIG" 2>/dev/null || true
+          } > /etc/rancher/k3s/config.yaml
+          chmod 600 /etc/rancher/k3s/config.yaml
         '';
       };
     };
@@ -395,6 +505,8 @@ in
         vim
         wget
         htop
+        sshfs
+        fuse3
       ];
 
     # ── Rook / Ceph ───────────────────────────────────────────────────────────
@@ -404,7 +516,182 @@ in
     systemd.tmpfiles.rules = [
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml  - - - - ${./rook/operator.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml   - - - - ${./rook/cluster.yaml}"
+    ] ++ lib.optionals s.veleroEnabled [
+      "L+ /var/lib/rancher/k3s/server/manifests/velero.yaml  - - - - ${./velero/helmchart.yaml}"
     ];
+
+    # Bootstrap Velero credentials and backup schedule from config.toml at runtime.
+    # Runs after K3s starts; waits for the HelmChart to install Velero, then creates
+    # the cloud-credentials Secret, BackupStorageLocation, and daily Schedule.
+    # Credentials never touch the Nix store — read live from config.toml.
+    systemd.services.yolab-velero-bootstrap = lib.mkIf s.veleroEnabled {
+      description = "Bootstrap Velero S3 credentials and backup schedule";
+      after = [
+        "k3s.service"
+        "network-online.target"
+      ];
+      wants = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
+      environment = {
+        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
+        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        Restart = "on-failure";
+        RestartSec = "30s";
+        ExecStart = pkgs.writeShellScript "velero-bootstrap" ''
+          set -euo pipefail
+          CONFIG="$YOLAB_CONFIG"
+
+          # Resolve S3 credentials: prefer yolab-external, fall back to [velero] in config.toml.
+          S3_JSON=""
+          eval "$(${pkgs.python3}/bin/python3 ${parseYolabExternalCreds} "$CONFIG" 2>/dev/null || echo 'YE_URL=; YE_TOKEN=')"
+          if [ -n "$YE_URL" ] && [ -n "$YE_TOKEN" ]; then
+            S3_JSON=$(${pkgs.curl}/bin/curl -sf --max-time 30 \
+              -H "Authorization: Bearer $YE_TOKEN" \
+              "$YE_URL/storage/s3" 2>/dev/null || true)
+            if [ -z "$S3_JSON" ]; then
+              echo "Provisioning S3 storage via yolab-external..."
+              S3_JSON=$(${pkgs.curl}/bin/curl -sf --max-time 60 -X POST \
+                -H "Authorization: Bearer $YE_TOKEN" \
+                "$YE_URL/storage/s3" 2>/dev/null || true)
+            fi
+          fi
+
+          TMPENV=$(mktemp)
+          trap 'rm -f "$TMPENV"' EXIT
+          if [ -n "$S3_JSON" ]; then
+            echo "$S3_JSON" | ${pkgs.python3}/bin/python3 ${parseS3CredsFromJson} > "$TMPENV"
+          else
+            ${pkgs.python3}/bin/python3 ${parseVeleroEnv} "$CONFIG" > "$TMPENV"
+          fi
+          . "$TMPENV"
+
+          echo "Waiting for velero namespace to appear..."
+          until kubectl get namespace velero &>/dev/null; do sleep 15; done
+
+          # Create or refresh the AWS credentials secret Velero reads at startup.
+          kubectl create secret generic cloud-credentials \
+            -n velero \
+            --from-literal=cloud="$(printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' "$S3_ACCESS_KEY" "$S3_SECRET_KEY")" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Waiting for Velero deployment to be ready..."
+          kubectl -n velero rollout status deployment/velero --timeout=300s
+
+          # BackupStorageLocation — tells Velero where to store backups.
+          kubectl apply -f - <<BSLEOF
+          apiVersion: velero.io/v1
+          kind: BackupStorageLocation
+          metadata:
+            name: default
+            namespace: velero
+          spec:
+            provider: aws
+            objectStorage:
+              bucket: $S3_BUCKET
+            config:
+              region: $S3_REGION
+              s3ForcePathStyle: "true"
+              s3Url: $S3_ENDPOINT
+          BSLEOF
+
+          # Daily full-cluster backup at 03:00, retained for 30 days.
+          kubectl apply -f - <<SCHEOF
+          apiVersion: velero.io/v1
+          kind: Schedule
+          metadata:
+            name: daily-full
+            namespace: velero
+          spec:
+            schedule: "0 3 * * *"
+            template:
+              ttl: 720h0m0s
+              storageLocation: default
+              defaultVolumesToFsBackup: true
+          SCHEOF
+
+          echo "Velero bootstrap complete."
+        '';
+      };
+    };
+
+    # ── SFTP virtual drive ─────────────────────────────────────────────────────
+    # Mounts the user's yolab-external SFTP virtual drive (backed by a Hetzner
+    # Storage Box sub-account) at /mnt/yolab-sftp.  Credentials are fetched at
+    # runtime from the yolab-external API using the account_token in config.toml.
+    # Silently exits if [yolab_external] is not configured or SFTP is not provisioned.
+    systemd.services.yolab-sftp-mount = {
+      description = "Mount yolab SFTP virtual drive";
+      after = [
+        "network-online.target"
+        "wireguard-wg0.service"
+      ];
+      wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+      environment = {
+        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
+        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "sftp-mount" ''
+          set -euo pipefail
+          CONFIG="$YOLAB_CONFIG"
+
+          eval "$(${pkgs.python3}/bin/python3 ${parseYolabExternalCreds} "$CONFIG" 2>/dev/null || echo 'YE_URL=; YE_TOKEN=')"
+          if [ -z "$YE_URL" ] || [ -z "$YE_TOKEN" ]; then
+            echo "yolab-external not configured, skipping SFTP mount."
+            exit 0
+          fi
+
+          SFTP_JSON=$(${pkgs.curl}/bin/curl -sf --max-time 30 \
+            -H "Authorization: Bearer $YE_TOKEN" \
+            "$YE_URL/storage/sftp" 2>/dev/null || true)
+          if [ -z "$SFTP_JSON" ]; then
+            echo "No SFTP storage provisioned yet, skipping mount."
+            exit 0
+          fi
+
+          TMPENV=$(mktemp)
+          trap 'rm -f "$TMPENV"' EXIT
+          echo "$SFTP_JSON" | ${pkgs.python3}/bin/python3 ${parseSftpCredsFromJson} > "$TMPENV"
+          . "$TMPENV"
+
+          mkdir -p /mnt/yolab-sftp
+
+          if ${pkgs.util-linux}/bin/mountpoint -q /mnt/yolab-sftp; then
+            echo "Already mounted."
+            exit 0
+          fi
+
+          PASSFILE=$(mktemp)
+          chmod 600 "$PASSFILE"
+          printf '%s' "$SFTP_PASS" > "$PASSFILE"
+
+          ${pkgs.sshfs}/bin/sshfs \
+            "$SFTP_USER@$SFTP_HOST:/" /mnt/yolab-sftp \
+            -p "$SFTP_PORT" \
+            -o password_stdin \
+            -o StrictHostKeyChecking=no \
+            -o reconnect \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            < "$PASSFILE"
+          rm -f "$PASSFILE"
+          echo "SFTP drive mounted at /mnt/yolab-sftp."
+        '';
+        ExecStop = pkgs.writeShellScript "sftp-unmount" ''
+          ${pkgs.fuse3}/bin/fusermount3 -u /mnt/yolab-sftp 2>/dev/null \
+            || ${pkgs.util-linux}/bin/umount /mnt/yolab-sftp 2>/dev/null \
+            || true
+        '';
+      };
+    };
 
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab

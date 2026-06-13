@@ -47,3 +47,17 @@ node_id = ""
 role = "server"
 token = ""
 server_addr = ""
+
+[velero]
+enabled = false
+s3_endpoint = "https://s3.amazonaws.com"
+s3_bucket = "yolab-backups"
+s3_region = "us-east-1"
+s3_access_key = ""
+s3_secret_key = ""
+
+[yolab_external]
+# URL of your yolab-external backend. When set, Velero and SFTP storage
+# are provisioned automatically via the API instead of manual config above.
+url = ""
+account_token = ""

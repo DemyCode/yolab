@@ -31,16 +31,27 @@ fi
 
 # Verify the cached tunnel still exists on the platform before committing to reuse.
 # The platform DB may have been reset, or the tunnel deleted externally.
+#
+# Distinction matters:
+#   404 → tunnel explicitly deleted on the platform → must re-register
+#   200 → tunnel valid, reuse it
+#   anything else (000 = timeout, 5xx, network error) → platform is temporarily
+#   unreachable; keep the cached state so the app survives reboots during outages
 if [ "$REUSE" = "1" ]; then
-    VERIFY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+    VERIFY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
         -H "Authorization: Bearer $ACCOUNT_TOKEN" \
         "$PLATFORM_API_URL/tunnels/$TUNNEL_ID")
     if [ "$VERIFY_HTTP" = "200" ]; then
         echo "Tunnel $TUNNEL_ID verified on platform."
-    else
-        echo "Tunnel $TUNNEL_ID no longer valid (HTTP $VERIFY_HTTP), re-registering..."
+    elif [ "$VERIFY_HTTP" = "404" ]; then
+        echo "Tunnel $TUNNEL_ID was deleted on the platform, re-registering..."
         rm -f "$STATE_FILE"
         REUSE=0
+    else
+        echo "Platform returned HTTP $VERIFY_HTTP (unreachable or error), reusing cached state to stay online."
+        # REUSE stays 1 — we proceed with the cached WireGuard credentials.
+        # The app will keep working; re-registration happens on the next pod restart
+        # once the platform is back.
     fi
 fi
 

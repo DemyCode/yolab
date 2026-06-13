@@ -84,6 +84,17 @@ spec:
         ports:
         - containerPort: 80
         - containerPort: 443
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         volumeMounts:
         - name: data
           mountPath: /data
@@ -152,6 +163,19 @@ spec:
       containers:
       - name: filebrowser
         image: filebrowser/filebrowser:v2
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         env:
         - name: FB_DATABASE
           value: /db/filebrowser.db

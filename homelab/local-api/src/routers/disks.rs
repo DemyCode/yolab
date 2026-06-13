@@ -42,6 +42,12 @@ pub struct DiskOrderRequest {
     pub entries: Vec<DiskOrderEntry>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct AddVirtualRequest {
+    pub size_gb: u64,
+    pub host: Option<String>,
+}
+
 fn lsblk() -> anyhow::Result<Vec<serde_json::Value>> {
     let out = std::process::Command::new("lsblk")
         .args(["-J", "-b", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,MODEL,FSTYPE"])
@@ -536,4 +542,86 @@ pub async fn deactivate_local(Json(body): Json<DiskOrderEntry>) -> Result<Json<s
     tokio::task::spawn_blocking(move || do_deactivate_local(&name))
         .await.map_err(|e| anyhow::anyhow!(e))??;
     Ok(Json(serde_json::json!({"ok": true})))
+}
+
+fn do_add_virtual_local(size_gb: u64) -> anyhow::Result<String> {
+    use std::path::Path;
+
+    // Find the lowest numbered slot whose image file either doesn't exist yet
+    // or exists but isn't currently attached to any loop device.
+    let disk_num = (1u32..64)
+        .find(|n| {
+            let img = format!("/var/lib/rook/virtual-osd-{n}.img");
+            if !Path::new(&img).exists() {
+                return true;
+            }
+            let attached = std::process::Command::new("losetup")
+                .args(["-j", &img])
+                .output()
+                .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+                .unwrap_or(false);
+            !attached
+        })
+        .ok_or_else(|| anyhow::anyhow!("no free virtual disk slot (max 63)"))?;
+
+    let img_path = format!("/var/lib/rook/virtual-osd-{disk_num}.img");
+    std::fs::create_dir_all("/var/lib/rook")?;
+
+    if !Path::new(&img_path).exists() {
+        let size_bytes = size_gb.saturating_mul(1024 * 1024 * 1024);
+        let status = std::process::Command::new("fallocate")
+            .args(["-l", &size_bytes.to_string(), &img_path])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("fallocate failed for {img_path}");
+        }
+    }
+
+    // losetup --find --show picks the next free loop device and prints its path.
+    let out = std::process::Command::new("losetup")
+        .args(["--find", "--show", "--direct-io=on", &img_path])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "losetup failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let dev = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(dev.trim_start_matches("/dev/").to_string())
+}
+
+pub async fn add_virtual_local(
+    Json(body): Json<AddVirtualRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let size_gb = body.size_gb;
+    let loop_name = tokio::task::spawn_blocking(move || do_add_virtual_local(size_gb))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
+}
+
+pub async fn add_virtual(
+    State(state): State<AppState>,
+    Json(body): Json<AddVirtualRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let host = body.host.clone().unwrap_or_else(|| state.config.node_ipv6.clone());
+    if host != state.config.node_ipv6 {
+        let resp = node_client()
+            .post(format!(
+                "http://[{}]:{}/api/disks/add-virtual-local",
+                host, state.config.port
+            ))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| anyhow::anyhow!(e))?;
+        return Ok(Json(json));
+    }
+    let size_gb = body.size_gb;
+    let loop_name = tokio::task::spawn_blocking(move || do_add_virtual_local(size_gb))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
 }

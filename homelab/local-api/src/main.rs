@@ -36,8 +36,10 @@ async fn main() {
         .init();
 
     let cfg = Arc::new(Config::from_env());
+    let sessions = auth::new_sessions();
+    auth::init_sessions(&sessions).await;
     let auth_state = AuthState {
-        sessions: auth::new_sessions(),
+        sessions,
         config: Arc::clone(&cfg),
     };
     let state = AppState { config: Arc::clone(&cfg), auth: auth_state.clone() };
@@ -66,6 +68,8 @@ async fn main() {
         .route("/api/disks/order", put(disks::update_order))
         .route("/api/disks/activate-local", post(disks::activate_local))
         .route("/api/disks/deactivate-local", post(disks::deactivate_local))
+        .route("/api/disks/virtual", post(disks::add_virtual))
+        .route("/api/disks/add-virtual-local", post(disks::add_virtual_local))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         // Nodes

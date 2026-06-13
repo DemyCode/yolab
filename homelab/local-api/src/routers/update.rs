@@ -149,7 +149,7 @@ pub async fn update(
             "-C".to_string(), cfg.repo_path.clone(),
             "fetch".to_string(), ch.remote.clone(), "--tags".to_string(),
         ];
-        yield Ok(Event::default().data(format!("$ git {}", fetch_args.join(" "))));
+        yield Ok::<Event, Infallible>(Event::default().data(format!("$ git {}", fetch_args.join(" "))));
 
         let fetch_rc = {
             let args: Vec<&str> = fetch_args.iter().map(|s| s.as_str()).collect();
