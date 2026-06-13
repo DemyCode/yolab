@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { GripVertical, HardDrive } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { GripVertical, HardDrive, Plus, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import type { CephStatus, DiskItem, DiskOrderRequest } from "@/types/disk";
 import {
   DndContext,
@@ -217,11 +218,111 @@ function DiskRow({ disk }: { disk: DiskItem }) {
   );
 }
 
+interface AddVirtualDiskFormProps {
+  nodes: { host: string; hostname: string }[];
+  onDone: () => void;
+  onCancel: () => void;
+}
+
+function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps) {
+  const [sizeGb, setSizeGb] = useState("20");
+  const [host, setHost] = useState(nodes[0]?.host ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleCreate() {
+    const size = parseInt(sizeGb, 10);
+    if (!size || size < 1) { setError("Enter a size of at least 1 GB"); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/disks/virtual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ size_gb: size, host: host || undefined }),
+      });
+      const json = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok || !json.ok) {
+        setError(json.error ?? `Server error ${res.status}`);
+      } else {
+        onDone();
+      }
+    } catch {
+      setError("Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="pt-5 pb-5">
+        <div className="space-y-4">
+          <div className="flex items-start justify-between">
+            <p className="text-sm font-medium text-[#fafafa]">New virtual disk</p>
+            <button
+              onClick={onCancel}
+              className="p-0.5 rounded hover:bg-[#27272a] transition-colors"
+            >
+              <X className="h-4 w-4 text-[#52525b]" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+            <div className="space-y-1.5">
+              <label className="text-xs text-[#71717a]">Size (GB)</label>
+              <input
+                type="number"
+                min={1}
+                value={sizeGb}
+                onChange={(e) => setSizeGb(e.target.value)}
+                className="w-full rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
+              />
+            </div>
+
+            {nodes.length > 1 && (
+              <div className="space-y-1.5">
+                <label className="text-xs text-[#71717a]">Node</label>
+                <select
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  className="rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
+                >
+                  {nodes.map((n) => (
+                    <option key={n.host} value={n.host}>{n.hostname}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <Button
+              onClick={handleCreate}
+              disabled={busy}
+              className="bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-9 px-4"
+            >
+              {busy ? "Creating…" : "Create"}
+            </Button>
+          </div>
+
+          <p className="text-xs text-[#52525b]">
+            Allocates a loop-device image file and makes it available to Ceph as a new OSD.
+          </p>
+
+          {error && (
+            <p className="text-xs text-[#f87171]">{error}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function DisksPage() {
   const [disks, setDisks] = useState<DiskItem[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [addingVirtual, setAddingVirtual] = useState(false);
   const savingRef = useRef(false);
   const draggingRef = useRef(false);
 
@@ -253,6 +354,12 @@ export function DisksPage() {
     const interval = setInterval(load, 10_000);
     return () => clearInterval(interval);
   }, []);
+
+  const nodes = useMemo(() => {
+    const seen = new Map<string, string>();
+    disks.forEach((d) => seen.set(d.host, d.hostname));
+    return Array.from(seen.entries()).map(([host, hostname]) => ({ host, hostname }));
+  }, [disks]);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -331,8 +438,31 @@ export function DisksPage() {
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
               Disks
             </h2>
-            {saving && <span className="text-xs text-[#52525b]">Saving…</span>}
+            <div className="flex items-center gap-3">
+              {saving && <span className="text-xs text-[#52525b]">Saving…</span>}
+              {!addingVirtual && (
+                <button
+                  onClick={() => setAddingVirtual(true)}
+                  className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add virtual disk
+                </button>
+              )}
+            </div>
           </div>
+
+          {addingVirtual && (
+            <div className="mb-3">
+              <AddVirtualDiskForm
+                nodes={nodes}
+                onDone={() => {
+                  setAddingVirtual(false);
+                }}
+                onCancel={() => setAddingVirtual(false)}
+              />
+            </div>
+          )}
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}

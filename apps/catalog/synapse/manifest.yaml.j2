@@ -104,6 +104,17 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        readinessProbe:
+          tcpSocket:
+            port: 443
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 443
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -121,6 +132,19 @@ spec:
 
       - name: synapse
         image: matrixdotorg/synapse:latest
+        readinessProbe:
+          httpGet:
+            path: /_matrix/client/versions
+            port: 8008
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /_matrix/client/versions
+            port: 8008
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -152,6 +176,17 @@ spec:
 
       - name: element
         image: vectorim/element-web:latest
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -207,6 +242,17 @@ spec:
       containers:
       - name: postgres
         image: postgres:16-alpine
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "synapse"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "synapse"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         env:
         - name: POSTGRES_USER
           value: synapse

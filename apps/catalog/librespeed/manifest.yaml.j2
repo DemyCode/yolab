@@ -84,6 +84,17 @@ spec:
         ports:
         - containerPort: 80
         - containerPort: 443
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         volumeMounts:
         - name: data
           mountPath: /data
@@ -124,6 +135,19 @@ spec:
       containers:
       - name: librespeed
         image: lscr.io/linuxserver/librespeed:latest@sha256:b1f655f387714f0e7a2b2356d4b6c9177e72f44753ec066d7f1a6d65e8ec4d76
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         env:
         - name: PUID
           value: "1000"

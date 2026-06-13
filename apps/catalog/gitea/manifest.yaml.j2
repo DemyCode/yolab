@@ -117,6 +117,19 @@ spec:
 
       - name: gitea
         image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        readinessProbe:
+          httpGet:
+            path: /api/healthz
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/healthz
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -169,6 +182,17 @@ spec:
         - -c
         - |
           . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         volumeMounts:
         - name: data
           mountPath: /data

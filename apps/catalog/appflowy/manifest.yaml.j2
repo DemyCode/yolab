@@ -116,6 +116,17 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -133,6 +144,19 @@ spec:
 
       - name: app
         image: appflowyinc/appflowy_web:latest
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -173,6 +197,17 @@ spec:
       containers:
       - name: cloud
         image: appflowyinc/appflowy_cloud:latest
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -291,6 +326,19 @@ spec:
       containers:
       - name: gotrue
         image: appflowyinc/gotrue:latest
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9999
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9999
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -363,6 +411,19 @@ spec:
       containers:
       - name: minio
         image: minio/minio:latest
+        readinessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 20
+          periodSeconds: 20
+          failureThreshold: 3
         command: ["minio", "server", "/data", "--console-address", ":9001"]
         env:
         - name: MINIO_ROOT_USER
@@ -412,6 +473,17 @@ spec:
       containers:
       - name: postgres
         image: postgres:16-alpine
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "appflowy"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "appflowy"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         env:
         - name: POSTGRES_USER
           value: appflowy
@@ -460,6 +532,17 @@ spec:
       containers:
       - name: redis
         image: redis:7.4-alpine
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command: ["redis-server"]
         volumeMounts:
         - name: data

@@ -93,6 +93,17 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -141,6 +152,19 @@ spec:
       containers:
       - name: immich-server
         image: ghcr.io/immich-app/immich-server:release@sha256:c15bff75068effb03f4355997d03dc7e0fc58720c2b54ad6f7f10d1bc57efaa5
+        readinessProbe:
+          httpGet:
+            path: /api/server/ping
+            port: 2283
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/server/ping
+            port: 2283
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -280,6 +304,17 @@ spec:
       containers:
       - name: postgres
         image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c

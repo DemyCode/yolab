@@ -76,6 +76,17 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -93,6 +104,17 @@ spec:
 
       - name: ollama
         image: ollama/ollama:latest
+        readinessProbe:
+          tcpSocket:
+            port: 11434
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 11434
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         volumeMounts:
         - name: data
           mountPath: /root/.ollama
@@ -100,6 +122,19 @@ spec:
 
       - name: open-webui
         image: ghcr.io/open-webui/open-webui:main
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
         env:
         - name: OLLAMA_BASE_URL
           value: "http://localhost:11434"
