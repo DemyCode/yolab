@@ -88,8 +88,10 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
-    // Reconcile loop on primary node — runs serially; each invocation completes before the next
-    // starts to prevent kubectl process accumulation under load.
+    // Reconcile loop on primary node.
+    // - MissedTickBehavior::Delay: if one run takes >30s, the next fires 30s *after* it finishes
+    //   rather than immediately, preventing runaway accumulation of parallel reconcile tasks.
+    // - tokio::spawn + .await: isolates panics so the loop survives a crash inside reconcile_storage.
     if cfg.is_primary_node() {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -97,7 +99,12 @@ async fn main() {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                disks::reconcile_storage(Arc::clone(&state.config)).await;
+                let handle = tokio::spawn(disks::reconcile_storage(Arc::clone(&state.config)));
+                match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::error!("reconcile_storage panicked: {:?}", e),
+                    Err(_) => tracing::error!("reconcile_storage timed out after 120s"),
+                }
             }
         });
     }
