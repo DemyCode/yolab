@@ -29,6 +29,21 @@ if [ -f "$STATE_FILE" ]; then
     fi
 fi
 
+# Verify the cached tunnel still exists on the platform before committing to reuse.
+# The platform DB may have been reset, or the tunnel deleted externally.
+if [ "$REUSE" = "1" ]; then
+    VERIFY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+        "$PLATFORM_API_URL/tunnels/$TUNNEL_ID")
+    if [ "$VERIFY_HTTP" = "200" ]; then
+        echo "Tunnel $TUNNEL_ID verified on platform."
+    else
+        echo "Tunnel $TUNNEL_ID no longer valid (HTTP $VERIFY_HTTP), re-registering..."
+        rm -f "$STATE_FILE"
+        REUSE=0
+    fi
+fi
+
 if [ "$REUSE" = "0" ]; then
     echo "Generating WireGuard keypair..."
     PRIVATE_KEY=$(wg genkey)

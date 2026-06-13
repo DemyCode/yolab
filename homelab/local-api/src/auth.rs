@@ -41,9 +41,13 @@ fn verify_password(password: &str, hash: &str) -> bool {
 fn is_cluster_internal(req: &Request<Body>) -> bool {
     req.extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| {
-            let ip = ci.0.ip().to_string().to_lowercase();
-            ip.starts_with("fd") || ip.starts_with("fc")
+        .map(|ci| match ci.0.ip() {
+            std::net::IpAddr::V6(v6) => {
+                // ULA range: fc00::/7 — first byte is 0xfc or 0xfd
+                let b = v6.octets()[0];
+                b == 0xfc || b == 0xfd
+            }
+            _ => false,
         })
         .unwrap_or(false)
 }

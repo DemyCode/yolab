@@ -242,34 +242,51 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
 
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let catalog_dir = state.config.catalog_dir();
-    let out = tokio::process::Command::new("kubectl")
-        .args(["get", "namespaces", "-l", &format!("{LABEL_MANAGED}=true"), "-o", "json"])
-        .output().await?;
-    let v: Value = serde_json::from_slice(&out.stdout)?;
+    let (ns_out, pods_out) = tokio::join!(
+        tokio::process::Command::new("kubectl")
+            .args(["get", "namespaces", "-l", &format!("{LABEL_MANAGED}=true"), "-o", "json"])
+            .output(),
+        tokio::process::Command::new("kubectl")
+            .args(["get", "pods", "--all-namespaces", "-o", "json"])
+            .output(),
+    );
+    let v: Value = serde_json::from_slice(&ns_out?.stdout)?;
+
+    // Build a pod-by-namespace index from the single bulk query so list_apps
+    // requires only two kubectl calls regardless of app count.
+    let pods_v: Value = pods_out.ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or_else(|| serde_json::json!({"items": []}));
+    let empty_pods: Vec<Value> = vec![];
+    let all_pod_items = pods_v["items"].as_array().unwrap_or(&empty_pods);
+    let mut pods_by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
+    for pod in all_pod_items {
+        if let Some(ns) = pod["metadata"]["namespace"].as_str() {
+            pods_by_ns.entry(ns).or_default().push(pod);
+        }
+    }
+
     let mut apps = vec![];
-    for ns in v["items"].as_array().unwrap_or(&vec![]) {
+    let empty_ns: Vec<Value> = vec![];
+    for ns in v["items"].as_array().unwrap_or(&empty_ns) {
         let ann = ns["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
         let name = ns["metadata"]["name"].as_str().unwrap_or("").trim_start_matches("yolab-").to_string();
         let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
         let status = if phase == "Terminating" {
             "uninstalling".to_string()
         } else {
-            let pods = tokio::process::Command::new("kubectl")
-                .args(["get", "pods", "-n", &format!("yolab-{name}"), "-o", "json"])
-                .output().await.ok();
-            let status = pods.and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-                .and_then(|v| v["items"].as_array().cloned())
-                .map(|items| {
-                    if items.is_empty() { return "starting".to_string(); }
-                    let all_ready = items.iter().all(|p| {
-                        p["status"]["conditions"].as_array()
-                            .map(|cs| cs.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
-                            .unwrap_or(false)
-                    });
-                    if all_ready { "running" } else { "starting" }.to_string()
-                })
-                .unwrap_or_else(|| "starting".to_string());
-            status
+            let ns_full = format!("yolab-{name}");
+            let items = pods_by_ns.get(ns_full.as_str()).map(|v| v.as_slice()).unwrap_or(&[]);
+            if items.is_empty() {
+                "starting".to_string()
+            } else {
+                let all_ready = items.iter().all(|p| {
+                    p["status"]["conditions"].as_array()
+                        .map(|cs| cs.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
+                        .unwrap_or(false)
+                });
+                if all_ready { "running" } else { "starting" }.to_string()
+            }
         };
 
         let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -436,13 +453,31 @@ pub async fn scan_outputs(
     }
     let outputs_spec: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&outputs_json)?)?;
 
+    // Compile regex patterns once — recompiling inside the inner log-line loop
+    // is O(patterns × lines) compilations which blows up on long logs.
+    struct CompiledSpec {
+        key: String,
+        label: String,
+        type_: String,
+        re: Option<regex::Regex>,
+    }
+    let compiled: Vec<CompiledSpec> = outputs_spec.iter().filter_map(|spec| {
+        let key = spec["key"].as_str()?.to_string();
+        Some(CompiledSpec {
+            re: spec["pattern"].as_str().and_then(|p| regex::Regex::new(p).ok()),
+            label: spec.get("label").and_then(|v| v.as_str()).unwrap_or(&key).to_string(),
+            type_: spec.get("type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
+            key,
+        })
+    }).collect();
+
     let pods_out = tokio::process::Command::new("kubectl")
         .args(["get", "pods", "-n", &ns, "-o", "json"])
         .output().await?;
     let pods_v: Value = serde_json::from_slice(&pods_out.stdout)?;
     let mut found: std::collections::HashMap<String, String> = Default::default();
 
-    for pod in pods_v["items"].as_array().unwrap_or(&vec![]) {
+    'outer: for pod in pods_v["items"].as_array().unwrap_or(&vec![]) {
         let pod_name = pod["metadata"]["name"].as_str().unwrap_or("");
         let empty = vec![];
         let init_containers = pod["spec"]["initContainers"].as_array().unwrap_or(&empty);
@@ -457,18 +492,17 @@ pub async fn scan_outputs(
             let Ok(logs) = logs else { continue };
             let text = String::from_utf8_lossy(&logs.stdout);
             for line in text.lines() {
-                for spec in &outputs_spec {
-                    let key = spec["key"].as_str().unwrap_or("");
-                    if found.contains_key(key) { continue; }
-                    if let Some(pattern) = spec["pattern"].as_str() {
-                        if let Ok(re) = regex::Regex::new(pattern) {
-                            if let Some(cap) = re.captures(line).and_then(|c| c.get(1)) {
-                                found.insert(key.to_string(), cap.as_str().to_string());
-                            }
+                for cs in &compiled {
+                    if found.contains_key(&cs.key) { continue; }
+                    if let Some(re) = &cs.re {
+                        if let Some(cap) = re.captures(line).and_then(|c| c.get(1)) {
+                            found.insert(cs.key.clone(), cap.as_str().to_string());
                         }
                     }
                 }
             }
+            // Stop as soon as all keys are found.
+            if found.len() == compiled.len() { break 'outer; }
         }
     }
 
@@ -476,15 +510,14 @@ pub async fn scan_outputs(
         return Ok(Json(ScanOutputsResponse { outputs: normalize_outputs(&ann) }));
     }
 
-    let outputs: Vec<AppOutput> = outputs_spec.iter()
-        .filter_map(|spec| {
-            let key = spec["key"].as_str()?;
-            let value = found.get(key)?.clone();
+    let outputs: Vec<AppOutput> = compiled.iter()
+        .filter_map(|cs| {
+            let value = found.get(&cs.key)?.clone();
             Some(AppOutput {
-                key: key.to_string(),
-                label: spec.get("label").and_then(|v| v.as_str()).unwrap_or(key).to_string(),
+                key: cs.key.clone(),
+                label: cs.label.clone(),
                 value,
-                type_: spec.get("type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
+                type_: cs.type_.clone(),
             })
         })
         .collect();
