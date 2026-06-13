@@ -61,6 +61,28 @@ jobs:
           push: true
           tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
 
+  build-nixos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://cache.nixos.org
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+
+      - name: Provide CI config stub
+        run: cp homelab/ci-config.toml homelab/ignored/config.toml
+
+      - name: Build NixOS toplevel
+        run: >
+          nix build path:.#nixosConfigurations.yolab.config.system.build.toplevel
+          --print-build-logs --accept-flake-config
+
   build-iso:
     runs-on: ubuntu-latest
     # needs: pre-commit
