@@ -32,14 +32,6 @@ role = "server"
 token = "ci-token"
 server_addr = ""
 
-[velero]
-enabled = false
-s3_endpoint = "https://s3.amazonaws.com"
-s3_bucket = "ci-bucket"
-s3_region = "us-east-1"
-s3_access_key = ""
-s3_secret_key = ""
-
 [yolab_external]
 url = ""
 account_token = ""
