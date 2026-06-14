@@ -4,7 +4,9 @@ use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 const CM_NAME: &str = "yolab-disk-priority";
-const CM_NS: &str = "rook-ceph";
+// kube-system always exists in k3s — avoids write failures during Rook cold-start
+// when the rook-ceph namespace hasn't been created yet.
+const CM_NS: &str = "kube-system";
 
 // Serialise all ConfigMap read-modify-write operations so concurrent calls
 // (reconcile_storage + HTTP handler) cannot interleave and lose writes.

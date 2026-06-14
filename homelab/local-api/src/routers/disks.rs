@@ -48,12 +48,42 @@ pub struct AddVirtualRequest {
     pub host: Option<String>,
 }
 
-fn lsblk() -> anyhow::Result<Vec<serde_json::Value>> {
+// Virtual OSDs occupy loop1..loop7, system OSD is loop0.
+// Cloud OSD (SFTP-backed) is pinned to loop8 so it stays stable across reboots.
+const CLOUD_OSD_LOOP: u32 = 8;
+
+/// Returns a map of loop-device short name → backing-file path for every
+/// currently-attached loop device, e.g. `{"loop0" → "/var/lib/rook/system-osd.img"}`.
+/// Drives filtering in disks_local so system/squashfs loops never appear in the UI.
+fn loop_backing_files() -> std::collections::HashMap<String, String> {
+    let Ok(out) = std::process::Command::new("losetup")
+        .args(["-l", "--output", "NAME,BACK-FILE", "--noheadings"])
+        .output()
+    else { return Default::default() };
+    let mut map = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(name), Some(file)) = (parts.next(), parts.next()) {
+            if name.starts_with("/dev/loop") {
+                map.insert(name.trim_start_matches("/dev/").to_string(), file.to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Returns true for loop-device backing files we own.
+fn is_our_backing_file(path: &str) -> bool {
+    path.starts_with("/var/lib/rook/") || path.starts_with("/mnt/yolab-sftp/")
+}
+
+fn scan_block_devices() -> anyhow::Result<(Vec<serde_json::Value>, std::collections::HashMap<String, String>)> {
     let out = std::process::Command::new("lsblk")
         .args(["-J", "-b", "-o", "NAME,SIZE,TYPE,MOUNTPOINT,MODEL,FSTYPE"])
         .output()?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    Ok(v["blockdevices"].as_array().cloned().unwrap_or_default())
+    let devices = v["blockdevices"].as_array().cloned().unwrap_or_default();
+    Ok((devices, loop_backing_files()))
 }
 
 fn is_system_disk(device: &serde_json::Value) -> bool {
@@ -168,23 +198,32 @@ fn ceph_device_for(disk_name: &str) -> String {
 
 fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
-    // Guard against wiping a disk that is currently being prepared OR has just
-    // been prepared (succeeded) but whose OSD pod hasn't registered in Ceph yet.
-    // Without the succeeded check the reconcile loop would wipe the freshly
-    // prepared OSD every 30 s, restarting the cycle indefinitely.
-    let (job_active, job_succeeded) = std::process::Command::new("kubectl")
-        .args(["get", "job", "-n", CEPH_NS, &format!("rook-ceph-osd-prepare-{hostname}"),
-               "-o", "jsonpath={.status.active}/{.status.succeeded}"])
+    let job_name = format!("rook-ceph-osd-prepare-{hostname}");
+    // Check OSD prepare job state:
+    //  active    → job still running, don't interrupt
+    //  succeeded → job done, OSD pod starting, don't re-wipe yet
+    //  failed    → job crashed, delete it so Rook retries on the next reconcile
+    let (job_active, job_succeeded, job_failed) = std::process::Command::new("kubectl")
+        .args(["get", "job", "-n", CEPH_NS, &job_name,
+               "-o", "jsonpath={.status.active}/{.status.succeeded}/{.status.failed}"])
         .output()
         .map(|o| {
             let s = String::from_utf8_lossy(&o.stdout).to_string();
-            let mut p = s.splitn(2, '/');
+            let mut p = s.splitn(3, '/');
             let active    = p.next().unwrap_or("").trim().parse::<u32>().unwrap_or(0);
             let succeeded = p.next().unwrap_or("").trim().parse::<u32>().unwrap_or(0);
-            (active > 0, succeeded > 0)
+            let failed    = p.next().unwrap_or("").trim().parse::<u32>().unwrap_or(0);
+            (active > 0, succeeded > 0, failed > 0)
         })
-        .unwrap_or((false, false));
+        .unwrap_or((false, false, false));
     if job_active || job_succeeded { return Ok(()); }
+    if job_failed {
+        tracing::warn!("activate {disk_name}: OSD prepare job failed — deleting for Rook to retry");
+        let _ = std::process::Command::new("kubectl")
+            .args(["delete", "job", "-n", CEPH_NS, &job_name, "--ignore-not-found"])
+            .output();
+        // Fall through: wipe device and re-patch CephCluster to trigger a fresh job.
+    }
 
     if disk_name.starts_with("loop") {
         let _ = std::process::Command::new("dd")
@@ -382,13 +421,21 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
         }))
         .collect();
 
+    if disk_map.is_empty() {
+        tracing::debug!("reconcile: no disks visible from any node (nodes unreachable or no devices)");
+        return;
+    }
+    tracing::debug!("reconcile: {} disk(s) visible across nodes", disk_map.len());
+
     let mut prio = priority::read().await;
     let known: std::collections::HashSet<_> =
         prio.iter().map(|e| (e.host.clone(), e.disk_name.clone())).collect();
     let mut updated = false;
     for ((host, name), disk) in &disk_map {
         if !known.contains(&(host.clone(), name.clone())) {
-            if disk["is_builtin"].as_bool().unwrap_or(false) {
+            let builtin = disk["is_builtin"].as_bool().unwrap_or(false);
+            tracing::info!("reconcile: new disk {name} on {host} (builtin={builtin}) → adding to priority list");
+            if builtin {
                 let _ = priority::prepend(host, name).await;
             } else {
                 let _ = priority::append(host, name).await;
@@ -397,27 +444,42 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
         }
     }
     if updated { prio = priority::read().await; }
-    if prio.is_empty() { return; }
+
+    if prio.is_empty() {
+        tracing::warn!("reconcile: priority list is empty after update — ConfigMap write may have failed");
+        return;
+    }
 
     let any_osd = disk_map.values().any(|d| d["is_osd"].as_bool().unwrap_or(false));
     if !any_osd {
+        // No OSDs exist at all: activate the first available disk in priority order.
         for entry in &prio {
-            if disk_map.contains_key(&(entry.host.clone(), entry.disk_name.clone())) {
+            let key = (entry.host.clone(), entry.disk_name.clone());
+            if disk_map.contains_key(&key) {
+                tracing::info!("reconcile: no OSDs yet — activating {} on {}", entry.disk_name, entry.host);
                 activate_disk(&cfg, &entry.disk_name, &entry.host).await;
                 return;
             }
         }
+        tracing::debug!("reconcile: no OSDs and no priority disk is currently visible — waiting");
         return;
     }
 
-    let Ok((status, _, _)) = crate::routers::ceph::cluster_status_from_k8s().await else { return };
+    let Ok((status, _, _)) = crate::routers::ceph::cluster_status_from_k8s().await else {
+        tracing::debug!("reconcile: Ceph status unavailable — skipping capacity check");
+        return;
+    };
     let current_used = status.get("ceph")
         .and_then(|c| c.get("capacity"))
         .and_then(|cap| cap.get("bytesUsed"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    if current_used == 0 { return; }
+    if current_used == 0 {
+        tracing::debug!("reconcile: Ceph reports 0 bytes used — skipping expansion check");
+        return;
+    }
 
+    // Build the minimal set of disks needed to cover 120% of current usage.
     let demanded = (current_used as f64 * 1.2) as u64;
     let mut running = 0u64;
     let mut needed = std::collections::HashSet::new();
@@ -430,6 +492,7 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
             }
         }
     }
+    tracing::debug!("reconcile: need {} disk(s) to cover {demanded} bytes (used={current_used})", needed.len());
 
     let osd_map = ceph_osd_map().await;
     let needed_all_ready = needed.iter().all(|k| {
@@ -441,14 +504,15 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
         let Some(disk) = disk_map.get(&key) else { continue };
         let is_osd = disk["is_osd"].as_bool().unwrap_or(false);
         if needed.contains(&key) && !is_osd {
+            tracing::info!("reconcile: activating {} on {} (needed for capacity)", entry.disk_name, entry.host);
             activate_disk(&cfg, &entry.disk_name, &entry.host).await;
         } else if !needed.contains(&key) && is_osd && needed_all_ready {
             if let Some(&osd_id) = osd_map.get(&entry.disk_name) {
-                // Guard against spawning a second drain task if one is already running.
                 let mut draining = draining_osds().lock().unwrap();
                 if draining.contains(&osd_id) { continue; }
                 draining.insert(osd_id);
                 drop(draining);
+                tracing::info!("reconcile: draining osd.{osd_id} ({}) — no longer needed", entry.disk_name);
                 let (cfg2, dn, host) = (Arc::clone(&cfg), entry.disk_name.clone(), entry.host.clone());
                 tokio::spawn(async move { drain_osd(cfg2, dn, osd_id, host).await });
             }
@@ -460,8 +524,8 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
     let cfg = &state.config;
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
     let (osd_map, usage) = tokio::join!(ceph_osd_map(), kubectl::osd_df());
-    let devices = tokio::task::spawn_blocking(lsblk).await
-        .unwrap_or_else(|_| Ok(vec![]))
+    let (devices, backing_files) = tokio::task::spawn_blocking(scan_block_devices).await
+        .unwrap_or_else(|_| Ok((vec![], Default::default())))
         .unwrap_or_default();
     let mut result = vec![];
     for d in &devices {
@@ -471,7 +535,24 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
         let is_disk = dtype == "disk";
         if !is_disk && !is_loop { continue; }
         if is_disk && is_system_disk(d) { continue; }
-        let model = if is_loop { "Built-in storage".into() } else { d["model"].as_str().unwrap_or("").trim().to_string() };
+        if is_loop {
+            // Only expose loop devices we own — filters out squashfs, snap, etc.
+            let backing = backing_files.get(&name).map(String::as_str).unwrap_or("");
+            if !is_our_backing_file(backing) { continue; }
+        }
+        // system-osd.img is the truly built-in disk; virtual/cloud loops are user-managed.
+        let is_builtin = if is_loop {
+            backing_files.get(&name).map(String::as_str).unwrap_or("") == "/var/lib/rook/system-osd.img"
+        } else {
+            false
+        };
+        let model = if is_loop {
+            let backing = backing_files.get(&name).map(String::as_str).unwrap_or("");
+            if backing.starts_with("/mnt/yolab-sftp/") { "Cloud storage".into() }
+            else { "Built-in storage".into() }
+        } else {
+            d["model"].as_str().unwrap_or("").trim().to_string()
+        };
         let osd_id = osd_map.get(&name).copied();
         let u = osd_id.and_then(|id| usage.get(&id));
         result.push(DiskItem {
@@ -481,7 +562,7 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
             host: cfg.node_ipv6.clone(),
             hostname: hostname.clone(),
             is_osd: osd_id.is_some(),
-            is_builtin: is_loop,
+            is_builtin,
             used_bytes: u.map(|u| u.used_bytes),
             free_bytes: u.map(|u| u.free_bytes),
         });
@@ -557,48 +638,69 @@ pub async fn deactivate_local(Json(body): Json<DiskOrderEntry>) -> Result<Json<s
 fn do_add_virtual_local(size_gb: u64) -> anyhow::Result<String> {
     use std::path::Path;
 
-    // Find the lowest numbered slot whose image file either doesn't exist yet
-    // or exists but isn't currently attached to any loop device.
-    let disk_num = (1u32..64)
+    // Each virtual-osd-N.img is pinned to /dev/loopN.
+    // loop0  → system-osd.img  (reserved by yolab-system-osd service)
+    // loop1..7 → virtual-osd-{1..7}.img
+    // loop8  → cloud-osd on SFTP (CLOUD_OSD_LOOP)
+    // A slot is free when its image file does not exist, or the image exists but
+    // is NOT currently attached to its reserved /dev/loopN.
+    let disk_num = (1u32..CLOUD_OSD_LOOP)
         .find(|n| {
             let img = format!("/var/lib/rook/virtual-osd-{n}.img");
-            if !Path::new(&img).exists() {
-                return true;
-            }
-            let attached = std::process::Command::new("losetup")
-                .args(["-j", &img])
+            if !Path::new(&img).exists() { return true; }
+            // Image exists — check if it's already on its pinned device.
+            let loop_dev = format!("/dev/loop{n}");
+            let backing = std::process::Command::new("losetup")
+                .args(["-l", "--output", "BACK-FILE", "--noheadings", &loop_dev])
                 .output()
-                .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-                .unwrap_or(false);
-            !attached
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            backing != img   // slot free if loopN is not already backed by this image
         })
-        .ok_or_else(|| anyhow::anyhow!("no free virtual disk slot (max 63)"))?;
+        .ok_or_else(|| anyhow::anyhow!("no free virtual disk slot (max {})", CLOUD_OSD_LOOP - 1))?;
 
     let img_path = format!("/var/lib/rook/virtual-osd-{disk_num}.img");
+    let loop_dev = format!("/dev/loop{disk_num}");
+    let loop_name = format!("loop{disk_num}");
+
     std::fs::create_dir_all("/var/lib/rook")?;
 
     if !Path::new(&img_path).exists() {
         let size_bytes = size_gb.saturating_mul(1024 * 1024 * 1024);
-        let status = std::process::Command::new("fallocate")
+        if !std::process::Command::new("fallocate")
             .args(["-l", &size_bytes.to_string(), &img_path])
-            .status()?;
-        if !status.success() {
+            .status()?.success()
+        {
             anyhow::bail!("fallocate failed for {img_path}");
         }
     }
 
-    // losetup --find --show picks the next free loop device and prints its path.
-    let out = std::process::Command::new("losetup")
-        .args(["--find", "--show", "--direct-io=on", &img_path])
-        .output()?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "losetup failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+    // Check if already correctly attached.
+    let current_backing = std::process::Command::new("losetup")
+        .args(["-l", "--output", "BACK-FILE", "--noheadings", &loop_dev])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if current_backing == img_path { return Ok(loop_name); }
+
+    // Evict whatever occupies this loop slot, then attach the image.
+    let _ = std::process::Command::new("losetup").args(["-d", &loop_dev]).output();
+
+    let ok = std::process::Command::new("losetup")
+        .args(["--direct-io=on", &loop_dev, &img_path])
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        // Kernel may not support --direct-io; retry without it.
+        let out = std::process::Command::new("losetup")
+            .args([&loop_dev, &img_path])
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!("losetup {} {} failed: {}",
+                loop_dev, img_path, String::from_utf8_lossy(&out.stderr).trim());
+        }
     }
-    let dev = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(dev.trim_start_matches("/dev/").to_string())
+
+    Ok(loop_name)
 }
 
 pub async fn add_virtual_local(
@@ -720,48 +822,46 @@ pub async fn add_cloud(
 
 fn do_add_cloud_local(size_gb: u64) -> anyhow::Result<String> {
     const CLOUD_IMG: &str = "/mnt/yolab-sftp/yolab-cloud-osd.img";
+    let loop_dev = format!("/dev/loop{CLOUD_OSD_LOOP}");
+    let loop_name = format!("loop{CLOUD_OSD_LOOP}");
 
-    // Re-attach if the image exists but has no loop device yet.
-    let already = std::process::Command::new("losetup")
-        .args(["-j", CLOUD_IMG])
+    // Check if already correctly attached to the reserved loop device.
+    let current_backing = std::process::Command::new("losetup")
+        .args(["-l", "--output", "BACK-FILE", "--noheadings", &loop_dev])
         .output()
-        .map(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            s.split(':').next().map(|p| p.trim().to_string()).filter(|p| !p.is_empty())
-        })
-        .unwrap_or(None);
-    if let Some(dev) = already {
-        return Ok(dev.trim_start_matches("/dev/").to_string());
-    }
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if current_backing == CLOUD_IMG { return Ok(loop_name); }
 
     // Create the sparse image if it doesn't exist yet.
     if !std::path::Path::new(CLOUD_IMG).exists() {
         let size_bytes = size_gb.saturating_mul(1024 * 1024 * 1024);
-        let status = std::process::Command::new("fallocate")
+        let ok = std::process::Command::new("fallocate")
             .args(["-l", &size_bytes.to_string(), CLOUD_IMG])
-            .status()?;
-        if !status.success() {
-            // fallocate may not work on FUSE; fall back to truncate.
+            .status().map(|s| s.success()).unwrap_or(false);
+        if !ok {
+            // FUSE mounts don't support fallocate; fall back to truncate (sparse punch).
             std::process::Command::new("truncate")
                 .args(["-s", &size_bytes.to_string(), CLOUD_IMG])
                 .status()?;
         }
     }
 
-    let out = std::process::Command::new("losetup")
-        .args(["--find", "--show", "--direct-io=on", CLOUD_IMG])
-        .output()?;
-    if !out.status.success() {
-        // --direct-io may not work on FUSE; retry without it.
-        let out2 = std::process::Command::new("losetup")
-            .args(["--find", "--show", CLOUD_IMG])
+    // Evict whatever is at the reserved slot, then attach.
+    let _ = std::process::Command::new("losetup").args(["-d", &loop_dev]).output();
+
+    // FUSE-backed files may not support direct-IO; try with then without.
+    let ok = std::process::Command::new("losetup")
+        .args(["--direct-io=on", &loop_dev, CLOUD_IMG])
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        let out = std::process::Command::new("losetup")
+            .args([&loop_dev, CLOUD_IMG])
             .output()?;
-        if !out2.status.success() {
-            anyhow::bail!("losetup failed: {}", String::from_utf8_lossy(&out2.stderr).trim());
+        if !out.status.success() {
+            anyhow::bail!("losetup cloud OSD failed: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
-        let dev = String::from_utf8_lossy(&out2.stdout).trim().to_string();
-        return Ok(dev.trim_start_matches("/dev/").to_string());
     }
-    let dev = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(dev.trim_start_matches("/dev/").to_string())
+
+    Ok(loop_name)
 }
