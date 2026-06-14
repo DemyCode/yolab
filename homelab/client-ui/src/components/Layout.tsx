@@ -11,12 +11,14 @@ import {
   Boxes,
   Menu,
   X,
+  Cloud,
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { to: "/overview", icon: Activity, label: "Overview" },
   { to: "/nodes", icon: Server, label: "Nodes" },
   { to: "/disks", icon: HardDrive, label: "Disks" },
+  { to: "/backups", icon: Cloud, label: "Backups" },
   { to: "/apps", icon: LayoutGrid, label: "Apps" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal" },
 ];

@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod backups;
 pub mod ceph;
 pub mod disks;
 pub mod nodes;

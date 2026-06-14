@@ -6,7 +6,7 @@ use std::{
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, error::Result, kubectl, priority, AppState};
+use crate::{config::Config, error::Result, kubectl, priority, routers::backups, AppState};
 
 // Tracks OSD IDs currently being drained so reconcile_storage (which fires
 // every 30 s) never spawns a second task for the same OSD.
@@ -628,4 +628,130 @@ pub async fn add_virtual(
         .await
         .map_err(|e| anyhow::anyhow!(e))??;
     Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
+}
+
+// ── Cloud (Hetzner Storage Box) OSD ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AddCloudRequest {
+    /// Size in GiB for the sparse image file on the storage box.
+    pub size_gb: u64,
+}
+
+/// POST /api/disks/cloud
+///
+/// 1. Provisions an SFTP sub-account via yolab-external (idempotent).
+/// 2. Restarts yolab-sftp-mount to bring up /mnt/yolab-sftp.
+/// 3. Creates a sparse image file on the mount and attaches a loop device.
+/// 4. Hands the loop device to the existing OSD activation flow.
+pub async fn add_cloud(
+    State(state): State<AppState>,
+    Json(body): Json<AddCloudRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Step 1 — provision SFTP via yolab-external.
+    let Some((ye_url, ye_token)) = backups::ye_creds(&state.config) else {
+        return Err(anyhow::anyhow!("yolab_external not configured in config.toml").into());
+    };
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    http.post(format!("{ye_url}/storage/sftp"))
+        .bearer_auth(&ye_token)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Step 2 — (re)start the SFTP mount service to ensure /mnt/yolab-sftp is up.
+    tokio::task::spawn_blocking(|| {
+        let _ = std::process::Command::new("systemctl")
+            .args(["restart", "yolab-sftp-mount.service"])
+            .output();
+    })
+    .await
+    .ok();
+
+    // Wait up to 60 s for the mountpoint to appear.
+    let mount_ready = tokio::task::spawn_blocking(|| {
+        for _ in 0..120u32 {
+            if std::process::Command::new("mountpoint")
+                .args(["-q", "/mnt/yolab-sftp"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    if !mount_ready {
+        return Err(anyhow::anyhow!("/mnt/yolab-sftp did not mount within 60s").into());
+    }
+
+    // Step 3 — create the image file (if absent) and attach a loop device.
+    let size_gb = body.size_gb;
+    let loop_name = tokio::task::spawn_blocking(move || do_add_cloud_local(size_gb))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))??;
+
+    // Step 4 — activate as Ceph OSD (same path as virtual disks).
+    let name = loop_name.clone();
+    tokio::task::spawn_blocking(move || { let _ = do_activate_local(&name); }).await.ok();
+
+    Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
+}
+
+fn do_add_cloud_local(size_gb: u64) -> anyhow::Result<String> {
+    const CLOUD_IMG: &str = "/mnt/yolab-sftp/yolab-cloud-osd.img";
+
+    // Re-attach if the image exists but has no loop device yet.
+    let already = std::process::Command::new("losetup")
+        .args(["-j", CLOUD_IMG])
+        .output()
+        .map(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.split(':').next().map(|p| p.trim().to_string()).filter(|p| !p.is_empty())
+        })
+        .unwrap_or(None);
+    if let Some(dev) = already {
+        return Ok(dev.trim_start_matches("/dev/").to_string());
+    }
+
+    // Create the sparse image if it doesn't exist yet.
+    if !std::path::Path::new(CLOUD_IMG).exists() {
+        let size_bytes = size_gb.saturating_mul(1024 * 1024 * 1024);
+        let status = std::process::Command::new("fallocate")
+            .args(["-l", &size_bytes.to_string(), CLOUD_IMG])
+            .status()?;
+        if !status.success() {
+            // fallocate may not work on FUSE; fall back to truncate.
+            std::process::Command::new("truncate")
+                .args(["-s", &size_bytes.to_string(), CLOUD_IMG])
+                .status()?;
+        }
+    }
+
+    let out = std::process::Command::new("losetup")
+        .args(["--find", "--show", "--direct-io=on", CLOUD_IMG])
+        .output()?;
+    if !out.status.success() {
+        // --direct-io may not work on FUSE; retry without it.
+        let out2 = std::process::Command::new("losetup")
+            .args(["--find", "--show", CLOUD_IMG])
+            .output()?;
+        if !out2.status.success() {
+            anyhow::bail!("losetup failed: {}", String::from_utf8_lossy(&out2.stderr).trim());
+        }
+        let dev = String::from_utf8_lossy(&out2.stdout).trim().to_string();
+        return Ok(dev.trim_start_matches("/dev/").to_string());
+    }
+    let dev = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(dev.trim_start_matches("/dev/").to_string())
 }

@@ -516,15 +516,18 @@ in
     systemd.tmpfiles.rules = [
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml  - - - - ${./rook/operator.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml   - - - - ${./rook/cluster.yaml}"
-    ] ++ lib.optionals s.veleroEnabled [
+      # Velero is always deployed so the user can enable backups from the UI
+      # without requiring a NixOS rebuild.  The bootstrap service (below) exits
+      # gracefully when no credentials are configured.
       "L+ /var/lib/rancher/k3s/server/manifests/velero.yaml  - - - - ${./velero/helmchart.yaml}"
     ];
 
     # Bootstrap Velero credentials and backup schedule from config.toml at runtime.
     # Runs after K3s starts; waits for the HelmChart to install Velero, then creates
     # the cloud-credentials Secret, BackupStorageLocation, and daily Schedule.
-    # Credentials never touch the Nix store — read live from config.toml.
-    systemd.services.yolab-velero-bootstrap = lib.mkIf s.veleroEnabled {
+    # Exits early if no S3 credentials are available (yolab-external not configured
+    # and [velero] section absent / disabled).  Credentials never touch the Nix store.
+    systemd.services.yolab-velero-bootstrap = {
       description = "Bootstrap Velero S3 credentials and backup schedule";
       after = [
         "k3s.service"
@@ -553,12 +556,6 @@ in
             S3_JSON=$(${pkgs.curl}/bin/curl -sf --max-time 30 \
               -H "Authorization: Bearer $YE_TOKEN" \
               "$YE_URL/storage/s3" 2>/dev/null || true)
-            if [ -z "$S3_JSON" ]; then
-              echo "Provisioning S3 storage via yolab-external..."
-              S3_JSON=$(${pkgs.curl}/bin/curl -sf --max-time 60 -X POST \
-                -H "Authorization: Bearer $YE_TOKEN" \
-                "$YE_URL/storage/s3" 2>/dev/null || true)
-            fi
           fi
 
           TMPENV=$(mktemp)
@@ -568,7 +565,14 @@ in
           else
             ${pkgs.python3}/bin/python3 ${parseVeleroEnv} "$CONFIG" > "$TMPENV"
           fi
+
+          # If no credentials available at all, skip silently.  The local-api
+          # UI can trigger a re-run via 'systemctl restart yolab-velero-bootstrap'.
           . "$TMPENV"
+          if [ -z "${S3_BUCKET:-}" ]; then
+            echo "No S3 credentials configured — Velero bootstrap skipped."
+            exit 0
+          fi
 
           echo "Waiting for velero namespace to appear..."
           until kubectl get namespace velero &>/dev/null; do sleep 15; done
@@ -636,6 +640,7 @@ in
         PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
         YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
       };
+      path = [ pkgs.util-linux pkgs.sshfs pkgs.fuse3 pkgs.curl pkgs.python3 ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -683,6 +688,20 @@ in
             -o ServerAliveCountMax=3 \
             < "$PASSFILE"
           echo "SFTP drive mounted at /mnt/yolab-sftp."
+
+          # Create a sparse image file on the storage box and attach a loop
+          # device to it so Ceph can use it as an OSD alongside local disks.
+          # The local-api reads the size_gb from its request body; we default
+          # to whatever size was already written.  If no file exists yet the
+          # local-api's POST /api/disks/cloud endpoint creates it — we just
+          # need to re-attach any existing image on subsequent boots.
+          CLOUD_IMG=/mnt/yolab-sftp/yolab-cloud-osd.img
+          if [ -f "$CLOUD_IMG" ]; then
+            # Re-attach if not already attached (e.g. after reboot).
+            if ! losetup -j "$CLOUD_IMG" | grep -q /dev/loop; then
+              losetup --find --show --direct-io=on "$CLOUD_IMG" || true
+            fi
+          fi
         '';
         ExecStop = pkgs.writeShellScript "sftp-unmount" ''
           ${pkgs.fuse3}/bin/fusermount3 -u /mnt/yolab-sftp 2>/dev/null \
