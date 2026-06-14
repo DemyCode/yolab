@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GripVertical, HardDrive, Plus, X } from "lucide-react";
+import { Cloud, GripVertical, HardDrive, Plus, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { CephStatus, DiskItem, DiskOrderRequest } from "@/types/disk";
@@ -317,12 +317,103 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
   );
 }
 
+// ── Add cloud disk form ───────────────────────────────────────────────────────
+
+interface AddCloudDiskFormProps {
+  onDone: () => void;
+  onCancel: () => void;
+}
+
+function AddCloudDiskForm({ onDone, onCancel }: AddCloudDiskFormProps) {
+  const [sizeGb, setSizeGb] = useState("100");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleCreate() {
+    const size = parseInt(sizeGb, 10);
+    if (!size || size < 1) { setError("Enter a size of at least 1 GB"); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/disks/cloud", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ size_gb: size }),
+      });
+      const json = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok || !json.ok) {
+        setError(json.error ?? `Server error ${res.status}`);
+      } else {
+        onDone();
+      }
+    } catch {
+      setError("Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="pt-5 pb-5">
+        <div className="space-y-4">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <Cloud className="h-4 w-4 text-[#818cf8]" strokeWidth={1.75} />
+              <p className="text-sm font-medium text-[#fafafa]">New cloud disk</p>
+            </div>
+            <button
+              onClick={onCancel}
+              className="p-0.5 rounded hover:bg-[#27272a] transition-colors"
+            >
+              <X className="h-4 w-4 text-[#52525b]" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+            <div className="space-y-1.5">
+              <label className="text-xs text-[#71717a]">Size (GB)</label>
+              <input
+                type="number"
+                min={1}
+                value={sizeGb}
+                onChange={(e) => setSizeGb(e.target.value)}
+                className="w-full rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#818cf8]"
+              />
+            </div>
+
+            <Button
+              onClick={handleCreate}
+              disabled={busy}
+              className="bg-[#818cf8] hover:bg-[#6366f1] text-white font-medium text-sm h-9 px-4"
+            >
+              {busy ? "Provisioning…" : "Provision"}
+            </Button>
+          </div>
+
+          <p className="text-xs text-[#52525b]">
+            Provisions a Hetzner Storage Box sub-account, mounts it via SFTP,
+            and presents it to Ceph as an OSD — billed through your YoLab account.
+          </p>
+
+          {error && (
+            <p className="text-xs text-[#f87171]">{error}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── DisksPage ─────────────────────────────────────────────────────────────────
+
 export function DisksPage() {
   const [disks, setDisks] = useState<DiskItem[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [addingVirtual, setAddingVirtual] = useState(false);
+  const [addingCloud, setAddingCloud] = useState(false);
   const savingRef = useRef(false);
   const draggingRef = useRef(false);
 
@@ -440,14 +531,23 @@ export function DisksPage() {
             </h2>
             <div className="flex items-center gap-3">
               {saving && <span className="text-xs text-[#52525b]">Saving…</span>}
-              {!addingVirtual && (
-                <button
-                  onClick={() => setAddingVirtual(true)}
-                  className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add virtual disk
-                </button>
+              {!addingVirtual && !addingCloud && (
+                <>
+                  <button
+                    onClick={() => setAddingVirtual(true)}
+                    className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add virtual disk
+                  </button>
+                  <button
+                    onClick={() => setAddingCloud(true)}
+                    className="flex items-center gap-1 text-xs text-[#818cf8] hover:text-[#6366f1] transition-colors"
+                  >
+                    <Cloud className="h-3.5 w-3.5" />
+                    Add cloud disk
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -460,6 +560,15 @@ export function DisksPage() {
                   setAddingVirtual(false);
                 }}
                 onCancel={() => setAddingVirtual(false)}
+              />
+            </div>
+          )}
+
+          {addingCloud && (
+            <div className="mb-3">
+              <AddCloudDiskForm
+                onDone={() => setAddingCloud(false)}
+                onCancel={() => setAddingCloud(false)}
               />
             </div>
           )}
