@@ -9,7 +9,6 @@
   cfg = homelabConfig.homelab;
   tunnelCfg = homelabConfig.tunnel or {};
   nodeCfg = homelabConfig.node or {};
-  veleroCfg = homelabConfig.velero or {};
 
   # Whether the tunnel section is populated (installer has run pairing).
   tunnelEnabled = (tunnelCfg.sub_ipv6 or "") != "";
@@ -29,8 +28,6 @@ in {
   allowedSshKeys = cfg.allowed_ssh_keys or [];
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
-
-  veleroEnabled = veleroCfg.enabled or false;
 
   inherit
     tunnelCfg
