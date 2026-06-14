@@ -168,13 +168,23 @@ fn ceph_device_for(disk_name: &str) -> String {
 
 fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
-    let job_active = std::process::Command::new("kubectl")
+    // Guard against wiping a disk that is currently being prepared OR has just
+    // been prepared (succeeded) but whose OSD pod hasn't registered in Ceph yet.
+    // Without the succeeded check the reconcile loop would wipe the freshly
+    // prepared OSD every 30 s, restarting the cycle indefinitely.
+    let (job_active, job_succeeded) = std::process::Command::new("kubectl")
         .args(["get", "job", "-n", CEPH_NS, &format!("rook-ceph-osd-prepare-{hostname}"),
-               "-o", "jsonpath={.status.active}"])
+               "-o", "jsonpath={.status.active}/{.status.succeeded}"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string() == "1")
-        .unwrap_or(false);
-    if job_active { return Ok(()); }
+        .map(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let mut p = s.splitn(2, '/');
+            let active    = p.next().unwrap_or("").trim().parse::<u32>().unwrap_or(0);
+            let succeeded = p.next().unwrap_or("").trim().parse::<u32>().unwrap_or(0);
+            (active > 0, succeeded > 0)
+        })
+        .unwrap_or((false, false));
+    if job_active || job_succeeded { return Ok(()); }
 
     if disk_name.starts_with("loop") {
         let _ = std::process::Command::new("dd")
