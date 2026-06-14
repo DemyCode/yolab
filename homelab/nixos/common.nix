@@ -569,7 +569,7 @@ in
           # If no credentials available at all, skip silently.  The local-api
           # UI can trigger a re-run via 'systemctl restart yolab-velero-bootstrap'.
           . "$TMPENV"
-          if [ -z "${S3_BUCKET:-}" ]; then
+          if [ -z "''${S3_BUCKET:-}" ]; then
             echo "No S3 credentials configured — Velero bootstrap skipped."
             exit 0
           fi
