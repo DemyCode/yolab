@@ -364,6 +364,44 @@ in
       };
     };
 
+    # ── Virtual OSD loop re-attachment ────────────────────────────────────
+    # On each boot, re-pin every virtual-osd-N.img to /dev/loopN so device
+    # names stay stable and the priority ConfigMap entries remain valid.
+    # Must run before k3s so Rook always finds the devices ready.
+    systemd.services.yolab-virtual-osd-attach = {
+      description = "Re-attach virtual Ceph OSD loop devices";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" "yolab-system-osd.service" ];
+      before = [ "k3s.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "virtual-osd-attach" ''
+          set -euo pipefail
+          OSD_DIR=/var/lib/rook
+          [ -d "$OSD_DIR" ] || exit 0
+
+          for img in "$OSD_DIR"/virtual-osd-*.img; do
+            [ -f "$img" ] || continue
+            n=$(basename "$img" .img | sed 's/virtual-osd-//')
+            loopdev="/dev/loop''${n}"
+
+            current=$(${pkgs.util-linux}/bin/losetup -l \
+              --output BACK-FILE --noheadings "$loopdev" 2>/dev/null || true)
+            if [ "$current" = "$img" ]; then
+              echo "$img already on $loopdev"
+              continue
+            fi
+
+            ${pkgs.util-linux}/bin/losetup -d "$loopdev" 2>/dev/null || true
+            ${pkgs.util-linux}/bin/losetup --direct-io=on "$loopdev" "$img" 2>/dev/null || \
+              ${pkgs.util-linux}/bin/losetup "$loopdev" "$img"
+            echo "Attached $img → $loopdev"
+          done
+        '';
+      };
+    };
+
     # ── Local API ──────────────────────────────────────────────────────────
     # Runs on every node.  The node the user opens in their browser queries
     # its own local-api, which fans out disk / storage / node requests to
@@ -505,17 +543,22 @@ in
             < "$PASSFILE"
           echo "SFTP drive mounted at /mnt/yolab-sftp."
 
-          # Create a sparse image file on the storage box and attach a loop
-          # device to it so Ceph can use it as an OSD alongside local disks.
-          # The local-api reads the size_gb from its request body; we default
-          # to whatever size was already written.  If no file exists yet the
-          # local-api's POST /api/disks/cloud endpoint creates it — we just
-          # need to re-attach any existing image on subsequent boots.
+          # Re-attach the cloud OSD image to its reserved loop device on reboot.
+          # loop8 is the pinned slot for the cloud OSD (loop0=system, loop1-7=virtual).
+          # Using a fixed slot keeps the device name stable so the Ceph priority
+          # ConfigMap entry (host:loop8) stays valid across reboots.
           CLOUD_IMG=/mnt/yolab-sftp/yolab-cloud-osd.img
+          CLOUD_LOOP=/dev/loop8
           if [ -f "$CLOUD_IMG" ]; then
-            # Re-attach if not already attached (e.g. after reboot).
-            if ! losetup -j "$CLOUD_IMG" | grep -q /dev/loop; then
-              losetup --find --show --direct-io=on "$CLOUD_IMG" || true
+            current=$(${pkgs.util-linux}/bin/losetup -l \
+              --output BACK-FILE --noheadings "$CLOUD_LOOP" 2>/dev/null || true)
+            if [ "$current" != "$CLOUD_IMG" ]; then
+              ${pkgs.util-linux}/bin/losetup -d "$CLOUD_LOOP" 2>/dev/null || true
+              ${pkgs.util-linux}/bin/losetup --direct-io=on "$CLOUD_LOOP" "$CLOUD_IMG" 2>/dev/null || \
+                ${pkgs.util-linux}/bin/losetup "$CLOUD_LOOP" "$CLOUD_IMG" || true
+              echo "Cloud OSD attached: $CLOUD_IMG → $CLOUD_LOOP"
+            else
+              echo "Cloud OSD already on $CLOUD_LOOP"
             fi
           fi
         '';
