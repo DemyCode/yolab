@@ -70,7 +70,6 @@ async fn main() {
         .route("/api/disks/deactivate-local", post(disks::deactivate_local))
         .route("/api/disks/virtual", post(disks::add_virtual))
         .route("/api/disks/add-virtual-local", post(disks::add_virtual_local))
-        .route("/api/disks/cloud", post(disks::add_cloud))
         // Backups
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
