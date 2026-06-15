@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock}};
 
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
@@ -533,16 +533,38 @@ fn node_client() -> reqwest::Client {
 
 // ── Activation ────────────────────────────────────────────────────────────────
 
+// Tracks which devices are currently being activated to prevent concurrent
+// spawn_blocking tasks (from aborted reconcile tasks) from double-wiping.
+static ACTIVATING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
 /// Prepare a device for use as a Ceph OSD on the local node.
 ///
-/// Three guards prevent redundant or destructive activations:
+/// Four guards prevent redundant or destructive activations:
 ///   1. OSD deploy already references this device → Rook is working on it.
 ///   2. Prepare job is actively running → Rook is working on it.
 ///   3. Prepare job completed recently → Rook may not have created the deploy yet.
+///   4. Device already in CephCluster → Rook is about to create the prepare job.
 ///
-/// If none of the guards fire, the device is wiped and registered in the
-/// CephCluster so Rook creates a fresh prepare job.
+/// A process-level mutex prevents two concurrent spawn_blocking calls (e.g. from
+/// an aborted reconcile whose blocking task outlived the abort) from both wiping
+/// the same device simultaneously.
 fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
+    // Mutex guard: only one activation per device at a time.
+    let activating = ACTIVATING.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    {
+        let mut guard = activating.lock().unwrap();
+        if guard.contains(disk_name) {
+            tracing::debug!("activate {disk_name}: another task is already activating this device");
+            return Ok(());
+        }
+        guard.insert(disk_name.to_string());
+    }
+    let result = do_activate_local_inner(disk_name);
+    activating.lock().unwrap().remove(disk_name);
+    result
+}
+
+fn do_activate_local_inner(disk_name: &str) -> anyhow::Result<()> {
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
     let job_name = format!("rook-ceph-osd-prepare-{hostname}");
     let ceph_dev = ceph_device_for(disk_name);
