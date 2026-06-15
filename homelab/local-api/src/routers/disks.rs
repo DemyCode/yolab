@@ -484,17 +484,30 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
 
     if job_succeeded {
         // The job object persists after completion (no ttlSecondsAfterFinished).
-        // Check whether it actually prepared THIS device by looking for the
-        // activation dir — if found, the OSD pod is starting up and we should wait.
+        // Check whether this device is already prepared:
+        //   (a) Rook activation dir exists with a block symlink — OSD pod is starting.
+        //   (b) An OSD deployment already references this device via ROOK_BLOCK_PATH.
+        //       This covers the window between prepare completing and the OSD pod
+        //       creating the activation dir (can take 30-90s while Rook reconciles).
         let ceph_dev_check = ceph_device_for(disk_name);
-        if find_activation_dir_for_device(&ceph_dev_check).is_some() {
+        let dev_path = format!("/dev/{ceph_dev_check}");
+        let osd_deploy_exists = std::process::Command::new("kubectl")
+            .args(["get", "deploy", "-n", CEPH_NS, "-l", "app=rook-ceph-osd",
+                   "-o", &format!("jsonpath={{range .items[*]}}{{range .spec.template.spec.initContainers[*]}}{{range .env[*]}}{{.name}}={{.value}}{{'\\n'}}{{end}}{{end}}{{end}}")])
+            .output()
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).to_string();
+                s.lines().any(|l| l == format!("ROOK_BLOCK_PATH={dev_path}"))
+            })
+            .unwrap_or(false);
+        if find_activation_dir_for_device(&ceph_dev_check).is_some() || osd_deploy_exists {
             return Ok(());
         }
         // Stale succeeded job from a previous device (e.g., loop0 was prepared
         // hours ago and its job is still around). Delete it and re-trigger.
         tracing::info!(
-            "activate {disk_name}: stale succeeded prepare job (no activation dir for \
-             {ceph_dev_check}) — deleting and re-triggering"
+            "activate {disk_name}: stale succeeded prepare job (no activation dir or OSD \
+             deploy for {ceph_dev_check}) — deleting and re-triggering"
         );
         let _ = std::process::Command::new("kubectl")
             .args(["delete", "job", "-n", CEPH_NS, &job_name, "--ignore-not-found"])
