@@ -606,6 +606,10 @@ in
     ];
     nix.settings.extra-substituters = [ "https://cache.demycode.ovh/yolab" ];
     nix.settings.extra-trusted-public-keys = [ "yolab:p/dOzQU8mPkD7kCCU9J7isVtBUT2gjq0RJror0uzkEo=" ];
+    # Limit build parallelism so deploys don't starve k3s and Ceph.
+    # One job at a time, capped at 2 cores — Rust link phase is single-threaded anyway.
+    nix.settings.max-jobs = 1;
+    nix.settings.cores = 2;
     nix.gc.automatic = true;
 
     swapDevices = [
