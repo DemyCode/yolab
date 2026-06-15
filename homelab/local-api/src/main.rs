@@ -80,6 +80,7 @@ async fn main() {
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/cluster/join-info", get(nodes::join_info))
         // Apps
+        .route("/api/account/token", get(apps::account_token))
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
         .route("/api/apps", get(apps::list_apps))

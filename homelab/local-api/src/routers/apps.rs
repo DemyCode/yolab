@@ -201,6 +201,21 @@ async fn apply_manifest_stream(
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
+pub struct AccountTokenResponse {
+    pub account_token: String,
+}
+
+pub async fn account_token(State(state): State<AppState>) -> Result<Json<AccountTokenResponse>> {
+    let tunnel = tunnel_config(&state.config)?;
+    let token = tunnel
+        .get("account_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(Json(AccountTokenResponse { account_token: token }))
+}
+
 pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainResponse>> {
     let tunnel = tunnel_config(&state.config)?;
     let dns_url = tunnel.get("dns_url").and_then(|v| v.as_str()).unwrap_or("");
