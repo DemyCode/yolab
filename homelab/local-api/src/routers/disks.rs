@@ -731,6 +731,32 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
         }
     }
 
+    // ── Phase 5b: Un-drain target OSDs that were marked out ──────────────────
+    // If the user reorders priority mid-drain, a disk that was being drained
+    // may now be in the target set. Re-mark it in+weight=1 so Ceph accepts PGs.
+    let osd_in_status = ceph_osd_in_status().await;
+    if !any_preparing {
+        for entry in &prio {
+            let key = (entry.host.clone(), entry.disk_name.clone());
+            if !target.contains(&key) { continue; }
+            let ceph_dev = ceph_device_for(&entry.disk_name);
+            let dev_path = format!("/dev/{ceph_dev}");
+            let Some(deploy) = deploy_by_dev.get(dev_path.as_str()) else { continue };
+            let osd_id = deploy.osd_id;
+            let is_out = osd_in_status.get(&osd_id).copied().unwrap_or(1) == 0;
+            if is_out {
+                tracing::info!(
+                    "reconcile: osd.{osd_id} ({}) is target but was out — restoring in",
+                    entry.disk_name
+                );
+                let id_str = osd_id.to_string();
+                let _ = kubectl::ceph_exec(&["osd", "in", &id_str]).await;
+                let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "1"]).await;
+                return; // one action per tick
+            }
+        }
+    }
+
     // ── Phase 6: Drain — only when ALL target disks are ACTIVE (ready=1) ─────
     // This guarantees data is already on the target disks before we remove anything.
     let all_target_active = target.iter().all(|k| {
@@ -743,8 +769,7 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
         return;
     }
 
-    // Query Ceph OSD in/out status once.
-    let osd_in_status = ceph_osd_in_status().await;
+    // osd_in_status already queried above in Phase 5b.
 
     // Walk the priority list so we drain in consistent order.
     for entry in &prio {
