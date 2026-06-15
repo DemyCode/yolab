@@ -248,12 +248,22 @@ async fn ceph_osd_in_status() -> HashMap<u32, u32> {
 
 /// PG count on an OSD via direct Ceph query (ground truth, not Prometheus).
 /// Returns None when Ceph is unreachable — callers must treat None as "don't drain".
+///
+/// Ceph returns either a JSON array of PG objects, or `{"pg_ready":true}` when
+/// the OSD has no PGs assigned. Both are valid "0 PGs" responses.
 async fn pg_count_direct(osd_id: u32) -> Option<u32> {
     let out = kubectl::ceph_exec(&[
         "pg", "ls-by-osd", &osd_id.to_string(), "--format", "json",
     ]).await.ok()?;
     let v: serde_json::Value = serde_json::from_str(&out).ok()?;
-    Some(v.as_array()?.len() as u32)
+    if let Some(arr) = v.as_array() {
+        return Some(arr.len() as u32);
+    }
+    // {"pg_ready":true} (or similar object) = OSD has no PGs
+    if v.is_object() {
+        return Some(0);
+    }
+    None
 }
 
 // ── Ceph device / CephCluster helpers ────────────────────────────────────────
