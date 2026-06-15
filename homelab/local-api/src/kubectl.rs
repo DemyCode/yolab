@@ -98,17 +98,22 @@ pub async fn ceph_exec(args: &[&str]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Use a process-unique path so concurrent ceph_exec calls in the same
-    // binary never overwrite each other's keyring file.
-    let key_path = format!("/tmp/ceph-key-{}.keyring", std::process::id());
+    // Use thread-unique paths so concurrent ceph_exec calls never race on
+    // the same files.  Thread ID is stable for the lifetime of one call.
+    let tid = format!("{:?}", std::thread::current().id())
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>();
+    let key_path  = format!("/tmp/ceph-key-{tid}.keyring");
+    let conf_path = format!("/tmp/ceph-conf-{tid}.conf");
 
     let shell_cmd = format!(
         "echo {keyring_b64} | base64 -d > {key_path} && \
          printf '[global]\\nmon_host = v2:[{mon_ip}]:3300\\n\
          ms_cluster_mode = crc\\nms_service_mode = crc\\nms_client_mode = crc\\n\
-         [client.admin]\\nkeyring = {key_path}\\n' > /tmp/ceph.conf && \
-         ceph -c /tmp/ceph.conf --name client.admin {quoted_args}; \
-         RC=$?; rm -f {key_path}; exit $RC"
+         [client.admin]\\nkeyring = {key_path}\\n' > {conf_path} && \
+         ceph -c {conf_path} --name client.admin {quoted_args}; \
+         RC=$?; rm -f {key_path} {conf_path}; exit $RC"
     );
 
     let pod = ceph_exec_pod().await?;
