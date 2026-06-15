@@ -400,10 +400,12 @@ async fn cleanup_ghost_osds() {
             "ghost OSD: osd.{} device {} missing — purging",
             deploy.osd_id, deploy.dev_path
         );
-        purge_osd_from_ceph(deploy.osd_id).await;
+        // Delete deploy first so the pod terminates and OSD goes DOWN before
+        // we call `osd rm`. Avoids EBUSY if Ceph hasn't marked it down yet.
         let _ = kubectl::run(&[
             "delete", "deploy", "-n", CEPH_NS, &deploy.name, "--ignore-not-found",
         ]).await;
+        purge_osd_from_ceph(deploy.osd_id).await;
         tracing::info!("ghost OSD: osd.{} purged", deploy.osd_id);
     }
 }
@@ -927,10 +929,14 @@ pub async fn update_order(
     let cfg2 = Arc::clone(&state.config);
     tokio::spawn(async move {
         let handle = tokio::spawn(reconcile_storage(cfg2));
+        let abort = handle.abort_handle();
         match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => tracing::error!("reconcile_storage panicked in update_order: {:?}", e),
-            Err(_) => tracing::error!("reconcile_storage timed out in update_order"),
+            Err(_) => {
+                abort.abort();
+                tracing::error!("reconcile_storage timed out in update_order, aborted");
+            }
         }
     });
     Ok(Json(serde_json::json!({"ok": true})))
