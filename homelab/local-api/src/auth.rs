@@ -222,6 +222,12 @@ pub async fn login(
     (jar_with(cookie), axum::Json(OkResponse { ok: true })).into_response()
 }
 
+/// Used by Caddy forward_auth to gate access to /glances.
+/// Returns 200 if the session cookie is valid; the middleware returns 401 otherwise.
+pub async fn check() -> StatusCode {
+    StatusCode::OK
+}
+
 pub async fn logout(
     State(state): State<crate::AppState>,
     jar: CookieJar,

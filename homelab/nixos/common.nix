@@ -303,6 +303,9 @@ in
             reverse_proxy [::1]:3001
           }
           handle /glances* {
+            forward_auth [::1]:3001 {
+              uri /api/auth/check
+            }
             reverse_proxy [::1]:61208
           }
           handle {

@@ -52,6 +52,7 @@ async fn main() {
         // Auth
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
+        .route("/api/auth/check", get(auth::check))
         // Status
         .route("/api/status", get(status::handler))
         // Update / channel
