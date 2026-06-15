@@ -302,6 +302,9 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
+          handle /glances* {
+            reverse_proxy [::1]:61208
+          }
           handle {
             root * ${s.clientUi}
             try_files {path} /index.html
@@ -309,6 +312,22 @@ in
           }
         }
       '';
+    };
+
+    # ── Glances ───────────────────────────────────────────────────────────────
+    # System-level resource monitor (CPU, RAM, disk, network, processes).
+    # Runs as a web server on port 61208, proxied by Caddy at /glances.
+    # Not in Kubernetes — this monitors the host itself.
+    systemd.services.glances = {
+      description = "Glances system monitor";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.glances}/bin/glances -w --port 61208 --disable-plugin docker";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
     };
 
     systemd.services.caddy = {
@@ -460,6 +479,7 @@ in
         vim
         wget
         htop
+        glances
         sshfs
         fuse3
       ];
