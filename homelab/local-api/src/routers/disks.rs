@@ -232,7 +232,12 @@ async fn prepare_job_active(hostname: &str) -> bool {
 
 /// Ceph OSD "in" status from `ceph osd dump`: osd_id → 1 (in/active) or 0 (out/draining).
 /// Returns an empty map if Ceph is unreachable — callers must treat empty as unknown.
-async fn ceph_osd_in_status() -> HashMap<u32, u32> {
+struct CephOsdState {
+    in_val: u32, // 1 = in, 0 = out
+    up_val: u32, // 1 = up, 0 = down
+}
+
+async fn ceph_osd_states() -> HashMap<u32, CephOsdState> {
     let Ok(out) = kubectl::ceph_exec(&["osd", "dump", "--format", "json"]).await else {
         return HashMap::new();
     };
@@ -242,8 +247,13 @@ async fn ceph_osd_in_status() -> HashMap<u32, u32> {
     v["osds"].as_array().unwrap_or(&vec![]).iter().filter_map(|o| {
         let id: u32 = o["osd"].as_u64()? as u32;
         let in_val: u32 = o["in"].as_u64().unwrap_or(1) as u32;
-        Some((id, in_val))
+        let up_val: u32 = o["up"].as_u64().unwrap_or(1) as u32;
+        Some((id, CephOsdState { in_val, up_val }))
     }).collect()
+}
+
+async fn ceph_osd_in_status() -> HashMap<u32, u32> {
+    ceph_osd_states().await.into_iter().map(|(id, s)| (id, s.in_val)).collect()
 }
 
 /// PG count on an OSD via direct Ceph query (ground truth, not Prometheus).
@@ -377,6 +387,28 @@ async fn cleanup_ghost_osds() {
             "delete", "deploy", "-n", CEPH_NS, &deploy.name, "--ignore-not-found",
         ]).await;
         tracing::info!("ghost OSD: osd.{} purged", deploy.osd_id);
+    }
+}
+
+// ── Orphaned OSD cleanup ──────────────────────────────────────────────────────
+
+/// An orphaned OSD is one that is `down+out` in Ceph but has no deploy.
+/// This can happen when `ceph osd rm` fails with EBUSY (OSD still up) during
+/// drain, and then the deploy is deleted. The OSD goes down once the pod is
+/// gone but was never removed from the Ceph OSD map.
+async fn purge_orphaned_osds() {
+    let deploys = list_osd_deploys().await;
+    let deployed_ids: std::collections::HashSet<u32> = deploys.iter().map(|d| d.osd_id).collect();
+
+    let states = ceph_osd_states().await;
+    for (osd_id, state) in &states {
+        if deployed_ids.contains(osd_id) { continue; } // has a deploy — normal
+        if state.in_val != 0 { continue; }             // still in — don't touch active OSDs
+        if state.up_val != 0 { continue; }             // still up — wait for pod termination
+
+        // down+out with no deploy → safe to remove from Ceph
+        tracing::info!("purge_orphaned: osd.{osd_id} is down+out with no deploy — removing from Ceph");
+        purge_osd_from_ceph(*osd_id).await;
     }
 }
 
@@ -573,6 +605,11 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
     // ── Phase 0b: Re-attach detached loop devices for live OSDs ─────────────
     recover_detached_loop_osds().await;
 
+    // ── Phase 0c: Remove Ceph OSD entries that are down+out with no deploy ───
+    // Handles the race where `ceph osd rm` failed because the OSD was still up
+    // when the drain flow ran, but the pod has since terminated.
+    purge_orphaned_osds().await;
+
     // ── Phase 1: Gather disk state from all nodes ────────────────────────────
     let node_results = gather_from_nodes(&cfg, "/api/disks/local").await;
     let disk_map: HashMap<(String, String), serde_json::Value> = node_results
@@ -726,10 +763,14 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
                     "reconcile: osd.{osd_id} ({}): 0 PGs — removing from Ceph",
                     entry.disk_name
                 );
-                purge_osd_from_ceph(osd_id).await;
+                // Delete the deploy first so the OSD pod terminates.
+                // purge_osd_from_ceph will then attempt `osd rm`; if it fails
+                // with EBUSY (OSD still up), purge_orphaned_osds handles it
+                // on the next reconcile tick once the pod has fully stopped.
                 let _ = kubectl::run(&[
                     "delete", "deploy", "-n", CEPH_NS, &deploy.name, "--ignore-not-found",
                 ]).await;
+                purge_osd_from_ceph(osd_id).await;
                 wipe_disk(&cfg, &entry.disk_name, &entry.host).await;
                 tracing::info!(
                     "reconcile: osd.{osd_id} ({}): drain complete, disk wiped — safe to unplug",
