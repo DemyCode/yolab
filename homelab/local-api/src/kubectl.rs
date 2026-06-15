@@ -184,28 +184,6 @@ pub async fn osd_df() -> std::collections::HashMap<u32, OsdUsage> {
         .collect()
 }
 
-pub async fn osd_numpg() -> std::collections::HashMap<u32, u32> {
-    let text = exporter_metrics().await;
-    let mut result = std::collections::HashMap::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("ceph_osd_numpg{") {
-            if let Some((id, val)) = parse_osd_metric(rest) {
-                result.insert(id, val as u32);
-            }
-        }
-    }
-    result
-}
-
-/// Direct Ceph query for the number of PGs on an OSD.
-/// Used as fallback ground truth when the Prometheus exporter is unavailable —
-/// the exporter returning an empty map must NOT be treated as "0 PGs" since
-/// that would cause drain_osd to wipe a disk with live data.
-pub async fn ceph_osd_numpg_direct(osd_id: u32) -> Result<u32> {
-    let out = ceph_exec(&["pg", "ls-by-osd", &osd_id.to_string(), "--format", "json"]).await?;
-    let v: serde_json::Value = serde_json::from_str(&out).unwrap_or(serde_json::json!([]));
-    Ok(v.as_array().map(|a| a.len() as u32).unwrap_or(0))
-}
 
 fn parse_osd_metric(rest: &str) -> Option<(u32, u64)> {
     let id_start = rest.find("\"osd.")? + 5;
