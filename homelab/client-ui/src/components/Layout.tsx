@@ -75,16 +75,25 @@ function SidebarContent({
 
       {/* Bottom */}
       <div className="px-3 py-4 border-t border-[#27272a] space-y-0.5">
-        <a
-          href="https://demycode.ovh/dashboard"
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          onClick={async () => {
+            try {
+              const res = await fetch("/api/account/token");
+              const { account_token } = await res.json();
+              window.open(
+                `https://demycode.ovh/dashboard#token=${encodeURIComponent(account_token)}`,
+                "_blank"
+              );
+            } catch {
+              window.open("https://demycode.ovh/dashboard", "_blank");
+            }
+          }}
           className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-[#a1a1aa] hover:bg-[#18181b] hover:text-[#fafafa] transition-colors"
         >
           <Globe className="h-4 w-4 flex-shrink-0" strokeWidth={1.75} />
           Account dashboard
           <ExternalLink className="h-3 w-3 ml-auto opacity-50" />
-        </a>
+        </button>
         <a
           href="/glances/"
           target="_blank"
