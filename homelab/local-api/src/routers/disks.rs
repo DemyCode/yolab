@@ -164,7 +164,7 @@ async fn list_osd_deploys() -> Vec<OsdDeploy> {
         let dev_path = d["spec"]["template"]["spec"]["initContainers"]
             .as_array()?
             .iter()
-            .flat_map(|c| c["env"].as_array().unwrap_or(&vec![]).iter())
+            .flat_map(|c| c["env"].as_array().into_iter().flatten())
             .find(|e| e["name"] == "ROOK_BLOCK_PATH")?
             ["value"].as_str()?.to_string();
         Some(OsdDeploy { name, osd_id, ready, dev_path })
