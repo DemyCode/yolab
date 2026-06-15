@@ -10,13 +10,10 @@ export interface DiskItem {
   free_bytes: number | null;
 }
 
-export interface DiskOrderEntry {
-  host: string;
+export interface DrainRequest {
   disk_name: string;
-}
-
-export interface DiskOrderRequest {
-  entries: DiskOrderEntry[];
+  host: string;
+  force?: boolean;
 }
 
 export interface CephStatus {

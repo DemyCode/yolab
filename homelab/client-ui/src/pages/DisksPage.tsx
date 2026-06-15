@@ -1,25 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { GripVertical, HardDrive, Plus, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { HardDrive, Plus, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import type { CephStatus, DiskItem, DiskOrderRequest } from "@/types/disk";
-import {
-  DndContext,
-  PointerSensor,
-  KeyboardSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-  arrayMove,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import type { CephStatus, DiskItem, DrainRequest } from "@/types/disk";
 
 function fmt(bytes: number | null | undefined): string {
   if (!bytes) return "—";
@@ -60,7 +43,6 @@ function DiskRowSkeleton() {
     <Card>
       <CardContent className="pt-5 pb-5">
         <div className="flex items-start gap-3">
-          <Shimmer className="mt-1 h-5 w-5 flex-shrink-0" />
           <Shimmer className="mt-0.5 h-7 w-7 rounded-md flex-shrink-0" />
           <div className="flex-1 space-y-2.5">
             <div className="flex items-center justify-between gap-4">
@@ -102,24 +84,15 @@ function StorageOverview({ status }: { status: CephStatus | null }) {
   );
 }
 
-function DiskRow({ disk }: { disk: DiskItem }) {
-  const id = `${disk.host}:${disk.name}`;
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : 1,
-    zIndex: isDragging ? 10 : undefined,
-  };
-
+function DiskRow({
+  disk,
+  onRemove,
+  removing,
+}: {
+  disk: DiskItem;
+  onRemove: (disk: DiskItem) => void;
+  removing: boolean;
+}) {
   const usedPct =
     disk.used_bytes && disk.size_bytes
       ? Math.round((disk.used_bytes / disk.size_bytes) * 100)
@@ -140,81 +113,77 @@ function DiskRow({ disk }: { disk: DiskItem }) {
   );
 
   return (
-    <div ref={setNodeRef} style={style}>
-      <Card>
-        <CardContent className="pt-5">
-          <div className="flex items-start gap-3">
-            <button
-              {...attributes}
-              {...listeners}
-              className="mt-1 flex-shrink-0 p-0.5 rounded cursor-grab active:cursor-grabbing hover:bg-[#27272a] transition-colors touch-none"
-              aria-label="Drag to reorder"
-            >
-              <GripVertical
-                className="h-4 w-4 text-[#52525b]"
-                strokeWidth={2}
-              />
-            </button>
-
-            <div
-              className="mt-0.5 rounded-md p-1.5 flex-shrink-0"
-              style={{ background: disk.is_osd ? "#1a2e1a" : "#2d2a1a" }}
-            >
-              <HardDrive
-                className="h-4 w-4"
-                style={{ color: disk.is_osd ? "#4ade80" : "#fbbf24" }}
-                strokeWidth={1.75}
-              />
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-medium text-[#fafafa] text-sm">
-                    {disk.model || disk.name}
-                  </span>
-                  {disk.model && (
-                    <span className="text-xs text-[#52525b] font-mono">
-                      {disk.name}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {statusLabel}
-                  <span className="text-xs text-[#52525b]">·</span>
-                  <span className="text-xs text-[#71717a]">
-                    {fmt(disk.size_bytes)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="text-xs text-[#52525b] mt-0.5">
-                {disk.hostname}
-              </div>
-
-              {disk.is_osd &&
-                disk.used_bytes != null &&
-                disk.size_bytes > 0 && (
-                  <div className="mt-2 space-y-1">
-                    <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{
-                          width: `${usedPct ?? 0}%`,
-                          background: barColor,
-                        }}
-                      />
-                    </div>
-                    <span className="text-xs text-[#71717a]">
-                      {fmt(disk.used_bytes)} used · {usedPct}%
-                    </span>
-                  </div>
-                )}
-            </div>
+    <Card>
+      <CardContent className="pt-5">
+        <div className="flex items-start gap-3">
+          <div
+            className="mt-0.5 rounded-md p-1.5 flex-shrink-0"
+            style={{ background: disk.is_osd ? "#1a2e1a" : "#2d2a1a" }}
+          >
+            <HardDrive
+              className="h-4 w-4"
+              style={{ color: disk.is_osd ? "#4ade80" : "#fbbf24" }}
+              strokeWidth={1.75}
+            />
           </div>
-        </CardContent>
-      </Card>
-    </div>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-baseline gap-2">
+                <span className="font-medium text-[#fafafa] text-sm">
+                  {disk.model || disk.name}
+                </span>
+                {disk.model && (
+                  <span className="text-xs text-[#52525b] font-mono">
+                    {disk.name}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {statusLabel}
+                <span className="text-xs text-[#52525b]">·</span>
+                <span className="text-xs text-[#71717a]">
+                  {fmt(disk.size_bytes)}
+                </span>
+                {!disk.is_builtin && (
+                  <button
+                    onClick={() => onRemove(disk)}
+                    disabled={removing}
+                    className="ml-1 text-xs text-[#52525b] hover:text-[#f87171] transition-colors disabled:opacity-40"
+                    title="Remove from storage"
+                  >
+                    {removing ? "Removing…" : "Remove"}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="text-xs text-[#52525b] mt-0.5">
+              {disk.hostname}
+            </div>
+
+            {disk.is_osd &&
+              disk.used_bytes != null &&
+              disk.size_bytes > 0 && (
+                <div className="mt-2 space-y-1">
+                  <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${usedPct ?? 0}%`,
+                        background: barColor,
+                      }}
+                    />
+                  </div>
+                  <span className="text-xs text-[#71717a]">
+                    {fmt(disk.used_bytes)} used · {usedPct}%
+                  </span>
+                </div>
+              )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -323,16 +292,14 @@ export function DisksPage() {
   const [disks, setDisks] = useState<DiskItem[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [addingVirtual, setAddingVirtual] = useState(false);
-  const savingRef = useRef(false);
-  const draggingRef = useRef(false);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   useEffect(() => {
     let first = true;
 
     function load() {
-      if (savingRef.current || draggingRef.current) return;
+      if (removing) return;
 
       const disksP = fetch("/api/disks")
         .then((r) => r.json())
@@ -355,7 +322,7 @@ export function DisksPage() {
     load();
     const interval = setInterval(load, 10_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [removing]);
 
   const nodes = useMemo(() => {
     const seen = new Map<string, string>();
@@ -363,55 +330,27 @@ export function DisksPage() {
     return Array.from(seen.entries()).map(([host, hostname]) => ({ host, hostname }));
   }, [disks]);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
-  );
-
-  function handleDragStart() {
-    draggingRef.current = true;
-  }
-
-  async function handleDragEnd(event: DragEndEvent) {
-    draggingRef.current = false;
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-
-    const oldIndex = disks.findIndex(
-      (d) => `${d.host}:${d.name}` === active.id,
-    );
-    const newIndex = disks.findIndex((d) => `${d.host}:${d.name}` === over.id);
-    if (oldIndex === -1 || newIndex === -1) return;
-
-    const next = arrayMove(disks, oldIndex, newIndex);
-    setDisks(next);
-    setSaving(true);
-    savingRef.current = true;
+  async function handleRemove(disk: DiskItem) {
+    const key = `${disk.host}:${disk.name}`;
+    setRemoving(key);
     try {
-      const body: DiskOrderRequest = {
-        entries: next.map((d) => ({ host: d.host, disk_name: d.name })),
-      };
-      await fetch("/api/disks/order", {
-        method: "PUT",
+      const body: DrainRequest = { disk_name: disk.name, host: disk.host };
+      await fetch("/api/disks/drain", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
     } finally {
-      setSaving(false);
-      savingRef.current = false;
+      setRemoving(null);
     }
   }
-
-  const diskIds = disks.map((d) => `${d.host}:${d.name}`);
 
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-semibold text-[#fafafa]">Storage</h1>
         <p className="text-sm text-[#71717a] mt-0.5">
-          Drag to reorder. Disks at the top are preferred for storage.
+          All disks are used automatically. Ceph distributes data across every OSD.
         </p>
       </div>
 
@@ -440,49 +379,40 @@ export function DisksPage() {
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">
               Disks
             </h2>
-            <div className="flex items-center gap-3">
-              {saving && <span className="text-xs text-[#52525b]">Saving…</span>}
-              {!addingVirtual && (
-                <button
-                  onClick={() => setAddingVirtual(true)}
-                  className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add virtual disk
-                </button>
-              )}
-            </div>
+            {!addingVirtual && (
+              <button
+                onClick={() => setAddingVirtual(true)}
+                className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add virtual disk
+              </button>
+            )}
           </div>
 
           {addingVirtual && (
             <div className="mb-3">
               <AddVirtualDiskForm
                 nodes={nodes}
-                onDone={() => {
-                  setAddingVirtual(false);
-                }}
+                onDone={() => setAddingVirtual(false)}
                 onCancel={() => setAddingVirtual(false)}
               />
             </div>
           )}
 
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext
-              items={diskIds}
-              strategy={verticalListSortingStrategy}
-            >
-              <div className="space-y-3">
-                {disks.map((disk) => (
-                  <DiskRow key={`${disk.host}:${disk.name}`} disk={disk} />
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
+          <div className="space-y-3">
+            {disks.map((disk) => {
+              const key = `${disk.host}:${disk.name}`;
+              return (
+                <DiskRow
+                  key={key}
+                  disk={disk}
+                  onRemove={handleRemove}
+                  removing={removing === key}
+                />
+              );
+            })}
+          </div>
         </div>
       )}
 
