@@ -117,11 +117,15 @@ pub async fn ceph_exec(args: &[&str]) -> Result<String> {
     );
 
     let pod = ceph_exec_pod().await?;
-    let out = Command::new("kubectl")
-        .args(["exec", "-n", CEPH_NS, &pod, "--", "bash", "-c", &shell_cmd])
-        .output()
-        .await
-        .context("kubectl exec")?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Command::new("kubectl")
+            .args(["exec", "-n", CEPH_NS, &pod, "--", "bash", "-c", &shell_cmd])
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("ceph_exec timed out after 30s"))?
+    .context("kubectl exec")?;
 
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
