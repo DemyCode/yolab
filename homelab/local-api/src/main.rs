@@ -108,10 +108,15 @@ async fn main() {
             loop {
                 interval.tick().await;
                 let handle = tokio::spawn(disks::reconcile_storage(Arc::clone(&state.config)));
+                let abort = handle.abort_handle();
                 match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => tracing::error!("reconcile_storage panicked: {:?}", e),
-                    Err(_) => tracing::error!("reconcile_storage timed out after 120s"),
+                    Err(_) => {
+                        // Abort the still-running task to prevent concurrent reconciles.
+                        abort.abort();
+                        tracing::error!("reconcile_storage timed out after 120s, aborted");
+                    }
                 }
             }
         });

@@ -256,24 +256,27 @@ async fn ceph_osd_in_status() -> HashMap<u32, u32> {
     ceph_osd_states().await.into_iter().map(|(id, s)| (id, s.in_val)).collect()
 }
 
-/// PG count on an OSD via direct Ceph query (ground truth, not Prometheus).
-/// Returns None when Ceph is unreachable — callers must treat None as "don't drain".
+/// Ask Ceph whether an OSD can be safely destroyed without data loss.
 ///
-/// Ceph returns either a JSON array of PG objects, or `{"pg_ready":true}` when
-/// the OSD has no PGs assigned. Both are valid "0 PGs" responses.
-async fn pg_count_direct(osd_id: u32) -> Option<u32> {
+/// This is the correct check before wiping a disk. `pg ls-by-osd` is WRONG:
+/// when an OSD goes down its PGs are immediately re-mapped in CRUSH (showing 0
+/// PGs assigned), even though the data hasn't been backfilled yet.
+///
+/// Returns:
+///   Some(true)  — safe: all data has been replicated elsewhere
+///   Some(false) — not safe: data still being migrated
+///   None        — Ceph unreachable: never wipe, keep OSD safe
+async fn osd_safe_to_destroy(osd_id: u32) -> Option<bool> {
+    let id_str = osd_id.to_string();
     let out = kubectl::ceph_exec(&[
-        "pg", "ls-by-osd", &osd_id.to_string(), "--format", "json",
+        "osd", "safe-to-destroy", &id_str, "--format", "json",
     ]).await.ok()?;
     let v: serde_json::Value = serde_json::from_str(&out).ok()?;
-    if let Some(arr) = v.as_array() {
-        return Some(arr.len() as u32);
-    }
-    // {"pg_ready":true} (or similar object) = OSD has no PGs
-    if v.is_object() {
-        return Some(0);
-    }
-    None
+    // Response: {"safe_to_destroy":[N], "active":[], "missing_stats":[], "stored_pgs":[]}
+    let safe = v["safe_to_destroy"].as_array()
+        .map(|arr| arr.iter().any(|id| id.as_u64() == Some(osd_id as u64)))
+        .unwrap_or(false);
+    Some(safe)
 }
 
 // ── Ceph device / CephCluster helpers ────────────────────────────────────────
@@ -795,8 +798,12 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
             return; // one action per tick
         }
 
-        // OSD is already out — check PG count (direct Ceph query, not Prometheus).
-        match pg_count_direct(osd_id).await {
+        // OSD is already out — ask Ceph if it's safe to destroy.
+        // NOTE: pg ls-by-osd returns 0 when an OSD is DOWN because CRUSH
+        // immediately reassigns PGs to other OSDs, even before data is copied.
+        // osd safe-to-destroy is the correct check: it confirms all data has
+        // actually been replicated before we wipe.
+        match osd_safe_to_destroy(osd_id).await {
             None => {
                 // Ceph unreachable — never wipe without confirmation.
                 tracing::warn!(
@@ -804,10 +811,10 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
                     entry.disk_name
                 );
             }
-            Some(0) => {
-                // All PGs migrated — safe to remove.
+            Some(true) => {
+                // All data replicated — safe to remove.
                 tracing::info!(
-                    "reconcile: osd.{osd_id} ({}): 0 PGs — removing from Ceph",
+                    "reconcile: osd.{osd_id} ({}): safe-to-destroy confirmed — removing from Ceph",
                     entry.disk_name
                 );
                 // Delete the deploy first so the OSD pod terminates.
@@ -825,9 +832,9 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
                 );
                 return; // one action per tick
             }
-            Some(n) => {
+            Some(false) => {
                 tracing::info!(
-                    "reconcile: osd.{osd_id} ({}): {n} PGs still migrating, waiting",
+                    "reconcile: osd.{osd_id} ({}): data still migrating, waiting for safe-to-destroy",
                     entry.disk_name
                 );
             }
