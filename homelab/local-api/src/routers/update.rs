@@ -228,9 +228,8 @@ pub async fn update(
             // Run under idle I/O class + nice 19 so the entire build tree
             // (nix, rustc, linker) yields to k3s and Ceph on disk and CPU.
             // ionice/nice exec into the next command, keeping the same PID.
-            if let Ok(mut child) = std::process::Command::new("ionice")
-                .args(["-c", "3", "nice", "-n", "19",
-                       "nixos-rebuild", "switch", "--flake", &flake,
+            if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
+                .args(["switch", "--flake", &flake,
                        "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
                        "--cores", "1", "--max-jobs", "1"])
                 .stdin(std::process::Stdio::null())

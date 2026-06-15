@@ -302,6 +302,8 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
+          @glances_exact path /glances
+          redir @glances_exact /glances/ 301
           handle /glances/* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
@@ -366,12 +368,13 @@ in
           IMG=/var/lib/rook/system-osd.img
 
           mkdir -p /var/lib/rook
-          set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
-          TARGET=$(( $2 * 3 / 4 ))
-          # Only create on first boot. Never resize an existing image: enlarging
-          # the file shifts the BlueStore backup-label offsets so expand_devices
-          # reads zeroes, decodes a malformed label, and aborts the OSD.
           if [ ! -f "$IMG" ]; then
+            # 50% of the disk goes to the OSD; 50% stays free for the OS,
+            # nix store, container images, and k3s state.
+            # fallocate pre-allocates real disk blocks so Ceph OSD writes can
+            # never fail due to ENOSPC — sparse files must not be used here.
+            set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
+            TARGET=$(( $2 / 2 ))
             ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
           fi
 
