@@ -482,12 +482,25 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
 
     if job_active { return Ok(()); }
 
-    // After a successful prepare, the OSD pod may not yet be running.  The
-    // job object stays until we delete it (no ttlSecondsAfterFinished set),
-    // so job_succeeded=true is a reliable signal.
-    if job_succeeded { return Ok(()); }
-
-    if job_failed {
+    if job_succeeded {
+        // The job object persists after completion (no ttlSecondsAfterFinished).
+        // Check whether it actually prepared THIS device by looking for the
+        // activation dir — if found, the OSD pod is starting up and we should wait.
+        let ceph_dev_check = ceph_device_for(disk_name);
+        if find_activation_dir_for_device(&ceph_dev_check).is_some() {
+            return Ok(());
+        }
+        // Stale succeeded job from a previous device (e.g., loop0 was prepared
+        // hours ago and its job is still around). Delete it and re-trigger.
+        tracing::info!(
+            "activate {disk_name}: stale succeeded prepare job (no activation dir for \
+             {ceph_dev_check}) — deleting and re-triggering"
+        );
+        let _ = std::process::Command::new("kubectl")
+            .args(["delete", "job", "-n", CEPH_NS, &job_name, "--ignore-not-found"])
+            .output();
+        wipe_device(disk_name);
+    } else if job_failed {
         tracing::warn!("activate {disk_name}: prepare job failed");
         let _ = std::process::Command::new("kubectl")
             .args(["delete", "job", "-n", CEPH_NS, &job_name, "--ignore-not-found"])
@@ -496,8 +509,8 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
         let ceph_dev = ceph_device_for(disk_name);
         // If the prepare job wrote the BlueStore label before failing, the
         // activation dir will have a `block` symlink pointing to our device.
-        // In that case, don't wipe — re-trigger the prepare so Rook can
-        // activate the already-registered OSD without data loss.
+        // Don't wipe — re-trigger the prepare so Rook can activate the
+        // already-registered OSD without data loss.
         if find_activation_dir_for_device(&ceph_dev).is_some() {
             tracing::info!(
                 "activate {disk_name}: existing activation dir found — re-triggering \
@@ -505,7 +518,6 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
             );
             // Fall through to patch + delete prepare job, skipping the wipe.
         } else {
-            // No OSD registration found on this device — safe to wipe and restart.
             tracing::info!("activate {disk_name}: no activation dir — wiping device for clean retry");
             wipe_device(disk_name);
         }
