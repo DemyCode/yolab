@@ -302,11 +302,12 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
-          handle /glances* {
+          handle /glances/* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
             }
-            reverse_proxy [::1]:61208
+            uri strip_prefix /glances
+            reverse_proxy 127.0.0.1:61208
           }
           handle {
             root * ${s.clientUi}
