@@ -81,11 +81,11 @@ function SidebarContent({
               const res = await fetch("/api/account/token");
               const { account_token } = await res.json();
               window.open(
-                `https://demycode.ovh/dashboard#token=${encodeURIComponent(account_token)}`,
+                `https://demycode.ovh/console#token=${encodeURIComponent(account_token)}`,
                 "_blank"
               );
             } catch {
-              window.open("https://demycode.ovh/dashboard", "_blank");
+              window.open("https://demycode.ovh/console", "_blank");
             }
           }}
           className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-[#a1a1aa] hover:bg-[#18181b] hover:text-[#fafafa] transition-colors"
