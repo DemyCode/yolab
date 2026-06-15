@@ -82,7 +82,7 @@ spec:
         - name: EULA
           value: "TRUE"
         - name: DIFFICULTY
-          value: "{{ difficulty | default('normal') }}"
+          value: "{{ difficulty | default(value='normal') }}"
         - name: ENABLE_WHITELIST
           value: "{{ 'true' if whitelist is defined and whitelist else 'false' }}"
         {% if ops is defined and ops %}
