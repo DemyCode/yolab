@@ -2,7 +2,6 @@ mod auth;
 mod config;
 mod error;
 mod kubectl;
-mod priority;
 mod proc;
 mod routers;
 
@@ -10,7 +9,7 @@ use std::sync::Arc;
 
 use axum::{
     middleware,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -65,7 +64,7 @@ async fn main() {
         // Disks
         .route("/api/disks/local", get(disks::disks_local))
         .route("/api/disks", get(disks::disks))
-        .route("/api/disks/order", put(disks::update_order))
+        .route("/api/disks/drain", post(disks::drain_disk))
         .route("/api/disks/activate-local", post(disks::activate_local))
         .route("/api/disks/deactivate-local", post(disks::deactivate_local))
         .route("/api/disks/virtual", post(disks::add_virtual))
