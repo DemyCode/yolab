@@ -3,12 +3,11 @@ use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock}};
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, error::Result, kubectl, priority, AppState};
+use crate::{config::Config, error::Result, kubectl, AppState};
 
 const CEPH_NS: &str = "rook-ceph";
 const CEPH_CLUSTER: &str = "rook-ceph";
 const MAX_VIRTUAL_LOOP: u32 = 7;
-const HEADROOM_FACTOR: f64 = 1.2;
 // After a prepare job completes, Rook needs time to create the OSD deployment.
 // Treat a recently-completed job as still in progress during this cooldown.
 const PREPARE_COOLDOWN_SECS: i64 = 300;
@@ -35,8 +34,10 @@ pub struct DiskOrderEntry {
 }
 
 #[derive(Deserialize)]
-pub struct DiskOrderRequest {
-    pub entries: Vec<DiskOrderEntry>,
+pub struct DrainRequest {
+    pub disk_name: String,
+    pub host: String,
+    pub force: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -250,10 +251,6 @@ async fn ceph_osd_states() -> HashMap<u32, CephOsdState> {
         let up_val: u32 = o["up"].as_u64().unwrap_or(1) as u32;
         Some((id, CephOsdState { in_val, up_val }))
     }).collect()
-}
-
-async fn ceph_osd_in_status() -> HashMap<u32, u32> {
-    ceph_osd_states().await.into_iter().map(|(id, s)| (id, s.in_val)).collect()
 }
 
 /// Ask Ceph whether an OSD can be safely destroyed without data loss.
@@ -612,255 +609,29 @@ async fn activate_disk(cfg: &Config, disk_name: &str, host: &str) {
     tokio::task::spawn_blocking(move || { let _ = do_activate_local(&name); }).await.ok();
 }
 
-/// Wipe a disk that has been fully drained and removed from Ceph, then remove
-/// it from the CephCluster spec. Runs locally or fans out to the owning node.
-async fn wipe_disk(cfg: &Config, disk_name: &str, host: &str) {
-    if host != cfg.node_ipv6 {
-        let _ = node_client()
-            .post(format!("http://[{}]:{}/api/disks/deactivate-local", host, cfg.port))
-            .json(&serde_json::json!({"host": host, "disk_name": disk_name}))
-            .send().await;
-        return;
-    }
-    let name = disk_name.to_string();
-    tokio::task::spawn_blocking(move || {
-        let ceph_dev = ceph_device_for(&name);
-        wipe_device(&name);
-        // Remove from CephCluster spec (sync).
-        let raw = std::process::Command::new("kubectl")
-            .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
-                   "-o", "jsonpath={.spec.storage.devices}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-        let devices: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
-        let new_devices: Vec<_> = devices.into_iter()
-            .filter(|d| d["name"].as_str() != Some(&ceph_dev))
-            .collect();
-        let patch = serde_json::json!({"spec": {"storage": {"devices": new_devices}}});
-        let _ = std::process::Command::new("kubectl")
-            .args(["patch", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
-                   "--type", "merge", "-p", &patch.to_string()])
-            .output();
-    }).await.ok();
-}
-
 // ── Reconcile ────────────────────────────────────────────────────────────────
 
+/// Simple reconcile: fix broken state, then ensure every non-system disk is an OSD.
+/// No priority list. No target computation. Ceph handles data distribution.
+/// Drain is explicit-only: user triggers POST /api/disks/drain.
 pub async fn reconcile_storage(cfg: Arc<Config>) {
-    // ── Phase 0a: Remove ghost OSDs (no device, stuck in CrashLoopBackOff) ──
     cleanup_ghost_osds().await;
-
-    // ── Phase 0b: Re-attach detached loop devices for live OSDs ─────────────
     recover_detached_loop_osds().await;
-
-    // ── Phase 0c: Remove Ceph OSD entries that are down+out with no deploy ───
-    // Handles the race where `ceph osd rm` failed because the OSD was still up
-    // when the drain flow ran, but the pod has since terminated.
     purge_orphaned_osds().await;
 
-    // ── Phase 1: Gather disk state from all nodes ────────────────────────────
+    // Ensure every non-system disk visible from any node is in CephCluster.
+    // Activate at most one disk per tick so Rook isn't overwhelmed.
     let node_results = gather_from_nodes(&cfg, "/api/disks/local").await;
-    let disk_map: HashMap<(String, String), serde_json::Value> = node_results
-        .into_iter()
-        .flat_map(|(_, disks)| disks.into_iter().filter_map(|d| {
-            let host = d["host"].as_str()?.to_string();
-            let name = d["name"].as_str()?.to_string();
-            Some(((host, name), d))
-        }))
-        .collect();
-    if disk_map.is_empty() {
-        tracing::debug!("reconcile: no disks visible from any node");
-        return;
-    }
-
-    // ── Phase 2: Ensure all visible disks are in the priority list ───────────
-    let mut prio = priority::read().await;
-    let known: std::collections::HashSet<_> =
-        prio.iter().map(|e| (e.host.clone(), e.disk_name.clone())).collect();
-    let mut updated = false;
-    for ((host, name), disk) in &disk_map {
-        if !known.contains(&(host.clone(), name.clone())) {
-            let builtin = disk["is_builtin"].as_bool().unwrap_or(false);
-            tracing::info!(
-                "reconcile: new disk {name} on {host} (builtin={builtin}) → adding to priority list"
-            );
-            if builtin { let _ = priority::prepend(host, name).await; }
-            else { let _ = priority::append(host, name).await; }
-            updated = true;
-        }
-    }
-    if updated { prio = priority::read().await; }
-    if prio.is_empty() {
-        tracing::warn!("reconcile: priority list is empty — skipping");
-        return;
-    }
-
-    // ── Phase 3: Compute target set ──────────────────────────────────────────
-    // Target = minimum set of top-priority disks covering 120 % of current usage.
-    // If no data yet (used=0), bootstrap by targeting the first visible disk.
-    let used_bytes = {
-        let Ok((status, _, _)) = crate::routers::ceph::cluster_status_from_k8s().await else {
-            tracing::debug!("reconcile: Ceph status unavailable — skipping");
-            return;
-        };
-        status.get("ceph")
-            .and_then(|c| c.get("capacity"))
-            .and_then(|cap| cap.get("bytesUsed"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-    };
-    let demanded = if used_bytes == 0 { 1 } else { (used_bytes as f64 * HEADROOM_FACTOR) as u64 };
-    let mut running = 0u64;
-    let mut target = std::collections::HashSet::<(String, String)>::new();
-    for entry in &prio {
-        let key = (entry.host.clone(), entry.disk_name.clone());
-        if let Some(disk) = disk_map.get(&key) {
-            if running < demanded {
-                running += disk["size_bytes"].as_u64().unwrap_or(0);
-                target.insert(key);
-            }
-        }
-    }
-    tracing::debug!(
-        "reconcile: target={} disk(s), demanded={demanded} bytes, used={used_bytes}",
-        target.len()
-    );
-
-    // ── Phase 4: Collect current OSD deploy state (single K8s call) ──────────
-    let deploys = list_osd_deploys().await;
-    // dev_path → deploy
-    let deploy_by_dev: HashMap<&str, &OsdDeploy> =
-        deploys.iter().map(|d| (d.dev_path.as_str(), d)).collect();
-
-    let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
-
-    // PREPARING = prepare job running OR any deploy not yet ready.
-    let any_preparing = prepare_job_active(&hostname).await
-        || deploys.iter().any(|d| !d.ready);
-
-    // ── Phase 5: Activate — at most ONE disk per tick ─────────────────────────
-    // Skip if anything is still starting up; one activation at a time.
-    if !any_preparing {
-        for entry in &prio {
-            let key = (entry.host.clone(), entry.disk_name.clone());
-            if !target.contains(&key) { continue; }
-            let ceph_dev = ceph_device_for(&entry.disk_name);
-            let dev_path = format!("/dev/{ceph_dev}");
-            if !deploy_by_dev.contains_key(dev_path.as_str()) {
-                tracing::info!(
-                    "reconcile: activating {} on {} (needed for capacity)",
-                    entry.disk_name, entry.host
-                );
-                activate_disk(&cfg, &entry.disk_name, &entry.host).await;
-                return;
-            }
-        }
-    }
-
-    // ── Phase 5b: Un-drain target OSDs that were marked out ──────────────────
-    // If the user reorders priority mid-drain, a disk that was being drained
-    // may now be in the target set. Re-mark it in+weight=1 so Ceph accepts PGs.
-    let osd_in_status = ceph_osd_in_status().await;
-    if !any_preparing {
-        for entry in &prio {
-            let key = (entry.host.clone(), entry.disk_name.clone());
-            if !target.contains(&key) { continue; }
-            let ceph_dev = ceph_device_for(&entry.disk_name);
-            let dev_path = format!("/dev/{ceph_dev}");
-            let Some(deploy) = deploy_by_dev.get(dev_path.as_str()) else { continue };
-            let osd_id = deploy.osd_id;
-            let is_out = osd_in_status.get(&osd_id).copied().unwrap_or(1) == 0;
-            if is_out {
-                tracing::info!(
-                    "reconcile: osd.{osd_id} ({}) is target but was out — restoring in",
-                    entry.disk_name
-                );
-                let id_str = osd_id.to_string();
-                let _ = kubectl::ceph_exec(&["osd", "in", &id_str]).await;
-                let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "1"]).await;
-                return; // one action per tick
-            }
-        }
-    }
-
-    // ── Phase 6: Drain — only when ALL target disks are ACTIVE (ready=1) ─────
-    // This guarantees data is already on the target disks before we remove anything.
-    let all_target_active = target.iter().all(|k| {
-        let ceph_dev = ceph_device_for(&k.1);
-        let dev_path = format!("/dev/{ceph_dev}");
-        deploy_by_dev.get(dev_path.as_str()).map(|d| d.ready).unwrap_or(false)
-    });
-    if !all_target_active {
-        tracing::debug!("reconcile: waiting for all target disks to be active before draining");
-        return;
-    }
-
-    // osd_in_status already queried above in Phase 5b.
-
-    // Walk the priority list so we drain in consistent order.
-    for entry in &prio {
-        let key = (entry.host.clone(), entry.disk_name.clone());
-        if target.contains(&key) { continue; } // Still needed, skip.
-
-        let ceph_dev = ceph_device_for(&entry.disk_name);
-        let dev_path = format!("/dev/{ceph_dev}");
-        let Some(deploy) = deploy_by_dev.get(dev_path.as_str()) else { continue };
-
-        let osd_id = deploy.osd_id;
-        let is_out = osd_in_status.get(&osd_id).copied().unwrap_or(1) == 0;
-
-        if !is_out {
-            // First drain step: mark the OSD out so Ceph starts migrating PGs.
-            tracing::info!(
-                "reconcile: draining osd.{osd_id} ({}) — marking out",
-                entry.disk_name
-            );
-            let id_str = osd_id.to_string();
-            let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "0"]).await;
-            let _ = kubectl::ceph_exec(&["osd", "out", &id_str]).await;
-            return; // one action per tick
-        }
-
-        // OSD is already out — ask Ceph if it's safe to destroy.
-        // NOTE: pg ls-by-osd returns 0 when an OSD is DOWN because CRUSH
-        // immediately reassigns PGs to other OSDs, even before data is copied.
-        // osd safe-to-destroy is the correct check: it confirms all data has
-        // actually been replicated before we wipe.
-        match osd_safe_to_destroy(osd_id).await {
-            None => {
-                // Ceph unreachable — never wipe without confirmation.
-                tracing::warn!(
-                    "reconcile: osd.{osd_id} ({}): Ceph unreachable, keeping OSD safe",
-                    entry.disk_name
-                );
-            }
-            Some(true) => {
-                // All data replicated — safe to remove.
-                tracing::info!(
-                    "reconcile: osd.{osd_id} ({}): safe-to-destroy confirmed — removing from Ceph",
-                    entry.disk_name
-                );
-                // Delete the deploy first so the OSD pod terminates.
-                // purge_osd_from_ceph will then attempt `osd rm`; if it fails
-                // with EBUSY (OSD still up), purge_orphaned_osds handles it
-                // on the next reconcile tick once the pod has fully stopped.
-                let _ = kubectl::run(&[
-                    "delete", "deploy", "-n", CEPH_NS, &deploy.name, "--ignore-not-found",
-                ]).await;
-                purge_osd_from_ceph(osd_id).await;
-                wipe_disk(&cfg, &entry.disk_name, &entry.host).await;
-                tracing::info!(
-                    "reconcile: osd.{osd_id} ({}): drain complete, disk wiped — safe to unplug",
-                    entry.disk_name
-                );
-                return; // one action per tick
-            }
-            Some(false) => {
-                tracing::info!(
-                    "reconcile: osd.{osd_id} ({}): data still migrating, waiting for safe-to-destroy",
-                    entry.disk_name
-                );
+    for (_, disks) in node_results {
+        for disk in disks {
+            let host = disk["host"].as_str().unwrap_or("").to_string();
+            let name = disk["name"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || host.is_empty() { continue; }
+            let ceph_dev = ceph_device_for(&name);
+            if !cephcluster_has_device_sync(&ceph_dev) {
+                tracing::info!("reconcile: {name} on {host} not in CephCluster — activating");
+                activate_disk(&cfg, &name, &host).await;
+                return; // one activation per tick
             }
         }
     }
@@ -912,56 +683,13 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
 }
 
 pub async fn disks(State(state): State<AppState>) -> Result<Json<Vec<DiskItem>>> {
-    let cfg = &state.config;
-    let (node_results, mut prio) = tokio::join!(
-        gather_from_nodes(cfg, "/api/disks/local"),
-        priority::read(),
-    );
-    let disk_map: HashMap<(String, String), DiskItem> = node_results
+    let node_results = gather_from_nodes(&state.config, "/api/disks/local").await;
+    let mut result: Vec<DiskItem> = node_results
         .into_iter()
-        .flat_map(|(_, items)| items.into_iter().filter_map(|v| {
-            let item: DiskItem = serde_json::from_value(v).ok()?;
-            Some(((item.host.clone(), item.name.clone()), item))
-        }))
+        .flat_map(|(_, items)| items.into_iter().filter_map(|v| serde_json::from_value(v).ok()))
         .collect();
-    let known: std::collections::HashSet<_> =
-        prio.iter().map(|e| (e.host.clone(), e.disk_name.clone())).collect();
-    let mut updated = false;
-    for (key, disk) in &disk_map {
-        if !known.contains(key) {
-            if disk.is_builtin { let _ = priority::prepend(&key.0, &key.1).await; }
-            else { let _ = priority::append(&key.0, &key.1).await; }
-            updated = true;
-        }
-    }
-    if updated { prio = priority::read().await; }
-    Ok(Json(prio.iter()
-        .filter_map(|e| disk_map.get(&(e.host.clone(), e.disk_name.clone())).cloned())
-        .collect()))
-}
-
-pub async fn update_order(
-    State(state): State<AppState>,
-    Json(body): Json<DiskOrderRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let entries: Vec<priority::PriorityEntry> = body.entries.into_iter()
-        .map(|e| priority::PriorityEntry { host: e.host, disk_name: e.disk_name })
-        .collect();
-    priority::write(&entries).await?;
-    let cfg2 = Arc::clone(&state.config);
-    tokio::spawn(async move {
-        let handle = tokio::spawn(reconcile_storage(cfg2));
-        let abort = handle.abort_handle();
-        match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::error!("reconcile_storage panicked in update_order: {:?}", e),
-            Err(_) => {
-                abort.abort();
-                tracing::error!("reconcile_storage timed out in update_order, aborted");
-            }
-        }
-    });
-    Ok(Json(serde_json::json!({"ok": true})))
+    result.sort_by(|a, b| a.host.cmp(&b.host).then(a.name.cmp(&b.name)));
+    Ok(Json(result))
 }
 
 pub async fn activate_local(Json(body): Json<DiskOrderEntry>) -> Result<Json<serde_json::Value>> {
@@ -995,6 +723,72 @@ pub async fn deactivate_local(Json(body): Json<DiskOrderEntry>) -> Result<Json<s
         Ok(())
     }).await.map_err(|e| anyhow::anyhow!(e))??;
     Ok(Json(serde_json::json!({"ok": true})))
+}
+
+// ── Explicit drain ────────────────────────────────────────────────────────────
+
+/// Drain an OSD: mark it out, wait for safe-to-destroy, then remove from Ceph.
+/// No wipe — the disk stays clean and can be re-added by the reconcile loop.
+/// Use force=true to skip the safe-to-destroy check and accept data loss.
+pub async fn drain_disk(
+    State(state): State<AppState>,
+    Json(body): Json<DrainRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let cfg = Arc::clone(&state.config);
+    let disk_name = body.disk_name.clone();
+    let host = body.host.clone();
+    let force = body.force.unwrap_or(false);
+    tokio::spawn(async move {
+        drain_disk_background(&cfg, &disk_name, &host, force).await;
+    });
+    Ok(Json(serde_json::json!({"ok": true, "message": "drain started"})))
+}
+
+async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force: bool) {
+    let ceph_dev = ceph_device_for(disk_name);
+
+    if host != cfg.node_ipv6 {
+        // Remote node: fan out to that node's drain-local endpoint (NYI — remove from spec only).
+        tracing::warn!("drain: remote drain NYI for {disk_name} on {host}, removing from CephCluster spec");
+        cephcluster_remove_device(&ceph_dev).await;
+        return;
+    }
+
+    let deploys = list_osd_deploys().await;
+    let dev_path = format!("/dev/{ceph_dev}");
+    let Some(deploy) = deploys.iter().find(|d| d.dev_path == dev_path) else {
+        tracing::info!("drain: {disk_name} has no OSD deploy — removing from CephCluster spec only");
+        cephcluster_remove_device(&ceph_dev).await;
+        return;
+    };
+
+    let osd_id = deploy.osd_id;
+    let deploy_name = deploy.name.clone();
+    let id_str = osd_id.to_string();
+
+    let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "0"]).await;
+    let _ = kubectl::ceph_exec(&["osd", "out", &id_str]).await;
+    tracing::info!("drain: osd.{osd_id} ({disk_name}) marked out");
+
+    if !force {
+        // Wait indefinitely — bounded timeouts caused data loss in the past.
+        // With size=1 pools, this only resolves if the pool is emptied first.
+        // Use force=true to bypass and accept data loss.
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            match osd_safe_to_destroy(osd_id).await {
+                Some(true) => break,
+                Some(false) => tracing::debug!("drain: osd.{osd_id}: PGs still migrating"),
+                None => tracing::warn!("drain: osd.{osd_id}: Ceph unreachable, retrying"),
+            }
+        }
+    }
+
+    tracing::info!("drain: osd.{osd_id} ({disk_name}): removing from Ceph");
+    let _ = kubectl::run(&["delete", "deploy", "-n", CEPH_NS, &deploy_name, "--ignore-not-found"]).await;
+    purge_osd_from_ceph(osd_id).await;
+    cephcluster_remove_device(&ceph_dev).await;
+    tracing::info!("drain: osd.{osd_id} ({disk_name}): done — disk ready to unplug or re-add");
 }
 
 // ── Virtual disk management ───────────────────────────────────────────────────
