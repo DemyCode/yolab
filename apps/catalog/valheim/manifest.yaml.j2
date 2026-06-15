@@ -80,7 +80,7 @@ spec:
         - name: SERVER_NAME
           value: "{{ server_name }}"
         - name: WORLD_NAME
-          value: "{{ world_name | default('Dedicated') }}"
+          value: "{{ world_name | default(value='Dedicated') }}"
         - name: SERVER_PASS
           value: "{{ server_pass }}"
         - name: SERVER_PUBLIC
