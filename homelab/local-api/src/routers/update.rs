@@ -225,8 +225,14 @@ pub async fn update(
         let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
         if let Ok(log_file) = std::fs::File::create(&cfg.rebuild_log) {
             let log2 = log_file.try_clone().unwrap_or_else(|_| std::fs::File::create(&cfg.rebuild_log).unwrap());
-            if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
-                .args(["switch", "--flake", &flake, "--no-update-lock-file", "--print-build-logs", "--accept-flake-config"])
+            // Run under idle I/O class + nice 19 so the entire build tree
+            // (nix, rustc, linker) yields to k3s and Ceph on disk and CPU.
+            // ionice/nice exec into the next command, keeping the same PID.
+            if let Ok(mut child) = std::process::Command::new("ionice")
+                .args(["-c", "3", "nice", "-n", "19",
+                       "nixos-rebuild", "switch", "--flake", &flake,
+                       "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
+                       "--cores", "1", "--max-jobs", "1"])
                 .stdin(std::process::Stdio::null())
                 .stdout(log_file)
                 .stderr(log2)

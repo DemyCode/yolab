@@ -75,7 +75,7 @@ function SidebarContent({
       {/* Bottom */}
       <div className="px-3 py-4 border-t border-[#27272a] space-y-0.5">
         <a
-          href="/glances"
+          href="/glances/"
           target="_blank"
           rel="noopener noreferrer"
           className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-[#a1a1aa] hover:bg-[#18181b] hover:text-[#fafafa] transition-colors"
