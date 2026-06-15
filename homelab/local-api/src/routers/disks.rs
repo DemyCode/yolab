@@ -311,6 +311,21 @@ fn wipe_device(disk_name: &str) {
     }
 }
 
+fn cephcluster_devices_sync() -> Vec<String> {
+    let raw = std::process::Command::new("kubectl")
+        .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
+               "-o", "jsonpath={.spec.storage.devices}"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let devices: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+    devices.iter().filter_map(|d| d["name"].as_str().map(String::from)).collect()
+}
+
+fn cephcluster_has_device_sync(ceph_dev: &str) -> bool {
+    cephcluster_devices_sync().iter().any(|d| d == ceph_dev)
+}
+
 /// Add a device to CephCluster.spec.storage.devices. Sync, idempotent.
 fn cephcluster_add_device_sync(ceph_dev: &str) {
     let raw = std::process::Command::new("kubectl")
@@ -538,6 +553,13 @@ fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
     }
     if prepare_job_completed_recently_sync(&job_name) {
         tracing::debug!("activate {disk_name}: prepare job completed recently, waiting for deploy");
+        return Ok(());
+    }
+    // Device already in CephCluster: Rook is about to (or is) creating the prepare job.
+    // This covers the 60-90s window between patching CephCluster and the job appearing,
+    // preventing repeated wipes that reset BlueStore initialization mid-flight.
+    if cephcluster_has_device_sync(&ceph_dev) {
+        tracing::debug!("activate {disk_name}: already in CephCluster, waiting for Rook");
         return Ok(());
     }
 
