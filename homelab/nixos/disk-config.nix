@@ -8,6 +8,7 @@
   diskConfig = homelabConfig.disk or (throw "[disk] section missing in config.toml");
   diskDevice = diskConfig.device or (throw "[disk] device is required in config.toml");
   espSize = diskConfig.esp_size or (throw "[disk] esp_size is required in config.toml");
+  bootMode = homelabConfig.homelab.boot_mode or "uefi";
 in {
   disko.devices = {
     disk.disk1 = {
@@ -15,26 +16,37 @@ in {
       type = "disk";
       content = {
         type = "gpt";
-        partitions = {
-          esp = {
-            name = "ESP";
-            size = espSize;
-            type = "EF00";
-            content = {
-              type = "filesystem";
-              format = "vfat";
-              mountpoint = "/boot";
+        partitions =
+          (if bootMode == "bios" then {
+            # 1 MB BIOS boot partition — GRUB embeds its core.img here on GPT disks.
+            # No content block: GRUB writes directly to this partition.
+            bios = {
+              name = "BIOS";
+              size = "1M";
+              type = "EF02"; # for GRUB MBR on GPT
+            };
+          } else {
+            esp = {
+              name = "ESP";
+              size = espSize;
+              type = "EF00";
+              content = {
+                type = "filesystem";
+                format = "vfat";
+                mountpoint = "/boot";
+              };
+            };
+          })
+          // {
+            root = {
+              name = "root";
+              size = "100%";
+              content = {
+                type = "lvm_pv";
+                vg = "pool";
+              };
             };
           };
-          root = {
-            name = "root";
-            size = "100%";
-            content = {
-              type = "lvm_pv";
-              vg = "pool";
-            };
-          };
-        };
       };
     };
     lvm_vg = {

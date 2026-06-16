@@ -4,6 +4,12 @@ use serde::Serialize;
 use crate::{error::Result, kubectl, AppState};
 
 #[derive(Serialize)]
+pub struct NodeLink {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Serialize)]
 pub struct NodeInfo {
     pub name: String,
     pub ip: String,
@@ -16,6 +22,8 @@ pub struct NodeInfo {
 pub struct JoinInfo {
     pub k3s_token: String,
     pub server_addr: String,
+    pub account_token: String,
+    pub platform_api_url: String,
 }
 
 pub async fn nodes() -> Json<Vec<NodeInfo>> {
@@ -46,15 +54,58 @@ pub async fn nodes() -> Json<Vec<NodeInfo>> {
     )
 }
 
+pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLink>>> {
+    let text = std::fs::read_to_string(&state.config.config_path)?;
+    let table: toml::Table = toml::from_str(&text)?;
+    let tunnel = table["tunnel"].as_table()
+        .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))?;
+    let account_token = tunnel.get("account_token")
+        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let platform_api_url = tunnel.get("platform_api_url")
+        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{platform_api_url}/tunnels"))
+        .bearer_auth(&account_token)
+        .send().await?
+        .json::<serde_json::Value>().await?;
+
+    let node_re = regex::Regex::new(r"^node\d+$").unwrap();
+    let empty = vec![];
+    let tunnels = resp.as_array().unwrap_or(&empty);
+    let mut links: Vec<NodeLink> = tunnels.iter()
+        .flat_map(|tunnel| {
+            let records = tunnel["dns_records"].as_array().unwrap_or(&empty);
+            records.iter().filter_map(|r| {
+                let name = r["name"].as_str()?;
+                if !node_re.is_match(name) { return None; }
+                let fqdn = r["fqdn"].as_str()?;
+                Some(NodeLink { name: name.to_string(), url: format!("https://{fqdn}") })
+            }).collect::<Vec<_>>()
+        })
+        .collect();
+
+    links.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Json(links))
+}
+
 pub async fn join_info(State(state): State<AppState>) -> Result<Json<JoinInfo>> {
     let text = std::fs::read_to_string(&state.config.config_path)?;
     let table: toml::Table = toml::from_str(&text)?;
     let k3s_token = table["node"]["k3s"]["token"].as_str()
         .ok_or_else(|| anyhow::anyhow!("missing node.k3s.token"))?.to_string();
-    let sub_ipv6_private = table["tunnel"]["sub_ipv6_private"].as_str()
+    let tunnel = table["tunnel"].as_table()
+        .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))?;
+    let sub_ipv6_private = tunnel["sub_ipv6_private"].as_str()
         .ok_or_else(|| anyhow::anyhow!("missing tunnel.sub_ipv6_private"))?;
+    let account_token = tunnel.get("account_token")
+        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let platform_api_url = tunnel.get("platform_api_url")
+        .and_then(|v| v.as_str()).unwrap_or("").to_string();
     Ok(Json(JoinInfo {
         k3s_token,
         server_addr: format!("https://[{sub_ipv6_private}]:6443"),
+        account_token,
+        platform_api_url,
     }))
 }

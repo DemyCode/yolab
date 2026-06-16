@@ -78,6 +78,7 @@ async fn main() {
         .route("/api/ceph/status", get(ceph::ceph_status))
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
+        .route("/api/nodes/links", get(nodes::node_links))
         .route("/api/cluster/join-info", get(nodes::join_info))
         // Apps
         .route("/api/account/token", get(apps::account_token))

@@ -12,6 +12,7 @@ from installer.install_flow import build_install_config, install_system
 from installer.password import hash_password
 from installer.ssh_keygen import generate_ssh_keypair
 from installer.system import detect_disks
+from installer.wireguard_live import PLATFORM_API, next_node_name, register_and_bring_up_tunnel
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -28,6 +29,42 @@ _install_started = threading.Event()
 async def api_set_tunnel(body: dict) -> dict:
     _state["tunnel"] = body
     return {"ok": True}
+
+
+# ── Account helpers ────────────────────────────────────────────────────────────
+
+
+@app.post("/api/account/create")
+async def api_account_create() -> dict:
+    """Create a new YoLab platform account. Returns the account token to save."""
+    try:
+        resp = httpx.post(f"{PLATFORM_API}/users", timeout=15)
+        resp.raise_for_status()
+        token = resp.json()["account_token"]
+        _state["account_token"] = token
+        return {"account_token": token}
+    except Exception as e:
+        logging.exception("Account creation failed")
+        raise HTTPException(status_code=500, detail=f"Account creation failed: {e}")
+
+
+@app.post("/api/account/verify")
+async def api_account_verify(body: dict) -> dict:
+    """Verify an existing account token against the platform API."""
+    token = body.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=422, detail="Token is required")
+    try:
+        resp = httpx.get(
+            f"{PLATFORM_API}/tunnels",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        _state["account_token"] = token
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {e}")
 
 
 # ── Cluster join helpers ───────────────────────────────────────────────────────
@@ -72,7 +109,17 @@ async def api_join_info(body: dict) -> dict:
             status_code=info_resp.status_code,
             detail="Failed to fetch join info from existing node",
         )
-    return info_resp.json()
+    data = info_resp.json()
+
+    # Inherit account credentials so the worker node can register its own tunnel
+    # and use the same YoLab account as the primary node.
+    if data.get("account_token"):
+        _state["account_token"] = data["account_token"]
+
+    return {
+        "k3s_token": data["k3s_token"],
+        "server_addr": data["server_addr"],
+    }
 
 
 # ── Disk & SSH helpers ─────────────────────────────────────────────────────────
@@ -119,13 +166,34 @@ async def api_install(body: dict) -> JSONResponse:
             content={"detail": "Password must be at least 8 characters"},
         )
 
+    account_token = _state.get("account_token", "")
+    if not account_token:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Account setup is required before installation"},
+        )
+
+    # Every node (new cluster or joining) registers its own WireGuard tunnel
+    # to get a unique public URL (node1, node2, node3…).
+    try:
+        service_name = next_node_name(account_token)
+        tunnel = register_and_bring_up_tunnel(
+            account_token=account_token,
+            service_name=service_name,
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"WireGuard registration failed: {e}"},
+        )
+
     config = build_install_config(
         disk=disk,
         hostname=hostname,
         timezone=timezone,
         root_ssh_key=ssh_key,
         homelab_password_hash=hash_password(password),
-        tunnel=_state.get("tunnel"),
+        tunnel=tunnel,
         server_addr=server_addr,
         k3s_token=k3s_token,
     )

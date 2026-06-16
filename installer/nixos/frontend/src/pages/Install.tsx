@@ -101,10 +101,52 @@ function StepHeader({ step, title }: { step: Step; title: string }) {
 
 function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: JoinInfo) => void }) {
   const [mode, setMode] = useState<'new' | 'join' | null>(null)
+  // Account sub-step (new cluster only)
+  const [accountMethod, setAccountMethod] = useState<'create' | 'existing' | null>(null)
+  const [existingToken, setExistingToken] = useState('')
+  const [createdToken, setCreatedToken] = useState('')
+  const [accountReady, setAccountReady] = useState(false)
+  // Join form
   const [url, setUrl] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  async function createAccount() {
+    setError('')
+    setLoading(true)
+    try {
+      const res = await fetch('/api/account/create', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) { setError(data.detail ?? `Error ${res.status}`); return }
+      setCreatedToken(data.account_token)
+      setAccountReady(true)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function verifyToken() {
+    setError('')
+    if (!existingToken.trim()) { setError('Token is required'); return }
+    setLoading(true)
+    try {
+      const res = await fetch('/api/account/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: existingToken.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.detail ?? `Error ${res.status}`); return }
+      setAccountReady(true)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function fetchJoinInfo() {
     setError('')
@@ -115,7 +157,7 @@ function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: Join
       const res = await fetch('/api/join-info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), password  }),
+        body: JSON.stringify({ url: url.trim(), password }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -130,30 +172,102 @@ function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: Join
     }
   }
 
+  function selectMode(m: 'new' | 'join') {
+    setMode(m)
+    setError('')
+    setAccountMethod(null)
+    setAccountReady(false)
+    setCreatedToken('')
+  }
+
   return (
     <Card>
       <StepHeader step={1} title="Cluster setup" />
 
       <div className="flex flex-col gap-3">
         <button
-          onClick={() => { setMode('new'); setError('') }}
-          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${mode === 'new' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
-            }`}
+          onClick={() => selectMode('new')}
+          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${mode === 'new' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'}`}
         >
           <span className="text-sm font-semibold text-[#e5e7eb]">New cluster</span>
           <span className="text-xs text-muted">First node — creates a fresh single-node cluster</span>
         </button>
 
         <button
-          onClick={() => { setMode('join'); setError('') }}
-          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${mode === 'join' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'
-            }`}
+          onClick={() => selectMode('join')}
+          className={`flex flex-col gap-1 p-4 rounded-xl border text-left transition-colors ${mode === 'join' ? 'border-accent bg-[#0a1f15]' : 'border-border hover:border-[#444]'}`}
         >
           <span className="text-sm font-semibold text-[#e5e7eb]">Join existing cluster</span>
           <span className="text-xs text-muted">Additional node — joins a running YoLab cluster</span>
         </button>
       </div>
 
+      {/* New cluster: account setup */}
+      {mode === 'new' && !accountReady && (
+        <div className="mt-5">
+          <p className="text-xs text-muted mb-3">
+            Connect your YoLab account so each node gets its own public URL.
+          </p>
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setAccountMethod('create')}
+              className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${accountMethod === 'create' ? 'border-accent text-accent bg-[#0a1f15]' : 'border-border text-muted hover:border-[#444]'}`}
+            >
+              Create new account
+            </button>
+            <button
+              onClick={() => setAccountMethod('existing')}
+              className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${accountMethod === 'existing' ? 'border-accent text-accent bg-[#0a1f15]' : 'border-border text-muted hover:border-[#444]'}`}
+            >
+              I have an account
+            </button>
+          </div>
+          {accountMethod === 'create' && (
+            <>
+              <p className="text-xs text-muted mb-3">
+                A new account is created instantly — no email required.
+              </p>
+              <PrimaryBtn onClick={createAccount} disabled={loading}>
+                {loading ? 'Creating…' : 'Create account →'}
+              </PrimaryBtn>
+            </>
+          )}
+          {accountMethod === 'existing' && (
+            <>
+              <Field label="Account token">
+                <Input
+                  value={existingToken}
+                  onChange={(e) => setExistingToken(e.target.value)}
+                  placeholder="Paste your YoLab account token"
+                />
+              </Field>
+              <PrimaryBtn onClick={verifyToken} disabled={loading}>
+                {loading ? 'Verifying…' : 'Verify token →'}
+              </PrimaryBtn>
+            </>
+          )}
+          <ErrorMsg msg={error} />
+        </div>
+      )}
+
+      {/* New cluster: account ready */}
+      {mode === 'new' && accountReady && (
+        <div className="mt-5">
+          {createdToken && (
+            <div className="mb-4 bg-[#0d2118] border border-[#065f46] rounded-lg p-3">
+              <p className="text-xs text-[#86efac] mb-2 font-semibold">
+                Save this token — you'll need it to add more nodes later:
+              </p>
+              <pre className="text-xs font-mono text-accent break-all whitespace-pre-wrap">{createdToken}</pre>
+            </div>
+          )}
+          <p className="text-sm text-[#86efac] mb-4">✓ Account ready</p>
+          <ErrorMsg msg={error} />
+          <PrimaryBtn onClick={onNew}>Continue →</PrimaryBtn>
+        </div>
+      )}
+
+      {/* Join cluster form */}
       {mode === 'join' && (
         <div>
           <Field label="Existing node URL">
@@ -177,13 +291,6 @@ function StepCluster({ onNew, onJoin }: { onNew: () => void; onJoin: (info: Join
             {loading ? 'Connecting…' : 'Connect & Continue →'}
           </PrimaryBtn>
         </div>
-      )}
-
-      {mode === 'new' && (
-        <>
-          <ErrorMsg msg={error} />
-          <PrimaryBtn onClick={onNew}>Continue →</PrimaryBtn>
-        </>
       )}
     </Card>
   )
