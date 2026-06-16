@@ -1,0 +1,20 @@
+{
+  "title": "Syncthing",
+  "type": "object",
+  "required": ["subdomain"],
+  "properties": {
+    "subdomain": {
+      "type": "string",
+      "title": "Subdomain",
+      "format": "tunnel",
+      "default": "syncthing"
+    },
+    "storage_size": {
+      "type": "string",
+      "title": "Storage size",
+      "description": "Size of the persistent volume for synced files",
+      "default": "20Gi",
+      "enum": ["5Gi", "10Gi", "20Gi", "50Gi", "100Gi"]
+    }
+  }
+}
