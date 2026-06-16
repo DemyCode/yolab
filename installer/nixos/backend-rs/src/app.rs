@@ -621,6 +621,18 @@ impl App {
             self.error = Some("Password must be at least 8 characters.".into());
             return;
         }
+        if !self.password.chars().any(|c| c.is_uppercase()) {
+            self.error = Some("Password must contain at least one uppercase letter.".into());
+            return;
+        }
+        if !self.password.chars().any(|c| c.is_lowercase()) {
+            self.error = Some("Password must contain at least one lowercase letter.".into());
+            return;
+        }
+        if !self.password.chars().any(|c| c.is_ascii_digit()) {
+            self.error = Some("Password must contain at least one number.".into());
+            return;
+        }
         if self.password != self.password2 {
             self.error = Some("Passwords do not match.".into());
             return;
