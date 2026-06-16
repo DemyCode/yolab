@@ -1,0 +1,1 @@
+[{"key": "url", "label": "Web UI", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]

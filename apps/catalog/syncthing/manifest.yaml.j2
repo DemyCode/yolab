@@ -1,0 +1,140 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yolab-{{ instance_name }}
+  labels:
+    yolab.io/managed: "true"
+  annotations:
+    yolab.io/app-id: "{{ app_id }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-data
+  namespace: yolab-{{ instance_name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ storage_size | default(value="20Gi") }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: syncthing-caddy
+  namespace: yolab-{{ instance_name }}
+data:
+  Caddyfile: |
+    {$YOLAB_FQDN} {
+      reverse_proxy localhost:8384
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      - name: wg-register
+        image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        env:
+        - name: PLATFORM_API_URL
+          value: "{{ platform_api_url }}"
+        - name: ACCOUNT_TOKEN
+          value: "{{ account_token }}"
+        - name: SERVICE_NAME
+          value: "{{ service_name }}"
+        volumeMounts:
+        - name: wireguard
+          mountPath: /wireguard
+        - name: yolab
+          mountPath: /yolab
+        - name: data
+          mountPath: /state
+          subPath: "{{ instance_name }}/yolab-state"
+
+      containers:
+      - name: wireguard
+        image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: wireguard
+          mountPath: /etc/wireguard
+
+      - name: caddy
+        image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        readinessProbe:
+          tcpSocket:
+            port: 443
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 443
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        - |
+          . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ instance_name }}/caddy
+        - name: caddy-config
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+        - name: yolab
+          mountPath: /yolab
+
+      - name: syncthing
+        image: syncthing/syncthing:latest
+        readinessProbe:
+          httpGet:
+            path: /rest/noauth/health
+            port: 8384
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /rest/noauth/health
+            port: 8384
+          initialDelaySeconds: 20
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: STNOUPGRADE
+          value: "1"
+        - name: STGUIADDRESS
+          value: "0.0.0.0:8384"
+        volumeMounts:
+        - name: data
+          mountPath: /var/syncthing
+          subPath: {{ instance_name }}/syncthing
+
+      volumes:
+      - name: wireguard
+        emptyDir: {}
+      - name: yolab
+        emptyDir: {}
+      - name: caddy-config
+        configMap:
+          name: syncthing-caddy
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data

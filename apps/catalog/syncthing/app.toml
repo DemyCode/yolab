@@ -1,0 +1,6 @@
+[app]
+id = "syncthing"
+name = "Syncthing"
+description = "Continuous file synchronization between your devices"
+icon = "🔄"
+category = "utilities"
