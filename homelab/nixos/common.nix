@@ -487,15 +487,7 @@ in
           DNS_URL=""
 
           if [ -f "$CONFIG" ]; then
-            DNS_URL=$(CONFIG="$CONFIG" ${pkgs.python3}/bin/python3 -c "
-import os, re
-config = os.environ.get('CONFIG', '')
-try:
-    with open(config) as f:
-        m = re.search(r'dns_url\s*=\s*\"([^\"]+)\"', f.read())
-    if m: print(m.group(1), end='')
-except Exception: pass
-" 2>/dev/null || true)
+            DNS_URL=$(${pkgs.gnugrep}/bin/grep -oP 'dns_url\s*=\s*"\K[^"]+' "$CONFIG" 2>/dev/null || true)
           fi
 
           {
@@ -651,8 +643,6 @@ except Exception: pass
       "nix-command"
       "flakes"
     ];
-    nix.settings.extra-substituters = [ "https://cache.demycode.ovh/yolab" ];
-    nix.settings.extra-trusted-public-keys = [ "yolab:p/dOzQU8mPkD7kCCU9J7isVtBUT2gjq0RJror0uzkEo=" ];
     # Limit build parallelism so deploys don't starve k3s and Ceph.
     # One job at a time, capped at 2 cores — Rust link phase is single-threaded anyway.
     nix.settings.max-jobs = 1;

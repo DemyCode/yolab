@@ -323,7 +323,7 @@ async fn do_install(
             "--flake", &flake_ref,
             "--no-root-password",
             "--log-format", "raw",
-            "-v",
+            "-v", "--accept-flake-config"
         ],
         tx,
     )
