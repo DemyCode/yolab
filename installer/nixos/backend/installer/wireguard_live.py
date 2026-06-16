@@ -1,4 +1,5 @@
 import ipaddress
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,30 @@ from installer.display import show_error, show_success
 from installer.wg_keygen import generate_wg_keypair
 
 PLATFORM_API = "https://api.demycode.ovh"
+
+
+def next_node_name(account_token: str) -> str:
+    """Return the next available nodeN name by scanning existing DNS records."""
+    import httpx
+    headers = {"Authorization": f"Bearer {account_token}"}
+    try:
+        resp = httpx.get(f"{PLATFORM_API}/tunnels", headers=headers, timeout=10)
+        resp.raise_for_status()
+        tunnels = resp.json()
+    except Exception:
+        return "node1"
+
+    existing: set[int] = set()
+    for tunnel in tunnels:
+        for record in tunnel.get("dns_records", []):
+            m = re.match(r"^node(\d+)$", record.get("name", ""))
+            if m:
+                existing.add(int(m.group(1)))
+
+    n = 1
+    while n in existing:
+        n += 1
+    return f"node{n}"
 
 
 def register_and_bring_up_tunnel(account_token: str, service_name: str) -> dict:

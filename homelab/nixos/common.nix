@@ -471,6 +471,48 @@ in
 
     services.logind.settings.Login.HandleLidSwitchExternalPower = "ignore";
 
+    # ── Boot banner ───────────────────────────────────────────────────────────────
+    # Generates /run/issue with a QR code and management URL before tty1 shows
+    # the login prompt.  agetty is configured to display that file.
+    systemd.services.yolab-banner = {
+      description = "Generate boot banner with management URL QR code";
+      before = [ "getty@tty1.service" ];
+      wantedBy = [ "getty@tty1.service" ];
+      after = [ "local-fs.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "yolab-banner" ''
+          CONFIG="${config.yolab.repoPath}/homelab/ignored/config.toml"
+          DNS_URL=""
+
+          if [ -f "$CONFIG" ]; then
+            DNS_URL=$(CONFIG="$CONFIG" ${pkgs.python3}/bin/python3 -c "
+import os, re
+config = os.environ.get('CONFIG', '')
+try:
+    with open(config) as f:
+        m = re.search(r'dns_url\s*=\s*\"([^\"]+)\"', f.read())
+    if m: print(m.group(1), end='')
+except Exception: pass
+" 2>/dev/null || true)
+          fi
+
+          {
+            printf '\n'
+            if [ -n "$DNS_URL" ]; then
+              ${pkgs.qrencode}/bin/qrencode -t UTF8 -m 1 "$DNS_URL" 2>/dev/null || true
+              printf '\n  YoLab Management: %s\n\n' "$DNS_URL"
+            else
+              printf '  YoLab — not yet configured\n\n'
+            fi
+          } > /run/issue
+        '';
+      };
+    };
+
+    services.getty.extraArgs = [ "--issue-file" "/run/issue" "--noclear" ];
+
     environment.systemPackages =
       with pkgs;
       map lib.lowPrio [
@@ -489,6 +531,7 @@ in
         glances
         sshfs
         fuse3
+        qrencode
       ];
 
     # ── Rook / Ceph ───────────────────────────────────────────────────────────
