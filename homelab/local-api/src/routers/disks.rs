@@ -870,26 +870,40 @@ pub async fn add_virtual(
     State(state): State<AppState>,
     Json(body): Json<AddVirtualRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    // Try yolab_external Storage Box provisioning first.
-    if let Some(result) = try_provision_storage_box(&state.config, &body).await {
-        return Ok(Json(result));
-    }
+    let result = try_provision_storage_box_result(&state.config, &body).await?;
+    Ok(Json(result))
+}
 
-    // Fallback: local loop device.
-    let host = body.host.clone().unwrap_or_else(|| state.config.node_ipv6.clone());
-    if host != state.config.node_ipv6 {
-        let json: serde_json::Value = node_client()
-            .post(format!("http://[{}]:{}/api/disks/add-virtual-local", host, state.config.port))
-            .json(&body)
-            .send().await.map_err(|e| anyhow::anyhow!(e))?
-            .error_for_status().map_err(|e| anyhow::anyhow!(e))?
-            .json().await.map_err(|e| anyhow::anyhow!(e))?;
-        return Ok(Json(json));
-    }
-    let size_gb = body.size_gb();
-    let loop_name = tokio::task::spawn_blocking(move || do_add_virtual_local(size_gb))
-        .await.map_err(|e| anyhow::anyhow!(e))??;
-    Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
+async fn try_provision_storage_box_result(
+    cfg: &Config,
+    body: &AddVirtualRequest,
+) -> anyhow::Result<serde_json::Value> {
+    let (url, token) = crate::routers::backups::ye_creds(cfg)
+        .ok_or_else(|| anyhow::anyhow!("No account configured — connect this node to an account first"))?;
+
+    let box_type = body.box_type.as_str();
+
+    let resp = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?
+        .post(format!("{url}/storage/volume"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "box_type": box_type }))
+        .send().await
+        .map_err(|e| anyhow::anyhow!("Could not reach provisioning service: {e}"))?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("Provisioning failed: {e}"))?
+        .json::<serde_json::Value>().await
+        .map_err(|e| anyhow::anyhow!("Invalid response from provisioning service: {e}"))?;
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "type": "storage_box",
+        "host": resp["host"],
+        "port": resp["port"],
+        "username": resp["username"],
+        "password": resp["password"],
+    }))
 }
 
 async fn try_provision_storage_box(
