@@ -42,8 +42,20 @@ pub struct DrainRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct AddVirtualRequest {
-    pub size_gb: u64,
+    /// Storage Box type: bx11 (1 TB), bx21 (5 TB), bx31 (10 TB), bx41 (20 TB)
+    pub box_type: String,
     pub host: Option<String>,
+}
+
+impl AddVirtualRequest {
+    fn size_gb(&self) -> u64 {
+        match self.box_type.as_str() {
+            "bx21" => 5120,
+            "bx31" => 10240,
+            "bx41" => 20480,
+            _      => 1024, // bx11 default
+        }
+    }
 }
 
 // ── Block device helpers ──────────────────────────────────────────────────────
@@ -848,7 +860,7 @@ fn do_add_virtual_local(size_gb: u64) -> anyhow::Result<String> {
 pub async fn add_virtual_local(
     Json(body): Json<AddVirtualRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let size_gb = body.size_gb;
+    let size_gb = body.size_gb();
     let loop_name = tokio::task::spawn_blocking(move || do_add_virtual_local(size_gb))
         .await.map_err(|e| anyhow::anyhow!(e))??;
     Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
@@ -858,6 +870,12 @@ pub async fn add_virtual(
     State(state): State<AppState>,
     Json(body): Json<AddVirtualRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    // Try yolab_external Storage Box provisioning first.
+    if let Some(result) = try_provision_storage_box(&state.config, &body).await {
+        return Ok(Json(result));
+    }
+
+    // Fallback: local loop device.
     let host = body.host.clone().unwrap_or_else(|| state.config.node_ipv6.clone());
     if host != state.config.node_ipv6 {
         let json: serde_json::Value = node_client()
@@ -868,8 +886,36 @@ pub async fn add_virtual(
             .json().await.map_err(|e| anyhow::anyhow!(e))?;
         return Ok(Json(json));
     }
-    let size_gb = body.size_gb;
+    let size_gb = body.size_gb();
     let loop_name = tokio::task::spawn_blocking(move || do_add_virtual_local(size_gb))
         .await.map_err(|e| anyhow::anyhow!(e))??;
     Ok(Json(serde_json::json!({ "ok": true, "device": loop_name })))
+}
+
+async fn try_provision_storage_box(
+    cfg: &Config,
+    body: &AddVirtualRequest,
+) -> Option<serde_json::Value> {
+    let (url, token) = crate::routers::backups::ye_creds(cfg)?;
+
+    let box_type = body.box_type.as_str();
+
+    let resp = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build().ok()?
+        .post(format!("{url}/storage/volume"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "box_type": box_type }))
+        .send().await.ok()?
+        .error_for_status().ok()?
+        .json::<serde_json::Value>().await.ok()?;
+
+    Some(serde_json::json!({
+        "ok": true,
+        "type": "storage_box",
+        "host": resp["host"],
+        "port": resp["port"],
+        "username": resp["username"],
+        "password": resp["password"],
+    }))
 }
