@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -10,19 +10,42 @@ import {
 } from "@/components/ui/card";
 import type { NodeInfo, NodeLink } from "@/types/nodes";
 
+const CACHE_KEY = "yolab:nodes";
+
 export function NodesPage() {
   const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
+  const [stale, setStale] = useState(false);
 
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        setNodes(JSON.parse(cached) as NodeInfo[]);
+        setStale(true);
+      }
+    } catch {}
+
     fetch("/api/nodes")
       .then((r) => r.json())
-      .then((n: NodeInfo[]) => setNodes(prev => n.length > 0 ? n : (prev ?? [])))
-      .catch(() => setNodes(prev => prev ?? []));
+      .then((n: NodeInfo[]) => {
+        if (n.length > 0) {
+          localStorage.setItem(CACHE_KEY, JSON.stringify(n));
+          setNodes(n);
+          setStale(false);
+        } else {
+          setStale(true);
+          setNodes((prev) => prev ?? []);
+        }
+      })
+      .catch(() => {
+        setStale(true);
+        setNodes((prev) => prev ?? []);
+      });
 
     fetch("/api/nodes/links")
       .then((r) => r.json())
-      .then((l: NodeLink[]) => setLinks(prev => l.length > 0 ? l : prev))
+      .then((l: NodeLink[]) => setLinks((prev) => (l.length > 0 ? l : prev)))
       .catch(() => {});
   }, []);
 
@@ -38,12 +61,23 @@ export function NodesPage() {
         </p>
       </div>
 
+      {stale && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-[#fbbf24]">
+            Cluster API unreachable — showing last known state. One or more machines may be offline.
+          </p>
+        </div>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Cluster machines</CardTitle>
           {nodes && (
             <CardDescription>
-              {nodes.filter((n) => n.ready).length} of {nodes.length} ready
+              {stale
+                ? `${nodes.length} machine${nodes.length !== 1 ? "s" : ""} known — status unknown`
+                : `${nodes.filter((n) => n.ready).length} of ${nodes.length} ready`}
             </CardDescription>
           )}
         </CardHeader>
@@ -83,9 +117,13 @@ export function NodesPage() {
                           {n.name}
                         </td>
                         <td className="py-3 pr-4">
-                          <Badge variant={n.ready ? "success" : "destructive"}>
-                            {n.ready ? "Ready" : "Not Ready"}
-                          </Badge>
+                          {stale ? (
+                            <Badge variant="warning">Offline</Badge>
+                          ) : (
+                            <Badge variant={n.ready ? "success" : "destructive"}>
+                              {n.ready ? "Ready" : "Not Ready"}
+                            </Badge>
+                          )}
                         </td>
                         <td className="py-3 pr-4 text-xs text-[#71717a] whitespace-nowrap">
                           {n.joined_at

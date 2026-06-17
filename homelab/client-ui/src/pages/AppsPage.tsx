@@ -3,6 +3,7 @@ import type { WidgetProps } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { AlertTriangle } from "lucide-react";
 import {
   ArrowLeft,
   Copy,
@@ -216,20 +217,45 @@ function CatalogCardSkeleton() {
 
 // ─── Main apps list ───────────────────────────────────────────────────────────
 
+const APPS_CACHE_KEY = "yolab:installed_apps";
+
 export function AppsPage() {
   const navigate = useNavigate();
   const [catalog, setCatalog] = useState<CatalogApp[]>([]);
   const [installed, setInstalled] = useState<AppInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
 
   function loadInstalled() {
     return fetch("/api/apps")
       .then((r) => r.json())
-      .then((a) => setInstalled(a as AppInfo[]))
-      .catch(() => {});
+      .then((a: AppInfo[]) => {
+        if (a.length > 0) {
+          localStorage.setItem(APPS_CACHE_KEY, JSON.stringify(a));
+          setInstalled(a);
+          setStale(false);
+        } else {
+          // Empty — K3s may be unreachable, keep cached data
+          setInstalled((prev) => {
+            if (prev.length > 0) { setStale(true); return prev; }
+            return a;
+          });
+        }
+      })
+      .catch(() => {
+        setStale(true);
+      });
   }
 
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem(APPS_CACHE_KEY);
+      if (cached) {
+        setInstalled(JSON.parse(cached) as AppInfo[]);
+        setStale(true);
+      }
+    } catch {}
+
     const catalogP = fetch("/api/apps/catalog")
       .then((r) => r.json())
       .then((c) => setCatalog(c as CatalogApp[]))
@@ -254,6 +280,15 @@ export function AppsPage() {
           Manage and install self-hosted apps
         </p>
       </div>
+
+      {stale && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-[#fbbf24]">
+            Cluster API unreachable — showing last known apps. They may still be running but status is unknown.
+          </p>
+        </div>
+      )}
 
       {/* Installed */}
       {loading ? (
