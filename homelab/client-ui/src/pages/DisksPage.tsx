@@ -293,7 +293,7 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
           </Button>
 
           <p className="text-xs text-[#52525b]">
-            Billed monthly. Your disk is fully encrypted and only accessible to you.
+            Encrypted at rest — only your key, only your data. Billed monthly.
           </p>
 
           {error && (
