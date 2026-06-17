@@ -441,8 +441,6 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
         .constraints([
             Constraint::Length(3),   // heading
             Constraint::Length(1),
-            Constraint::Length(3),   // hostname
-            Constraint::Length(1),
             Constraint::Length(3),   // timezone
             Constraint::Length(1),
             Constraint::Length(3),   // password
@@ -460,14 +458,13 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
     render_heading(f, rows[0], "System configuration");
 
     let fields: &[(&str, &str, bool, u8)] = &[
-        ("Hostname", &app.hostname.clone(), false, 0),
-        ("Timezone", &app.timezone.clone(), false, 1),
-        ("Password", &app.password.clone(), true, 2),
-        ("Confirm password", &app.password2.clone(), true, 3),
-        ("SSH public key  (optional)", &app.ssh_pub.clone(), false, 4),
+        ("Timezone", &app.timezone.clone(), false, 0),
+        ("Password", &app.password.clone(), true, 1),
+        ("Confirm password", &app.password2.clone(), true, 2),
+        ("SSH public key  (optional)", &app.ssh_pub.clone(), false, 3),
     ];
 
-    let field_rows = [rows[2], rows[4], rows[6], rows[8], rows[10]];
+    let field_rows = [rows[2], rows[4], rows[6], rows[8]];
     for ((label, value, secret, field_id), row) in fields.iter().zip(field_rows.iter()) {
         let focused = app.cfg_field == *field_id;
         render_input(f, *row, label, value, *secret, focused);
@@ -475,7 +472,7 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Generate SSH key button
-    render_button(f, rows[12], "Generate SSH key", true, app, ClickTarget::Btn(BtnId::GenSshKey));
+    render_button(f, rows[10], "Generate SSH key", true, app, ClickTarget::Btn(BtnId::GenSshKey));
 
     if let Some(key) = &app.gen_privkey.clone() {
         let short_key = if key.len() > 50 { format!("{}…", &key[..50]) } else { key.clone() };
@@ -483,11 +480,11 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled("  Private key (save it!): ", danger()),
             Span::styled(short_key, muted()),
         ]));
-        f.render_widget(note, rows[13]);
+        f.render_widget(note, rows[11]);
     }
 
     if let Some(err) = &app.error.clone() {
-        f.render_widget(error_paragraph(err), rows[14]);
+        f.render_widget(error_paragraph(err), rows[12]);
     }
 }
 
