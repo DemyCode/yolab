@@ -193,10 +193,10 @@ interface AddVirtualDiskFormProps {
 }
 
 const BOX_TYPES = [
-  { id: "bx11", label: "1 TB",  sub: "bx11" },
-  { id: "bx21", label: "5 TB",  sub: "bx21" },
-  { id: "bx31", label: "10 TB", sub: "bx31" },
-  { id: "bx41", label: "20 TB", sub: "bx41" },
+  { id: "bx11", label: "1 TB",  price: "€6.90"  },
+  { id: "bx21", label: "5 TB",  price: "€21.60" },
+  { id: "bx31", label: "10 TB", price: "€37.30" },
+  { id: "bx41", label: "20 TB", price: "€65.94" },
 ] as const;
 
 function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps) {
@@ -255,7 +255,7 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
                   }`}
                 >
                   <div className="font-medium">{t.label}</div>
-                  <div className="text-xs opacity-60">{t.sub}</div>
+                  <div className="text-xs opacity-60">{t.price}/mo</div>
                 </button>
               ))}
             </div>
@@ -263,7 +263,15 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
 
           {nodes.length > 1 && (
             <div className="space-y-1.5">
-              <label className="text-xs text-[#71717a]">Node</label>
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs text-[#71717a]">Attached node</label>
+                <div className="group relative">
+                  <div className="h-3.5 w-3.5 rounded-full border border-[#52525b] flex items-center justify-center text-[9px] text-[#52525b] cursor-default leading-none">?</div>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 w-48 rounded-md bg-[#27272a] border border-[#3f3f46] px-2.5 py-1.5 text-xs text-[#a1a1aa]">
+                    The node that will mount and expose this disk to your apps.
+                  </div>
+                </div>
+              </div>
               <select
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
@@ -285,7 +293,7 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
           </Button>
 
           <p className="text-xs text-[#52525b]">
-            Provisions a dedicated Hetzner Storage Box and mounts it as a virtual disk.
+            Provisions a dedicated virtual disk. Billed monthly, accessible over SFTP and mountable on any node.
           </p>
 
           {error && (
