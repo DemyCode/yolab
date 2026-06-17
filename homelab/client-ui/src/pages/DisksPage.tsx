@@ -293,7 +293,7 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
           </Button>
 
           <p className="text-xs text-[#52525b]">
-            Provisions a dedicated virtual disk. Billed monthly, accessible over SFTP and mountable on any node.
+            Billed monthly. Your disk is fully encrypted and only accessible to you.
           </p>
 
           {error && (
