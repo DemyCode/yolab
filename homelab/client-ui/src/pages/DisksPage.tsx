@@ -264,11 +264,11 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
           {nodes.length > 1 && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-1.5">
-                <label className="text-xs text-[#71717a]">Attached node</label>
+                <label className="text-xs text-[#71717a]">Attached machine</label>
                 <div className="group relative">
                   <div className="h-3.5 w-3.5 rounded-full border border-[#52525b] flex items-center justify-center text-[9px] text-[#52525b] cursor-default leading-none">?</div>
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 w-48 rounded-md bg-[#27272a] border border-[#3f3f46] px-2.5 py-1.5 text-xs text-[#a1a1aa]">
-                    The node that will mount and expose this disk to your apps.
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 w-56 rounded-md bg-[#27272a] border border-[#3f3f46] px-2.5 py-1.5 text-xs text-[#a1a1aa]">
+                    If the machine goes offline, so does the virtual disk.
                   </div>
                 </div>
               </div>

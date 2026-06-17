@@ -271,7 +271,11 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
     let cfg = state.config.clone();
     let self_ip = cfg.node_ipv6.clone();
 
-    // Kick off remote nodes in the background (fire-and-forget).
+    // Read this node's channel and push it to every other node before rebuilding,
+    // so all machines converge to the same remote/ref.
+    let ch = read_channel(&cfg);
+    let channel_body = serde_json::json!({ "remote": ch.remote, "ref": ch.ref_ });
+
     for node in kubectl::get_nodes().await.unwrap_or_default() {
         if let Some(addr) = node["status"]["addresses"].as_array()
             .and_then(|a| a.iter().find(|a| {
@@ -281,9 +285,16 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
             .and_then(|a| a["address"].as_str())
         {
             if addr == self_ip { continue; }
-            let url = format!("http://[{}]:{}/api/update", addr, cfg.port);
+            let base = format!("http://[{}]:{}", addr, cfg.port);
+            let body = channel_body.clone();
             tokio::spawn(async move {
-                let _ = reqwest::Client::new().post(&url)
+                let client = reqwest::Client::new();
+                // Sync channel first, then trigger the rebuild.
+                let _ = client.put(format!("{base}/api/update/channel"))
+                    .json(&body)
+                    .timeout(Duration::from_secs(10))
+                    .send().await;
+                let _ = client.post(format!("{base}/api/update"))
                     .timeout(Duration::from_secs(3600))
                     .send().await;
             });
