@@ -311,27 +311,15 @@ export function OverviewPage() {
         <CardContent className="pt-5 pb-4 space-y-4">
           <div className="flex items-center gap-3 flex-wrap">
             <Button
-              onClick={() => void runUpdate()}
-              disabled={updating}
-              className="gap-2"
-            >
-              <RefreshCw
-                className={cn("h-4 w-4", updating && "animate-spin")}
-                strokeWidth={2}
-              />
-              {updating ? "Updating…" : "Update this node"}
-            </Button>
-            <Button
               onClick={() => void runUpdateAll()}
               disabled={updating}
-              variant="outline"
               className="gap-2"
             >
               <RefreshCw
                 className={cn("h-4 w-4", updating && "animate-spin")}
                 strokeWidth={2}
               />
-              {updating ? "Updating…" : "Update all nodes"}
+              {updating ? "Updating…" : "Update all machines"}
             </Button>
             <button
               onClick={() => setChannelOpen((o) => !o)}
