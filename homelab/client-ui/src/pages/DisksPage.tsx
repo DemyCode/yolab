@@ -303,7 +303,14 @@ export function DisksPage() {
       const disksP = fetch("/api/disks")
         .then((r) => r.json())
         .then((d: DiskItem[]) => {
-          if (d.length > 0) setDisks(d);
+          if (d.length > 0) setDisks(prev => d.map(disk => {
+            const old = prev.find(p => p.host === disk.host && p.name === disk.name);
+            return {
+              ...disk,
+              used_bytes: disk.used_bytes ?? old?.used_bytes ?? null,
+              free_bytes: disk.free_bytes ?? old?.free_bytes ?? null,
+            };
+          }));
         })
         .catch(() => {});
 
