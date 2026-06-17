@@ -94,9 +94,15 @@ spec:
           gitea admin regenerate keys || true
         env:
         - name: GITEA__database__DB_TYPE
-          value: "sqlite3"
-        - name: GITEA__database__PATH
-          value: "/data/gitea/gitea.db"
+          value: "postgres"
+        - name: GITEA__database__HOST
+          value: "postgres.yolab-{{ instance_name }}.svc.cluster.local:5432"
+        - name: GITEA__database__NAME
+          value: gitea
+        - name: GITEA__database__USER
+          value: gitea
+        - name: GITEA__database__PASSWD
+          value: gitea
         - name: GITEA__server__SSH_KEY_PATH
           value: "/data/git/.ssh/authorized_keys"
         volumeMounts:
@@ -149,9 +155,15 @@ spec:
         - name: GITEA__server__SSH_PORT
           value: "22"
         - name: GITEA__database__DB_TYPE
-          value: "sqlite3"
-        - name: GITEA__database__PATH
-          value: "/data/gitea/gitea.db"
+          value: "postgres"
+        - name: GITEA__database__HOST
+          value: "postgres.yolab-{{ instance_name }}.svc.cluster.local:5432"
+        - name: GITEA__database__NAME
+          value: gitea
+        - name: GITEA__database__USER
+          value: gitea
+        - name: GITEA__database__PASSWD
+          value: gitea
         - name: GITEA__log__MODE
           value: "console"
         volumeMounts:
@@ -218,3 +230,60 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-alpine
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "gitea"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "gitea"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          value: gitea
+        - name: POSTGRES_PASSWORD
+          value: gitea
+        - name: POSTGRES_DB
+          value: gitea
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ instance_name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
