@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { HardDrive, Plus, X } from "lucide-react";
+import { HardDrive, Plus, X, AlertTriangle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { CephStatus, DiskItem, DrainRequest } from "@/types/disk";
@@ -90,7 +90,7 @@ function DiskRow({
   onRemove,
   removing,
 }: {
-  disk: DiskItem;
+  disk: DiskItemExt;
   onRemove: (disk: DiskItem) => void;
   removing: boolean;
 }) {
@@ -105,7 +105,9 @@ function DiskRow({
         ? "#fbbf24"
         : "#a78bfa";
 
-  const statusLabel = disk.is_osd ? (
+  const statusLabel = disk.offline ? (
+    <span className="text-xs text-[#f87171]">Machine offline</span>
+  ) : disk.is_osd ? (
     <span className="text-xs text-[#4ade80]">In storage</span>
   ) : disk.is_builtin ? (
     <span className="text-xs text-[#fbbf24]">Built-in · can&apos;t unplug</span>
@@ -313,14 +315,19 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
   );
 }
 
+const DISKS_CACHE_KEY = "yolab:disks";
+
+type DiskItemExt = DiskItem & { offline?: boolean };
+
 // ── DisksPage ─────────────────────────────────────────────────────────────────
 
 export function DisksPage() {
-  const [disks, setDisks] = useState<DiskItem[]>([]);
+  const [disks, setDisks] = useState<DiskItemExt[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [addingVirtual, setAddingVirtual] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
 
   useEffect(() => {
     let first = true;
@@ -331,16 +338,42 @@ export function DisksPage() {
       const disksP = fetch("/api/disks")
         .then((r) => r.json())
         .then((d: DiskItem[]) => {
-          if (d.length > 0) setDisks(prev => d.map(disk => {
-            const old = prev.find(p => p.host === disk.host && p.name === disk.name);
-            return {
-              ...disk,
-              used_bytes: disk.used_bytes ?? old?.used_bytes ?? null,
-              free_bytes: disk.free_bytes ?? old?.free_bytes ?? null,
-            };
-          }));
+          if (d.length > 0) {
+            localStorage.setItem(DISKS_CACHE_KEY, JSON.stringify(d));
+            setDisks((prev) => {
+              // Merge: fresh disks updated, cached-only disks marked offline
+              const freshHosts = new Set(d.map((x) => x.host));
+              const offlineDisks: DiskItemExt[] = prev
+                .filter((p) => !freshHosts.has(p.host))
+                .map((p) => ({ ...p, offline: true }));
+              const freshMerged = d.map((disk) => {
+                const old = prev.find((p) => p.host === disk.host && p.name === disk.name);
+                return {
+                  ...disk,
+                  used_bytes: disk.used_bytes ?? old?.used_bytes ?? null,
+                  free_bytes: disk.free_bytes ?? old?.free_bytes ?? null,
+                  offline: false,
+                };
+              });
+              const hasOffline = offlineDisks.length > 0;
+              setStale(hasOffline);
+              return [...freshMerged, ...offlineDisks];
+            });
+          } else {
+            // No data — show cached disks as offline
+            setDisks((prev) => {
+              if (prev.length > 0) {
+                setStale(true);
+                return prev.map((d) => ({ ...d, offline: true }));
+              }
+              return prev;
+            });
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          setDisks((prev) => prev.map((d) => ({ ...d, offline: true })));
+          setStale(true);
+        });
 
       const cephP = fetch("/api/ceph/status")
         .then((r) => r.json())
@@ -351,6 +384,14 @@ export function DisksPage() {
         first = false;
         void Promise.all([disksP, cephP]).finally(() => setLoading(false));
       }
+    }
+
+    // Pre-populate from cache so page isn't blank while fetching
+    if (first) {
+      try {
+        const cached = localStorage.getItem(DISKS_CACHE_KEY);
+        if (cached) setDisks(JSON.parse(cached) as DiskItemExt[]);
+      } catch {}
     }
 
     load();
@@ -387,6 +428,15 @@ export function DisksPage() {
           All disks are used automatically. Ceph distributes data across every OSD.
         </p>
       </div>
+
+      {stale && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-[#fbbf24]">
+            One or more machines are offline — their disks are shown as last known.
+          </p>
+        </div>
+      )}
 
       {loading ? (
         <StorageOverviewSkeleton />
