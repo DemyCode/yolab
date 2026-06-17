@@ -208,12 +208,19 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
   async function handleCreate() {
     setBusy(true);
     setError(null);
+    let res: Response;
     try {
-      const res = await fetch("/api/disks/virtual", {
+      res = await fetch("/api/disks/virtual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ box_type: boxType, host: host || undefined }),
       });
+    } catch (e) {
+      setError(`Network error: ${e instanceof Error ? e.message : String(e)}`);
+      setBusy(false);
+      return;
+    }
+    try {
       const json = await res.json() as { ok?: boolean; error?: string };
       if (!res.ok || !json.ok) {
         setError(json.error ?? `Server error ${res.status}`);
@@ -221,7 +228,8 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
         onDone();
       }
     } catch {
-      setError("Request failed");
+      const text = await res.text().catch(() => "");
+      setError(`Server error ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
     } finally {
       setBusy(false);
     }
