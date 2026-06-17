@@ -17,12 +17,12 @@ export function NodesPage() {
   useEffect(() => {
     fetch("/api/nodes")
       .then((r) => r.json())
-      .then((n) => setNodes(n as NodeInfo[]))
-      .catch(() => setNodes([]));
+      .then((n: NodeInfo[]) => setNodes(prev => n.length > 0 ? n : (prev ?? [])))
+      .catch(() => setNodes(prev => prev ?? []));
 
     fetch("/api/nodes/links")
       .then((r) => r.json())
-      .then((l) => setLinks(l as NodeLink[]))
+      .then((l: NodeLink[]) => setLinks(prev => l.length > 0 ? l : prev))
       .catch(() => {});
   }, []);
 
