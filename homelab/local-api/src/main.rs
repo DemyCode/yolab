@@ -77,6 +77,7 @@ async fn main() {
         .route("/api/backups/sftp", get(backups::get_sftp))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
+        .route("/api/cluster/health", get(ceph::cluster_health))
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
