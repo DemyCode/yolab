@@ -135,12 +135,12 @@ export function OverviewPage() {
     loadChannel();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function runUpdate() {
+  async function streamUpdate(url: string) {
     setLog([]);
     setPhase("git");
     rebuildOffsetRef.current = 0;
     try {
-      const response = await fetch("/api/update", { method: "POST" });
+      const response = await fetch(url, { method: "POST" });
       if (response.body) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -160,12 +160,13 @@ export function OverviewPage() {
     } catch {
       /* service is restarting — handled by pollRebuildLog */
     }
-    // Switch to rebuild phase and poll the PID-backed log directly.
-    // Works whether the service restarted or not.
     setPhase("rebuild");
     rebuildOffsetRef.current = 0;
     pollRebuildLog();
   }
+
+  const runUpdate = () => streamUpdate("/api/update");
+  const runUpdateAll = () => streamUpdate("/api/update/all");
 
   async function saveChannelAndUpdate() {
     if (!editRemote.trim() || !editRef.trim()) return;
@@ -318,7 +319,19 @@ export function OverviewPage() {
                 className={cn("h-4 w-4", updating && "animate-spin")}
                 strokeWidth={2}
               />
-              {updating ? "Updating…" : "Update & rebuild"}
+              {updating ? "Updating…" : "Update this node"}
+            </Button>
+            <Button
+              onClick={() => void runUpdateAll()}
+              disabled={updating}
+              variant="outline"
+              className="gap-2"
+            >
+              <RefreshCw
+                className={cn("h-4 w-4", updating && "animate-spin")}
+                strokeWidth={2}
+              />
+              {updating ? "Updating…" : "Update all nodes"}
             </Button>
             <button
               onClick={() => setChannelOpen((o) => !o)}
