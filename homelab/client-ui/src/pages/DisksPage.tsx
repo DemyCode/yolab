@@ -309,7 +309,7 @@ export function DisksPage() {
 
       const cephP = fetch("/api/ceph/status")
         .then((r) => r.json())
-        .then((d) => setCeph(d as CephStatus))
+        .then((d: CephStatus) => { if (d?.total_bytes > 0) setCeph(d); })
         .catch(() => {});
 
       if (first) {
