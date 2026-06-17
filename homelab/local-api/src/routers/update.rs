@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}};
+use std::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}, time::Duration};
 
 use axum::{
     extract::{Path, State},
@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, proc::KillOnDrop, AppState};
+use crate::{config::Config, kubectl, proc::KillOnDrop, AppState};
 
 static IS_UPDATING: AtomicBool = AtomicBool::new(false);
 
@@ -255,6 +255,112 @@ pub async fn update(
                         let _ = std::fs::remove_file(&pid_file);
                     }
                 });
+            }
+        }
+    };
+
+    Sse::new(stream).into_response()
+}
+
+// ── Update all nodes ──────────────────────────────────────────────────────────
+
+async fn all_node_ips(cfg: &Config) -> Vec<String> {
+    let mut ips = vec![cfg.node_ipv6.clone()];
+    for node in kubectl::get_nodes().await.unwrap_or_default() {
+        if let Some(addr) = node["status"]["addresses"].as_array()
+            .and_then(|a| a.iter().find(|a| {
+                a["type"] == "InternalIP"
+                    && a["address"].as_str().map(|s| s.contains(':')).unwrap_or(false)
+            }))
+            .and_then(|a| a["address"].as_str())
+        {
+            if addr != cfg.node_ipv6 { ips.push(addr.to_string()); }
+        }
+    }
+    ips
+}
+
+async fn wait_for_node(client: &reqwest::Client, ip: &str, port: u16) -> bool {
+    let url = format!("http://[{}]:{}/api/update/channel", ip, port);
+    // Give nixos-rebuild time to restart the service before we start polling.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    for _ in 0..60u32 {
+        if client.get(&url).timeout(Duration::from_secs(3)).send().await
+            .map(|r| r.status().is_success()).unwrap_or(false)
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    false
+}
+
+pub async fn update_all(State(state): State<AppState>) -> Response {
+    let stream = async_stream::stream! {
+        let cfg = state.config.clone();
+        let all_ips = all_node_ips(&cfg).await;
+        let self_ip = cfg.node_ipv6.clone();
+
+        // Others first so the SSE connection to the client stays alive.
+        // Self goes last — when nixos-rebuild restarts local-api, the stream dies,
+        // which is fine (same behaviour as the single-node Update button).
+        let others: Vec<_> = all_ips.iter().filter(|ip| *ip != &self_ip).cloned().collect();
+        let order: Vec<_> = others.iter().chain(std::iter::once(&self_ip)).cloned().collect();
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(600))
+            .build()
+            .unwrap_or_default();
+
+        for ip in &order {
+            let is_self = ip == &self_ip;
+            let label = if is_self { "this node".to_string() } else { ip.clone() };
+
+            yield Ok::<Event, Infallible>(
+                Event::default().data(format!("[node {label}] starting update"))
+            );
+
+            let url = format!("http://[{}]:{}/api/update", ip, cfg.port);
+            let resp = client.post(&url).send().await;
+            match resp {
+                Err(e) => {
+                    yield Ok(Event::default().data(format!("[node {label}] ERROR: {e}")));
+                    return;
+                }
+                Ok(mut r) => {
+                    // Stream SSE lines from the remote node.
+                    use futures::StreamExt;
+                    let mut byte_stream = r.bytes_stream();
+                    let mut buf = String::new();
+                    while let Some(chunk) = byte_stream.next().await {
+                        let Ok(bytes) = chunk else { break };
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        let parts: Vec<&str> = buf.split("\n\n").collect();
+                        let last = parts.len() - 1;
+                        for (i, part) in parts.iter().enumerate() {
+                            if i == last { buf = part.to_string(); continue; }
+                            let line = if part.starts_with("data: ") { &part[6..] } else { part };
+                            if !line.trim().is_empty() {
+                                yield Ok(Event::default().data(format!("[node {label}] {line}")));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if is_self {
+                // Service is restarting — client will lose the stream here,
+                // same as single-node update. Nothing more to emit.
+                break;
+            }
+
+            // Wait for the node to come back before updating the next one.
+            yield Ok(Event::default().data(format!("[node {label}] waiting for node to come back…")));
+            if wait_for_node(&client, ip, cfg.port).await {
+                yield Ok(Event::default().data(format!("[node {label}] online, continuing")));
+            } else {
+                yield Ok(Event::default().data(format!("[node {label}] ERROR: timed out waiting for node")));
+                return;
             }
         }
     };
