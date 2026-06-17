@@ -276,17 +276,16 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
             </div>
           )}
 
-            <Button
-              onClick={handleCreate}
-              disabled={busy}
-              className="bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-9 px-4"
-            >
-              {busy ? "Creating…" : "Create"}
-            </Button>
-          </div>
+          <Button
+            onClick={handleCreate}
+            disabled={busy}
+            className="w-full bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-9 px-4"
+          >
+            {busy ? "Creating…" : "Create"}
+          </Button>
 
           <p className="text-xs text-[#52525b]">
-            Allocates a loop-device image file and makes it available to Ceph as a new OSD.
+            Provisions a dedicated Hetzner Storage Box and mounts it as a virtual disk.
           </p>
 
           {error && (
