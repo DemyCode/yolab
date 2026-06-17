@@ -10,8 +10,3 @@ export interface NodeLink {
   name: string;
   url: string;
 }
-
-export interface JoinInfo {
-  k3s_token: string;
-  server_addr: string;
-}
