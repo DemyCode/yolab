@@ -19,7 +19,7 @@ import {
 
 const NAV_ITEMS = [
   { to: "/overview", icon: Activity, label: "Overview" },
-  { to: "/nodes", icon: Server, label: "Nodes" },
+  { to: "/nodes", icon: Server, label: "Machines" },
   { to: "/disks", icon: HardDrive, label: "Disks" },
   { to: "/backups", icon: Cloud, label: "Backups" },
   { to: "/apps", icon: LayoutGrid, label: "Apps" },

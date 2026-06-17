@@ -32,7 +32,7 @@ export function NodesPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-xl font-semibold text-[#fafafa]">Nodes</h1>
+        <h1 className="text-xl font-semibold text-[#fafafa]">Machines</h1>
         <p className="text-sm text-[#71717a] mt-0.5">
           Machines in your cluster
         </p>
@@ -40,7 +40,7 @@ export function NodesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Cluster nodes</CardTitle>
+          <CardTitle>Cluster machines</CardTitle>
           {nodes && (
             <CardDescription>
               {nodes.filter((n) => n.ready).length} of {nodes.length} ready
@@ -51,7 +51,7 @@ export function NodesPage() {
           {nodes === null ? (
             <p className="text-sm text-[#71717a]">Loading…</p>
           ) : nodes.length === 0 ? (
-            <p className="text-sm text-[#71717a]">No nodes found.</p>
+            <p className="text-sm text-[#71717a]">No machines found.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
