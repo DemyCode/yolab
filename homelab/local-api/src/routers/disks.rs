@@ -621,6 +621,106 @@ async fn activate_disk(cfg: &Config, disk_name: &str, host: &str) {
     tokio::task::spawn_blocking(move || { let _ = do_activate_local(&name); }).await.ok();
 }
 
+// ── MDS auto-recovery ─────────────────────────────────────────────────────────
+
+/// Detect damaged or completely-offline MDS and attempt auto-recovery.
+///
+/// When MDS_DAMAGE or MDS_ALL_DOWN is present, the file system can be recovered
+/// by failing the FS, removing it, and recreating it over the existing pools.
+/// This preserves pool data (56 GiB+) while resetting the MDS map.
+async fn auto_recover_mds() {
+    let health_raw = match kubectl::ceph_exec(&["health", "detail", "--format", "json"]).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let health: serde_json::Value = serde_json::from_str(&health_raw).unwrap_or_default();
+    let checks = health["checks"].as_object();
+    let has_damage = checks.map(|c| c.contains_key("MDS_DAMAGE")).unwrap_or(false);
+    let has_all_down = checks.map(|c| c.contains_key("MDS_ALL_DOWN")).unwrap_or(false);
+
+    if !has_damage && !has_all_down { return; }
+
+    tracing::warn!("auto_recover_mds: detected {} — initiating FS recovery",
+        if has_damage { "MDS_DAMAGE" } else { "MDS_ALL_DOWN" });
+
+    // 1. Get current FS info (pools)
+    let fs_info_raw = kubectl::ceph_exec(&["fs", "get", "yolab-fs", "--format", "json"]).await;
+    let (meta_pool, data_pool) = match fs_info_raw.as_ref().ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+    {
+        Some(v) => {
+            let meta = v["mdsmap"]["metadata_pool_map"]
+                .as_object().and_then(|m| m.keys().next().map(String::from))
+                .unwrap_or_else(|| "yolab-fs-metadata".into());
+            let data = v["mdsmap"]["data_pools"]
+                .as_array().and_then(|a| a.first()).and_then(|v| v.as_str()).map(String::from)
+                .unwrap_or_else(|| "yolab-fs-data0".into());
+            (meta, data)
+        }
+        None => ("yolab-fs-metadata".into(), "yolab-fs-data0".into()),
+    };
+
+    // 2. Fail → remove → recreate (over existing pools — data preserved)
+    let _ = kubectl::ceph_exec(&["fs", "fail", "yolab-fs"]).await;
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let _ = kubectl::ceph_exec(&["fs", "rm", "yolab-fs", "--yes-i-really-mean-it"]).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    match kubectl::ceph_exec(&["fs", "new", "yolab-fs", &meta_pool, &data_pool, "--force"]).await {
+        Ok(_) => {
+            tracing::info!("auto_recover_mds: FS recreated over {meta_pool}/{data_pool} — restarting MDS pods");
+            let _ = kubectl::run(&[
+                "delete", "pod", "-n", CEPH_NS,
+                "-l", "app=rook-ceph-mds", "--ignore-not-found",
+            ]).await;
+        }
+        Err(e) => tracing::error!("auto_recover_mds: fs new failed: {e}"),
+    }
+}
+
+/// Restart app pods that have been stuck in an Init container for >10 minutes.
+///
+/// After CephFS goes offline and comes back, pods that were scheduling during the
+/// outage can get stuck in Init state because the volume attachment timed out.
+/// Deleting them triggers a clean reschedule once the volume is available again.
+async fn restart_stuck_init_pods() {
+    let Ok(pods_raw) = kubectl::run(&[
+        "get", "pods", "--all-namespaces",
+        "-o", "json",
+    ]).await else { return };
+    let Ok(pods) = serde_json::from_str::<serde_json::Value>(&pods_raw) else { return };
+
+    let now = time::OffsetDateTime::now_utc();
+    for pod in pods["items"].as_array().unwrap_or(&vec![]) {
+        let phase = pod["status"]["phase"].as_str().unwrap_or("");
+        if phase == "Succeeded" || phase == "Running" { continue; }
+
+        // Only care about pods stuck in an init container
+        let init_statuses = pod["status"]["initContainerStatuses"].as_array();
+        let waiting_init = init_statuses.map(|cs| {
+            cs.iter().any(|c| c["state"]["waiting"].is_object() || !c["ready"].as_bool().unwrap_or(false))
+        }).unwrap_or(false);
+        if !waiting_init { continue; }
+
+        let ns = pod["metadata"]["namespace"].as_str().unwrap_or("");
+        // Only restart user-app namespaces, not system ones
+        if ns.starts_with("kube-") || ns == "rook-ceph" || ns == "default" { continue; }
+
+        let start_str = pod["metadata"]["creationTimestamp"].as_str().unwrap_or("");
+        let age_minutes = time::OffsetDateTime::parse(start_str, &time::format_description::well_known::Rfc3339)
+            .map(|t| (now - t).whole_minutes())
+            .unwrap_or(0);
+
+        // Only restart if stuck for more than 10 minutes
+        if age_minutes < 10 { continue; }
+
+        let name = pod["metadata"]["name"].as_str().unwrap_or("");
+        tracing::warn!("restart_stuck_init: {ns}/{name} stuck in Init for {age_minutes}m — deleting");
+        let _ = kubectl::run(&[
+            "delete", "pod", "-n", ns, name, "--ignore-not-found",
+        ]).await;
+    }
+}
+
 // ── Reconcile ────────────────────────────────────────────────────────────────
 
 /// Simple reconcile: fix broken state, then ensure every non-system disk is an OSD.
@@ -630,6 +730,8 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
     cleanup_ghost_osds().await;
     recover_detached_loop_osds().await;
     purge_orphaned_osds().await;
+    auto_recover_mds().await;
+    restart_stuck_init_pods().await;
 
     // Ensure every non-system disk visible from any node is in CephCluster.
     // Activate at most one disk per tick so Rook isn't overwhelmed.
