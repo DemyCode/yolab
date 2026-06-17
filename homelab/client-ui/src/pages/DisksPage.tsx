@@ -192,22 +192,27 @@ interface AddVirtualDiskFormProps {
   onCancel: () => void;
 }
 
+const BOX_TYPES = [
+  { id: "bx11", label: "1 TB",  sub: "bx11" },
+  { id: "bx21", label: "5 TB",  sub: "bx21" },
+  { id: "bx31", label: "10 TB", sub: "bx31" },
+  { id: "bx41", label: "20 TB", sub: "bx41" },
+] as const;
+
 function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps) {
-  const [sizeGb, setSizeGb] = useState("20");
+  const [boxType, setBoxType] = useState<string>("bx11");
   const [host, setHost] = useState(nodes[0]?.host ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
-    const size = parseInt(sizeGb, 10);
-    if (!size || size < 1) { setError("Enter a size of at least 1 GB"); return; }
     setBusy(true);
     setError(null);
     try {
       const res = await fetch("/api/disks/virtual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ size_gb: size, host: host || undefined }),
+        body: JSON.stringify({ box_type: boxType, host: host || undefined }),
       });
       const json = await res.json() as { ok?: boolean; error?: string };
       if (!res.ok || !json.ok) {
@@ -236,32 +241,40 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
             </button>
           </div>
 
-          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
-            <div className="space-y-1.5">
-              <label className="text-xs text-[#71717a]">Size (GB)</label>
-              <input
-                type="number"
-                min={1}
-                value={sizeGb}
-                onChange={(e) => setSizeGb(e.target.value)}
-                className="w-full rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
-              />
-            </div>
-
-            {nodes.length > 1 && (
-              <div className="space-y-1.5">
-                <label className="text-xs text-[#71717a]">Node</label>
-                <select
-                  value={host}
-                  onChange={(e) => setHost(e.target.value)}
-                  className="rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
+          <div className="space-y-1.5">
+            <label className="text-xs text-[#71717a]">Storage size</label>
+            <div className="grid grid-cols-4 gap-2">
+              {BOX_TYPES.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setBoxType(t.id)}
+                  className={`rounded-md border px-3 py-2 text-sm text-center transition-colors ${
+                    boxType === t.id
+                      ? "border-[#a78bfa] bg-[#a78bfa]/10 text-[#fafafa]"
+                      : "border-[#27272a] bg-[#18181b] text-[#71717a] hover:border-[#52525b]"
+                  }`}
                 >
-                  {nodes.map((n) => (
-                    <option key={n.host} value={n.host}>{n.hostname}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+                  <div className="font-medium">{t.label}</div>
+                  <div className="text-xs opacity-60">{t.sub}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {nodes.length > 1 && (
+            <div className="space-y-1.5">
+              <label className="text-xs text-[#71717a]">Node</label>
+              <select
+                value={host}
+                onChange={(e) => setHost(e.target.value)}
+                className="w-full rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
+              >
+                {nodes.map((n) => (
+                  <option key={n.host} value={n.host}>{n.hostname}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
             <Button
               onClick={handleCreate}
