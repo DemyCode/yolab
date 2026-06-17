@@ -141,9 +141,17 @@ spec:
         - name: APP_ENV
           value: production
         - name: DB_CONNECTION
-          value: sqlite
+          value: pgsql
+        - name: DB_HOST
+          value: "postgres.yolab-{{ instance_name }}.svc.cluster.local"
+        - name: DB_PORT
+          value: "5432"
         - name: DB_DATABASE
-          value: /2fauth/database.sqlite
+          value: 2fauth
+        - name: DB_USERNAME
+          value: 2fauth
+        - name: DB_PASSWORD
+          value: 2fauth
         - name: CACHE_DRIVER
           value: file
         - name: SESSION_DRIVER
@@ -174,3 +182,60 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: {{ instance_name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-alpine
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "2fauth"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "2fauth"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          value: 2fauth
+        - name: POSTGRES_PASSWORD
+          value: 2fauth
+        - name: POSTGRES_DB
+          value: 2fauth
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ instance_name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ instance_name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: yolab-{{ instance_name }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
