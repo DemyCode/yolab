@@ -13,7 +13,6 @@ const CODE_DIR: &str = "/tmp/yolab-install";
 
 pub struct InstallParams {
     pub disk: String,
-    pub hostname: String,
     pub timezone: String,
     pub password: String,
     pub root_ssh_key: String,
@@ -215,7 +214,8 @@ async fn do_install(
     let service_name = crate::wireguard::next_node_name(&req.account_token)
         .await
         .context("next_node_name")?;
-    log!("Node will be registered as: {service_name}");
+    // service_name (e.g. "node1", "node2") is used as the hostname — unique by construction.
+    log!("This machine will be: {service_name}");
 
     let tunnel = crate::wireguard::register_and_bring_up_tunnel(&req.account_token, &service_name)
         .await
@@ -257,7 +257,7 @@ async fn do_install(
 
     let config = ConfigToml {
         homelab: HomelabSection {
-            hostname: req.hostname.clone(),
+            hostname: service_name.clone(),
             timezone: req.timezone.clone(),
             locale: "en_US.UTF-8".into(),
             ssh_port: 22,

@@ -109,7 +109,6 @@ pub struct App {
     pub disk_cursor: usize,
 
     // Step 4 – Configure
-    pub hostname: String,
     pub timezone: String,
     pub password: String,
     pub password2: String,
@@ -170,7 +169,6 @@ impl App {
             join_field: 0,
             disks: vec![],
             disk_cursor: 0,
-            hostname: "homelab".into(),
             timezone: "UTC".into(),
             password: String::new(),
             password2: String::new(),
@@ -351,7 +349,7 @@ impl App {
     }
 
     async fn key_configure(&mut self, key: KeyEvent) {
-        const FIELDS: u8 = 5; // hostname, timezone, pass, pass2, ssh_pub
+        const FIELDS: u8 = 4; // timezone, pass, pass2, ssh_pub
         match key.code {
             KeyCode::Esc => { self.step = Step::Disk; }
             KeyCode::Tab => {
@@ -369,22 +367,20 @@ impl App {
 
     fn cfg_push(&mut self, c: char) {
         match self.cfg_field {
-            0 => self.hostname.push(c),
-            1 => self.timezone.push(c),
-            2 => self.password.push(c),
-            3 => self.password2.push(c),
-            4 => self.ssh_pub.push(c),
+            0 => self.timezone.push(c),
+            1 => self.password.push(c),
+            2 => self.password2.push(c),
+            3 => self.ssh_pub.push(c),
             _ => {}
         }
     }
 
     fn cfg_pop(&mut self) {
         match self.cfg_field {
-            0 => { self.hostname.pop(); }
-            1 => { self.timezone.pop(); }
-            2 => { self.password.pop(); }
-            3 => { self.password2.pop(); }
-            4 => { self.ssh_pub.pop(); }
+            0 => { self.timezone.pop(); }
+            1 => { self.password.pop(); }
+            2 => { self.password2.pop(); }
+            3 => { self.ssh_pub.pop(); }
             _ => {}
         }
     }
@@ -613,10 +609,6 @@ impl App {
     }
 
     async fn confirm_configure(&mut self) {
-        if self.hostname.trim().is_empty() {
-            self.error = Some("Hostname is required.".into());
-            return;
-        }
         if self.password.len() < 8 {
             self.error = Some("Password must be at least 8 characters.".into());
             return;
@@ -650,7 +642,6 @@ impl App {
 
         let params = install::InstallParams {
             disk,
-            hostname: self.hostname.trim().to_string(),
             timezone: self.timezone.trim().to_string(),
             password: self.password.clone(),
             root_ssh_key: self.ssh_pub.trim().to_string(),
