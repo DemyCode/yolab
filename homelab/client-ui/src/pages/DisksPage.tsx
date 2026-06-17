@@ -163,24 +163,22 @@ function DiskRow({
               {disk.hostname}
             </div>
 
-            {disk.is_osd &&
-              disk.used_bytes != null &&
-              disk.size_bytes > 0 && (
-                <div className="mt-2 space-y-1">
-                  <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{
-                        width: `${usedPct ?? 0}%`,
-                        background: barColor,
-                      }}
-                    />
-                  </div>
-                  <span className="text-xs text-[#71717a]">
-                    {fmt(disk.used_bytes)} used · {usedPct}%
-                  </span>
+            {disk.is_osd && (
+              <div className="mt-2 space-y-1">
+                <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${usedPct ?? 0}%`,
+                      background: barColor,
+                    }}
+                  />
                 </div>
-              )}
+                <span className="text-xs text-[#71717a]">
+                  {disk.used_bytes != null ? `${fmt(disk.used_bytes)} used · ${usedPct}%` : "—"}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </CardContent>
