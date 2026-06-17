@@ -1,20 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Cloud, HardDrive, Plus, X } from "lucide-react";
+import { HardDrive, Plus, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { CephStatus, DiskItem, DrainRequest } from "@/types/disk";
 
-interface SftpInfo {
-  host: string;
-  port: number;
-  username: string;
-  created_at: string;
-}
-
-interface SftpStatus {
-  provisioned: boolean;
-  sftp?: SftpInfo;
-}
 
 function fmt(bytes: number | null | undefined): string {
   if (!bytes) return "—";
@@ -298,76 +287,11 @@ function AddVirtualDiskForm({ nodes, onDone, onCancel }: AddVirtualDiskFormProps
   );
 }
 
-// ── Cloud disk card ───────────────────────────────────────────────────────────
-
-function CloudDiskCard({ status }: { status: SftpStatus | null }) {
-  const info = status?.sftp;
-  return (
-    <Card>
-      <CardContent className="pt-5 pb-5">
-        <div className="flex items-start gap-3">
-          <div
-            className="mt-0.5 rounded-md p-1.5 flex-shrink-0"
-            style={{ background: info ? "#1a2e1a" : "#1a1a2e" }}
-          >
-            <Cloud
-              className="h-4 w-4"
-              style={{ color: info ? "#4ade80" : "#818cf8" }}
-              strokeWidth={1.75}
-            />
-          </div>
-
-          <div className="flex-1">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <p className="text-sm font-medium text-[#fafafa]">Cloud Disk</p>
-                <p className="text-xs text-[#71717a] mt-0.5">
-                  {info
-                    ? "1 TB cloud drive — mountable as a Ceph OSD"
-                    : "Not provisioned"}
-                </p>
-              </div>
-              {!info && (
-                <a
-                  href="https://demycode.ovh/console"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-[#818cf8] hover:text-[#a5b4fc] transition-colors"
-                >
-                  Provision in Console →
-                </a>
-              )}
-            </div>
-
-            {info && (
-              <div className="mt-3 grid grid-cols-1 gap-1.5 text-xs font-mono">
-                <div className="flex gap-2">
-                  <span className="text-[#52525b] w-24 flex-shrink-0">Host</span>
-                  <span className="text-[#a1a1aa]">{info.host}</span>
-                </div>
-                <div className="flex gap-2">
-                  <span className="text-[#52525b] w-24 flex-shrink-0">Port</span>
-                  <span className="text-[#a1a1aa]">{info.port}</span>
-                </div>
-                <div className="flex gap-2">
-                  <span className="text-[#52525b] w-24 flex-shrink-0">Username</span>
-                  <span className="text-[#a1a1aa]">{info.username}</span>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 // ── DisksPage ─────────────────────────────────────────────────────────────────
 
 export function DisksPage() {
   const [disks, setDisks] = useState<DiskItem[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
-  const [sftp, setSftp] = useState<SftpStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [addingVirtual, setAddingVirtual] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -390,14 +314,9 @@ export function DisksPage() {
         .then((d) => setCeph(d as CephStatus))
         .catch(() => {});
 
-      const sftpP = fetch("/api/backups/sftp")
-        .then((r) => r.json())
-        .then((d) => setSftp(d as SftpStatus))
-        .catch(() => setSftp({ provisioned: false }));
-
       if (first) {
         first = false;
-        void Promise.all([disksP, cephP, sftpP]).finally(() => setLoading(false));
+        void Promise.all([disksP, cephP]).finally(() => setLoading(false));
       }
     }
 
@@ -519,14 +438,6 @@ export function DisksPage() {
         </Card>
       )}
 
-      {!loading && (
-        <div>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b] mb-3">
-            Cloud
-          </h2>
-          <CloudDiskCard status={sftp} />
-        </div>
-      )}
     </div>
   );
 }
