@@ -7,7 +7,7 @@
       "type": "string",
       "title": "Subdomain",
       "format": "tunnel",
-      "default": "files"
+      "default": "filebrowser"
     },
     "password": {
       "type": "string",
