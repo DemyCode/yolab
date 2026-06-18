@@ -13,6 +13,8 @@ export interface DiskItem {
   safe_to_destroy: boolean | null;
   /** True when removing this disk would leave zero active OSDs. */
   last_disk: boolean;
+  /** Removing disks only: 0–100% of data migrated off this OSD. */
+  migration_pct: number | null;
 }
 
 export interface DiskRequest {

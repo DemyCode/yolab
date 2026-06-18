@@ -41,6 +41,8 @@ pub struct DiskItem {
     pub safe_to_destroy: Option<bool>,
     /// True when this is the only active OSD — removing it would destroy all data.
     pub last_disk: bool,
+    /// For Removing: 0–100 percentage of data migrated off this OSD.
+    pub migration_pct: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -360,6 +362,17 @@ async fn cephcluster_remove_device(ceph_dev: &str) {
     }).await;
 }
 
+/// Cluster-wide percentage of objects that have been migrated off draining OSDs.
+/// Returns None if Ceph is unreachable.
+async fn pg_migration_pct() -> Option<u8> {
+    let out = kubectl::ceph_exec(&["pg", "stat", "--format", "json"]).await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+    let total = v["num_objects"].as_u64()?;
+    if total == 0 { return Some(100); }
+    let misplaced = v["misplaced_objects"].as_u64().unwrap_or(0);
+    Some((total.saturating_sub(misplaced) * 100 / total) as u8)
+}
+
 async fn purge_osd_from_ceph(osd_id: u32) {
     let id_str = osd_id.to_string();
     for cmd in [
@@ -398,13 +411,14 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
     let cfg = &state.config;
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
 
-    let (osd_map, usage, spec_devs_res, deploys, out_ids, scan_res) = tokio::join!(
+    let (osd_map, usage, spec_devs_res, deploys, out_ids, scan_res, migration_pct) = tokio::join!(
         ceph_osd_map(),
         kubectl::osd_df(),
         tokio::task::spawn_blocking(cephcluster_devices_sync),
         list_osd_deploys(),
         osd_out_ids(),
         tokio::task::spawn_blocking(scan_block_devices),
+        pg_migration_pct(),
     );
 
     let spec_devs: HashSet<String> = spec_devs_res.unwrap_or_default().into_iter().collect();
@@ -472,6 +486,7 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
             last_disk: active_osd_count <= 1
                 && osd_id.is_some()
                 && !is_removing,
+            migration_pct: if is_removing { migration_pct } else { None },
         });
     }
 
@@ -539,6 +554,7 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
             used_bytes: u.map(|u| u.used_bytes),
             safe_to_destroy: *safe,
             last_disk: false,
+            migration_pct: None,
         });
     }
 
