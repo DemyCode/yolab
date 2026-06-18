@@ -46,12 +46,8 @@ spec:
     mgr: system-cluster-critical
     osd: system-cluster-critical
   storage:
-    useAllNodes: false
-    useAllDevices: false
-    deviceFilter: "^loop[0-9]+"
-    # Rook ignores useAllNodes=true when nodes array is also set.
-    # With useAllNodes=false, only nodes in spec.storage.nodes are provisioned.
-    # The local-api auto-registers each node's loop devices on startup.
+    useAllNodes: true
+    useAllDevices: true
   # Rook auto-removes OSDs that are marked out once Ceph considers them safe.
   # Correct field name: removeOSDsIfOutAndSafeToRemove (not ...ToDestroy).
   removeOSDsIfOutAndSafeToRemove: true
