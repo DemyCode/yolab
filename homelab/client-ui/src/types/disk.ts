@@ -1,4 +1,4 @@
-export type DiskStatus = "pending" | "joining" | "active" | "draining" | "missing";
+export type DiskStatus = "unused" | "joining" | "active" | "removing" | "missing";
 
 export interface DiskItem {
   name: string;
@@ -8,22 +8,16 @@ export interface DiskItem {
   hostname: string;
   status: DiskStatus;
   is_builtin: boolean;
-  used_bytes: number | null;
-  free_bytes: number | null;
   osd_id: number | null;
+  used_bytes: number | null;
   safe_to_destroy: boolean | null;
+  /** True when removing this disk would leave zero active OSDs. */
+  last_disk: boolean;
 }
 
-export interface DrainRequest {
+export interface DiskRequest {
   disk_name: string;
   host: string;
-  force?: boolean;
-}
-
-export interface RemoveRequest {
-  disk_name: string;
-  host: string;
-  force?: boolean;
 }
 
 export interface CephStatus {

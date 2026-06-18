@@ -66,13 +66,10 @@ async fn main() {
         // Disks
         .route("/api/disks/local", get(disks::disks_local))
         .route("/api/disks", get(disks::disks))
-        .route("/api/disks/drain", post(disks::drain_disk))
-        .route("/api/disks/cancel-drain", post(disks::cancel_drain))
-        .route("/api/disks/complete-drain", post(disks::complete_drain))
+        .route("/api/disks/add", post(disks::add_disk))
+        .route("/api/disks/add-local", post(disks::add_disk_local))
         .route("/api/disks/remove", post(disks::remove_disk))
-        .route("/api/disks/join", post(disks::join_disk))
-        .route("/api/disks/activate-local", post(disks::activate_local))
-        .route("/api/disks/deactivate-local", post(disks::deactivate_local))
+        .route("/api/disks/dismiss", post(disks::dismiss_disk))
         .route("/api/disks/virtual", post(disks::add_virtual))
         .route("/api/disks/add-virtual-local", post(disks::add_virtual_local))
         // Backups
