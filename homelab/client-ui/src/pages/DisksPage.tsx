@@ -163,7 +163,7 @@ function DiskRow({
                     className="ml-1 text-xs text-[#4ade80] hover:text-[#22c55e] transition-colors disabled:opacity-40"
                     title="Cancel drain and bring disk back to Active"
                   >
-                    {busy ? "Cancelling…" : "Set Active"}
+                    {busy ? "Activating…" : "Set Active"}
                   </button>
                 )}
 
