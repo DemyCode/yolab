@@ -2,7 +2,6 @@ mod auth;
 mod config;
 mod error;
 mod kubectl;
-mod loop_osd;
 mod proc;
 mod routers;
 
@@ -92,17 +91,6 @@ async fn main() {
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());
-
-    // Register this node's loop devices in the CephCluster spec.
-    // Rook v1.16+ cannot discover loop devices via deviceFilter — they must be
-    // listed explicitly. Retry because K3s may not be ready at first boot.
-    tokio::spawn(async {
-        for delay in [10u64, 30, 60, 120] {
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            let ok = tokio::task::spawn_blocking(loop_osd::register).await.unwrap_or(false);
-            if ok { break; }
-        }
-    });
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
