@@ -381,9 +381,11 @@ async fn cephcluster_remove_device(ceph_dev: &str) {
 async fn pg_migration_pct() -> Option<u8> {
     let out = kubectl::ceph_exec(&["pg", "stat", "--format", "json"]).await.ok()?;
     let v: serde_json::Value = serde_json::from_str(&out).ok()?;
-    let total = v["num_objects"].as_u64()?;
+    // pg stat JSON nests everything under "pg_summary"
+    let s = &v["pg_summary"];
+    let total = s["misplaced_total"].as_u64().unwrap_or(0);
     if total == 0 { return Some(100); }
-    let misplaced = v["misplaced_objects"].as_u64().unwrap_or(0);
+    let misplaced = s["misplaced_objects"].as_u64().unwrap_or(0);
     Some((total.saturating_sub(misplaced) * 100 / total) as u8)
 }
 
