@@ -49,6 +49,11 @@ fn draining_set() -> &'static Mutex<std::collections::HashSet<String>> {
     DRAINING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
+static CANCEL_DRAINING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn cancel_draining_set() -> &'static Mutex<std::collections::HashSet<String>> {
+    CANCEL_DRAINING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
 #[derive(Deserialize)]
 pub struct DiskOrderEntry {
     pub host: String,
@@ -643,8 +648,14 @@ async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force:
     if !force {
         // Wait indefinitely — bounded timeouts caused data loss in the past.
         // With rep=1, safe-to-destroy never returns true; use force to bypass.
+        // Check for cancellation on every cycle.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if cancel_draining_set().lock().unwrap().remove(disk_name) {
+                tracing::info!("drain: osd.{osd_id} ({disk_name}): cancelled");
+                draining_set().lock().unwrap().remove(disk_name);
+                return;
+            }
             match osd_safe_to_destroy(osd_id).await {
                 Some(true) => break,
                 Some(false) => tracing::debug!("drain: osd.{osd_id}: PGs still migrating"),
@@ -659,6 +670,42 @@ async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force:
     cephcluster_remove_device(&ceph_dev).await;
     draining_set().lock().unwrap().remove(disk_name);
     tracing::info!("drain: osd.{osd_id} ({disk_name}): done — disk ready to unplug or re-add");
+}
+
+// ── Cancel drain ─────────────────────────────────────────────────────────────
+
+/// Cancel an in-progress drain: bring the OSD back in, clear draining state.
+/// The background task will see the cancellation signal on its next poll and exit.
+pub async fn cancel_drain(
+    State(_state): State<AppState>,
+    Json(body): Json<DrainRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let disk_name = &body.disk_name;
+
+    if !draining_set().lock().unwrap().contains(disk_name.as_str()) {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "reason": "disk is not currently draining"
+        })));
+    }
+
+    // Find the OSD id so we can bring it back in
+    let deploys = list_osd_deploys().await;
+    let ceph_dev = ceph_device_for(disk_name);
+    let dev_path = format!("/dev/{ceph_dev}");
+    if let Some(deploy) = deploys.iter().find(|d| d.dev_path == dev_path) {
+        let id_str = deploy.osd_id.to_string();
+        let _ = kubectl::ceph_exec(&["osd", "in", &id_str]).await;
+        let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "1"]).await;
+        tracing::info!("cancel-drain: osd.{} ({disk_name}) brought back in", deploy.osd_id);
+    }
+
+    // Clear DRAINING immediately so the UI shows Active on next poll.
+    // Signal the background task to exit on its next cycle.
+    draining_set().lock().unwrap().remove(disk_name.as_str());
+    cancel_draining_set().lock().unwrap().insert(disk_name.clone());
+
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 // ── Missing disk removal ──────────────────────────────────────────────────────
