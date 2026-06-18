@@ -401,6 +401,45 @@ async fn purge_osd_from_ceph(osd_id: u32) {
 }
 
 
+/// When CRUSH weight is very unbalanced (e.g. tiny loop0 vs large sdb), the
+/// straw2 algorithm can fail to map specific PGs after the heavy OSD goes out,
+/// leaving them with UP=[] and stuck forever. Detect these and force-upmap them
+/// to any available in/up OSD. Ceph's `osd purge` (run by Rook on destroy)
+/// cleans up the upmaps automatically.
+async fn unstick_osd_migration(removing_osd_id: u32) {
+    // Find first in/up OSD that is not the one being removed.
+    let target_id: u32 = {
+        let Ok(out) = kubectl::ceph_exec(&["osd", "dump", "--format", "json"]).await else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) else { return };
+        let Some(target) = v["osds"].as_array().into_iter().flatten().find_map(|o| {
+            let id = o["osd"].as_u64()? as u32;
+            if id == removing_osd_id { return None; }
+            if o["in"].as_u64().unwrap_or(0) == 1 && o["up"].as_u64().unwrap_or(0) == 1 {
+                Some(id)
+            } else { None }
+        }) else { return };
+        target
+    };
+
+    // Get PGs still mapped to the removing OSD.
+    let Ok(out) = kubectl::ceph_exec(&[
+        "pg", "ls-by-osd", &removing_osd_id.to_string(), "--format", "json",
+    ]).await else { return };
+    let pgs: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap_or_default();
+
+    for pg in &pgs {
+        let Some(pg_id) = pg["pgid"].as_str() else { continue };
+        // Check if CRUSH returns an empty UP set for this PG.
+        let Ok(map_out) = kubectl::ceph_exec(&["pg", "map", pg_id]).await else { continue };
+        if map_out.contains("up []") {
+            tracing::info!("migration stuck: pg {pg_id} has empty CRUSH UP set, force-upmapping to osd.{target_id}");
+            let _ = kubectl::ceph_exec(&[
+                "osd", "pg-upmap", pg_id, &target_id.to_string(),
+            ]).await;
+        }
+    }
+}
+
 // ── Fan-out helper ─────────────────────────────────────────────────────────────
 
 async fn gather_from_nodes(cfg: &Config, path: &str) -> Vec<(String, Vec<serde_json::Value>)> {
@@ -528,6 +567,12 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
                 // purge from Ceph, delete deploy, clean up data directory.
                 cephcluster_remove_device(&ceph_dev).await;
             });
+        } else if *safe == Some(false) {
+            // CRUSH straw2 can fail to remap specific PGs when OSD weights are
+            // very unbalanced, leaving UP=[] and blocking the drain forever.
+            // Detect and force-upmap any stuck PGs on each poll.
+            let oid = *osd_id;
+            tokio::spawn(async move { unstick_osd_migration(oid).await; });
         }
     }
 
