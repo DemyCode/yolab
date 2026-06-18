@@ -38,6 +38,12 @@ pub struct ClusterHealth {
     pub title: String,
     pub message: String,
     pub issues: Vec<HealthIssue>,
+    /// Some PGs have zero accessible copies — reads/writes to affected PVCs block.
+    pub pg_unavailable: bool,
+    /// Ceph API (and likely MON quorum) is reachable.
+    pub mon_quorum_ok: bool,
+    /// A disk or pool is full — new writes are blocked, recovery may be stalled.
+    pub osd_full: bool,
 }
 
 pub async fn cluster_health() -> Json<ClusterHealth> {
@@ -56,6 +62,9 @@ async fn compute_cluster_health() -> ClusterHealth {
                 title: "Storage cluster unreachable".into(),
                 message: "Cannot connect to the storage control plane. If a machine just restarted, wait 2–3 minutes.".into(),
                 issues: vec![],
+                pg_unavailable: false,
+                mon_quorum_ok: false,
+                osd_full: false,
             };
         }
     };
@@ -86,24 +95,41 @@ async fn compute_cluster_health() -> ClusterHealth {
         HealthLevel::Warn
     };
 
+    // Derive machine-readable flags from the active issue codes.
+    let pg_unavailable = details.as_object().map_or(false, |obj| {
+        obj.contains_key("PG_AVAILABILITY") || obj.contains_key("PG_DOWN")
+    });
+    let osd_full = details.as_object().map_or(false, |obj| {
+        obj.contains_key("OSD_FULL") || obj.contains_key("NOSPC") || obj.contains_key("POOL_FULL")
+    });
+
     match level {
         HealthLevel::Ok => ClusterHealth {
             level: HealthLevel::Ok,
             title: "All systems healthy".into(),
             message: "Your storage cluster is running normally.".into(),
             issues,
+            pg_unavailable,
+            mon_quorum_ok: true,
+            osd_full,
         },
         HealthLevel::Warn => ClusterHealth {
             level: HealthLevel::Warn,
             title: "Storage has warnings".into(),
             message: "Your cluster is operational but has non-critical issues.".into(),
             issues,
+            pg_unavailable,
+            mon_quorum_ok: true,
+            osd_full,
         },
         HealthLevel::Error => ClusterHealth {
             level: HealthLevel::Error,
             title: "Storage cluster has critical errors".into(),
             message: "One or more critical problems affect your storage. Apps may be unable to read or write data.".into(),
             issues,
+            pg_unavailable,
+            mon_quorum_ok: true,
+            osd_full,
         },
     }
 }
