@@ -601,6 +601,21 @@ pub async fn drain_disk(
                 "reason": "disk is missing — use /api/disks/remove instead"
             })));
         }
+
+        // Block if this is the only OSD in the cluster — marking it out would
+        // make all data immediately inaccessible with no path to safe-to-destroy.
+        let out_ids = osd_out_ids().await;
+        let active_count = deploys.iter()
+            .filter(|d| std::path::Path::new(&d.dev_path).exists())
+            .filter(|d| !out_ids.contains(&d.osd_id))
+            .count();
+        if active_count <= 1 {
+            return Ok(Json(serde_json::json!({
+                "ok": false,
+                "reason": "This is the only active disk. Draining it would make all stored data inaccessible. Add another disk first."
+            })));
+        }
+
         let id_str = deploy.osd_id.to_string();
         let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "0"]).await;
         let _ = kubectl::ceph_exec(&["osd", "out", &id_str]).await;
