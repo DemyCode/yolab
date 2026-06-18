@@ -246,8 +246,8 @@ function DiskRow({
               </div>
             )}
 
-            {/* Usage bar — active disks */}
-            {disk.status === "active" && (
+            {/* Usage bar — active and draining disks */}
+            {(disk.status === "active" || disk.status === "draining") && (
               <div className="mt-2 space-y-1">
                 <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
                   <div className="h-full rounded-full transition-all" style={{ width: `${usedPct ?? 0}%`, background: barColor }} />
