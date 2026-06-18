@@ -602,6 +602,20 @@ pub async fn drain_disk(
             })));
         }
 
+        // If the OSD pod is not running AND not in the live OSD map, this is a
+        // Joining disk (added to spec but OSD never became active, e.g. after a
+        // manual purge). Skip the Ceph drain path and just clean up the stale deploy.
+        if !deploy.ready {
+            let osd_map = ceph_osd_map().await;
+            let in_map = osd_map.contains_key(disk_name) || osd_map.contains_key(&ceph_dev);
+            if !in_map {
+                tracing::info!("drain: {disk_name} deploy not ready and no live OSD — cleaning up stale deploy");
+                let _ = kubectl::run(&["delete", "deploy", "-n", CEPH_NS, &deploy.name, "--ignore-not-found"]).await;
+                cephcluster_remove_device(&ceph_dev).await;
+                return Ok(Json(serde_json::json!({"ok": true})));
+            }
+        }
+
         // Block if this is the only OSD in the cluster — marking it out would
         // make all data immediately inaccessible with no path to safe-to-destroy.
         let out_ids = osd_out_ids().await;
