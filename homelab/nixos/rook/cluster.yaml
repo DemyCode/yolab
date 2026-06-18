@@ -142,6 +142,7 @@ metadata:
   namespace: rook-ceph
 spec:
   type: NodePort
+  clusterIP: fd00:43::cefd
   selector:
     app: rook-ceph-mgr
     mgr: a
