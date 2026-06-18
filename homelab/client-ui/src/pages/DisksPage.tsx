@@ -116,7 +116,7 @@ function DiskRow({
           Use for storage
         </Btn>
       );
-    } else if (disk.status === "active" && !disk.is_builtin) {
+    } else if (disk.status === "active") {
       if (disk.last_disk) {
         action = (
           <span className="text-xs text-[#52525b]" title="Removing the last disk would destroy all data">
@@ -136,7 +136,7 @@ function DiskRow({
           Keep disk
         </Btn>
       );
-    } else if (disk.status === "missing" && !disk.is_builtin) {
+    } else if (disk.status === "missing") {
       if (disk.safe_to_destroy === true) {
         action = (
           <Btn variant="danger" onClick={() => onDismiss(disk)}>
