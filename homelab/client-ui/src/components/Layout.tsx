@@ -132,7 +132,7 @@ function SidebarContent({
           </NavLink>
         ))}
         <a
-          href={`http://${window.location.hostname}:30700`}
+          href="/ceph-dashboard/"
           target="_blank"
           rel="noopener noreferrer"
           onClick={onClose}

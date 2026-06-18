@@ -16,6 +16,7 @@ spec:
   dashboard:
     enabled: true
     ssl: false
+    urlPrefix: /ceph-dashboard
   crashCollector:
     disable: true
   logCollector:
