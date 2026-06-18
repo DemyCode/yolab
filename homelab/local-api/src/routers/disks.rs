@@ -561,11 +561,24 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
         result[*idx].safe_to_destroy = *safe;
         if *safe == Some(true) {
             let ceph_dev = ceph_dev.clone();
+            let osd_id = *osd_id;
+            let deploy_name = format!("rook-ceph-osd-{osd_id}");
+            // Derive the raw disk name from the ceph_dev (strip trailing partition digit).
+            let disk_name = dev_to_disk_name(&ceph_dev).to_string();
             tokio::spawn(async move {
-                // Remove from per-node spec so Rook won't reprovision the disk.
-                // Rook's removeOSDsIfOutAndSafeToRemove handles the rest:
-                // purge from Ceph, delete deploy, clean up data directory.
+                // 1. Remove from per-node spec (prevent Rook from re-provisioning).
                 cephcluster_remove_device(&ceph_dev).await;
+                // 2. Purge OSD from Ceph (removes CRUSH entry, auth key, OSD slot).
+                let _ = kubectl::ceph_exec(&[
+                    "osd", "purge", &osd_id.to_string(), "--yes-i-really-mean-it",
+                ]).await;
+                // 3. Wipe the device header so the next Rook prepare job does not
+                //    re-detect the BlueStore signature and re-provision the OSD.
+                tokio::task::spawn_blocking(move || wipe_device(&disk_name)).await.ok();
+                // 4. Delete the OSD deploy.
+                let _ = kubectl::run(&[
+                    "delete", "deploy", "-n", CEPH_NS, &deploy_name, "--ignore-not-found",
+                ]).await;
             });
         } else if *safe == Some(false) {
             // CRUSH straw2 can fail to remap specific PGs when OSD weights are
