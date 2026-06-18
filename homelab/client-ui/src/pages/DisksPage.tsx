@@ -20,11 +20,11 @@ const STATUS_STYLE: Record<DiskStatus, {
   labelColor: string;
   label: string;
 }> = {
-  active:   { iconBg: "#1a2e1a", iconColor: "#4ade80", labelColor: "#4ade80", label: "In storage"  },
-  pending:  { iconBg: "#2d2a1a", iconColor: "#fbbf24", labelColor: "#fbbf24", label: "Not added"    },
-  joining:  { iconBg: "#1e1e24", iconColor: "#71717a", labelColor: "#71717a", label: "Setting up…"  },
-  draining: { iconBg: "#2d1e0a", iconColor: "#fb923c", labelColor: "#fb923c", label: "Draining…"   },
-  missing:  { iconBg: "#2d1a1a", iconColor: "#f87171", labelColor: "#f87171", label: "Missing"      },
+  active:   { iconBg: "#1a2e1a", iconColor: "#4ade80", labelColor: "#4ade80", label: "Active"      },
+  pending:  { iconBg: "#1e1e24", iconColor: "#71717a", labelColor: "#71717a", label: "Non Active"  },
+  joining:  { iconBg: "#2d2a1a", iconColor: "#fbbf24", labelColor: "#fbbf24", label: "Joining…"    },
+  draining: { iconBg: "#2d1e0a", iconColor: "#fb923c", labelColor: "#fb923c", label: "Draining…"  },
+  missing:  { iconBg: "#2d1a1a", iconColor: "#f87171", labelColor: "#f87171", label: "Missing"     },
 };
 
 // ── Skeletons ─────────────────────────────────────────────────────────────────
@@ -142,51 +142,51 @@ function DiskRow({
                 <span className="text-xs text-[#52525b]">·</span>
                 <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
 
-                {/* Join button — pending disks only */}
+                {/* Non Active → Active */}
                 {disk.status === "pending" && !disk.offline && (
                   <button
                     onClick={() => onJoin(disk)}
                     disabled={busy}
-                    className="ml-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors disabled:opacity-40"
+                    className="ml-1 text-xs text-[#4ade80] hover:text-[#22c55e] transition-colors disabled:opacity-40"
                   >
-                    {busy ? "Adding…" : "Add to storage"}
+                    {busy ? "Activating…" : "Set Active"}
                   </button>
                 )}
 
-                {/* Drain button — active non-builtin disks */}
+                {/* Active → Non Active (drain) */}
                 {disk.status === "active" && !disk.is_builtin && !disk.offline && (
                   <button
                     onClick={() => onDrain(disk)}
                     disabled={busy}
-                    className="ml-1 text-xs text-[#52525b] hover:text-[#f87171] transition-colors disabled:opacity-40"
-                    title="Remove from storage"
+                    className="ml-1 text-xs text-[#52525b] hover:text-[#71717a] transition-colors disabled:opacity-40"
+                    title="Drain data off this disk and make it Non Active"
                   >
-                    {busy ? "Removing…" : "Remove"}
+                    {busy ? "Deactivating…" : "Set Non Active"}
                   </button>
                 )}
 
-                {/* Remove button — missing disks */}
+                {/* Missing → Non Active (remove from Ceph so it can be re-joined if replugged) */}
                 {disk.status === "missing" && !disk.is_builtin && (
                   disk.safe_to_destroy === true ? (
                     <button
                       onClick={() => onRemove(disk, false)}
                       disabled={busy}
-                      className="ml-1 text-xs text-[#f87171] hover:text-[#ef4444] transition-colors disabled:opacity-40"
-                      title="Disk is gone and data is safe to remove"
+                      className="ml-1 text-xs text-[#71717a] hover:text-[#a1a1aa] transition-colors disabled:opacity-40"
+                      title="Remove from Ceph — if replugged, disk will appear as Non Active"
                     >
-                      {busy ? "Removing…" : "Recover without disk"}
+                      {busy ? "Removing…" : "Set Non Active"}
                     </button>
                   ) : disk.safe_to_destroy === false ? (
                     <button
                       onClick={() => onRemove(disk, true)}
                       disabled={busy}
-                      className="ml-1 text-xs text-[#52525b] hover:text-[#f87171] transition-colors disabled:opacity-40"
-                      title="Data loss — restore from Velero after removing"
+                      className="ml-1 text-xs text-[#52525b] hover:text-[#71717a] transition-colors disabled:opacity-40"
+                      title="Data not replicated — restore from Velero after this"
                     >
-                      {busy ? "Removing…" : "Force remove"}
+                      {busy ? "Removing…" : "Force Non Active"}
                     </button>
                   ) : (
-                    <span className="ml-1 text-xs text-[#52525b]" title="Cluster unreachable — cannot verify">
+                    <span className="ml-1 text-xs text-[#52525b]" title="Cluster unreachable — cannot verify safety">
                       Cluster unreachable
                     </span>
                   )
@@ -196,14 +196,14 @@ function DiskRow({
 
             <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
 
-            {/* Missing: safe-to-destroy hint */}
+            {/* Missing: recovery hint */}
             {disk.status === "missing" && !disk.offline && (
               <div className="mt-1 text-xs" style={{ color: disk.safe_to_destroy === true ? "#4ade80" : "#71717a" }}>
                 {disk.safe_to_destroy === true
-                  ? "All data replicated elsewhere — safe to recover without this disk"
+                  ? "Data is safe — replug to go Active again, or set Non Active to remove from Ceph"
                   : disk.safe_to_destroy === false
-                  ? "Data not yet replicated — replug disk to recover, or force remove and restore from backup"
-                  : "Cannot verify cluster state"}
+                  ? "Replug disk to recover data — or force Non Active and restore from backup"
+                  : "Cannot verify cluster state — reconnect Ceph before taking action"}
               </div>
             )}
 
