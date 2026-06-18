@@ -37,6 +37,9 @@ spec:
       # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)
       # can leave the BlueStore label half-written and unrecoverable.
       bluestore_cache_size_ssd: "1073741824"
+      # Parallel backfill/recovery streams — default 1 makes migrations very slow.
+      osd_max_backfills: "4"
+      osd_recovery_max_active: "4"
   priorityClassNames:
     mon: system-cluster-critical
     mgr: system-cluster-critical
@@ -45,6 +48,12 @@ spec:
     useAllNodes: true
     useAllDevices: false
     deviceFilter: "^loop[0-9]+"
+    # Rook auto-purges OSDs that are marked out once safe_to_destroy is true.
+    # Handles: ceph osd purge, deploy deletion, data dir cleanup.
+    removeOSDsIfOutAndSafeToDestroy: true
+  disruptionManagement:
+    # Pod disruption budgets can block node drains and K3s upgrades on single-node.
+    managePodBudgets: false
   resources:
     mgr:
       limits:

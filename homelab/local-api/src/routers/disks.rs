@@ -386,6 +386,7 @@ async fn purge_osd_from_ceph(osd_id: u32) {
     }
 }
 
+
 // ── Fan-out helper ─────────────────────────────────────────────────────────────
 
 async fn gather_from_nodes(cfg: &Config, path: &str) -> Vec<(String, Vec<serde_json::Value>)> {
@@ -506,21 +507,12 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
     for ((idx, osd_id, ceph_dev), safe) in removing.iter().zip(safe_checks.iter()) {
         result[*idx].safe_to_destroy = *safe;
         if *safe == Some(true) {
-            let osd_id = *osd_id;
             let ceph_dev = ceph_dev.clone();
-            let deploy_name = deploys.iter()
-                .find(|d| d.osd_id == osd_id)
-                .map(|d| d.name.clone());
             tokio::spawn(async move {
-                // Remove from per-node spec FIRST — this overrides the global
-                // deviceFilter so Rook won't auto-reprovision the disk.
+                // Remove from per-node spec so Rook won't reprovision the disk.
+                // Rook's removeOSDsIfOutAndSafeToDestroy handles the rest:
+                // purge from Ceph, delete deploy, clean up data directory.
                 cephcluster_remove_device(&ceph_dev).await;
-                // Give Rook time to reconcile before we delete the deploy.
-                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-                if let Some(name) = deploy_name {
-                    let _ = kubectl::run(&["delete", "deploy", "-n", CEPH_NS, &name, "--ignore-not-found"]).await;
-                }
-                purge_osd_from_ceph(osd_id).await;
             });
         }
     }
