@@ -546,46 +546,23 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
         });
     }
 
-    // ── Removing: check safe + auto-purge ─────────────────────────────────────
-    let removing: Vec<(usize, u32, String)> = result.iter().enumerate()
+    // ── Removing: fill safe_to_destroy + fix stuck CRUSH mappings ────────────
+    // Rook's removeOSDsIfOutAndSafeToRemove handles purge + deploy deletion
+    // automatically once the OSD is out and safe. We only need to detect stuck
+    // CRUSH PG mappings that would prevent the drain from completing.
+    let removing: Vec<(usize, u32)> = result.iter().enumerate()
         .filter_map(|(i, item)| {
-            if item.status == DiskStatus::Removing {
-                Some((i, item.osd_id?, ceph_device_for(&item.name)))
-            } else { None }
+            if item.status == DiskStatus::Removing { Some((i, item.osd_id?)) } else { None }
         })
         .collect();
 
     let safe_checks: Vec<Option<bool>> = futures::future::join_all(
-        removing.iter().map(|(_, id, _)| osd_safe_to_destroy(*id))
+        removing.iter().map(|(_, id)| osd_safe_to_destroy(*id))
     ).await;
 
-    for ((idx, osd_id, ceph_dev), safe) in removing.iter().zip(safe_checks.iter()) {
+    for ((idx, osd_id), safe) in removing.iter().zip(safe_checks.iter()) {
         result[*idx].safe_to_destroy = *safe;
-        if *safe == Some(true) {
-            let ceph_dev = ceph_dev.clone();
-            let osd_id = *osd_id;
-            let deploy_name = format!("rook-ceph-osd-{osd_id}");
-            // Derive the raw disk name from the ceph_dev (strip trailing partition digit).
-            let disk_name = dev_to_disk_name(&ceph_dev).to_string();
-            tokio::spawn(async move {
-                // 1. Remove from per-node spec (prevent Rook from re-provisioning).
-                cephcluster_remove_device(&ceph_dev).await;
-                // 2. Purge OSD from Ceph (removes CRUSH entry, auth key, OSD slot).
-                let _ = kubectl::ceph_exec(&[
-                    "osd", "purge", &osd_id.to_string(), "--yes-i-really-mean-it",
-                ]).await;
-                // 3. Wipe the device header so the next Rook prepare job does not
-                //    re-detect the BlueStore signature and re-provision the OSD.
-                tokio::task::spawn_blocking(move || wipe_device(&disk_name)).await.ok();
-                // 4. Delete the OSD deploy.
-                let _ = kubectl::run(&[
-                    "delete", "deploy", "-n", CEPH_NS, &deploy_name, "--ignore-not-found",
-                ]).await;
-            });
-        } else if *safe == Some(false) {
-            // CRUSH straw2 can fail to remap specific PGs when OSD weights are
-            // very unbalanced, leaving UP=[] and blocking the drain forever.
-            // Detect and force-upmap any stuck PGs on each poll.
+        if *safe == Some(false) {
             let oid = *osd_id;
             tokio::spawn(async move { unstick_osd_migration(oid).await; });
         }
@@ -739,9 +716,14 @@ pub async fn remove_disk(
     }
 
     let id_str = dep.osd_id.to_string();
+    let ceph_dev = ceph_device_for(disk_name);
+    // Remove from spec first so Rook does not re-provision the device after
+    // purging it. Then mark out — Rook's removeOSDsIfOutAndSafeToRemove
+    // handles purge + deploy deletion once data has drained.
+    cephcluster_remove_device(&ceph_dev).await;
     let _ = kubectl::ceph_exec(&["osd", "reweight", &id_str, "0"]).await;
     let _ = kubectl::ceph_exec(&["osd", "out", &id_str]).await;
-    tracing::info!("remove: osd.{} ({disk_name}) marked out", dep.osd_id);
+    tracing::info!("remove: osd.{} ({disk_name}) marked out, removed from spec", dep.osd_id);
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
