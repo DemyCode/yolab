@@ -280,7 +280,7 @@ fn cephcluster_node_devices_sync(k8s_node: &str) -> Vec<String> {
         }
     }
     // No per-node entry yet. Build a seed list from the global devices list
-    // plus any loop devices already backed by rook files (managed via deviceFilter).
+    // plus any loop devices already backed by rook files.
     let raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
                "-o", "jsonpath={.spec.storage.devices}"])
@@ -291,11 +291,16 @@ fn cephcluster_node_devices_sync(k8s_node: &str) -> Vec<String> {
     let mut devices: Vec<String> = global.iter()
         .filter_map(|d| d["name"].as_str().map(String::from))
         .collect();
-    // Include active rook-backed loop devices so they survive the per-node override.
     for (name, backing) in loop_backing_files() {
         if is_our_backing_file(&backing) && !devices.contains(&name) {
             devices.push(name);
         }
+    }
+    // Rook (v1.16+) refuses to provision loop devices via deviceFilter —
+    // they must be listed explicitly. Auto-register the per-node entry now
+    // so Rook re-runs the prepare job and actually provisions the disk.
+    if !devices.is_empty() {
+        cephcluster_set_node_devices_sync(k8s_node, devices.clone());
     }
     devices
 }
