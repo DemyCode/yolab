@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { HardDrive, Plus, X, AlertTriangle } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { HardDrive, Plus, X, AlertTriangle, RefreshCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { CephStatus, DiskItem, DiskStatus } from "@/types/disk";
@@ -344,6 +344,16 @@ function AddVirtualDiskForm({
 // ── DisksPage ─────────────────────────────────────────────────────────────────
 
 const DISKS_CACHE_KEY = "yolab:disks";
+const REFRESH_INTERVAL_KEY = "yolab:disks:refreshInterval";
+const AUTO_REFRESH_KEY = "yolab:disks:autoRefresh";
+
+const INTERVAL_OPTIONS = [
+  { label: "5s",  value: 5   },
+  { label: "10s", value: 10  },
+  { label: "30s", value: 30  },
+  { label: "1m",  value: 60  },
+  { label: "5m",  value: 300 },
+];
 
 type DiskItemExt = DiskItem & { offline?: boolean };
 
@@ -354,9 +364,32 @@ export function DisksPage() {
   const [addingVirtual, setAddingVirtual] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(() => {
+    try { return localStorage.getItem(AUTO_REFRESH_KEY) === "true"; } catch { return false; }
+  });
+  const [refreshInterval, setRefreshInterval] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem(REFRESH_INTERVAL_KEY) ?? "10", 10); } catch { return 10; }
+  });
+  const firstRef = useRef(true);
+
+  // Persist refresh settings
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
+      localStorage.setItem(REFRESH_INTERVAL_KEY, String(refreshInterval));
+    } catch {}
+  }, [autoRefresh, refreshInterval]);
 
   useEffect(() => {
-    let first = true;
+    // Pre-populate from cache on first mount
+    if (firstRef.current) {
+      try {
+        const cached = localStorage.getItem(DISKS_CACHE_KEY);
+        if (cached) setDisks(JSON.parse(cached) as DiskItemExt[]);
+      } catch {}
+    }
 
     function load() {
       if (busy) return;
@@ -385,10 +418,7 @@ export function DisksPage() {
             });
           } else {
             setDisks((prev) => {
-              if (prev.length > 0) {
-                setStale(true);
-                return prev.map((d) => ({ ...d, offline: true }));
-              }
+              if (prev.length > 0) { setStale(true); return prev.map((d) => ({ ...d, offline: true })); }
               return prev;
             });
           }
@@ -403,23 +433,24 @@ export function DisksPage() {
         .then((d: CephStatus) => { if (d?.total_bytes > 0) setCeph(d); })
         .catch(() => {});
 
-      if (first) {
-        first = false;
-        void Promise.all([disksP, cephP]).finally(() => setLoading(false));
+      if (firstRef.current) {
+        firstRef.current = false;
+        void Promise.all([disksP, cephP]).finally(() => { setLoading(false); setRefreshing(false); });
+      } else {
+        void Promise.all([disksP, cephP]).finally(() => setRefreshing(false));
       }
     }
 
-    if (first) {
-      try {
-        const cached = localStorage.getItem(DISKS_CACHE_KEY);
-        if (cached) setDisks(JSON.parse(cached) as DiskItemExt[]);
-      } catch {}
-    }
-
     load();
-    const interval = setInterval(load, 10_000);
-    return () => clearInterval(interval);
-  }, [busy]);
+
+    const interval = autoRefresh ? setInterval(load, refreshInterval * 1000) : null;
+    return () => { if (interval) clearInterval(interval); };
+  }, [busy, refreshTick, autoRefresh, refreshInterval]);
+
+  function handleManualRefresh() {
+    setRefreshing(true);
+    setRefreshTick((t) => t + 1);
+  }
 
   const nodes = useMemo(() => {
     const seen = new Map<string, string>();
@@ -471,11 +502,47 @@ export function DisksPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-xl font-semibold text-[#fafafa]">Storage</h1>
-        <p className="text-sm text-[#71717a] mt-0.5">
-          All disks are used automatically. Ceph distributes data across every OSD.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold text-[#fafafa]">Storage</h1>
+          <p className="text-sm text-[#71717a] mt-0.5">
+            All disks are used automatically. Ceph distributes data across every OSD.
+          </p>
+        </div>
+
+        {/* Refresh controls */}
+        <div className="flex items-center gap-3 flex-shrink-0 pt-0.5">
+          <button
+            onClick={handleManualRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors disabled:opacity-40"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa] cursor-pointer"
+            />
+            <span className="text-xs text-[#71717a]">Auto</span>
+          </label>
+
+          {autoRefresh && (
+            <select
+              value={refreshInterval}
+              onChange={(e) => setRefreshInterval(Number(e.target.value))}
+              className="rounded bg-[#18181b] border border-[#27272a] px-2 py-0.5 text-xs text-[#a1a1aa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
+            >
+              {INTERVAL_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
 
       {stale && (
