@@ -257,8 +257,10 @@ fn k8s_node_name() -> String {
 }
 
 // Read the per-node devices list for a given k8s node name.
-// Falls back to the global spec.storage.devices list if no per-node entry exists.
-// Per-node entries override the global deviceFilter, giving us explicit control.
+// Falls back to global spec.storage.devices + active rook-backed loop devices.
+// Per-node entries override the global deviceFilter — so when we first create
+// a per-node list we must include loop devices explicitly (otherwise they'd
+// be dropped since the filter no longer applies for this node).
 fn cephcluster_node_devices_sync(k8s_node: &str) -> Vec<String> {
     let nodes_raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
@@ -274,15 +276,25 @@ fn cephcluster_node_devices_sync(k8s_node: &str) -> Vec<String> {
             }
         }
     }
-    // No per-node entry — fall back to global devices list.
+    // No per-node entry yet. Build a seed list from the global devices list
+    // plus any loop devices already backed by rook files (managed via deviceFilter).
     let raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
                "-o", "jsonpath={.spec.storage.devices}"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    let devices: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
-    devices.iter().filter_map(|d| d["name"].as_str().map(String::from)).collect()
+    let global: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+    let mut devices: Vec<String> = global.iter()
+        .filter_map(|d| d["name"].as_str().map(String::from))
+        .collect();
+    // Include active rook-backed loop devices so they survive the per-node override.
+    for (name, backing) in loop_backing_files() {
+        if is_our_backing_file(&backing) && !devices.contains(&name) {
+            devices.push(name);
+        }
+    }
+    devices
 }
 
 // Keep for disks_local() spec check (uses k8s_node_name internally).
