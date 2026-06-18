@@ -251,10 +251,11 @@ fn wipe_device(disk_name: &str) {
 }
 
 fn k8s_node_name() -> String {
-    std::process::Command::new("kubectl")
-        .args(["get", "nodes", "-o", "jsonpath={.items[0].metadata.name}"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    // K3s uses the OS hostname as the node name by default.
+    // Never use items[0] — that always returns the first node alphabetically,
+    // not the current one, which would corrupt per-node spec entries on node2+.
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_default()
 }
 
