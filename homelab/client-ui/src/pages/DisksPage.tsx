@@ -92,12 +92,14 @@ function DiskRow({
   disk,
   onJoin,
   onDrain,
+  onCancelDrain,
   onRemove,
   busy,
 }: {
   disk: DiskItemExt;
   onJoin: (disk: DiskItem) => void;
   onDrain: (disk: DiskItem) => void;
+  onCancelDrain: (disk: DiskItem) => void;
   onRemove: (disk: DiskItem, force: boolean) => void;
   busy: boolean;
 }) {
@@ -150,6 +152,18 @@ function DiskRow({
                     className="ml-1 text-xs text-[#4ade80] hover:text-[#22c55e] transition-colors disabled:opacity-40"
                   >
                     {busy ? "Activating…" : "Set Active"}
+                  </button>
+                )}
+
+                {/* Draining → Active (cancel drain) */}
+                {disk.status === "draining" && !disk.offline && (
+                  <button
+                    onClick={() => onCancelDrain(disk)}
+                    disabled={busy}
+                    className="ml-1 text-xs text-[#4ade80] hover:text-[#22c55e] transition-colors disabled:opacity-40"
+                    title="Cancel drain and bring disk back to Active"
+                  >
+                    {busy ? "Cancelling…" : "Set Active"}
                   </button>
                 )}
 
@@ -486,6 +500,20 @@ export function DisksPage() {
     }
   }
 
+  async function handleCancelDrain(disk: DiskItem) {
+    const key = `${disk.host}:${disk.name}`;
+    setBusy(key);
+    try {
+      await fetch("/api/disks/cancel-drain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleRemove(disk: DiskItem, force: boolean) {
     const key = `${disk.host}:${disk.name}`;
     setBusy(key);
@@ -601,6 +629,7 @@ export function DisksPage() {
                   disk={disk}
                   onJoin={handleJoin}
                   onDrain={handleDrain}
+                  onCancelDrain={handleCancelDrain}
                   onRemove={handleRemove}
                   busy={busy === key}
                 />
