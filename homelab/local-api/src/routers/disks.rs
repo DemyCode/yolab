@@ -310,6 +310,14 @@ fn cephcluster_devices_sync() -> Vec<String> {
     cephcluster_node_devices_sync(&k8s_node_name())
 }
 
+/// Called at local-api startup. Returns true if this node was successfully
+/// registered in the CephCluster spec (kubectl was reachable and returned data).
+/// Required because Rook (useAllNodes=false) only provisions spec.storage.nodes.
+pub fn register_local_node() -> bool {
+    let devices = cephcluster_devices_sync();
+    !devices.is_empty()
+}
+
 fn cephcluster_has_device_sync(ceph_dev: &str) -> bool {
     cephcluster_devices_sync().iter().any(|d| d == ceph_dev)
 }

@@ -45,11 +45,12 @@ spec:
     mgr: system-cluster-critical
     osd: system-cluster-critical
   storage:
-    useAllNodes: true
+    useAllNodes: false
     useAllDevices: false
     deviceFilter: "^loop[0-9]+"
-    # Rook auto-purges OSDs that are marked out once safe_to_destroy is true.
-    # Handles: ceph osd purge, deploy deletion, data dir cleanup.
+    # Rook ignores useAllNodes=true when nodes array is also set.
+    # With useAllNodes=false, only nodes in spec.storage.nodes are provisioned.
+    # The local-api auto-registers each node's loop devices on startup.
     removeOSDsIfOutAndSafeToDestroy: true
   disruptionManagement:
     # Pod disruption budgets can block node drains and K3s upgrades on single-node.

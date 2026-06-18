@@ -101,6 +101,18 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
+    // Register this node's loop devices in the CephCluster spec.
+    // Rook (useAllNodes=false) ignores nodes not in spec.storage.nodes.
+    // Retry because kubectl/K3s may not be ready when the local-api first starts.
+    tokio::spawn(async {
+        for delay in [10u64, 30, 60, 120] {
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            let registered = tokio::task::spawn_blocking(disks::register_local_node)
+                .await.unwrap_or(false);
+            if registered { break; }
+        }
+    });
+
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
