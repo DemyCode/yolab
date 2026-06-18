@@ -402,6 +402,7 @@ export function DisksPage() {
   const [loading, setLoading] = useState(true);
   const [addingVirtual, setAddingVirtual] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -514,12 +515,15 @@ export function DisksPage() {
   async function handleDrain(disk: DiskItem) {
     const key = `${disk.host}:${disk.name}`;
     setBusy(key);
+    setActionError(null);
     try {
-      await fetch("/api/disks/drain", {
+      const res = await fetch("/api/disks/drain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
       });
+      const json = await res.json() as { ok?: boolean; reason?: string };
+      if (!json.ok && json.reason) setActionError(json.reason);
     } finally {
       setBusy(null);
     }
@@ -618,6 +622,16 @@ export function DisksPage() {
           <p className="text-sm text-[#fbbf24]">
             One or more machines are offline — their disks are shown as last known.
           </p>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-[#f87171]/30 bg-[#f87171]/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-[#f87171] mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-[#f87171]">{actionError}</p>
+          <button onClick={() => setActionError(null)} className="ml-auto text-[#f87171]/60 hover:text-[#f87171]">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
