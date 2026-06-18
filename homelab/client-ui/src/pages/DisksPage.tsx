@@ -154,7 +154,7 @@ function DiskRow({
                 )}
 
                 {/* Active → Non Active (drain) */}
-                {disk.status === "active" && !disk.is_builtin && !disk.offline && (
+                {disk.status === "active" && !disk.offline && (
                   <button
                     onClick={() => onDrain(disk)}
                     disabled={busy}
