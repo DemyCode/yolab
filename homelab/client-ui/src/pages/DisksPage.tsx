@@ -4,6 +4,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { CephStatus, DiskItem, DiskStatus } from "@/types/disk";
 
+// ── Formatters ────────────────────────────────────────────────────────────────
+
 function fmt(bytes: number | null | undefined): string {
   if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -14,17 +16,12 @@ function fmt(bytes: number | null | undefined): string {
 
 // ── Status palette ────────────────────────────────────────────────────────────
 
-const STATUS_STYLE: Record<DiskStatus, {
-  iconBg: string;
-  iconColor: string;
-  labelColor: string;
-  label: string;
-}> = {
-  active:   { iconBg: "#1a2e1a", iconColor: "#4ade80", labelColor: "#4ade80", label: "Active"      },
-  pending:  { iconBg: "#1e1e24", iconColor: "#71717a", labelColor: "#71717a", label: "Non Active"  },
-  joining:  { iconBg: "#2d2a1a", iconColor: "#fbbf24", labelColor: "#fbbf24", label: "Joining…"    },
-  draining: { iconBg: "#2d1e0a", iconColor: "#fb923c", labelColor: "#fb923c", label: "Draining…"  },
-  missing:  { iconBg: "#2d1a1a", iconColor: "#f87171", labelColor: "#f87171", label: "Missing"     },
+const STATUS: Record<DiskStatus, { bg: string; color: string; label: string }> = {
+  unused:   { bg: "#1e1e24", color: "#52525b", label: "Unused"         },
+  joining:  { bg: "#2d2a1a", color: "#fbbf24", label: "Setting up…"    },
+  active:   { bg: "#1a2e1a", color: "#4ade80", label: "Active"         },
+  removing: { bg: "#2d1e0a", color: "#fb923c", label: "Removing…"      },
+  missing:  { bg: "#2d1a1a", color: "#f87171", label: "Disconnected"   },
 };
 
 // ── Skeletons ─────────────────────────────────────────────────────────────────
@@ -33,38 +30,24 @@ function Shimmer({ className }: { className?: string }) {
   return <div className={`animate-pulse rounded bg-[#27272a] ${className ?? ""}`} />;
 }
 
-function StorageOverviewSkeleton() {
-  return (
-    <Card><CardContent className="pt-4 pb-4">
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <Shimmer className="h-3 w-24" />
-          <Shimmer className="h-3 w-28" />
-        </div>
-        <Shimmer className="h-2 w-full" />
-      </div>
-    </CardContent></Card>
-  );
-}
-
 function DiskRowSkeleton() {
   return (
     <Card><CardContent className="pt-5 pb-5">
       <div className="flex items-start gap-3">
         <Shimmer className="mt-0.5 h-7 w-7 rounded-md flex-shrink-0" />
         <div className="flex-1 space-y-2.5">
-          <div className="flex items-center justify-between gap-4">
-            <Shimmer className="h-3.5 w-40" />
-            <Shimmer className="h-3 w-24" />
+          <Shimmer className="h-3.5 w-40" />
+          <div className="flex gap-2">
+            <Shimmer className="h-5 w-20 rounded-full" />
+            <Shimmer className="h-5 w-16 rounded-full" />
           </div>
-          <Shimmer className="h-3 w-20" />
         </div>
       </div>
     </CardContent></Card>
   );
 }
 
-// ── Storage overview bar ──────────────────────────────────────────────────────
+// ── Storage overview ──────────────────────────────────────────────────────────
 
 function StorageOverview({ status }: { status: CephStatus | null }) {
   if (!status?.available || !status.total_bytes) return null;
@@ -88,173 +71,141 @@ function StorageOverview({ status }: { status: CephStatus | null }) {
 
 // ── Disk row ──────────────────────────────────────────────────────────────────
 
+type DiskItemExt = DiskItem & { offline?: boolean };
+
 function DiskRow({
-  disk,
-  onJoin,
-  onDrain,
-  onCancelDrain,
-  onCompleteDrain,
-  onRemove,
-  busy,
+  disk, busy,
+  onAdd, onRemove, onDismiss,
 }: {
   disk: DiskItemExt;
-  onJoin: (disk: DiskItem) => void;
-  onDrain: (disk: DiskItem) => void;
-  onCancelDrain: (disk: DiskItem) => void;
-  onCompleteDrain: (disk: DiskItem) => void;
-  onRemove: (disk: DiskItem, force: boolean) => void;
   busy: boolean;
+  onAdd: (d: DiskItem) => void;
+  onRemove: (d: DiskItem) => void;
+  onDismiss: (d: DiskItem) => void;
 }) {
-  const usedPct =
-    disk.used_bytes && disk.size_bytes
-      ? Math.round((disk.used_bytes / disk.size_bytes) * 100)
-      : null;
-  const barColor =
-    (usedPct ?? 0) > 85 ? "#f87171" : (usedPct ?? 0) > 65 ? "#fbbf24" : "#a78bfa";
-
   const effectiveStatus: DiskStatus = disk.offline ? "missing" : disk.status;
-  const style = STATUS_STYLE[effectiveStatus];
+  const s = STATUS[effectiveStatus];
 
-  const statusLabel = disk.offline ? (
-    <span className="text-xs" style={{ color: style.labelColor }}>Machine offline</span>
-  ) : (
-    <span className="text-xs" style={{ color: style.labelColor }}>
-      {style.label}
-      {disk.status === "active" && disk.is_builtin ? " · built-in" : ""}
-    </span>
-  );
+  const usedPct = disk.used_bytes && disk.size_bytes
+    ? Math.round((disk.used_bytes / disk.size_bytes) * 100) : null;
+  const barColor = (usedPct ?? 0) > 85 ? "#f87171" : (usedPct ?? 0) > 65 ? "#fbbf24" : "#a78bfa";
+
+  // ── Hint (pure info, no button references) ─────────────────────────────────
+  let hint: string | null = null;
+  if (disk.offline) {
+    hint = "Machine offline — showing last known state";
+  } else if (disk.status === "joining") {
+    hint = "Setting up — usually ready in a few minutes";
+  } else if (disk.status === "removing") {
+    hint = "Moving data to other disks…";
+  } else if (disk.status === "missing") {
+    if (disk.safe_to_destroy === true)
+      hint = "Data is safely stored elsewhere";
+    else if (disk.safe_to_destroy === false)
+      hint = "Replug to recover your data — or restore from backup before dismissing";
+    else
+      hint = "Cannot reach storage cluster — reconnect before taking action";
+  }
+
+  // ── Action button ──────────────────────────────────────────────────────────
+  let action: React.ReactNode = null;
+  if (!busy && !disk.offline) {
+    if (disk.status === "unused") {
+      action = (
+        <Btn variant="primary" onClick={() => onAdd(disk)}>
+          Use for storage
+        </Btn>
+      );
+    } else if (disk.status === "active" && !disk.is_builtin) {
+      if (disk.last_disk) {
+        action = (
+          <span className="text-xs text-[#52525b]" title="Removing the last disk would destroy all data">
+            Only disk — cannot remove
+          </span>
+        );
+      } else {
+        action = (
+          <Btn variant="ghost" onClick={() => onRemove(disk)}>
+            Remove
+          </Btn>
+        );
+      }
+    } else if (disk.status === "removing") {
+      action = (
+        <Btn variant="primary" onClick={() => onAdd(disk)}>
+          Keep disk
+        </Btn>
+      );
+    } else if (disk.status === "missing" && !disk.is_builtin) {
+      if (disk.safe_to_destroy === true) {
+        action = (
+          <Btn variant="danger" onClick={() => onDismiss(disk)}>
+            Remove from list
+          </Btn>
+        );
+      }
+      // safe_to_destroy=false or null → no action, hint explains why
+    }
+  }
+
+  const statusLabel = disk.offline ? "Offline"
+    : disk.status === "active" && disk.is_builtin ? "Active · built-in"
+    : s.label;
 
   return (
     <Card>
-      <CardContent className="pt-5">
+      <CardContent className="pt-4 pb-4">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0" style={{ background: style.iconBg }}>
-            <HardDrive className="h-4 w-4" style={{ color: style.iconColor }} strokeWidth={1.75} />
+          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0" style={{ background: s.bg }}>
+            <HardDrive className="h-4 w-4" style={{ color: s.color }} strokeWidth={1.75} />
           </div>
 
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-baseline gap-2">
-                <span className="font-medium text-[#fafafa] text-sm">{disk.model || disk.name}</span>
-                {disk.model && (
-                  <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                {statusLabel}
-                <span className="text-xs text-[#52525b]">·</span>
-                <span className="text-xs text-[#71717a]">{fmt(disk.size_bytes)}</span>
-
-                {/* Non Active → Active */}
-                {disk.status === "pending" && !disk.offline && (
-                  <button
-                    onClick={() => onJoin(disk)}
-                    disabled={busy}
-                    className="ml-1 text-xs text-[#4ade80] hover:text-[#22c55e] transition-colors disabled:opacity-40"
-                  >
-                    {busy ? "Activating…" : "Set Active"}
-                  </button>
-                )}
-
-                {/* Draining → Active (cancel drain) */}
-                {disk.status === "draining" && !disk.offline && (
-                  <button
-                    onClick={() => onCancelDrain(disk)}
-                    disabled={busy}
-                    className="ml-1 text-xs text-[#4ade80] hover:text-[#22c55e] transition-colors disabled:opacity-40"
-                    title="Cancel drain and bring disk back to Active"
-                  >
-                    {busy ? "Activating…" : "Set Active"}
-                  </button>
-                )}
-
-                {/* Draining → Non Active (complete drain when data migrated) */}
-                {disk.status === "draining" && !disk.offline && disk.safe_to_destroy === true && (
-                  <button
-                    onClick={() => onCompleteDrain(disk)}
-                    disabled={busy}
-                    className="ml-1 text-xs text-[#52525b] hover:text-[#71717a] transition-colors disabled:opacity-40"
-                    title="Data migrated — remove OSD from Ceph and make disk Non Active"
-                  >
-                    {busy ? "Removing…" : "Set Non Active"}
-                  </button>
-                )}
-
-                {/* Active or Joining → Non Active */}
-                {(disk.status === "active" || disk.status === "joining") && !disk.offline && (
-                  <button
-                    onClick={() => onDrain(disk)}
-                    disabled={busy}
-                    className="ml-1 text-xs text-[#52525b] hover:text-[#71717a] transition-colors disabled:opacity-40"
-                    title="Drain data off this disk and make it Non Active"
-                  >
-                    {busy ? "Deactivating…" : "Set Non Active"}
-                  </button>
-                )}
-
-                {/* Missing → Non Active (remove from Ceph so it can be re-joined if replugged) */}
-                {disk.status === "missing" && !disk.is_builtin && (
-                  disk.safe_to_destroy === true ? (
-                    <button
-                      onClick={() => onRemove(disk, false)}
-                      disabled={busy}
-                      className="ml-1 text-xs text-[#71717a] hover:text-[#a1a1aa] transition-colors disabled:opacity-40"
-                      title="Remove from Ceph — if replugged, disk will appear as Non Active"
-                    >
-                      {busy ? "Removing…" : "Set Non Active"}
-                    </button>
-                  ) : disk.safe_to_destroy === false ? (
-                    <button
-                      onClick={() => onRemove(disk, true)}
-                      disabled={busy}
-                      className="ml-1 text-xs text-[#52525b] hover:text-[#71717a] transition-colors disabled:opacity-40"
-                      title="Data not replicated — restore from Velero after this"
-                    >
-                      {busy ? "Removing…" : "Force Non Active"}
-                    </button>
-                  ) : (
-                    <span className="ml-1 text-xs text-[#52525b]" title="Cluster unreachable — cannot verify safety">
-                      Cluster unreachable
-                    </span>
-                  )
-                )}
-              </div>
+          <div className="flex-1 min-w-0 space-y-2">
+            {/* Name */}
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium text-[#fafafa] text-sm leading-tight">
+                {disk.model || disk.name}
+              </span>
+              {disk.model && (
+                <span className="text-xs text-[#52525b] font-mono">{disk.name}</span>
+              )}
             </div>
 
-            <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
+            {/* Status + size + hostname */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className="rounded-full px-2 py-0.5 text-xs font-medium"
+                style={{ background: s.bg, color: s.color }}
+              >
+                {statusLabel}
+              </span>
+              <span className="text-xs text-[#52525b]">{fmt(disk.size_bytes)}</span>
+              <span className="text-xs text-[#3f3f46]">·</span>
+              <span className="text-xs text-[#52525b]">{disk.hostname}</span>
+            </div>
 
-            {/* Draining: migration progress hint */}
-            {disk.status === "draining" && !disk.offline && (
-              <div className="mt-1 text-xs" style={{ color: disk.safe_to_destroy === true ? "#4ade80" : "#71717a" }}>
-                {disk.safe_to_destroy === true
-                  ? "Data migrated — click Set Non Active to finalize"
-                  : disk.safe_to_destroy === false
-                  ? "Moving data to other disks…"
-                  : "Checking migration status…"}
-              </div>
-            )}
-
-            {/* Missing: recovery hint */}
-            {disk.status === "missing" && !disk.offline && (
-              <div className="mt-1 text-xs" style={{ color: disk.safe_to_destroy === true ? "#4ade80" : "#71717a" }}>
-                {disk.safe_to_destroy === true
-                  ? "Data is safe — replug to go Active again, or set Non Active to remove from Ceph"
-                  : disk.safe_to_destroy === false
-                  ? "Replug disk to recover data — or force Non Active and restore from backup"
-                  : "Cannot verify cluster state — reconnect Ceph before taking action"}
-              </div>
-            )}
-
-            {/* Usage bar — active and draining disks */}
-            {(disk.status === "active" || disk.status === "draining") && (
-              <div className="mt-2 space-y-1">
+            {/* Usage bar */}
+            {(disk.status === "active" || disk.status === "removing") && usedPct !== null && (
+              <div className="space-y-1">
                 <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
-                  <div className="h-full rounded-full transition-all" style={{ width: `${usedPct ?? 0}%`, background: barColor }} />
+                  <div className="h-full rounded-full transition-all"
+                    style={{ width: `${usedPct}%`, background: barColor }} />
                 </div>
-                <span className="text-xs text-[#71717a]">
-                  {disk.used_bytes != null ? `${fmt(disk.used_bytes)} used · ${usedPct}%` : "—"}
+                <span className="text-xs text-[#52525b]">
+                  {fmt(disk.used_bytes)} used · {usedPct}%
                 </span>
+              </div>
+            )}
+
+            {/* Hint */}
+            {hint && <p className="text-xs text-[#71717a]">{hint}</p>}
+
+            {/* Action */}
+            {(action || busy) && (
+              <div className="pt-1">
+                {busy
+                  ? <span className="text-xs text-[#52525b]">Working…</span>
+                  : action}
               </div>
             )}
           </div>
@@ -264,7 +215,27 @@ function DiskRow({
   );
 }
 
-// ── Add virtual disk form ──────────────────────────────────────────────────────
+// ── Button primitive ──────────────────────────────────────────────────────────
+
+function Btn({ onClick, variant = "ghost", children }: {
+  onClick: () => void;
+  variant?: "primary" | "ghost" | "danger";
+  children: React.ReactNode;
+}) {
+  const cls = {
+    primary: "border-[#4ade80]/50 text-[#4ade80] hover:border-[#4ade80] hover:bg-[#4ade80]/5",
+    ghost:   "border-[#3f3f46] text-[#a1a1aa] hover:border-[#52525b] hover:text-[#d4d4d8]",
+    danger:  "border-[#f87171]/40 text-[#f87171] hover:border-[#f87171]/70 hover:bg-[#f87171]/5",
+  }[variant];
+  return (
+    <button onClick={onClick}
+      className={`rounded border px-3 py-1 text-xs transition-colors ${cls}`}>
+      {children}
+    </button>
+  );
+}
+
+// ── Virtual disk form ─────────────────────────────────────────────────────────
 
 const BOX_TYPES = [
   { id: "bx11", label: "1 TB",  price: "€6.90"  },
@@ -274,22 +245,15 @@ const BOX_TYPES = [
 ] as const;
 
 function AddVirtualDiskForm({
-  nodes,
-  onDone,
-  onCancel,
-}: {
-  nodes: { host: string; hostname: string }[];
-  onDone: () => void;
-  onCancel: () => void;
-}) {
+  nodes, onDone, onCancel,
+}: { nodes: { host: string; hostname: string }[]; onDone: () => void; onCancel: () => void }) {
   const [boxType, setBoxType] = useState<string>("bx11");
   const [host, setHost] = useState(nodes[0]?.host ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
       const res = await fetch("/api/disks/virtual", {
         method: "POST",
@@ -297,16 +261,11 @@ function AddVirtualDiskForm({
         body: JSON.stringify({ box_type: boxType, host: host || undefined }),
       });
       const json = await res.json() as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) {
-        setError(json.error ?? `Server error ${res.status}`);
-      } else {
-        onDone();
-      }
+      if (!res.ok || !json.ok) setError(json.error ?? `Error ${res.status}`);
+      else onDone();
     } catch (e) {
       setError(`Network error: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
   return (
@@ -319,61 +278,32 @@ function AddVirtualDiskForm({
           </button>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="text-xs text-[#71717a]">Storage size</label>
-          <div className="grid grid-cols-4 gap-2">
-            {BOX_TYPES.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setBoxType(t.id)}
-                className={`rounded-md border px-3 py-2 text-sm text-center transition-colors ${
-                  boxType === t.id
-                    ? "border-[#a78bfa] bg-[#a78bfa]/10 text-[#fafafa]"
-                    : "border-[#27272a] bg-[#18181b] text-[#71717a] hover:border-[#52525b]"
-                }`}
-              >
-                <div className="font-medium">{t.label}</div>
-                <div className="text-xs opacity-60">{t.price}/mo</div>
-              </button>
-            ))}
-          </div>
+        <div className="grid grid-cols-4 gap-2">
+          {BOX_TYPES.map((t) => (
+            <button key={t.id} onClick={() => setBoxType(t.id)}
+              className={`rounded-md border px-3 py-2 text-sm text-center transition-colors ${
+                boxType === t.id
+                  ? "border-[#a78bfa] bg-[#a78bfa]/10 text-[#fafafa]"
+                  : "border-[#27272a] bg-[#18181b] text-[#71717a] hover:border-[#52525b]"
+              }`}>
+              <div className="font-medium">{t.label}</div>
+              <div className="text-xs opacity-60">{t.price}/mo</div>
+            </button>
+          ))}
         </div>
 
         {nodes.length > 1 && (
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs text-[#71717a]">Attached machine</label>
-              <div className="group relative">
-                <div className="h-3.5 w-3.5 rounded-full border border-[#52525b] flex items-center justify-center text-[9px] text-[#52525b] cursor-default leading-none">?</div>
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 w-56 rounded-md bg-[#27272a] border border-[#3f3f46] px-2.5 py-1.5 text-xs text-[#a1a1aa]">
-                  If the machine goes offline, so does the virtual disk.
-                </div>
-              </div>
-            </div>
-            <select
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              className="w-full rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
-            >
-              {nodes.map((n) => (
-                <option key={n.host} value={n.host}>{n.hostname}</option>
-              ))}
-            </select>
-          </div>
+          <select value={host} onChange={(e) => setHost(e.target.value)}
+            className="w-full rounded-md bg-[#18181b] border border-[#27272a] px-3 py-1.5 text-sm text-[#fafafa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]">
+            {nodes.map((n) => <option key={n.host} value={n.host}>{n.hostname}</option>)}
+          </select>
         )}
 
-        <Button
-          onClick={handleCreate}
-          disabled={busy}
-          className="w-full bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-9 px-4"
-        >
+        <Button onClick={handleCreate} disabled={busy}
+          className="w-full bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-9 px-4">
           {busy ? "Creating…" : "Create"}
         </Button>
-
-        <p className="text-xs text-[#52525b]">
-          Encrypted at rest — only your key, only your data. Billed monthly.
-        </p>
-
+        <p className="text-xs text-[#52525b]">Encrypted at rest. Billed monthly.</p>
         {error && <p className="text-xs text-[#f87171]">{error}</p>}
       </div>
     </CardContent></Card>
@@ -382,79 +312,75 @@ function AddVirtualDiskForm({
 
 // ── DisksPage ─────────────────────────────────────────────────────────────────
 
-const DISKS_CACHE_KEY = "yolab:disks";
-const REFRESH_INTERVAL_KEY = "yolab:disks:refreshInterval";
-const AUTO_REFRESH_KEY = "yolab:disks:autoRefresh";
+const CACHE_KEY = "yolab:disks";
+const INTERVAL_KEY = "yolab:disks:interval";
+const AUTO_KEY = "yolab:disks:auto";
 
-const INTERVAL_OPTIONS = [
-  { label: "5s",  value: 5   },
-  { label: "10s", value: 10  },
-  { label: "30s", value: 30  },
-  { label: "1m",  value: 60  },
-  { label: "5m",  value: 300 },
+const INTERVALS = [
+  { label: "5s", value: 5 }, { label: "10s", value: 10 },
+  { label: "30s", value: 30 }, { label: "1m", value: 60 }, { label: "5m", value: 300 },
 ];
-
-type DiskItemExt = DiskItem & { offline?: boolean };
 
 export function DisksPage() {
   const [disks, setDisks] = useState<DiskItemExt[]>([]);
   const [ceph, setCeph] = useState<CephStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
   const [addingVirtual, setAddingVirtual] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [stale, setStale] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState<boolean>(() => {
-    try { return localStorage.getItem(AUTO_REFRESH_KEY) === "true"; } catch { return false; }
+  const [tick, setTick] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState(() => {
+    try { return localStorage.getItem(AUTO_KEY) === "true"; } catch { return false; }
   });
-  const [refreshInterval, setRefreshInterval] = useState<number>(() => {
-    try { return parseInt(localStorage.getItem(REFRESH_INTERVAL_KEY) ?? "10", 10); } catch { return 10; }
+  const [interval, setInterval_] = useState(() => {
+    try { return parseInt(localStorage.getItem(INTERVAL_KEY) ?? "10", 10); } catch { return 10; }
   });
   const firstRef = useRef(true);
 
-  // Persist refresh settings
-  useEffect(() => {
-    try {
-      localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
-      localStorage.setItem(REFRESH_INTERVAL_KEY, String(refreshInterval));
-    } catch {}
-  }, [autoRefresh, refreshInterval]);
+  // Auto-poll when disks are in transitional states, regardless of user setting.
+  const needsFastPoll = disks.some(
+    (d) => !d.offline && (d.status === "joining" || d.status === "removing")
+  );
 
   useEffect(() => {
-    // Pre-populate from cache on first mount
+    try {
+      localStorage.setItem(AUTO_KEY, String(autoRefresh));
+      localStorage.setItem(INTERVAL_KEY, String(interval));
+    } catch {}
+  }, [autoRefresh, interval]);
+
+  useEffect(() => {
     if (firstRef.current) {
       try {
-        const cached = localStorage.getItem(DISKS_CACHE_KEY);
+        const cached = localStorage.getItem(CACHE_KEY);
         if (cached) setDisks(JSON.parse(cached) as DiskItemExt[]);
       } catch {}
     }
 
     function load() {
       if (busy) return;
-
-      const disksP = fetch("/api/disks")
+      const p1 = fetch("/api/disks")
         .then((r) => r.json())
         .then((d: DiskItem[]) => {
           if (d.length > 0) {
-            localStorage.setItem(DISKS_CACHE_KEY, JSON.stringify(d));
+            localStorage.setItem(CACHE_KEY, JSON.stringify(d));
             setDisks((prev) => {
               const freshHosts = new Set(d.map((x) => x.host));
-              const offlineDisks: DiskItemExt[] = prev
+              const offline = prev
                 .filter((p) => !freshHosts.has(p.host))
                 .map((p) => ({ ...p, offline: true }));
-              const freshMerged = d.map((disk) => {
+              const fresh = d.map((disk) => {
                 const old = prev.find((p) => p.host === disk.host && p.name === disk.name);
                 return {
                   ...disk,
                   used_bytes: disk.used_bytes ?? old?.used_bytes ?? null,
-                  free_bytes: disk.free_bytes ?? old?.free_bytes ?? null,
                   offline: false,
                 };
               });
-              setStale(offlineDisks.length > 0);
-              return [...freshMerged, ...offlineDisks];
+              setStale(offline.length > 0);
+              return [...fresh, ...offline];
             });
           } else {
             setDisks((prev) => {
@@ -468,29 +394,23 @@ export function DisksPage() {
           setStale(true);
         });
 
-      const cephP = fetch("/api/ceph/status")
+      const p2 = fetch("/api/ceph/status")
         .then((r) => r.json())
         .then((d: CephStatus) => { if (d?.total_bytes > 0) setCeph(d); })
         .catch(() => {});
 
       if (firstRef.current) {
         firstRef.current = false;
-        void Promise.all([disksP, cephP]).finally(() => { setLoading(false); setRefreshing(false); });
+        void Promise.all([p1, p2]).finally(() => { setLoading(false); setRefreshing(false); });
       } else {
-        void Promise.all([disksP, cephP]).finally(() => setRefreshing(false));
+        void Promise.all([p1, p2]).finally(() => setRefreshing(false));
       }
     }
 
     load();
-
-    const interval = autoRefresh ? setInterval(load, refreshInterval * 1000) : null;
-    return () => { if (interval) clearInterval(interval); };
-  }, [busy, refreshTick, autoRefresh, refreshInterval]);
-
-  function handleManualRefresh() {
-    setRefreshing(true);
-    setRefreshTick((t) => t + 1);
-  }
+    const id = (autoRefresh ? setInterval(load, interval * 1000) : needsFastPoll ? setInterval(load, 5000) : null);
+    return () => { if (id) clearInterval(id); };
+  }, [busy, tick, autoRefresh, interval, needsFastPoll]);
 
   const nodes = useMemo(() => {
     const seen = new Map<string, string>();
@@ -498,74 +418,20 @@ export function DisksPage() {
     return Array.from(seen.entries()).map(([host, hostname]) => ({ host, hostname }));
   }, [disks]);
 
-  async function handleJoin(disk: DiskItem) {
+  async function post(path: string, disk: DiskItem, extra?: object) {
     const key = `${disk.host}:${disk.name}`;
     setBusy(key);
+    setError(null);
     try {
-      await fetch("/api/disks/join", {
+      const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
-      });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleDrain(disk: DiskItem) {
-    const key = `${disk.host}:${disk.name}`;
-    setBusy(key);
-    setActionError(null);
-    try {
-      const res = await fetch("/api/disks/drain", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
+        body: JSON.stringify({ disk_name: disk.name, host: disk.host, ...extra }),
       });
       const json = await res.json() as { ok?: boolean; reason?: string };
-      if (!json.ok && json.reason) setActionError(json.reason);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleCancelDrain(disk: DiskItem) {
-    const key = `${disk.host}:${disk.name}`;
-    setBusy(key);
-    try {
-      await fetch("/api/disks/cancel-drain", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
-      });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleCompleteDrain(disk: DiskItem) {
-    const key = `${disk.host}:${disk.name}`;
-    setBusy(key);
-    try {
-      await fetch("/api/disks/complete-drain", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
-      });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleRemove(disk: DiskItem, force: boolean) {
-    const key = `${disk.host}:${disk.name}`;
-    setBusy(key);
-    try {
-      await fetch("/api/disks/remove", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ disk_name: disk.name, host: disk.host, force }),
-      });
+      if (!json.ok && json.reason) setError(json.reason);
+    } catch (e) {
+      setError(`Network error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -573,90 +439,79 @@ export function DisksPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold text-[#fafafa]">Storage</h1>
           <p className="text-sm text-[#71717a] mt-0.5">
-            All disks are used automatically. Ceph distributes data across every OSD.
+            Plug in a disk and click "Use for storage" to expand your storage pool.
           </p>
         </div>
 
-        {/* Refresh controls */}
         <div className="flex items-center gap-3 flex-shrink-0 pt-0.5">
-          <button
-            onClick={handleManualRefresh}
+          <button onClick={() => { setRefreshing(true); setTick((t) => t + 1); }}
             disabled={refreshing}
-            className="flex items-center gap-1.5 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors disabled:opacity-40"
-          >
+            className="flex items-center gap-1.5 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors disabled:opacity-40">
             <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
             Refresh
           </button>
 
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
+            <input type="checkbox" checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa] cursor-pointer"
-            />
+              className="h-3.5 w-3.5 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa] cursor-pointer" />
             <span className="text-xs text-[#71717a]">Auto</span>
           </label>
 
           {autoRefresh && (
-            <select
-              value={refreshInterval}
-              onChange={(e) => setRefreshInterval(Number(e.target.value))}
-              className="rounded bg-[#18181b] border border-[#27272a] px-2 py-0.5 text-xs text-[#a1a1aa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]"
-            >
-              {INTERVAL_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
+            <select value={interval} onChange={(e) => setInterval_(Number(e.target.value))}
+              className="rounded bg-[#18181b] border border-[#27272a] px-2 py-0.5 text-xs text-[#a1a1aa] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]">
+              {INTERVALS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           )}
         </div>
       </div>
 
+      {/* Banners */}
       {stale && (
         <div className="flex items-start gap-2.5 rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
-          <p className="text-sm text-[#fbbf24]">
-            One or more machines are offline — their disks are shown as last known.
-          </p>
+          <p className="text-sm text-[#fbbf24]">One or more machines are offline — showing last known state.</p>
         </div>
       )}
-
-      {actionError && (
+      {error && (
         <div className="flex items-start gap-2.5 rounded-lg border border-[#f87171]/30 bg-[#f87171]/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-[#f87171] mt-0.5 flex-shrink-0" />
-          <p className="text-sm text-[#f87171]">{actionError}</p>
-          <button onClick={() => setActionError(null)} className="ml-auto text-[#f87171]/60 hover:text-[#f87171]">
+          <p className="text-sm text-[#f87171] flex-1">{error}</p>
+          <button onClick={() => setError(null)} className="text-[#f87171]/60 hover:text-[#f87171]">
             <X className="h-4 w-4" />
           </button>
         </div>
       )}
 
-      {loading ? <StorageOverviewSkeleton /> : <StorageOverview status={ceph} />}
+      {/* Storage overview */}
+      {!loading && <StorageOverview status={ceph} />}
 
-      {loading && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <Shimmer className="h-3 w-10" />
+      {/* Disk list */}
+      {loading ? (
+        <div className="space-y-3">{[1, 2, 3].map((i) => <DiskRowSkeleton key={i} />)}</div>
+      ) : disks.length === 0 ? (
+        <Card><CardContent className="py-12 flex flex-col items-center gap-4 text-center">
+          <div className="rounded-full bg-[#27272a] p-4">
+            <HardDrive className="h-7 w-7 text-[#52525b]" strokeWidth={1.5} />
           </div>
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => <DiskRowSkeleton key={i} />)}
+          <div>
+            <p className="text-sm font-medium text-[#71717a]">No storage disks detected</p>
+            <p className="text-xs text-[#52525b] mt-1">Disks appear here once the node is reachable</p>
           </div>
-        </div>
-      )}
-
-      {!loading && disks.length > 0 && (
+        </CardContent></Card>
+      ) : (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#52525b]">Disks</h2>
             {!addingVirtual && (
-              <button
-                onClick={() => setAddingVirtual(true)}
-                className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors"
-              >
+              <button onClick={() => setAddingVirtual(true)}
+                className="flex items-center gap-1 text-xs text-[#a78bfa] hover:text-[#9061f9] transition-colors">
                 <Plus className="h-3.5 w-3.5" />
                 Add virtual disk
               </button>
@@ -665,11 +520,9 @@ export function DisksPage() {
 
           {addingVirtual && (
             <div className="mb-3">
-              <AddVirtualDiskForm
-                nodes={nodes}
+              <AddVirtualDiskForm nodes={nodes}
                 onDone={() => setAddingVirtual(false)}
-                onCancel={() => setAddingVirtual(false)}
-              />
+                onCancel={() => setAddingVirtual(false)} />
             </div>
           )}
 
@@ -677,34 +530,14 @@ export function DisksPage() {
             {disks.map((disk) => {
               const key = `${disk.host}:${disk.name}`;
               return (
-                <DiskRow
-                  key={key}
-                  disk={disk}
-                  onJoin={handleJoin}
-                  onDrain={handleDrain}
-                  onCancelDrain={handleCancelDrain}
-                  onCompleteDrain={handleCompleteDrain}
-                  onRemove={handleRemove}
-                  busy={busy === key}
-                />
+                <DiskRow key={key} disk={disk} busy={busy === key}
+                  onAdd={(d) => post("/api/disks/add", d)}
+                  onRemove={(d) => post("/api/disks/remove", d)}
+                  onDismiss={(d) => post("/api/disks/dismiss", d)} />
               );
             })}
           </div>
         </div>
-      )}
-
-      {!loading && disks.length === 0 && (
-        <Card>
-          <CardContent className="py-12 flex flex-col items-center gap-4 text-center">
-            <div className="rounded-full bg-[#27272a] p-4">
-              <HardDrive className="h-7 w-7 text-[#52525b]" strokeWidth={1.5} />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-[#71717a]">No storage disks detected</p>
-              <p className="text-xs text-[#52525b] mt-1">Disks appear here once the local API can reach the node</p>
-            </div>
-          </CardContent>
-        </Card>
       )}
     </div>
   );
