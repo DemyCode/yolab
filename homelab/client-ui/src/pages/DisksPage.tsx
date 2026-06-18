@@ -93,6 +93,7 @@ function DiskRow({
   onJoin,
   onDrain,
   onCancelDrain,
+  onCompleteDrain,
   onRemove,
   busy,
 }: {
@@ -100,6 +101,7 @@ function DiskRow({
   onJoin: (disk: DiskItem) => void;
   onDrain: (disk: DiskItem) => void;
   onCancelDrain: (disk: DiskItem) => void;
+  onCompleteDrain: (disk: DiskItem) => void;
   onRemove: (disk: DiskItem, force: boolean) => void;
   busy: boolean;
 }) {
@@ -167,6 +169,18 @@ function DiskRow({
                   </button>
                 )}
 
+                {/* Draining → Non Active (complete drain when data migrated) */}
+                {disk.status === "draining" && !disk.offline && disk.safe_to_destroy === true && (
+                  <button
+                    onClick={() => onCompleteDrain(disk)}
+                    disabled={busy}
+                    className="ml-1 text-xs text-[#52525b] hover:text-[#71717a] transition-colors disabled:opacity-40"
+                    title="Data migrated — remove OSD from Ceph and make disk Non Active"
+                  >
+                    {busy ? "Removing…" : "Set Non Active"}
+                  </button>
+                )}
+
                 {/* Active or Joining → Non Active */}
                 {(disk.status === "active" || disk.status === "joining") && !disk.offline && (
                   <button
@@ -209,6 +223,17 @@ function DiskRow({
             </div>
 
             <div className="text-xs text-[#52525b] mt-0.5">{disk.hostname}</div>
+
+            {/* Draining: migration progress hint */}
+            {disk.status === "draining" && !disk.offline && (
+              <div className="mt-1 text-xs" style={{ color: disk.safe_to_destroy === true ? "#4ade80" : "#71717a" }}>
+                {disk.safe_to_destroy === true
+                  ? "Data migrated — click Set Non Active to finalize"
+                  : disk.safe_to_destroy === false
+                  ? "Moving data to other disks…"
+                  : "Checking migration status…"}
+              </div>
+            )}
 
             {/* Missing: recovery hint */}
             {disk.status === "missing" && !disk.offline && (
@@ -514,6 +539,20 @@ export function DisksPage() {
     }
   }
 
+  async function handleCompleteDrain(disk: DiskItem) {
+    const key = `${disk.host}:${disk.name}`;
+    setBusy(key);
+    try {
+      await fetch("/api/disks/complete-drain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disk_name: disk.name, host: disk.host }),
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleRemove(disk: DiskItem, force: boolean) {
     const key = `${disk.host}:${disk.name}`;
     setBusy(key);
@@ -630,6 +669,7 @@ export function DisksPage() {
                   onJoin={handleJoin}
                   onDrain={handleDrain}
                   onCancelDrain={handleCancelDrain}
+                  onCompleteDrain={handleCompleteDrain}
                   onRemove={handleRemove}
                   busy={busy === key}
                 />

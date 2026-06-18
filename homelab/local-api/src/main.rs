@@ -68,6 +68,7 @@ async fn main() {
         .route("/api/disks", get(disks::disks))
         .route("/api/disks/drain", post(disks::drain_disk))
         .route("/api/disks/cancel-drain", post(disks::cancel_drain))
+        .route("/api/disks/complete-drain", post(disks::complete_drain))
         .route("/api/disks/remove", post(disks::remove_disk))
         .route("/api/disks/join", post(disks::join_disk))
         .route("/api/disks/activate-local", post(disks::activate_local))
