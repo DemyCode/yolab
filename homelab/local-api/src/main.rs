@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod error;
 mod kubectl;
+mod loop_osd;
 mod proc;
 mod routers;
 
@@ -16,7 +17,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use auth::{auth_middleware, AuthState};
 use config::Config;
-use routers::{apps, backups, ceph, disks, nodes, rebuild, status, terminal, update};
+use routers::{apps, backups, ceph, nodes, rebuild, status, terminal, update};
 
 /// Single shared state threaded through all handlers.
 #[derive(Clone)]
@@ -63,15 +64,6 @@ async fn main() {
         .route("/api/update/remotes/:name", delete(update::remove_remote))
         // Rebuild log
         .route("/api/rebuild-log", get(rebuild::rebuild_log))
-        // Disks
-        .route("/api/disks/local", get(disks::disks_local))
-        .route("/api/disks", get(disks::disks))
-        .route("/api/disks/add", post(disks::add_disk))
-        .route("/api/disks/add-local", post(disks::add_disk_local))
-        .route("/api/disks/remove", post(disks::remove_disk))
-        .route("/api/disks/dismiss", post(disks::dismiss_disk))
-        .route("/api/disks/virtual", post(disks::add_virtual))
-        .route("/api/disks/add-virtual-local", post(disks::add_virtual_local))
         // Backups
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
@@ -102,14 +94,13 @@ async fn main() {
         .with_state(state.clone());
 
     // Register this node's loop devices in the CephCluster spec.
-    // Rook (useAllNodes=false) ignores nodes not in spec.storage.nodes.
-    // Retry because kubectl/K3s may not be ready when the local-api first starts.
+    // Rook v1.16+ cannot discover loop devices via deviceFilter — they must be
+    // listed explicitly. Retry because K3s may not be ready at first boot.
     tokio::spawn(async {
         for delay in [10u64, 30, 60, 120] {
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            let registered = tokio::task::spawn_blocking(disks::register_local_node)
-                .await.unwrap_or(false);
-            if registered { break; }
+            let ok = tokio::task::spawn_blocking(loop_osd::register).await.unwrap_or(false);
+            if ok { break; }
         }
     });
 
