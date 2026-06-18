@@ -44,6 +44,7 @@ spec:
   storage:
     useAllNodes: true
     useAllDevices: false
+    deviceFilter: "^loop[0-9]+"
   resources:
     mgr:
       limits:
