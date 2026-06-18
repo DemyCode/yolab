@@ -184,8 +184,8 @@ function DiskRow({
               <span className="text-xs text-[#52525b]">{disk.hostname}</span>
             </div>
 
-            {/* Usage bar */}
-            {(disk.status === "active" || disk.status === "removing") && usedPct !== null && (
+            {/* Usage bar (active only) */}
+            {disk.status === "active" && usedPct !== null && (
               <div className="space-y-1">
                 <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
                   <div className="h-full rounded-full transition-all"
@@ -193,6 +193,19 @@ function DiskRow({
                 </div>
                 <span className="text-xs text-[#52525b]">
                   {fmt(disk.used_bytes)} used · {usedPct}%
+                </span>
+              </div>
+            )}
+
+            {/* Migration progress bar (removing only) */}
+            {disk.status === "removing" && disk.migration_pct !== null && (
+              <div className="space-y-1">
+                <div className="h-1.5 rounded-full bg-[#27272a] overflow-hidden">
+                  <div className="h-full rounded-full transition-all"
+                    style={{ width: `${disk.migration_pct}%`, background: "#fb923c" }} />
+                </div>
+                <span className="text-xs text-[#71717a]">
+                  {disk.migration_pct}% migrated
                 </span>
               </div>
             )}
