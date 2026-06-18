@@ -311,6 +311,12 @@ in
             uri strip_prefix /glances
             reverse_proxy 127.0.0.1:61208
           }
+          handle /ceph-dashboard/* {
+            forward_auth [::1]:3001 {
+              uri /api/auth/check
+            }
+            reverse_proxy [::1]:30700
+          }
           handle {
             root * ${s.clientUi}
             try_files {path} /index.html
