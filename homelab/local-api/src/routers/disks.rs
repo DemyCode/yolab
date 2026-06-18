@@ -8,11 +8,23 @@ use crate::{config::Config, error::Result, kubectl, AppState};
 const CEPH_NS: &str = "rook-ceph";
 const CEPH_CLUSTER: &str = "rook-ceph";
 const MAX_VIRTUAL_LOOP: u32 = 7;
-// After a prepare job completes, Rook needs time to create the OSD deployment.
-// Treat a recently-completed job as still in progress during this cooldown.
-const PREPARE_COOLDOWN_SECS: i64 = 300;
 
 // ── Structs ───────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DiskStatus {
+    /// Visible but not in CephCluster — safe to unplug, shows Join button.
+    Pending,
+    /// In CephCluster spec, prepare job running or OSD deploy not yet ready.
+    Joining,
+    /// OSD deploy exists and is ready.
+    Active,
+    /// osd out issued, waiting for PG migration to complete.
+    Draining,
+    /// OSD deploy exists but the block device has disappeared.
+    Missing,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DiskItem {
@@ -21,10 +33,20 @@ pub struct DiskItem {
     pub size_bytes: u64,
     pub host: String,
     pub hostname: String,
-    pub is_osd: bool,
+    pub status: DiskStatus,
     pub is_builtin: bool,
     pub used_bytes: Option<u64>,
     pub free_bytes: Option<u64>,
+    /// Ceph OSD id, present when the disk has an active OSD or is missing one.
+    pub osd_id: Option<u32>,
+    /// Only populated for Missing disks: whether Ceph says it's safe to remove.
+    /// None = Ceph unreachable (never allow removal without this).
+    pub safe_to_destroy: Option<bool>,
+}
+
+static DRAINING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn draining_set() -> &'static Mutex<std::collections::HashSet<String>> {
+    DRAINING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
 #[derive(Deserialize)]
@@ -107,7 +129,7 @@ fn dev_to_disk_name(dev: &str) -> &str {
     if dev.starts_with("loop") { dev } else { dev.trim_end_matches(|c: char| c.is_ascii_digit()) }
 }
 
-// ── Ceph OSD map (used by disks_local for is_osd / usage) ────────────────────
+// ── Ceph OSD map ──────────────────────────────────────────────────────────────
 
 async fn ceph_osd_map() -> HashMap<String, u32> {
     let mut mapping = HashMap::new();
@@ -197,73 +219,7 @@ fn osd_deploy_exists_for_device_sync(dev_path: &str) -> bool {
     out.lines().any(|l| l == needle)
 }
 
-/// True if the prepare job for this hostname is currently running (active pods > 0).
-fn prepare_job_active_sync(job_name: &str) -> bool {
-    std::process::Command::new("kubectl")
-        .args(["get", "job", "-n", CEPH_NS, job_name,
-               "-o", "jsonpath={.status.active}"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0) > 0)
-        .unwrap_or(false)
-}
 
-/// True if the prepare job completed within PREPARE_COOLDOWN_SECS.
-/// Prevents wiping a device Rook just prepared before the OSD deploy is created.
-fn prepare_job_completed_recently_sync(job_name: &str) -> bool {
-    let out = std::process::Command::new("kubectl")
-        .args(["get", "job", "-n", CEPH_NS, job_name,
-               "-o", "jsonpath={.status.succeeded}/{.status.completionTime}"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-    let mut parts = out.splitn(2, '/');
-    let succeeded: u32 = parts.next().unwrap_or("").trim().parse().unwrap_or(0);
-    if succeeded == 0 { return false; }
-    let completion_time = parts.next().unwrap_or("").trim();
-    // If job succeeded but completionTime is missing, treat as recent (safe).
-    if completion_time.is_empty() { return true; }
-    if let Ok(t) = time::OffsetDateTime::parse(
-        completion_time,
-        &time::format_description::well_known::Rfc3339,
-    ) {
-        let now = time::OffsetDateTime::now_utc();
-        return (now - t).whole_seconds() < PREPARE_COOLDOWN_SECS;
-    }
-    true // unparseable → assume recent (safe)
-}
-
-/// Async: true if the prepare job for this hostname has active pods.
-async fn prepare_job_active(hostname: &str) -> bool {
-    let job_name = format!("rook-ceph-osd-prepare-{hostname}");
-    kubectl::run(&["get", "job", "-n", CEPH_NS, &job_name,
-                   "-o", "jsonpath={.status.active}"])
-        .await
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0) > 0
-}
-
-/// Ceph OSD "in" status from `ceph osd dump`: osd_id → 1 (in/active) or 0 (out/draining).
-/// Returns an empty map if Ceph is unreachable — callers must treat empty as unknown.
-struct CephOsdState {
-    in_val: u32, // 1 = in, 0 = out
-    up_val: u32, // 1 = up, 0 = down
-}
-
-async fn ceph_osd_states() -> HashMap<u32, CephOsdState> {
-    let Ok(out) = kubectl::ceph_exec(&["osd", "dump", "--format", "json"]).await else {
-        return HashMap::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) else {
-        return HashMap::new();
-    };
-    v["osds"].as_array().unwrap_or(&vec![]).iter().filter_map(|o| {
-        let id: u32 = o["osd"].as_u64()? as u32;
-        let in_val: u32 = o["in"].as_u64().unwrap_or(1) as u32;
-        let up_val: u32 = o["up"].as_u64().unwrap_or(1) as u32;
-        Some((id, CephOsdState { in_val, up_val }))
-    }).collect()
-}
 
 /// Ask Ceph whether an OSD can be safely destroyed without data loss.
 ///
@@ -388,366 +344,77 @@ async fn purge_osd_from_ceph(osd_id: u32) {
     }
 }
 
-// ── Ghost OSD cleanup ─────────────────────────────────────────────────────────
+// ── Fan-out helpers ───────────────────────────────────────────────────────────
 
-/// A ghost OSD is one whose deploy is not ready AND whose backing device is gone.
-/// This happens when a device is physically removed or wiped while Ceph still has
-/// an OSD entry for it. Ghost OSDs loop forever in Init:CrashLoopBackOff.
-///
-/// We skip cleanup when a prepare job is active: a deploy can legitimately be
-/// not-ready while Rook is still writing the BlueStore label.
-async fn cleanup_ghost_osds() {
-    let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
-    if prepare_job_active(&hostname).await { return; }
-
-    for deploy in list_osd_deploys().await {
-        if deploy.ready { continue; }
-        // If the device exists, the OSD is just starting up — not a ghost.
-        if std::path::Path::new(&deploy.dev_path).exists() { continue; }
-
-        tracing::warn!(
-            "ghost OSD: osd.{} device {} missing — purging",
-            deploy.osd_id, deploy.dev_path
-        );
-        // Delete deploy first so the pod terminates and OSD goes DOWN before
-        // we call `osd rm`. Avoids EBUSY if Ceph hasn't marked it down yet.
-        let _ = kubectl::run(&[
-            "delete", "deploy", "-n", CEPH_NS, &deploy.name, "--ignore-not-found",
-        ]).await;
-        purge_osd_from_ceph(deploy.osd_id).await;
-        tracing::info!("ghost OSD: osd.{} purged", deploy.osd_id);
-    }
-}
-
-// ── Orphaned OSD cleanup ──────────────────────────────────────────────────────
-
-/// An orphaned OSD is one that is `down+out` in Ceph but has no deploy.
-/// This can happen when `ceph osd rm` fails with EBUSY (OSD still up) during
-/// drain, and then the deploy is deleted. The OSD goes down once the pod is
-/// gone but was never removed from the Ceph OSD map.
-async fn purge_orphaned_osds() {
-    let deploys = list_osd_deploys().await;
-    let deployed_ids: std::collections::HashSet<u32> = deploys.iter().map(|d| d.osd_id).collect();
-
-    let states = ceph_osd_states().await;
-    for (osd_id, state) in &states {
-        if deployed_ids.contains(osd_id) { continue; } // has a deploy — normal
-        if state.in_val != 0 { continue; }             // still in — don't touch active OSDs
-        if state.up_val != 0 { continue; }             // still up — wait for pod termination
-
-        // down+out with no deploy → safe to remove from Ceph
-        tracing::info!("purge_orphaned: osd.{osd_id} is down+out with no deploy — removing from Ceph");
-        purge_osd_from_ceph(*osd_id).await;
-    }
-}
-
-// ── Loop device recovery ──────────────────────────────────────────────────────
-
-/// Re-attach a loop device that was detached at runtime (kernel recycled the slot,
-/// manual losetup -d, etc.). The .img file is still on disk; re-mount and restart
-/// the OSD pod so it comes back without data loss.
-async fn recover_detached_loop_osds() {
-    for deploy in list_osd_deploys().await {
-        if deploy.ready { continue; }
-        if !deploy.dev_path.starts_with("/dev/loop") { continue; }
-        // Device path exists → loop is attached, OSD is just starting.
-        if std::path::Path::new(&deploy.dev_path).exists() { continue; }
-
-        let loop_num: u32 = deploy.dev_path
-            .trim_start_matches("/dev/loop")
-            .parse()
-            .unwrap_or(u32::MAX);
-        let img_path = if loop_num == 0 {
-            "/var/lib/rook/system-osd.img".to_string()
-        } else {
-            format!("/var/lib/rook/virtual-osd-{loop_num}.img")
-        };
-
-        if !std::path::Path::new(&img_path).exists() {
-            tracing::warn!(
-                "recover_loop: osd.{}: image {img_path} missing, cannot recover",
-                deploy.osd_id
-            );
-            continue;
-        }
-
-        tracing::warn!(
-            "recover_loop: osd.{}: {} detached — re-attaching {img_path}",
-            deploy.osd_id, deploy.dev_path
-        );
-        let _ = std::process::Command::new("losetup").args(["-d", &deploy.dev_path]).output();
-        let ok = std::process::Command::new("losetup")
-            .args(["--direct-io=on", &deploy.dev_path, &img_path])
-            .status().map(|s| s.success()).unwrap_or(false);
-        if !ok {
-            let out = std::process::Command::new("losetup")
-                .args([&deploy.dev_path, &img_path])
-                .output();
-            if !out.map(|o| o.status.success()).unwrap_or(false) {
-                tracing::error!("recover_loop: osd.{}: losetup failed", deploy.osd_id);
-                continue;
-            }
-        }
-        let _ = kubectl::run(&[
-            "delete", "pod", "-n", CEPH_NS,
-            "-l", &format!("app=rook-ceph-osd,ceph-osd-id={}", deploy.osd_id),
-            "--ignore-not-found",
-        ]).await;
-        tracing::info!("recover_loop: osd.{}: re-attached, pod restarted", deploy.osd_id);
-    }
-}
-
-// ── Node fan-out ──────────────────────────────────────────────────────────────
-
-async fn node_ips(cfg: &Config) -> Vec<String> {
-    let mut ips = vec![cfg.node_ipv6.clone()];
-    for node in kubectl::get_nodes().await.unwrap_or_default() {
-        if let Some(addr) = node["status"]["addresses"].as_array()
-            .and_then(|a| a.iter().find(|a| {
-                a["type"] == "InternalIP" && a["address"].as_str().map(|s| s.contains(':')).unwrap_or(false)
-            }))
-            .and_then(|a| a["address"].as_str())
-        {
-            if addr != cfg.node_ipv6 { ips.push(addr.to_string()); }
-        }
-    }
-    ips
-}
-
-async fn gather_from_nodes(cfg: &Config, path: &str) -> Vec<(String, Vec<serde_json::Value>)> {
-    let ips = node_ips(cfg).await;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap();
+/// Fan out a GET request to all K8s node IPs and collect their JSON responses.
+async fn gather_from_nodes(
+    cfg: &Config,
+    path: &str,
+) -> Vec<(String, Vec<serde_json::Value>)> {
+    let ips = kubectl::get_node_ips().await;
+    let port = cfg.port;
     let futs = ips.iter().map(|ip| {
-        let url = format!("http://[{}]:{}{}", ip, cfg.port, path);
-        let client = client.clone();
-        let ip = ip.clone();
+        let url = format!("http://[{ip}]:{port}{path}");
         async move {
-            let Ok(resp) = client.get(&url).send().await else { return None };
-            let Ok(data) = resp.json::<Vec<serde_json::Value>>().await else { return None };
-            Some((ip, data))
+            let items = reqwest::Client::new()
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .ok()?
+                .json::<Vec<serde_json::Value>>()
+                .await
+                .ok()?;
+            Some((ip.clone(), items))
         }
     });
-    futures::future::join_all(futs).await.into_iter().flatten().collect()
+    futures::future::join_all(futs).await
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
-fn node_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
+// ── Local disk activation ─────────────────────────────────────────────────────
 
-// ── Activation ────────────────────────────────────────────────────────────────
-
-// Tracks which devices are currently being activated to prevent concurrent
-// spawn_blocking tasks (from aborted reconcile tasks) from double-wiping.
 static ACTIVATING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn activating_set() -> &'static Mutex<std::collections::HashSet<String>> {
+    ACTIVATING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
 
-/// Prepare a device for use as a Ceph OSD on the local node.
-///
-/// Four guards prevent redundant or destructive activations:
-///   1. OSD deploy already references this device → Rook is working on it.
-///   2. Prepare job is actively running → Rook is working on it.
-///   3. Prepare job completed recently → Rook may not have created the deploy yet.
-///   4. Device already in CephCluster → Rook is about to create the prepare job.
-///
-/// A process-level mutex prevents two concurrent spawn_blocking calls (e.g. from
-/// an aborted reconcile whose blocking task outlived the abort) from both wiping
-/// the same device simultaneously.
 fn do_activate_local(disk_name: &str) -> anyhow::Result<()> {
-    // Mutex guard: only one activation per device at a time.
-    let activating = ACTIVATING.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let ceph_dev = ceph_device_for(disk_name);
     {
-        let mut guard = activating.lock().unwrap();
-        if guard.contains(disk_name) {
-            tracing::debug!("activate {disk_name}: another task is already activating this device");
-            return Ok(());
+        let mut set = activating_set().lock().unwrap();
+        if set.contains(disk_name) {
+            anyhow::bail!("already activating {disk_name}");
         }
-        guard.insert(disk_name.to_string());
+        set.insert(disk_name.to_string());
     }
-    let result = do_activate_local_inner(disk_name);
-    activating.lock().unwrap().remove(disk_name);
+    let result = (|| -> anyhow::Result<()> {
+        // Safety: skip if already in CephCluster spec or OSD deploy exists
+        if cephcluster_has_device_sync(&ceph_dev) { return Ok(()); }
+        if osd_deploy_exists_for_device_sync(&format!("/dev/{ceph_dev}")) { return Ok(()); }
+        wipe_device(disk_name);
+        cephcluster_add_device_sync(&ceph_dev);
+        Ok(())
+    })();
+    activating_set().lock().unwrap().remove(disk_name);
     result
 }
 
-fn do_activate_local_inner(disk_name: &str) -> anyhow::Result<()> {
-    let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
-    let job_name = format!("rook-ceph-osd-prepare-{hostname}");
-    let ceph_dev = ceph_device_for(disk_name);
-    let dev_path = format!("/dev/{ceph_dev}");
-
-    if osd_deploy_exists_for_device_sync(&dev_path) {
-        tracing::debug!("activate {disk_name}: OSD deploy exists, nothing to do");
-        return Ok(());
-    }
-    if prepare_job_active_sync(&job_name) {
-        tracing::debug!("activate {disk_name}: prepare job active, waiting");
-        return Ok(());
-    }
-    if prepare_job_completed_recently_sync(&job_name) {
-        tracing::debug!("activate {disk_name}: prepare job completed recently, waiting for deploy");
-        return Ok(());
-    }
-    // Device already in CephCluster: Rook is about to (or is) creating the prepare job.
-    // This covers the 60-90s window between patching CephCluster and the job appearing,
-    // preventing repeated wipes that reset BlueStore initialization mid-flight.
-    if cephcluster_has_device_sync(&ceph_dev) {
-        tracing::debug!("activate {disk_name}: already in CephCluster, waiting for Rook");
-        return Ok(());
-    }
-
-    // Clear any stale job, wipe the device, register in CephCluster.
-    let _ = std::process::Command::new("kubectl")
-        .args(["delete", "job", "-n", CEPH_NS, &job_name, "--ignore-not-found"])
-        .output();
-    wipe_device(disk_name);
-    cephcluster_add_device_sync(&ceph_dev);
-    tracing::info!("activate {disk_name}: wiped and registered as {ceph_dev}, waiting for Rook");
-    Ok(())
-}
-
+/// Activate a disk — local if host matches, otherwise fan out via HTTP.
 async fn activate_disk(cfg: &Config, disk_name: &str, host: &str) {
-    if host != cfg.node_ipv6 {
-        let _ = node_client()
-            .post(format!("http://[{}]:{}/api/disks/activate-local", host, cfg.port))
-            .json(&serde_json::json!({"host": host, "disk_name": disk_name}))
-            .send().await;
-        return;
-    }
-    let name = disk_name.to_string();
-    tokio::task::spawn_blocking(move || { let _ = do_activate_local(&name); }).await.ok();
-}
-
-// ── MDS auto-recovery ─────────────────────────────────────────────────────────
-
-/// Detect damaged or completely-offline MDS and attempt auto-recovery.
-///
-/// When MDS_DAMAGE or MDS_ALL_DOWN is present, the file system can be recovered
-/// by failing the FS, removing it, and recreating it over the existing pools.
-/// This preserves pool data (56 GiB+) while resetting the MDS map.
-async fn auto_recover_mds() {
-    let health_raw = match kubectl::ceph_exec(&["health", "detail", "--format", "json"]).await {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let health: serde_json::Value = serde_json::from_str(&health_raw).unwrap_or_default();
-    let checks = health["checks"].as_object();
-    let has_damage = checks.map(|c| c.contains_key("MDS_DAMAGE")).unwrap_or(false);
-    let has_all_down = checks.map(|c| c.contains_key("MDS_ALL_DOWN")).unwrap_or(false);
-
-    if !has_damage && !has_all_down { return; }
-
-    tracing::warn!("auto_recover_mds: detected {} — initiating FS recovery",
-        if has_damage { "MDS_DAMAGE" } else { "MDS_ALL_DOWN" });
-
-    // 1. Get current FS info (pools)
-    let fs_info_raw = kubectl::ceph_exec(&["fs", "get", "yolab-fs", "--format", "json"]).await;
-    let (meta_pool, data_pool) = match fs_info_raw.as_ref().ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-    {
-        Some(v) => {
-            let meta = v["mdsmap"]["metadata_pool_map"]
-                .as_object().and_then(|m| m.keys().next().map(String::from))
-                .unwrap_or_else(|| "yolab-fs-metadata".into());
-            let data = v["mdsmap"]["data_pools"]
-                .as_array().and_then(|a| a.first()).and_then(|v| v.as_str()).map(String::from)
-                .unwrap_or_else(|| "yolab-fs-data0".into());
-            (meta, data)
-        }
-        None => ("yolab-fs-metadata".into(), "yolab-fs-data0".into()),
-    };
-
-    // 2. Fail → remove → recreate (over existing pools — data preserved)
-    let _ = kubectl::ceph_exec(&["fs", "fail", "yolab-fs"]).await;
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    let _ = kubectl::ceph_exec(&["fs", "rm", "yolab-fs", "--yes-i-really-mean-it"]).await;
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    match kubectl::ceph_exec(&["fs", "new", "yolab-fs", &meta_pool, &data_pool, "--force"]).await {
-        Ok(_) => {
-            tracing::info!("auto_recover_mds: FS recreated over {meta_pool}/{data_pool} — restarting MDS pods");
-            let _ = kubectl::run(&[
-                "delete", "pod", "-n", CEPH_NS,
-                "-l", "app=rook-ceph-mds", "--ignore-not-found",
-            ]).await;
-        }
-        Err(e) => tracing::error!("auto_recover_mds: fs new failed: {e}"),
-    }
-}
-
-/// Restart app pods that have been stuck in an Init container for >10 minutes.
-///
-/// After CephFS goes offline and comes back, pods that were scheduling during the
-/// outage can get stuck in Init state because the volume attachment timed out.
-/// Deleting them triggers a clean reschedule once the volume is available again.
-async fn restart_stuck_init_pods() {
-    let Ok(pods_raw) = kubectl::run(&[
-        "get", "pods", "--all-namespaces",
-        "-o", "json",
-    ]).await else { return };
-    let Ok(pods) = serde_json::from_str::<serde_json::Value>(&pods_raw) else { return };
-
-    let now = time::OffsetDateTime::now_utc();
-    for pod in pods["items"].as_array().unwrap_or(&vec![]) {
-        let phase = pod["status"]["phase"].as_str().unwrap_or("");
-        if phase == "Succeeded" || phase == "Running" { continue; }
-
-        // Only care about pods stuck in an init container
-        let init_statuses = pod["status"]["initContainerStatuses"].as_array();
-        let waiting_init = init_statuses.map(|cs| {
-            cs.iter().any(|c| c["state"]["waiting"].is_object() || !c["ready"].as_bool().unwrap_or(false))
-        }).unwrap_or(false);
-        if !waiting_init { continue; }
-
-        let ns = pod["metadata"]["namespace"].as_str().unwrap_or("");
-        // Only restart user-app namespaces, not system ones
-        if ns.starts_with("kube-") || ns == "rook-ceph" || ns == "default" { continue; }
-
-        let start_str = pod["metadata"]["creationTimestamp"].as_str().unwrap_or("");
-        let age_minutes = time::OffsetDateTime::parse(start_str, &time::format_description::well_known::Rfc3339)
-            .map(|t| (now - t).whole_minutes())
-            .unwrap_or(0);
-
-        // Only restart if stuck for more than 10 minutes
-        if age_minutes < 10 { continue; }
-
-        let name = pod["metadata"]["name"].as_str().unwrap_or("");
-        tracing::warn!("restart_stuck_init: {ns}/{name} stuck in Init for {age_minutes}m — deleting");
-        let _ = kubectl::run(&[
-            "delete", "pod", "-n", ns, name, "--ignore-not-found",
-        ]).await;
-    }
-}
-
-// ── Reconcile ────────────────────────────────────────────────────────────────
-
-/// Simple reconcile: fix broken state, then ensure every non-system disk is an OSD.
-/// No priority list. No target computation. Ceph handles data distribution.
-/// Drain is explicit-only: user triggers POST /api/disks/drain.
-pub async fn reconcile_storage(cfg: Arc<Config>) {
-    cleanup_ghost_osds().await;
-    recover_detached_loop_osds().await;
-    purge_orphaned_osds().await;
-    auto_recover_mds().await;
-    restart_stuck_init_pods().await;
-
-    // Ensure every non-system disk visible from any node is in CephCluster.
-    // Activate at most one disk per tick so Rook isn't overwhelmed.
-    let node_results = gather_from_nodes(&cfg, "/api/disks/local").await;
-    for (_, disks) in node_results {
-        for disk in disks {
-            let host = disk["host"].as_str().unwrap_or("").to_string();
-            let name = disk["name"].as_str().unwrap_or("").to_string();
-            if name.is_empty() || host.is_empty() { continue; }
-            let ceph_dev = ceph_device_for(&name);
-            if !cephcluster_has_device_sync(&ceph_dev) {
-                tracing::info!("reconcile: {name} on {host} not in CephCluster — activating");
-                activate_disk(&cfg, &name, &host).await;
-                return; // one activation per tick
-            }
-        }
+    if host == cfg.node_ipv6 {
+        let name = disk_name.to_string();
+        let _ = tokio::task::spawn_blocking(move || do_activate_local(&name)).await;
+    } else {
+        let url = format!("http://[{host}]:{}/api/disks/activate-local", cfg.port);
+        let _ = reqwest::Client::new()
+            .post(&url)
+            .json(&serde_json::json!({"disk_name": disk_name, "host": host}))
+            .timeout(std::time::Duration::from_secs(60))
+            .send()
+            .await;
     }
 }
 
@@ -756,7 +423,14 @@ pub async fn reconcile_storage(cfg: Arc<Config>) {
 pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskItem>>> {
     let cfg = &state.config;
     let hostname = hostname::get().unwrap_or_default().to_string_lossy().to_string();
-    let (osd_map, usage) = tokio::join!(ceph_osd_map(), kubectl::osd_df());
+    let (osd_map, usage, cephcluster_devs_vec, deploys) = tokio::join!(
+        ceph_osd_map(),
+        kubectl::osd_df(),
+        tokio::task::spawn_blocking(cephcluster_devices_sync),
+        list_osd_deploys(),
+    );
+    let cephcluster_devs: std::collections::HashSet<String> =
+        cephcluster_devs_vec.unwrap_or_default().into_iter().collect();
     let (devices, backing_files) = tokio::task::spawn_blocking(scan_block_devices).await
         .unwrap_or_else(|_| Ok((vec![], Default::default())))
         .unwrap_or_default();
@@ -779,7 +453,18 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
         } else {
             d["model"].as_str().unwrap_or("").trim().to_string()
         };
+        let ceph_dev = ceph_device_for(&name);
         let osd_id = osd_map.get(&name).copied();
+        let is_draining = draining_set().lock().unwrap().contains(&name);
+        let status = if is_draining {
+            DiskStatus::Draining
+        } else if osd_id.is_some() {
+            DiskStatus::Active
+        } else if cephcluster_devs.contains(&ceph_dev) {
+            DiskStatus::Joining
+        } else {
+            DiskStatus::Pending
+        };
         let u = osd_id.and_then(|id| usage.get(&id));
         result.push(DiskItem {
             name,
@@ -787,13 +472,59 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
             size_bytes: d["size"].as_u64().unwrap_or(0),
             host: cfg.node_ipv6.clone(),
             hostname: hostname.clone(),
-            is_osd: osd_id.is_some(),
+            status,
             is_builtin,
             used_bytes: u.map(|u| u.used_bytes),
             free_bytes: u.map(|u| u.free_bytes),
+            osd_id,
+            safe_to_destroy: None,
         });
     }
+
+    // Add entries for OSD deploys whose block device has disappeared.
+    // For each missing OSD, check safe-to-destroy in parallel.
+    let seen: std::collections::HashSet<&str> = result.iter().map(|d| d.name.as_str()).collect();
+    let missing_deploys: Vec<_> = deploys.iter().filter(|d| {
+        if std::path::Path::new(&d.dev_path).exists() { return false; }
+        let dev_name = d.dev_path.trim_start_matches("/dev/");
+        let disk_name = dev_to_disk_name(dev_name);
+        !seen.contains(disk_name)
+    }).collect();
+
+    let safe_checks: Vec<Option<bool>> = futures::future::join_all(
+        missing_deploys.iter().map(|d| osd_safe_to_destroy(d.osd_id))
+    ).await;
+
+    for (deploy, safe) in missing_deploys.iter().zip(safe_checks.iter()) {
+        let dev_name = deploy.dev_path.trim_start_matches("/dev/");
+        let disk_name = dev_to_disk_name(dev_name).to_string();
+        let is_builtin = deploy.dev_path == "/dev/loop0";
+        let is_loop = disk_name.starts_with("loop");
+        let u = usage.get(&deploy.osd_id);
+        result.push(DiskItem {
+            name: disk_name,
+            model: if is_loop { "Built-in storage".to_string() } else { String::new() },
+            size_bytes: u.map(|u| u.used_bytes + u.free_bytes).unwrap_or(0),
+            host: cfg.node_ipv6.clone(),
+            hostname: hostname.clone(),
+            status: DiskStatus::Missing,
+            is_builtin,
+            used_bytes: u.map(|u| u.used_bytes),
+            free_bytes: u.map(|u| u.free_bytes),
+            osd_id: Some(deploy.osd_id),
+            safe_to_destroy: *safe,
+        });
+    }
+
     Ok(Json(result))
+}
+
+pub async fn join_disk(
+    State(state): State<AppState>,
+    Json(body): Json<DiskOrderEntry>,
+) -> Result<Json<serde_json::Value>> {
+    activate_disk(&state.config, &body.disk_name, &body.host).await;
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 pub async fn disks(State(state): State<AppState>) -> Result<Json<Vec<DiskItem>>> {
@@ -842,16 +573,40 @@ pub async fn deactivate_local(Json(body): Json<DiskOrderEntry>) -> Result<Json<s
 // ── Explicit drain ────────────────────────────────────────────────────────────
 
 /// Drain an OSD: mark it out, wait for safe-to-destroy, then remove from Ceph.
-/// No wipe — the disk stays clean and can be re-added by the reconcile loop.
+/// Only valid for Active disks — use /api/disks/remove for Missing disks.
+/// No wipe — the disk stays clean and can be re-added via the Join button.
 /// Use force=true to skip the safe-to-destroy check and accept data loss.
 pub async fn drain_disk(
     State(state): State<AppState>,
     Json(body): Json<DrainRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let cfg = Arc::clone(&state.config);
     let disk_name = body.disk_name.clone();
+
+    // Guard: already draining
+    if draining_set().lock().unwrap().contains(&disk_name) {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "reason": "drain already in progress for this disk"
+        })));
+    }
+
+    // Guard: disk must not be missing (use /remove for that)
+    let deploys = list_osd_deploys().await;
+    let ceph_dev = ceph_device_for(&disk_name);
+    let dev_path = format!("/dev/{ceph_dev}");
+    if let Some(d) = deploys.iter().find(|d| d.dev_path == dev_path) {
+        if !std::path::Path::new(&d.dev_path).exists() {
+            return Ok(Json(serde_json::json!({
+                "ok": false,
+                "reason": "disk is missing — use /api/disks/remove instead"
+            })));
+        }
+    }
+
+    let cfg = Arc::clone(&state.config);
     let host = body.host.clone();
     let force = body.force.unwrap_or(false);
+    draining_set().lock().unwrap().insert(disk_name.clone());
     tokio::spawn(async move {
         drain_disk_background(&cfg, &disk_name, &host, force).await;
     });
@@ -862,9 +617,9 @@ async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force:
     let ceph_dev = ceph_device_for(disk_name);
 
     if host != cfg.node_ipv6 {
-        // Remote node: fan out to that node's drain-local endpoint (NYI — remove from spec only).
         tracing::warn!("drain: remote drain NYI for {disk_name} on {host}, removing from CephCluster spec");
         cephcluster_remove_device(&ceph_dev).await;
+        draining_set().lock().unwrap().remove(disk_name);
         return;
     }
 
@@ -873,6 +628,7 @@ async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force:
     let Some(deploy) = deploys.iter().find(|d| d.dev_path == dev_path) else {
         tracing::info!("drain: {disk_name} has no OSD deploy — removing from CephCluster spec only");
         cephcluster_remove_device(&ceph_dev).await;
+        draining_set().lock().unwrap().remove(disk_name);
         return;
     };
 
@@ -886,8 +642,7 @@ async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force:
 
     if !force {
         // Wait indefinitely — bounded timeouts caused data loss in the past.
-        // With size=1 pools, this only resolves if the pool is emptied first.
-        // Use force=true to bypass and accept data loss.
+        // With rep=1, safe-to-destroy never returns true; use force to bypass.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             match osd_safe_to_destroy(osd_id).await {
@@ -902,7 +657,114 @@ async fn drain_disk_background(cfg: &Config, disk_name: &str, host: &str, force:
     let _ = kubectl::run(&["delete", "deploy", "-n", CEPH_NS, &deploy_name, "--ignore-not-found"]).await;
     purge_osd_from_ceph(osd_id).await;
     cephcluster_remove_device(&ceph_dev).await;
+    draining_set().lock().unwrap().remove(disk_name);
     tracing::info!("drain: osd.{osd_id} ({disk_name}): done — disk ready to unplug or re-add");
+}
+
+// ── Missing disk removal ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RemoveRequest {
+    pub disk_name: String,
+    pub host: String,
+    /// Acknowledge data loss and proceed even when safe-to-destroy is false.
+    /// Required for the Velero-restore recovery path.
+    pub force: Option<bool>,
+}
+
+/// Remove a disk that is in Missing state from Ceph and the CephCluster spec.
+/// Checks osd safe-to-destroy first; blocks if not safe unless force=true.
+/// Ceph unreachable always blocks — we refuse to remove without a health signal.
+pub async fn remove_disk(
+    State(state): State<AppState>,
+    Json(body): Json<RemoveRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let disk_name = &body.disk_name;
+    let force = body.force.unwrap_or(false);
+
+    let deploys = list_osd_deploys().await;
+    let ceph_dev = ceph_device_for(disk_name);
+    let dev_path = format!("/dev/{ceph_dev}");
+
+    let deploy = match deploys.iter().find(|d| d.dev_path == dev_path) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({
+            "ok": false,
+            "reason": "no OSD deploy found for this disk — it may already be removed"
+        }))),
+    };
+
+    // Must actually be missing (device gone)
+    if std::path::Path::new(&deploy.dev_path).exists() {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "reason": "disk is present, not missing — use drain to remove an active disk"
+        })));
+    }
+
+    let osd_id = deploy.osd_id;
+    let deploy_name = deploy.name.clone();
+
+    let safe = osd_safe_to_destroy(osd_id).await;
+
+    match safe {
+        None => {
+            // Ceph unreachable — never remove, we can't verify cluster health
+            return Ok(Json(serde_json::json!({
+                "ok": false,
+                "safe": null,
+                "reason": "cluster unreachable — cannot verify it is safe to remove this disk. Try again when Ceph is healthy."
+            })));
+        }
+        Some(false) if !force => {
+            return Ok(Json(serde_json::json!({
+                "ok": false,
+                "safe": false,
+                "reason": "data on this disk has not been fully replicated elsewhere. Replug the disk to recover, or use force=true to remove and accept data loss (then restore from Velero backup)."
+            })));
+        }
+        _ => {}
+    }
+
+    let data_loss = matches!(safe, Some(false));
+
+    tracing::info!("remove: osd.{osd_id} ({disk_name}) — force={force}, data_loss={data_loss}");
+    let _ = kubectl::run(&[
+        "delete", "deploy", "-n", CEPH_NS, &deploy_name, "--ignore-not-found",
+    ]).await;
+    purge_osd_from_ceph(osd_id).await;
+    cephcluster_remove_device(&ceph_dev).await;
+    tracing::info!("remove: osd.{osd_id} ({disk_name}): done");
+
+    // Count remaining OSD deploys to detect pool replication mismatch
+    let remaining_deploys = list_osd_deploys().await;
+    let remaining_osd_count = remaining_deploys.len();
+
+    // Check CephCluster pool replication setting
+    let pool_size = kubectl::run(&[
+        "get", "cephblockpool", "-n", CEPH_NS, "-o",
+        "jsonpath={.items[0].spec.replicated.size}",
+    ]).await.ok().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0);
+
+    let pool_warning = if pool_size > 0 && remaining_osd_count < pool_size {
+        Some(serde_json::json!({
+            "pool_size": pool_size,
+            "osd_count": remaining_osd_count,
+            "message": format!(
+                "Your cluster now has {} OSD(s) but pools require {} replicas. \
+                 Consider reducing pool replication to match.",
+                remaining_osd_count, pool_size
+            )
+        }))
+    } else {
+        None
+    };
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "data_loss_warning": data_loss,
+        "pool_replication_warning": pool_warning,
+    })))
 }
 
 // ── Virtual disk management ───────────────────────────────────────────────────
@@ -999,34 +861,6 @@ async fn try_provision_storage_box_result(
         .map_err(|e| anyhow::anyhow!("Invalid response from provisioning service: {e}"))?;
 
     Ok(serde_json::json!({
-        "ok": true,
-        "type": "storage_box",
-        "host": resp["host"],
-        "port": resp["port"],
-        "username": resp["username"],
-        "password": resp["password"],
-    }))
-}
-
-async fn try_provision_storage_box(
-    cfg: &Config,
-    body: &AddVirtualRequest,
-) -> Option<serde_json::Value> {
-    let (url, token) = crate::routers::backups::ye_creds(cfg)?;
-
-    let box_type = body.box_type.as_str();
-
-    let resp = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build().ok()?
-        .post(format!("{url}/storage/volume"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "box_type": box_type }))
-        .send().await.ok()?
-        .error_for_status().ok()?
-        .json::<serde_json::Value>().await.ok()?;
-
-    Some(serde_json::json!({
         "ok": true,
         "type": "storage_box",
         "host": resp["host"],

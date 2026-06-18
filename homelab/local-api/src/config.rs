@@ -12,7 +12,6 @@ pub struct Config {
     pub rebuild_pid: PathBuf,
     pub built_dir: PathBuf,
     pub osd_img_path: PathBuf,
-    pub k3s_server_dir: PathBuf,
     pub channel_file: PathBuf,
 }
 
@@ -38,7 +37,6 @@ impl Config {
             rebuild_pid: PathBuf::from("/run/yolab-rebuild.pid"),
             channel_file: built_dir.join("channel.json"),
             osd_img_path: PathBuf::from("/var/lib/rook/system-osd.img"),
-            k3s_server_dir: PathBuf::from("/var/lib/rancher/k3s/server"),
             built_dir,
             repo_path,
         }
@@ -48,7 +46,5 @@ impl Config {
         PathBuf::from(&self.repo_path).join("apps/catalog")
     }
 
-    pub fn is_primary_node(&self) -> bool {
-        self.k3s_server_dir.is_dir()
-    }
+
 }

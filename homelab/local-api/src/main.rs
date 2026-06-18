@@ -67,6 +67,8 @@ async fn main() {
         .route("/api/disks/local", get(disks::disks_local))
         .route("/api/disks", get(disks::disks))
         .route("/api/disks/drain", post(disks::drain_disk))
+        .route("/api/disks/remove", post(disks::remove_disk))
+        .route("/api/disks/join", post(disks::join_disk))
         .route("/api/disks/activate-local", post(disks::activate_local))
         .route("/api/disks/deactivate-local", post(disks::deactivate_local))
         .route("/api/disks/virtual", post(disks::add_virtual))
@@ -99,32 +101,6 @@ async fn main() {
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());
-
-    // Reconcile loop on primary node.
-    // - MissedTickBehavior::Delay: if one run takes >30s, the next fires 30s *after* it finishes
-    //   rather than immediately, preventing runaway accumulation of parallel reconcile tasks.
-    // - tokio::spawn + .await: isolates panics so the loop survives a crash inside reconcile_storage.
-    if cfg.is_primary_node() {
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                let handle = tokio::spawn(disks::reconcile_storage(Arc::clone(&state.config)));
-                let abort = handle.abort_handle();
-                match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => tracing::error!("reconcile_storage panicked: {:?}", e),
-                    Err(_) => {
-                        // Abort the still-running task to prevent concurrent reconciles.
-                        abort.abort();
-                        tracing::error!("reconcile_storage timed out after 120s, aborted");
-                    }
-                }
-            }
-        });
-    }
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
