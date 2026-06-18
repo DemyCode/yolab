@@ -315,7 +315,7 @@ in
             forward_auth [::1]:3001 {
               uri /api/auth/check
             }
-            reverse_proxy [::1]:30700
+            reverse_proxy [fd00:43::df84]:7000
           }
           handle {
             root * ${s.clientUi}
