@@ -4,7 +4,6 @@ import { cn } from "@/lib/utils";
 import {
   Activity,
   Server,
-  HardDrive,
   LayoutGrid,
   TerminalSquare,
   LogOut,
@@ -37,7 +36,6 @@ interface ClusterHealth {
 const NAV_ITEMS = [
   { to: "/overview", icon: Activity, label: "Overview" },
   { to: "/nodes", icon: Server, label: "Machines" },
-  { to: "/disks", icon: HardDrive, label: "Disks" },
   { to: "/backups", icon: Cloud, label: "Backups" },
   { to: "/apps", icon: LayoutGrid, label: "Apps" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal" },

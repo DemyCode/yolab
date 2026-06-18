@@ -4,7 +4,6 @@ import { Layout } from "@/components/Layout";
 import { LoginPage } from "@/pages/LoginPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { NodesPage } from "@/pages/NodesPage";
-import { DisksPage } from "@/pages/DisksPage";
 import { BackupsPage } from "@/pages/BackupsPage";
 import {
   AppsPage,
@@ -20,7 +19,6 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
       <Route element={<Layout onLogout={onLogout} />}>
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/nodes" element={<NodesPage />} />
-        <Route path="/disks" element={<DisksPage />} />
         <Route path="/backups" element={<BackupsPage />} />
         <Route path="/apps" element={<AppsPage />} />
         <Route path="/apps/:appId" element={<AppInstallPage />} />
