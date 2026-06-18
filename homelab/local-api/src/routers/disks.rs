@@ -248,7 +248,33 @@ fn wipe_device(disk_name: &str) {
     }
 }
 
-fn cephcluster_devices_sync() -> Vec<String> {
+fn k8s_node_name() -> String {
+    std::process::Command::new("kubectl")
+        .args(["get", "nodes", "-o", "jsonpath={.items[0].metadata.name}"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+// Read the per-node devices list for a given k8s node name.
+// Falls back to the global spec.storage.devices list if no per-node entry exists.
+// Per-node entries override the global deviceFilter, giving us explicit control.
+fn cephcluster_node_devices_sync(k8s_node: &str) -> Vec<String> {
+    let nodes_raw = std::process::Command::new("kubectl")
+        .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
+               "-o", "jsonpath={.spec.storage.nodes}"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if let Ok(nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&nodes_raw) {
+        for node in &nodes {
+            if node["name"].as_str() == Some(k8s_node) {
+                return node["devices"].as_array().unwrap_or(&vec![])
+                    .iter().filter_map(|d| d["name"].as_str().map(String::from)).collect();
+            }
+        }
+    }
+    // No per-node entry — fall back to global devices list.
     let raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
                "-o", "jsonpath={.spec.storage.devices}"])
@@ -259,42 +285,67 @@ fn cephcluster_devices_sync() -> Vec<String> {
     devices.iter().filter_map(|d| d["name"].as_str().map(String::from)).collect()
 }
 
+// Keep for disks_local() spec check (uses k8s_node_name internally).
+fn cephcluster_devices_sync() -> Vec<String> {
+    cephcluster_node_devices_sync(&k8s_node_name())
+}
+
 fn cephcluster_has_device_sync(ceph_dev: &str) -> bool {
     cephcluster_devices_sync().iter().any(|d| d == ceph_dev)
 }
 
-fn cephcluster_add_device_sync(ceph_dev: &str) {
-    let raw = std::process::Command::new("kubectl")
+// Write the per-node devices list for a k8s node.
+// Creating a per-node entry disables the global deviceFilter for that node,
+// so Rook only provisions the devices we explicitly list.
+fn cephcluster_set_node_devices_sync(k8s_node: &str, devices: Vec<String>) {
+    let nodes_raw = std::process::Command::new("kubectl")
         .args(["get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
-               "-o", "jsonpath={.spec.storage.devices}"])
+               "-o", "jsonpath={.spec.storage.nodes}"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    let mut devices: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
-    if !devices.iter().any(|d| d["name"].as_str() == Some(ceph_dev)) {
-        devices.push(serde_json::json!({"name": ceph_dev}));
+    let mut nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_raw).unwrap_or_default();
+
+    let dev_entries: Vec<serde_json::Value> = devices.iter()
+        .map(|d| serde_json::json!({"name": d}))
+        .collect();
+
+    let mut found = false;
+    for node in nodes.iter_mut() {
+        if node["name"].as_str() == Some(k8s_node) {
+            node["devices"] = serde_json::Value::Array(dev_entries.clone());
+            found = true;
+            break;
+        }
     }
-    let patch = serde_json::json!({"spec": {"storage": {"devices": devices}}});
+    if !found {
+        nodes.push(serde_json::json!({"name": k8s_node, "devices": dev_entries}));
+    }
+
+    let patch = serde_json::json!({"spec": {"storage": {"nodes": nodes}}});
     let _ = std::process::Command::new("kubectl")
         .args(["patch", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
                "--type", "merge", "-p", &patch.to_string()])
         .output();
 }
 
+fn cephcluster_add_device_sync(ceph_dev: &str) {
+    let k8s_node = k8s_node_name();
+    let mut devices = cephcluster_node_devices_sync(&k8s_node);
+    if !devices.iter().any(|d| d == ceph_dev) {
+        devices.push(ceph_dev.to_string());
+    }
+    cephcluster_set_node_devices_sync(&k8s_node, devices);
+}
+
 async fn cephcluster_remove_device(ceph_dev: &str) {
-    let Ok(raw) = kubectl::run(&[
-        "get", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
-        "-o", "jsonpath={.spec.storage.devices}",
-    ]).await else { return };
-    let devices: Vec<serde_json::Value> = serde_json::from_str(raw.trim()).unwrap_or_default();
-    let new_devices: Vec<_> = devices.into_iter()
-        .filter(|d| d["name"].as_str() != Some(ceph_dev))
-        .collect();
-    let patch = serde_json::json!({"spec": {"storage": {"devices": new_devices}}});
-    let _ = kubectl::run(&[
-        "patch", "cephcluster", "-n", CEPH_NS, CEPH_CLUSTER,
-        "--type", "merge", "-p", &patch.to_string(),
-    ]).await;
+    let ceph_dev = ceph_dev.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let k8s_node = k8s_node_name();
+        let mut devices = cephcluster_node_devices_sync(&k8s_node);
+        devices.retain(|d| d != &ceph_dev);
+        cephcluster_set_node_devices_sync(&k8s_node, devices);
+    }).await;
 }
 
 async fn purge_osd_from_ceph(osd_id: u32) {
@@ -434,11 +485,15 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
                 .find(|d| d.osd_id == osd_id)
                 .map(|d| d.name.clone());
             tokio::spawn(async move {
+                // Remove from per-node spec FIRST — this overrides the global
+                // deviceFilter so Rook won't auto-reprovision the disk.
+                cephcluster_remove_device(&ceph_dev).await;
+                // Give Rook time to reconcile before we delete the deploy.
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 if let Some(name) = deploy_name {
                     let _ = kubectl::run(&["delete", "deploy", "-n", CEPH_NS, &name, "--ignore-not-found"]).await;
                 }
                 purge_osd_from_ceph(osd_id).await;
-                cephcluster_remove_device(&ceph_dev).await;
             });
         }
     }
