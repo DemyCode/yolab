@@ -51,7 +51,9 @@ spec:
     # Rook ignores useAllNodes=true when nodes array is also set.
     # With useAllNodes=false, only nodes in spec.storage.nodes are provisioned.
     # The local-api auto-registers each node's loop devices on startup.
-    removeOSDsIfOutAndSafeToDestroy: true
+  # Rook auto-removes OSDs that are marked out once Ceph considers them safe.
+  # Correct field name: removeOSDsIfOutAndSafeToRemove (not ...ToDestroy).
+  removeOSDsIfOutAndSafeToRemove: true
   disruptionManagement:
     # Pod disruption budgets can block node drains and K3s upgrades on single-node.
     managePodBudgets: false

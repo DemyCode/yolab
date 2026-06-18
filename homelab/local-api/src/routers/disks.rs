@@ -563,7 +563,7 @@ pub async fn disks_local(State(state): State<AppState>) -> Result<Json<Vec<DiskI
             let ceph_dev = ceph_dev.clone();
             tokio::spawn(async move {
                 // Remove from per-node spec so Rook won't reprovision the disk.
-                // Rook's removeOSDsIfOutAndSafeToDestroy handles the rest:
+                // Rook's removeOSDsIfOutAndSafeToRemove handles the rest:
                 // purge from Ceph, delete deploy, clean up data directory.
                 cephcluster_remove_device(&ceph_dev).await;
             });
