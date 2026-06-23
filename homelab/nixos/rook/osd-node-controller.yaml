@@ -33,28 +33,6 @@ subjects:
     name: osd-node-controller
     namespace: rook-ceph
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: osd-node-controller
-rules:
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: osd-node-controller
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: osd-node-controller
-subjects:
-  - kind: ServiceAccount
-    name: osd-node-controller
-    namespace: rook-ceph
----
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -95,7 +73,7 @@ data:
             log.warning(f'sysfs read error: {e}')
         return sorted(devices)
 
-    def reconcile(custom_api, core_api):
+    def reconcile(custom_api):
         devices = get_devices()
         log.info(f'Candidate devices on {NODE_NAME}: {devices}')
 
@@ -104,12 +82,9 @@ data:
                 cr = custom_api.get_namespaced_custom_object(
                     'ceph.rook.io', 'v1', NAMESPACE, 'cephclusters', CLUSTER)
 
-                k8s_nodes     = [n.metadata.name for n in core_api.list_node().items]
-                storage       = cr.get('spec', {}).get('storage', {})
-                nodes         = list(storage.get('nodes') or [])
-                registered    = {n['name'] for n in nodes}
-
-                desired_devs  = [{'name': d} for d in devices]
+                storage      = cr.get('spec', {}).get('storage', {})
+                nodes        = list(storage.get('nodes') or [])
+                desired_devs = [{'name': d} for d in devices]
                 idx = next((i for i, n in enumerate(nodes) if n['name'] == NODE_NAME), None)
                 changed = False
 
@@ -122,18 +97,11 @@ data:
                         log.info(f'Device change: {current_devs} -> {devices}')
                         nodes[idx]['devices'] = desired_devs
                         changed = True
-                    # Remove stale deviceFilter if it snuck in (since it's ignored anyway
-                    # when devices is set, but keep the CR clean)
                     if 'deviceFilter' in nodes[idx]:
                         del nodes[idx]['deviceFilter']
                         changed = True
 
-                # Only flip useAllNodes→false once every K8s node has registered.
-                # This prevents Rook from dropping OSDs on nodes that haven't had
-                # a chance to add themselves to the list yet.
-                all_registered = all(n in registered or n == NODE_NAME for n in k8s_nodes)
-                target_use_all = not all_registered
-                if storage.get('useAllNodes', True) != target_use_all:
+                if storage.get('useAllNodes') or storage.get('useAllDevices'):
                     changed = True
 
                 if not changed:
@@ -141,13 +109,13 @@ data:
                     return
 
                 patch = {'spec': {'storage': {
-                    'useAllNodes':   target_use_all,
+                    'useAllNodes':   False,
                     'useAllDevices': False,
                     'nodes':         nodes,
                 }}}
                 custom_api.patch_namespaced_custom_object(
                     'ceph.rook.io', 'v1', NAMESPACE, 'cephclusters', CLUSTER, patch)
-                log.info(f'Patched CephCluster (useAllNodes={target_use_all})')
+                log.info('CephCluster patched')
                 return
 
             except ApiException as e:
@@ -160,7 +128,6 @@ data:
 
     config.load_incluster_config()
     custom_api = client.CustomObjectsApi()
-    core_api   = client.CoreV1Api()
 
     # Stagger startup across nodes to reduce simultaneous patch conflicts
     time.sleep(random.uniform(0, 10))
@@ -168,7 +135,7 @@ data:
 
     while True:
         try:
-            reconcile(custom_api, core_api)
+            reconcile(custom_api)
         except Exception as e:
             log.error(f'Reconcile error: {e}')
         time.sleep(INTERVAL)
