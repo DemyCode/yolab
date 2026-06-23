@@ -50,9 +50,9 @@ spec:
     useAllNodes: false
     useAllDevices: false
     # nodes list managed by osd-node-controller DaemonSet
-  # Rook auto-removes OSDs that are marked out once Ceph considers them safe.
-  # Correct field name: removeOSDsIfOutAndSafeToRemove (not ...ToDestroy).
-  removeOSDsIfOutAndSafeToRemove: true
+  # Do NOT auto-remove OSDs — disk reconnection must re-integrate cleanly.
+  # Intentional decommission requires explicit manual steps (osd out → purge).
+  removeOSDsIfOutAndSafeToRemove: false
   disruptionManagement:
     # Pod disruption budgets can block node drains and K3s upgrades on single-node.
     managePodBudgets: false
