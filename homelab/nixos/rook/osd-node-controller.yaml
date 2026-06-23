@@ -1,0 +1,233 @@
+---
+# Watches every storage node, reads its block devices (physical sd[b-z] + attached
+# loop devices) from sysfs, and reconciles spec.storage.nodes in the CephCluster CR.
+# This replaces useAllDevices/useAllNodes because loop devices are never auto-discovered
+# by Rook (confirmed: deviceFilter is also ignored for loop devices per Rook docs).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: osd-node-controller
+  namespace: rook-ceph
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osd-node-controller
+  namespace: rook-ceph
+rules:
+  - apiGroups: ["ceph.rook.io"]
+    resources: ["cephclusters"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osd-node-controller
+  namespace: rook-ceph
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: osd-node-controller
+subjects:
+  - kind: ServiceAccount
+    name: osd-node-controller
+    namespace: rook-ceph
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: osd-node-controller
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: osd-node-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: osd-node-controller
+subjects:
+  - kind: ServiceAccount
+    name: osd-node-controller
+    namespace: rook-ceph
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: osd-node-controller-script
+  namespace: rook-ceph
+data:
+  reconcile.py: |
+    #!/usr/bin/env python3
+    import os, re, time, logging, random
+    from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    log = logging.getLogger(__name__)
+
+    NODE_NAME  = os.environ['MY_NODE_NAME']
+    NAMESPACE  = 'rook-ceph'
+    CLUSTER    = 'rook-ceph'
+    INTERVAL   = 30
+
+    def get_devices():
+        """
+        Read candidate devices directly from host sysfs (mounted at /host-sys).
+        - Physical disks: sd[b-z]  (sda is always the OS disk, skip it)
+        - Loop devices:   loopN    only if the kernel reports a backing_file
+        Rook's OSD prepare job will still reject anything that has a filesystem,
+        is too small, etc. — we just provide the candidate list.
+        """
+        devices = []
+        try:
+            for name in sorted(os.listdir('/host-sys/block')):
+                if re.fullmatch(r'sd[b-z]', name):
+                    devices.append(name)
+                elif re.fullmatch(r'loop\d+', name):
+                    if os.path.exists(f'/host-sys/block/{name}/loop/backing_file'):
+                        devices.append(name)
+        except Exception as e:
+            log.warning(f'sysfs read error: {e}')
+        return sorted(devices)
+
+    def reconcile(custom_api, core_api):
+        devices = get_devices()
+        log.info(f'Candidate devices on {NODE_NAME}: {devices}')
+
+        for attempt in range(5):
+            try:
+                cr = custom_api.get_namespaced_custom_object(
+                    'ceph.rook.io', 'v1', NAMESPACE, 'cephclusters', CLUSTER)
+
+                k8s_nodes     = [n.metadata.name for n in core_api.list_node().items]
+                storage       = cr.get('spec', {}).get('storage', {})
+                nodes         = list(storage.get('nodes') or [])
+                registered    = {n['name'] for n in nodes}
+
+                desired_devs  = [{'name': d} for d in devices]
+                idx = next((i for i, n in enumerate(nodes) if n['name'] == NODE_NAME), None)
+                changed = False
+
+                if idx is None:
+                    nodes.append({'name': NODE_NAME, 'devices': desired_devs})
+                    changed = True
+                else:
+                    current_devs = sorted(d['name'] for d in (nodes[idx].get('devices') or []))
+                    if current_devs != devices:
+                        log.info(f'Device change: {current_devs} -> {devices}')
+                        nodes[idx]['devices'] = desired_devs
+                        changed = True
+                    # Remove stale deviceFilter if it snuck in (since it's ignored anyway
+                    # when devices is set, but keep the CR clean)
+                    if 'deviceFilter' in nodes[idx]:
+                        del nodes[idx]['deviceFilter']
+                        changed = True
+
+                # Only flip useAllNodes→false once every K8s node has registered.
+                # This prevents Rook from dropping OSDs on nodes that haven't had
+                # a chance to add themselves to the list yet.
+                all_registered = all(n in registered or n == NODE_NAME for n in k8s_nodes)
+                target_use_all = not all_registered
+                if storage.get('useAllNodes', True) != target_use_all:
+                    changed = True
+
+                if not changed:
+                    log.info('State is current, nothing to do')
+                    return
+
+                patch = {'spec': {'storage': {
+                    'useAllNodes':   target_use_all,
+                    'useAllDevices': False,
+                    'nodes':         nodes,
+                }}}
+                custom_api.patch_namespaced_custom_object(
+                    'ceph.rook.io', 'v1', NAMESPACE, 'cephclusters', CLUSTER, patch)
+                log.info(f'Patched CephCluster (useAllNodes={target_use_all})')
+                return
+
+            except ApiException as e:
+                if e.status == 409 and attempt < 4:
+                    delay = random.uniform(1, 4)
+                    log.warning(f'Conflict, retrying in {delay:.1f}s ({attempt+1}/5)')
+                    time.sleep(delay)
+                else:
+                    raise
+
+    config.load_incluster_config()
+    custom_api = client.CustomObjectsApi()
+    core_api   = client.CoreV1Api()
+
+    # Stagger startup across nodes to reduce simultaneous patch conflicts
+    time.sleep(random.uniform(0, 10))
+    log.info(f'osd-node-controller started on {NODE_NAME}')
+
+    while True:
+        try:
+            reconcile(custom_api, core_api)
+        except Exception as e:
+            log.error(f'Reconcile error: {e}')
+        time.sleep(INTERVAL)
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: osd-node-controller
+  namespace: rook-ceph
+spec:
+  selector:
+    matchLabels:
+      app: osd-node-controller
+  template:
+    metadata:
+      labels:
+        app: osd-node-controller
+    spec:
+      serviceAccountName: osd-node-controller
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: install-deps
+          image: python:3.12-slim
+          command: [pip, install, kubernetes, --quiet, --target, /deps]
+          volumeMounts:
+            - name: deps
+              mountPath: /deps
+      containers:
+        - name: controller
+          image: python:3.12-slim
+          command: [python3, /scripts/reconcile.py]
+          env:
+            - name: MY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: PYTHONPATH
+              value: /deps
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+            - name: deps
+              mountPath: /deps
+            - name: host-sys
+              mountPath: /host-sys
+              readOnly: true
+          resources:
+            requests:
+              memory: 48Mi
+              cpu: 5m
+            limits:
+              memory: 96Mi
+      volumes:
+        - name: script
+          configMap:
+            name: osd-node-controller-script
+        - name: deps
+          emptyDir: {}
+        - name: host-sys
+          hostPath:
+            path: /sys
