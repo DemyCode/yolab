@@ -101,18 +101,11 @@ data:
                         del nodes[idx]['deviceFilter']
                         changed = True
 
-                if storage.get('useAllNodes') or storage.get('useAllDevices'):
-                    changed = True
-
                 if not changed:
                     log.info('State is current, nothing to do')
                     return
 
-                patch = {'spec': {'storage': {
-                    'useAllNodes':   False,
-                    'useAllDevices': False,
-                    'nodes':         nodes,
-                }}}
+                patch = {'spec': {'storage': {'nodes': nodes}}}
                 custom_api.patch_namespaced_custom_object(
                     'ceph.rook.io', 'v1', NAMESPACE, 'cephclusters', CLUSTER, patch)
                 log.info('CephCluster patched')

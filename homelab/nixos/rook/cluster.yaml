@@ -47,8 +47,9 @@ spec:
     mgr: system-cluster-critical
     osd: system-cluster-critical
   storage:
-    useAllNodes: true
-    useAllDevices: true
+    useAllNodes: false
+    useAllDevices: false
+    # nodes list managed by osd-node-controller DaemonSet
   # Rook auto-removes OSDs that are marked out once Ceph considers them safe.
   # Correct field name: removeOSDsIfOutAndSafeToRemove (not ...ToDestroy).
   removeOSDsIfOutAndSafeToRemove: true
