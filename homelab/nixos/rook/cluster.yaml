@@ -37,7 +37,10 @@ spec:
       # Never auto-mark OSDs out — in/out is an explicit admin decision.
       # A disk going down (unplugged, rebooting) stays "in" until someone
       # explicitly runs "ceph osd out <id>".
+      # docs.ceph.com/en/latest/rados/configuration/mon-osd-interaction/
       mon_osd_down_out_interval: "0"
+      # Silence the HEALTH_WARN Ceph emits when interval is 0 — it's intentional.
+      mon_warn_on_osd_down_out_interval_zero: "false"
     osd:
       # Cap BlueStore's block cache so the OSD process stays well within its
       # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)
