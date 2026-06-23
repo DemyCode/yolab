@@ -48,6 +48,17 @@ def get_cluster_fsid(custom_api):
         return None
 
 
+def read_bluestore_header(device):
+    """Read the first 4096 bytes of a device. Returns None on error."""
+    dev_path = f'/host-dev/{device}'
+    try:
+        with open(dev_path, 'rb') as f:
+            return f.read(4096)
+    except (IOError, OSError) as e:
+        log.debug(f'Cannot read {dev_path}: {e}')
+        return None
+
+
 def get_bluestore_fsid(device):
     """
     Read the BlueStore device label and extract the cluster FSID.
@@ -61,15 +72,8 @@ def get_bluestore_fsid(device):
 
     Returns the cluster FSID string or None if not a BlueStore device.
     """
-    dev_path = f'/host-dev/{device}'
-    try:
-        with open(dev_path, 'rb') as f:
-            data = f.read(4096)
-    except (IOError, OSError) as e:
-        log.debug(f'Cannot read {dev_path}: {e}')
-        return None
-
-    if not data.startswith(BLUESTORE_MAGIC):
+    data = read_bluestore_header(device)
+    if data is None or not data.startswith(BLUESTORE_MAGIC):
         return None
 
     pos = data.find(CEPH_FSID_KEY)
@@ -91,6 +95,29 @@ def get_bluestore_fsid(device):
 
     if re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', fsid):
         return fsid
+    return None
+
+
+def get_bluestore_osd_uuid(device):
+    """
+    Extract the OSD UUID from the BlueStore label.
+
+    The OSD UUID is stored as 36 ASCII bytes at offset 23 (immediately after
+    the magic), followed by a newline at offset 59.
+
+    Returns the OSD UUID string or None.
+    """
+    data = read_bluestore_header(device)
+    if data is None or not data.startswith(BLUESTORE_MAGIC):
+        return None
+
+    try:
+        osd_uuid = data[23:59].decode('ascii')
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+    if re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', osd_uuid):
+        return osd_uuid
     return None
 
 
@@ -150,7 +177,123 @@ def classify_devices(all_devices, our_fsid):
     return sorted(effective)
 
 
-def reconcile(custom_api):
+def is_prepare_job_complete(batch_api):
+    """Return True if the Rook OSD prepare job for this node has completed."""
+    try:
+        job = batch_api.read_namespaced_job(
+            f'rook-ceph-osd-prepare-{NODE_NAME}', NAMESPACE)
+        return job.status.completion_time is not None
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+
+
+def migrate_osd_deployments(apps_api, batch_api, our_fsid):
+    """
+    For each disk on this node that belongs to our cluster, check whether the
+    corresponding OSD Deployment targets a different node. If so, and the
+    prepare job for this node has completed (meaning Rook has updated the CRUSH
+    map), patch the Deployment to run here instead.
+    """
+    if not is_prepare_job_complete(batch_api):
+        return
+
+    all_devices = get_devices()
+    our_osd_uuids = {}
+    for device in all_devices:
+        if re.fullmatch(r'loop\d+', device):
+            continue
+        if get_bluestore_fsid(device) != our_fsid:
+            continue
+        osd_uuid = get_bluestore_osd_uuid(device)
+        if osd_uuid:
+            our_osd_uuids[osd_uuid] = device
+
+    if not our_osd_uuids:
+        return
+
+    try:
+        deploys = apps_api.list_namespaced_deployment(
+            NAMESPACE, label_selector='app=rook-ceph-osd')
+    except ApiException as e:
+        log.error(f'Failed to list OSD deployments: {e}')
+        return
+
+    for deploy in deploys.items:
+        containers = deploy.spec.template.spec.containers
+        if not containers:
+            continue
+        env = containers[0].env or []
+
+        deploy_uuid = next(
+            (e.value for e in env if e.name == 'ROOK_OSD_UUID'), None)
+        if deploy_uuid not in our_osd_uuids:
+            continue
+
+        node_selector = deploy.spec.template.spec.node_selector or {}
+        if node_selector.get('kubernetes.io/hostname') == NODE_NAME:
+            continue  # Already targeting this node
+
+        old_node = node_selector.get('kubernetes.io/hostname', '?')
+        device   = our_osd_uuids[deploy_uuid]
+        log.info(
+            f'{deploy.metadata.name}: disk {device} (uuid={deploy_uuid}) '
+            f'moved from {old_node} to {NODE_NAME} — patching Deployment'
+        )
+        _patch_osd_deployment(apps_api, deploy, NODE_NAME)
+
+
+def _patch_osd_deployment(apps_api, deploy, new_node):
+    """Redirect an OSD Deployment to new_node by updating nodeSelector, args, and env."""
+    deploy_name = deploy.metadata.name
+    containers  = deploy.spec.template.spec.containers
+
+    # Fix --crush-location arg
+    args = list(containers[0].args or [])
+    for i, arg in enumerate(args):
+        if arg.startswith('--crush-location='):
+            args[i] = f'--crush-location=root=default host={new_node}'
+            break
+
+    # Fix node-specific env vars, preserve all others (including valueFrom entries)
+    new_env = []
+    for e in (containers[0].env or []):
+        if e.name in ('ROOK_NODE_NAME', 'ROOK_CRUSHMAP_HOSTNAME'):
+            new_env.append({'name': e.name, 'value': new_node})
+        else:
+            d = {'name': e.name}
+            if e.value is not None:
+                d['value'] = e.value
+            if e.value_from is not None:
+                d['valueFrom'] = e.value_from.to_dict()
+            new_env.append(d)
+
+    patch = {
+        'spec': {
+            'template': {
+                'spec': {
+                    'nodeSelector': {'kubernetes.io/hostname': new_node},
+                    'containers': [{'name': 'osd', 'args': args, 'env': new_env}],
+                }
+            }
+        }
+    }
+
+    for attempt in range(5):
+        try:
+            apps_api.patch_namespaced_deployment(deploy_name, NAMESPACE, patch)
+            log.info(f'{deploy_name} patched → {new_node}')
+            return
+        except ApiException as e:
+            if e.status == 409 and attempt < 4:
+                time.sleep(random.uniform(1, 4))
+            else:
+                log.error(f'Failed to patch {deploy_name}: {e}')
+                return
+
+
+def reconcile(custom_api, apps_api, batch_api):
     all_devices = get_devices()
     our_fsid    = get_cluster_fsid(custom_api)
     effective   = classify_devices(all_devices, our_fsid)
@@ -183,13 +326,13 @@ def reconcile(custom_api):
 
             if not changed:
                 log.info('State is current, nothing to do')
-                return
+                break
 
             patch = {'spec': {'storage': {'nodes': nodes}}}
             custom_api.patch_namespaced_custom_object(
                 'ceph.rook.io', 'v1', NAMESPACE, 'cephclusters', CLUSTER, patch)
             log.info('CephCluster patched')
-            return
+            break
 
         except ApiException as e:
             if e.status == 409 and attempt < 4:
@@ -199,16 +342,21 @@ def reconcile(custom_api):
             else:
                 raise
 
+    if our_fsid:
+        migrate_osd_deployments(apps_api, batch_api, our_fsid)
+
 
 config.load_incluster_config()
 custom_api = client.CustomObjectsApi()
+apps_api   = client.AppsV1Api()
+batch_api  = client.BatchV1Api()
 
 time.sleep(random.uniform(0, 10))
 log.info(f'osd-node-controller started on {NODE_NAME}')
 
 while True:
     try:
-        reconcile(custom_api)
+        reconcile(custom_api, apps_api, batch_api)
     except Exception as e:
         log.error(f'Reconcile error: {e}')
     time.sleep(INTERVAL)
