@@ -34,6 +34,10 @@ spec:
       mds_beacon_grace: "60"
       ms_bind_ipv6: "true"
       ms_bind_ipv4: "false"
+      # Never auto-mark OSDs out — in/out is an explicit admin decision.
+      # A disk going down (unplugged, rebooting) stays "in" until someone
+      # explicitly runs "ceph osd out <id>".
+      mon_osd_down_out_interval: "0"
     osd:
       # Cap BlueStore's block cache so the OSD process stays well within its
       # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)
