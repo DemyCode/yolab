@@ -50,8 +50,7 @@ def get_cluster_fsid(custom_api):
 
 def get_bluestore_fsid(device):
     """
-    Read the first 4096 bytes of the device and extract the Ceph cluster FSID
-    from the BlueStore device label.
+    Read the BlueStore device label and extract the cluster FSID.
 
     BlueStore label layout (from Ceph source):
       offset 0   : 'bluestore block device\\n'  (magic, 23 bytes)
