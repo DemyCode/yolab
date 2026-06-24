@@ -11,6 +11,7 @@ import {
   InstalledDetailPage,
 } from "@/pages/AppsPage";
 import { TerminalPage } from "@/pages/TerminalPage";
+import { StoragePage } from "@/pages/StoragePage";
 
 function AppRoutes({ onLogout }: { onLogout: () => void }) {
   return (
@@ -27,6 +28,7 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
           element={<InstalledDetailPage />}
         />
         <Route path="/terminal" element={<TerminalPage />} />
+        <Route path="/storage" element={<StoragePage />} />
       </Route>
     </Routes>
   );
