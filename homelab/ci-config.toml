@@ -31,7 +31,3 @@ node_id = "ci"
 role = "server"
 token = "ci-token"
 server_addr = ""
-
-[yolab_external]
-url = ""
-account_token = ""
