@@ -58,6 +58,7 @@ async fn main() {
         // Update / channel
         .route("/api/update", post(update::update))
         .route("/api/update/all", post(update::update_all))
+        .route("/api/update/trigger", post(update::trigger_update))
         .route("/api/update/channel", get(update::get_channel).put(update::set_channel))
         .route("/api/update/remotes", post(update::add_remote))
         .route("/api/update/remotes/:name", delete(update::remove_remote))
