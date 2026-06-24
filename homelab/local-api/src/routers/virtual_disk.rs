@@ -20,7 +20,6 @@ struct VolumeInfo {
     username: String,
     password: String,
     size_gb: i32,
-    node_id: Option<i32>,
 }
 
 // ── Persisted state ───────────────────────────────────────────────────────────
@@ -166,15 +165,6 @@ async fn unmount_sshfs(mount_point: &str) {
     }
 }
 
-// ── Config reader ─────────────────────────────────────────────────────────────
-
-async fn read_node_id(config_path: &str) -> Option<i32> {
-    let text = tokio::fs::read_to_string(config_path).await.ok()?;
-    let table: toml::Table = toml::from_str(&text).ok()?;
-    let ye = table.get("yolab_external")?.as_table()?;
-    ye.get("node_id")?.as_integer().map(|n| n as i32)
-}
-
 // ── Core logic ────────────────────────────────────────────────────────────────
 
 fn http_client() -> reqwest::Client {
@@ -274,9 +264,6 @@ pub async fn run(config: Arc<Config>) {
         let Some((url, token)) = ye_creds(&config) else {
             continue;
         };
-        let Some(our_node_id) = read_node_id(&config.config_path).await else {
-            continue;
-        };
 
         let volumes = match fetch_volumes(&url, &token).await {
             Ok(v) => v,
@@ -286,31 +273,24 @@ pub async fn run(config: Arc<Config>) {
             }
         };
 
-        let ours: Vec<&VolumeInfo> = volumes
-            .iter()
-            .filter(|v| v.node_id == Some(our_node_id))
-            .collect();
-
-        // Provision newly assigned disks.
-        for vol in &ours {
+        // Provision any new volumes not yet mounted.
+        for vol in &volumes {
             if !disk_state.disks.iter().any(|d| d.volume_id == vol.id) {
                 match provision(vol).await {
                     Ok(disk) => {
                         disk_state.disks.push(disk);
                         disk_state.save(&state_path);
                     }
-                    Err(e) => {
-                        tracing::warn!("virtual-disk provision {}: {e}", vol.id);
-                    }
+                    Err(e) => tracing::warn!("virtual-disk provision {}: {e}", vol.id),
                 }
             }
         }
 
-        // Detach disks no longer assigned here.
-        let ours_ids: Vec<i32> = ours.iter().map(|v| v.id).collect();
+        // Detach volumes that were deleted from the account.
+        let volume_ids: Vec<i32> = volumes.iter().map(|v| v.id).collect();
         let mut removed: Vec<i32> = Vec::new();
         for disk in &disk_state.disks {
-            if !ours_ids.contains(&disk.volume_id) {
+            if !volume_ids.contains(&disk.volume_id) {
                 tracing::info!("virtual-disk {}: detaching", disk.volume_id);
                 detach_loop(&disk.loop_device).await;
                 unmount_sshfs(&disk.mount_point).await;
