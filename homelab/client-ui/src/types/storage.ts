@@ -37,3 +37,16 @@ export interface StorageDetailResponse {
   data?: StorageDetail;
   error?: string;
 }
+
+export interface VirtualDiskInfo {
+  id: number;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  box_type: string;
+  size_gb: number;
+  created_at: string;
+  node_hostname: string | null;
+  mounted: boolean;
+}
