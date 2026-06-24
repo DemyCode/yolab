@@ -132,17 +132,7 @@ function SidebarContent({
             {label}
           </NavLink>
         ))}
-        <a
-          href="/ceph-dashboard/"
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={onClose}
-          className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-[#a1a1aa] hover:bg-[#18181b] hover:text-[#fafafa] transition-colors"
-        >
-          <ExternalLink className="h-4 w-4 flex-shrink-0" strokeWidth={1.75} />
-          Ceph dashboard
-          <ExternalLink className="h-3 w-3 ml-auto opacity-50" />
-        </a>
+
       </nav>
 
       {/* Bottom */}
