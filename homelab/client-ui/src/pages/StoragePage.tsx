@@ -442,7 +442,12 @@ function VirtualDisksSection({ onLoad }: { onLoad: () => void }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ box_type: boxType, node_hostname: nodeHostname }),
       });
-      if (!r.ok) throw new Error((await r.json() as { error?: string }).error ?? "Failed");
+      if (!r.ok) {
+        const text = await r.text().catch(() => "Unknown error");
+        let msg = text;
+        try { msg = JSON.parse(text).error ?? text; } catch {}
+        throw new Error(msg);
+      }
       setAdding(false);
       load();
       onLoad();
@@ -457,7 +462,12 @@ function VirtualDisksSection({ onLoad }: { onLoad: () => void }) {
     setDeleting(id);
     try {
       const r = await fetch(`/api/virtual-disks/${id}`, { method: "DELETE" });
-      if (!r.ok) throw new Error("Delete failed");
+      if (!r.ok) {
+        const text = await r.text().catch(() => "Unknown error");
+        let msg = text;
+        try { msg = JSON.parse(text).error ?? text; } catch {}
+        throw new Error(msg);
+      }
       load();
       onLoad();
     } catch (e) {
