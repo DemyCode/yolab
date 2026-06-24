@@ -314,16 +314,18 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
               </span>{" "}
               going down
             </p>
-            <p className={cn(
-              "text-sm",
-              survivesMachines === 0 ? "text-[#f87171]" : "text-[#a1a1aa]",
-            )}>
-              Cluster can survive{" "}
-              <span className={cn("font-semibold", survivesMachines === 0 ? "text-[#f87171]" : "text-[#fafafa]")}>
-                {survivesMachines} machine{survivesMachines !== 1 ? "s" : ""}
-              </span>{" "}
-              going down
-            </p>
+            {domain === "host" && (
+              <p className={cn(
+                "text-sm",
+                survivesMachines === 0 ? "text-[#f87171]" : "text-[#a1a1aa]",
+              )}>
+                Cluster can survive{" "}
+                <span className={cn("font-semibold", survivesMachines === 0 ? "text-[#f87171]" : "text-[#fafafa]")}>
+                  {survivesMachines} machine{survivesMachines !== 1 ? "s" : ""}
+                </span>{" "}
+                going down
+              </p>
+            )}
           </div>
         </div>
 
