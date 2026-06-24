@@ -7,6 +7,7 @@ pub struct Config {
     pub platform: String,
     pub flake_target: String,
     pub node_ipv6: String,
+    pub hostname: String,
     pub port: u16,
     pub rebuild_log: PathBuf,
     pub rebuild_pid: PathBuf,
@@ -29,6 +30,8 @@ impl Config {
                 .unwrap_or_else(|_| "yolab".into()),
             node_ipv6: std::env::var("YOLAB_NODE_IPV6")
                 .unwrap_or_else(|_| "::1".into()),
+            hostname: std::env::var("YOLAB_HOSTNAME")
+                .unwrap_or_else(|_| hostname::get().unwrap_or_else(|_| "localhost".into()).to_string_lossy().to_string()),
             port: std::env::var("YOLAB_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
