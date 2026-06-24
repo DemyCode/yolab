@@ -533,6 +533,20 @@ in
       ];
 
     # ── Rook / Ceph ───────────────────────────────────────────────────────────
+
+    # Ceph OSD containers run as uid/gid 167 (ceph:ceph) inside the pod.
+    # Declare the group on the host so udev can reference it by name.
+    users.groups.ceph = { gid = 167; };
+
+    # Any whole-disk block device (not a partition, loop, or dm volume) that
+    # appears or changes gets group ownership set to "ceph" with mode 0660.
+    # This fires on every connect/reconnect, so hot-plugged USB drives and
+    # newly provisioned disks are automatically accessible to Rook OSD pods
+    # without declaring them individually.
+    services.udev.extraRules = ''
+      SUBSYSTEM=="block", DEVTYPE=="disk", KERNEL!="loop*", KERNEL!="dm-*", GROUP="ceph", MODE="0660"
+    '';
+
     # K3s watches /var/lib/rancher/k3s/server/manifests/ and auto-applies
     # any YAML placed there.  Symlinks into the Nix store so updates
     # propagate on nixos-rebuild without manual kubectl apply.
