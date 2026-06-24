@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{extract::State, Json};
 use serde::Serialize;
 
@@ -87,6 +89,38 @@ pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLi
 
     links.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(Json(links))
+}
+
+pub async fn traffic(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let text = match std::fs::read_to_string(&state.config.config_path) {
+        Ok(t) => t,
+        Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let table: toml::Table = match toml::from_str(&text) {
+        Ok(t) => t,
+        Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let Some(tunnel) = table.get("tunnel").and_then(|v| v.as_table()) else {
+        return Json(serde_json::json!({ "error": "missing [tunnel] in config" }));
+    };
+    let token = tunnel.get("account_token").and_then(|v| v.as_str()).unwrap_or("");
+    let base_url = tunnel.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or("");
+
+    let url = format!("{base_url}/nodes/transfer");
+    match reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(v) => Json(v),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        },
+        Ok(r) => Json(serde_json::json!({ "error": format!("backend {}", r.status()) })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
 }
 
 pub async fn join_info(State(state): State<AppState>) -> Result<Json<JoinInfo>> {

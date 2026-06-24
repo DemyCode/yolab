@@ -77,6 +77,7 @@ async fn main() {
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
+        .route("/api/nodes/traffic", get(nodes::traffic))
         .route("/api/cluster/join-info", get(nodes::join_info))
         // Apps
         .route("/api/account/token", get(apps::account_token))
