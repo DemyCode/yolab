@@ -521,3 +521,22 @@ pub async fn set_replication(
         Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
     }
 }
+
+pub async fn dashboard_creds() -> Json<serde_json::Value> {
+    let password = kubectl::run(&[
+        "get", "secret", "-n", "rook-ceph", "rook-ceph-dashboard-password",
+        "-o", "go-template={{.data.password | base64decode}}",
+    ]).await.unwrap_or_default();
+
+    let username = kubectl::run(&[
+        "get", "secret", "-n", "rook-ceph", "rook-ceph-dashboard-password",
+        "-o", "go-template={{.data.username | base64decode}}",
+    ]).await.unwrap_or_else(|_| "admin".into());
+
+    let username = if username.trim().is_empty() { "admin".into() } else { username.trim().to_string() };
+
+    Json(serde_json::json!({
+        "username": username,
+        "password": password.trim(),
+    }))
+}
