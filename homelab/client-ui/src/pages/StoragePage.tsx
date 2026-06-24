@@ -169,6 +169,20 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
   const survivesDisks    = size - 1;
   const survivesMachines = domain === "host" ? size - 1 : 0;
 
+  // Feasibility: increasing replication requires (delta_copies × logical_stored) of free raw space.
+  // stored_bytes is the logical (deduplicated, one-copy) size; raw free is sum of OSD avail.
+  const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
+  const currentSize = current?.size ?? 1;
+  const rawFree     = osds.reduce((s, o) => s + o.avail_bytes, 0);
+  const rawNeeded   = (size - currentSize) * totalStored;  // negative = freeing space
+  type Feasibility  = "ok" | "tight" | "impossible" | null;
+  let feasibility: Feasibility = null;
+  if (rawNeeded > 0) {
+    if (rawFree < rawNeeded)           feasibility = "impossible";
+    else if (rawFree < rawNeeded * 1.3) feasibility = "tight";
+    else                                feasibility = "ok";
+  }
+
   async function apply() {
     setApplying(true);
     setResult(null);
@@ -249,6 +263,35 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
           </div>
         </div>
 
+        {/* Feasibility warning */}
+        {feasibility === "impossible" && (
+          <div className="flex items-start gap-2.5 rounded-md border border-[#f87171]/30 bg-[#f87171]/5 px-4 py-3">
+            <AlertTriangle className="h-4 w-4 text-[#f87171] mt-0.5 flex-shrink-0" />
+            <div className="text-sm">
+              <p className="font-medium text-[#f87171]">Not enough free space</p>
+              <p className="text-[#fca5a5] text-xs mt-0.5">
+                Creating {size - currentSize} extra {size - currentSize === 1 ? "copy" : "copies"} of your data
+                needs <span className="font-semibold">{fmtBytes(rawNeeded)}</span> of free
+                space — you only have <span className="font-semibold">{fmtBytes(rawFree)}</span>.
+                Free up space or reduce your data before switching.
+              </p>
+            </div>
+          </div>
+        )}
+        {feasibility === "tight" && (
+          <div className="flex items-start gap-2.5 rounded-md border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
+            <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
+            <div className="text-sm">
+              <p className="font-medium text-[#fbbf24]">Tight fit</p>
+              <p className="text-[#fde68a] text-xs mt-0.5">
+                Rebalancing needs <span className="font-semibold">{fmtBytes(rawNeeded)}</span> and
+                you have <span className="font-semibold">{fmtBytes(rawFree)}</span> free —
+                less than 30% headroom. The cluster may hit nearfull warnings during backfill.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Capacity + resilience */}
         <div className="rounded-md bg-[#18181b] border border-[#27272a] px-5 py-4 space-y-3">
           <div>
@@ -286,7 +329,12 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
 
         {/* Apply */}
         {changed && !confirm && !result && (
-          <Button onClick={() => setConfirm(true)} variant="outline" className="gap-2">
+          <Button
+            onClick={() => setConfirm(true)}
+            disabled={feasibility === "impossible"}
+            variant="outline"
+            className="gap-2"
+          >
             Apply changes
           </Button>
         )}
