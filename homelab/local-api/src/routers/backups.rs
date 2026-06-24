@@ -6,15 +6,31 @@ use crate::{config::Config, error::Result, AppState};
 // ── shared credential reader ──────────────────────────────────────────────────
 
 /// Read [yolab_external] url + account_token from config.toml.
-/// Returns None if not configured or the file can't be read.
+/// Falls back to [tunnel] platform_api_url + account_token if not present.
+/// Returns None if neither is configured or the file can't be read.
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
     let text = std::fs::read_to_string(&cfg.config_path).ok()?;
     let table: toml::Table = toml::from_str(&text).ok()?;
-    let ye = table.get("yolab_external")?.as_table()?;
-    let url = ye.get("url")?.as_str()?.trim_end_matches('/').to_string();
-    let token = ye.get("account_token")?.as_str()?.to_string();
-    if url.is_empty() || token.is_empty() { return None; }
-    Some((url, token))
+
+    // Try [yolab_external] first
+    if let Some(ye) = table.get("yolab_external").and_then(|v| v.as_table()) {
+        let url = ye.get("url").and_then(|v| v.as_str()).unwrap_or("").trim_end_matches('/').to_string();
+        let token = ye.get("account_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if !url.is_empty() && !token.is_empty() {
+            return Some((url, token));
+        }
+    }
+
+    // Fall back to [tunnel]
+    if let Some(tunnel) = table.get("tunnel").and_then(|v| v.as_table()) {
+        let url = tunnel.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or("").trim_end_matches('/').to_string();
+        let token = tunnel.get("account_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if !url.is_empty() && !token.is_empty() {
+            return Some((url, token));
+        }
+    }
+
+    None
 }
 
 fn http_client() -> reqwest::Client {
