@@ -496,17 +496,21 @@ pub async fn set_replication(
     ]).await.unwrap_or_default();
     let kb64 = kb64.trim().replace('\n', "");
 
+    // size=1 requires --yes-i-really-mean-it; the flag is harmless for size>1
+    let really = if size == 1 { " --yes-i-really-mean-it" } else { "" };
+
     let script = [
         format!("echo '{}' | base64 -d > /tmp/.ck 2>/dev/null", kb64),
         format!("printf '[global]\\nmon_host = {}\\n' > /tmp/.cc", mon_host),
         "CEPH='ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin'".into(),
+        "set -e".into(),
         // Create OSD-level rule if needed (replicated_rule already exists for host)
         format!("if ! $CEPH osd crush rule ls 2>/dev/null | grep -qx {rule}; then $CEPH osd crush rule create-replicated {rule} default {fd}; fi", rule = rule_name, fd = fd),
         // Apply to all non-internal pools
         format!("for POOL in $($CEPH osd pool ls 2>/dev/null | grep -v '^[.]'); do"),
-        format!("  $CEPH osd pool set $POOL crush_rule {rule} 2>/dev/null", rule = rule_name),
-        format!("  $CEPH osd pool set $POOL size {size} 2>/dev/null", size = size),
-        format!("  $CEPH osd pool set $POOL min_size {min_size} 2>/dev/null", min_size = min_size),
+        format!("  $CEPH osd pool set $POOL crush_rule {rule}", rule = rule_name),
+        format!("  $CEPH osd pool set $POOL size {size}{really}", size = size, really = really),
+        format!("  $CEPH osd pool set $POOL min_size {min_size}", min_size = min_size),
         "  echo \"Updated pool $POOL\"".into(),
         "done".into(),
         "rm -f /tmp/.ck /tmp/.cc".into(),
