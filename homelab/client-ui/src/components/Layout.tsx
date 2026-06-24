@@ -37,6 +37,7 @@ interface ClusterHealth {
 const NAV_ITEMS = [
   { to: "/overview", icon: Activity, label: "Overview" },
   { to: "/nodes", icon: Server, label: "Machines" },
+  { to: "/storage", icon: Database, label: "Storage" },
   { to: "/backups", icon: Cloud, label: "Backups" },
   { to: "/apps", icon: LayoutGrid, label: "Apps" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal" },
@@ -138,8 +139,8 @@ function SidebarContent({
           onClick={onClose}
           className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-[#a1a1aa] hover:bg-[#18181b] hover:text-[#fafafa] transition-colors"
         >
-          <Database className="h-4 w-4 flex-shrink-0" strokeWidth={1.75} />
-          Storage
+          <ExternalLink className="h-4 w-4 flex-shrink-0" strokeWidth={1.75} />
+          Ceph dashboard
           <ExternalLink className="h-3 w-3 ml-auto opacity-50" />
         </a>
       </nav>

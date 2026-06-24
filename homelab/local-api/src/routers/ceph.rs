@@ -1,5 +1,6 @@
-use axum::Json;
-use serde::Serialize;
+use axum::{http::StatusCode, Json};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::kubectl;
 
@@ -262,4 +263,257 @@ pub async fn cluster_status_from_k8s()
         .unwrap_or(0);
 
     Ok((status, osd_total, osd_ready))
+}
+
+// ── Storage detail ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct OsdInfo {
+    pub id: i64,
+    pub name: String,
+    pub host: String,
+    pub class: String,
+    pub size_bytes: u64,
+    pub used_bytes: u64,
+    pub avail_bytes: u64,
+    pub utilization: f64,
+    pub var: f64,
+    pub pgs: u64,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct PoolInfo {
+    pub id: u64,
+    pub name: String,
+    pub size: u32,
+    pub min_size: u32,
+    pub crush_rule_name: String,
+    pub failure_domain: String,
+    pub stored_bytes: u64,
+    pub used_bytes: u64,
+    pub max_avail_bytes: u64,
+}
+
+#[derive(Serialize)]
+pub struct StorageDetail {
+    pub osds: Vec<OsdInfo>,
+    pub pools: Vec<PoolInfo>,
+    pub total_bytes: u64,
+    pub avail_bytes: u64,
+    pub used_bytes: u64,
+}
+
+#[derive(Deserialize)]
+pub struct SetReplicationReq {
+    pub size: u32,
+    pub min_size: u32,
+    pub failure_domain: String,
+}
+
+async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
+    let pod = kubectl::run(&[
+        "get", "pod", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
+        "--field-selector=status.phase=Running",
+        "-o", "jsonpath={.items[0].metadata.name}",
+    ]).await?;
+    let pod = pod.trim().to_string();
+    anyhow::ensure!(!pod.is_empty(), "no running OSD pod found");
+
+    let mon_raw = kubectl::run(&[
+        "get", "cm", "-n", "rook-ceph", "rook-ceph-mon-endpoints",
+        "-o", "jsonpath={.data.data}",
+    ]).await.unwrap_or_default();
+    let mon_host = mon_raw.split('=').nth(1).unwrap_or("").trim().to_string();
+    anyhow::ensure!(!mon_host.is_empty(), "cannot find mon endpoint");
+
+    let kb64 = kubectl::run(&[
+        "get", "secret", "-n", "rook-ceph", "rook-ceph-admin-keyring",
+        "-o", "jsonpath={.data.keyring}",
+    ]).await.unwrap_or_default();
+    let kb64 = kb64.trim().replace('\n', "");
+    anyhow::ensure!(!kb64.is_empty(), "cannot read admin keyring");
+
+    let script = [
+        format!("echo '{}' | base64 -d > /tmp/.ck 2>/dev/null", kb64),
+        format!("printf '[global]\\nmon_host = {}\\n' > /tmp/.cc", mon_host),
+        "CEPH='ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin'".into(),
+        r#"echo '{"osd_df":'  "#.into(),
+        "$CEPH osd df tree -f json 2>/dev/null || echo '{}'".into(),
+        r#"echo ',"pool_detail":'"#.into(),
+        "$CEPH osd pool ls detail -f json 2>/dev/null || echo '[]'".into(),
+        r#"echo ',"ceph_df":'"#.into(),
+        "$CEPH df -f json 2>/dev/null || echo '{}'".into(),
+        r#"echo ',"crush_rules":'"#.into(),
+        "$CEPH osd crush rule dump -f json 2>/dev/null || echo '[]'".into(),
+        "echo '}'".into(),
+        "rm -f /tmp/.ck /tmp/.cc".into(),
+    ].join("\n");
+
+    let raw = kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await?;
+    serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("JSON parse: {e}\nRaw: {}", &raw[..raw.len().min(500)]))
+}
+
+fn failure_domain_from_rule(rule: &serde_json::Value) -> String {
+    rule["steps"].as_array().and_then(|steps| {
+        steps.iter().find_map(|s| {
+            let op = s["op"].as_str().unwrap_or("");
+            if op.contains("choose") { s["type"].as_str().map(str::to_string) } else { None }
+        })
+    }).unwrap_or_else(|| "host".into())
+}
+
+fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
+    // ── OSD tree ───────────────────────────────────────────────────────────────
+    let nodes = v["osd_df"]["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+
+    let mut osd_host: HashMap<i64, String> = HashMap::new();
+    for n in nodes {
+        if n["type"].as_str() == Some("host") {
+            let host = n["name"].as_str().unwrap_or("unknown").to_string();
+            if let Some(children) = n["children"].as_array() {
+                for c in children {
+                    if let Some(id) = c.as_i64() { osd_host.insert(id, host.clone()); }
+                }
+            }
+        }
+    }
+
+    let mut osds: Vec<OsdInfo> = nodes.iter()
+        .filter(|n| n["type"].as_str() == Some("osd"))
+        .map(|n| {
+            let id = n["id"].as_i64().unwrap_or(0);
+            let kb       = n["kb"].as_u64().unwrap_or(0);
+            let kb_used  = n["kb_used"].as_u64().unwrap_or(0);
+            let kb_avail = n["kb_avail"].as_u64().unwrap_or(0);
+            OsdInfo {
+                id,
+                name: n["name"].as_str().unwrap_or("").to_string(),
+                host: osd_host.get(&id).cloned().unwrap_or_else(|| "unknown".into()),
+                class: n["class"].as_str()
+                    .or_else(|| n["device_class"].as_str())
+                    .unwrap_or("").to_string(),
+                size_bytes:  kb       * 1024,
+                used_bytes:  kb_used  * 1024,
+                avail_bytes: kb_avail * 1024,
+                utilization: n["utilization"].as_f64().unwrap_or(0.0),
+                var:         n["var"].as_f64().unwrap_or(1.0),
+                pgs:         n["pgs"].as_u64().unwrap_or(0),
+                status:      n["status"].as_str().unwrap_or("unknown").to_string(),
+            }
+        })
+        .collect();
+    osds.sort_by(|a, b| a.host.cmp(&b.host).then(a.id.cmp(&b.id)));
+
+    // ── CRUSH rules → failure domain map ──────────────────────────────────────
+    let crush_rules = v["crush_rules"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let rule_fd: HashMap<u64, String> = crush_rules.iter()
+        .filter_map(|r| r["rule_id"].as_u64().map(|id| (id, failure_domain_from_rule(r))))
+        .collect();
+    let rule_names: HashMap<u64, String> = crush_rules.iter()
+        .filter_map(|r| r["rule_id"].as_u64().map(|id| (id, r["rule_name"].as_str().unwrap_or("").to_string())))
+        .collect();
+
+    // ── Pool df (max_avail, stored, used) ─────────────────────────────────────
+    let df_pools = v["ceph_df"]["pools"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let df_by_id: HashMap<u64, &serde_json::Value> = df_pools.iter()
+        .filter_map(|p| p["id"].as_u64().map(|id| (id, p)))
+        .collect();
+
+    // ── Pool detail ────────────────────────────────────────────────────────────
+    let pool_detail = v["pool_detail"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let pools: Vec<PoolInfo> = pool_detail.iter().map(|pd| {
+        let pool_id = pd["pool"].as_u64().or_else(|| pd["pool_id"].as_u64()).unwrap_or(0);
+        let crush_rule_id = pd["crush_rule"].as_u64().unwrap_or(0);
+        let df = df_by_id.get(&pool_id);
+        PoolInfo {
+            id: pool_id,
+            name: pd["pool_name"].as_str().unwrap_or("").to_string(),
+            size:     pd["size"].as_u64().unwrap_or(1) as u32,
+            min_size: pd["min_size"].as_u64().unwrap_or(1) as u32,
+            crush_rule_name: rule_names.get(&crush_rule_id).cloned()
+                .unwrap_or_else(|| format!("rule-{}", crush_rule_id)),
+            failure_domain: rule_fd.get(&crush_rule_id).cloned().unwrap_or_else(|| "host".into()),
+            stored_bytes:   df.and_then(|p| p["stats"]["stored"].as_u64()).unwrap_or(0),
+            used_bytes:     df.and_then(|p| p["stats"]["bytes_used"].as_u64()).unwrap_or(0),
+            max_avail_bytes: df.and_then(|p| p["stats"]["max_avail"].as_u64()).unwrap_or(0),
+        }
+    }).collect();
+
+    let stats = &v["ceph_df"]["stats"];
+    StorageDetail {
+        osds,
+        pools,
+        total_bytes: stats["total_bytes"].as_u64().unwrap_or(0),
+        avail_bytes: stats["total_avail_bytes"].as_u64().unwrap_or(0),
+        used_bytes:  stats["total_used_raw_bytes"].as_u64().unwrap_or(0),
+    }
+}
+
+pub async fn storage_detail() -> Json<serde_json::Value> {
+    match fetch_storage_raw().await {
+        Ok(raw) => Json(serde_json::json!({ "ok": true, "data": parse_storage_detail(&raw) })),
+        Err(e)  => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+pub async fn set_replication(
+    Json(req): Json<SetReplicationReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if req.size < 1 || req.size > 3 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "size must be 1–3"})));
+    }
+    if req.min_size < 1 || req.min_size > req.size {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "min_size must be ≥1 and ≤size"})));
+    }
+    if req.failure_domain != "osd" && req.failure_domain != "host" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "failure_domain must be osd or host"})));
+    }
+
+    let rule_name = if req.failure_domain == "osd" { "replicated_osd" } else { "replicated_rule" };
+    let fd = &req.failure_domain;
+    let size = req.size;
+    let min_size = req.min_size;
+
+    let pod = match kubectl::run(&[
+        "get", "pod", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
+        "--field-selector=status.phase=Running",
+        "-o", "jsonpath={.items[0].metadata.name}",
+    ]).await {
+        Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "no running OSD pod"}))),
+    };
+
+    let mon_raw = kubectl::run(&[
+        "get", "cm", "-n", "rook-ceph", "rook-ceph-mon-endpoints",
+        "-o", "jsonpath={.data.data}",
+    ]).await.unwrap_or_default();
+    let mon_host = mon_raw.split('=').nth(1).unwrap_or("").trim().to_string();
+
+    let kb64 = kubectl::run(&[
+        "get", "secret", "-n", "rook-ceph", "rook-ceph-admin-keyring",
+        "-o", "jsonpath={.data.keyring}",
+    ]).await.unwrap_or_default();
+    let kb64 = kb64.trim().replace('\n', "");
+
+    let script = [
+        format!("echo '{}' | base64 -d > /tmp/.ck 2>/dev/null", kb64),
+        format!("printf '[global]\\nmon_host = {}\\n' > /tmp/.cc", mon_host),
+        "CEPH='ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin'".into(),
+        // Create OSD-level rule if needed (replicated_rule already exists for host)
+        format!("if ! $CEPH osd crush rule ls 2>/dev/null | grep -qx {rule}; then $CEPH osd crush rule create-replicated {rule} default {fd}; fi", rule = rule_name, fd = fd),
+        // Apply to all non-internal pools
+        format!("for POOL in $($CEPH osd pool ls 2>/dev/null | grep -v '^[.]'); do"),
+        format!("  $CEPH osd pool set $POOL crush_rule {rule} 2>/dev/null", rule = rule_name),
+        format!("  $CEPH osd pool set $POOL size {size} 2>/dev/null", size = size),
+        format!("  $CEPH osd pool set $POOL min_size {min_size} 2>/dev/null", min_size = min_size),
+        "  echo \"Updated pool $POOL\"".into(),
+        "done".into(),
+        "rm -f /tmp/.ck /tmp/.cc".into(),
+    ].join("\n");
+
+    match kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await {
+        Ok(out) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "output": out}))),
+        Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
+    }
 }
