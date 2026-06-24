@@ -16,15 +16,15 @@ let
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 
-  # Reads [yolab_external] from config.toml and emits YE_URL / YE_TOKEN shell vars.
+  # Reads [tunnel] from config.toml and emits YE_URL / YE_TOKEN shell vars.
   parseYolabExternalCreds = pkgs.writeText "parse-ye-creds.py" ''
     import tomllib, sys, shlex
     with open(sys.argv[1], 'rb') as f:
         c = tomllib.load(f)
-    ye = c.get('yolab_external', {})
+    ye = c.get('tunnel', {})
     E = str()
     def q(s): return shlex.quote(str(s))
-    print(f"YE_URL={q(ye.get('url', E).rstrip('/'))}")
+    print(f"YE_URL={q(ye.get('platform_api_url', E).rstrip('/'))}")
     print(f"YE_TOKEN={q(ye.get('account_token', E))}")
   '';
 
@@ -564,7 +564,7 @@ in
     # Mounts the user's yolab-external SFTP virtual drive (backed by a Hetzner
     # Storage Box sub-account) at /mnt/yolab-sftp.  Credentials are fetched at
     # runtime from the yolab-external API using the account_token in config.toml.
-    # Silently exits if [yolab_external] is not configured or SFTP is not provisioned.
+    # Silently exits if [tunnel] is not configured or SFTP is not provisioned.
     systemd.services.yolab-sftp-mount = {
       description = "Mount yolab SFTP virtual drive";
       after = [
@@ -587,7 +587,7 @@ in
 
           eval "$(${pkgs.python3}/bin/python3 ${parseYolabExternalCreds} "$CONFIG" 2>/dev/null || echo 'YE_URL=; YE_TOKEN=')"
           if [ -z "$YE_URL" ] || [ -z "$YE_TOKEN" ]; then
-            echo "yolab-external not configured, skipping SFTP mount."
+            echo "platform API not configured, skipping SFTP mount."
             exit 0
           fi
 

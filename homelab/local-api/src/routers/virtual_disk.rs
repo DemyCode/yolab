@@ -189,7 +189,7 @@ pub async fn create_virtual_disk(
     Json(req): Json<CreateVirtualDiskRequest>,
 ) -> Result<Json<VirtualDiskInfo>> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Err(anyhow::anyhow!("yolab_external not configured").into());
+        return Err(anyhow::anyhow!("platform API not configured").into());
     };
 
     let vol: VolumeInfo = http_client()
@@ -230,7 +230,7 @@ pub async fn delete_virtual_disk(
     Path(volume_id): Path<i32>,
 ) -> Result<axum::http::StatusCode> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Err(anyhow::anyhow!("yolab_external not configured").into());
+        return Err(anyhow::anyhow!("platform API not configured").into());
     };
 
     http_client()

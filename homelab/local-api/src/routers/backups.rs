@@ -5,23 +5,12 @@ use crate::{config::Config, error::Result, AppState};
 
 // ── shared credential reader ──────────────────────────────────────────────────
 
-/// Read [yolab_external] url + account_token from config.toml.
-/// Falls back to [tunnel] platform_api_url + account_token if not present.
-/// Returns None if neither is configured or the file can't be read.
+/// Read platform API url + account_token from config.toml [tunnel] section.
+/// Returns None if not configured or the file can't be read.
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
     let text = std::fs::read_to_string(&cfg.config_path).ok()?;
     let table: toml::Table = toml::from_str(&text).ok()?;
 
-    // Try [yolab_external] first
-    if let Some(ye) = table.get("yolab_external").and_then(|v| v.as_table()) {
-        let url = ye.get("url").and_then(|v| v.as_str()).unwrap_or("").trim_end_matches('/').to_string();
-        let token = ye.get("account_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if !url.is_empty() && !token.is_empty() {
-            return Some((url, token));
-        }
-    }
-
-    // Fall back to [tunnel]
     if let Some(tunnel) = table.get("tunnel").and_then(|v| v.as_table()) {
         let url = tunnel.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or("").trim_end_matches('/').to_string();
         let token = tunnel.get("account_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -56,7 +45,7 @@ pub struct S3StorageInfo {
 /// GET /api/backups/s3 — return provisioned S3 info or 404.
 pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Ok(Json(serde_json::json!({ "provisioned": false, "reason": "yolab_external not configured" })));
+        return Ok(Json(serde_json::json!({ "provisioned": false, "reason": "platform API not configured" })));
     };
     let resp = http_client()
         .get(format!("{url}/storage/s3"))
@@ -80,7 +69,7 @@ pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Va
 /// the Velero credentials secret, BackupStorageLocation, and Schedule via kubectl.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Err(anyhow::anyhow!("yolab_external not configured in config.toml").into());
+        return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
     };
     let body: serde_json::Value = http_client()
         .post(format!("{url}/storage/s3"))
@@ -184,7 +173,7 @@ pub struct SftpStorageInfo {
 /// GET /api/backups/sftp — return provisioned SFTP info or not-provisioned.
 pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Ok(Json(serde_json::json!({ "provisioned": false, "reason": "yolab_external not configured" })));
+        return Ok(Json(serde_json::json!({ "provisioned": false, "reason": "platform API not configured" })));
     };
     let resp = http_client()
         .get(format!("{url}/storage/sftp"))
