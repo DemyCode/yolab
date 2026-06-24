@@ -544,7 +544,7 @@ in
     # newly provisioned disks are automatically accessible to Rook OSD pods
     # without declaring them individually.
     services.udev.extraRules = ''
-      SUBSYSTEM=="block", DEVTYPE=="disk", KERNEL!="loop*", KERNEL!="dm-*", GROUP="ceph", MODE="0660"
+      SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL!="loop*", KERNEL!="dm-*", GROUP="ceph", MODE="0660"
     '';
 
     # K3s watches /var/lib/rancher/k3s/server/manifests/ and auto-applies
