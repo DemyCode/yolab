@@ -15,29 +15,6 @@ let
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
-
-  # Reads [tunnel] from config.toml and emits YE_URL / YE_TOKEN shell vars.
-  parseYolabExternalCreds = pkgs.writeText "parse-ye-creds.py" ''
-    import tomllib, sys, shlex
-    with open(sys.argv[1], 'rb') as f:
-        c = tomllib.load(f)
-    ye = c.get('tunnel', {})
-    E = str()
-    def q(s): return shlex.quote(str(s))
-    print(f"YE_URL={q(ye.get('platform_api_url', E).rstrip('/'))}")
-    print(f"YE_TOKEN={q(ye.get('account_token', E))}")
-  '';
-
-  # Reads SFTP JSON (from yolab-external /storage/sftp) on stdin and emits SFTP_* shell vars.
-  parseSftpCredsFromJson = pkgs.writeText "parse-sftp-json.py" ''
-    import json, sys, shlex
-    d = json.load(sys.stdin)
-    def q(s): return shlex.quote(str(s))
-    print(f"SFTP_HOST={q(d['host'])}")
-    print(f"SFTP_PORT={q(d['port'])}")
-    print(f"SFTP_USER={q(d['username'])}")
-    print(f"SFTP_PASS={q(d['password'])}")
-  '';
 in
 {
   # ── Module options ────────────────────────────────────────────────────────
@@ -559,99 +536,6 @@ in
       # and Schedule via kubectl — nothing is read from config.toml here.
       "L+ /var/lib/rancher/k3s/server/manifests/velero.yaml  - - - - ${./velero/helmchart.yaml}"
     ];
-
-    # ── SFTP virtual drive ─────────────────────────────────────────────────────
-    # Mounts the user's yolab-external SFTP virtual drive (backed by a Hetzner
-    # Storage Box sub-account) at /mnt/yolab-sftp.  Credentials are fetched at
-    # runtime from the yolab-external API using the account_token in config.toml.
-    # Silently exits if [tunnel] is not configured or SFTP is not provisioned.
-    systemd.services.yolab-sftp-mount = {
-      description = "Mount yolab SFTP virtual drive";
-      after = [
-        "network-online.target"
-        "wireguard-wg0.service"
-      ];
-      wants = [ "network-online.target" ];
-      wantedBy = [ "multi-user.target" ];
-      environment = {
-        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
-        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
-      };
-      path = [ pkgs.util-linux pkgs.sshfs pkgs.fuse3 pkgs.curl pkgs.python3 ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "sftp-mount" ''
-          set -euo pipefail
-          CONFIG="$YOLAB_CONFIG"
-
-          eval "$(${pkgs.python3}/bin/python3 ${parseYolabExternalCreds} "$CONFIG" 2>/dev/null || echo 'YE_URL=; YE_TOKEN=')"
-          if [ -z "$YE_URL" ] || [ -z "$YE_TOKEN" ]; then
-            echo "platform API not configured, skipping SFTP mount."
-            exit 0
-          fi
-
-          SFTP_JSON=$(${pkgs.curl}/bin/curl -sf --max-time 30 \
-            -H "Authorization: Bearer $YE_TOKEN" \
-            "$YE_URL/storage/sftp" 2>/dev/null || true)
-          if [ -z "$SFTP_JSON" ]; then
-            echo "No SFTP storage provisioned yet, skipping mount."
-            exit 0
-          fi
-
-          TMPENV=$(mktemp)
-          PASSFILE=$(mktemp)
-          chmod 600 "$PASSFILE"
-          trap 'rm -f "$TMPENV" "$PASSFILE"' EXIT
-          echo "$SFTP_JSON" | ${pkgs.python3}/bin/python3 ${parseSftpCredsFromJson} > "$TMPENV"
-          . "$TMPENV"
-
-          mkdir -p /mnt/yolab-sftp
-
-          if ${pkgs.util-linux}/bin/mountpoint -q /mnt/yolab-sftp; then
-            echo "Already mounted."
-            exit 0
-          fi
-
-          printf '%s' "$SFTP_PASS" > "$PASSFILE"
-
-          ${pkgs.sshfs}/bin/sshfs \
-            "$SFTP_USER@$SFTP_HOST:/" /mnt/yolab-sftp \
-            -p "$SFTP_PORT" \
-            -o password_stdin \
-            -o StrictHostKeyChecking=no \
-            -o reconnect \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=3 \
-            < "$PASSFILE"
-          echo "SFTP drive mounted at /mnt/yolab-sftp."
-
-          # Re-attach the cloud OSD image to its reserved loop device on reboot.
-          # loop8 is the pinned slot for the cloud OSD (loop0=system, loop1-7=virtual).
-          # Using a fixed slot keeps the device name stable so the Ceph priority
-          # ConfigMap entry (host:loop8) stays valid across reboots.
-          CLOUD_IMG=/mnt/yolab-sftp/yolab-cloud-osd.img
-          CLOUD_LOOP=/dev/loop8
-          if [ -f "$CLOUD_IMG" ]; then
-            current=$(${pkgs.util-linux}/bin/losetup -l \
-              --output BACK-FILE --noheadings "$CLOUD_LOOP" 2>/dev/null || true)
-            if [ "$current" != "$CLOUD_IMG" ]; then
-              ${pkgs.util-linux}/bin/losetup -d "$CLOUD_LOOP" 2>/dev/null || true
-              ${pkgs.util-linux}/bin/losetup --direct-io=on "$CLOUD_LOOP" "$CLOUD_IMG" 2>/dev/null || \
-                ${pkgs.util-linux}/bin/losetup "$CLOUD_LOOP" "$CLOUD_IMG" || true
-              echo "Cloud OSD attached: $CLOUD_IMG → $CLOUD_LOOP"
-            else
-              echo "Cloud OSD already on $CLOUD_LOOP"
-            fi
-          fi
-        '';
-        ExecStop = pkgs.writeShellScript "sftp-unmount" ''
-          ${pkgs.fuse3}/bin/fusermount3 -u /mnt/yolab-sftp 2>/dev/null \
-            || ${pkgs.util-linux}/bin/umount /mnt/yolab-sftp 2>/dev/null \
-            || true
-        '';
-      };
-    };
 
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
