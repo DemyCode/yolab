@@ -263,6 +263,84 @@ pub async fn update(
     Sse::new(stream).into_response()
 }
 
+// ── Background (fire-and-forget) update ───────────────────────────────────────
+
+/// Called by other nodes via update_all. Starts the full update cycle in a
+/// background task and returns 200 immediately so the caller can drop the
+/// connection without cancelling the work.
+pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::Value> {
+    if IS_UPDATING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Json(serde_json::json!({"error": "already updating"}));
+    }
+    let cfg = state.config.clone();
+    tokio::spawn(async move {
+        let _guard = UpdateGuard;
+        let ch = read_channel(&cfg);
+
+        // git fetch
+        let fetch_ok = tokio::process::Command::new("git")
+            .args(["-C", &cfg.repo_path, "fetch", &ch.remote, "--tags"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !fetch_ok { return; }
+
+        // git reset --hard
+        let remote_ref = format!("{}/{}", ch.remote, ch.ref_);
+        let has_remote = std::process::Command::new("git")
+            .args(["-C", &cfg.repo_path, "rev-parse", "--verify", &remote_ref])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let target = if has_remote { remote_ref } else { ch.ref_.clone() };
+        let reset_ok = tokio::process::Command::new("git")
+            .args(["-C", &cfg.repo_path, "reset", "--hard", &target])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !reset_ok { return; }
+
+        // nixos-rebuild (detached — survives local-api restart)
+        let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
+        let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
+        if let (Ok(log_file), Ok(log2)) = (
+            std::fs::File::create(&cfg.rebuild_log),
+            std::fs::File::create(&cfg.rebuild_log),
+        ) {
+            if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
+                .args(["switch", "--flake", &flake,
+                       "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
+                       "--cores", "1", "--max-jobs", "1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(log_file)
+                .stderr(log2)
+                .spawn()
+            {
+                let pid = child.id();
+                let _ = std::fs::write(&cfg.rebuild_pid, pid.to_string());
+                let pid_file = cfg.rebuild_pid.clone();
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    if std::fs::read_to_string(&pid_file)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        == Some(pid)
+                    {
+                        let _ = std::fs::remove_file(&pid_file);
+                    }
+                });
+            }
+        }
+    });
+    Json(serde_json::json!({"ok": true}))
+}
+
 // ── Update all nodes ──────────────────────────────────────────────────────────
 
 pub async fn update_all(State(state): State<AppState>) -> Response {
@@ -289,13 +367,14 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
             let body = channel_body.clone();
             tokio::spawn(async move {
                 let client = reqwest::Client::new();
-                // Sync channel first, then trigger the rebuild.
+                // Sync channel, then fire trigger (returns 200 immediately —
+                // the actual work runs in a background task on the remote node).
                 let _ = client.put(format!("{base}/api/update/channel"))
                     .json(&body)
                     .timeout(Duration::from_secs(10))
                     .send().await;
-                let _ = client.post(format!("{base}/api/update"))
-                    .timeout(Duration::from_secs(3600))
+                let _ = client.post(format!("{base}/api/update/trigger"))
+                    .timeout(Duration::from_secs(10))
                     .send().await;
             });
         }
