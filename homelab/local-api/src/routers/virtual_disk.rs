@@ -134,22 +134,57 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+async fn ye_post(url: &str, token: &str, path: &str, body: serde_json::Value) -> anyhow::Result<reqwest::Response> {
+    let resp = http_client()
+        .post(format!("{url}{path}"))
+        .bearer_auth(token)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("external API {status}: {text}");
+    }
+    Ok(resp)
+}
+
+async fn ye_get(url: &str, token: &str, path: &str) -> anyhow::Result<reqwest::Response> {
+    let resp = http_client()
+        .get(format!("{url}{path}"))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("external API {status}: {text}");
+    }
+    Ok(resp)
+}
+
+async fn ye_delete(url: &str, token: &str, path: &str) -> anyhow::Result<reqwest::Response> {
+    let resp = http_client()
+        .delete(format!("{url}{path}"))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("external API {status}: {text}");
+    }
+    Ok(resp)
+}
+
 /// GET /api/virtual-disks
 pub async fn get_virtual_disks(State(state): State<AppState>) -> Result<Json<Vec<VirtualDiskInfo>>> {
     let Some((url, token)) = ye_creds(&state.config) else {
         return Ok(Json(vec![]));
     };
-    let volumes: Vec<VolumeInfo> = http_client()
-        .get(format!("{url}/storage/volume"))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!(e))?
-        .json()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let volumes: Vec<VolumeInfo> = ye_get(&url, &token, "/storage/volume").await?
+        .json().await.map_err(|e| anyhow::anyhow!(e))?;
 
     let assignments = read_assignments().await;
 
@@ -192,19 +227,8 @@ pub async fn create_virtual_disk(
         return Err(anyhow::anyhow!("platform API not configured").into());
     };
 
-    let vol: VolumeInfo = http_client()
-        .post(format!("{url}/storage/volume"))
-        .bearer_auth(&token)
-        .header("Content-Type", "application/json")
-        .body(serde_json::json!({ "box_type": req.box_type }).to_string())
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!(e))?
-        .json()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let vol: VolumeInfo = ye_post(&url, &token, "/storage/volume", serde_json::json!({ "box_type": req.box_type })).await?
+        .json().await.map_err(|e| anyhow::anyhow!(e))?;
 
     let mut assignments = read_assignments().await;
     assignments.insert(vol.id, req.node_hostname.clone());
@@ -233,14 +257,7 @@ pub async fn delete_virtual_disk(
         return Err(anyhow::anyhow!("platform API not configured").into());
     };
 
-    http_client()
-        .delete(format!("{url}/storage/volume/{volume_id}"))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!(e))?;
+    ye_delete(&url, &token, &format!("/storage/volume/{volume_id}")).await?;
 
     let mut assignments = read_assignments().await;
     assignments.remove(&volume_id);
@@ -392,22 +409,8 @@ async fn unmount_sshfs(mount_point: &str) {
 
 // ── Core provisioning logic ────────────────────────────────────────────────────
 
-fn poll_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
 async fn fetch_volumes(url: &str, token: &str) -> anyhow::Result<Vec<VolumeInfo>> {
-    Ok(poll_http_client()
-        .get(format!("{url}/storage/volume"))
-        .bearer_auth(token)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Vec<VolumeInfo>>()
-        .await?)
+    Ok(ye_get(url, token, "/storage/volume").await?.json().await?)
 }
 
 async fn provision(vol: &VolumeInfo) -> anyhow::Result<AttachedDisk> {
