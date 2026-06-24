@@ -6,3 +6,4 @@ pub mod rebuild;
 pub mod status;
 pub mod terminal;
 pub mod update;
+pub mod virtual_disk;

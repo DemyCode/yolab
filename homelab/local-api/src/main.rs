@@ -16,7 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use auth::{auth_middleware, AuthState};
 use config::Config;
-use routers::{apps, backups, ceph, nodes, rebuild, status, terminal, update};
+use routers::{apps, backups, ceph, nodes, rebuild, status, terminal, update, virtual_disk};
 
 /// Single shared state threaded through all handlers.
 #[derive(Clone)]
@@ -96,6 +96,8 @@ async fn main() {
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());
+
+    tokio::spawn(virtual_disk::run(Arc::clone(&cfg)));
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
