@@ -136,24 +136,14 @@ function estimateUsable(osds: OsdInfo[], size: number, domain: "osd" | "host"): 
   }
 }
 
-function domainLabel(d: string): string {
-  return d === "osd" ? "Disk-level" : "Node-level";
-}
-
-function redundancyLabel(size: number, domain: string): string {
-  if (size === 1) return "No redundancy — a single disk failure loses data";
-  if (size === 2 && domain === "osd") return "Survives 1 disk failure";
-  if (size === 2 && domain === "host") return "Survives 1 full node going offline";
-  if (size === 3 && domain === "osd") return "Survives 2 disk failures";
-  if (size === 3 && domain === "host") return "Survives 2 full nodes going offline";
-  return "";
-}
-
 type Domain = "osd" | "host";
 
 function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] }) {
   const cephFs = pools.filter(p => !p.name.startsWith("."));
   const current = cephFs[0];
+
+  const nDisks = osds.length;
+  const nNodes = new Set(osds.map(o => o.host)).size;
 
   const [domain, setDomain] = useState<Domain>((current?.failure_domain as Domain) ?? "osd");
   const [size, setSize]     = useState<number>(current?.size ?? 2);
@@ -161,8 +151,23 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
   const [confirm, setConfirm]   = useState(false);
   const [result, setResult]     = useState<string | null>(null);
 
+  const maxSize = domain === "osd" ? nDisks : nNodes;
+
+  function changeDomain(d: Domain) {
+    setDomain(d);
+    const newMax = d === "osd" ? nDisks : nNodes;
+    if (size > newMax) setSize(newMax);
+    setConfirm(false);
+    setResult(null);
+  }
+
   const changed = current && (domain !== current.failure_domain || size !== current.size);
-  const estimate = estimateUsable(osds, size, domain);
+  const authoritative = current?.max_avail_bytes ?? 0;
+  const showEstimate  = changed || authoritative === 0;
+  const displayCapacity = showEstimate ? estimateUsable(osds, size, domain) : authoritative;
+
+  const survivesDisks    = size - 1;
+  const survivesMachines = domain === "host" ? size - 1 : 0;
 
   async function apply() {
     setApplying(true);
@@ -183,9 +188,6 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
     }
   }
 
-  const authoritative = cephFs[0]?.max_avail_bytes ?? 0;
-  const showEstimate  = changed || authoritative === 0;
-
   return (
     <Card>
       <CardHeader>
@@ -193,30 +195,15 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
       </CardHeader>
       <CardContent className="space-y-5">
 
-        {/* Current pool summary */}
-        {cephFs.length > 0 && (
-          <div className="rounded-md border border-[#27272a] divide-y divide-[#27272a]/50">
-            {cephFs.map(p => (
-              <div key={p.id} className="flex items-center gap-4 px-4 py-2.5 text-xs">
-                <span className="font-mono text-[#a78bfa] w-40 truncate">{p.name}</span>
-                <span className="text-[#71717a]">size={p.size} / min={p.min_size}</span>
-                <span className="text-[#71717a]">{domainLabel(p.failure_domain)}</span>
-                <span className="text-[#52525b] ml-auto">{p.crush_rule_name}</span>
-                <span className="text-[#4ade80] font-medium">max {fmtBytes(p.max_avail_bytes)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* Controls */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
           <div className="space-y-2">
-            <p className="text-xs font-medium text-[#71717a] uppercase tracking-wider">Failure domain</p>
+            <p className="text-xs font-medium text-[#71717a] uppercase tracking-wider">Redundancy scope</p>
             <div className="flex gap-2">
               {(["osd", "host"] as Domain[]).map(d => (
                 <button
                   key={d}
-                  onClick={() => { setDomain(d); setConfirm(false); setResult(null); }}
+                  onClick={() => changeDomain(d)}
                   className={cn(
                     "flex-1 rounded-md border px-3 py-2 text-sm transition-colors",
                     domain === d
@@ -224,69 +211,77 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
                       : "border-[#27272a] text-[#71717a] hover:border-[#3f3f46] hover:text-[#a1a1aa]",
                   )}
                 >
-                  {d === "osd" ? "Disk-level" : "Node-level"}
+                  {d === "osd" ? "Disk-level" : "Machine-level"}
                 </button>
               ))}
             </div>
-            <p className="text-xs text-[#52525b]">
-              {domain === "osd"
-                ? "Copies land on any 2 different disks — may be on the same node."
-                : "Each copy must land on a different node — survives a full node outage."}
-            </p>
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs font-medium text-[#71717a] uppercase tracking-wider">Copies (replication size)</p>
-            <div className="flex gap-2">
-              {[1, 2, 3].map(s => (
-                <button
-                  key={s}
-                  onClick={() => { setSize(s); setConfirm(false); setResult(null); }}
-                  className={cn(
-                    "flex-1 rounded-md border px-3 py-2 text-sm transition-colors",
-                    size === s
-                      ? "border-[#a78bfa] bg-[#a78bfa]/10 text-[#c4b5fd]"
-                      : "border-[#27272a] text-[#71717a] hover:border-[#3f3f46] hover:text-[#a1a1aa]",
-                  )}
-                >
-                  {s}×
-                </button>
-              ))}
-            </div>
-            <p className={cn(
-              "text-xs",
-              size === 1 ? "text-[#f87171]" : "text-[#52525b]",
-            )}>
-              {redundancyLabel(size, domain)}
+            <p className="text-xs font-medium text-[#71717a] uppercase tracking-wider">
+              Copies
+              <span className="ml-1.5 normal-case font-normal text-[#52525b]">
+                (max {maxSize} — you have {domain === "osd" ? `${nDisks} disk${nDisks !== 1 ? "s" : ""}` : `${nNodes} machine${nNodes !== 1 ? "s" : ""}`})
+              </span>
             </p>
+            <div className="flex gap-2">
+              {[1, 2, 3].map(s => {
+                const disabled = s > maxSize;
+                return (
+                  <button
+                    key={s}
+                    disabled={disabled}
+                    onClick={() => { setSize(s); setConfirm(false); setResult(null); }}
+                    className={cn(
+                      "flex-1 rounded-md border px-3 py-2 text-sm transition-colors",
+                      disabled
+                        ? "border-[#27272a]/50 text-[#3f3f46] cursor-not-allowed opacity-40"
+                        : size === s
+                          ? "border-[#a78bfa] bg-[#a78bfa]/10 text-[#c4b5fd]"
+                          : "border-[#27272a] text-[#71717a] hover:border-[#3f3f46] hover:text-[#a1a1aa]",
+                    )}
+                  >
+                    {s}×
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        {/* Capacity estimate */}
-        <div className="rounded-md bg-[#18181b] border border-[#27272a] px-4 py-3 flex items-center gap-4 flex-wrap">
+        {/* Capacity + resilience */}
+        <div className="rounded-md bg-[#18181b] border border-[#27272a] px-5 py-4 space-y-3">
           <div>
-            <p className="text-xs text-[#71717a]">
-              {showEstimate ? "Estimated usable capacity" : "Usable capacity (Ceph)"}
+            <p className="text-xs text-[#71717a] mb-0.5">
+              {showEstimate ? "Estimated capacity" : "Usable capacity"}
             </p>
-            <p className="text-xl font-semibold text-[#fafafa] mt-0.5">
-              {showEstimate ? `~${fmtBytes(estimate)}` : fmtBytes(authoritative)}
+            <p className="text-2xl font-semibold text-[#fafafa] tabular-nums">
+              {showEstimate ? `~${fmtBytes(displayCapacity)}` : fmtBytes(displayCapacity)}
             </p>
           </div>
-          {showEstimate && (
-            <p className="text-xs text-[#52525b] flex-1">
-              Approximate — apply to get Ceph's exact answer.
-              {domain === "host" && (() => {
-                const hostMap = new Map<string, number>();
-                for (const o of osds) hostMap.set(o.host, (hostMap.get(o.host) ?? 0) + o.size_bytes);
-                const caps = [...hostMap.values()];
-                const unbalanced = caps.length >= 2 && Math.max(...caps) / Math.min(...caps) > 2;
-                return unbalanced ? " ⚠ Nodes are unbalanced — the smallest node caps your capacity." : null;
-              })()}
+          <div className="h-px bg-[#27272a]" />
+          <div className="space-y-1.5">
+            <p className={cn(
+              "text-sm",
+              survivesDisks === 0 ? "text-[#f87171]" : "text-[#a1a1aa]",
+            )}>
+              Cluster can survive{" "}
+              <span className={cn("font-semibold", survivesDisks === 0 ? "text-[#f87171]" : "text-[#fafafa]")}>
+                {survivesDisks} disk{survivesDisks !== 1 ? "s" : ""}
+              </span>{" "}
+              going down
             </p>
-          )}
-          {!showEstimate && (
-            <p className="text-xs text-[#52525b]">Exact figure from Ceph. Changes live as data is written.</p>
-          )}
+            <p className={cn(
+              "text-sm",
+              survivesMachines === 0 ? "text-[#f87171]" : "text-[#a1a1aa]",
+            )}>
+              Cluster can survive{" "}
+              <span className={cn("font-semibold", survivesMachines === 0 ? "text-[#f87171]" : "text-[#fafafa]")}>
+                {survivesMachines} machine{survivesMachines !== 1 ? "s" : ""}
+              </span>{" "}
+              going down
+            </p>
+          </div>
         </div>
 
         {/* Apply */}
@@ -300,12 +295,9 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
           <div className="rounded-md border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3 space-y-3">
             <div className="flex items-start gap-2">
               <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
-              <div className="text-sm text-[#fbbf24]">
-                <p className="font-medium">Apply {size}× replication, {domainLabel(domain)}?</p>
-                <p className="text-xs text-[#fde68a] mt-0.5">
-                  Ceph will immediately start rebalancing. Estimated usable: ~{fmtBytes(estimate)}.
-                </p>
-              </div>
+              <p className="text-sm text-[#fbbf24] font-medium">
+                Apply {size}× replication, {domain === "osd" ? "disk-level" : "machine-level"}? Ceph will start rebalancing immediately.
+              </p>
             </div>
             <div className="flex gap-2">
               <Button onClick={() => void apply()} disabled={applying} size="sm" className="gap-2">
