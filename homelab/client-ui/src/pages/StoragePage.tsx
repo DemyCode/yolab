@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, HardDrive, AlertTriangle } from "lucide-react";
+import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -372,6 +372,99 @@ function ReplicationPanel({ pools, osds }: { pools: PoolInfo[]; osds: OsdInfo[] 
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+  return (
+    <button onClick={copy} className="text-[#52525b] hover:text-[#a1a1aa] transition-colors">
+      {copied ? <Check className="h-3.5 w-3.5 text-[#4ade80]" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+function AdvancedPanel() {
+  const [open, setOpen]         = useState(false);
+  const [loading, setLoading]   = useState(false);
+  const [creds, setCreds]       = useState<{ username: string; password: string } | null>(null);
+  const [showPass, setShowPass] = useState(false);
+
+  function toggle() {
+    if (!open && !creds) {
+      setLoading(true);
+      fetch("/api/ceph/dashboard")
+        .then(r => r.json())
+        .then(d => setCreds(d))
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    }
+    setOpen(o => !o);
+  }
+
+  return (
+    <div className="rounded-md border border-[#27272a] overflow-hidden">
+      <button
+        onClick={toggle}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm text-[#71717a] hover:text-[#a1a1aa] hover:bg-[#18181b] transition-colors"
+      >
+        <span className="font-medium">Advanced</span>
+        <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
+      </button>
+
+      {open && (
+        <div className="border-t border-[#27272a] px-4 py-4 bg-[#111114] space-y-4">
+          {loading && <p className="text-xs text-[#52525b]">Loading…</p>}
+          {creds && (
+            <>
+              <div className="space-y-3">
+                {/* Username */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[#71717a] w-24">Username</span>
+                  <div className="flex items-center gap-2 font-mono text-sm text-[#fafafa]">
+                    {creds.username}
+                    <CopyButton text={creds.username} />
+                  </div>
+                </div>
+                {/* Password */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[#71717a] w-24">Password</span>
+                  <div className="flex items-center gap-2 font-mono text-sm text-[#fafafa]">
+                    {showPass ? creds.password : "••••••••••••"}
+                    <button
+                      onClick={() => setShowPass(s => !s)}
+                      className="text-[#52525b] hover:text-[#a1a1aa] transition-colors"
+                    >
+                      {showPass ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                    <CopyButton text={creds.password} />
+                  </div>
+                </div>
+                {/* Dashboard link */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[#71717a] w-24">Dashboard</span>
+                  <a
+                    href="/ceph-dashboard/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-[#a78bfa] hover:text-[#c4b5fd] transition-colors"
+                  >
+                    Open Ceph dashboard
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StoragePage() {
   const [detail, setDetail] = useState<StorageDetail | null>(null);
   const [error, setError]   = useState<string | null>(null);
@@ -437,6 +530,8 @@ export function StoragePage() {
           <ReplicationPanel pools={detail.pools} osds={detail.osds} />
         </>
       )}
+
+      <AdvancedPanel />
     </div>
   );
 }
