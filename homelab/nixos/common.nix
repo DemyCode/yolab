@@ -429,7 +429,6 @@ in
         YOLAB_PLATFORM = config.yolab.platform;
         YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
         YOLAB_NODE_IPV6 = s.tunnelCfg.sub_ipv6_private;
-        YOLAB_HOSTNAME = s.hostname;
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };
       serviceConfig = {
