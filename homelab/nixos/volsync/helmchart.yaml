@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: volsync-system
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: volsync
+  namespace: kube-system
+spec:
+  chart: volsync
+  repo: https://backube.github.io/helm-charts/
+  targetNamespace: volsync-system
+  createNamespace: false
+  valuesContent: |-
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
