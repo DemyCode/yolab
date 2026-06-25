@@ -16,7 +16,7 @@
   # The /112 private subnet covering all nodes' cluster IPs.
   # Stored by the installer in config.toml so all nodes share the same value.
   # Falls back to a sensible ULA default if absent (e.g. dev/WSL).
-  privateSubnet = tunnelCfg.sub_ipv6_private_subnet or "fd00:cafe::/112";
+  privateSubnet = nodeCfg.sub_ipv6_private_subnet or "fd00:cafe::/112";
 
   builds = import ./builds.nix {inherit pkgs inputs;};
   inherit (builds) clientUi localApiEnv;

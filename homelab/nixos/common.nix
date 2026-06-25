@@ -66,64 +66,53 @@ in
 
       # ── WireGuard ──────────────────────────────────────────────────────
       #
-      # Topology: hub-and-spoke.  Every node has ONE peer — the external
-      # WireGuard server in yolab-external.  The server relays traffic
-      # between nodes (Node A → hub → Node B).  New nodes appear on the
-      # hub automatically via the wireguard-manager daemon; existing nodes
-      # never need a rebuild when the cluster grows.
+      # Topology: hub-and-spoke.  Every node connects to the external WireGuard
+      # server in yolab-external via TWO independent interfaces, each with its
+      # own keypair:
       #
-      # Each node gets two addresses on wg0:
-      #   sub_ipv6         – public, routed by the external DNS server.
-      #                      Caddy binds here to serve the management UI.
-      #   sub_ipv6_private – private cluster IP used by K3s, Flannel VXLAN,
-      #                      kubelet, and the local-api fan-out calls.
+      #   wg0 — tunnel interface (public address sub_ipv6 = 2a01::...)
+      #     • Caddy binds here to serve the management UI over HTTPS.
+      #     • Source-policy routing ensures outbound/return tunnel traffic always
+      #       exits wg0, preventing asymmetric routing.
+      #     • Pod egress SNATs to sub_ipv6 via Flannel, then exits via wg0.
       #
-      # Routing strategy — two complementary rules:
+      #   wg1 — node mesh interface (private address sub_ipv6_private = fd00:cafe::...)
+      #     • K3s, Flannel VXLAN, kubelet, and local-api fan-out use this.
+      #     • A single destination route sends all cluster-subnet traffic here
+      #       regardless of source address (needed for VXLAN sockets).
       #
-      #  A. Destination route (main table):
-      #       ip -6 route add <privateSubnet> dev wg0
-      #     Any packet headed for another node's cluster IP exits wg0,
-      #     regardless of source.  This is what makes VXLAN and kubelet
-      #     traffic work — those sockets may use a source address that the
-      #     source-based policy rule below wouldn't catch.
+      # Decoupling the two interfaces means tunnel clients (public access only)
+      # and mesh nodes (cluster only) can be provisioned independently.
       #
-      #  B. Source policy (table 51820):
-      #       ip -6 rule add from <our IPs> lookup 51820
+      # Routing rules:
+      #
+      #  A. Destination route on wg1 (main table):
+      #       ip -6 route add <privateSubnet> dev wg1
+      #     Cluster-bound traffic exits wg1, regardless of source.
+      #
+      #  B. Source policy on wg0 (table 51820):
+      #       ip -6 rule add from <sub_ipv6> lookup 51820
       #       ip -6 route add ::/0 dev wg0 table 51820
-      #     Return / keepalive / outbound traffic originating from our own
-      #     WireGuard addresses also exits wg0, preventing asymmetric routing
-      #     for inbound tunnel connections.
+      #     Outbound/return traffic from our public address exits wg0.
+      #
+      #  C. Default route on wg0 (metric 200):
+      #     Pod traffic (fd00:42::/56) SNATs to sub_ipv6, then exits via wg0.
       wireguard.interfaces.wg0 = {
-        ips = [
-          "${s.tunnelCfg.sub_ipv6}/128"
-          "${s.tunnelCfg.sub_ipv6_private}/128"
-        ];
+        ips = [ "${s.tunnelCfg.sub_ipv6}/128" ];
         privateKey = s.tunnelCfg.wg_private_key;
 
         postSetup = ''
-          # A. Destination route: all cluster-node IPs go through wg0
-          ip -6 route replace ${s.privateSubnet} dev wg0 2>/dev/null || true
-
-          # B. Source policy: sub_ipv6 (public/Caddy address) always exits through wg0.
-          #    sub_ipv6_private is NOT added here — it is a ULA address only reachable
-          #    within the fd00:cafe::/112 cluster subnet, which is already covered by
-          #    the destination route above (rule A).  Adding a source policy for
-          #    sub_ipv6_private sends API-server replies to pods via wg0 instead of
-          #    the local bridge, causing i/o timeouts for all in-cluster service traffic.
+          # B. Source policy: public address always exits wg0.
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
 
-          # C. Default route in main table: allows pod traffic (fd00:42::/56) to reach
-          #    external IPv6 via wg0.  Flannel's --flannel-ipv6-masq SNATs the pod source
-          #    to sub_ipv6, which is then picked up by source policy B above.  This is
-          #    needed so app WireGuard sidecars can reach the hub to establish their tunnel.
-          #    metric 200 loses to any ISP-provided default route (single encapsulation path)
-          #    and wins only when no ISP IPv6 exists (double encapsulation path, still works).
+          # C. Default route: pod traffic exits via wg0 for outbound IPv6.
+          #    metric 200 loses to any ISP-provided default route and wins only
+          #    when no ISP IPv6 exists.
           ip -6 route replace ::/0 dev wg0 metric 200 2>/dev/null || true
         '';
 
         preShutdown = ''
-          ip -6 route del ${s.privateSubnet} dev wg0 2>/dev/null || true
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 metric 200 2>/dev/null || true
@@ -131,11 +120,32 @@ in
 
         peers = [
           {
-            # The external hub is the only peer on every node.
-            # It knows about all registered nodes and relays traffic between them.
             publicKey = s.tunnelCfg.wg_server_public_key;
             endpoint = s.tunnelCfg.wg_server_endpoint;
             allowedIPs = [ "::/0" ];
+            persistentKeepalive = 25;
+          }
+        ];
+      };
+
+      wireguard.interfaces.wg1 = {
+        ips = [ "${s.nodeCfg.sub_ipv6_private}/128" ];
+        privateKey = s.nodeCfg.wg_private_key;
+
+        postSetup = ''
+          # A. Destination route: all cluster-node IPs go through wg1.
+          ip -6 route replace ${s.privateSubnet} dev wg1 2>/dev/null || true
+        '';
+
+        preShutdown = ''
+          ip -6 route del ${s.privateSubnet} dev wg1 2>/dev/null || true
+        '';
+
+        peers = [
+          {
+            publicKey = s.nodeCfg.wg_server_public_key;
+            endpoint = s.nodeCfg.wg_server_endpoint;
+            allowedIPs = [ "${s.privateSubnet}" ];
             persistentKeepalive = 25;
           }
         ];
@@ -219,8 +229,8 @@ in
         "--cluster-cidr=fd00:42::/56,10.42.0.0/16"
         "--service-cidr=fd00:43::/112,10.43.0.0/16"
         "--cluster-dns=fd00:43::a"
-        "--advertise-address=${s.tunnelCfg.sub_ipv6_private}"
-        "--tls-san=${s.tunnelCfg.sub_ipv6_private}"
+        "--advertise-address=${s.nodeCfg.sub_ipv6_private}"
+        "--tls-san=${s.nodeCfg.sub_ipv6_private}"
         "--resolv-conf=/etc/k3s-resolv.conf"
       ];
     };
@@ -231,7 +241,7 @@ in
     systemd.services.k3s-node-ip = {
       description = "Write K3s dual-stack node-ip config";
       after = [
-        "wireguard-wg0.service"
+        "wireguard-wg1.service"
         "network-online.target"
       ];
       wants = [ "network-online.target" ];
@@ -246,9 +256,9 @@ in
           mkdir -p /etc/rancher/k3s
           {
             if [ -n "$IPV4" ]; then
-              echo "node-ip: ${s.tunnelCfg.sub_ipv6_private},$IPV4"
+              echo "node-ip: ${s.nodeCfg.sub_ipv6_private},$IPV4"
             else
-              echo "node-ip: ${s.tunnelCfg.sub_ipv6_private}"
+              echo "node-ip: ${s.nodeCfg.sub_ipv6_private}"
             fi
           } > /etc/rancher/k3s/config.yaml
           chmod 600 /etc/rancher/k3s/config.yaml
@@ -256,14 +266,18 @@ in
       };
     };
 
-    # K3s must start after WireGuard so the node-ip is reachable before K3s
-    # tries to register itself with the cluster.
+    # K3s must start after both WireGuard interfaces so all addresses are up
+    # before K3s tries to register itself with the cluster.
     systemd.services.k3s = {
       after = [
         "wireguard-wg0.service"
+        "wireguard-wg1.service"
         "k3s-node-ip.service"
       ];
-      wants = [ "wireguard-wg0.service" ];
+      wants = [
+        "wireguard-wg0.service"
+        "wireguard-wg1.service"
+      ];
       serviceConfig.TimeoutStopSec = "30";
     };
 
@@ -428,7 +442,7 @@ in
         YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
         YOLAB_PLATFORM = config.yolab.platform;
         YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
-        YOLAB_NODE_IPV6 = s.tunnelCfg.sub_ipv6_private;
+        YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       };
       serviceConfig = {
