@@ -508,6 +508,7 @@ in
         sshfs
         fuse3
         qrencode
+        rclone
       ];
 
     # ── Rook / Ceph ───────────────────────────────────────────────────────────
@@ -529,12 +530,17 @@ in
     # any YAML placed there.  Symlinks into the Nix store so updates
     # propagate on nixos-rebuild without manual kubectl apply.
     systemd.tmpfiles.rules = [
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml  - - - - ${./rook/operator.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml   - - - - ${./rook/cluster.yaml}"
-      # Velero is always deployed so it is ready when the user enables backups
-      # from the UI.  The local-api manages cloud-credentials, BackupStorageLocation
-      # and Schedule via kubectl — nothing is read from config.toml here.
-      "L+ /var/lib/rancher/k3s/server/manifests/velero.yaml  - - - - ${./velero/helmchart.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml               - - - - ${./rook/cluster.yaml}"
+      # external-snapshotter: CRDs + RBAC must be applied before the controller.
+      # K3s applies manifests in lexicographic order so the prefix ensures ordering.
+      "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/snap-2-controller.yaml               - - - - ${./external-snapshotter/controller.yaml}"
+      # VolSync operator for PV backup/restore via rclone → B2.
+      "L+ /var/lib/rancher/k3s/server/manifests/volsync.yaml                         - - - - ${./volsync/helmchart.yaml}"
+      # VolumeSnapshotClass for Rook CephFS CSI — used by VolSync ReplicationSources.
+      # Applied after VolSync so the CRD (from external-snapshotter) exists first.
+      "L+ /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml           - - - - ${./volsync/snapshotclass.yaml}"
     ];
 
     system.activationScripts.yolabVersion = ''

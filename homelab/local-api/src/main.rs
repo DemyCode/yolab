@@ -68,6 +68,9 @@ async fn main() {
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
         .route("/api/backups/sftp", get(backups::get_sftp))
+        .route("/api/backups/status", get(backups::backup_status))
+        .route("/api/backups/restore/:namespace/:pvc", post(backups::trigger_restore))
+        .route("/api/backups/restore/:namespace/:pvc/status", get(backups::restore_status))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         .route("/api/ceph/detail", get(ceph::storage_detail))
@@ -101,6 +104,7 @@ async fn main() {
         .with_state(state.clone());
 
     tokio::spawn(virtual_disk::run(Arc::clone(&cfg)));
+    tokio::spawn(backups::run_etcd_snapshots(Arc::clone(&cfg)));
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
