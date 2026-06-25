@@ -545,6 +545,9 @@ in
     systemd.tmpfiles.rules = [
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml               - - - - ${./rook/cluster.yaml}"
+      # ConfigMap must sort before the DaemonSet so K3s applies it first.
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-osd-controller-cm.yaml          - - - - ${./rook/osd-node-controller-configmap.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-osd-controller.yaml             - - - - ${./rook/osd-node-controller.yaml}"
       # external-snapshotter: CRDs + RBAC must be applied before the controller.
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
