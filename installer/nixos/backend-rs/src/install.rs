@@ -59,12 +59,9 @@ struct TunnelSection {
     platform_api_url: String,
     account_token: String,
     tunnel_id: String,
-    node_id: String,
     wg_private_key: String,
     wg_public_key: String,
     sub_ipv6: String,
-    sub_ipv6_private: String,
-    sub_ipv6_private_subnet: String,
     dns_url: String,
     wg_server_endpoint: String,
     wg_server_public_key: String,
@@ -78,6 +75,12 @@ struct SwarmSection {
 #[derive(Serialize)]
 struct NodeSection {
     node_id: String,
+    wg_private_key: String,
+    wg_public_key: String,
+    sub_ipv6_private: String,
+    sub_ipv6_private_subnet: String,
+    wg_server_endpoint: String,
+    wg_server_public_key: String,
     k3s: K3sSection,
 }
 
@@ -244,12 +247,9 @@ async fn do_install(
         platform_api_url: tunnel.platform_api_url.clone(),
         account_token: tunnel.account_token.clone(),
         tunnel_id: tunnel.tunnel_id.clone(),
-        node_id: tunnel.node_id.clone(),
         wg_private_key: tunnel.wg_private_key.clone(),
         wg_public_key: tunnel.wg_public_key.clone(),
         sub_ipv6: tunnel.sub_ipv6.clone(),
-        sub_ipv6_private: tunnel.sub_ipv6_private.clone(),
-        sub_ipv6_private_subnet: tunnel.sub_ipv6_private_subnet.clone(),
         dns_url: tunnel.dns_url.clone(),
         wg_server_endpoint: tunnel.wg_server_endpoint.clone(),
         wg_server_public_key: tunnel.wg_server_public_key.clone(),
@@ -274,7 +274,13 @@ async fn do_install(
         tunnel: Some(tunnel_section),
         swarm: SwarmSection { enabled: false },
         node: NodeSection {
-            node_id: uuid::Uuid::new_v4().to_string(),
+            node_id: tunnel.node_id.clone(),
+            wg_private_key: tunnel.node_wg_private_key.clone(),
+            wg_public_key: tunnel.node_wg_public_key.clone(),
+            sub_ipv6_private: tunnel.sub_ipv6_private.clone(),
+            sub_ipv6_private_subnet: tunnel.sub_ipv6_private_subnet.clone(),
+            wg_server_endpoint: tunnel.node_wg_server_endpoint.clone(),
+            wg_server_public_key: tunnel.node_wg_server_public_key.clone(),
             k3s: K3sSection {
                 token: req.k3s_token.clone().unwrap_or_else(gen_k3s_token),
                 server_addr: req.server_addr.clone().unwrap_or_default(),

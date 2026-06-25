@@ -126,12 +126,14 @@ pub async fn traffic(State(state): State<AppState>) -> Json<serde_json::Value> {
 pub async fn join_info(State(state): State<AppState>) -> Result<Json<JoinInfo>> {
     let text = std::fs::read_to_string(&state.config.config_path)?;
     let table: toml::Table = toml::from_str(&text)?;
-    let k3s_token = table["node"]["k3s"]["token"].as_str()
+    let node = table["node"].as_table()
+        .ok_or_else(|| anyhow::anyhow!("missing [node] in config"))?;
+    let k3s_token = node["k3s"]["token"].as_str()
         .ok_or_else(|| anyhow::anyhow!("missing node.k3s.token"))?.to_string();
+    let sub_ipv6_private = node["sub_ipv6_private"].as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing node.sub_ipv6_private"))?;
     let tunnel = table["tunnel"].as_table()
         .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))?;
-    let sub_ipv6_private = tunnel["sub_ipv6_private"].as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing tunnel.sub_ipv6_private"))?;
     let account_token = tunnel.get("account_token")
         .and_then(|v| v.as_str()).unwrap_or("").to_string();
     let platform_api_url = tunnel.get("platform_api_url")

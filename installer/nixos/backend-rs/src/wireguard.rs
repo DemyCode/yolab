@@ -9,19 +9,25 @@ pub const PLATFORM_API: &str = "https://api.demycode.ovh";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct TunnelResult {
+    // Tunnel WireGuard (wg0) — public IP, DNS, Caddy
     pub enabled: bool,
     pub platform_api_url: String,
     pub account_token: String,
     pub tunnel_id: String,
-    pub node_id: String,
     pub wg_private_key: String,
     pub wg_public_key: String,
     pub sub_ipv6: String,
-    pub sub_ipv6_private: String,
-    pub sub_ipv6_private_subnet: String,
     pub dns_url: String,
     pub wg_server_endpoint: String,
     pub wg_server_public_key: String,
+    // Node WireGuard (wg1) — private cluster IP, K3s, inter-node mesh
+    pub node_id: String,
+    pub node_wg_private_key: String,
+    pub node_wg_public_key: String,
+    pub sub_ipv6_private: String,
+    pub sub_ipv6_private_subnet: String,
+    pub node_wg_server_endpoint: String,
+    pub node_wg_server_public_key: String,
 }
 
 pub async fn generate_wg_keypair() -> anyhow::Result<(String, String)> {
@@ -95,16 +101,18 @@ pub async fn register_and_bring_up_tunnel(
     account_token: &str,
     service_name: &str,
 ) -> anyhow::Result<TunnelResult> {
-    let (private_key, public_key) = generate_wg_keypair().await?;
+    // Generate independent keypairs for the public tunnel and the private node mesh.
+    let (tunnel_priv, tunnel_pub) = generate_wg_keypair().await?;
+    let (node_priv, node_pub) = generate_wg_keypair().await?;
 
     let client = reqwest::Client::new();
     let auth = format!("Bearer {account_token}");
 
-    // Step 1: create tunnel
+    // Step 1: create tunnel (public IP, DNS)
     let tunnel_resp = client
         .post(format!("{PLATFORM_API}/tunnels"))
         .header("Authorization", &auth)
-        .json(&serde_json::json!({ "wg_public_key": public_key }))
+        .json(&serde_json::json!({ "wg_public_key": tunnel_pub }))
         .send()
         .await
         .context("POST /tunnels")?
@@ -148,11 +156,11 @@ pub async fn register_and_bring_up_tunnel(
         .ok_or_else(|| anyhow!("missing fqdn in record response"))?;
     let dns_url = format!("https://{fqdn}");
 
-    // Step 3: register node (private cluster IP)
+    // Step 3: register node peer with its own keypair (private cluster IP, K3s mesh)
     let node_resp = client
         .post(format!("{PLATFORM_API}/nodes"))
         .header("Authorization", &auth)
-        .json(&serde_json::json!({ "wg_public_key": public_key }))
+        .json(&serde_json::json!({ "wg_public_key": node_pub }))
         .send()
         .await
         .context("POST /nodes")?
@@ -167,20 +175,27 @@ pub async fn register_and_bring_up_tunnel(
         .as_u64()
         .ok_or_else(|| anyhow!("missing node_id in response: {node_resp}"))?
         .to_string();
+    let node_wg_server_endpoint = node_resp["wg_server_endpoint"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing wg_server_endpoint in node response"))?
+        .to_string();
+    let node_wg_server_public_key = node_resp["wg_server_public_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing wg_server_public_key in node response"))?
+        .to_string();
     let sub_ipv6_private_subnet = mask_to_112(&sub_ipv6_private)?;
 
-    // Step 4: write wg0.conf and bring up tunnel
+    // Step 4: write wg0.conf (tunnel only) and bring up the public interface.
+    // wg1 (node mesh) is configured by NixOS at boot via networking.wireguard.interfaces.
     let conf = format!(
         "[Interface]\n\
-         PrivateKey = {private_key}\n\
-         Address = {sub_ipv6}/128, {sub_ipv6_private}/128\n\
+         PrivateKey = {tunnel_priv}\n\
+         Address = {sub_ipv6}/128\n\
          Table = off\n\
          PostUp = ip -6 rule add from {sub_ipv6} lookup 51820 priority 100; \
-                  ip -6 route add ::/0 dev wg0 table 51820; \
-                  ip -6 route add {sub_ipv6_private_subnet} dev wg0\n\
+                  ip -6 route add ::/0 dev wg0 table 51820\n\
          PreDown = ip -6 rule del from {sub_ipv6} lookup 51820 priority 100; \
-                   ip -6 route del ::/0 dev wg0 table 51820; \
-                   ip -6 route del {sub_ipv6_private_subnet} dev wg0\n\
+                   ip -6 route del ::/0 dev wg0 table 51820\n\
          \n\
          [Peer]\n\
          PublicKey = {wg_server_public_key}\n\
@@ -192,7 +207,6 @@ pub async fn register_and_bring_up_tunnel(
     tokio::fs::create_dir_all("/etc/wireguard").await?;
     let conf_path = "/etc/wireguard/wg0.conf";
     tokio::fs::write(conf_path, &conf).await?;
-    // 0600 permissions
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::set_permissions(conf_path, std::fs::Permissions::from_mode(0o600)).await?;
 
@@ -213,14 +227,18 @@ pub async fn register_and_bring_up_tunnel(
         platform_api_url: PLATFORM_API.to_string(),
         account_token: account_token.to_string(),
         tunnel_id,
-        node_id,
-        wg_private_key: private_key,
-        wg_public_key: public_key,
+        wg_private_key: tunnel_priv,
+        wg_public_key: tunnel_pub,
         sub_ipv6,
-        sub_ipv6_private,
-        sub_ipv6_private_subnet,
         dns_url,
         wg_server_endpoint,
         wg_server_public_key,
+        node_id,
+        node_wg_private_key: node_priv,
+        node_wg_public_key: node_pub,
+        sub_ipv6_private,
+        sub_ipv6_private_subnet,
+        node_wg_server_endpoint,
+        node_wg_server_public_key,
     })
 }
