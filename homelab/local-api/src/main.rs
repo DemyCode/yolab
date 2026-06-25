@@ -16,7 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use auth::{auth_middleware, AuthState};
 use config::Config;
-use routers::{apps, backups, ceph, nodes, rebuild, status, terminal, update, virtual_disk};
+use routers::{apps, backups, ceph, nodes, rebuild, status, terminal, update};
 
 /// Single shared state threaded through all handlers.
 #[derive(Clone)]
@@ -94,16 +94,12 @@ async fn main() {
         .route("/api/apps/:id/pods", get(apps::list_pods))
         .route("/api/apps/:id/describe/:pod_name", get(apps::describe_pod))
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
-        // Virtual disks
-        .route("/api/virtual-disks", get(virtual_disk::get_virtual_disks).post(virtual_disk::create_virtual_disk))
-        .route("/api/virtual-disks/:id", delete(virtual_disk::delete_virtual_disk))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());
 
-    tokio::spawn(virtual_disk::run(Arc::clone(&cfg)));
     tokio::spawn(backups::run_etcd_snapshots(Arc::clone(&cfg)));
 
     let addr = format!("[::]:{}", cfg.port);
