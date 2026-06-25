@@ -194,10 +194,10 @@ in
     # 3+ nodes (embedded etcd quorum = n/2 + 1).
     #
     # Flannel backend: vxlan — NOT wireguard-native.
-    #   wg0 already encrypts all inter-node traffic end-to-end.
+    #   wg1 already encrypts all inter-node traffic end-to-end (node mesh key).
     #   wireguard-native would add a second WireGuard layer on top (double
     #   encapsulation, ~2× overhead, more complex routing).  With vxlan, pod
-    #   traffic is encapsulated then encrypted once by wg0 — simpler and faster.
+    #   traffic is encapsulated then encrypted once by wg1 — simpler and faster.
     #
     # --cluster-dns: the 10th address of the service CIDR (fd00:43::a).
     #   K3s normally infers this, but we set it explicitly because the
