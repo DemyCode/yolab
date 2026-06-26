@@ -41,6 +41,10 @@ spec:
       mon_osd_down_out_interval: "0"
       # Silence the HEALTH_WARN Ceph emits when interval is 0 — it's intentional.
       mon_warn_on_osd_down_out_interval_zero: "false"
+      # New OSDs start with CRUSH weight 0 — no PGs assigned until explicitly
+      # activated via the UI. Existing OSDs coming back after a reboot keep their
+      # stored CRUSH weight and re-integrate automatically.
+      osd_crush_initial_weight: "0"
     osd:
       # Cap BlueStore's block cache so the OSD process stays well within its
       # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)

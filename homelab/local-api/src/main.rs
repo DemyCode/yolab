@@ -77,6 +77,8 @@ async fn main() {
         .route("/api/ceph/replication", post(ceph::set_replication))
         .route("/api/ceph/dashboard", get(ceph::dashboard_creds))
         .route("/api/cluster/health", get(ceph::cluster_health))
+        .route("/api/ceph/osd/:id/activate", post(ceph::osd_activate))
+        .route("/api/ceph/osd/:id/deactivate", post(ceph::osd_deactivate))
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
@@ -101,6 +103,7 @@ async fn main() {
         .with_state(state.clone());
 
     tokio::spawn(backups::run_etcd_snapshots(Arc::clone(&cfg)));
+    tokio::spawn(ceph::run_osd_removal_watcher());
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
