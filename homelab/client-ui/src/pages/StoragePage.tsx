@@ -111,7 +111,7 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
     }
   }
 
-  if (state === "inactive") {
+  if (state === "inactive" || state === "draining") {
     return (
       <div className="flex flex-col gap-1">
         <Button size="sm" variant="outline" disabled={busy}
