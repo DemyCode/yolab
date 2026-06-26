@@ -284,6 +284,9 @@ pub struct OsdInfo {
     pub crush_weight: f64,
     /// OSD reweight (0.0 = explicitly out/draining, 1.0 = in).
     pub reweight: f64,
+    /// True when `ceph osd safe-to-destroy` confirms no data remains on this OSD.
+    /// Combined with crush_weight=0 + reweight=0, this means the disk can be unplugged.
+    pub safe_to_destroy: bool,
 }
 
 #[derive(Serialize)]
@@ -350,6 +353,13 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
         "$CEPH df -f json 2>/dev/null || echo '{}'".into(),
         r#"echo ',"crush_rules":'"#.into(),
         "$CEPH osd crush rule dump -f json 2>/dev/null || echo '[]'".into(),
+        r#"echo ',"safe_to_destroy":'"#.into(),
+        r#"OSDS=$($CEPH osd ls 2>/dev/null | awk '{printf "osd.%s ", $0}' | sed 's/ $//')"#.into(),
+        r#"if [ -n "$OSDS" ]; then"#.into(),
+        r#"    $CEPH osd safe-to-destroy $OSDS -f json 2>/dev/null || echo '{"safe_to_destroy":[]}'"#.into(),
+        r#"else"#.into(),
+        r#"    echo '{"safe_to_destroy":[]}'"#.into(),
+        r#"fi"#.into(),
         "echo '}'".into(),
         "rm -f /tmp/.ck /tmp/.cc".into(),
     ].join("\n");
@@ -368,6 +378,13 @@ fn failure_domain_from_rule(rule: &serde_json::Value) -> String {
 }
 
 fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
+    // ── safe-to-destroy set ────────────────────────────────────────────────────
+    // ceph osd safe-to-destroy returns {"safe_to_destroy": [id, ...], "active": [...], ...}
+    let safe_ids: std::collections::HashSet<i64> = v["safe_to_destroy"]["safe_to_destroy"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default();
+
     // ── OSD tree ───────────────────────────────────────────────────────────────
     let nodes = v["osd_df"]["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
 
@@ -406,6 +423,7 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
                 status:      n["status"].as_str().unwrap_or("unknown").to_string(),
                 crush_weight: n["crush_weight"].as_f64().unwrap_or(0.0),
                 reweight:     n["reweight"].as_f64().unwrap_or(1.0),
+                safe_to_destroy: safe_ids.contains(&id),
             }
         })
         .collect();
