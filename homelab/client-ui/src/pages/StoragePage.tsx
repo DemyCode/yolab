@@ -53,105 +53,54 @@ function VarBadge({ v }: { v: number }) {
   );
 }
 
-// ── OSD lifecycle state ────────────────────────────────────────────────────────
-// crush_weight is the control knob (0 = out, >0 = in). The daemon status
-// follows: "up" while running, "down" once fully stopped.
-//
-//  crush_weight > 0, up   → Active      (normal operation)
-//  crush_weight > 0, down → Errored     (daemon crash / unreachable)
-//  crush_weight = 0, up   → Draining    (PGs migrating off, daemon still running)
-//  crush_weight = 0, down → Inactive    (settled, no data expected)
-//  crush_weight = 0, down, safe_to_destroy → Unpluggable (data confirmed gone)
-
-type OsdState = "active" | "errored" | "draining" | "inactive" | "unpluggable";
-
-function getOsdState(osd: OsdInfo): OsdState {
-  if (osd.crush_weight > 0) {
-    return osd.status === "up" ? "active" : "errored";
-  }
-  if (osd.safe_to_destroy)             return "unpluggable";
-  if (osd.status === "up" && osd.pgs > 0) return "draining";
-  return "inactive";
-}
-
-const STATE_CONFIG: Record<OsdState, { label: string; variant: "success" | "destructive" | "warning" | "muted" }> = {
-  active:      { label: "Active",      variant: "success" },
-  errored:     { label: "Errored",     variant: "destructive" },
-  draining:    { label: "Draining",    variant: "warning" },
-  inactive:    { label: "Inactive",    variant: "muted" },
-  unpluggable: { label: "Unpluggable", variant: "muted" },
-};
-
-function OsdStateBadge({ osd }: { osd: OsdInfo }) {
-  const state = getOsdState(osd);
-  const { label, variant } = STATE_CONFIG[state];
+function OsdPill({ on, labels }: { on: boolean; labels: [string, string] }) {
   return (
-    <Badge variant={variant} className="gap-1.5">
-      {state === "draining" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-      {label}
+    <Badge variant={on ? "success" : "muted"}>
+      {on ? labels[0] : labels[1]}
     </Badge>
   );
 }
 
 function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void }) {
-  const state = getOsdState(osd);
+  const isIn = osd.crush_weight > 0;
   const [busy, setBusy]       = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [err, setErr]         = useState<string | null>(null);
 
   async function callApi(path: string) {
-    setBusy(true);
-    setErr(null);
+    setBusy(true); setErr(null);
     try {
       const r = await fetch(path, { method: "POST" });
       const d = await r.json() as { ok?: boolean; error?: string };
       if (!d.ok) setErr(d.error ?? "Unknown error");
-      else onRefresh();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-      setConfirm(false);
-    }
+      else { setConfirm(false); onRefresh(); }
+    } catch (e) { setErr(String(e)); }
+    finally { setBusy(false); }
   }
 
-  if (state === "draining" || state === "inactive" || state === "unpluggable") {
-    return (
-      <div className="flex flex-col gap-1">
-        <Button size="sm" variant="outline" disabled={busy}
-          onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-in`)}>
-          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Mark In"}
-        </Button>
-        {err && <p className="text-xs text-[#f87171]">{err}</p>}
-      </div>
-    );
-  }
-
-  if (state === "active" || state === "errored") {
-    if (confirm) {
-      return (
-        <div className="flex flex-col gap-1">
+  return (
+    <div className="flex flex-col gap-1">
+      {isIn ? (
+        confirm ? (
           <div className="flex gap-1.5">
             <Button size="sm" variant="destructive" disabled={busy}
               onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-out`)}>
               {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
             </Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm(false)}>Cancel</Button>
           </div>
-          {err && <p className="text-xs text-[#f87171]">{err}</p>}
-        </div>
-      );
-    }
-    return (
-      <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>
-        Mark Out
-      </Button>
-    );
-  }
-
-  return null;
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>Mark Out</Button>
+        )
+      ) : (
+        <Button size="sm" variant="outline" disabled={busy}
+          onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-in`)}>
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Mark In"}
+        </Button>
+      )}
+      {err && <p className="text-xs text-[#f87171]">{err}</p>}
+    </div>
+  );
 }
 
 function OsdTable({ osds, onRefresh }: { osds: OsdInfo[]; onRefresh: () => void }) {
@@ -167,7 +116,7 @@ function OsdTable({ osds, onRefresh }: { osds: OsdInfo[]; onRefresh: () => void 
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#27272a]">
-                {["OSD", "Host", "Class", "Size", "Fill", "Used / Free", "PGs", "Balance", "State", ""].map((h, i) => (
+                {["OSD", "Host", "Class", "Size", "Fill", "Used / Free", "PGs", "Balance", "In/Out", "Up/Down", "Safe", ""].map((h, i) => (
                   <th key={i} className="px-4 py-2.5 text-left text-xs font-medium text-[#71717a] whitespace-nowrap first:pl-6 last:pr-6">{h}</th>
                 ))}
               </tr>
@@ -206,10 +155,10 @@ function OsdTable({ osds, onRefresh }: { osds: OsdInfo[]; onRefresh: () => void 
                     </td>
                     <td className="px-4 py-3 text-xs text-[#71717a] tabular-nums">{osd.pgs}</td>
                     <td className="px-4 py-3"><VarBadge v={osd.var} /></td>
-                    <td className="px-4 py-3"><OsdStateBadge osd={osd} /></td>
-                    <td className="pr-6 px-4 py-3">
-                      <OsdActions osd={osd} onRefresh={onRefresh} />
-                    </td>
+                    <td className="px-4 py-3"><OsdPill on={osd.crush_weight > 0} labels={["In", "Out"]} /></td>
+                    <td className="px-4 py-3"><OsdPill on={osd.status === "up"} labels={["Up", "Down"]} /></td>
+                    <td className="px-4 py-3"><OsdPill on={osd.safe_to_destroy} labels={["Safe", "—"]} /></td>
+                    <td className="pr-6 px-4 py-3"><OsdActions osd={osd} onRefresh={onRefresh} /></td>
                   </tr>
                 ));
               })}
