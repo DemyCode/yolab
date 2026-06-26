@@ -354,12 +354,17 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
         r#"echo ',"crush_rules":'"#.into(),
         "$CEPH osd crush rule dump -f json 2>/dev/null || echo '[]'".into(),
         r#"echo ',"safe_to_destroy":'"#.into(),
-        r#"OSDS=$($CEPH osd ls 2>/dev/null | awk '{printf "osd.%s ", $0}' | sed 's/ $//')"#.into(),
-        r#"if [ -n "$OSDS" ]; then"#.into(),
-        r#"    $CEPH osd safe-to-destroy $OSDS -f json 2>/dev/null || echo '{"safe_to_destroy":[]}'"#.into(),
-        r#"else"#.into(),
-        r#"    echo '{"safe_to_destroy":[]}'"#.into(),
-        r#"fi"#.into(),
+        // Query each OSD individually: "can we safely remove just this one?"
+        // Querying all at once asks "can we remove all simultaneously?" which is
+        // almost always false and gives wrong per-OSD results.
+        r#"SAFE_LIST="""#.into(),
+        r#"for OSD in $($CEPH osd ls 2>/dev/null); do"#.into(),
+        r#"  RESULT=$($CEPH osd safe-to-destroy osd.$OSD -f json 2>/dev/null)"#.into(),
+        r#"  if echo "$RESULT" | grep -q '"safe_to_destroy":\['"$OSD"'\]'; then"#.into(),
+        r#"    SAFE_LIST="${SAFE_LIST:+$SAFE_LIST,}$OSD""#.into(),
+        r#"  fi"#.into(),
+        r#"done"#.into(),
+        r#"echo "{\"safe_to_destroy\":[$SAFE_LIST]}""#.into(),
         "echo '}'".into(),
         "rm -f /tmp/.ck /tmp/.cc".into(),
     ].join("\n");
