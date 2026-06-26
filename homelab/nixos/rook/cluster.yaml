@@ -45,6 +45,12 @@ spec:
       # activated via the UI. Existing OSDs coming back after a reboot keep their
       # stored CRUSH weight and re-integrate automatically.
       osd_crush_initial_weight: "0"
+      # Rebalancing is disabled cluster-wide:
+      #   ceph osd set norebalance   — PGs don't shuffle when weights change
+      #   ceph balancer off          — MGR balancer module is off
+      # These are OSD-map / MGR flags (not config options) so they're set once
+      # via ceph commands and persist in Ceph's own state across restarts.
+      # To re-enable: ceph osd unset norebalance && ceph balancer on
     osd:
       # Cap BlueStore's block cache so the OSD process stays well within its
       # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)
