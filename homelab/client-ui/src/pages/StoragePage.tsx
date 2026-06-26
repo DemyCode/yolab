@@ -69,8 +69,8 @@ function getOsdState(osd: OsdInfo): OsdState {
   if (osd.crush_weight > 0) {
     return osd.status === "up" ? "active" : "errored";
   }
-  if (osd.status === "up")   return "draining";
-  if (osd.safe_to_destroy)   return "unpluggable";
+  if (osd.safe_to_destroy)             return "unpluggable";
+  if (osd.status === "up" && osd.pgs > 0) return "draining";
   return "inactive";
 }
 
