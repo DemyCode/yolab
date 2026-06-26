@@ -548,48 +548,53 @@ pub async fn set_replication(
 
 // ── OSD lifecycle ──────────────────────────────────────────────────────────────
 
-/// Activate a weight-0 OSD: set its CRUSH weight to the physical disk size
-/// and mark it `in` so Ceph starts assigning PGs to it.
-pub async fn osd_activate(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
+/// Mark an OSD `in`: set crush_weight from device size (if currently 0) then mark in.
+pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     let osd = format!("osd.{id}");
 
-    // Derive the physical size from OSD metadata (bluestore_bdev_size in bytes).
-    let meta = match kubectl::ceph_exec(&["osd", "metadata", &osd, "-f", "json"]).await {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("metadata: {e}")}))),
-    };
-    let size_bytes: u64 = serde_json::from_str::<serde_json::Value>(&meta)
+    // If crush_weight is 0 (new OSD), derive the physical size and set it first.
+    let df_raw = kubectl::ceph_exec(&["osd", "df", &osd, "-f", "json"]).await
+        .unwrap_or_default();
+    let crush_weight = serde_json::from_str::<serde_json::Value>(&df_raw)
         .ok()
-        .and_then(|v| {
-            v["bluestore_bdev_size"].as_str()
-                .and_then(|s| s.parse().ok())
-                .or_else(|| v["bluestore_bdev_size"].as_u64())
-        })
-        .unwrap_or(0);
-    if size_bytes == 0 {
-        return (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "cannot determine device size from OSD metadata"})));
+        .and_then(|v| v["nodes"].as_array()?.first()?.get("crush_weight")?.as_f64())
+        .unwrap_or(0.0);
+
+    if crush_weight == 0.0 {
+        let meta = match kubectl::ceph_exec(&["osd", "metadata", &osd, "-f", "json"]).await {
+            Ok(s) => s,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("metadata: {e}")}))),
+        };
+        let size_bytes: u64 = serde_json::from_str::<serde_json::Value>(&meta)
+            .ok()
+            .and_then(|v| {
+                v["bluestore_bdev_size"].as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v["bluestore_bdev_size"].as_u64())
+            })
+            .unwrap_or(0);
+        if size_bytes == 0 {
+            return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "cannot determine device size from OSD metadata"})));
+        }
+        let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
+        if let Err(e) = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("crush reweight: {e}")})));
+        }
     }
 
-    // CRUSH weight unit = 1 TiB. Round to 5 decimal places.
-    let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
-
-    if let Err(e) = kubectl::ceph_exec(&["osd", "in", &osd]).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("osd in: {e}")})));
-    }
-    match kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await {
-        Ok(_)  => (StatusCode::OK, Json(serde_json::json!({"ok": true, "crush_weight": weight}))),
+    match kubectl::ceph_exec(&["osd", "in", &osd]).await {
+        Ok(_)  => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("crush reweight: {e}")}))),
+            Json(serde_json::json!({"error": format!("osd in: {e}")}))),
     }
 }
 
-/// Deactivate an OSD: set CRUSH weight to 0 and mark it `out`.
-/// Ceph will drain all PGs off it. The UI will show "Safe to unplug"
-/// once `ceph osd safe-to-destroy` returns clean.
-pub async fn osd_deactivate(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
+/// Mark an OSD `out`: set crush_weight to 0 and mark out.
+/// Ceph drains PGs off it; once safe_to_destroy is true it can be unplugged.
+pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     let osd = format!("osd.{id}");
     if let Err(e) = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, "0"]).await {
         return (StatusCode::INTERNAL_SERVER_ERROR,
