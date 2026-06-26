@@ -545,6 +545,9 @@ in
     systemd.tmpfiles.rules = [
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml               - - - - ${./rook/cluster.yaml}"
+      # Applies norebalance OSD flag after the cluster is ready. restartPolicy:OnFailure
+      # retries until Ceph is up; ttlSecondsAfterFinished cleans it up after success.
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster-init.yaml          - - - - ${./rook/cluster-init-job.yaml}"
       # ConfigMap must sort before the DaemonSet so K3s applies it first.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-osd-controller-cm.yaml          - - - - ${./rook/osd-node-controller-configmap.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-osd-controller.yaml             - - - - ${./rook/osd-node-controller.yaml}"
