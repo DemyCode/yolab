@@ -486,6 +486,11 @@ impl App {
             AppEvent::JoinConnected { server_addr, k3s_token } => {
                 self.join_server_addr = Some(server_addr);
                 self.join_k3s_token = Some(k3s_token);
+                // Pre-fill the configure password from the join password — same homelab, same password.
+                if self.password.is_empty() {
+                    self.password  = self.join_pass.clone();
+                    self.password2 = self.join_pass.clone();
+                }
                 self.goto_disk();
             }
             AppEvent::SshKeyGenerated { private_key, public_key } => {
