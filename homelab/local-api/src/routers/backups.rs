@@ -348,22 +348,6 @@ async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 
 async fn ensure_replication_source(pvc: &PvcInfo) -> anyhow::Result<()> {
     let rs_name = format!("volsync-{}", pvc.name);
-    let exists = Command::new("kubectl")
-        .args([
-            "get",
-            "replicationsource",
-            &rs_name,
-            "-n",
-            &pvc.namespace,
-        ])
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if exists {
-        return Ok(());
-    }
-
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationSource",
@@ -379,7 +363,12 @@ async fn ensure_replication_source(pvc: &PvcInfo) -> anyhow::Result<()> {
                 "rcloneConfigSection": "b2-crypt",
                 "rcloneDestPath": format!("b2-crypt:{}/{}", pvc.namespace, pvc.name),
                 "rcloneConfig": RCLONE_SECRET,
-                "copyMethod": "Direct"
+                "copyMethod": "Direct",
+                "moverSecurityContext": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "fsGroup": 1000
+                }
             }
         }
     });
