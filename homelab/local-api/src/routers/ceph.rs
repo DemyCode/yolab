@@ -584,57 +584,37 @@ pub async fn osd_deactivate(Path(id): Path<i64>) -> (StatusCode, Json<serde_json
     }
 }
 
-/// Background task: every 30 s scan for OSDs that are weight-0 + out + down +
-/// safe-to-destroy and purge them automatically. This is the final step after
-/// the user physically unplugs a deactivated disk.
-pub async fn run_osd_removal_watcher() {
-    // Give the cluster time to start before the first check.
+/// Background task: watch for newly joined OSDs that Ceph left `in` (reweight=1.0)
+/// despite having CRUSH weight 0. Set them `out` so their state is consistent:
+/// crush_weight=0 + reweight=0 = "inactive, not participating".
+///
+/// This only fires for brand-new OSDs on first join. Existing OSDs coming back
+/// after a reboot have crush_weight > 0 and are untouched.
+pub async fn run_osd_state_watcher() {
     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     loop {
-        if let Err(e) = osd_removal_tick().await {
-            tracing::debug!("osd removal watcher: {e}");
+        if let Err(e) = osd_state_tick().await {
+            tracing::debug!("osd state watcher: {e}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
 }
 
-async fn osd_removal_tick() -> anyhow::Result<()> {
+async fn osd_state_tick() -> anyhow::Result<()> {
     let raw = kubectl::ceph_exec(&["osd", "df", "tree", "-f", "json"]).await?;
     let v: serde_json::Value = serde_json::from_str(&raw)?;
-
     let nodes = v["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
     for node in nodes {
         if node["type"].as_str() != Some("osd") { continue; }
-        let id           = node["id"].as_i64().unwrap_or(-1);
         let crush_weight = node["crush_weight"].as_f64().unwrap_or(1.0);
         let reweight     = node["reweight"].as_f64().unwrap_or(1.0);
-        let status       = node["status"].as_str().unwrap_or("up");
-
-        // Only auto-purge OSDs the user explicitly deactivated (crush_weight=0,
-        // reweight=0 via `osd out`) that are now down (disk unplugged).
-        if crush_weight > 0.0 || reweight > 0.0 || status != "down" {
-            continue;
-        }
-
-        let osd = format!("osd.{id}");
-        match kubectl::ceph_exec(&["osd", "safe-to-destroy", &osd]).await {
-            Ok(_) => {
-                tracing::info!("auto-purging {osd}: weight=0, out, down, safe-to-destroy");
-                // Delete OSD deployment first so Rook doesn't restart it mid-purge.
-                let deploy = format!("rook-ceph-osd-{id}");
-                let _ = kubectl::run(&[
-                    "delete", "deploy", &deploy,
-                    "-n", "rook-ceph", "--ignore-not-found=true",
-                ]).await;
-                if let Err(e) = kubectl::ceph_exec(&[
-                    "osd", "purge", &osd, "--yes-i-really-mean-it",
-                ]).await {
-                    tracing::error!("purge {osd} failed: {e}");
-                } else {
-                    tracing::info!("{osd} purged");
-                }
-            }
-            Err(_) => {} // not safe yet — leave it alone
+        let id           = node["id"].as_i64().unwrap_or(-1);
+        // New OSD: osd_crush_initial_weight set it to 0 but Ceph still left it
+        // `in` (reweight=1.0). Mark it out so the state is unambiguous.
+        if crush_weight == 0.0 && reweight > 0.0 && id >= 0 {
+            let osd = format!("osd.{id}");
+            tracing::info!("new OSD {osd} joined at weight 0 — marking out");
+            let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         }
     }
     Ok(())
