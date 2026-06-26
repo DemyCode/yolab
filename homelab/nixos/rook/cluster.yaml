@@ -45,11 +45,6 @@ spec:
       # activated via the UI. Existing OSDs coming back after a reboot keep their
       # stored CRUSH weight and re-integrate automatically.
       osd_crush_initial_weight: "0"
-    mgr:
-      # Disable automatic PG balancer — we control placement manually.
-      # "ceph balancer off" stores this in the MGR config store; mirroring it
-      # here via cephConfig ensures it is applied on every fresh install.
-      mgr/balancer/active: "false"
     osd:
       # Cap BlueStore's block cache so the OSD process stays well within its
       # memory limit and never gets OOM-killed mid-write. An OOM kill (SIGKILL)

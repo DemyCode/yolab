@@ -2,12 +2,10 @@
 # Run once after a fresh cluster install:
 #   kubectl apply -f cluster-init-job.yaml
 #
-# Currently sets:
-#   norebalance — prevents PGs from shuffling when OSD weights change.
-#                 Only recovery (draining an OSD) still moves data.
-#                 To re-enable: ceph osd unset norebalance
-#
-# The balancer is handled declaratively via cephConfig in cluster.yaml.
+# Sets norebalance — prevents any PG movement for balancing purposes,
+# including balancer-initiated moves (the balancer respects this flag).
+# Only recovery (draining a marked-out OSD) still moves data.
+# To re-enable: ceph osd unset norebalance
 apiVersion: batch/v1
 kind: Job
 metadata:
