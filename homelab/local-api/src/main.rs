@@ -77,8 +77,8 @@ async fn main() {
         .route("/api/ceph/replication", post(ceph::set_replication))
         .route("/api/ceph/dashboard", get(ceph::dashboard_creds))
         .route("/api/cluster/health", get(ceph::cluster_health))
-        .route("/api/ceph/osd/:id/activate", post(ceph::osd_activate))
-        .route("/api/ceph/osd/:id/deactivate", post(ceph::osd_deactivate))
+        .route("/api/ceph/osd/:id/mark-in", post(ceph::osd_mark_in))
+        .route("/api/ceph/osd/:id/mark-out", post(ceph::osd_mark_out))
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))

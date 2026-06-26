@@ -54,28 +54,43 @@ function VarBadge({ v }: { v: number }) {
 }
 
 // ── OSD lifecycle state ────────────────────────────────────────────────────────
-// crush_weight is the source of truth: >0 = active, 0 = inactive.
-// reweight is kept in sync by the server-side watcher and is not used here.
+// crush_weight is the control knob (0 = out, >0 = in). The daemon status
+// follows: "up" while running, "down" once fully stopped.
+//
+//  crush_weight > 0, up   → Active      (normal operation)
+//  crush_weight > 0, down → Errored     (daemon crash / unreachable)
+//  crush_weight = 0, up   → Draining    (PGs migrating off, daemon still running)
+//  crush_weight = 0, down → Inactive    (settled, no data expected)
+//  crush_weight = 0, down, safe_to_destroy → Unpluggable (data confirmed gone)
 
-type OsdState = "active" | "offline" | "inactive";
+type OsdState = "active" | "errored" | "draining" | "inactive" | "unpluggable";
 
 function getOsdState(osd: OsdInfo): OsdState {
   if (osd.crush_weight > 0) {
-    return osd.status === "up" ? "active" : "offline";
+    return osd.status === "up" ? "active" : "errored";
   }
+  if (osd.status === "up")   return "draining";
+  if (osd.safe_to_destroy)   return "unpluggable";
   return "inactive";
 }
 
-const STATE_CONFIG: Record<OsdState, { label: string; variant: "success" | "destructive" | "muted" }> = {
-  active:   { label: "Active",   variant: "success" },
-  offline:  { label: "Offline",  variant: "destructive" },
-  inactive: { label: "Inactive", variant: "muted" },
+const STATE_CONFIG: Record<OsdState, { label: string; variant: "success" | "destructive" | "warning" | "muted" }> = {
+  active:      { label: "Active",      variant: "success" },
+  errored:     { label: "Errored",     variant: "destructive" },
+  draining:    { label: "Draining",    variant: "warning" },
+  inactive:    { label: "Inactive",    variant: "muted" },
+  unpluggable: { label: "Unpluggable", variant: "muted" },
 };
 
 function OsdStateBadge({ osd }: { osd: OsdInfo }) {
   const state = getOsdState(osd);
   const { label, variant } = STATE_CONFIG[state];
-  return <Badge variant={variant}>{label}</Badge>;
+  return (
+    <Badge variant={variant} className="gap-1.5">
+      {state === "draining" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+      {label}
+    </Badge>
+  );
 }
 
 function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void }) {
@@ -100,25 +115,25 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
     }
   }
 
-  if (state === "inactive") {
+  if (state === "draining" || state === "inactive" || state === "unpluggable") {
     return (
       <div className="flex flex-col gap-1">
         <Button size="sm" variant="outline" disabled={busy}
-          onClick={() => void callApi(`/api/ceph/osd/${osd.id}/activate`)}>
-          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Activate"}
+          onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-in`)}>
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Mark In"}
         </Button>
         {err && <p className="text-xs text-[#f87171]">{err}</p>}
       </div>
     );
   }
 
-  if (state === "active" || state === "offline") {
+  if (state === "active" || state === "errored") {
     if (confirm) {
       return (
         <div className="flex flex-col gap-1">
           <div className="flex gap-1.5">
             <Button size="sm" variant="destructive" disabled={busy}
-              onClick={() => void callApi(`/api/ceph/osd/${osd.id}/deactivate`)}>
+              onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-out`)}>
               {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
             </Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm(false)}>
@@ -131,7 +146,7 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
     }
     return (
       <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>
-        Deactivate
+        Mark Out
       </Button>
     );
   }
