@@ -1,0 +1,56 @@
+# One-shot job to apply OSD map flags that have no ceph.conf equivalent.
+# Run once after a fresh cluster install:
+#   kubectl apply -f cluster-init-job.yaml
+#
+# Currently sets:
+#   norebalance — prevents PGs from shuffling when OSD weights change.
+#                 Only recovery (draining an OSD) still moves data.
+#                 To re-enable: ceph osd unset norebalance
+#
+# The balancer is handled declaratively via cephConfig in cluster.yaml.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ceph-cluster-init
+  namespace: rook-ceph
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: quay.io/ceph/ceph:v19.2.0
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              MON=$(cat /etc/rook/mon-endpoints | cut -d= -f2)
+              cp /etc/ceph/keyring /tmp/.ck
+              printf '[global]\nmon_host = %s\n' "$MON" > /tmp/.cc
+              CEPH="ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin"
+
+              echo "Setting norebalance..."
+              $CEPH osd set norebalance
+
+              echo "Current OSD flags:"
+              $CEPH osd dump | grep ^flags
+          volumeMounts:
+            - name: mon-endpoints
+              mountPath: /etc/rook
+            - name: admin-keyring
+              mountPath: /etc/ceph
+      volumes:
+        - name: mon-endpoints
+          configMap:
+            name: rook-ceph-mon-endpoints
+            items:
+              - key: data
+                path: mon-endpoints
+        - name: admin-keyring
+          secret:
+            secretName: rook-ceph-admin-keyring
+            items:
+              - key: keyring
+                path: keyring
