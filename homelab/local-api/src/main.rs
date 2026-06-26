@@ -103,7 +103,7 @@ async fn main() {
         .with_state(state.clone());
 
     tokio::spawn(backups::run_etcd_snapshots(Arc::clone(&cfg)));
-    tokio::spawn(ceph::run_osd_removal_watcher());
+    tokio::spawn(ceph::run_osd_state_watcher());
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
