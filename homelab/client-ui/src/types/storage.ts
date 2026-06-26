@@ -10,6 +10,9 @@ export interface OsdInfo {
   var: number;
   pgs: number;
   status: string;
+  crush_weight: number;
+  reweight: number;
+  safe_to_destroy: boolean;
 }
 
 export interface PoolInfo {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff } from "lucide-react";
+import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,7 +53,104 @@ function VarBadge({ v }: { v: number }) {
   );
 }
 
-function OsdTable({ osds }: { osds: OsdInfo[] }) {
+// ── OSD lifecycle state ────────────────────────────────────────────────────────
+
+type OsdState = "active" | "offline" | "new" | "draining" | "inactive";
+
+function getOsdState(osd: OsdInfo): OsdState {
+  if (osd.crush_weight > 0) {
+    return osd.status === "up" ? "active" : "offline";
+  }
+  // crush_weight === 0
+  if (osd.reweight > 0.5) return "new";       // just joined; watcher will mark out
+  if (osd.safe_to_destroy)  return "inactive"; // no data; ready to activate or unplug
+  return "draining";                           // data still migrating off
+}
+
+const STATE_CONFIG: Record<OsdState, { label: string; variant: "success" | "destructive" | "warning" | "muted" }> = {
+  active:   { label: "Active",   variant: "success" },
+  offline:  { label: "Offline",  variant: "destructive" },
+  new:      { label: "Pending",  variant: "warning" },
+  draining: { label: "Draining", variant: "warning" },
+  inactive: { label: "Inactive", variant: "muted" },
+};
+
+function OsdStateBadge({ osd }: { osd: OsdInfo }) {
+  const state = getOsdState(osd);
+  const { label, variant } = STATE_CONFIG[state];
+  return (
+    <Badge variant={variant} className="gap-1.5">
+      {state === "draining" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+      {label}
+      {state === "draining" && osd.pgs > 0 && (
+        <span className="opacity-70">• {osd.pgs} PG{osd.pgs !== 1 ? "s" : ""}</span>
+      )}
+    </Badge>
+  );
+}
+
+function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void }) {
+  const state = getOsdState(osd);
+  const [busy, setBusy]       = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [err, setErr]         = useState<string | null>(null);
+
+  async function callApi(path: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch(path, { method: "POST" });
+      const d = await r.json() as { ok?: boolean; error?: string };
+      if (!d.ok) setErr(d.error ?? "Unknown error");
+      else onRefresh();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  }
+
+  if (state === "inactive") {
+    return (
+      <div className="flex flex-col gap-1">
+        <Button size="sm" variant="outline" disabled={busy}
+          onClick={() => void callApi(`/api/ceph/osd/${osd.id}/activate`)}>
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Activate"}
+        </Button>
+        {err && <p className="text-xs text-[#f87171]">{err}</p>}
+      </div>
+    );
+  }
+
+  if (state === "active" || state === "offline") {
+    if (confirm) {
+      return (
+        <div className="flex flex-col gap-1">
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="destructive" disabled={busy}
+              onClick={() => void callApi(`/api/ceph/osd/${osd.id}/deactivate`)}>
+              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+          </div>
+          {err && <p className="text-xs text-[#f87171]">{err}</p>}
+        </div>
+      );
+    }
+    return (
+      <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>
+        Deactivate
+      </Button>
+    );
+  }
+
+  return null;
+}
+
+function OsdTable({ osds, onRefresh }: { osds: OsdInfo[]; onRefresh: () => void }) {
   const hosts = [...new Set(osds.map(o => o.host))].sort();
 
   return (
@@ -66,8 +163,8 @@ function OsdTable({ osds }: { osds: OsdInfo[] }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#27272a]">
-                {["OSD", "Host", "Class", "Size", "Fill", "Used / Free", "PGs", "Balance", "Status"].map(h => (
-                  <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-[#71717a] whitespace-nowrap first:pl-6 last:pr-6">{h}</th>
+                {["OSD", "Host", "Class", "Size", "Fill", "Used / Free", "PGs", "Balance", "State", ""].map((h, i) => (
+                  <th key={i} className="px-4 py-2.5 text-left text-xs font-medium text-[#71717a] whitespace-nowrap first:pl-6 last:pr-6">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -91,20 +188,23 @@ function OsdTable({ osds }: { osds: OsdInfo[] }) {
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-xs text-[#a1a1aa] whitespace-nowrap tabular-nums">
-                      {fmtBytes(osd.size_bytes)}
+                      {osd.size_bytes > 0 ? fmtBytes(osd.size_bytes) : "—"}
                     </td>
                     <td className="px-4 py-3">
-                      <FillBar pct={osd.utilization} />
+                      {osd.utilization > 0
+                        ? <FillBar pct={osd.utilization} />
+                        : <span className="text-xs text-[#3f3f46]">—</span>}
                     </td>
                     <td className="px-4 py-3 text-xs text-[#71717a] whitespace-nowrap tabular-nums">
-                      {fmtBytes(osd.used_bytes)} / {fmtBytes(osd.avail_bytes)}
+                      {osd.used_bytes > 0
+                        ? `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.avail_bytes)}`
+                        : "—"}
                     </td>
                     <td className="px-4 py-3 text-xs text-[#71717a] tabular-nums">{osd.pgs}</td>
                     <td className="px-4 py-3"><VarBadge v={osd.var} /></td>
+                    <td className="px-4 py-3"><OsdStateBadge osd={osd} /></td>
                     <td className="pr-6 px-4 py-3">
-                      <Badge variant={osd.status === "up" ? "success" : "destructive"}>
-                        {osd.status}
-                      </Badge>
+                      <OsdActions osd={osd} onRefresh={onRefresh} />
                     </td>
                   </tr>
                 ));
@@ -528,7 +628,7 @@ export function StoragePage() {
             ))}
           </div>
 
-          <OsdTable osds={detail.osds} />
+          <OsdTable osds={detail.osds} onRefresh={load} />
           <ReplicationPanel pools={detail.pools} osds={detail.osds} />
         </>
       )}
