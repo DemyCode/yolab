@@ -602,12 +602,10 @@ pub async fn osd_deactivate(Path(id): Path<i64>) -> (StatusCode, Json<serde_json
     }
 }
 
-/// Background task: watch for newly joined OSDs that Ceph left `in` (reweight=1.0)
-/// despite having CRUSH weight 0. Set them `out` so their state is consistent:
-/// crush_weight=0 + reweight=0 = "inactive, not participating".
-///
-/// This only fires for brand-new OSDs on first join. Existing OSDs coming back
-/// after a reboot have crush_weight > 0 and are untouched.
+/// Background job: keep reweight in sync with crush_weight.
+/// crush_weight is the single source of truth — the UI only ever changes it.
+///   crush_weight  > 0 → osd in  (reweight = 1)
+///   crush_weight == 0 → osd out (reweight = 0)
 pub async fn run_osd_state_watcher() {
     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     loop {
@@ -624,14 +622,16 @@ async fn osd_state_tick() -> anyhow::Result<()> {
     let nodes = v["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
     for node in nodes {
         if node["type"].as_str() != Some("osd") { continue; }
-        let crush_weight = node["crush_weight"].as_f64().unwrap_or(1.0);
+        let crush_weight = node["crush_weight"].as_f64().unwrap_or(0.0);
         let reweight     = node["reweight"].as_f64().unwrap_or(1.0);
         let id           = node["id"].as_i64().unwrap_or(-1);
-        // New OSD: osd_crush_initial_weight set it to 0 but Ceph still left it
-        // `in` (reweight=1.0). Mark it out so the state is unambiguous.
-        if crush_weight == 0.0 && reweight > 0.0 && id >= 0 {
-            let osd = format!("osd.{id}");
-            tracing::info!("new OSD {osd} joined at weight 0 — marking out");
+        if id < 0 { continue; }
+        let osd = format!("osd.{id}");
+        if crush_weight > 0.0 && reweight < 0.5 {
+            tracing::info!("{osd}: crush_weight={crush_weight:.5} reweight={reweight:.2} — marking in");
+            let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
+        } else if crush_weight == 0.0 && reweight > 0.5 {
+            tracing::info!("{osd}: crush_weight=0 reweight={reweight:.2} — marking out");
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         }
     }

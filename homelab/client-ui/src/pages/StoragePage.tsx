@@ -54,39 +54,28 @@ function VarBadge({ v }: { v: number }) {
 }
 
 // ── OSD lifecycle state ────────────────────────────────────────────────────────
+// crush_weight is the source of truth: >0 = active, 0 = inactive.
+// reweight is kept in sync by the server-side watcher and is not used here.
 
-type OsdState = "active" | "offline" | "new" | "draining" | "inactive";
+type OsdState = "active" | "offline" | "inactive";
 
 function getOsdState(osd: OsdInfo): OsdState {
   if (osd.crush_weight > 0) {
     return osd.status === "up" ? "active" : "offline";
   }
-  // crush_weight === 0
-  if (osd.reweight > 0.5) return "new";       // just joined; watcher will mark out
-  if (osd.safe_to_destroy)  return "inactive"; // no data; ready to activate or unplug
-  return "draining";                           // data still migrating off
+  return "inactive";
 }
 
-const STATE_CONFIG: Record<OsdState, { label: string; variant: "success" | "destructive" | "warning" | "muted" }> = {
+const STATE_CONFIG: Record<OsdState, { label: string; variant: "success" | "destructive" | "muted" }> = {
   active:   { label: "Active",   variant: "success" },
   offline:  { label: "Offline",  variant: "destructive" },
-  new:      { label: "Pending",  variant: "warning" },
-  draining: { label: "Draining", variant: "warning" },
   inactive: { label: "Inactive", variant: "muted" },
 };
 
 function OsdStateBadge({ osd }: { osd: OsdInfo }) {
   const state = getOsdState(osd);
   const { label, variant } = STATE_CONFIG[state];
-  return (
-    <Badge variant={variant} className="gap-1.5">
-      {state === "draining" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-      {label}
-      {state === "draining" && osd.pgs > 0 && (
-        <span className="opacity-70">• {osd.pgs} PG{osd.pgs !== 1 ? "s" : ""}</span>
-      )}
-    </Badge>
-  );
+  return <Badge variant={variant}>{label}</Badge>;
 }
 
 function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void }) {
@@ -111,7 +100,7 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
     }
   }
 
-  if (state === "inactive" || state === "draining") {
+  if (state === "inactive") {
     return (
       <div className="flex flex-col gap-1">
         <Button size="sm" variant="outline" disabled={busy}
