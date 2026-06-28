@@ -569,6 +569,312 @@ pub async fn restore_status(
     })))
 }
 
+// ── Emergency restore helpers ─────────────────────────────────────────────────
+
+async fn find_deployments_for_pvc(namespace: &str, pvc_name: &str) -> anyhow::Result<Vec<String>> {
+    let out = Command::new("kubectl")
+        .args(["get", "deployments", "-n", namespace, "-o", "json"])
+        .output()
+        .await?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let names = v["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            let name = item["metadata"]["name"].as_str()?.to_string();
+            let volumes = item["spec"]["template"]["spec"]["volumes"].as_array()?;
+            let refs_pvc = volumes
+                .iter()
+                .any(|vol| vol["persistentVolumeClaim"]["claimName"].as_str() == Some(pvc_name));
+            if refs_pvc { Some(name) } else { None }
+        })
+        .collect();
+    Ok(names)
+}
+
+async fn scale_deployment(namespace: &str, name: &str, replicas: u32) -> anyhow::Result<()> {
+    let out = Command::new("kubectl")
+        .args([
+            "scale",
+            "deployment",
+            name,
+            "-n",
+            namespace,
+            &format!("--replicas={replicas}"),
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "scale deployment {} failed: {}",
+            name,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// POST /api/backups/restore/:namespace/:pvc/emergency
+/// Scales down apps, deletes corrupted PVC to free space, then pulls from B2.
+/// No rollback possible — only use when data is already lost/corrupted.
+pub async fn emergency_restore(
+    State(_state): State<AppState>,
+    Path((namespace, pvc)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    let dest_name = format!("emergency-restore-{pvc}");
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+
+    // Capture PVC spec before deletion.
+    let pvc_out = Command::new("kubectl")
+        .args(["get", "pvc", &pvc, "-n", &namespace, "-o", "json"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let pvc_v: serde_json::Value = serde_json::from_slice(&pvc_out.stdout).unwrap_or_default();
+    let capacity = pvc_v["spec"]["resources"]["requests"]["storage"]
+        .as_str()
+        .unwrap_or("10Gi")
+        .to_string();
+    let storage_class = pvc_v["spec"]["storageClassName"]
+        .as_str()
+        .unwrap_or("yolab-cephfs")
+        .to_string();
+    let access_mode = pvc_v["spec"]["accessModes"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|m| m.as_str())
+        .unwrap_or("ReadWriteMany")
+        .to_string();
+
+    // Scale down deployments using this PVC before deleting it.
+    let deployments = find_deployments_for_pvc(&namespace, &pvc).await?;
+    for deploy in &deployments {
+        scale_deployment(&namespace, deploy, 0).await?;
+    }
+
+    // Delete old PVC — non-blocking; Ceph reclaims space once pods finish terminating.
+    let del_out = Command::new("kubectl")
+        .args(["delete", "pvc", &pvc, "-n", &namespace, "--wait=false"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    if !del_out.status.success() {
+        anyhow::bail!(
+            "delete pvc failed: {}",
+            String::from_utf8_lossy(&del_out.stderr).trim()
+        );
+    }
+
+    // Create ReplicationDestination — VolSync retries until Ceph has space.
+    let manifest = serde_json::json!({
+        "apiVersion": "volsync.backube/v1alpha1",
+        "kind": "ReplicationDestination",
+        "metadata": {
+            "name": dest_name,
+            "namespace": namespace,
+            "labels": { "app.kubernetes.io/managed-by": "yolab" }
+        },
+        "spec": {
+            "trigger": { "manual": format!("emergency-{timestamp}") },
+            "rclone": {
+                "rcloneConfigSection": "b2-crypt",
+                "rcloneDestPath": format!("b2-crypt:{}/{}", namespace, pvc),
+                "rcloneConfig": RCLONE_SECRET,
+                "copyMethod": "Snapshot",
+                "storageClassName": storage_class,
+                "capacity": capacity,
+                "accessModes": [access_mode],
+                "moverSecurityContext": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "fsGroup": 1000
+                }
+            }
+        }
+    });
+    kubectl_apply(&manifest.to_string()).await?;
+
+    Ok(Json(serde_json::json!({
+        "started": true,
+        "destination_name": dest_name,
+        "deployments_scaled_down": deployments,
+        "note": "Old PVC deleted. Poll /emergency/status. Call /emergency/apply when Successful.",
+    })))
+}
+
+/// GET /api/backups/restore/:namespace/:pvc/emergency/status
+pub async fn emergency_restore_status(
+    State(_state): State<AppState>,
+    Path((namespace, pvc)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    let dest_name = format!("emergency-restore-{pvc}");
+    let out = Command::new("kubectl")
+        .args([
+            "get",
+            "replicationdestination",
+            &dest_name,
+            "-n",
+            &namespace,
+            "-o",
+            "json",
+        ])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    if !out.status.success() {
+        return Ok(Json(serde_json::json!({ "found": false })));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let result = v["status"]["latestMoverStatus"]["result"]
+        .as_str()
+        .unwrap_or("Running")
+        .to_string();
+    let last_sync_time = v["status"]["lastSyncTime"].as_str().map(String::from);
+
+    Ok(Json(serde_json::json!({
+        "found": true,
+        "result": result,
+        "last_sync_time": last_sync_time,
+        "restored_pvc": format!("volsync-{dest_name}-dest"),
+    })))
+}
+
+/// POST /api/backups/restore/:namespace/:pvc/emergency/apply
+/// Patches deployments to use the restored PVC and scales them back up.
+pub async fn apply_emergency_restore(
+    State(_state): State<AppState>,
+    Path((namespace, pvc)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    let dest_name = format!("emergency-restore-{pvc}");
+    let restored_pvc = format!("volsync-{dest_name}-dest");
+
+    // Verify restore completed.
+    let rd_out = Command::new("kubectl")
+        .args([
+            "get",
+            "replicationdestination",
+            &dest_name,
+            "-n",
+            &namespace,
+            "-o",
+            "json",
+        ])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    if !rd_out.status.success() {
+        return Err(
+            anyhow::anyhow!("Emergency restore not found — run /emergency first").into(),
+        );
+    }
+    let rd_v: serde_json::Value = serde_json::from_slice(&rd_out.stdout).unwrap_or_default();
+    let result = rd_v["status"]["latestMoverStatus"]["result"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    if result.to_lowercase() != "successful" {
+        return Err(anyhow::anyhow!("Restore not complete yet (status: {result})").into());
+    }
+
+    // Verify restored PVC exists.
+    let pvc_check = Command::new("kubectl")
+        .args(["get", "pvc", &restored_pvc, "-n", &namespace])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    if !pvc_check.status.success() {
+        return Err(anyhow::anyhow!("Restored PVC {restored_pvc} not found yet").into());
+    }
+
+    // Find deployments still referencing the original (now deleted) PVC name.
+    let deployments = find_deployments_for_pvc(&namespace, &pvc).await?;
+
+    for deploy in &deployments {
+        let dep_out = Command::new("kubectl")
+            .args(["get", "deployment", deploy, "-n", &namespace, "-o", "json"])
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut dep_v: serde_json::Value =
+            serde_json::from_slice(&dep_out.stdout).unwrap_or_default();
+
+        if let Some(volumes) = dep_v["spec"]["template"]["spec"]["volumes"].as_array_mut() {
+            for vol in volumes.iter_mut() {
+                if vol["persistentVolumeClaim"]["claimName"].as_str() == Some(&pvc) {
+                    vol["persistentVolumeClaim"]["claimName"] =
+                        serde_json::Value::String(restored_pvc.clone());
+                }
+            }
+        }
+
+        let patch = serde_json::json!({
+            "spec": {
+                "template": {
+                    "spec": {
+                        "volumes": dep_v["spec"]["template"]["spec"]["volumes"]
+                    }
+                }
+            }
+        });
+        let patch_out = Command::new("kubectl")
+            .args([
+                "patch",
+                "deployment",
+                deploy,
+                "-n",
+                &namespace,
+                "--type=merge",
+                "-p",
+                &patch.to_string(),
+            ])
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if !patch_out.status.success() {
+            return Err(anyhow::anyhow!(
+                "patch deployment {} failed: {}",
+                deploy,
+                String::from_utf8_lossy(&patch_out.stderr).trim()
+            )
+            .into());
+        }
+
+        scale_deployment(&namespace, deploy, 1).await?;
+    }
+
+    // Point the ReplicationSource at the new PVC so future backups stay intact.
+    let rs_name = format!("volsync-{pvc}");
+    let rs_patch = serde_json::json!({ "spec": { "sourcePVC": restored_pvc } });
+    let _ = Command::new("kubectl")
+        .args([
+            "patch",
+            "replicationsource",
+            &rs_name,
+            "-n",
+            &namespace,
+            "--type=merge",
+            "-p",
+            &rs_patch.to_string(),
+        ])
+        .output()
+        .await;
+
+    // Clean up ReplicationDestination.
+    let _ = Command::new("kubectl")
+        .args(["delete", "replicationdestination", &dest_name, "-n", &namespace])
+        .output()
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "applied": true,
+        "restored_pvc": restored_pvc,
+        "deployments_updated": deployments,
+    })))
+}
+
 // ── Background etcd snapshot task ─────────────────────────────────────────────
 
 /// Runs daily at 02:00 UTC: reads B2 creds from the master Secret and calls
