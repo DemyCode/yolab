@@ -661,10 +661,11 @@ pub async fn emergency_restore(
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     if !del_out.status.success() {
-        anyhow::bail!(
+        return Err(anyhow::anyhow!(
             "delete pvc failed: {}",
             String::from_utf8_lossy(&del_out.stderr).trim()
-        );
+        )
+        .into());
     }
 
     // Create ReplicationDestination — VolSync retries until Ceph has space.
