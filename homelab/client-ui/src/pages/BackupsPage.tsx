@@ -20,7 +20,7 @@ interface BackupStatus {
   dr_mode?: boolean;
 }
 
-type DrPhase = "none" | "detected" | "restoring" | "complete" | "applying" | "done";
+type DrPhase = "none" | "detected" | "restoring" | "applying" | "done";
 
 interface DrRestoreItem {
   namespace: string;
@@ -116,7 +116,7 @@ function EtcdCard({ lastSnapshot }: { lastSnapshot: string | null }) {
 
 // ── PVC card ──────────────────────────────────────────────────────────────────
 
-type RestoreStep = "idle" | "running" | "ready" | "applying" | "done";
+type RestoreStep = "idle" | "running" | "applying" | "done";
 
 function PvcCard({ pvc }: { pvc: PvcStatus }) {
   const [step, setStep] = useState<RestoreStep>("idle");
@@ -151,38 +151,33 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
           const s = await fetch(
             `/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency/status`
           ).then((r) => r.json()) as { found: boolean; result?: string };
+
           if (s.result?.toLowerCase() === "successful") {
             clearInterval(pollRef.current!);
             pollRef.current = null;
-            setStep("ready");
+            setStep("applying");
+            const apply = await fetch(
+              `/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency/apply`,
+              { method: "POST" }
+            );
+            if (!apply.ok) throw new Error(await apply.text());
+            setStep("done");
           } else if (s.result?.toLowerCase() === "failed") {
             clearInterval(pollRef.current!);
             pollRef.current = null;
             setStep("idle");
             setError("Restore failed — check VolSync logs.");
           }
-        } catch {
-          // network blip — keep polling
+        } catch (e) {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          setStep("idle");
+          setError(e instanceof Error ? e.message : "Restore failed");
         }
       }, 5000);
     } catch (e) {
       setStep("idle");
       setError(e instanceof Error ? e.message : "Failed to start restore");
-    }
-  }
-
-  async function handleApply() {
-    setStep("applying");
-    try {
-      const res = await fetch(
-        `/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency/apply`,
-        { method: "POST" }
-      );
-      if (!res.ok) throw new Error(await res.text());
-      setStep("done");
-    } catch (e) {
-      setStep("ready");
-      setError(e instanceof Error ? e.message : "Apply failed");
     }
   }
 
@@ -214,7 +209,7 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
                   variant="outline"
                   className="h-7 px-2.5 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] hover:border-[#6b7280]"
                 >
-                  Restore
+                  {step !== "idle" ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Restore"}
                 </Button>
               </div>
             </div>
@@ -240,19 +235,6 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
                 Pulling data from cloud backup… this may take 10–30 min.
               </div>
             )}
-            {step === "ready" && (
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <p className="text-xs text-[#4ade80]">
-                  Data ready. Click Apply to restart the app on the restored data.
-                </p>
-                <Button
-                  onClick={handleApply}
-                  className="h-7 px-3 text-xs bg-[#15803d] hover:bg-[#16a34a] text-white border-0 flex-shrink-0"
-                >
-                  Apply
-                </Button>
-              </div>
-            )}
             {step === "applying" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#a78bfa]">
                 <RefreshCw className="h-3 w-3 animate-spin" />
@@ -262,7 +244,7 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
             {step === "done" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#4ade80]">
                 <CheckCircle className="h-3 w-3" />
-                App restarted on restored data.
+                Restored successfully.
               </div>
             )}
             {error && (
@@ -338,7 +320,6 @@ function DisasterRecoveryBanner({
   failed,
   lostCount,
   onStart,
-  onApply,
   error,
 }: {
   phase: DrPhase;
@@ -348,23 +329,17 @@ function DisasterRecoveryBanner({
   failed: number;
   lostCount: number;
   onStart: () => Promise<void>;
-  onApply: () => Promise<void>;
   error: string | null;
 }) {
   const [starting, setStarting] = useState(false);
-  const [applying, setApplying] = useState(false);
 
   if (phase === "none") return null;
 
-  const isSuccess = phase === "done" || phase === "complete";
+  const isSuccess = phase === "done";
 
   async function handleStart() {
     setStarting(true);
     try { await onStart(); } finally { setStarting(false); }
-  }
-  async function handleApply() {
-    setApplying(true);
-    try { await onApply(); } finally { setApplying(false); }
   }
 
   return (
@@ -442,31 +417,6 @@ function DisasterRecoveryBanner({
         </>
       )}
 
-      {phase === "complete" && (
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <p className="text-sm font-semibold text-[#4ade80] flex items-center gap-2">
-              <CheckCircle className="h-4 w-4" />
-              All data restored
-            </p>
-            <p className="text-xs text-[#71717a] mt-1">
-              Click Apply to start all services on the restored data.
-            </p>
-          </div>
-          <Button
-            onClick={handleApply}
-            disabled={applying}
-            className="flex-shrink-0 bg-[#15803d] hover:bg-[#16a34a] text-white border-0 text-sm h-9 px-4"
-          >
-            {applying ? (
-              <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Applying…</>
-            ) : (
-              "Apply — Start All Services"
-            )}
-          </Button>
-        </div>
-      )}
-
       {phase === "applying" && (
         <p className="text-sm text-[#a78bfa] flex items-center gap-2">
           <RefreshCw className="h-4 w-4 animate-spin" />
@@ -520,7 +470,12 @@ export function BackupsPage() {
         if (s.all_complete) {
           clearInterval(drPollRef.current!);
           drPollRef.current = null;
-          setDrPhase("complete");
+          setDrPhase("applying");
+          const apply = await fetch("/api/backups/dr/apply", { method: "POST" });
+          if (!apply.ok) {
+            setDrError(await apply.text());
+          }
+          setDrPhase("done");
         }
       } catch {
         // network blip — keep polling
@@ -547,7 +502,7 @@ export function BackupsPage() {
       setDrFailed(drStatus.failed);
       setDrPhase((prev) => {
         if (prev === "applying" || prev === "done") return prev;
-        return drStatus.all_complete ? "complete" : "restoring";
+        return "restoring";
       });
       if (!drStatus.all_complete) startDrPolling();
     } else if ((statusRes as BackupStatus)?.dr_mode) {
@@ -576,23 +531,6 @@ export function BackupsPage() {
     }
     setDrPhase("restoring");
     startDrPolling();
-  }
-
-  async function handleDrApply() {
-    setDrError(null);
-    setDrPhase("applying");
-    try {
-      const res = await fetch("/api/backups/dr/apply", { method: "POST" });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as { applied: string[]; errors: string[] };
-      if (data.errors?.length > 0) {
-        setDrError(`Some errors: ${data.errors.join(", ")}`);
-      }
-      setDrPhase("done");
-    } catch (e) {
-      setDrPhase("complete");
-      setDrError(e instanceof Error ? e.message : "Apply failed");
-    }
   }
 
   const lostCount = backupStatus?.pvcs.filter(
@@ -626,7 +564,6 @@ export function BackupsPage() {
               failed={drFailed}
               lostCount={lostCount}
               onStart={handleDrStart}
-              onApply={handleDrApply}
               error={drError}
             />
           )}
