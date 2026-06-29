@@ -74,6 +74,9 @@ async fn main() {
         .route("/api/backups/restore/:namespace/:pvc/emergency", post(backups::emergency_restore))
         .route("/api/backups/restore/:namespace/:pvc/emergency/status", get(backups::emergency_restore_status))
         .route("/api/backups/restore/:namespace/:pvc/emergency/apply", post(backups::apply_emergency_restore))
+        .route("/api/backups/dr/start", post(backups::dr_start))
+        .route("/api/backups/dr/status", get(backups::dr_status))
+        .route("/api/backups/dr/apply", post(backups::dr_apply))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         .route("/api/ceph/detail", get(ceph::storage_detail))

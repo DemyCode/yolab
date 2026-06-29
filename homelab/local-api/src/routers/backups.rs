@@ -417,6 +417,24 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     let v: serde_json::Value =
         serde_json::from_slice(&rs_out.stdout).unwrap_or(serde_json::json!({"items": []}));
 
+    // Build a (namespace, pvc_name) → phase map from all PVCs.
+    let pvc_phase_map: HashMap<(String, String), String> = Command::new("kubectl")
+        .args(["get", "pvc", "-A", "-o", "json"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            let ns = item["metadata"]["namespace"].as_str()?.to_string();
+            let name = item["metadata"]["name"].as_str()?.to_string();
+            let phase = item["status"]["phase"].as_str().unwrap_or("Unknown").to_string();
+            Some(((ns, name), phase))
+        })
+        .collect();
+
     let pvcs: Vec<serde_json::Value> = v["items"]
         .as_array()
         .cloned()
@@ -432,15 +450,24 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
                 .as_str()
                 .unwrap_or(if last_sync_time.is_some() { "Successful" } else { "Pending" })
                 .to_string();
+            let pvc_phase = pvc_phase_map
+                .get(&(namespace.clone(), pvc.clone()))
+                .cloned()
+                .unwrap_or_else(|| "NotFound".to_string());
             serde_json::json!({
                 "namespace": namespace,
                 "pvc": pvc,
                 "last_sync_time": last_sync_time,
                 "last_sync_duration": last_sync_duration,
                 "result": result,
+                "pvc_phase": pvc_phase,
             })
         })
         .collect();
+
+    let dr_mode = pvcs
+        .iter()
+        .any(|p| matches!(p["pvc_phase"].as_str(), Some("Lost") | Some("NotFound")));
 
     // Latest etcd snapshot from K3s CRD.
     let etcd_last = Command::new("kubectl")
@@ -466,6 +493,7 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     Ok(Json(serde_json::json!({
         "pvcs": pvcs,
         "etcd_last_snapshot": etcd_last,
+        "dr_mode": dr_mode,
     })))
 }
 
@@ -610,6 +638,48 @@ async fn scale_deployment(namespace: &str, name: &str, replicas: u32) -> anyhow:
         anyhow::bail!(
             "scale deployment {} failed: {}",
             name,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+async fn patch_deployment_pvc(
+    namespace: &str,
+    deploy: &str,
+    old_pvc: &str,
+    new_pvc: &str,
+) -> anyhow::Result<()> {
+    let dep_out = Command::new("kubectl")
+        .args(["get", "deployment", deploy, "-n", namespace, "-o", "json"])
+        .output()
+        .await?;
+    let mut dep_v: serde_json::Value =
+        serde_json::from_slice(&dep_out.stdout).unwrap_or_default();
+    if let Some(volumes) = dep_v["spec"]["template"]["spec"]["volumes"].as_array_mut() {
+        for vol in volumes.iter_mut() {
+            if vol["persistentVolumeClaim"]["claimName"].as_str() == Some(old_pvc) {
+                vol["persistentVolumeClaim"]["claimName"] =
+                    serde_json::Value::String(new_pvc.to_string());
+            }
+        }
+    }
+    let patch = serde_json::json!({
+        "spec": { "template": { "spec": {
+            "volumes": dep_v["spec"]["template"]["spec"]["volumes"]
+        }}}
+    });
+    let out = Command::new("kubectl")
+        .args([
+            "patch", "deployment", deploy, "-n", namespace,
+            "--type=merge", "-p", &patch.to_string(),
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "patch deployment {} failed: {}",
+            deploy,
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -794,55 +864,7 @@ pub async fn apply_emergency_restore(
     let deployments = find_deployments_for_pvc(&namespace, &pvc).await?;
 
     for deploy in &deployments {
-        let dep_out = Command::new("kubectl")
-            .args(["get", "deployment", deploy, "-n", &namespace, "-o", "json"])
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let mut dep_v: serde_json::Value =
-            serde_json::from_slice(&dep_out.stdout).unwrap_or_default();
-
-        if let Some(volumes) = dep_v["spec"]["template"]["spec"]["volumes"].as_array_mut() {
-            for vol in volumes.iter_mut() {
-                if vol["persistentVolumeClaim"]["claimName"].as_str() == Some(&pvc) {
-                    vol["persistentVolumeClaim"]["claimName"] =
-                        serde_json::Value::String(restored_pvc.clone());
-                }
-            }
-        }
-
-        let patch = serde_json::json!({
-            "spec": {
-                "template": {
-                    "spec": {
-                        "volumes": dep_v["spec"]["template"]["spec"]["volumes"]
-                    }
-                }
-            }
-        });
-        let patch_out = Command::new("kubectl")
-            .args([
-                "patch",
-                "deployment",
-                deploy,
-                "-n",
-                &namespace,
-                "--type=merge",
-                "-p",
-                &patch.to_string(),
-            ])
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-        if !patch_out.status.success() {
-            return Err(anyhow::anyhow!(
-                "patch deployment {} failed: {}",
-                deploy,
-                String::from_utf8_lossy(&patch_out.stderr).trim()
-            )
-            .into());
-        }
-
+        patch_deployment_pvc(&namespace, deploy, &pvc, &restored_pvc).await?;
         scale_deployment(&namespace, deploy, 1).await?;
     }
 
@@ -874,6 +896,295 @@ pub async fn apply_emergency_restore(
         "restored_pvc": restored_pvc,
         "deployments_updated": deployments,
     })))
+}
+
+// ── Disaster-recovery bulk restore ───────────────────────────────────────────
+
+/// POST /api/backups/dr/start
+/// For every ReplicationSource whose sourcePVC is Lost/NotFound, triggers an
+/// emergency restore (scale-down → delete PVC → pull from B2).
+pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let rs_out = Command::new("kubectl")
+        .args(["get", "replicationsource", "-A", "-o", "json"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let rs_v: serde_json::Value =
+        serde_json::from_slice(&rs_out.stdout).unwrap_or(serde_json::json!({"items": []}));
+
+    let pvc_phase_map: HashMap<(String, String), String> = Command::new("kubectl")
+        .args(["get", "pvc", "-A", "-o", "json"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            let ns = item["metadata"]["namespace"].as_str()?.to_string();
+            let name = item["metadata"]["name"].as_str()?.to_string();
+            let phase = item["status"]["phase"].as_str().unwrap_or("Unknown").to_string();
+            Some(((ns, name), phase))
+        })
+        .collect();
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+    let mut started: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    for item in rs_v["items"].as_array().cloned().unwrap_or_default() {
+        let namespace = item["metadata"]["namespace"].as_str().unwrap_or("").to_string();
+        let pvc_name = item["spec"]["sourcePVC"].as_str().unwrap_or("").to_string();
+
+        if namespace.is_empty() || pvc_name.is_empty() || EXCLUDED_NS.contains(&namespace.as_str()) {
+            continue;
+        }
+
+        let phase = pvc_phase_map
+            .get(&(namespace.clone(), pvc_name.clone()))
+            .cloned()
+            .unwrap_or_else(|| "NotFound".to_string());
+
+        if phase != "Lost" && phase != "NotFound" {
+            skipped.push(format!("{namespace}/{pvc_name} (phase: {phase})"));
+            continue;
+        }
+
+        // Skip if this restore is already in progress.
+        let dest_name = format!("emergency-restore-{pvc_name}");
+        let rd_exists = Command::new("kubectl")
+            .args(["get", "replicationdestination", &dest_name, "-n", &namespace])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if rd_exists {
+            skipped.push(format!("{namespace}/{pvc_name} (already restoring)"));
+            continue;
+        }
+
+        // Read PVC spec for capacity / storage-class / access-mode.
+        let (capacity, storage_class, access_mode) = {
+            let pvc_out = Command::new("kubectl")
+                .args(["get", "pvc", &pvc_name, "-n", &namespace, "-o", "json"])
+                .output()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if pvc_out.status.success() {
+                let pv: serde_json::Value =
+                    serde_json::from_slice(&pvc_out.stdout).unwrap_or_default();
+                (
+                    pv["spec"]["resources"]["requests"]["storage"]
+                        .as_str().unwrap_or("10Gi").to_string(),
+                    pv["spec"]["storageClassName"]
+                        .as_str().unwrap_or("yolab-cephfs").to_string(),
+                    pv["spec"]["accessModes"].as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("ReadWriteMany")
+                        .to_string(),
+                )
+            } else {
+                ("10Gi".to_string(), "yolab-cephfs".to_string(), "ReadWriteMany".to_string())
+            }
+        };
+
+        // Scale down any deployments using this PVC.
+        let deploys = find_deployments_for_pvc(&namespace, &pvc_name)
+            .await
+            .unwrap_or_default();
+        for d in &deploys {
+            let _ = scale_deployment(&namespace, d, 0).await;
+        }
+
+        // Delete the Lost PVC (non-blocking).
+        let _ = Command::new("kubectl")
+            .args(["delete", "pvc", &pvc_name, "-n", &namespace, "--wait=false"])
+            .output()
+            .await;
+
+        // Create ReplicationDestination to pull data from B2.
+        let manifest = serde_json::json!({
+            "apiVersion": "volsync.backube/v1alpha1",
+            "kind": "ReplicationDestination",
+            "metadata": {
+                "name": dest_name,
+                "namespace": namespace,
+                "labels": { "app.kubernetes.io/managed-by": "yolab" }
+            },
+            "spec": {
+                "trigger": { "manual": format!("dr-{timestamp}") },
+                "rclone": {
+                    "rcloneConfigSection": "b2-crypt",
+                    "rcloneDestPath": format!("b2-crypt:{}/{}", namespace, pvc_name),
+                    "rcloneConfig": RCLONE_SECRET,
+                    "copyMethod": "Snapshot",
+                    "storageClassName": storage_class,
+                    "capacity": capacity,
+                    "accessModes": [access_mode],
+                    "moverSecurityContext": {
+                        "runAsUser": 1000,
+                        "runAsGroup": 1000,
+                        "fsGroup": 1000
+                    }
+                }
+            }
+        });
+
+        match kubectl_apply(&manifest.to_string()).await {
+            Ok(_) => started.push(format!("{namespace}/{pvc_name}")),
+            Err(e) => tracing::warn!("DR start: failed RD for {namespace}/{pvc_name}: {e}"),
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "started": started, "skipped": skipped })))
+}
+
+/// GET /api/backups/dr/status
+/// Returns the status of all in-progress emergency restores (emergency-restore-* RDs).
+pub async fn dr_status(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let out = Command::new("kubectl")
+        .args(["get", "replicationdestination", "-A", "-o", "json"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!({"items": []}));
+
+    let restores: Vec<serde_json::Value> = v["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            let name = item["metadata"]["name"].as_str()?.to_string();
+            if !name.starts_with("emergency-restore-") {
+                return None;
+            }
+            let namespace = item["metadata"]["namespace"].as_str()?.to_string();
+            let pvc_name = name.strip_prefix("emergency-restore-")?.to_string();
+            let result = item["status"]["latestMoverStatus"]["result"]
+                .as_str()
+                .unwrap_or("Running")
+                .to_string();
+            let last_sync_time = item["status"]["lastSyncTime"].as_str().map(String::from);
+            Some(serde_json::json!({
+                "namespace": namespace,
+                "pvc": pvc_name,
+                "result": result,
+                "last_sync_time": last_sync_time,
+                "restored_pvc": format!("volsync-{name}-dest"),
+            }))
+        })
+        .collect();
+
+    let total = restores.len();
+    let done = restores
+        .iter()
+        .filter(|r| r["result"].as_str().unwrap_or("").to_lowercase() == "successful")
+        .count();
+    let failed = restores
+        .iter()
+        .filter(|r| r["result"].as_str().unwrap_or("").to_lowercase() == "failed")
+        .count();
+
+    Ok(Json(serde_json::json!({
+        "restores": restores,
+        "total": total,
+        "done": done,
+        "failed": failed,
+        "all_complete": total > 0 && done + failed == total,
+    })))
+}
+
+/// POST /api/backups/dr/apply
+/// Patches deployments to use restored PVCs and scales them back up for all
+/// completed (Successful) emergency restores.
+pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let out = Command::new("kubectl")
+        .args(["get", "replicationdestination", "-A", "-o", "json"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!({"items": []}));
+
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for item in v["items"].as_array().cloned().unwrap_or_default() {
+        let name = match item["metadata"]["name"].as_str() {
+            Some(n) if n.starts_with("emergency-restore-") => n.to_string(),
+            _ => continue,
+        };
+        let namespace = item["metadata"]["namespace"].as_str().unwrap_or("").to_string();
+        let pvc_name = match name.strip_prefix("emergency-restore-") {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => continue,
+        };
+
+        if item["status"]["latestMoverStatus"]["result"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            != "successful"
+        {
+            continue;
+        }
+
+        let restored_pvc = format!("volsync-{name}-dest");
+
+        // Verify restored PVC exists.
+        let pvc_ok = Command::new("kubectl")
+            .args(["get", "pvc", &restored_pvc, "-n", &namespace])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !pvc_ok {
+            errors.push(format!("{namespace}/{pvc_name}: restored PVC not found yet"));
+            continue;
+        }
+
+        let deploys = find_deployments_for_pvc(&namespace, &pvc_name)
+            .await
+            .unwrap_or_default();
+        let mut had_error = false;
+        for deploy in &deploys {
+            match patch_deployment_pvc(&namespace, deploy, &pvc_name, &restored_pvc).await {
+                Ok(_) => {
+                    let _ = scale_deployment(&namespace, deploy, 1).await;
+                }
+                Err(e) => {
+                    errors.push(format!("{namespace}/{deploy}: {e}"));
+                    had_error = true;
+                }
+            }
+        }
+
+        if !had_error {
+            // Update ReplicationSource so future backups target the new PVC.
+            let rs_patch = serde_json::json!({ "spec": { "sourcePVC": restored_pvc } });
+            let _ = Command::new("kubectl")
+                .args([
+                    "patch", "replicationsource", &format!("volsync-{pvc_name}"),
+                    "-n", &namespace, "--type=merge", "-p", &rs_patch.to_string(),
+                ])
+                .output()
+                .await;
+
+            // Clean up ReplicationDestination.
+            let _ = Command::new("kubectl")
+                .args(["delete", "replicationdestination", &name, "-n", &namespace])
+                .output()
+                .await;
+
+            applied.push(format!("{namespace}/{pvc_name}"));
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "applied": applied, "errors": errors })))
 }
 
 // ── Background etcd snapshot task ─────────────────────────────────────────────
