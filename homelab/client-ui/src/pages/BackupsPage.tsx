@@ -11,11 +11,30 @@ interface PvcStatus {
   last_sync_time: string | null;
   last_sync_duration: string | null;
   result: string;
+  pvc_phase?: string;
 }
 
 interface BackupStatus {
   pvcs: PvcStatus[];
   etcd_last_snapshot: string | null;
+  dr_mode?: boolean;
+}
+
+type DrPhase = "none" | "detected" | "restoring" | "complete" | "applying" | "done";
+
+interface DrRestoreItem {
+  namespace: string;
+  pvc: string;
+  result: string;
+  last_sync_time: string | null;
+}
+
+interface DrStatusResponse {
+  restores: DrRestoreItem[];
+  total: number;
+  done: number;
+  failed: number;
+  all_complete: boolean;
 }
 
 interface S3Status {
@@ -359,6 +378,164 @@ function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
   );
 }
 
+// ── Disaster-recovery banner ──────────────────────────────────────────────────
+
+function DisasterRecoveryBanner({
+  phase,
+  restores,
+  done,
+  total,
+  failed,
+  lostCount,
+  onStart,
+  onApply,
+  error,
+}: {
+  phase: DrPhase;
+  restores: DrRestoreItem[];
+  done: number;
+  total: number;
+  failed: number;
+  lostCount: number;
+  onStart: () => Promise<void>;
+  onApply: () => Promise<void>;
+  error: string | null;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  if (phase === "none") return null;
+
+  const isSuccess = phase === "done" || phase === "complete";
+
+  async function handleStart() {
+    setStarting(true);
+    try { await onStart(); } finally { setStarting(false); }
+  }
+  async function handleApply() {
+    setApplying(true);
+    try { await onApply(); } finally { setApplying(false); }
+  }
+
+  return (
+    <div
+      className="rounded-lg border p-4 space-y-3"
+      style={{
+        borderColor: isSuccess ? "#14532d" : "#7f1d1d",
+        background: isSuccess ? "#0f1f0f" : "#1c0a0a",
+      }}
+    >
+      {phase === "detected" && (
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-[#f87171] flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4" />
+              Disaster Recovery Mode
+            </p>
+            <p className="text-xs text-[#71717a] mt-1">
+              {lostCount} PVC{lostCount !== 1 ? "s" : ""} lost — your apps are down.
+              Restore all data from the last cloud backup.
+            </p>
+          </div>
+          <Button
+            onClick={handleStart}
+            disabled={starting}
+            className="flex-shrink-0 bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 text-sm h-9 px-4"
+          >
+            {starting ? (
+              <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Starting…</>
+            ) : (
+              "Restore All from Cloud"
+            )}
+          </Button>
+        </div>
+      )}
+
+      {phase === "restoring" && (
+        <>
+          <p className="text-sm font-semibold text-[#fbbf24] flex items-center gap-2">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Restoring data… {done}/{total} complete
+          </p>
+          <div className="space-y-1.5">
+            {restores.map((r) => (
+              <div key={`${r.namespace}/${r.pvc}`} className="flex items-center gap-2 text-xs">
+                {r.result.toLowerCase() === "successful" ? (
+                  <CheckCircle className="h-3.5 w-3.5 text-[#4ade80] flex-shrink-0" />
+                ) : r.result.toLowerCase() === "failed" ? (
+                  <AlertCircle className="h-3.5 w-3.5 text-[#f87171] flex-shrink-0" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5 text-[#fbbf24] animate-spin flex-shrink-0" />
+                )}
+                <span className="text-[#a1a1aa] font-mono">{r.pvc}</span>
+                <span className="text-[#52525b]">{r.namespace}</span>
+                <span
+                  style={{
+                    color:
+                      r.result.toLowerCase() === "successful"
+                        ? "#4ade80"
+                        : r.result.toLowerCase() === "failed"
+                        ? "#f87171"
+                        : "#fbbf24",
+                  }}
+                >
+                  {r.result}
+                </span>
+              </div>
+            ))}
+          </div>
+          {failed > 0 && (
+            <p className="text-xs text-[#f87171]">
+              {failed} restore{failed !== 1 ? "s" : ""} failed — check VolSync logs.
+            </p>
+          )}
+        </>
+      )}
+
+      {phase === "complete" && (
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-[#4ade80] flex items-center gap-2">
+              <CheckCircle className="h-4 w-4" />
+              All data restored
+            </p>
+            <p className="text-xs text-[#71717a] mt-1">
+              Click Apply to start all services on the restored data.
+            </p>
+          </div>
+          <Button
+            onClick={handleApply}
+            disabled={applying}
+            className="flex-shrink-0 bg-[#15803d] hover:bg-[#16a34a] text-white border-0 text-sm h-9 px-4"
+          >
+            {applying ? (
+              <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Applying…</>
+            ) : (
+              "Apply — Start All Services"
+            )}
+          </Button>
+        </div>
+      )}
+
+      {phase === "applying" && (
+        <p className="text-sm text-[#a78bfa] flex items-center gap-2">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          Starting all services on restored data…
+        </p>
+      )}
+
+      {phase === "done" && (
+        <p className="text-sm font-semibold text-[#4ade80] flex items-center gap-2">
+          <CheckCircle className="h-4 w-4" />
+          All services restored successfully.
+        </p>
+      )}
+
+      {error && <p className="text-xs text-[#f87171]">{error}</p>}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function BackupsPage() {
@@ -366,15 +543,67 @@ export function BackupsPage() {
   const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // DR state
+  const [drPhase, setDrPhase] = useState<DrPhase>("none");
+  const [drRestores, setDrRestores] = useState<DrRestoreItem[]>([]);
+  const [drDone, setDrDone] = useState(0);
+  const [drTotal, setDrTotal] = useState(0);
+  const [drFailed, setDrFailed] = useState(0);
+  const [drError, setDrError] = useState<string | null>(null);
+  const drPollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (drPollRef.current !== null) clearInterval(drPollRef.current);
+    };
+  }, []);
+
+  const startDrPolling = useCallback(() => {
+    if (drPollRef.current !== null) return;
+    drPollRef.current = window.setInterval(async () => {
+      try {
+        const s = await fetch("/api/backups/dr/status").then((r) => r.json()) as DrStatusResponse;
+        setDrRestores(s.restores);
+        setDrDone(s.done);
+        setDrTotal(s.total);
+        setDrFailed(s.failed);
+        if (s.all_complete) {
+          clearInterval(drPollRef.current!);
+          drPollRef.current = null;
+          setDrPhase("complete");
+        }
+      } catch {
+        // network blip — keep polling
+      }
+    }, 5000);
+  }, []);
+
   const load = useCallback(async () => {
-    const [s3Res, statusRes] = await Promise.all([
+    const [s3Res, statusRes, drStatusRes] = await Promise.all([
       fetch("/api/backups/s3").then((r) => r.json()).catch(() => ({ provisioned: false })),
       fetch("/api/backups/status").then((r) => r.json()).catch(() => null),
+      fetch("/api/backups/dr/status").then((r) => r.json()).catch(() => null),
     ]);
     setS3Status(s3Res as S3Status);
     setBackupStatus(statusRes as BackupStatus | null);
     setLoading(false);
-  }, []);
+
+    // Detect DR mode: in-progress restores take precedence over Lost PVCs.
+    const drStatus = drStatusRes as DrStatusResponse | null;
+    if (drStatus && drStatus.total > 0) {
+      setDrRestores(drStatus.restores);
+      setDrDone(drStatus.done);
+      setDrTotal(drStatus.total);
+      setDrFailed(drStatus.failed);
+      setDrPhase((prev) => {
+        if (prev === "applying" || prev === "done") return prev;
+        return drStatus.all_complete ? "complete" : "restoring";
+      });
+      if (!drStatus.all_complete) startDrPolling();
+    } else if ((statusRes as BackupStatus)?.dr_mode) {
+      setDrPhase((prev) => (prev === "none" ? "detected" : prev));
+    }
+  }, [startDrPolling]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -395,6 +624,39 @@ export function BackupsPage() {
     }
   }
 
+  async function handleDrStart() {
+    setDrError(null);
+    const res = await fetch("/api/backups/dr/start", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json() as { started: string[]; skipped: string[] };
+    if (data.started.length === 0) {
+      throw new Error("No Lost PVCs found to restore — cluster may already be healthy.");
+    }
+    setDrPhase("restoring");
+    startDrPolling();
+  }
+
+  async function handleDrApply() {
+    setDrError(null);
+    setDrPhase("applying");
+    try {
+      const res = await fetch("/api/backups/dr/apply", { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as { applied: string[]; errors: string[] };
+      if (data.errors?.length > 0) {
+        setDrError(`Some errors: ${data.errors.join(", ")}`);
+      }
+      setDrPhase("done");
+    } catch (e) {
+      setDrPhase("complete");
+      setDrError(e instanceof Error ? e.message : "Apply failed");
+    }
+  }
+
+  const lostCount = backupStatus?.pvcs.filter(
+    (p) => p.pvc_phase === "Lost" || p.pvc_phase === "NotFound"
+  ).length ?? 0;
+
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
@@ -413,24 +675,42 @@ export function BackupsPage() {
         <EnableCard onEnable={handleEnable} />
       ) : (
         <div className="space-y-3">
-          <EtcdCard lastSnapshot={backupStatus?.etcd_last_snapshot ?? null} />
+          {drPhase !== "none" && (
+            <DisasterRecoveryBanner
+              phase={drPhase}
+              restores={drRestores}
+              done={drDone}
+              total={drTotal}
+              failed={drFailed}
+              lostCount={lostCount}
+              onStart={handleDrStart}
+              onApply={handleDrApply}
+              error={drError}
+            />
+          )}
 
-          {backupStatus?.pvcs && backupStatus.pvcs.length > 0 ? (
-            backupStatus.pvcs.map((pvc) => (
-              <PvcCard
-                key={`${pvc.namespace}/${pvc.pvc}`}
-                pvc={pvc}
-                onRestore={handleRestore}
-              />
-            ))
-          ) : (
-            <Card>
-              <CardContent className="pt-5 pb-5">
-                <p className="text-sm text-[#71717a]">
-                  No PVC backup sources found. Click Enable Backups to configure them.
-                </p>
-              </CardContent>
-            </Card>
+          {(drPhase === "none" || drPhase === "done") && (
+            <>
+              <EtcdCard lastSnapshot={backupStatus?.etcd_last_snapshot ?? null} />
+
+              {backupStatus?.pvcs && backupStatus.pvcs.length > 0 ? (
+                backupStatus.pvcs.map((pvc) => (
+                  <PvcCard
+                    key={`${pvc.namespace}/${pvc.pvc}`}
+                    pvc={pvc}
+                    onRestore={handleRestore}
+                  />
+                ))
+              ) : (
+                <Card>
+                  <CardContent className="pt-5 pb-5">
+                    <p className="text-sm text-[#71717a]">
+                      No PVC backup sources found. Click Enable Backups to configure them.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </>
           )}
 
           <div className="flex justify-end">
