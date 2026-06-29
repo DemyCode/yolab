@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Database, RefreshCw, RotateCcw, CheckCircle, AlertCircle, Clock, AlertTriangle } from "lucide-react";
+import { Database, RefreshCw, CheckCircle, AlertCircle, Clock, AlertTriangle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -116,21 +116,11 @@ function EtcdCard({ lastSnapshot }: { lastSnapshot: string | null }) {
 
 // ── PVC card ──────────────────────────────────────────────────────────────────
 
-type EmergencyStep = "idle" | "running" | "ready" | "applying" | "done";
+type RestoreStep = "idle" | "running" | "ready" | "applying" | "done";
 
-function PvcCard({
-  pvc,
-  onRestore,
-}: {
-  pvc: PvcStatus;
-  onRestore: (namespace: string, pvc: string) => Promise<void>;
-}) {
-  const [restoring, setRestoring] = useState(false);
-  const [restoreError, setRestoreError] = useState<string | null>(null);
-  const [restoreResult, setRestoreResult] = useState<string | null>(null);
-
-  const [emergencyStep, setEmergencyStep] = useState<EmergencyStep>("idle");
-  const [emergencyError, setEmergencyError] = useState<string | null>(null);
+function PvcCard({ pvc }: { pvc: PvcStatus }) {
+  const [step, setStep] = useState<RestoreStep>("idle");
+  const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -140,35 +130,15 @@ function PvcCard({
   }, []);
 
   async function handleRestore() {
-    if (!confirm(`Restore ${pvc.pvc} from last backup?\n\nThis will create a new PVC with the restored data.`)) return;
-    setRestoring(true);
-    setRestoreError(null);
-    try {
-      await onRestore(pvc.namespace, pvc.pvc);
-      setRestoreResult("Restore started — check status in a few minutes.");
-    } catch (e) {
-      setRestoreError(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setRestoring(false);
-    }
-  }
-
-  async function handleEmergencyRestore() {
     if (
       !confirm(
-        `⚠️ EMERGENCY RESTORE — DESTRUCTIVE\n\n` +
-        `This will:\n` +
-        `1. Scale down all apps using "${pvc.pvc}"\n` +
-        `2. PERMANENTLY DELETE the current PVC and all its data\n` +
-        `3. Restore data from the last cloud backup\n\n` +
-        `Only use this if the current data is already lost or corrupted.\n` +
-        `There is NO rollback.`
+        `Restore "${pvc.pvc}" from the last cloud backup?\n\n` +
+        `The app will be stopped and its current data replaced with the backed-up version.`
       )
     ) return;
-    if (!confirm(`Final confirmation: DELETE "${pvc.pvc}" and restore from cloud backup?`)) return;
 
-    setEmergencyStep("running");
-    setEmergencyError(null);
+    setStep("running");
+    setError(null);
 
     try {
       const res = await fetch(`/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency`, {
@@ -184,35 +154,35 @@ function PvcCard({
           if (s.result?.toLowerCase() === "successful") {
             clearInterval(pollRef.current!);
             pollRef.current = null;
-            setEmergencyStep("ready");
+            setStep("ready");
           } else if (s.result?.toLowerCase() === "failed") {
             clearInterval(pollRef.current!);
             pollRef.current = null;
-            setEmergencyStep("idle");
-            setEmergencyError("Restore failed — check VolSync logs.");
+            setStep("idle");
+            setError("Restore failed — check VolSync logs.");
           }
         } catch {
           // network blip — keep polling
         }
       }, 5000);
     } catch (e) {
-      setEmergencyStep("idle");
-      setEmergencyError(e instanceof Error ? e.message : "Failed to start emergency restore");
+      setStep("idle");
+      setError(e instanceof Error ? e.message : "Failed to start restore");
     }
   }
 
-  async function handleApplyEmergency() {
-    setEmergencyStep("applying");
+  async function handleApply() {
+    setStep("applying");
     try {
       const res = await fetch(
         `/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency/apply`,
         { method: "POST" }
       );
       if (!res.ok) throw new Error(await res.text());
-      setEmergencyStep("done");
+      setStep("done");
     } catch (e) {
-      setEmergencyStep("ready");
-      setEmergencyError(e instanceof Error ? e.message : "Apply failed");
+      setStep("ready");
+      setError(e instanceof Error ? e.message : "Apply failed");
     }
   }
 
@@ -240,24 +210,11 @@ function PvcCard({
                 <ResultBadge result={pvc.result} />
                 <Button
                   onClick={handleRestore}
-                  disabled={restoring || !pvc.last_sync_time || emergencyStep !== "idle"}
+                  disabled={!pvc.last_sync_time || step !== "idle"}
                   variant="outline"
                   className="h-7 px-2.5 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] hover:border-[#6b7280]"
                 >
-                  {restoring ? (
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <><RotateCcw className="h-3 w-3 mr-1" />Restore</>
-                  )}
-                </Button>
-                <Button
-                  onClick={handleEmergencyRestore}
-                  disabled={!pvc.last_sync_time || emergencyStep !== "idle" || restoring}
-                  variant="outline"
-                  className="h-7 px-2.5 text-xs border-[#7f1d1d] text-[#f87171] hover:bg-[#7f1d1d]/20 hover:text-[#fca5a5] hover:border-[#ef4444]"
-                >
-                  <AlertTriangle className="h-3 w-3 mr-1" />
-                  Emergency
+                  Restore
                 </Button>
               </div>
             </div>
@@ -277,46 +234,39 @@ function PvcCard({
               </div>
             )}
 
-            {restoreError && (
-              <p className="mt-2 text-xs text-[#f87171]">{restoreError}</p>
-            )}
-            {restoreResult && (
-              <p className="mt-2 text-xs text-[#4ade80]">{restoreResult}</p>
-            )}
-
-            {emergencyStep === "running" && (
+            {step === "running" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#fbbf24]">
                 <RefreshCw className="h-3 w-3 animate-spin" />
-                Deleting old PVC and pulling from cloud backup… this may take 10–30 min.
+                Pulling data from cloud backup… this may take 10–30 min.
               </div>
             )}
-            {emergencyStep === "ready" && (
+            {step === "ready" && (
               <div className="mt-3 flex items-center justify-between gap-3">
                 <p className="text-xs text-[#4ade80]">
-                  Restore complete. Click Apply to swap the app to the restored data.
+                  Data ready. Click Apply to restart the app on the restored data.
                 </p>
                 <Button
-                  onClick={handleApplyEmergency}
+                  onClick={handleApply}
                   className="h-7 px-3 text-xs bg-[#15803d] hover:bg-[#16a34a] text-white border-0 flex-shrink-0"
                 >
                   Apply
                 </Button>
               </div>
             )}
-            {emergencyStep === "applying" && (
+            {step === "applying" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#a78bfa]">
                 <RefreshCw className="h-3 w-3 animate-spin" />
-                Patching deployment and starting app…
+                Starting app on restored data…
               </div>
             )}
-            {emergencyStep === "done" && (
+            {step === "done" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#4ade80]">
                 <CheckCircle className="h-3 w-3" />
                 App restarted on restored data.
               </div>
             )}
-            {emergencyError && (
-              <p className="mt-2 text-xs text-[#f87171]">{emergencyError}</p>
+            {error && (
+              <p className="mt-2 text-xs text-[#f87171]">{error}</p>
             )}
           </div>
         </div>
@@ -616,14 +566,6 @@ export function BackupsPage() {
     await load();
   }
 
-  async function handleRestore(namespace: string, pvc: string) {
-    const res = await fetch(`/api/backups/restore/${namespace}/${pvc}`, { method: "POST" });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `Server error ${res.status}`);
-    }
-  }
-
   async function handleDrStart() {
     setDrError(null);
     const res = await fetch("/api/backups/dr/start", { method: "POST" });
@@ -698,7 +640,6 @@ export function BackupsPage() {
                   <PvcCard
                     key={`${pvc.namespace}/${pvc.pvc}`}
                     pvc={pvc}
-                    onRestore={handleRestore}
                   />
                 ))
               ) : (
