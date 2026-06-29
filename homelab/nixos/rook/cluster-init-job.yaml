@@ -1,11 +1,3 @@
-# One-shot job to apply OSD map flags that have no ceph.conf equivalent.
-# Run once after a fresh cluster install:
-#   kubectl apply -f cluster-init-job.yaml
-#
-# Sets norebalance — prevents any PG movement for balancing purposes,
-# including balancer-initiated moves (the balancer respects this flag).
-# Only recovery (draining a marked-out OSD) still moves data.
-# To re-enable: ceph osd unset norebalance
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -28,9 +20,6 @@ spec:
               cp /etc/ceph/keyring /tmp/.ck
               printf '[global]\nmon_host = %s\n' "$MON" > /tmp/.cc
               CEPH="ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin"
-
-              echo "Setting norebalance..."
-              $CEPH osd set norebalance
 
               echo "Current OSD flags:"
               $CEPH osd dump | grep ^flags
