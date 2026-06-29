@@ -77,6 +77,7 @@ async fn main() {
         .route("/api/backups/dr/start", post(backups::dr_start))
         .route("/api/backups/dr/status", get(backups::dr_status))
         .route("/api/backups/dr/apply", post(backups::dr_apply))
+        .route("/api/backups/snapshots", get(backups::list_snapshots))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         .route("/api/ceph/detail", get(ceph::storage_detail))
@@ -108,7 +109,7 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
-    tokio::spawn(backups::run_etcd_snapshots(Arc::clone(&cfg)));
+    tokio::spawn(backups::run_cluster_backup(Arc::clone(&cfg)));
     tokio::spawn(ceph::run_osd_state_watcher());
 
     let addr = format!("[::]:{}", cfg.port);
