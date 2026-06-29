@@ -116,7 +116,7 @@ function OsdTable({ osds, onRefresh }: { osds: OsdInfo[]; onRefresh: () => void 
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#27272a]">
-                {["OSD", "Host", "Class", "Size", "Fill", "Used / Free", "PGs", "Balance", "In/Out", "Up/Down", "Safe", ""].map((h, i) => (
+                {["OSD", "Host", "Class", "Size", "Fill", "Used / Free", "PGs", "Balance", "In/Out", "Up/Down", "Removable", ""].map((h, i) => (
                   <th key={i} className="px-4 py-2.5 text-left text-xs font-medium text-[#71717a] whitespace-nowrap first:pl-6 last:pr-6">{h}</th>
                 ))}
               </tr>
@@ -144,20 +144,22 @@ function OsdTable({ osds, onRefresh }: { osds: OsdInfo[]; onRefresh: () => void 
                       {osd.size_bytes > 0 ? fmtBytes(osd.size_bytes) : "—"}
                     </td>
                     <td className="px-4 py-3">
-                      {osd.utilization > 0
+                      {osd.size_bytes > 0
                         ? <FillBar pct={osd.utilization} />
                         : <span className="text-xs text-[#3f3f46]">—</span>}
                     </td>
                     <td className="px-4 py-3 text-xs text-[#71717a] whitespace-nowrap tabular-nums">
-                      {osd.used_bytes > 0
-                        ? `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.avail_bytes)}`
+                      {osd.size_bytes > 0
+                        ? osd.crush_weight > 0
+                          ? `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.avail_bytes)}`
+                          : `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.size_bytes)}`
                         : "—"}
                     </td>
                     <td className="px-4 py-3 text-xs text-[#71717a] tabular-nums">{osd.pgs}</td>
                     <td className="px-4 py-3"><VarBadge v={osd.var} /></td>
                     <td className="px-4 py-3"><OsdPill on={osd.crush_weight > 0} labels={["In", "Out"]} /></td>
                     <td className="px-4 py-3"><OsdPill on={osd.status === "up"} labels={["Up", "Down"]} /></td>
-                    <td className="px-4 py-3"><OsdPill on={osd.safe_to_destroy} labels={["Safe", "—"]} /></td>
+                    <td className="px-4 py-3"><OsdPill on={osd.safe_to_destroy} labels={["Yes", "No"]} /></td>
                     <td className="pr-6 px-4 py-3"><OsdActions osd={osd} onRefresh={onRefresh} /></td>
                   </tr>
                 ));
