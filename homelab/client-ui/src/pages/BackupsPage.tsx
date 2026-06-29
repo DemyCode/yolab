@@ -118,6 +118,12 @@ function EtcdCard({ lastSnapshot }: { lastSnapshot: string | null }) {
 
 type RestoreStep = "idle" | "running" | "applying" | "done";
 
+// Derive a human-readable service name from a namespace like "yolab-filebrowser" → "Filebrowser"
+function serviceNameFromNamespace(ns: string): string {
+  const stripped = ns.replace(/^yolab-/, "");
+  return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+}
+
 function PvcCard({ pvc }: { pvc: PvcStatus }) {
   const [step, setStep] = useState<RestoreStep>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -129,11 +135,14 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
     };
   }, []);
 
+  const serviceName = serviceNameFromNamespace(pvc.namespace);
+  const isFailed = pvc.result.toLowerCase() === "failed";
+
   async function handleRestore() {
     if (
       !confirm(
-        `Restore "${pvc.pvc}" from the last cloud backup?\n\n` +
-        `The app will be stopped and its current data replaced with the backed-up version.`
+        `Restore ${serviceName} from the last cloud backup?\n\n` +
+        `The service will be stopped, its data replaced with the backed-up version, then restarted automatically.`
       )
     ) return;
 
@@ -187,68 +196,61 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
         <div className="flex items-start gap-3">
           <div
             className="mt-0.5 rounded-md p-1.5 flex-shrink-0"
-            style={{ background: pvc.result.toLowerCase() === "failed" ? "#2d1a1a" : "#1a2e1a" }}
+            style={{ background: isFailed ? "#2d1a1a" : "#1a2e1a" }}
           >
             <Database
               className="h-4 w-4"
-              style={{ color: pvc.result.toLowerCase() === "failed" ? "#f87171" : "#4ade80" }}
+              style={{ color: isFailed ? "#f87171" : "#4ade80" }}
               strokeWidth={1.75}
             />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-[#fafafa] truncate">{pvc.pvc}</p>
-                <p className="text-xs text-[#71717a] mt-0.5">{pvc.namespace}</p>
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <ResultBadge result={pvc.result} />
-                <Button
-                  onClick={handleRestore}
-                  disabled={!pvc.last_sync_time || step !== "idle"}
-                  variant="outline"
-                  className="h-7 px-2.5 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] hover:border-[#6b7280]"
-                >
-                  {step !== "idle" ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Restore"}
-                </Button>
-              </div>
+            {/* Header: service name + sync badge */}
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium text-[#fafafa]">{serviceName}</p>
+              <ResultBadge result={pvc.result} />
             </div>
 
-            {pvc.last_sync_time && (
-              <div className="mt-2 grid grid-cols-2 gap-x-4 text-xs font-mono">
-                <div className="flex gap-2">
-                  <span className="text-[#52525b]">Last sync</span>
-                  <span className="text-[#a1a1aa]">{timeAgo(pvc.last_sync_time)}</span>
-                </div>
-                {pvc.last_sync_duration && (
-                  <div className="flex gap-2">
-                    <span className="text-[#52525b]">Duration</span>
-                    <span className="text-[#a1a1aa]">{pvc.last_sync_duration}</span>
-                  </div>
-                )}
-              </div>
+            {/* Last backup time */}
+            {pvc.last_sync_time ? (
+              <p className="text-xs text-[#71717a] mt-0.5">
+                Last backup {timeAgo(pvc.last_sync_time)}
+                {pvc.last_sync_duration && ` · ${pvc.last_sync_duration}`}
+              </p>
+            ) : (
+              <p className="text-xs text-[#52525b] mt-0.5">No backup yet</p>
             )}
 
+            {/* Progress states */}
             {step === "running" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#fbbf24]">
                 <RefreshCw className="h-3 w-3 animate-spin" />
-                Pulling data from cloud backup… this may take 10–30 min.
+                Restoring from cloud backup… this may take 10–30 min.
               </div>
             )}
             {step === "applying" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#a78bfa]">
                 <RefreshCw className="h-3 w-3 animate-spin" />
-                Starting app on restored data…
+                Restarting {serviceName}…
               </div>
             )}
             {step === "done" && (
               <div className="mt-3 flex items-center gap-2 text-xs text-[#4ade80]">
                 <CheckCircle className="h-3 w-3" />
-                Restored successfully.
+                {serviceName} restored and running.
               </div>
             )}
-            {error && (
-              <p className="mt-2 text-xs text-[#f87171]">{error}</p>
+            {error && <p className="mt-2 text-xs text-[#f87171]">{error}</p>}
+
+            {/* Restore action — full width at bottom, only when idle */}
+            {step === "idle" && pvc.last_sync_time && (
+              <Button
+                onClick={handleRestore}
+                variant="outline"
+                className="mt-3 w-full h-8 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] hover:border-[#6b7280]"
+              >
+                Restore {serviceName} to last backup
+              </Button>
             )}
           </div>
         </div>
