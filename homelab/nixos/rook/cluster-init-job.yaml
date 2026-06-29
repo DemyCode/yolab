@@ -21,8 +21,14 @@ spec:
               printf '[global]\nmon_host = %s\n' "$MON" > /tmp/.cc
               CEPH="ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin"
 
-              echo "Current OSD flags:"
-              $CEPH osd dump | grep ^flags
+              # Disable the balancer module — prevents proactive PG shuffling between
+              # healthy in-service disks. Unlike norebalance, this does NOT block drain:
+              # marking an OSD out still moves PGs via CRUSH remapping (a separate path).
+              echo "Disabling balancer..."
+              $CEPH balancer off
+
+              echo "Balancer status:"
+              $CEPH balancer status
           volumeMounts:
             - name: mon-endpoints
               mountPath: /etc/rook
