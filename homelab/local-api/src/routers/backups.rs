@@ -173,24 +173,6 @@ async fn kubectl_apply_secret(
     kubectl_apply(&manifest.to_string()).await
 }
 
-// ── Rclone password obfuscation ───────────────────────────────────────────────
-
-/// Implements rclone's Obscure so passwords can be embedded in rclone.conf.
-/// Algorithm: buf[0] ^= 0x9c; each subsequent byte XORs with the previous; base64url-nopad.
-fn rclone_obscure(plaintext: &str) -> String {
-    if plaintext.is_empty() {
-        return String::new();
-    }
-    let mut buf = plaintext.as_bytes().to_vec();
-    buf[0] ^= 0x9c;
-    for i in 1..buf.len() {
-        let prev = buf[i - 1];
-        buf[i] ^= prev;
-    }
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&buf)
-}
-
 fn random_hex(bytes: usize) -> String {
     use rand::RngCore as _;
     let mut buf = vec![0u8; bytes];
@@ -202,7 +184,8 @@ fn random_hex(bytes: usize) -> String {
 
 const MASTER_SECRET: &str = "yolab-backup-config";
 const MASTER_NS: &str = "kube-system";
-const RCLONE_SECRET: &str = "volsync-rclone";
+// Secret name per PVC: "<pvc-name>-restic" in the PVC's namespace.
+const RESTIC_SECRET_SUFFIX: &str = "-restic";
 
 const EXCLUDED_NS: &[&str] = &[
     "kube-system",
@@ -221,29 +204,52 @@ struct BackupConfig {
     bucket: String,
     /// Full S3 endpoint URL e.g. https://s3.eu-central-003.backblazeb2.com
     endpoint: String,
-    rclone_password: String,
-    rclone_salt: String,
+    /// restic encryption password — generated once, never sent to yolab-external.
+    restic_password: String,
 }
 
 impl BackupConfig {
-    /// Hostname-only endpoint for K3s etcd-snapshot (strips https://).
-    fn s3_host(&self) -> String {
-        self.endpoint
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .to_string()
+    fn restic_repo(&self, path: &str) -> String {
+        format!(
+            "s3:{}/{}/{}",
+            self.endpoint.trim_end_matches('/'),
+            self.bucket,
+            path
+        )
     }
 }
 
 async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupConfig> {
     if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
+        let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+        if !restic_password.is_empty() {
+            return Ok(BackupConfig {
+                access_key_id: data.get("access_key_id").cloned().unwrap_or_default(),
+                secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
+                bucket: data.get("bucket").cloned().unwrap_or_default(),
+                endpoint: data.get("endpoint").cloned().unwrap_or_default(),
+                restic_password,
+            });
+        }
+        // Old secret exists (rclone era) but lacks restic_password — add it.
+        let restic_password = random_hex(32);
+        kubectl_apply_secret(
+            MASTER_SECRET,
+            MASTER_NS,
+            &[
+                ("access_key_id", data.get("access_key_id").map(|s| s.as_str()).unwrap_or("")),
+                ("secret_access_key", data.get("secret_access_key").map(|s| s.as_str()).unwrap_or("")),
+                ("bucket", data.get("bucket").map(|s| s.as_str()).unwrap_or("")),
+                ("endpoint", data.get("endpoint").map(|s| s.as_str()).unwrap_or("")),
+                ("restic_password", &restic_password),
+            ],
+        ).await?;
         return Ok(BackupConfig {
             access_key_id: data.get("access_key_id").cloned().unwrap_or_default(),
             secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
             bucket: data.get("bucket").cloned().unwrap_or_default(),
             endpoint: data.get("endpoint").cloned().unwrap_or_default(),
-            rclone_password: data.get("rclone_password").cloned().unwrap_or_default(),
-            rclone_salt: data.get("rclone_salt").cloned().unwrap_or_default(),
+            restic_password,
         });
     }
 
@@ -257,18 +263,8 @@ async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupCo
         .map_err(|e| anyhow::anyhow!(e))?;
     let s3: S3StorageInfo = resp.json().await.map_err(|e| anyhow::anyhow!(e))?;
 
-    // Encryption keys generated locally — never sent to yolab-external.
-    let rclone_password = random_hex(32);
-    let rclone_salt = random_hex(16);
-
-    let cfg = BackupConfig {
-        access_key_id: s3.access_key_id.clone(),
-        secret_access_key: s3.secret_access_key.clone(),
-        bucket: s3.bucket_name.clone(),
-        endpoint: s3.endpoint.clone(),
-        rclone_password: rclone_password.clone(),
-        rclone_salt: rclone_salt.clone(),
-    };
+    // Encryption password generated locally — never sent to yolab-external.
+    let restic_password = random_hex(32);
 
     kubectl_apply_secret(
         MASTER_SECRET,
@@ -278,35 +274,36 @@ async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupCo
             ("secret_access_key", &s3.secret_access_key),
             ("bucket", &s3.bucket_name),
             ("endpoint", &s3.endpoint),
-            ("rclone_password", &rclone_password),
-            ("rclone_salt", &rclone_salt),
+            ("restic_password", &restic_password),
         ],
     )
     .await?;
 
-    Ok(cfg)
+    Ok(BackupConfig {
+        access_key_id: s3.access_key_id,
+        secret_access_key: s3.secret_access_key,
+        bucket: s3.bucket_name,
+        endpoint: s3.endpoint,
+        restic_password,
+    })
 }
 
-fn build_rclone_conf(cfg: &BackupConfig) -> String {
-    format!(
-        "[b2]\ntype = b2\naccount = {}\nkey = {}\n\n\
-         [b2-crypt]\ntype = crypt\nremote = b2:{}\n\
-         filename_encryption = standard\ndirectory_name_encryption = true\n\
-         password = {}\npassword2 = {}\n",
-        cfg.access_key_id,
-        cfg.secret_access_key,
-        cfg.bucket,
-        rclone_obscure(&cfg.rclone_password),
-        rclone_obscure(&cfg.rclone_salt),
+/// Create (or update) the per-PVC restic secret in its namespace.
+/// Contains the full repo URL so VolSync knows where to read/write.
+async fn ensure_restic_secret(ns: &str, pvc: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
+    let secret_name = format!("{pvc}{RESTIC_SECRET_SUFFIX}");
+    let repo = cfg.restic_repo(&format!("volsync/{ns}/{pvc}"));
+    kubectl_apply_secret(
+        &secret_name,
+        ns,
+        &[
+            ("RESTIC_REPOSITORY", &repo),
+            ("RESTIC_PASSWORD", &cfg.restic_password),
+            ("AWS_ACCESS_KEY_ID", &cfg.access_key_id),
+            ("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key),
+        ],
     )
-}
-
-async fn ensure_rclone_secret(ns: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
-    if kubectl_get_secret(RCLONE_SECRET, ns).await.is_some() {
-        return Ok(());
-    }
-    let conf = build_rclone_conf(cfg);
-    kubectl_apply_secret(RCLONE_SECRET, ns, &[("rclone.conf", &conf)]).await
+    .await
 }
 
 // ── PVC discovery ─────────────────────────────────────────────────────────────
@@ -348,6 +345,7 @@ async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 
 async fn ensure_replication_source(pvc: &PvcInfo) -> anyhow::Result<()> {
     let rs_name = format!("volsync-{}", pvc.name);
+    let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", pvc.name);
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationSource",
@@ -359,10 +357,10 @@ async fn ensure_replication_source(pvc: &PvcInfo) -> anyhow::Result<()> {
         "spec": {
             "sourcePVC": pvc.name,
             "trigger": { "schedule": "0 3 * * *" },
-            "rclone": {
-                "rcloneConfigSection": "b2-crypt",
-                "rcloneDestPath": format!("b2-crypt:{}/{}", pvc.namespace, pvc.name),
-                "rcloneConfig": RCLONE_SECRET,
+            "restic": {
+                "repository": secret_name,
+                "pruneIntervalDays": 7,
+                "retain": { "daily": 7, "weekly": 4, "monthly": 12 },
                 "copyMethod": "Direct",
                 "moverSecurityContext": {
                     "runAsUser": 1000,
@@ -386,14 +384,10 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
     let cfg = ensure_master_config(&url, &token).await?;
     let pvcs = list_user_pvcs().await.unwrap_or_default();
 
-    let mut namespaces_seen: Vec<String> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
 
     for pvc in &pvcs {
-        if !namespaces_seen.contains(&pvc.namespace) {
-            ensure_rclone_secret(&pvc.namespace, &cfg).await?;
-            namespaces_seen.push(pvc.namespace.clone());
-        }
+        ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await?;
         ensure_replication_source(pvc).await?;
         sources.push(format!("{}/{}", pvc.namespace, pvc.name));
     }
@@ -527,6 +521,7 @@ pub async fn trigger_restore(
         .unwrap_or("ReadWriteMany")
         .to_string();
 
+    let secret_name = format!("{pvc}{RESTIC_SECRET_SUFFIX}");
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationDestination",
@@ -537,14 +532,17 @@ pub async fn trigger_restore(
         },
         "spec": {
             "trigger": { "manual": format!("restore-{timestamp}") },
-            "rclone": {
-                "rcloneConfigSection": "b2-crypt",
-                "rcloneDestPath": format!("b2-crypt:{}/{}", namespace, pvc),
-                "rcloneConfig": RCLONE_SECRET,
+            "restic": {
+                "repository": secret_name,
                 "copyMethod": "Snapshot",
                 "storageClassName": storage_class,
                 "capacity": capacity,
                 "accessModes": [access_mode],
+                "moverSecurityContext": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "fsGroup": 1000
+                }
             }
         }
     });
@@ -553,7 +551,7 @@ pub async fn trigger_restore(
     Ok(Json(serde_json::json!({
         "started": true,
         "destination_name": dest_name,
-        "restored_pvc": format!("volsync-{dest_name}-dst"),
+        "restored_pvc": format!("volsync-{dest_name}-dest"),
         "note": "When complete, point your app at the restored PVC name above.",
     })))
 }
@@ -739,6 +737,7 @@ pub async fn emergency_restore(
     }
 
     // Create ReplicationDestination — VolSync retries until Ceph has space.
+    let secret_name = format!("{pvc}{RESTIC_SECRET_SUFFIX}");
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationDestination",
@@ -749,10 +748,8 @@ pub async fn emergency_restore(
         },
         "spec": {
             "trigger": { "manual": format!("emergency-{timestamp}") },
-            "rclone": {
-                "rcloneConfigSection": "b2-crypt",
-                "rcloneDestPath": format!("b2-crypt:{}/{}", namespace, pvc),
-                "rcloneConfig": RCLONE_SECRET,
+            "restic": {
+                "repository": secret_name,
                 "copyMethod": "Snapshot",
                 "storageClassName": storage_class,
                 "capacity": capacity,
@@ -1005,6 +1002,7 @@ pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json:
             .await;
 
         // Create ReplicationDestination to pull data from B2.
+        let secret_name = format!("{pvc_name}{RESTIC_SECRET_SUFFIX}");
         let manifest = serde_json::json!({
             "apiVersion": "volsync.backube/v1alpha1",
             "kind": "ReplicationDestination",
@@ -1015,10 +1013,8 @@ pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json:
             },
             "spec": {
                 "trigger": { "manual": format!("dr-{timestamp}") },
-                "rclone": {
-                    "rcloneConfigSection": "b2-crypt",
-                    "rcloneDestPath": format!("b2-crypt:{}/{}", namespace, pvc_name),
-                    "rcloneConfig": RCLONE_SECRET,
+                "restic": {
+                    "repository": secret_name,
                     "copyMethod": "Snapshot",
                     "storageClassName": storage_class,
                     "capacity": capacity,
@@ -1187,79 +1183,204 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
     Ok(Json(serde_json::json!({ "applied": applied, "errors": errors })))
 }
 
-// ── Background etcd snapshot task ─────────────────────────────────────────────
+// ── Background cluster backup task ───────────────────────────────────────────
 
-/// Runs daily at 02:00 UTC: reads B2 creds from the master Secret and calls
-/// `k3s etcd-snapshot save --etcd-s3 ...` to push a snapshot to B2.
-pub async fn run_etcd_snapshots(_config: Arc<Config>) {
+/// Runs daily at 02:00 UTC. Bundles:
+///   1. etcd snapshot (saved locally via k3s, then encrypted by restic)
+///   2. kubectl exports of all yolab-* namespace objects
+///   3. catalog.json (namespace + PVC list for the restore UI)
+/// Everything is pushed to B2 via restic — fully client-side encrypted.
+pub async fn run_cluster_backup(_config: Arc<Config>) {
     loop {
         // Sleep until next 02:00 UTC.
         let now = chrono::Utc::now();
         let next = {
-            let today_2am = now
-                .date_naive()
-                .and_hms_opt(2, 0, 0)
-                .unwrap()
-                .and_utc();
-            if now < today_2am {
-                today_2am
-            } else {
+            let today_2am = now.date_naive().and_hms_opt(2, 0, 0).unwrap().and_utc();
+            if now < today_2am { today_2am }
+            else {
                 (now.date_naive() + chrono::Duration::days(1))
-                    .and_hms_opt(2, 0, 0)
-                    .unwrap()
-                    .and_utc()
+                    .and_hms_opt(2, 0, 0).unwrap().and_utc()
             }
         };
-        let secs = (next - now).num_seconds().max(0) as u64;
-        tokio::time::sleep(Duration::from_secs(secs)).await;
+        tokio::time::sleep(Duration::from_secs(
+            (next - now).num_seconds().max(0) as u64,
+        )).await;
 
-        if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
-            let key_id = data.get("access_key_id").cloned().unwrap_or_default();
-            let secret = data.get("secret_access_key").cloned().unwrap_or_default();
-            let bucket = data.get("bucket").cloned().unwrap_or_default();
-            let endpoint = data.get("endpoint").cloned().unwrap_or_default();
+        let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
+            tracing::debug!("cluster-backup: not configured, skipping");
+            continue;
+        };
 
-            if key_id.is_empty() || bucket.is_empty() {
-                tracing::warn!("etcd-snapshot: master Secret missing B2 creds, skipping");
-                continue;
-            }
+        let key_id          = data.get("access_key_id").cloned().unwrap_or_default();
+        let secret_key      = data.get("secret_access_key").cloned().unwrap_or_default();
+        let bucket          = data.get("bucket").cloned().unwrap_or_default();
+        let endpoint        = data.get("endpoint").cloned().unwrap_or_default();
+        let restic_password = data.get("restic_password").cloned().unwrap_or_default();
 
-            let s3_host = endpoint
-                .trim_start_matches("https://")
-                .trim_start_matches("http://")
-                .to_string();
-            let name = format!("etcd-daily-{}", chrono::Utc::now().format("%Y-%m-%d"));
-
-            let out = Command::new("k3s")
-                .args([
-                    "etcd-snapshot",
-                    "save",
-                    "--etcd-s3",
-                    &format!("--etcd-s3-endpoint={s3_host}"),
-                    &format!("--etcd-s3-bucket={bucket}"),
-                    &format!("--etcd-s3-access-key={key_id}"),
-                    &format!("--etcd-s3-secret-key={secret}"),
-                    &format!("--name={name}"),
-                ])
-                .output()
-                .await;
-
-            match out {
-                Ok(o) if o.status.success() => {
-                    tracing::info!("etcd-snapshot: saved {name} to B2 bucket {bucket}");
-                }
-                Ok(o) => {
-                    tracing::warn!(
-                        "etcd-snapshot: failed: {}",
-                        String::from_utf8_lossy(&o.stderr).trim()
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("etcd-snapshot: could not run k3s: {e}");
-                }
-            }
-        } else {
-            tracing::debug!("etcd-snapshot: backup not configured, skipping");
+        if key_id.is_empty() || restic_password.is_empty() {
+            tracing::warn!("cluster-backup: missing creds or restic_password, skipping");
+            continue;
         }
+
+        let date    = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let tmp_dir = format!("/tmp/yolab-cluster-backup-{date}");
+        let repo    = format!("s3:{}/{}/cluster-backup", endpoint.trim_end_matches('/'), bucket);
+
+        if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+            tracing::warn!("cluster-backup: mkdir failed: {e}");
+            continue;
+        }
+
+        // 1. Save etcd snapshot to k3s default dir, then copy into our tmp bundle.
+        let snap_name = format!("yolab-cluster-{date}");
+        let snap_saved = Command::new("k3s")
+            .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
+            .output().await;
+
+        match snap_saved {
+            Ok(o) if o.status.success() => {
+                let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
+                if let Ok(entries) = std::fs::read_dir(snap_dir) {
+                    for entry in entries.flatten() {
+                        let fname = entry.file_name();
+                        let fname_str = fname.to_string_lossy();
+                        if fname_str.starts_with(&snap_name) {
+                            let dst = format!("{tmp_dir}/etcd.db");
+                            if let Err(e) = std::fs::copy(entry.path(), &dst) {
+                                tracing::warn!("cluster-backup: copy etcd snapshot failed: {e}");
+                            }
+                            // Clean up k3s-managed snapshot to avoid accumulation.
+                            let _ = Command::new("kubectl")
+                                .args(["delete", "etcdsnapshotfile", &fname_str.to_string(), "--ignore-not-found"])
+                                .output().await;
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(o) => tracing::warn!("cluster-backup: etcd-snapshot failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => tracing::warn!("cluster-backup: could not run k3s: {e}"),
+        }
+
+        // 2. Export K8s objects for all yolab-managed namespaces.
+        let ns_out = Command::new("kubectl")
+            .args(["get", "namespaces", "-l", "yolab.io/managed=true",
+                   "-o", "jsonpath={.items[*].metadata.name}"])
+            .output().await;
+
+        let mut namespaces: Vec<String> = Vec::new();
+        if let Ok(o) = ns_out {
+            for ns in String::from_utf8_lossy(&o.stdout).split_whitespace() {
+                namespaces.push(ns.to_string());
+                let obj_out = Command::new("kubectl")
+                    .args(["get", "deploy,svc,pvc,secret,configmap,replicationsource",
+                           "-n", ns, "-o", "yaml", "--ignore-not-found"])
+                    .output().await;
+                if let Ok(obj) = obj_out {
+                    let path = format!("{tmp_dir}/{ns}.yaml");
+                    let _ = tokio::fs::write(&path, &obj.stdout).await;
+                }
+            }
+        }
+
+        // 3. Write catalog.json.
+        let catalog = serde_json::json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "namespaces": namespaces,
+        });
+        let _ = tokio::fs::write(
+            format!("{tmp_dir}/catalog.json"),
+            catalog.to_string(),
+        ).await;
+
+        // 4. Init restic repo if it doesn't exist yet.
+        let snapshots_check = Command::new("restic")
+            .args(["snapshots"])
+            .env("RESTIC_REPOSITORY", &repo)
+            .env("RESTIC_PASSWORD", &restic_password)
+            .env("AWS_ACCESS_KEY_ID", &key_id)
+            .env("AWS_SECRET_ACCESS_KEY", &secret_key)
+            .output().await;
+        if snapshots_check.map(|o| !o.status.success()).unwrap_or(true) {
+            let _ = Command::new("restic")
+                .args(["init"])
+                .env("RESTIC_REPOSITORY", &repo)
+                .env("RESTIC_PASSWORD", &restic_password)
+                .env("AWS_ACCESS_KEY_ID", &key_id)
+                .env("AWS_SECRET_ACCESS_KEY", &secret_key)
+                .output().await;
+        }
+
+        // 5. Backup tmp dir with restic.
+        let backup_out = Command::new("restic")
+            .args(["backup", &tmp_dir, "--tag", "cluster-backup"])
+            .env("RESTIC_REPOSITORY", &repo)
+            .env("RESTIC_PASSWORD", &restic_password)
+            .env("AWS_ACCESS_KEY_ID", &key_id)
+            .env("AWS_SECRET_ACCESS_KEY", &secret_key)
+            .output().await;
+
+        match backup_out {
+            Ok(o) if o.status.success() => {
+                tracing::info!("cluster-backup: restic snapshot complete for {date}");
+                // Prune: keep 7 daily, 4 weekly, 12 monthly.
+                let _ = Command::new("restic")
+                    .args(["forget", "--tag", "cluster-backup",
+                           "--keep-daily", "7", "--keep-weekly", "4",
+                           "--keep-monthly", "12", "--prune"])
+                    .env("RESTIC_REPOSITORY", &repo)
+                    .env("RESTIC_PASSWORD", &restic_password)
+                    .env("AWS_ACCESS_KEY_ID", &key_id)
+                    .env("AWS_SECRET_ACCESS_KEY", &secret_key)
+                    .output().await;
+            }
+            Ok(o) => tracing::warn!("cluster-backup: restic failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => tracing::warn!("cluster-backup: could not run restic: {e}"),
+        }
+
+        // 6. Clean up temp dir.
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
     }
+}
+
+/// GET /api/backups/snapshots — list available cluster-backup restic snapshots.
+/// Returns timestamps the restore UI can offer as restore points.
+pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
+        return Ok(Json(serde_json::json!({ "snapshots": [], "configured": false })));
+    };
+
+    let key_id          = data.get("access_key_id").cloned().unwrap_or_default();
+    let secret_key      = data.get("secret_access_key").cloned().unwrap_or_default();
+    let bucket          = data.get("bucket").cloned().unwrap_or_default();
+    let endpoint        = data.get("endpoint").cloned().unwrap_or_default();
+    let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+
+    if restic_password.is_empty() {
+        return Ok(Json(serde_json::json!({ "snapshots": [], "configured": false })));
+    }
+
+    let repo = format!("s3:{}/{}/cluster-backup", endpoint.trim_end_matches('/'), bucket);
+
+    let out = Command::new("restic")
+        .args(["snapshots", "--json", "--tag", "cluster-backup"])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &restic_password)
+        .env("AWS_ACCESS_KEY_ID", &key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &secret_key)
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("restic not available: {e}"))?;
+
+    if !out.status.success() {
+        // Repo not initialised yet — no snapshots exist.
+        return Ok(Json(serde_json::json!({ "snapshots": [], "configured": true })));
+    }
+
+    let snapshots: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!([]));
+
+    Ok(Json(serde_json::json!({ "snapshots": snapshots, "configured": true })))
 }
