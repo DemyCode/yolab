@@ -495,7 +495,30 @@ function RestorePanel({ currentNamespaces }: { currentNamespaces: Set<string> })
 
 // ── Cluster backup card ───────────────────────────────────────────────────────
 
-function ClusterBackupCard({ lastSnapshot }: { lastSnapshot: string | null }) {
+function ClusterBackupCard({
+  lastSnapshot,
+  onBackupDone,
+}: {
+  lastSnapshot: string | null;
+  onBackupDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleBackupNow() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/backups/cluster/run-now", { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      onBackupDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Backup failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Card>
       <CardContent className="pt-5 pb-5">
@@ -511,14 +534,31 @@ function ClusterBackupCard({ lastSnapshot }: { lastSnapshot: string | null }) {
             />
           </div>
           <div className="flex-1">
-            <p className="text-sm font-medium text-[#fafafa]">Cluster Backup (daily)</p>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-sm font-medium text-[#fafafa]">Cluster Backup (daily)</p>
+              <div className="flex items-center gap-2">
+                {lastSnapshot && <ResultBadge result="Successful" />}
+                <Button
+                  onClick={handleBackupNow}
+                  disabled={busy}
+                  variant="outline"
+                  className="h-7 px-2.5 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] hover:border-[#6b7280]"
+                >
+                  {busy ? (
+                    <><RefreshCw className="h-3 w-3 mr-1 animate-spin" />Backing up…</>
+                  ) : (
+                    "Backup Now"
+                  )}
+                </Button>
+              </div>
+            </div>
             <p className="text-xs text-[#71717a] mt-0.5">
               {lastSnapshot
                 ? `Last backup ${timeAgo(lastSnapshot)} — runs daily at 02:00 UTC`
                 : "No backup yet — runs daily at 02:00 UTC"}
             </p>
+            {error && <p className="mt-1 text-xs text-[#f87171]">{error}</p>}
           </div>
-          {lastSnapshot && <ResultBadge result="Successful" />}
         </div>
       </CardContent>
     </Card>
@@ -741,7 +781,10 @@ export function BackupsPage() {
           </div>
 
           {/* Cluster backup */}
-          <ClusterBackupCard lastSnapshot={backupStatus?.etcd_last_snapshot ?? null} />
+          <ClusterBackupCard
+            lastSnapshot={backupStatus?.etcd_last_snapshot ?? null}
+            onBackupDone={load}
+          />
 
           {/* Per-service PVC backups */}
           {backupStatus?.pvcs && backupStatus.pvcs.length > 0 ? (
