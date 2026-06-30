@@ -21,7 +21,7 @@ interface ServiceEntry {
 interface SnapshotCatalog {
   timestamp: string;
   namespaces: string[];
-  services: ServiceEntry[];
+  services?: ServiceEntry[];
 }
 
 interface ResticSnapshot {
@@ -107,7 +107,10 @@ function RestoreFlow({
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
-  const diff: DiffEntry[] = catalog.services.map(svc => ({
+  const services: ServiceEntry[] = catalog.services ??
+    catalog.namespaces.map(ns => ({ namespace: ns, pvcs: [] }));
+
+  const diff: DiffEntry[] = services.map(svc => ({
     namespace: svc.namespace,
     serviceName: serviceNameFromNamespace(svc.namespace),
     pvcs: svc.pvcs,
@@ -335,7 +338,7 @@ function SnapshotCard({
     onRestoreEnd();
   }
 
-  const serviceCount = catalog?.services.length ?? null;
+  const serviceCount = catalog ? (catalog.services?.length ?? catalog.namespaces.length) : null;
 
   return (
     <Card className="border-[#27272a]">
@@ -379,7 +382,7 @@ function SnapshotCard({
 
             {catalog && !restoring && (
               <div className="space-y-2">
-                {catalog.services.map(svc => (
+                {(catalog.services ?? catalog.namespaces.map(ns => ({ namespace: ns, pvcs: [] }))).map(svc => (
                   <div key={svc.namespace} className="flex items-start gap-3">
                     <Database className="h-3.5 w-3.5 text-[#52525b] mt-0.5 flex-shrink-0" />
                     <div>
