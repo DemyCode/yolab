@@ -78,6 +78,8 @@ async fn main() {
         .route("/api/backups/dr/status", get(backups::dr_status))
         .route("/api/backups/dr/apply", post(backups::dr_apply))
         .route("/api/backups/snapshots", get(backups::list_snapshots))
+        .route("/api/backups/snapshots/:id/catalog", get(backups::snapshot_catalog))
+        .route("/api/backups/restore/from-snapshot", post(backups::restore_from_snapshot))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         .route("/api/ceph/detail", get(ceph::storage_detail))

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Database, RefreshCw, CheckCircle, AlertCircle, Clock, AlertTriangle } from "lucide-react";
+import {
+  Database, RefreshCw, CheckCircle, AlertCircle, Clock,
+  AlertTriangle, RotateCcw, ChevronDown,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -20,7 +23,19 @@ interface BackupStatus {
   dr_mode?: boolean;
 }
 
-type DrPhase = "none" | "detected" | "restoring" | "applying" | "done";
+interface ResticSnapshot {
+  id: string;
+  short_id: string;
+  time: string;
+}
+
+interface DiffEntry {
+  namespace: string;
+  serviceName: string;
+  mode: "adding" | "recovering";
+}
+
+type RestoreFlow = "idle" | "loading-snapshots" | "picking" | "loading-catalog" | "diff" | "confirming" | "restoring" | "applying" | "done";
 
 interface DrRestoreItem {
   namespace: string;
@@ -37,10 +52,6 @@ interface DrStatusResponse {
   all_complete: boolean;
 }
 
-interface S3Status {
-  provisioned: boolean;
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function Shimmer({ className }: { className?: string }) {
@@ -55,6 +66,19 @@ function timeAgo(iso: string | null): string {
   if (h > 48) return `${Math.floor(h / 24)}d ago`;
   if (h > 0) return `${h}h ${m}m ago`;
   return `${m}m ago`;
+}
+
+function formatSnapshotDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function serviceNameFromNamespace(ns: string): string {
+  const s = ns.replace(/^yolab-/, "");
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function ResultBadge({ result }: { result: string }) {
@@ -80,9 +104,398 @@ function ResultBadge({ result }: { result: string }) {
   );
 }
 
-// ── Etcd card ─────────────────────────────────────────────────────────────────
+// ── Restore Panel ─────────────────────────────────────────────────────────────
 
-function EtcdCard({ lastSnapshot }: { lastSnapshot: string | null }) {
+function RestorePanel({ currentNamespaces }: { currentNamespaces: Set<string> }) {
+  const [flow, setFlow] = useState<RestoreFlow>("idle");
+  const [snapshots, setSnapshots] = useState<ResticSnapshot[]>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>("");
+  const [diff, setDiff] = useState<DiffEntry[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [restoreItems, setRestoreItems] = useState<DrRestoreItem[]>([]);
+  const [restoreDone, setRestoreDone] = useState(0);
+  const [restoreTotal, setRestoreTotal] = useState(0);
+  const [restoreFailed, setRestoreFailed] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<number | null>(null);
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  async function openPicker() {
+    setFlow("loading-snapshots");
+    setError(null);
+    try {
+      const res = await fetch("/api/backups/snapshots").then(r => r.json()) as { snapshots: ResticSnapshot[]; configured: boolean };
+      const snaps = (res.snapshots ?? []).sort(
+        (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()
+      );
+      setSnapshots(snaps);
+      setSelectedSnapshotId(snaps[0]?.id ?? "");
+      setFlow("picking");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load snapshots");
+      setFlow("idle");
+    }
+  }
+
+  async function loadCatalog(snapshotId: string) {
+    setFlow("loading-catalog");
+    setError(null);
+    try {
+      const catalog = await fetch(`/api/backups/snapshots/${snapshotId}/catalog`).then(r => r.json()) as { namespaces?: string[] };
+      const namespaces: string[] = catalog.namespaces ?? [];
+      const entries: DiffEntry[] = namespaces.map(ns => ({
+        namespace: ns,
+        serviceName: serviceNameFromNamespace(ns),
+        mode: currentNamespaces.has(ns) ? "recovering" : "adding",
+      }));
+      setDiff(entries);
+      setSelected(new Set(namespaces));
+      setFlow("diff");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load catalog");
+      setFlow("picking");
+    }
+  }
+
+  function toggleService(ns: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(ns)) next.delete(ns);
+      else next.add(ns);
+      return next;
+    });
+  }
+
+  function startPolling() {
+    if (pollRef.current) return;
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const s = await fetch("/api/backups/dr/status").then(r => r.json()) as DrStatusResponse;
+        setRestoreItems(s.restores);
+        setRestoreDone(s.done);
+        setRestoreTotal(s.total);
+        setRestoreFailed(s.failed);
+        if (s.all_complete) {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          setFlow("applying");
+          const apply = await fetch("/api/backups/dr/apply", { method: "POST" });
+          if (!apply.ok) setError(await apply.text());
+          setFlow("done");
+        }
+      } catch {
+        // network blip — keep polling
+      }
+    }, 5000);
+  }
+
+  async function handleAccept() {
+    setError(null);
+    setFlow("restoring");
+    try {
+      const res = await fetch("/api/backups/restore/from-snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          snapshot_id: selectedSnapshotId,
+          namespaces: [...selected],
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as { started: string[]; errors: string[] };
+      if (data.started.length === 0) {
+        setError(data.errors.join(", ") || "Nothing started — no PVCs found for selected services.");
+        setFlow("diff");
+        return;
+      }
+      setRestoreTotal(data.started.length);
+      setRestoreDone(0);
+      setRestoreFailed(0);
+      setRestoreItems([]);
+      startPolling();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start restore");
+      setFlow("diff");
+    }
+  }
+
+  const selectedSnapshot = snapshots.find(s => s.id === selectedSnapshotId);
+
+  // ── idle ──
+  if (flow === "idle") {
+    return (
+      <Card className="border-[#3f3f46]">
+        <CardContent className="pt-5 pb-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold text-[#fafafa] flex items-center gap-2">
+                <RotateCcw className="h-4 w-4 text-[#a78bfa]" />
+                Restore from Backup
+              </p>
+              <p className="text-xs text-[#71717a] mt-0.5">
+                Roll back one or more services to a specific backup date.
+              </p>
+            </div>
+            <Button
+              onClick={openPicker}
+              className="flex-shrink-0 bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-9 px-4"
+            >
+              Select Backup Date
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── loading-snapshots ──
+  if (flow === "loading-snapshots") {
+    return (
+      <Card className="border-[#3f3f46]">
+        <CardContent className="pt-5 pb-5">
+          <div className="flex items-center gap-2 text-sm text-[#a1a1aa]">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Loading available backups…
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── picking ──
+  if (flow === "picking") {
+    return (
+      <Card className="border-[#3f3f46]">
+        <CardContent className="pt-5 pb-5 space-y-4">
+          <p className="text-sm font-semibold text-[#fafafa] flex items-center gap-2">
+            <RotateCcw className="h-4 w-4 text-[#a78bfa]" />
+            Select a backup date
+          </p>
+
+          {snapshots.length === 0 ? (
+            <p className="text-xs text-[#71717a]">No cluster backups found. The first backup runs nightly at 02:00 UTC.</p>
+          ) : (
+            <div className="relative">
+              <select
+                value={selectedSnapshotId}
+                onChange={e => setSelectedSnapshotId(e.target.value)}
+                className="w-full appearance-none bg-[#18181b] border border-[#3f3f46] rounded-md text-sm text-[#fafafa] px-3 py-2 pr-8 focus:outline-none focus:border-[#a78bfa]"
+              >
+                {snapshots.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {formatSnapshotDate(s.time)} — {s.short_id}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-[#71717a] pointer-events-none" />
+            </div>
+          )}
+
+          {error && <p className="text-xs text-[#f87171]">{error}</p>}
+
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              className="h-8 px-3 text-xs border-[#3f3f46] text-[#71717a] hover:text-[#fafafa]"
+              onClick={() => { setFlow("idle"); setError(null); }}
+            >
+              Cancel
+            </Button>
+            {snapshots.length > 0 && (
+              <Button
+                onClick={() => loadCatalog(selectedSnapshotId)}
+                className="h-8 px-4 text-xs bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium"
+              >
+                Next →
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── loading-catalog ──
+  if (flow === "loading-catalog") {
+    return (
+      <Card className="border-[#3f3f46]">
+        <CardContent className="pt-5 pb-5">
+          <div className="flex items-center gap-2 text-sm text-[#a1a1aa]">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Reading backup contents…
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── diff ──
+  if (flow === "diff") {
+    const addingCount     = diff.filter(e => e.mode === "adding"     && selected.has(e.namespace)).length;
+    const recoveringCount = diff.filter(e => e.mode === "recovering" && selected.has(e.namespace)).length;
+
+    return (
+      <Card className="border-[#3f3f46]">
+        <CardContent className="pt-5 pb-5 space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-[#fafafa] flex items-center gap-2">
+              <RotateCcw className="h-4 w-4 text-[#a78bfa]" />
+              Restore from {selectedSnapshot ? formatSnapshotDate(selectedSnapshot.time) : "backup"}
+            </p>
+            <p className="text-xs text-[#71717a] mt-0.5">
+              Tick the services you want to restore.
+            </p>
+          </div>
+
+          {diff.length === 0 ? (
+            <p className="text-xs text-[#71717a]">No services found in this backup.</p>
+          ) : (
+            <div className="space-y-2">
+              {diff.map(entry => (
+                <label
+                  key={entry.namespace}
+                  className="flex items-center gap-3 cursor-pointer group"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(entry.namespace)}
+                    onChange={() => toggleService(entry.namespace)}
+                    className="h-4 w-4 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa]"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm text-[#fafafa]">{entry.serviceName}</span>
+                    {entry.mode === "adding" ? (
+                      <span className="ml-2 text-xs text-[#4ade80] font-medium">Adding</span>
+                    ) : (
+                      <span className="ml-2 text-xs text-[#fbbf24] font-medium">Recovering</span>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {selected.size > 0 && (
+            <div className="rounded-md border border-[#7f1d1d] bg-[#1c0a0a] p-3 text-xs text-[#fca5a5] space-y-1">
+              <p className="font-medium flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                This will replace current data — it cannot be undone.
+              </p>
+              {addingCount > 0 && (
+                <p>· {addingCount} service{addingCount !== 1 ? "s" : ""} will be created and filled from backup.</p>
+              )}
+              {recoveringCount > 0 && (
+                <p>· {recoveringCount} running service{recoveringCount !== 1 ? "s" : ""} will be stopped and their data replaced.</p>
+              )}
+            </div>
+          )}
+
+          {error && <p className="text-xs text-[#f87171]">{error}</p>}
+
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              className="h-8 px-3 text-xs border-[#3f3f46] text-[#71717a] hover:text-[#fafafa]"
+              onClick={() => { setFlow("picking"); setError(null); }}
+            >
+              ← Back
+            </Button>
+            <Button
+              onClick={handleAccept}
+              disabled={selected.size === 0}
+              className="h-8 px-4 text-xs bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 font-medium disabled:opacity-40"
+            >
+              Accept & Restore {selected.size > 0 ? `(${selected.size})` : ""}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── restoring ──
+  if (flow === "restoring" || flow === "applying") {
+    return (
+      <Card className="border-[#78350f]" style={{ background: "#1a1000" }}>
+        <CardContent className="pt-5 pb-5 space-y-3">
+          <p className="text-sm font-semibold text-[#fbbf24] flex items-center gap-2">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            {flow === "applying"
+              ? "Starting services on restored data…"
+              : `Restoring… ${restoreDone}/${restoreTotal || "?"} complete`}
+          </p>
+
+          {restoreItems.length > 0 && (
+            <div className="space-y-1.5">
+              {restoreItems.map(r => (
+                <div key={`${r.namespace}/${r.pvc}`} className="flex items-center gap-2 text-xs">
+                  {r.result.toLowerCase() === "successful" ? (
+                    <CheckCircle className="h-3.5 w-3.5 text-[#4ade80] flex-shrink-0" />
+                  ) : r.result.toLowerCase() === "failed" ? (
+                    <AlertCircle className="h-3.5 w-3.5 text-[#f87171] flex-shrink-0" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5 text-[#fbbf24] animate-spin flex-shrink-0" />
+                  )}
+                  <span className="text-[#fafafa]">{serviceNameFromNamespace(r.namespace)}</span>
+                  <span
+                    className="text-xs"
+                    style={{
+                      color: r.result.toLowerCase() === "successful" ? "#4ade80"
+                           : r.result.toLowerCase() === "failed"     ? "#f87171"
+                           : "#fbbf24",
+                    }}
+                  >
+                    {r.result.toLowerCase() === "successful" ? "Done"
+                   : r.result.toLowerCase() === "failed"     ? "Failed"
+                   : "Pulling from cloud…"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {restoreFailed > 0 && (
+            <p className="text-xs text-[#f87171]">
+              {restoreFailed} restore{restoreFailed !== 1 ? "s" : ""} failed — check VolSync logs.
+            </p>
+          )}
+          {error && <p className="text-xs text-[#f87171]">{error}</p>}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── done ──
+  if (flow === "done") {
+    return (
+      <Card className="border-[#14532d]" style={{ background: "#0f1f0f" }}>
+        <CardContent className="pt-5 pb-5">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm font-semibold text-[#4ade80] flex items-center gap-2">
+              <CheckCircle className="h-4 w-4" />
+              Restore complete — all services are back up.
+            </p>
+            <Button
+              variant="outline"
+              className="h-8 px-3 text-xs border-[#14532d] text-[#4ade80] hover:bg-[#14532d]"
+              onClick={() => { setFlow("idle"); setError(null); }}
+            >
+              Done
+            </Button>
+          </div>
+          {error && <p className="mt-2 text-xs text-[#f87171]">{error}</p>}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return null;
+}
+
+// ── Cluster backup card ───────────────────────────────────────────────────────
+
+function ClusterBackupCard({ lastSnapshot }: { lastSnapshot: string | null }) {
   return (
     <Card>
       <CardContent className="pt-5 pb-5">
@@ -98,16 +511,14 @@ function EtcdCard({ lastSnapshot }: { lastSnapshot: string | null }) {
             />
           </div>
           <div className="flex-1">
-            <p className="text-sm font-medium text-[#fafafa]">Cluster State (etcd)</p>
+            <p className="text-sm font-medium text-[#fafafa]">Cluster Backup (daily)</p>
             <p className="text-xs text-[#71717a] mt-0.5">
               {lastSnapshot
-                ? `Last snapshot ${timeAgo(lastSnapshot)} — daily at 02:00 UTC`
-                : "No snapshot yet — runs daily at 02:00 UTC"}
+                ? `Last backup ${timeAgo(lastSnapshot)} — runs daily at 02:00 UTC`
+                : "No backup yet — runs daily at 02:00 UTC"}
             </p>
           </div>
-          {lastSnapshot && (
-            <ResultBadge result="Successful" />
-          )}
+          {lastSnapshot && <ResultBadge result="Successful" />}
         </div>
       </CardContent>
     </Card>
@@ -116,80 +527,9 @@ function EtcdCard({ lastSnapshot }: { lastSnapshot: string | null }) {
 
 // ── PVC card ──────────────────────────────────────────────────────────────────
 
-type RestoreStep = "idle" | "running" | "applying" | "done";
-
-// Derive a human-readable service name from a namespace like "yolab-filebrowser" → "Filebrowser"
-function serviceNameFromNamespace(ns: string): string {
-  const stripped = ns.replace(/^yolab-/, "");
-  return stripped.charAt(0).toUpperCase() + stripped.slice(1);
-}
-
 function PvcCard({ pvc }: { pvc: PvcStatus }) {
-  const [step, setStep] = useState<RestoreStep>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (pollRef.current !== null) clearInterval(pollRef.current);
-    };
-  }, []);
-
-  const serviceName = serviceNameFromNamespace(pvc.namespace);
   const isFailed = pvc.result.toLowerCase() === "failed";
-
-  async function handleRestore() {
-    if (
-      !confirm(
-        `Restore ${serviceName} from the last cloud backup?\n\n` +
-        `The service will be stopped, its data replaced with the backed-up version, then restarted automatically.`
-      )
-    ) return;
-
-    setStep("running");
-    setError(null);
-
-    try {
-      const res = await fetch(`/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency`, {
-        method: "POST",
-      });
-      if (!res.ok) throw new Error(await res.text());
-
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const s = await fetch(
-            `/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency/status`
-          ).then((r) => r.json()) as { found: boolean; result?: string };
-
-          if (s.result?.toLowerCase() === "successful") {
-            clearInterval(pollRef.current!);
-            pollRef.current = null;
-            setStep("applying");
-            const apply = await fetch(
-              `/api/backups/restore/${pvc.namespace}/${pvc.pvc}/emergency/apply`,
-              { method: "POST" }
-            );
-            if (!apply.ok) throw new Error(await apply.text());
-            setStep("done");
-          } else if (s.result?.toLowerCase() === "failed") {
-            clearInterval(pollRef.current!);
-            pollRef.current = null;
-            setStep("idle");
-            setError("Restore failed — check VolSync logs.");
-          }
-        } catch (e) {
-          clearInterval(pollRef.current!);
-          pollRef.current = null;
-          setStep("idle");
-          setError(e instanceof Error ? e.message : "Restore failed");
-        }
-      }, 5000);
-    } catch (e) {
-      setStep("idle");
-      setError(e instanceof Error ? e.message : "Failed to start restore");
-    }
-  }
-
+  const serviceName = serviceNameFromNamespace(pvc.namespace);
   return (
     <Card>
       <CardContent className="pt-5 pb-5">
@@ -205,13 +545,10 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
             />
           </div>
           <div className="flex-1 min-w-0">
-            {/* Header: service name + sync badge */}
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-medium text-[#fafafa]">{serviceName}</p>
               <ResultBadge result={pvc.result} />
             </div>
-
-            {/* Last backup time */}
             {pvc.last_sync_time ? (
               <p className="text-xs text-[#71717a] mt-0.5">
                 Last backup {timeAgo(pvc.last_sync_time)}
@@ -219,38 +556,6 @@ function PvcCard({ pvc }: { pvc: PvcStatus }) {
               </p>
             ) : (
               <p className="text-xs text-[#52525b] mt-0.5">No backup yet</p>
-            )}
-
-            {/* Progress states */}
-            {step === "running" && (
-              <div className="mt-3 flex items-center gap-2 text-xs text-[#fbbf24]">
-                <RefreshCw className="h-3 w-3 animate-spin" />
-                Restoring from cloud backup… this may take 10–30 min.
-              </div>
-            )}
-            {step === "applying" && (
-              <div className="mt-3 flex items-center gap-2 text-xs text-[#a78bfa]">
-                <RefreshCw className="h-3 w-3 animate-spin" />
-                Restarting {serviceName}…
-              </div>
-            )}
-            {step === "done" && (
-              <div className="mt-3 flex items-center gap-2 text-xs text-[#4ade80]">
-                <CheckCircle className="h-3 w-3" />
-                {serviceName} restored and running.
-              </div>
-            )}
-            {error && <p className="mt-2 text-xs text-[#f87171]">{error}</p>}
-
-            {/* Restore action — full width at bottom, only when idle */}
-            {step === "idle" && pvc.last_sync_time && (
-              <Button
-                onClick={handleRestore}
-                variant="outline"
-                className="mt-3 w-full h-8 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] hover:border-[#6b7280]"
-              >
-                Restore {serviceName} to last backup
-              </Button>
             )}
           </div>
         </div>
@@ -312,127 +617,50 @@ function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
   );
 }
 
-// ── Disaster-recovery banner ──────────────────────────────────────────────────
+// ── DR banner (auto-detected Lost PVCs) ───────────────────────────────────────
 
-function DisasterRecoveryBanner({
-  phase,
-  restores,
-  done,
-  total,
-  failed,
+function DrBanner({
   lostCount,
   onStart,
-  error,
 }: {
-  phase: DrPhase;
-  restores: DrRestoreItem[];
-  done: number;
-  total: number;
-  failed: number;
   lostCount: number;
   onStart: () => Promise<void>;
-  error: string | null;
 }) {
   const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (phase === "none") return null;
-
-  const isSuccess = phase === "done";
-
-  async function handleStart() {
+  async function handle() {
     setStarting(true);
-    try { await onStart(); } finally { setStarting(false); }
+    setError(null);
+    try { await onStart(); } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally { setStarting(false); }
   }
 
   return (
-    <div
-      className="rounded-lg border p-4 space-y-3"
-      style={{
-        borderColor: isSuccess ? "#14532d" : "#7f1d1d",
-        background: isSuccess ? "#0f1f0f" : "#1c0a0a",
-      }}
-    >
-      {phase === "detected" && (
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <p className="text-sm font-semibold text-[#f87171] flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4" />
-              Disaster Recovery Mode
-            </p>
-            <p className="text-xs text-[#71717a] mt-1">
-              {lostCount} PVC{lostCount !== 1 ? "s" : ""} lost — your apps are down.
-              Restore all data from the last cloud backup.
-            </p>
-          </div>
-          <Button
-            onClick={handleStart}
-            disabled={starting}
-            className="flex-shrink-0 bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 text-sm h-9 px-4"
-          >
-            {starting ? (
-              <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Starting…</>
-            ) : (
-              "Restore All from Cloud"
-            )}
-          </Button>
-        </div>
-      )}
-
-      {phase === "restoring" && (
-        <>
-          <p className="text-sm font-semibold text-[#fbbf24] flex items-center gap-2">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            Restoring data… {done}/{total} complete
+    <div className="rounded-lg border border-[#7f1d1d] bg-[#1c0a0a] p-4 space-y-3">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-sm font-semibold text-[#f87171] flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Disk failure detected
           </p>
-          <div className="space-y-1.5">
-            {restores.map((r) => (
-              <div key={`${r.namespace}/${r.pvc}`} className="flex items-center gap-2 text-xs">
-                {r.result.toLowerCase() === "successful" ? (
-                  <CheckCircle className="h-3.5 w-3.5 text-[#4ade80] flex-shrink-0" />
-                ) : r.result.toLowerCase() === "failed" ? (
-                  <AlertCircle className="h-3.5 w-3.5 text-[#f87171] flex-shrink-0" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5 text-[#fbbf24] animate-spin flex-shrink-0" />
-                )}
-                <span className="text-[#a1a1aa] font-mono">{r.pvc}</span>
-                <span className="text-[#52525b]">{r.namespace}</span>
-                <span
-                  style={{
-                    color:
-                      r.result.toLowerCase() === "successful"
-                        ? "#4ade80"
-                        : r.result.toLowerCase() === "failed"
-                        ? "#f87171"
-                        : "#fbbf24",
-                  }}
-                >
-                  {r.result}
-                </span>
-              </div>
-            ))}
-          </div>
-          {failed > 0 && (
-            <p className="text-xs text-[#f87171]">
-              {failed} restore{failed !== 1 ? "s" : ""} failed — check VolSync logs.
-            </p>
+          <p className="text-xs text-[#71717a] mt-1">
+            {lostCount} volume{lostCount !== 1 ? "s" : ""} lost. Restore all data from the last cloud backup.
+          </p>
+        </div>
+        <Button
+          onClick={handle}
+          disabled={starting}
+          className="flex-shrink-0 bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 text-sm h-9 px-4"
+        >
+          {starting ? (
+            <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Starting…</>
+          ) : (
+            "Restore All from Cloud"
           )}
-        </>
-      )}
-
-      {phase === "applying" && (
-        <p className="text-sm text-[#a78bfa] flex items-center gap-2">
-          <RefreshCw className="h-4 w-4 animate-spin" />
-          Starting all services on restored data…
-        </p>
-      )}
-
-      {phase === "done" && (
-        <p className="text-sm font-semibold text-[#4ade80] flex items-center gap-2">
-          <CheckCircle className="h-4 w-4" />
-          All services restored successfully.
-        </p>
-      )}
-
+        </Button>
+      </div>
       {error && <p className="text-xs text-[#f87171]">{error}</p>}
     </div>
   );
@@ -441,110 +669,53 @@ function DisasterRecoveryBanner({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function BackupsPage() {
-  const [s3Status, setS3Status] = useState<S3Status | null>(null);
+  const [s3Status, setS3Status] = useState<{ provisioned: boolean } | null>(null);
   const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
   const [loading, setLoading] = useState(true);
-
-  // DR state
-  const [drPhase, setDrPhase] = useState<DrPhase>("none");
-  const [drRestores, setDrRestores] = useState<DrRestoreItem[]>([]);
-  const [drDone, setDrDone] = useState(0);
-  const [drTotal, setDrTotal] = useState(0);
-  const [drFailed, setDrFailed] = useState(0);
-  const [drError, setDrError] = useState<string | null>(null);
-  const drPollRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (drPollRef.current !== null) clearInterval(drPollRef.current);
-    };
-  }, []);
-
-  const startDrPolling = useCallback(() => {
-    if (drPollRef.current !== null) return;
-    drPollRef.current = window.setInterval(async () => {
-      try {
-        const s = await fetch("/api/backups/dr/status").then((r) => r.json()) as DrStatusResponse;
-        setDrRestores(s.restores);
-        setDrDone(s.done);
-        setDrTotal(s.total);
-        setDrFailed(s.failed);
-        if (s.all_complete) {
-          clearInterval(drPollRef.current!);
-          drPollRef.current = null;
-          setDrPhase("applying");
-          const apply = await fetch("/api/backups/dr/apply", { method: "POST" });
-          if (!apply.ok) {
-            setDrError(await apply.text());
-          }
-          setDrPhase("done");
-        }
-      } catch {
-        // network blip — keep polling
-      }
-    }, 5000);
-  }, []);
+  const [drActive, setDrActive] = useState(false);
 
   const load = useCallback(async () => {
-    const [s3Res, statusRes, drStatusRes] = await Promise.all([
-      fetch("/api/backups/s3").then((r) => r.json()).catch(() => ({ provisioned: false })),
-      fetch("/api/backups/status").then((r) => r.json()).catch(() => null),
-      fetch("/api/backups/dr/status").then((r) => r.json()).catch(() => null),
+    const [s3Res, statusRes, drRes] = await Promise.all([
+      fetch("/api/backups/s3").then(r => r.json()).catch(() => ({ provisioned: false })),
+      fetch("/api/backups/status").then(r => r.json()).catch(() => null),
+      fetch("/api/backups/dr/status").then(r => r.json()).catch(() => null),
     ]);
-    setS3Status(s3Res as S3Status);
+    setS3Status(s3Res as { provisioned: boolean });
     setBackupStatus(statusRes as BackupStatus | null);
+    const dr = drRes as DrStatusResponse | null;
+    setDrActive(!!dr && dr.total > 0 && !dr.all_complete);
     setLoading(false);
-
-    // Detect DR mode: in-progress restores take precedence over Lost PVCs.
-    const drStatus = drStatusRes as DrStatusResponse | null;
-    if (drStatus && drStatus.total > 0) {
-      setDrRestores(drStatus.restores);
-      setDrDone(drStatus.done);
-      setDrTotal(drStatus.total);
-      setDrFailed(drStatus.failed);
-      setDrPhase((prev) => {
-        if (prev === "applying" || prev === "done") return prev;
-        return "restoring";
-      });
-      if (!drStatus.all_complete) startDrPolling();
-    } else if ((statusRes as BackupStatus)?.dr_mode) {
-      setDrPhase((prev) => (prev === "none" ? "detected" : prev));
-    }
-  }, [startDrPolling]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
   async function handleEnable() {
     const res = await fetch("/api/backups/s3/enable", { method: "POST" });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `Server error ${res.status}`);
-    }
+    if (!res.ok) throw new Error(await res.text() || `Server error ${res.status}`);
     await load();
   }
 
   async function handleDrStart() {
-    setDrError(null);
     const res = await fetch("/api/backups/dr/start", { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
-    const data = await res.json() as { started: string[]; skipped: string[] };
+    const data = await res.json() as { started: string[] };
     if (data.started.length === 0) {
-      throw new Error("No Lost PVCs found to restore — cluster may already be healthy.");
+      throw new Error("No lost volumes found — cluster may already be healthy.");
     }
-    setDrPhase("restoring");
-    startDrPolling();
   }
 
   const lostCount = backupStatus?.pvcs.filter(
-    (p) => p.pvc_phase === "Lost" || p.pvc_phase === "NotFound"
+    p => p.pvc_phase === "Lost" || p.pvc_phase === "NotFound"
   ).length ?? 0;
+
+  const currentNamespaces = new Set(backupStatus?.pvcs.map(p => p.namespace) ?? []);
 
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-semibold text-[#fafafa]">Backups</h1>
         <p className="text-sm text-[#71717a] mt-0.5">
-          Daily encrypted backups to Backblaze B2 via VolSync. Restore your data if disks or nodes fail.
+          Daily encrypted backups to Backblaze B2. Restore your data if disks fail or services break.
         </p>
       </div>
 
@@ -557,40 +728,34 @@ export function BackupsPage() {
         <EnableCard onEnable={handleEnable} />
       ) : (
         <div className="space-y-3">
-          {drPhase !== "none" && (
-            <DisasterRecoveryBanner
-              phase={drPhase}
-              restores={drRestores}
-              done={drDone}
-              total={drTotal}
-              failed={drFailed}
-              lostCount={lostCount}
-              onStart={handleDrStart}
-              error={drError}
-            />
+          {/* Auto-detected disk failure */}
+          {lostCount > 0 && !drActive && (
+            <DrBanner lostCount={lostCount} onStart={handleDrStart} />
           )}
 
-          {(drPhase === "none" || drPhase === "done") && (
-            <>
-              <EtcdCard lastSnapshot={backupStatus?.etcd_last_snapshot ?? null} />
+          {/* User-initiated restore */}
+          <RestorePanel currentNamespaces={currentNamespaces} />
 
-              {backupStatus?.pvcs && backupStatus.pvcs.length > 0 ? (
-                backupStatus.pvcs.map((pvc) => (
-                  <PvcCard
-                    key={`${pvc.namespace}/${pvc.pvc}`}
-                    pvc={pvc}
-                  />
-                ))
-              ) : (
-                <Card>
-                  <CardContent className="pt-5 pb-5">
-                    <p className="text-sm text-[#71717a]">
-                      No PVC backup sources found. Click Enable Backups to configure them.
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
-            </>
+          <div className="pt-2 pb-1">
+            <p className="text-xs font-medium text-[#52525b] uppercase tracking-wider">Backup Status</p>
+          </div>
+
+          {/* Cluster backup */}
+          <ClusterBackupCard lastSnapshot={backupStatus?.etcd_last_snapshot ?? null} />
+
+          {/* Per-service PVC backups */}
+          {backupStatus?.pvcs && backupStatus.pvcs.length > 0 ? (
+            backupStatus.pvcs.map(pvc => (
+              <PvcCard key={`${pvc.namespace}/${pvc.pvc}`} pvc={pvc} />
+            ))
+          ) : (
+            <Card>
+              <CardContent className="pt-5 pb-5">
+                <p className="text-sm text-[#71717a]">
+                  No service backups configured. Click "Enable Backups" above to set them up.
+                </p>
+              </CardContent>
+            </Card>
           )}
 
           <div className="flex justify-end">
