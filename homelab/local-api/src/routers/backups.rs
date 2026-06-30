@@ -1257,10 +1257,32 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
         }
     }
 
-    // 3. catalog.json.
+    // 3. catalog.json — includes per-namespace PVC info so the restore UI can
+    //    show service names, PVC counts, and storage sizes without extra API calls.
+    let mut services: Vec<serde_json::Value> = Vec::new();
+    for ns in &namespaces {
+        let pvc_out = Command::new("kubectl")
+            .args(["get", "pvc", "-n", ns, "-o", "json"])
+            .output().await;
+        let pvcs: Vec<serde_json::Value> = pvc_out
+            .ok()
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|v| v["items"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                let name     = item["metadata"]["name"].as_str()?.to_string();
+                let capacity = item["spec"]["resources"]["requests"]["storage"]
+                    .as_str().unwrap_or("?").to_string();
+                Some(serde_json::json!({ "name": name, "capacity": capacity }))
+            })
+            .collect();
+        services.push(serde_json::json!({ "namespace": ns, "pvcs": pvcs }));
+    }
     let catalog = serde_json::json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "namespaces": namespaces,
+        "services": services,
     });
     let _ = tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await;
 
