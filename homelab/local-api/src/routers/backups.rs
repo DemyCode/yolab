@@ -1329,7 +1329,16 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
 }
 
 /// POST /api/backups/cluster/run-now — manual trigger (synchronous, waits for completion).
-pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+/// Auto-configures the master secret + VolSync sources if not already set up.
+pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    if let Some((url, token)) = ye_creds(&state.config) {
+        let cfg = ensure_master_config(&url, &token).await?;
+        let pvcs = list_user_pvcs().await.unwrap_or_default();
+        for pvc in &pvcs {
+            let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
+            let _ = ensure_replication_source(pvc).await;
+        }
+    }
     let date = do_cluster_backup().await?;
     Ok(Json(serde_json::json!({ "ok": true, "snapshot": date })))
 }
