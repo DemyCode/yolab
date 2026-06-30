@@ -1185,15 +1185,131 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
 
 // ── Background cluster backup task ───────────────────────────────────────────
 
-/// Runs daily at 02:00 UTC. Bundles:
-///   1. etcd snapshot (saved locally via k3s, then encrypted by restic)
-///   2. kubectl exports of all yolab-* namespace objects
-///   3. catalog.json (namespace + PVC list for the restore UI)
-/// Everything is pushed to B2 via restic — fully client-side encrypted.
+/// Core backup logic — called by both the daily scheduler and the manual trigger.
+async fn do_cluster_backup() -> anyhow::Result<String> {
+    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
+        anyhow::bail!("backup not configured");
+    };
+
+    let key_id          = data.get("access_key_id").cloned().unwrap_or_default();
+    let secret_key      = data.get("secret_access_key").cloned().unwrap_or_default();
+    let bucket          = data.get("bucket").cloned().unwrap_or_default();
+    let endpoint        = data.get("endpoint").cloned().unwrap_or_default();
+    let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+
+    if key_id.is_empty() || restic_password.is_empty() {
+        anyhow::bail!("missing credentials or restic_password");
+    }
+
+    let date    = chrono::Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
+    let tmp_dir = format!("/tmp/yolab-cluster-backup-{date}");
+    let repo    = format!("s3:{}/{}/cluster-backup", endpoint.trim_end_matches('/'), bucket);
+
+    tokio::fs::create_dir_all(&tmp_dir).await?;
+
+    // 1. etcd snapshot.
+    let snap_name = format!("yolab-cluster-{date}");
+    let snap_saved = Command::new("k3s")
+        .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
+        .output().await;
+
+    match snap_saved {
+        Ok(o) if o.status.success() => {
+            let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
+            if let Ok(entries) = std::fs::read_dir(snap_dir) {
+                for entry in entries.flatten() {
+                    let fname = entry.file_name();
+                    let fname_str = fname.to_string_lossy();
+                    if fname_str.starts_with(&snap_name) {
+                        let dst = format!("{tmp_dir}/etcd.db");
+                        if let Err(e) = std::fs::copy(entry.path(), &dst) {
+                            tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
+                        }
+                        let _ = Command::new("kubectl")
+                            .args(["delete", "etcdsnapshotfile", &fname_str.to_string(), "--ignore-not-found"])
+                            .output().await;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(o) => tracing::warn!("cluster-backup: etcd-snapshot: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => tracing::warn!("cluster-backup: k3s unavailable: {e}"),
+    }
+
+    // 2. Export K8s objects for all yolab-managed namespaces.
+    let ns_out = Command::new("kubectl")
+        .args(["get", "namespaces", "-l", "yolab.io/managed=true",
+               "-o", "jsonpath={.items[*].metadata.name}"])
+        .output().await;
+
+    let mut namespaces: Vec<String> = Vec::new();
+    if let Ok(o) = ns_out {
+        for ns in String::from_utf8_lossy(&o.stdout).split_whitespace() {
+            namespaces.push(ns.to_string());
+            let obj_out = Command::new("kubectl")
+                .args(["get", "deploy,svc,pvc,secret,configmap,replicationsource",
+                       "-n", ns, "-o", "yaml", "--ignore-not-found"])
+                .output().await;
+            if let Ok(obj) = obj_out {
+                let _ = tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), &obj.stdout).await;
+            }
+        }
+    }
+
+    // 3. catalog.json.
+    let catalog = serde_json::json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "namespaces": namespaces,
+    });
+    let _ = tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await;
+
+    // 4. Init restic repo if needed.
+    let check = Command::new("restic").args(["snapshots"])
+        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &restic_password)
+        .env("AWS_ACCESS_KEY_ID", &key_id).env("AWS_SECRET_ACCESS_KEY", &secret_key)
+        .output().await;
+    if check.map(|o| !o.status.success()).unwrap_or(true) {
+        let init = Command::new("restic").args(["init"])
+            .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &restic_password)
+            .env("AWS_ACCESS_KEY_ID", &key_id).env("AWS_SECRET_ACCESS_KEY", &secret_key)
+            .output().await?;
+        if !init.status.success() {
+            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+            anyhow::bail!("restic init failed: {}", String::from_utf8_lossy(&init.stderr).trim());
+        }
+    }
+
+    // 5. Backup.
+    let backup = Command::new("restic")
+        .args(["backup", &tmp_dir, "--tag", "cluster-backup"])
+        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &restic_password)
+        .env("AWS_ACCESS_KEY_ID", &key_id).env("AWS_SECRET_ACCESS_KEY", &secret_key)
+        .output().await?;
+
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+
+    if !backup.status.success() {
+        anyhow::bail!("restic backup failed: {}", String::from_utf8_lossy(&backup.stderr).trim());
+    }
+
+    tracing::info!("cluster-backup: snapshot complete ({date})");
+
+    // 6. Prune old snapshots.
+    let _ = Command::new("restic")
+        .args(["forget", "--tag", "cluster-backup",
+               "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "12", "--prune"])
+        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &restic_password)
+        .env("AWS_ACCESS_KEY_ID", &key_id).env("AWS_SECRET_ACCESS_KEY", &secret_key)
+        .output().await;
+
+    Ok(date)
+}
+
+/// Daily scheduler — sleeps until 02:00 UTC then calls do_cluster_backup.
 pub async fn run_cluster_backup(_config: Arc<Config>) {
     loop {
-        // Sleep until next 02:00 UTC.
-        let now = chrono::Utc::now();
+        let now  = chrono::Utc::now();
         let next = {
             let today_2am = now.date_naive().and_hms_opt(2, 0, 0).unwrap().and_utc();
             if now < today_2am { today_2am }
@@ -1206,143 +1322,16 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
             (next - now).num_seconds().max(0) as u64,
         )).await;
 
-        let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
-            tracing::debug!("cluster-backup: not configured, skipping");
-            continue;
-        };
-
-        let key_id          = data.get("access_key_id").cloned().unwrap_or_default();
-        let secret_key      = data.get("secret_access_key").cloned().unwrap_or_default();
-        let bucket          = data.get("bucket").cloned().unwrap_or_default();
-        let endpoint        = data.get("endpoint").cloned().unwrap_or_default();
-        let restic_password = data.get("restic_password").cloned().unwrap_or_default();
-
-        if key_id.is_empty() || restic_password.is_empty() {
-            tracing::warn!("cluster-backup: missing creds or restic_password, skipping");
-            continue;
+        if let Err(e) = do_cluster_backup().await {
+            tracing::warn!("cluster-backup: {e}");
         }
-
-        let date    = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let tmp_dir = format!("/tmp/yolab-cluster-backup-{date}");
-        let repo    = format!("s3:{}/{}/cluster-backup", endpoint.trim_end_matches('/'), bucket);
-
-        if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
-            tracing::warn!("cluster-backup: mkdir failed: {e}");
-            continue;
-        }
-
-        // 1. Save etcd snapshot to k3s default dir, then copy into our tmp bundle.
-        let snap_name = format!("yolab-cluster-{date}");
-        let snap_saved = Command::new("k3s")
-            .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
-            .output().await;
-
-        match snap_saved {
-            Ok(o) if o.status.success() => {
-                let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
-                if let Ok(entries) = std::fs::read_dir(snap_dir) {
-                    for entry in entries.flatten() {
-                        let fname = entry.file_name();
-                        let fname_str = fname.to_string_lossy();
-                        if fname_str.starts_with(&snap_name) {
-                            let dst = format!("{tmp_dir}/etcd.db");
-                            if let Err(e) = std::fs::copy(entry.path(), &dst) {
-                                tracing::warn!("cluster-backup: copy etcd snapshot failed: {e}");
-                            }
-                            // Clean up k3s-managed snapshot to avoid accumulation.
-                            let _ = Command::new("kubectl")
-                                .args(["delete", "etcdsnapshotfile", &fname_str.to_string(), "--ignore-not-found"])
-                                .output().await;
-                            break;
-                        }
-                    }
-                }
-            }
-            Ok(o) => tracing::warn!("cluster-backup: etcd-snapshot failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()),
-            Err(e) => tracing::warn!("cluster-backup: could not run k3s: {e}"),
-        }
-
-        // 2. Export K8s objects for all yolab-managed namespaces.
-        let ns_out = Command::new("kubectl")
-            .args(["get", "namespaces", "-l", "yolab.io/managed=true",
-                   "-o", "jsonpath={.items[*].metadata.name}"])
-            .output().await;
-
-        let mut namespaces: Vec<String> = Vec::new();
-        if let Ok(o) = ns_out {
-            for ns in String::from_utf8_lossy(&o.stdout).split_whitespace() {
-                namespaces.push(ns.to_string());
-                let obj_out = Command::new("kubectl")
-                    .args(["get", "deploy,svc,pvc,secret,configmap,replicationsource",
-                           "-n", ns, "-o", "yaml", "--ignore-not-found"])
-                    .output().await;
-                if let Ok(obj) = obj_out {
-                    let path = format!("{tmp_dir}/{ns}.yaml");
-                    let _ = tokio::fs::write(&path, &obj.stdout).await;
-                }
-            }
-        }
-
-        // 3. Write catalog.json.
-        let catalog = serde_json::json!({
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "namespaces": namespaces,
-        });
-        let _ = tokio::fs::write(
-            format!("{tmp_dir}/catalog.json"),
-            catalog.to_string(),
-        ).await;
-
-        // 4. Init restic repo if it doesn't exist yet.
-        let snapshots_check = Command::new("restic")
-            .args(["snapshots"])
-            .env("RESTIC_REPOSITORY", &repo)
-            .env("RESTIC_PASSWORD", &restic_password)
-            .env("AWS_ACCESS_KEY_ID", &key_id)
-            .env("AWS_SECRET_ACCESS_KEY", &secret_key)
-            .output().await;
-        if snapshots_check.map(|o| !o.status.success()).unwrap_or(true) {
-            let _ = Command::new("restic")
-                .args(["init"])
-                .env("RESTIC_REPOSITORY", &repo)
-                .env("RESTIC_PASSWORD", &restic_password)
-                .env("AWS_ACCESS_KEY_ID", &key_id)
-                .env("AWS_SECRET_ACCESS_KEY", &secret_key)
-                .output().await;
-        }
-
-        // 5. Backup tmp dir with restic.
-        let backup_out = Command::new("restic")
-            .args(["backup", &tmp_dir, "--tag", "cluster-backup"])
-            .env("RESTIC_REPOSITORY", &repo)
-            .env("RESTIC_PASSWORD", &restic_password)
-            .env("AWS_ACCESS_KEY_ID", &key_id)
-            .env("AWS_SECRET_ACCESS_KEY", &secret_key)
-            .output().await;
-
-        match backup_out {
-            Ok(o) if o.status.success() => {
-                tracing::info!("cluster-backup: restic snapshot complete for {date}");
-                // Prune: keep 7 daily, 4 weekly, 12 monthly.
-                let _ = Command::new("restic")
-                    .args(["forget", "--tag", "cluster-backup",
-                           "--keep-daily", "7", "--keep-weekly", "4",
-                           "--keep-monthly", "12", "--prune"])
-                    .env("RESTIC_REPOSITORY", &repo)
-                    .env("RESTIC_PASSWORD", &restic_password)
-                    .env("AWS_ACCESS_KEY_ID", &key_id)
-                    .env("AWS_SECRET_ACCESS_KEY", &secret_key)
-                    .output().await;
-            }
-            Ok(o) => tracing::warn!("cluster-backup: restic failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()),
-            Err(e) => tracing::warn!("cluster-backup: could not run restic: {e}"),
-        }
-
-        // 6. Clean up temp dir.
-        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
     }
+}
+
+/// POST /api/backups/cluster/run-now — manual trigger (synchronous, waits for completion).
+pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let date = do_cluster_backup().await?;
+    Ok(Json(serde_json::json!({ "ok": true, "snapshot": date })))
 }
 
 /// GET /api/backups/snapshots — list available cluster-backup restic snapshots.
