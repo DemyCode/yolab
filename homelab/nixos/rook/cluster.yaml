@@ -34,13 +34,11 @@ spec:
       mds_beacon_grace: "60"
       ms_bind_ipv6: "true"
       ms_bind_ipv4: "false"
-      # Never auto-mark OSDs out — in/out is an explicit admin decision.
-      # A disk going down (unplugged, rebooting) stays "in" until someone
-      # explicitly runs "ceph osd out <id>".
+      # If a disk stays down for 10 minutes, auto-mark it out so Ceph
+      # starts rebalancing data onto the remaining disks. Short outages
+      # (reboot, accidental unplug) recover before the timer fires.
       # docs.ceph.com/en/latest/rados/configuration/mon-osd-interaction/
-      mon_osd_down_out_interval: "0"
-      # Silence the HEALTH_WARN Ceph emits when interval is 0 — it's intentional.
-      mon_warn_on_osd_down_out_interval_zero: "false"
+      mon_osd_down_out_interval: "600"
       # New OSDs start with CRUSH weight 0 — no PGs assigned until explicitly
       # activated via the UI. Existing OSDs coming back after a reboot keep their
       # stored CRUSH weight and re-integrate automatically.
