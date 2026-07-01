@@ -374,7 +374,7 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
         // Exit 0 = losable (system still works), non-0 = I/O would be disrupted.
         r#"OK_LIST="""#.into(),
         r#"for OSD in $($CEPH osd ls 2>/dev/null); do"#.into(),
-        r#"  if $CEPH osd ok-to-stop osd.$OSD 2>/dev/null; then"#.into(),
+        r#"  if $CEPH osd ok-to-stop osd.$OSD >/dev/null 2>&1; then"#.into(),
         r#"    OK_LIST="${OK_LIST:+$OK_LIST,}$OSD""#.into(),
         r#"  fi"#.into(),
         r#"done"#.into(),
