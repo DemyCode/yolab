@@ -104,11 +104,11 @@ kind: CephFilesystem
 metadata:
   name: yolab-fs
   namespace: rook-ceph
-  annotations:
-    # Rook creates pools and MDS on first install then stops reconciling.
-    # Pool sizes are managed directly by the local-api (ceph osd pool set)
-    # so user changes via the Storage page persist across rebuilds.
-    rook.io/do-not-reconcile: "true"
+  labels:
+    # Rook checks this label in its controller predicate and skips reconciliation
+    # when set. Pool sizes are managed directly by the local-api (ceph osd pool set)
+    # so user changes via the Storage page persist across nixos-rebuilds.
+    do_not_reconcile: "true"
 spec:
   metadataPool:
     replicated:
