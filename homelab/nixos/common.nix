@@ -521,7 +521,6 @@ in
         sshfs
         fuse3
         qrencode
-        rclone
         restic
       ];
 
@@ -556,7 +555,7 @@ in
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-2-controller.yaml               - - - - ${./external-snapshotter/controller.yaml}"
-      # VolSync operator for PV backup/restore via rclone → B2.
+      # VolSync operator for PV backup/restore via restic.
       "L+ /var/lib/rancher/k3s/server/manifests/volsync.yaml                         - - - - ${./volsync/helmchart.yaml}"
       # VolumeSnapshotClass for Rook CephFS CSI — used by VolSync ReplicationSources.
       # Applied after VolSync so the CRD (from external-snapshotter) exists first.
