@@ -11,7 +11,6 @@ pub struct Config {
     pub rebuild_log: PathBuf,
     pub rebuild_pid: PathBuf,
     pub built_dir: PathBuf,
-    pub osd_img_path: PathBuf,
     pub channel_file: PathBuf,
 }
 
@@ -36,7 +35,6 @@ impl Config {
             rebuild_log: PathBuf::from("/var/log/yolab-rebuild.log"),
             rebuild_pid: PathBuf::from("/run/yolab-rebuild.pid"),
             channel_file: built_dir.join("channel.json"),
-            osd_img_path: PathBuf::from("/var/lib/rook/system-osd.img"),
             built_dir,
             repo_path,
         }
