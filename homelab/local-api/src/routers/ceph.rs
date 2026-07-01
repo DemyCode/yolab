@@ -546,7 +546,22 @@ pub async fn set_replication(
     ].join("\n");
 
     match kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await {
-        Ok(out) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "output": out}))),
+        Ok(out) => {
+            // Also patch the CephFilesystem resource so Rook stops reconciling it back
+            // to whatever size is in the manifest. Without this, Rook overwrites the
+            // pool size on every reconcile loop.
+            let patch = serde_json::json!({
+                "spec": {
+                    "metadataPool": { "replicated": { "size": size, "requireSafeReplicaSize": false } },
+                    "dataPools": [{ "name": "data0", "replicated": { "size": size, "requireSafeReplicaSize": false } }]
+                }
+            });
+            let _ = kubectl::run(&[
+                "patch", "cephfilesystem", "yolab-fs", "-n", "rook-ceph",
+                "--type=merge", "-p", &patch.to_string(),
+            ]).await;
+            (StatusCode::OK, Json(serde_json::json!({"ok": true, "output": out})))
+        }
         Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
     }
 }
