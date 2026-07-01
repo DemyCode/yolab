@@ -107,12 +107,12 @@ metadata:
 spec:
   metadataPool:
     replicated:
-      size: 1
+      size: 2
       requireSafeReplicaSize: false
   dataPools:
     - name: data0
       replicated:
-        size: 1
+        size: 2
         requireSafeReplicaSize: false
   preserveFilesystemOnDelete: true
   metadataServer:
