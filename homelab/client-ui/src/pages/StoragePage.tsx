@@ -90,12 +90,12 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm(false)}>Cancel</Button>
           </div>
         ) : (
-          <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>Mark Out</Button>
+          <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>Remove safely</Button>
         )
       ) : (
         <Button size="sm" variant="outline" disabled={busy}
           onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-in`)}>
-          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Mark In"}
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Re-add disk"}
         </Button>
       )}
       {err && <p className="text-xs text-[#f87171]">{err}</p>}
