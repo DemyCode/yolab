@@ -13,6 +13,7 @@ export interface OsdInfo {
   crush_weight: number;
   reweight: number;
   safe_to_destroy: boolean;
+  ok_to_stop: boolean;
 }
 
 export interface PoolInfo {
