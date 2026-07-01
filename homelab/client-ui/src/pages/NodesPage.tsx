@@ -65,7 +65,7 @@ export function NodesPage() {
         <div className="flex items-start gap-2.5 rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
           <p className="text-sm text-[#fbbf24]">
-            Cluster API unreachable — the main node may be restarting. Showing last known state; everything will recover automatically.
+            Cluster API unreachable — the control plane is restarting. Showing last known state; everything will recover automatically.
           </p>
         </div>
       )}
