@@ -99,33 +99,6 @@ spec:
         memory: "64Mi"
         cpu: "50m"
 ---
-apiVersion: ceph.rook.io/v1
-kind: CephFilesystem
-metadata:
-  name: yolab-fs
-  namespace: rook-ceph
-spec:
-  metadataPool:
-    replicated:
-      size: 2
-      requireSafeReplicaSize: false
-  dataPools:
-    - name: data0
-      replicated:
-        size: 2
-        requireSafeReplicaSize: false
-  preserveFilesystemOnDelete: true
-  metadataServer:
-    activeCount: 1
-    activeStandby: false
-    priorityClassName: system-cluster-critical
-    resources:
-      requests:
-        cpu: "50m"
-        memory: "128Mi"
-      limits:
-        memory: "512Mi"
----
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:

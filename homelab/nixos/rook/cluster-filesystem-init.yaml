@@ -1,0 +1,83 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ceph-filesystem-init
+  namespace: rook-ceph
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ceph-filesystem-init
+  namespace: rook-ceph
+rules:
+  - apiGroups: ["ceph.rook.io"]
+    resources: ["cephfilesystems"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ceph-filesystem-init
+  namespace: rook-ceph
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ceph-filesystem-init
+subjects:
+  - kind: ServiceAccount
+    name: ceph-filesystem-init
+    namespace: rook-ceph
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ceph-filesystem-init
+  namespace: rook-ceph
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: ceph-filesystem-init
+      containers:
+        - name: init
+          image: docker.io/rook/ceph:v1.16.3
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              if kubectl get cephfilesystem yolab-fs -n rook-ceph >/dev/null 2>&1; then
+                echo "CephFilesystem already exists — skipping (user settings preserved)."
+                exit 0
+              fi
+              kubectl apply -f - <<'MANIFEST'
+              apiVersion: ceph.rook.io/v1
+              kind: CephFilesystem
+              metadata:
+                name: yolab-fs
+                namespace: rook-ceph
+              spec:
+                metadataPool:
+                  replicated:
+                    size: 2
+                    requireSafeReplicaSize: false
+                dataPools:
+                  - name: data0
+                    replicated:
+                      size: 2
+                      requireSafeReplicaSize: false
+                preserveFilesystemOnDelete: true
+                metadataServer:
+                  activeCount: 1
+                  activeStandby: false
+                  priorityClassName: system-cluster-critical
+                  resources:
+                    requests:
+                      cpu: "50m"
+                      memory: "128Mi"
+                    limits:
+                      memory: "512Mi"
+              MANIFEST
+              echo "CephFilesystem created."
