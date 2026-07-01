@@ -535,8 +535,9 @@ pub async fn set_replication(
         "set -e".into(),
         // Create OSD-level rule if needed (replicated_rule already exists for host)
         format!("if ! $CEPH osd crush rule ls 2>/dev/null | grep -qx {rule}; then $CEPH osd crush rule create-replicated {rule} default {fd}; fi", rule = rule_name, fd = fd),
-        // Apply to all non-internal pools
-        format!("for POOL in $($CEPH osd pool ls 2>/dev/null | grep -v '^[.]'); do"),
+        // Apply to all pools including .mgr (manager state should follow replication too).
+        // Skip only .nfs and .rgw.* which have stricter placement requirements.
+        format!("for POOL in $($CEPH osd pool ls 2>/dev/null | grep -vE '^\\.(nfs|rgw)'); do"),
         format!("  $CEPH osd pool set $POOL crush_rule {rule}", rule = rule_name),
         format!("  $CEPH osd pool set $POOL size {size}{really}", size = size, really = really),
         format!("  $CEPH osd pool set $POOL min_size {min_size}", min_size = min_size),
