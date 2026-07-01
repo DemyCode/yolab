@@ -287,6 +287,10 @@ pub struct OsdInfo {
     /// True when `ceph osd safe-to-destroy` confirms no data remains on this OSD.
     /// Combined with crush_weight=0 + reweight=0, this means the disk can be unplugged.
     pub safe_to_destroy: bool,
+    /// True when `ceph osd ok-to-stop` confirms losing this OSD won't block any I/O
+    /// (all its PGs still meet min_size on remaining OSDs). The disk can be lost without
+    /// service disruption — data degrades but stays accessible.
+    pub ok_to_stop: bool,
 }
 
 #[derive(Serialize)]
@@ -365,6 +369,16 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
         r#"  fi"#.into(),
         r#"done"#.into(),
         r#"echo "{\"safe_to_destroy\":[$SAFE_LIST]}""#.into(),
+        r#"echo ',"ok_to_stop":'"#.into(),
+        // ok-to-stop checks if losing this OSD blocks any I/O (min_size check).
+        // Exit 0 = losable (system still works), non-0 = I/O would be disrupted.
+        r#"OK_LIST="""#.into(),
+        r#"for OSD in $($CEPH osd ls 2>/dev/null); do"#.into(),
+        r#"  if $CEPH osd ok-to-stop osd.$OSD 2>/dev/null; then"#.into(),
+        r#"    OK_LIST="${OK_LIST:+$OK_LIST,}$OSD""#.into(),
+        r#"  fi"#.into(),
+        r#"done"#.into(),
+        r#"echo "{\"ok_to_stop\":[$OK_LIST]}""#.into(),
         "echo '}'".into(),
         "rm -f /tmp/.ck /tmp/.cc".into(),
     ].join("\n");
@@ -386,6 +400,13 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
     // ── safe-to-destroy set ────────────────────────────────────────────────────
     // ceph osd safe-to-destroy returns {"safe_to_destroy": [id, ...], "active": [...], ...}
     let safe_ids: std::collections::HashSet<i64> = v["safe_to_destroy"]["safe_to_destroy"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default();
+
+    // ── ok-to-stop set ────────────────────────────────────────────────────────
+    // ok-to-stop exit 0 = losing this OSD won't block I/O (PGs still meet min_size)
+    let ok_to_stop_ids: std::collections::HashSet<i64> = v["ok_to_stop"]["ok_to_stop"]
         .as_array()
         .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
         .unwrap_or_default();
@@ -429,6 +450,7 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
                 crush_weight: n["crush_weight"].as_f64().unwrap_or(0.0),
                 reweight:     n["reweight"].as_f64().unwrap_or(1.0),
                 safe_to_destroy: safe_ids.contains(&id),
+                ok_to_stop: ok_to_stop_ids.contains(&id),
             }
         })
         .collect();
