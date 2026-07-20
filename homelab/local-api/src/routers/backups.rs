@@ -671,6 +671,9 @@ pub async fn trigger_restore(
         .unwrap_or("ReadWriteMany")
         .to_string();
 
+    let restored_pvc = format!("volsync-{dest_name}-dest");
+    ensure_destination_pvc(&restored_pvc, &namespace, &capacity, &storage_class, &access_mode).await?;
+
     let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc));
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
@@ -684,10 +687,8 @@ pub async fn trigger_restore(
             "trigger": { "manual": format!("restore-{timestamp}") },
             "restic": {
                 "repository": secret_name,
-                "copyMethod": "Snapshot",
-                "storageClassName": storage_class,
-                "capacity": capacity,
-                "accessModes": [access_mode],
+                "copyMethod": "Direct",
+                "destinationPVC": restored_pvc,
                 "moverSecurityContext": {
                     "runAsUser": 1000,
                     "runAsGroup": 1000,
@@ -701,7 +702,7 @@ pub async fn trigger_restore(
     Ok(Json(serde_json::json!({
         "started": true,
         "destination_name": dest_name,
-        "restored_pvc": format!("volsync-{dest_name}-dest"),
+        "restored_pvc": restored_pvc,
         "note": "When complete, point your app at the restored PVC name above.",
     })))
 }
@@ -859,6 +860,41 @@ async fn patch_deployment_pvc(
     Ok(())
 }
 
+/// Creates the PVC a restore will write into, owned by us rather than VolSync.
+///
+/// Every RD manifest in this file uses copyMethod "Direct" with this PVC passed as
+/// `destinationPVC`, instead of copyMethod "Snapshot" (which was the original design).
+/// Per VolSync's own docs, a Snapshot-copyMethod destination PVC is explicitly internal to
+/// VolSync's own bookkeeping — it can be recreated/replaced on subsequent reconciles — which
+/// is fundamentally incompatible with what this code does with it (repoint a Deployment to
+/// use it as a permanent, ongoing data volume). That mismatch, not any particular delete
+/// ordering, is what caused the restored PVC to vanish out from under running pods, observed
+/// live and reproduced twice even after two different delete-ordering fixes. With Direct +
+/// destinationPVC, the PVC is ours from creation onward; VolSync only ever writes into it.
+async fn ensure_destination_pvc(
+    name: &str,
+    namespace: &str,
+    capacity: &str,
+    storage_class: &str,
+    access_mode: &str,
+) -> anyhow::Result<()> {
+    let manifest = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": { "app.kubernetes.io/managed-by": "yolab" }
+        },
+        "spec": {
+            "accessModes": [access_mode],
+            "storageClassName": storage_class,
+            "resources": { "requests": { "storage": capacity } }
+        }
+    });
+    kubectl_apply(&manifest.to_string()).await
+}
+
 #[derive(Deserialize)]
 pub struct EmergencyRestoreParams {
     #[serde(default)]
@@ -945,7 +981,11 @@ pub async fn emergency_restore(
         .into());
     }
 
-    // Create ReplicationDestination — VolSync retries until Ceph has space.
+    // Create the destination PVC ourselves, then ReplicationDestination writes directly into
+    // it (copyMethod Direct) — VolSync retries until Ceph has space.
+    let restored_pvc = format!("volsync-{dest_name}-dest");
+    ensure_destination_pvc(&restored_pvc, &namespace, &capacity, &storage_class, &access_mode).await?;
+
     let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc));
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
@@ -959,10 +999,8 @@ pub async fn emergency_restore(
             "trigger": { "manual": format!("emergency-{timestamp}") },
             "restic": {
                 "repository": secret_name,
-                "copyMethod": "Snapshot",
-                "storageClassName": storage_class,
-                "capacity": capacity,
-                "accessModes": [access_mode],
+                "copyMethod": "Direct",
+                "destinationPVC": restored_pvc,
                 "moverSecurityContext": {
                     "runAsUser": 1000,
                     "runAsGroup": 1000,
@@ -1209,7 +1247,14 @@ pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json:
             .output()
             .await;
 
-        // Create ReplicationDestination to pull data from B2.
+        // Create the destination PVC ourselves, then ReplicationDestination writes directly
+        // into it (copyMethod Direct) to pull data from B2.
+        let restored_pvc = format!("volsync-{dest_name}-dest");
+        if let Err(e) = ensure_destination_pvc(&restored_pvc, &namespace, &capacity, &storage_class, &access_mode).await {
+            tracing::warn!("DR start: failed to create destination PVC for {namespace}/{pvc_name}: {e}");
+            continue;
+        }
+
         let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc_name));
         let manifest = serde_json::json!({
             "apiVersion": "volsync.backube/v1alpha1",
@@ -1223,10 +1268,8 @@ pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json:
                 "trigger": { "manual": format!("dr-{timestamp}") },
                 "restic": {
                     "repository": secret_name,
-                    "copyMethod": "Snapshot",
-                    "storageClassName": storage_class,
-                    "capacity": capacity,
-                    "accessModes": [access_mode],
+                    "copyMethod": "Direct",
+                    "destinationPVC": restored_pvc,
                     "moverSecurityContext": {
                         "runAsUser": 1000,
                         "runAsGroup": 1000,
@@ -1807,7 +1850,7 @@ pub async fn restore_from_snapshot(
             // Ensure a ReplicationSource exists for future backups.
             let _ = ensure_replication_source(pvc, false).await;
 
-            let dest_name = format!("emergency-restore-{}", pvc.name);
+            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&pvc.name));
             let rd_exists = Command::new("kubectl")
                 .args(["get", "replicationdestination", &dest_name, "-n", &pvc.namespace])
                 .output()
@@ -1850,13 +1893,17 @@ pub async fn restore_from_snapshot(
                 .output()
                 .await;
 
+            let restored_pvc = format!("volsync-{dest_name}-dest");
+            if let Err(e) = ensure_destination_pvc(&restored_pvc, &pvc.namespace, &capacity, &storage_class, &access_mode).await {
+                errors.push(format!("{}/{}: destination pvc: {e}", pvc.namespace, pvc.name));
+                continue;
+            }
+
             let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc.name));
             let mut restic_spec = serde_json::json!({
                 "repository": secret_name,
-                "copyMethod": "Snapshot",
-                "storageClassName": storage_class,
-                "capacity": capacity,
-                "accessModes": [access_mode],
+                "copyMethod": "Direct",
+                "destinationPVC": restored_pvc,
                 "moverSecurityContext": {
                     "runAsUser": 1000,
                     "runAsGroup": 1000,
