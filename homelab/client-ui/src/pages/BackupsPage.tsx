@@ -51,6 +51,11 @@ interface DrStatusResponse {
   all_complete: boolean;
 }
 
+interface OperationState {
+  backing_up: boolean;
+  restoring: boolean;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function Shimmer({ className }: { className?: string }) {
@@ -132,12 +137,19 @@ function RestoreFlow({
     if (pollRef.current) return;
     pollRef.current = window.setInterval(async () => {
       try {
-        const s = await fetch("/api/backups/dr/status").then(r => r.json()) as DrStatusResponse;
+        const [s, state] = await Promise.all([
+          fetch("/api/backups/dr/status").then(r => r.json()) as Promise<DrStatusResponse>,
+          fetch("/api/backups/state").then(r => r.json()) as Promise<{ restoring: boolean }>,
+        ]);
         setRestoreItems(s.restores);
         setDone(s.done);
         setTotal(s.total);
         setFailed(s.failed);
-        if (s.all_complete) {
+        // state.restoring is the backend's own read of whether any restore objects still
+        // exist — prefer it over all_complete, which reads as permanently false (stuck at
+        // "0/?") if this poll starts after the restore's ReplicationDestinations were
+        // already cleaned up by the time we look.
+        if (s.all_complete || !state.restoring) {
           clearInterval(pollRef.current!);
           pollRef.current = null;
           setStep("applying");
@@ -296,12 +308,14 @@ function SnapshotCard({
   snapshot,
   runningNamespaces,
   isRestoring,
+  disabled,
   onRestoreStart,
   onRestoreEnd,
 }: {
   snapshot: ResticSnapshot;
   runningNamespaces: Set<string>;
   isRestoring: boolean;
+  disabled: boolean;
   onRestoreStart: () => void;
   onRestoreEnd: () => void;
 }) {
@@ -365,7 +379,7 @@ function SnapshotCard({
           {!restoring && !isRestoring && (
             <Button
               onClick={handleRestoreClick}
-              disabled={!catalog || loading}
+              disabled={!catalog || loading || disabled}
               variant="outline"
               className="flex-shrink-0 h-7 px-3 text-xs border-[#3f3f46] text-[#a78bfa] hover:border-[#a78bfa] hover:text-[#a78bfa] disabled:opacity-30"
             >
@@ -427,9 +441,11 @@ function SnapshotCard({
 function SnapshotExplorer({
   runningNamespaces,
   onBackupDone,
+  disabled,
 }: {
   runningNamespaces: Set<string>;
   onBackupDone: () => void;
+  disabled: boolean;
 }) {
   const [snapshots, setSnapshots] = useState<ResticSnapshot[] | null>(null);
   const [backingUp, setBackingUp] = useState(false);
@@ -477,9 +493,9 @@ function SnapshotExplorer({
         </div>
         <Button
           onClick={handleBackupNow}
-          disabled={backingUp}
+          disabled={backingUp || disabled}
           variant="outline"
-          className="flex-shrink-0 h-8 px-3 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa]"
+          className="flex-shrink-0 h-8 px-3 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] disabled:opacity-40"
         >
           {backingUp
             ? <><RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />Backing up…</>
@@ -510,6 +526,7 @@ function SnapshotExplorer({
             snapshot={snap}
             runningNamespaces={runningNamespaces}
             isRestoring={activeRestore !== null && activeRestore !== snap.id}
+            disabled={disabled}
             onRestoreStart={() => setActiveRestore(snap.id)}
             onRestoreEnd={() => { setActiveRestore(null); void load(); }}
           />
@@ -521,7 +538,7 @@ function SnapshotExplorer({
 
 // ── Enable card ───────────────────────────────────────────────────────────────
 
-function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
+function EnableCard({ onEnable, disabled }: { onEnable: () => Promise<void>; disabled: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -550,8 +567,8 @@ function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
               </div>
               <Button
                 onClick={handle}
-                disabled={busy}
-                className="bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-8 px-3"
+                disabled={busy || disabled}
+                className="bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-8 px-3 disabled:opacity-40"
               >
                 {busy
                   ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enabling…</>
@@ -568,7 +585,7 @@ function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
 
 // ── DR banner (auto-detected Lost PVCs) ───────────────────────────────────────
 
-function DrBanner({ lostCount }: { lostCount: number }) {
+function DrBanner({ lostCount, disabled }: { lostCount: number; disabled: boolean }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -597,8 +614,8 @@ function DrBanner({ lostCount }: { lostCount: number }) {
         </div>
         <Button
           onClick={handle}
-          disabled={starting}
-          className="flex-shrink-0 bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 text-sm h-9 px-4"
+          disabled={starting || disabled}
+          className="flex-shrink-0 bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 text-sm h-9 px-4 disabled:opacity-40"
         >
           {starting
             ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Starting…</>
@@ -617,6 +634,7 @@ export function BackupsPage() {
   const [runningNamespaces, setRunning] = useState<Set<string>>(new Set());
   const [lostCount, setLostCount]       = useState(0);
   const [loading, setLoading]           = useState(true);
+  const [opState, setOpState]           = useState<OperationState>({ backing_up: false, restoring: false });
 
   const load = useCallback(async () => {
     const [s3Res, statusRes] = await Promise.all([
@@ -635,6 +653,24 @@ export function BackupsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Single source of truth for "is a backup or restore currently running" — read from the
+  // backend on a timer, never tracked locally, so a page refresh or a second tab can't
+  // desync from what's actually happening.
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const s = await fetch("/api/backups/state").then(r => r.json()) as OperationState;
+        if (!cancelled) setOpState(s);
+      } catch { /* network blip */ }
+    }
+    void poll();
+    const id = window.setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  const opBusy = opState.backing_up || opState.restoring;
+
   async function handleEnable() {
     const res = await fetch("/api/backups/s3/enable", { method: "POST" });
     if (!res.ok) throw new Error(await res.text() || `Server error ${res.status}`);
@@ -650,19 +686,31 @@ export function BackupsPage() {
         </p>
       </div>
 
+      {opBusy && (
+        <div className="rounded-lg border border-[#78350f] bg-[#1a1000] px-4 py-3 flex items-center gap-2">
+          <RefreshCw className="h-4 w-4 text-[#fbbf24] animate-spin flex-shrink-0" />
+          <p className="text-sm text-[#fbbf24] font-medium">
+            {opState.backing_up
+              ? "Backup in progress — other backup actions are disabled until it finishes."
+              : "Restore in progress — other backup actions are disabled until it finishes."}
+          </p>
+        </div>
+      )}
+
       {loading ? (
         <div className="space-y-3">
           <Card><CardContent className="pt-5 pb-5"><Shimmer className="h-14 w-full" /></CardContent></Card>
           <Card><CardContent className="pt-5 pb-5"><Shimmer className="h-14 w-full" /></CardContent></Card>
         </div>
       ) : !s3Status?.provisioned ? (
-        <EnableCard onEnable={handleEnable} />
+        <EnableCard onEnable={handleEnable} disabled={opBusy} />
       ) : (
         <div className="space-y-4">
-          {lostCount > 0 && <DrBanner lostCount={lostCount} />}
+          {lostCount > 0 && <DrBanner lostCount={lostCount} disabled={opBusy} />}
           <SnapshotExplorer
             runningNamespaces={runningNamespaces}
             onBackupDone={load}
+            disabled={opBusy}
           />
         </div>
       )}

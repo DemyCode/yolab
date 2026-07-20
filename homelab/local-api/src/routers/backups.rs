@@ -2,12 +2,82 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::{config::Config, error::Result, AppState};
+
+// ── Backup/restore operation state ──────────────────────────────────────────
+//
+// Single source of truth the frontend reads (GET /api/backups/state) instead of
+// tracking its own progress client-side — a page refresh, a second tab, or a lost
+// connection should never desync from what's actually happening on the backend.
+//
+// "Backing up" is an in-memory flag: do_cluster_backup() is fully synchronous
+// within one process, so if local-api restarts mid-backup the child processes it
+// spawned die with it — resetting to "not backing up" on restart is correct, not
+// a bug to work around.
+//
+// "Restoring" is deliberately NOT a flag — it's derived by checking whether any
+// yolab-managed ReplicationDestination still exists. A restore is asynchronous
+// (VolSync jobs run in the cluster independent of local-api's lifetime), so a
+// flag could get stuck forever if the process restarted mid-restore. Deriving it
+// from real cluster state means it's always correct and self-clears the moment
+// dr_apply/apply_emergency_restore removes the last ReplicationDestination.
+
+static BACKUP_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct BackupGuard;
+
+impl BackupGuard {
+    fn acquire() -> Option<Self> {
+        BACKUP_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| BackupGuard)
+    }
+}
+
+impl Drop for BackupGuard {
+    fn drop(&mut self) {
+        BACKUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
+async fn restore_in_progress() -> bool {
+    Command::new("kubectl")
+        .args([
+            "get", "replicationdestination", "-A",
+            "-l", "app.kubernetes.io/managed-by=yolab", "-o", "name",
+        ])
+        .output()
+        .await
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Refuses to start a new backup/restore action while either is already in progress.
+async fn ensure_no_operation_in_progress() -> anyhow::Result<()> {
+    if BACKUP_IN_PROGRESS.load(Ordering::SeqCst) {
+        anyhow::bail!("A backup is currently running — try again once it finishes.");
+    }
+    if restore_in_progress().await {
+        anyhow::bail!("A restore is currently in progress — try again once it finishes.");
+    }
+    Ok(())
+}
+
+/// GET /api/backups/state — read-only; the frontend polls this instead of tracking
+/// backup/restore progress itself.
+pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    Ok(Json(serde_json::json!({
+        "backing_up": BACKUP_IN_PROGRESS.load(Ordering::SeqCst),
+        "restoring": restore_in_progress().await,
+    })))
+}
 
 // ── Config reader ─────────────────────────────────────────────────────────────
 
@@ -420,6 +490,7 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
 
 /// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    ensure_no_operation_in_progress().await?;
     let Some((url, token)) = ye_creds(&state.config) else {
         return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
     };
@@ -574,6 +645,7 @@ pub async fn trigger_restore(
     State(_state): State<AppState>,
     Path((namespace, pvc)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
+    ensure_no_operation_in_progress().await?;
     let dest_name = format!("restore-{pvc}");
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
 
@@ -776,6 +848,7 @@ pub async fn emergency_restore(
     Path((namespace, pvc)): Path<(String, String)>,
     Query(params): Query<EmergencyRestoreParams>,
 ) -> Result<Json<serde_json::Value>> {
+    ensure_no_operation_in_progress().await?;
     let dest_name = format!("emergency-restore-{pvc}");
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
 
@@ -1014,6 +1087,7 @@ pub async fn apply_emergency_restore(
 /// For every ReplicationSource whose sourcePVC is Lost/NotFound, triggers an
 /// emergency restore (scale-down → delete PVC → pull from B2).
 pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    ensure_no_operation_in_progress().await?;
     let rs_out = Command::new("kubectl")
         .args(["get", "replicationsource", "-A", "-o", "json"])
         .output()
@@ -1464,6 +1538,14 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
             (next - now).num_seconds().max(0) as u64,
         )).await;
 
+        if restore_in_progress().await {
+            tracing::warn!("cluster-backup: skipping scheduled run — a restore is in progress");
+            continue;
+        }
+        let Some(_guard) = BackupGuard::acquire() else {
+            tracing::warn!("cluster-backup: skipping scheduled run — a backup is already running");
+            continue;
+        };
         if let Err(e) = do_cluster_backup().await {
             tracing::warn!("cluster-backup: {e}");
         }
@@ -1473,6 +1555,12 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
 /// POST /api/backups/cluster/run-now — manual trigger (synchronous, waits for completion).
 /// Auto-configures the master secret + VolSync sources if not already set up.
 pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    if restore_in_progress().await {
+        return Err(anyhow::anyhow!("A restore is currently in progress — try again once it finishes.").into());
+    }
+    let Some(_guard) = BackupGuard::acquire() else {
+        return Err(anyhow::anyhow!("A backup is already running.").into());
+    };
     if let Some((url, token)) = ye_creds(&state.config) {
         let cfg = ensure_master_config(&url, &token).await?;
         let pvcs = list_user_pvcs().await.unwrap_or_default();
@@ -1599,6 +1687,7 @@ pub async fn restore_from_snapshot(
     State(_state): State<AppState>,
     Json(body): Json<RestoreFromSnapshotBody>,
 ) -> Result<Json<serde_json::Value>> {
+    ensure_no_operation_in_progress().await?;
     let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
         return Err(anyhow::anyhow!("backup not configured").into());
     };
