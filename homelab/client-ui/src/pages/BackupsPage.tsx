@@ -325,23 +325,36 @@ function SnapshotCard({
   const [error, setError] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
 
-  async function expand() {
-    if (catalog) { setExpanded(e => !e); return; }
-    setExpanded(true);
+  // Returns the loaded catalog, fetching it first if this card hasn't been expanded yet.
+  // Used by both the row-expand toggle and "Restore from here" — the latter is visible (and
+  // was previously clickable-but-silently-a-no-op) before the row's ever been expanded, since
+  // it doesn't live inside the expanded section.
+  async function ensureCatalogLoaded(): Promise<SnapshotCatalog | null> {
+    if (catalog) return catalog;
     setLoading(true);
     setError(null);
     try {
       const data = await fetch(`/api/backups/snapshots/${snapshot.id}/catalog`).then(r => r.json()) as SnapshotCatalog;
       setCatalog(data);
+      return data;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
+      return null;
     } finally {
       setLoading(false);
     }
   }
 
-  function handleRestoreClick() {
-    if (!catalog) return;
+  async function expand() {
+    if (catalog) { setExpanded(e => !e); return; }
+    setExpanded(true);
+    await ensureCatalogLoaded();
+  }
+
+  async function handleRestoreClick() {
+    setExpanded(true);
+    const data = await ensureCatalogLoaded();
+    if (!data) return; // fetch failed — `error` is already shown in the expanded section
     setRestoring(true);
     onRestoreStart();
   }
@@ -379,7 +392,7 @@ function SnapshotCard({
           {!restoring && !isRestoring && (
             <Button
               onClick={handleRestoreClick}
-              disabled={!catalog || loading || disabled}
+              disabled={loading || disabled}
               variant="outline"
               className="flex-shrink-0 h-7 px-3 text-xs border-[#3f3f46] text-[#a78bfa] hover:border-[#a78bfa] hover:text-[#a78bfa] disabled:opacity-30"
             >
