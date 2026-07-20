@@ -818,48 +818,6 @@ async fn scale_deployment(namespace: &str, name: &str, replicas: u32) -> anyhow:
     Ok(())
 }
 
-async fn patch_deployment_pvc(
-    namespace: &str,
-    deploy: &str,
-    old_pvc: &str,
-    new_pvc: &str,
-) -> anyhow::Result<()> {
-    let dep_out = Command::new("kubectl")
-        .args(["get", "deployment", deploy, "-n", namespace, "-o", "json"])
-        .output()
-        .await?;
-    let mut dep_v: serde_json::Value =
-        serde_json::from_slice(&dep_out.stdout).unwrap_or_default();
-    if let Some(volumes) = dep_v["spec"]["template"]["spec"]["volumes"].as_array_mut() {
-        for vol in volumes.iter_mut() {
-            if vol["persistentVolumeClaim"]["claimName"].as_str() == Some(old_pvc) {
-                vol["persistentVolumeClaim"]["claimName"] =
-                    serde_json::Value::String(new_pvc.to_string());
-            }
-        }
-    }
-    let patch = serde_json::json!({
-        "spec": { "template": { "spec": {
-            "volumes": dep_v["spec"]["template"]["spec"]["volumes"]
-        }}}
-    });
-    let out = Command::new("kubectl")
-        .args([
-            "patch", "deployment", deploy, "-n", namespace,
-            "--type=merge", "-p", &patch.to_string(),
-        ])
-        .output()
-        .await?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "patch deployment {} failed: {}",
-            deploy,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
 /// Creates the PVC a restore will write into, owned by us rather than VolSync.
 ///
 /// Every RD manifest in this file uses copyMethod "Direct" with this PVC passed as
@@ -893,6 +851,36 @@ async fn ensure_destination_pvc(
         }
     });
     kubectl_apply(&manifest.to_string()).await
+}
+
+/// Deletes `pvc_name` if present and waits (bounded) for it to actually finish deleting.
+///
+/// Restoring in place — recreating a PVC under the exact same name the app already uses,
+/// instead of a differently-named "-dest" PVC that then needs deployments repointed at it —
+/// means the caller can never have two PVC objects share a name even momentarily. The caller
+/// must have already scaled down whatever was mounting the old PVC; this just waits out the
+/// window between issuing the delete and the pvc-protection finalizer actually clearing.
+async fn delete_pvc_and_wait(namespace: &str, pvc_name: &str) -> anyhow::Result<()> {
+    let _ = Command::new("kubectl")
+        .args(["delete", "pvc", pvc_name, "-n", namespace, "--wait=false", "--ignore-not-found"])
+        .output()
+        .await;
+    for _ in 0..40 {
+        let exists = Command::new("kubectl")
+            .args(["get", "pvc", pvc_name, "-n", namespace])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !exists {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    anyhow::bail!(
+        "timed out waiting for PVC {namespace}/{pvc_name} to finish deleting — \
+         a pod may still be mounting it"
+    );
 }
 
 #[derive(Deserialize)]
@@ -967,24 +955,16 @@ pub async fn emergency_restore(
         scale_deployment(&namespace, deploy, 0).await?;
     }
 
-    // Delete old PVC — non-blocking; Ceph reclaims space once pods finish terminating.
-    let del_out = Command::new("kubectl")
-        .args(["delete", "pvc", &pvc, "-n", &namespace, "--wait=false"])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    if !del_out.status.success() {
-        return Err(anyhow::anyhow!(
-            "delete pvc failed: {}",
-            String::from_utf8_lossy(&del_out.stderr).trim()
-        )
-        .into());
-    }
-
-    // Create the destination PVC ourselves, then ReplicationDestination writes directly into
-    // it (copyMethod Direct) — VolSync retries until Ceph has space.
-    let restored_pvc = format!("volsync-{dest_name}-dest");
-    ensure_destination_pvc(&restored_pvc, &namespace, &capacity, &storage_class, &access_mode).await?;
+    // Delete the old PVC and wait for it to actually be gone, then recreate it fresh under
+    // the exact same name. Restoring in place like this — rather than into a differently
+    // named "-dest" PVC that deployments then get repointed at — means every other codepath
+    // that expects this app's data to live at its catalog-defined name (an app Update
+    // re-applying the manifest, a reinstall, anything) keeps working without modification.
+    // A differently-named restore is invisible to all of that and gets silently orphaned the
+    // next time anything re-applies the app's manifest — this is exactly what happened live.
+    delete_pvc_and_wait(&namespace, &pvc).await?;
+    ensure_destination_pvc(&pvc, &namespace, &capacity, &storage_class, &access_mode).await?;
+    let restored_pvc = pvc.clone();
 
     let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc));
     let manifest = serde_json::json!({
@@ -1053,18 +1033,17 @@ pub async fn emergency_restore_status(
         "found": true,
         "result": result,
         "last_sync_time": last_sync_time,
-        "restored_pvc": format!("volsync-{dest_name}-dest"),
+        "restored_pvc": pvc,
     })))
 }
 
 /// POST /api/backups/restore/:namespace/:pvc/emergency/apply
-/// Patches deployments to use the restored PVC and scales them back up.
+/// Scales the app back up now that its data has been restored in place.
 pub async fn apply_emergency_restore(
     State(_state): State<AppState>,
     Path((namespace, pvc)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     let dest_name = format!("emergency-restore-{pvc}");
-    let restored_pvc = format!("volsync-{dest_name}-dest");
 
     // Verify restore completed.
     let rd_out = Command::new("kubectl")
@@ -1094,48 +1073,29 @@ pub async fn apply_emergency_restore(
         return Err(anyhow::anyhow!("Restore not complete yet (status: {result})").into());
     }
 
-    // Verify restored PVC exists.
+    // Verify the (canonical-named) PVC exists — restored in place, so this is the same PVC
+    // name the app has always used.
     let pvc_check = Command::new("kubectl")
-        .args(["get", "pvc", &restored_pvc, "-n", &namespace])
+        .args(["get", "pvc", &pvc, "-n", &namespace])
         .output()
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     if !pvc_check.status.success() {
-        return Err(anyhow::anyhow!("Restored PVC {restored_pvc} not found yet").into());
+        return Err(anyhow::anyhow!("Restored PVC {pvc} not found yet").into());
     }
 
-    // Find deployments still referencing the original (now deleted) PVC name.
+    // No deployment or ReplicationSource patching needed — the PVC name never changed, only
+    // the volume behind it. Just scale the app back up.
     let deployments = find_deployments_for_pvc(&namespace, &pvc).await?;
-
     for deploy in &deployments {
-        patch_deployment_pvc(&namespace, deploy, &pvc, &restored_pvc).await?;
         scale_deployment(&namespace, deploy, 1).await?;
     }
-
-    // Point the ReplicationSource at the new PVC so future backups stay intact. Name is
-    // canonical (volsync-{id}), matching what ensure_replication_source always (re)creates —
-    // so this never mints a duplicate RS, even across repeated restore cycles.
-    let rs_name = format!("volsync-{}", canonical_pvc_id(&pvc));
-    let rs_patch = serde_json::json!({ "spec": { "sourcePVC": restored_pvc } });
-    let _ = Command::new("kubectl")
-        .args([
-            "patch",
-            "replicationsource",
-            &rs_name,
-            "-n",
-            &namespace,
-            "--type=merge",
-            "-p",
-            &rs_patch.to_string(),
-        ])
-        .output()
-        .await;
 
     delete_replication_destination_without_touching_pvc(&dest_name, &namespace).await;
 
     Ok(Json(serde_json::json!({
         "applied": true,
-        "restored_pvc": restored_pvc,
+        "restored_pvc": pvc,
         "deployments_updated": deployments,
     })))
 }
@@ -1241,15 +1201,15 @@ pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json:
             let _ = scale_deployment(&namespace, d, 0).await;
         }
 
-        // Delete the Lost PVC (non-blocking).
-        let _ = Command::new("kubectl")
-            .args(["delete", "pvc", &pvc_name, "-n", &namespace, "--wait=false"])
-            .output()
-            .await;
-
-        // Create the destination PVC ourselves, then ReplicationDestination writes directly
-        // into it (copyMethod Direct) to pull data from B2.
-        let restored_pvc = format!("volsync-{dest_name}-dest");
+        // Delete the Lost PVC and wait for it to actually be gone, then recreate it fresh
+        // under the exact same name — restoring in place, not into a differently-named
+        // "-dest" PVC, so the app's Deployment (and its catalog manifest, on any future
+        // Update) keeps pointing at the right place with no repointing step required.
+        if let Err(e) = delete_pvc_and_wait(&namespace, &pvc_name).await {
+            tracing::warn!("DR start: {e}");
+            continue;
+        }
+        let restored_pvc = pvc_name.clone();
         if let Err(e) = ensure_destination_pvc(&restored_pvc, &namespace, &capacity, &storage_class, &access_mode).await {
             tracing::warn!("DR start: failed to create destination PVC for {namespace}/{pvc_name}: {e}");
             continue;
@@ -1318,10 +1278,10 @@ pub async fn dr_status(State(_state): State<AppState>) -> Result<Json<serde_json
             let last_sync_time = item["status"]["lastSyncTime"].as_str().map(String::from);
             Some(serde_json::json!({
                 "namespace": namespace,
-                "pvc": pvc_name,
+                "pvc": pvc_name.clone(),
                 "result": result,
                 "last_sync_time": last_sync_time,
-                "restored_pvc": format!("volsync-{name}-dest"),
+                "restored_pvc": pvc_name,
             }))
         })
         .collect();
@@ -1380,11 +1340,10 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
             continue;
         }
 
-        let restored_pvc = format!("volsync-{name}-dest");
-
-        // Verify restored PVC exists.
+        // Verify the (canonical-named) PVC exists — restored in place, so no separate
+        // deployment or ReplicationSource repointing is needed, just scale back up.
         let pvc_ok = Command::new("kubectl")
-            .args(["get", "pvc", &restored_pvc, "-n", &namespace])
+            .args(["get", "pvc", &pvc_name, "-n", &namespace])
             .output()
             .await
             .map(|o| o.status.success())
@@ -1397,36 +1356,13 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
         let deploys = find_deployments_for_pvc(&namespace, &pvc_name)
             .await
             .unwrap_or_default();
-        let mut had_error = false;
         for deploy in &deploys {
-            match patch_deployment_pvc(&namespace, deploy, &pvc_name, &restored_pvc).await {
-                Ok(_) => {
-                    let _ = scale_deployment(&namespace, deploy, 1).await;
-                }
-                Err(e) => {
-                    errors.push(format!("{namespace}/{deploy}: {e}"));
-                    had_error = true;
-                }
-            }
+            let _ = scale_deployment(&namespace, deploy, 1).await;
         }
 
-        if !had_error {
-            // Update ReplicationSource so future backups target the new PVC.
-            // RS name is canonical (matches ensure_replication_source), not the raw restored
-            // pvc_name, so repeated restores keep patching the same object.
-            let rs_patch = serde_json::json!({ "spec": { "sourcePVC": restored_pvc } });
-            let _ = Command::new("kubectl")
-                .args([
-                    "patch", "replicationsource", &format!("volsync-{}", canonical_pvc_id(&pvc_name)),
-                    "-n", &namespace, "--type=merge", "-p", &rs_patch.to_string(),
-                ])
-                .output()
-                .await;
+        delete_replication_destination_without_touching_pvc(&name, &namespace).await;
 
-            delete_replication_destination_without_touching_pvc(&name, &namespace).await;
-
-            applied.push(format!("{namespace}/{pvc_name}"));
-        }
+        applied.push(format!("{namespace}/{pvc_name}"));
     }
 
     Ok(Json(serde_json::json!({ "applied": applied, "errors": errors })))
@@ -1888,12 +1824,17 @@ pub async fn restore_from_snapshot(
                 let _ = scale_deployment(&pvc.namespace, d, 0).await;
             }
 
-            let _ = Command::new("kubectl")
-                .args(["delete", "pvc", &pvc.name, "-n", &pvc.namespace, "--wait=false"])
-                .output()
-                .await;
-
-            let restored_pvc = format!("volsync-{dest_name}-dest");
+            // Restore in place: delete the PVC, wait for it to actually be gone, then recreate
+            // it fresh under the exact same name — not a differently-named "-dest" PVC that
+            // deployments would need repointing at. Anything that re-applies this app's
+            // catalog manifest later (an Update, a reinstall) expects its data at this exact
+            // name; a differently-named restore is invisible to that and gets silently
+            // orphaned the next time it happens.
+            if let Err(e) = delete_pvc_and_wait(&pvc.namespace, &pvc.name).await {
+                errors.push(format!("{}/{}: {e}", pvc.namespace, pvc.name));
+                continue;
+            }
+            let restored_pvc = pvc.name.clone();
             if let Err(e) = ensure_destination_pvc(&restored_pvc, &pvc.namespace, &capacity, &storage_class, &access_mode).await {
                 errors.push(format!("{}/{}: destination pvc: {e}", pvc.namespace, pvc.name));
                 continue;
