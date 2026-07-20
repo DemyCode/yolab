@@ -1386,7 +1386,12 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|item| {
-                let name     = item["metadata"]["name"].as_str()?.to_string();
+                let name = item["metadata"]["name"].as_str()?.to_string();
+                // Same exclusion as list_user_pvcs(): VolSync's own restic-cache PVCs live in
+                // the same namespace as the real app data and shouldn't be listed as a "service".
+                if name.starts_with("volsync-") {
+                    return None;
+                }
                 let capacity = item["spec"]["resources"]["requests"]["storage"]
                     .as_str().unwrap_or("?").to_string();
                 Some(serde_json::json!({ "name": name, "capacity": capacity }))
