@@ -86,7 +86,7 @@ function timeAgo(iso: string): string {
 
 // ── Restore flow ──────────────────────────────────────────────────────────────
 
-type RestoreStep = "diff" | "restoring" | "applying" | "done";
+type RestoreStep = "diff" | "restoring" | "done";
 
 function RestoreFlow({
   snapshot,
@@ -145,15 +145,14 @@ function RestoreFlow({
         setDone(s.done);
         setTotal(s.total);
         setFailed(s.failed);
-        // state.restoring is the backend's own read of whether any restore objects still
-        // exist — prefer it over all_complete, which reads as permanently false (stuck at
-        // "0/?") if this poll starts after the restore's ReplicationDestinations were
-        // already cleaned up by the time we look.
-        if (s.all_complete || !state.restoring) {
+        // The backend's reconciler applies each restore on its own (scales the app back up,
+        // cleans up its ReplicationDestination) — we never call /dr/apply ourselves. We just
+        // wait for state.restoring to flip false, which only happens once every
+        // ReplicationDestination is gone, i.e. fully applied. This page doesn't need to stay
+        // open for the restore to finish; it's just watching.
+        if (!state.restoring) {
           clearInterval(pollRef.current!);
           pollRef.current = null;
-          setStep("applying");
-          await fetch("/api/backups/dr/apply", { method: "POST" });
           setStep("done");
         }
       } catch { /* network blip */ }
@@ -254,14 +253,15 @@ function RestoreFlow({
     );
   }
 
-  // ── restoring / applying ──
-  if (step === "restoring" || step === "applying") {
+  // ── restoring ──
+  if (step === "restoring") {
+    const allSynced = total > 0 && done + failed === total;
     return (
       <div className="border border-[#78350f] rounded-lg p-4 space-y-3 bg-[#1a1000]">
         <p className="text-sm font-semibold text-[#fbbf24] flex items-center gap-2">
           <RefreshCw className="h-4 w-4 animate-spin" />
-          {step === "applying"
-            ? "Starting services on restored data…"
+          {allSynced
+            ? "Data restored — starting services…"
             : `Pulling data from cloud… ${done}/${total || "?"}`}
         </p>
         {restoreItems.length > 0 && (

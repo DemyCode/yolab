@@ -818,6 +818,35 @@ async fn scale_deployment(namespace: &str, name: &str, replicas: u32) -> anyhow:
     Ok(())
 }
 
+/// Finishes one completed restore: scales the app's deployments back up and cleans up the
+/// ReplicationDestination. The one place this happens — called by the manual /emergency/apply
+/// and /dr/apply endpoints and by the background reconciler, so there's a single
+/// implementation instead of three that can drift out of sync with each other.
+///
+/// Idempotent: safe to call more than once for the same RD (e.g. a manual call racing the
+/// reconciler's next tick) — scaling to a replica count it's already at is a no-op, and the
+/// RD delete already ignores not-found.
+async fn apply_one_restore(namespace: &str, rd_name: &str, pvc_name: &str) -> anyhow::Result<Vec<String>> {
+    let pvc_ok = Command::new("kubectl")
+        .args(["get", "pvc", pvc_name, "-n", namespace])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !pvc_ok {
+        anyhow::bail!("restored PVC {pvc_name} not found yet");
+    }
+
+    let deployments = find_deployments_for_pvc(namespace, pvc_name).await.unwrap_or_default();
+    for deploy in &deployments {
+        let _ = scale_deployment(namespace, deploy, 1).await;
+    }
+
+    delete_replication_destination_without_touching_pvc(rd_name, namespace).await;
+
+    Ok(deployments)
+}
+
 /// Creates the PVC a restore will write into, owned by us rather than VolSync.
 ///
 /// Every RD manifest in this file uses copyMethod "Direct" with this PVC passed as
@@ -1073,25 +1102,7 @@ pub async fn apply_emergency_restore(
         return Err(anyhow::anyhow!("Restore not complete yet (status: {result})").into());
     }
 
-    // Verify the (canonical-named) PVC exists — restored in place, so this is the same PVC
-    // name the app has always used.
-    let pvc_check = Command::new("kubectl")
-        .args(["get", "pvc", &pvc, "-n", &namespace])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    if !pvc_check.status.success() {
-        return Err(anyhow::anyhow!("Restored PVC {pvc} not found yet").into());
-    }
-
-    // No deployment or ReplicationSource patching needed — the PVC name never changed, only
-    // the volume behind it. Just scale the app back up.
-    let deployments = find_deployments_for_pvc(&namespace, &pvc).await?;
-    for deploy in &deployments {
-        scale_deployment(&namespace, deploy, 1).await?;
-    }
-
-    delete_replication_destination_without_touching_pvc(&dest_name, &namespace).await;
+    let deployments = apply_one_restore(&namespace, &dest_name, &pvc).await?;
 
     Ok(Json(serde_json::json!({
         "applied": true,
@@ -1305,20 +1316,23 @@ pub async fn dr_status(State(_state): State<AppState>) -> Result<Json<serde_json
     })))
 }
 
-/// POST /api/backups/dr/apply
-/// Patches deployments to use restored PVCs and scales them back up for all
-/// completed (Successful) emergency restores.
-pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let out = Command::new("kubectl")
+/// Finds every restore whose data pull has succeeded but hasn't been applied yet (its
+/// ReplicationDestination still exists), and finishes each one via apply_one_restore().
+/// Used both by the manual POST /api/backups/dr/apply endpoint and by the background
+/// reconciler — restores complete the same way regardless of who/what triggers the check.
+async fn reconcile_restores() -> (Vec<String>, Vec<String>) {
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    let Ok(out) = Command::new("kubectl")
         .args(["get", "replicationdestination", "-A", "-o", "json"])
         .output()
         .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    else {
+        return (applied, errors);
+    };
     let v: serde_json::Value =
         serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!({"items": []}));
-
-    let mut applied: Vec<String> = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
 
     for item in v["items"].as_array().cloned().unwrap_or_default() {
         let name = match item["metadata"]["name"].as_str() {
@@ -1331,41 +1345,46 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
             _ => continue,
         };
 
-        if item["status"]["latestMoverStatus"]["result"]
+        let successful = item["status"]["latestMoverStatus"]["result"]
             .as_str()
             .unwrap_or("")
-            .to_lowercase()
-            != "successful"
-        {
+            .eq_ignore_ascii_case("successful");
+        if !successful {
             continue;
         }
 
-        // Verify the (canonical-named) PVC exists — restored in place, so no separate
-        // deployment or ReplicationSource repointing is needed, just scale back up.
-        let pvc_ok = Command::new("kubectl")
-            .args(["get", "pvc", &pvc_name, "-n", &namespace])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !pvc_ok {
-            errors.push(format!("{namespace}/{pvc_name}: restored PVC not found yet"));
-            continue;
+        match apply_one_restore(&namespace, &name, &pvc_name).await {
+            Ok(_) => applied.push(format!("{namespace}/{pvc_name}")),
+            Err(e) => errors.push(format!("{namespace}/{pvc_name}: {e}")),
         }
-
-        let deploys = find_deployments_for_pvc(&namespace, &pvc_name)
-            .await
-            .unwrap_or_default();
-        for deploy in &deploys {
-            let _ = scale_deployment(&namespace, deploy, 1).await;
-        }
-
-        delete_replication_destination_without_touching_pvc(&name, &namespace).await;
-
-        applied.push(format!("{namespace}/{pvc_name}"));
     }
 
+    (applied, errors)
+}
+
+/// POST /api/backups/dr/apply — apply right now instead of waiting for the reconciler's next
+/// tick. Nothing depends on this being called anymore; it's a convenience for testing/impatience.
+pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let (applied, errors) = reconcile_restores().await;
     Ok(Json(serde_json::json!({ "applied": applied, "errors": errors })))
+}
+
+/// Background reconciler — periodically finishes any restore whose data pull already
+/// succeeded but hasn't been applied yet. Makes restores fully server-driven: once triggered
+/// (emergency_restore, dr_start, restore_from_snapshot), they complete on their own, whether
+/// or not any client stays connected to watch — this is what makes a browser tab closing (or
+/// simply not being open) harmless instead of leaving the restore stuck forever.
+pub async fn run_restore_reconciler() {
+    loop {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        let (applied, errors) = reconcile_restores().await;
+        for a in &applied {
+            tracing::info!("restore-reconciler: applied {a}");
+        }
+        for e in &errors {
+            tracing::warn!("restore-reconciler: {e}");
+        }
+    }
 }
 
 // ── Background cluster backup task ───────────────────────────────────────────

@@ -114,6 +114,7 @@ async fn main() {
         .with_state(state.clone());
 
     tokio::spawn(backups::run_cluster_backup(Arc::clone(&cfg)));
+    tokio::spawn(backups::run_restore_reconciler());
     tokio::spawn(ceph::run_osd_state_watcher());
 
     let addr = format!("[::]:{}", cfg.port);
