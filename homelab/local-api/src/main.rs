@@ -69,6 +69,7 @@ async fn main() {
         .route("/api/backups/s3/enable", post(backups::enable_s3))
         .route("/api/backups/sftp", get(backups::get_sftp))
         .route("/api/backups/status", get(backups::backup_status))
+        .route("/api/backups/state", get(backups::operation_state))
         .route("/api/backups/restore/:namespace/:pvc", post(backups::trigger_restore))
         .route("/api/backups/restore/:namespace/:pvc/status", get(backups::restore_status))
         .route("/api/backups/restore/:namespace/:pvc/emergency", post(backups::emergency_restore))
