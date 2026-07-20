@@ -747,6 +747,31 @@ pub async fn restore_status(
 
 // ── Emergency restore helpers ─────────────────────────────────────────────────
 
+/// Deletes a ReplicationDestination once its data has been applied, without letting
+/// VolSync's own controller tear down the destination PVC in the process.
+///
+/// The destination PVC is now the live, actively-mounted data volume for the app — by this
+/// point we've already patched deployments to use it. Kubectl's `--cascade=orphan` only
+/// controls the API server's ownerReference-based garbage collection; it does NOT stop
+/// VolSync's own finalizer-driven reconcile-on-delete cleanup, which (observed live) can
+/// still delete the PVC it created for this RD regardless of that flag. Stripping the RD's
+/// finalizers first means it's removed immediately, before VolSync's controller ever gets a
+/// chance to react to the deletion at all — leftover VolSync-internal staging objects (temp
+/// PVC/snapshot) are an acceptable trade-off; destroying the live app's data is not.
+async fn delete_replication_destination_without_touching_pvc(name: &str, namespace: &str) {
+    let _ = Command::new("kubectl")
+        .args([
+            "patch", "replicationdestination", name, "-n", namespace,
+            "--type=merge", "-p", r#"{"metadata":{"finalizers":[]}}"#,
+        ])
+        .output()
+        .await;
+    let _ = Command::new("kubectl")
+        .args(["delete", "replicationdestination", name, "-n", namespace, "--ignore-not-found"])
+        .output()
+        .await;
+}
+
 async fn find_deployments_for_pvc(namespace: &str, pvc_name: &str) -> anyhow::Result<Vec<String>> {
     let out = Command::new("kubectl")
         .args(["get", "deployments", "-n", namespace, "-o", "json"])
@@ -1068,19 +1093,7 @@ pub async fn apply_emergency_restore(
         .output()
         .await;
 
-    // Clean up ReplicationDestination. --cascade=orphan is critical here: the restored PVC
-    // has an ownerReference back to this RD (VolSync sets one), and it's now the live,
-    // actively-mounted data volume for the deployments we just patched above. A normal
-    // (foreground/background) delete cascades to the owned PVC via garbage collection —
-    // setting deletionTimestamp on it immediately, even though pods are using it right now.
-    // It then sits stuck in Terminating (blocked by the pvc-protection finalizer) until
-    // those pods happen to restart, at which point it actually gets deleted — destroying
-    // live data with no warning. Orphaning the PVC before deleting the RD is what makes
-    // this safe.
-    let _ = Command::new("kubectl")
-        .args(["delete", "replicationdestination", &dest_name, "-n", &namespace, "--cascade=orphan"])
-        .output()
-        .await;
+    delete_replication_destination_without_touching_pvc(&dest_name, &namespace).await;
 
     Ok(Json(serde_json::json!({
         "applied": true,
@@ -1367,14 +1380,7 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
                 .output()
                 .await;
 
-            // Clean up ReplicationDestination. --cascade=orphan: see apply_emergency_restore —
-            // the restored PVC is owned by this RD and is now the live, mounted data volume;
-            // a normal cascading delete would set its deletionTimestamp immediately and leave
-            // it stuck Terminating until the next pod restart destroys it for real.
-            let _ = Command::new("kubectl")
-                .args(["delete", "replicationdestination", &name, "-n", &namespace, "--cascade=orphan"])
-                .output()
-                .await;
+            delete_replication_destination_without_touching_pvc(&name, &namespace).await;
 
             applied.push(format!("{namespace}/{pvc_name}"));
         }
