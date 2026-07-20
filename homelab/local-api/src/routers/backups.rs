@@ -1612,6 +1612,21 @@ pub async fn restore_from_snapshot(
     let repo      = cfg.restic_repo("cluster-backup");
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
 
+    // Pin each PVC's restore to (at most) this snapshot's time — otherwise VolSync just pulls
+    // the latest data from each PVC's own ongoing backup stream regardless of which snapshot
+    // was picked, defeating the entire point of a point-in-time restore.
+    let restore_as_of: Option<String> = Command::new("restic")
+        .args(["snapshots", &body.snapshot_id, "--json"])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v.as_array()?.first()?["time"].as_str().map(String::from));
+
     let mut started: Vec<String> = Vec::new();
     let mut errors:  Vec<String> = Vec::new();
 
@@ -1730,6 +1745,21 @@ pub async fn restore_from_snapshot(
                 .await;
 
             let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc.name));
+            let mut restic_spec = serde_json::json!({
+                "repository": secret_name,
+                "copyMethod": "Snapshot",
+                "storageClassName": storage_class,
+                "capacity": capacity,
+                "accessModes": [access_mode],
+                "moverSecurityContext": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "fsGroup": 1000
+                }
+            });
+            if let Some(ref t) = restore_as_of {
+                restic_spec["restoreAsOf"] = serde_json::Value::String(t.clone());
+            }
             let manifest = serde_json::json!({
                 "apiVersion": "volsync.backube/v1alpha1",
                 "kind": "ReplicationDestination",
@@ -1740,18 +1770,7 @@ pub async fn restore_from_snapshot(
                 },
                 "spec": {
                     "trigger": { "manual": format!("snapshot-restore-{timestamp}") },
-                    "restic": {
-                        "repository": secret_name,
-                        "copyMethod": "Snapshot",
-                        "storageClassName": storage_class,
-                        "capacity": capacity,
-                        "accessModes": [access_mode],
-                        "moverSecurityContext": {
-                            "runAsUser": 1000,
-                            "runAsGroup": 1000,
-                            "fsGroup": 1000
-                        }
-                    }
+                    "restic": restic_spec
                 }
             });
 
