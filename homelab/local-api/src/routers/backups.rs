@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -180,6 +180,24 @@ fn random_hex(bytes: usize) -> String {
     hex::encode(buf)
 }
 
+/// Collapses a (possibly restore-mangled) PVC name back to its original identity.
+///
+/// Restores rename the live PVC to `volsync-emergency-restore-{id}-dest`. Without this,
+/// every subsequent restore of an already-restored PVC mints a longer, uglier name and a
+/// brand new ReplicationSource/restic-secret/S3-path — fragmenting backup history and
+/// leaving the previous RS behind as an orphaned duplicate. Names derived from this id
+/// (RS name, restic secret name, S3 repo path) stay stable across any number of restores.
+fn canonical_pvc_id(pvc_name: &str) -> String {
+    let mut id = pvc_name;
+    while let Some(stripped) = id
+        .strip_prefix("volsync-emergency-restore-")
+        .and_then(|s| s.strip_suffix("-dest"))
+    {
+        id = stripped;
+    }
+    id.to_string()
+}
+
 // ── Master backup config ──────────────────────────────────────────────────────
 
 const MASTER_SECRET: &str = "yolab-backup-config";
@@ -290,9 +308,11 @@ async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupCo
 
 /// Create (or update) the per-PVC restic secret in its namespace.
 /// Contains the full repo URL so VolSync knows where to read/write.
+/// Keyed by the canonical PVC id so the repo path (and thus backup history) survives restores.
 async fn ensure_restic_secret(ns: &str, pvc: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
-    let secret_name = format!("{pvc}{RESTIC_SECRET_SUFFIX}");
-    let repo = cfg.restic_repo(&format!("volsync/{ns}/{pvc}"));
+    let cid = canonical_pvc_id(pvc);
+    let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
+    let repo = cfg.restic_repo(&format!("volsync/{ns}/{cid}"));
     kubectl_apply_secret(
         &secret_name,
         ns,
@@ -336,6 +356,15 @@ async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
             if EXCLUDED_NS.contains(&ns.as_str()) {
                 return None;
             }
+            // VolSync creates its own PVCs (restic cache, restore destinations) inside the
+            // same user namespace as the real app data. Without this, each backup run would
+            // pick up the previous run's cache PVC and back *that* up too, spawning a new
+            // ReplicationSource and cache PVC every time — an unbounded, self-amplifying
+            // chain. App PVCs are always named after the app (e.g. "filebrowser-data"),
+            // never with this prefix.
+            if name.starts_with("volsync-") {
+                return None;
+            }
             Some(PvcInfo { namespace: ns, name })
         })
         .collect())
@@ -343,9 +372,23 @@ async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 
 // ── VolSync ReplicationSource ─────────────────────────────────────────────────
 
-async fn ensure_replication_source(pvc: &PvcInfo) -> anyhow::Result<()> {
-    let rs_name = format!("volsync-{}", pvc.name);
-    let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", pvc.name);
+/// `trigger_now`: also stamp a fresh `trigger.manual` value so VolSync syncs this PVC's data
+/// immediately, instead of only (re)confirming its daily schedule. Without this, "Backup Now"
+/// would create a cluster-metadata snapshot but silently leave PVC file data untouched until
+/// the next 3am UTC run — while the UI claims the snapshot is "K8s state + PVC data" right now.
+async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::Result<()> {
+    // Keyed by the canonical id (not the current PVC name) so that re-running this after a
+    // restore updates the same ReplicationSource in place instead of minting a duplicate
+    // under the restore-mangled name.
+    let cid = canonical_pvc_id(&pvc.name);
+    let rs_name = format!("volsync-{cid}");
+    let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
+    let mut trigger = serde_json::json!({ "schedule": "0 3 * * *" });
+    if trigger_now {
+        trigger["manual"] = serde_json::Value::String(
+            chrono::Utc::now().format("now-%Y%m%d%H%M%S").to_string(),
+        );
+    }
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationSource",
@@ -356,7 +399,7 @@ async fn ensure_replication_source(pvc: &PvcInfo) -> anyhow::Result<()> {
         },
         "spec": {
             "sourcePVC": pvc.name,
-            "trigger": { "schedule": "0 3 * * *" },
+            "trigger": trigger,
             "restic": {
                 "repository": secret_name,
                 "pruneIntervalDays": 7,
@@ -388,7 +431,7 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
 
     for pvc in &pvcs {
         ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await?;
-        ensure_replication_source(pvc).await?;
+        ensure_replication_source(pvc, false).await?;
         sources.push(format!("{}/{}", pvc.namespace, pvc.name));
     }
 
@@ -398,6 +441,16 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
         "schedule": "daily at 03:00 UTC",
         "etcd_snapshots": "daily at 02:00 UTC (background task)",
     })))
+}
+
+/// A PVC hasn't synced in this long → flag it as stale rather than silently "Pending" forever.
+/// Chosen to comfortably exceed the daily 03:00 UTC schedule plus retry slack.
+const STALE_AFTER_HOURS: i64 = 36;
+
+fn hours_since(timestamp: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_hours())
 }
 
 /// GET /api/backups/status — per-PVC VolSync ReplicationSource status + etcd snapshot.
@@ -411,8 +464,8 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     let v: serde_json::Value =
         serde_json::from_slice(&rs_out.stdout).unwrap_or(serde_json::json!({"items": []}));
 
-    // Build a (namespace, pvc_name) → phase map from all PVCs.
-    let pvc_phase_map: HashMap<(String, String), String> = Command::new("kubectl")
+    // Build a (namespace, pvc_name) → (phase, deletionTimestamp) map from all PVCs.
+    let pvc_health_map: HashMap<(String, String), (String, Option<String>)> = Command::new("kubectl")
         .args(["get", "pvc", "-A", "-o", "json"])
         .output()
         .await
@@ -425,7 +478,8 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
             let ns = item["metadata"]["namespace"].as_str()?.to_string();
             let name = item["metadata"]["name"].as_str()?.to_string();
             let phase = item["status"]["phase"].as_str().unwrap_or("Unknown").to_string();
-            Some(((ns, name), phase))
+            let deletion_ts = item["metadata"]["deletionTimestamp"].as_str().map(String::from);
+            Some(((ns, name), (phase, deletion_ts)))
         })
         .collect();
 
@@ -437,6 +491,7 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
         .map(|item| {
             let namespace = item["metadata"]["namespace"].as_str().unwrap_or("").to_string();
             let pvc = item["spec"]["sourcePVC"].as_str().unwrap_or("").to_string();
+            let created = item["metadata"]["creationTimestamp"].as_str().map(String::from);
             let last_sync_time = item["status"]["lastSyncTime"].as_str().map(String::from);
             let last_sync_duration =
                 item["status"]["lastSyncDuration"].as_str().map(String::from);
@@ -444,10 +499,26 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
                 .as_str()
                 .unwrap_or(if last_sync_time.is_some() { "Successful" } else { "Pending" })
                 .to_string();
-            let pvc_phase = pvc_phase_map
+            let (pvc_phase, pvc_deletion_ts) = pvc_health_map
                 .get(&(namespace.clone(), pvc.clone()))
                 .cloned()
-                .unwrap_or_else(|| "NotFound".to_string());
+                .unwrap_or(("NotFound".to_string(), None));
+
+            // Stale: never synced and this RS has existed longer than the grace window, or
+            // its last successful sync is older than the grace window. Either way, a backup
+            // that looks "Pending" forever with no visible alert is exactly how a dead backup
+            // goes unnoticed until the day it's needed.
+            let stale = match &last_sync_time {
+                Some(t) => hours_since(t).map_or(true, |h| h > STALE_AFTER_HOURS),
+                None => created
+                    .as_deref()
+                    .and_then(hours_since)
+                    .map_or(false, |h| h > STALE_AFTER_HOURS),
+            };
+            // The PVC has a pending deletion but is still present (finalizer blocking) —
+            // the exact state that makes every future backup job permanently unschedulable.
+            let stuck_terminating = pvc_deletion_ts.is_some();
+
             serde_json::json!({
                 "namespace": namespace,
                 "pvc": pvc,
@@ -455,6 +526,9 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
                 "last_sync_duration": last_sync_duration,
                 "result": result,
                 "pvc_phase": pvc_phase,
+                "stale": stale,
+                "stuck_terminating": stuck_terminating,
+                "pvc_deletion_timestamp": pvc_deletion_ts,
             })
         })
         .collect();
@@ -462,6 +536,9 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     let dr_mode = pvcs
         .iter()
         .any(|p| matches!(p["pvc_phase"].as_str(), Some("Lost") | Some("NotFound")));
+    let backup_alert = pvcs.iter().any(|p| {
+        p["stale"].as_bool().unwrap_or(false) || p["stuck_terminating"].as_bool().unwrap_or(false)
+    });
 
     // Latest etcd snapshot from K3s CRD.
     let etcd_last = Command::new("kubectl")
@@ -488,6 +565,7 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
         "pvcs": pvcs,
         "etcd_last_snapshot": etcd_last,
         "dr_mode": dr_mode,
+        "backup_alert": backup_alert,
     })))
 }
 
@@ -521,7 +599,7 @@ pub async fn trigger_restore(
         .unwrap_or("ReadWriteMany")
         .to_string();
 
-    let secret_name = format!("{pvc}{RESTIC_SECRET_SUFFIX}");
+    let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc));
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationDestination",
@@ -684,12 +762,19 @@ async fn patch_deployment_pvc(
     Ok(())
 }
 
+#[derive(Deserialize)]
+pub struct EmergencyRestoreParams {
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// POST /api/backups/restore/:namespace/:pvc/emergency
 /// Scales down apps, deletes corrupted PVC to free space, then pulls from B2.
 /// No rollback possible — only use when data is already lost/corrupted.
 pub async fn emergency_restore(
     State(_state): State<AppState>,
     Path((namespace, pvc)): Path<(String, String)>,
+    Query(params): Query<EmergencyRestoreParams>,
 ) -> Result<Json<serde_json::Value>> {
     let dest_name = format!("emergency-restore-{pvc}");
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
@@ -716,6 +801,32 @@ pub async fn emergency_restore(
         .unwrap_or("ReadWriteMany")
         .to_string();
 
+    // Refuse to act on a PVC that's already mid-deletion from a previous attempt — deleting
+    // it again is a no-op, and blindly proceeding is exactly how a PVC ends up permanently
+    // stuck Terminating (still mounted by live pods) while every future backup job fails to
+    // schedule against it. Surface the stuck state instead of compounding it.
+    if let Some(ts) = pvc_v["metadata"]["deletionTimestamp"].as_str() {
+        return Err(anyhow::anyhow!(
+            "PVC {namespace}/{pvc} is already Terminating (since {ts}), likely from a previous \
+             restore attempt. Check `kubectl get pods -n {namespace}` for pods still referencing \
+             it — scale those to 0 and let them fully terminate so the deletion can finish before \
+             retrying. Running emergency restore again won't fix this."
+        )
+        .into());
+    }
+
+    // Refuse to nuke a PVC that looks healthy — this call has no rollback. Require an
+    // explicit force=true if the caller really means to act on a Bound, working volume.
+    let phase = pvc_v["status"]["phase"].as_str().unwrap_or("Unknown");
+    if phase == "Bound" && !params.force {
+        return Err(anyhow::anyhow!(
+            "PVC {namespace}/{pvc} looks healthy (phase: Bound). Emergency restore deletes it \
+             immediately with no rollback. Pass ?force=true if you're certain its data is lost \
+             or corrupted and you want to proceed anyway."
+        )
+        .into());
+    }
+
     // Scale down deployments using this PVC before deleting it.
     let deployments = find_deployments_for_pvc(&namespace, &pvc).await?;
     for deploy in &deployments {
@@ -737,7 +848,7 @@ pub async fn emergency_restore(
     }
 
     // Create ReplicationDestination — VolSync retries until Ceph has space.
-    let secret_name = format!("{pvc}{RESTIC_SECRET_SUFFIX}");
+    let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc));
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationDestination",
@@ -865,8 +976,10 @@ pub async fn apply_emergency_restore(
         scale_deployment(&namespace, deploy, 1).await?;
     }
 
-    // Point the ReplicationSource at the new PVC so future backups stay intact.
-    let rs_name = format!("volsync-{pvc}");
+    // Point the ReplicationSource at the new PVC so future backups stay intact. Name is
+    // canonical (volsync-{id}), matching what ensure_replication_source always (re)creates —
+    // so this never mints a duplicate RS, even across repeated restore cycles.
+    let rs_name = format!("volsync-{}", canonical_pvc_id(&pvc));
     let rs_patch = serde_json::json!({ "spec": { "sourcePVC": restored_pvc } });
     let _ = Command::new("kubectl")
         .args([
@@ -1002,7 +1115,7 @@ pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json:
             .await;
 
         // Create ReplicationDestination to pull data from B2.
-        let secret_name = format!("{pvc_name}{RESTIC_SECRET_SUFFIX}");
+        let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc_name));
         let manifest = serde_json::json!({
             "apiVersion": "volsync.backube/v1alpha1",
             "kind": "ReplicationDestination",
@@ -1161,10 +1274,12 @@ pub async fn dr_apply(State(_state): State<AppState>) -> Result<Json<serde_json:
 
         if !had_error {
             // Update ReplicationSource so future backups target the new PVC.
+            // RS name is canonical (matches ensure_replication_source), not the raw restored
+            // pvc_name, so repeated restores keep patching the same object.
             let rs_patch = serde_json::json!({ "spec": { "sourcePVC": restored_pvc } });
             let _ = Command::new("kubectl")
                 .args([
-                    "patch", "replicationsource", &format!("volsync-{pvc_name}"),
+                    "patch", "replicationsource", &format!("volsync-{}", canonical_pvc_id(&pvc_name)),
                     "-n", &namespace, "--type=merge", "-p", &rs_patch.to_string(),
                 ])
                 .output()
@@ -1358,7 +1473,7 @@ pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_
         let pvcs = list_user_pvcs().await.unwrap_or_default();
         for pvc in &pvcs {
             let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
-            let _ = ensure_replication_source(pvc).await;
+            let _ = ensure_replication_source(pvc, true).await;
         }
     }
     let date = do_cluster_backup().await?;
@@ -1564,7 +1679,7 @@ pub async fn restore_from_snapshot(
             }
 
             // Ensure a ReplicationSource exists for future backups.
-            let _ = ensure_replication_source(pvc).await;
+            let _ = ensure_replication_source(pvc, false).await;
 
             let dest_name = format!("emergency-restore-{}", pvc.name);
             let rd_exists = Command::new("kubectl")
@@ -1609,7 +1724,7 @@ pub async fn restore_from_snapshot(
                 .output()
                 .await;
 
-            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", pvc.name);
+            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc.name));
             let manifest = serde_json::json!({
                 "apiVersion": "volsync.backube/v1alpha1",
                 "kind": "ReplicationDestination",
