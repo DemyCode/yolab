@@ -19,6 +19,8 @@ import {
   AlertOctagon,
   CheckCircle2,
   ChevronDown,
+  Loader2,
+  HardDriveDownload,
 } from "lucide-react";
 
 type HealthLevel = "ok" | "warn" | "error";
@@ -32,6 +34,8 @@ interface ClusterHealth {
   title: string;
   message: string;
   issues: HealthIssue[];
+  starting: boolean;
+  provisioning: boolean;
 }
 
 const NAV_ITEMS = [
@@ -54,6 +58,8 @@ function SidebarContent({
 }) {
   const isError = health?.level === "error";
   const isWarn = health?.level === "warn";
+  const isStarting = health?.starting ?? false;
+  const isProvisioning = health?.provisioning ?? false;
 
   return (
     <div className="flex h-full flex-col">
@@ -69,7 +75,7 @@ function SidebarContent({
         {isError && (
           <span className="ml-auto inline-block w-2 h-2 rounded-full bg-[#f87171] animate-pulse" />
         )}
-        {isWarn && (
+        {(isWarn || isStarting) && !isError && (
           <span className="ml-auto inline-block w-2 h-2 rounded-full bg-[#fbbf24]" />
         )}
         {onClose && (
@@ -82,31 +88,35 @@ function SidebarContent({
         )}
       </div>
 
-      {/* Health summary in sidebar for non-OK states */}
-      {health && health.level !== "ok" && (
-        <div className={cn(
-          "mx-3 mt-3 rounded-md px-3 py-2 text-xs",
-          isError ? "bg-[#f87171]/10 text-[#f87171]" : "bg-[#fbbf24]/10 text-[#fbbf24]",
-        )}>
-          {isError ? (
-            <div className="flex items-center gap-1.5">
-              <AlertOctagon className="h-3.5 w-3.5 flex-shrink-0" />
-              <span className="font-medium">Storage error</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
-              <span className="font-medium">Storage warning</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Health OK indicator */}
-      {health?.level === "ok" && (
+      {/* Sidebar health indicator */}
+      {health?.level === "ok" && !isProvisioning && (
         <div className="mx-3 mt-3 rounded-md px-3 py-2 text-xs bg-[#4ade80]/10 text-[#4ade80] flex items-center gap-1.5">
           <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0" />
           <span className="font-medium">Storage healthy</span>
+        </div>
+      )}
+      {isStarting && (
+        <div className="mx-3 mt-3 rounded-md px-3 py-2 text-xs bg-[#60a5fa]/10 text-[#60a5fa] flex items-center gap-1.5">
+          <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin" />
+          <span className="font-medium">Storage starting…</span>
+        </div>
+      )}
+      {isProvisioning && !isStarting && (
+        <div className="mx-3 mt-3 rounded-md px-3 py-2 text-xs bg-[#a78bfa]/10 text-[#a78bfa] flex items-center gap-1.5">
+          <HardDriveDownload className="h-3.5 w-3.5 flex-shrink-0" />
+          <span className="font-medium">Preparing new disk…</span>
+        </div>
+      )}
+      {isError && !isStarting && (
+        <div className="mx-3 mt-3 rounded-md px-3 py-2 text-xs bg-[#f87171]/10 text-[#f87171] flex items-center gap-1.5">
+          <AlertOctagon className="h-3.5 w-3.5 flex-shrink-0" />
+          <span className="font-medium">Storage error</span>
+        </div>
+      )}
+      {isWarn && !isStarting && !isError && (
+        <div className="mx-3 mt-3 rounded-md px-3 py-2 text-xs bg-[#fbbf24]/10 text-[#fbbf24] flex items-center gap-1.5">
+          <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+          <span className="font-medium">Storage warning</span>
         </div>
       )}
 
@@ -181,16 +191,26 @@ function SidebarContent({
 function ClusterHealthBanner({ health }: { health: ClusterHealth | null }) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!health || health.level === "ok") return null;
+  if (!health || (health.level === "ok" && !health.provisioning)) return null;
 
-  const isError = health.level === "error";
-  const colors = isError
+  const isStarting = health.starting;
+  const isProvisioning = health.provisioning;
+  const isError = health.level === "error" && !isStarting;
+
+  const colors = isStarting || isProvisioning
+    ? {
+        bg: "bg-[#60a5fa]/10 border-[#60a5fa]/30",
+        icon: "text-[#60a5fa]",
+        title: "text-[#60a5fa]",
+        msg: "text-[#93c5fd]",
+        chevron: "text-[#60a5fa]/70",
+      }
+    : isError
     ? {
         bg: "bg-[#f87171]/10 border-[#f87171]/40",
         icon: "text-[#f87171]",
         title: "text-[#f87171]",
         msg: "text-[#fca5a5]",
-        badge: "bg-[#f87171]/20 text-[#f87171]",
         chevron: "text-[#f87171]/70",
       }
     : {
@@ -198,26 +218,42 @@ function ClusterHealthBanner({ health }: { health: ClusterHealth | null }) {
         icon: "text-[#fbbf24]",
         title: "text-[#fbbf24]",
         msg: "text-[#fde68a]",
-        badge: "bg-[#fbbf24]/20 text-[#fbbf24]",
         chevron: "text-[#fbbf24]/70",
       };
+
+  const Icon = isStarting
+    ? () => <Loader2 className={cn("h-4 w-4 flex-shrink-0 animate-spin", colors.icon)} />
+    : isProvisioning
+    ? () => <HardDriveDownload className={cn("h-4 w-4 flex-shrink-0", colors.icon)} />
+    : isError
+    ? () => <AlertOctagon className={cn("h-4 w-4 flex-shrink-0", colors.icon)} />
+    : () => <AlertTriangle className={cn("h-4 w-4 flex-shrink-0", colors.icon)} />;
+
+  const title = isStarting
+    ? health.title
+    : isProvisioning && health.level === "ok"
+    ? "Preparing new disk"
+    : health.title;
+
+  const message = isStarting
+    ? health.message
+    : isProvisioning && health.level === "ok"
+    ? "A new disk is being set up as storage. This takes a few minutes."
+    : health.message;
 
   return (
     <div className={cn("border-b px-4 py-3", colors.bg)}>
       <button
         className="w-full text-left"
         onClick={() => setExpanded((e) => !e)}
+        disabled={isStarting || health.issues.length === 0}
       >
         <div className="flex items-center gap-2.5">
-          {isError ? (
-            <AlertOctagon className={cn("h-4 w-4 flex-shrink-0", colors.icon)} />
-          ) : (
-            <AlertTriangle className={cn("h-4 w-4 flex-shrink-0", colors.icon)} />
-          )}
+          <Icon />
           <span className={cn("text-sm font-semibold flex-1", colors.title)}>
-            {health.title}
+            {title}
           </span>
-          {health.issues.length > 0 && (
+          {!isStarting && health.issues.length > 0 && (
             <ChevronDown
               className={cn(
                 "h-3.5 w-3.5 flex-shrink-0 transition-transform",
@@ -227,7 +263,7 @@ function ClusterHealthBanner({ health }: { health: ClusterHealth | null }) {
             />
           )}
         </div>
-        <p className={cn("text-xs mt-0.5 ml-6.5", colors.msg)}>{health.message}</p>
+        <p className={cn("text-xs mt-0.5 ml-6.5", colors.msg)}>{message}</p>
       </button>
       {expanded && health.issues.length > 0 && (
         <div className="mt-2 ml-6 space-y-2">
@@ -260,11 +296,14 @@ export function Layout({ onLogout }: { onLogout: () => void }) {
       .catch(() => {});
   }, []);
 
+  // Poll every 10s while starting or provisioning so the UI updates quickly.
+  // Back off to 30s once stable.
+  const isTransient = health?.starting || health?.provisioning;
   useEffect(() => {
     pollHealth();
-    const id = setInterval(pollHealth, 30_000);
+    const id = setInterval(pollHealth, isTransient ? 10_000 : 30_000);
     return () => clearInterval(id);
-  }, [pollHealth]);
+  }, [pollHealth, isTransient]);
 
   async function handleLogout() {
     await fetch("/api/logout", { method: "POST" });
@@ -327,8 +366,8 @@ export function Layout({ onLogout }: { onLogout: () => void }) {
         {/* Health banner — shown for WARN and ERROR */}
         <ClusterHealthBanner health={health} />
 
-        {/* ERROR overlay: extra prominance strip */}
-        {isError && (
+        {/* ERROR overlay: extra prominence strip — not shown during normal startup */}
+        {isError && !health?.starting && (
           <div className="bg-[#f87171]/5 border-b border-[#f87171]/20 px-4 py-1.5 flex items-center gap-2">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#f87171] animate-pulse" />
             <span className="text-xs text-[#f87171]/70 font-mono">STORAGE ERROR — apps may be unavailable</span>
