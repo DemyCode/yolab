@@ -14,6 +14,9 @@ let
   # After joining, all nodes are identical: control plane + worker + UI.
   isFirstNode = k3sCfg.server_addr == "";
 
+  # glances 4.5.5 has flaky REST integration tests (race: server not ready).
+  glances = pkgs.glances.overrideAttrs (_: { doCheck = false; });
+
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
 {
@@ -327,7 +330,7 @@ in
       after = [ "network.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${pkgs.glances}/bin/glances -w --port 61208 --disable-plugin docker";
+        ExecStart = "${glances}/bin/glances -w --port 61208 --disable-plugin docker";
         Restart = "on-failure";
         RestartSec = "5s";
       };
