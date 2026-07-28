@@ -14,9 +14,13 @@ let
   # After joining, all nodes are identical: control plane + worker + UI.
   isFirstNode = k3sCfg.server_addr == "";
 
-  # glances 4.5.5 has flaky REST integration tests (server not ready race).
-  # Skip them so the package builds from source on nodes that miss the cache.
-  glances = pkgs.glances.overrideAttrs (_: { doCheck = false; nativeCheckInputs = []; });
+  # glances 4.5.5: REST integration tests race the server (connection refused).
+  # Delete those two test files in postPatch so pytest never sees them.
+  glances = pkgs.glances.overrideAttrs (old: {
+    postPatch = (old.postPatch or "") + ''
+      rm -f tests/test_restful.py tests/test_browser_restful.py
+    '';
+  });
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
