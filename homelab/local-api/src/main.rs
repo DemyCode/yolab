@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod disks_reconciler;
 mod error;
 mod kubectl;
 mod proc;
@@ -119,6 +120,7 @@ async fn main() {
     tokio::spawn(backups::run_cluster_backup(Arc::clone(&cfg)));
     tokio::spawn(backups::run_restore_reconciler());
     tokio::spawn(ceph::run_osd_state_watcher());
+    tokio::spawn(disks_reconciler::run());
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");

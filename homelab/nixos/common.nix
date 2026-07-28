@@ -454,6 +454,29 @@ in
       };
     };
 
+    # ── osd-node-controller legacy cleanup ───────────────────────────────────
+    # Disk reconciliation moved into yolab-local-api (Rust). Delete the old
+    # Python DaemonSet and its RBAC once the cluster is reachable.
+    systemd.services.yolab-osd-controller-cleanup = {
+      description = "Remove legacy osd-node-controller DaemonSet";
+      after = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
+      environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "osd-controller-cleanup" ''
+          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
+          until kubectl get nodes 2>/dev/null; do sleep 5; done
+          kubectl delete daemonset    osd-node-controller        -n rook-ceph --ignore-not-found
+          kubectl delete serviceaccount osd-node-controller      -n rook-ceph --ignore-not-found
+          kubectl delete role         osd-node-controller        -n rook-ceph --ignore-not-found
+          kubectl delete rolebinding  osd-node-controller        -n rook-ceph --ignore-not-found
+          kubectl delete configmap    osd-node-controller-script -n rook-ceph --ignore-not-found
+        '';
+      };
+    };
+
     # ── Storage class default management ─────────────────────────────────────
     # K3s creates a `local-path` StorageClass on every boot and marks it as
     # the cluster default.  We deploy `yolab-cephfs` as the real default (set
@@ -601,9 +624,9 @@ in
       # Applies norebalance OSD flag after the cluster is ready. restartPolicy:OnFailure
       # retries until Ceph is up; ttlSecondsAfterFinished cleans it up after success.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster-init.yaml          - - - - ${./rook/cluster-init-job.yaml}"
-      # ConfigMap must sort before the DaemonSet so K3s applies it first.
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-osd-controller-cm.yaml          - - - - ${./rook/osd-node-controller-configmap.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-osd-controller.yaml             - - - - ${./rook/osd-node-controller.yaml}"
+      # osd-node-controller DaemonSet removed — disk reconciliation now runs
+      # inside yolab-local-api (src/disks_reconciler.rs). Migration service
+      # below deletes the legacy Kubernetes resources on the next boot.
       # external-snapshotter: CRDs + RBAC must be applied before the controller.
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
