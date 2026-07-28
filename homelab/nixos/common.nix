@@ -14,14 +14,6 @@ let
   # After joining, all nodes are identical: control plane + worker + UI.
   isFirstNode = k3sCfg.server_addr == "";
 
-  # glances 4.5.5: REST integration tests race the server (connection refused).
-  # Delete those two test files in postPatch so pytest never sees them.
-  glances = pkgs.glances.overrideAttrs (old: {
-    postPatch = (old.postPatch or "") + ''
-      rm -f tests/test_restful.py tests/test_browser_restful.py
-    '';
-  });
-
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
 {
@@ -47,6 +39,18 @@ in
   };
 
   config = {
+    # glances 4.5.5: REST tests race a locally-started server (connection
+    # refused). Remove those two files in postPatch so pytest never sees them.
+    nixpkgs.overlays = [
+      (_final: prev: {
+        glances = prev.glances.overrideAttrs (old: {
+          postPatch = (old.postPatch or "") + ''
+            rm -f tests/test_restful.py tests/test_browser_restful.py
+          '';
+        });
+      })
+    ];
+
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
 
@@ -331,7 +335,7 @@ in
       after = [ "network.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${glances}/bin/glances -w --port 61208 --disable-plugin docker";
+        ExecStart = "${pkgs.glances}/bin/glances -w --port 61208 --disable-plugin docker";
         Restart = "on-failure";
         RestartSec = "5s";
       };
