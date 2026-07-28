@@ -14,12 +14,6 @@ let
   # After joining, all nodes are identical: control plane + worker + UI.
   isFirstNode = k3sCfg.server_addr == "";
 
-  # glances 4.5.5 has flaky REST integration tests (race: server not ready).
-  glances = pkgs.glances.overrideAttrs (old: {
-    doCheck = false;
-    nativeCheckInputs = [];
-  });
-
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
 {
@@ -299,15 +293,6 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
-          @glances_exact path /glances
-          redir @glances_exact /glances/ 301
-          handle /glances/* {
-            forward_auth [::1]:3001 {
-              uri /api/auth/check
-            }
-            uri strip_prefix /glances
-            reverse_proxy 127.0.0.1:61208
-          }
           handle /ceph-dashboard/* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
@@ -321,22 +306,6 @@ in
           }
         }
       '';
-    };
-
-    # ── Glances ───────────────────────────────────────────────────────────────
-    # System-level resource monitor (CPU, RAM, disk, network, processes).
-    # Runs as a web server on port 61208, proxied by Caddy at /glances.
-    # Not in Kubernetes — this monitors the host itself.
-    systemd.services.glances = {
-      description = "Glances system monitor";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${glances}/bin/glances -w --port 61208 --disable-plugin docker";
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
     };
 
     systemd.services.caddy = {
@@ -599,7 +568,6 @@ in
         vim
         wget
         htop
-        glances
         sshfs
         fuse3
         qrencode
