@@ -14,6 +14,10 @@ let
   # After joining, all nodes are identical: control plane + worker + UI.
   isFirstNode = k3sCfg.server_addr == "";
 
+  # glances 4.5.5 has flaky REST integration tests (server not ready race).
+  # Skip them so the package builds from source on nodes that miss the cache.
+  glances = pkgs.glances.overrideAttrs (_: { doCheck = false; nativeCheckInputs = []; });
+
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
 {
@@ -293,6 +297,15 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
+          @glances_exact path /glances
+          redir @glances_exact /glances/ 301
+          handle /glances/* {
+            forward_auth [::1]:3001 {
+              uri /api/auth/check
+            }
+            uri strip_prefix /glances
+            reverse_proxy 127.0.0.1:61208
+          }
           handle /ceph-dashboard/* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
@@ -306,6 +319,18 @@ in
           }
         }
       '';
+    };
+
+    systemd.services.glances = {
+      description = "Glances system monitor";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${glances}/bin/glances -w --port 61208 --disable-plugin docker";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
     };
 
     systemd.services.caddy = {
@@ -568,6 +593,7 @@ in
         vim
         wget
         htop
+        glances
         sshfs
         fuse3
         qrencode
