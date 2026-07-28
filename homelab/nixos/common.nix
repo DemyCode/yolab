@@ -15,7 +15,10 @@ let
   isFirstNode = k3sCfg.server_addr == "";
 
   # glances 4.5.5 has flaky REST integration tests (race: server not ready).
-  glances = pkgs.glances.overrideAttrs (_: { doCheck = false; });
+  glances = pkgs.glances.overrideAttrs (old: {
+    doCheck = false;
+    nativeCheckInputs = [];
+  });
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
 in
