@@ -241,6 +241,19 @@ fn get_devices() -> Vec<String> {
     devices
 }
 
+/// Returns true if the device has any partition entries in /sys/block/{dev}/{dev}*.
+/// Used to exclude system/boot disks that have a partition table.
+fn has_partitions(device: &str) -> bool {
+    std::fs::read_dir(format!("/sys/block/{device}"))
+        .ok()
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().starts_with(device)
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn is_physical_disk(name: &str) -> bool {
     if let Some(rest) = name.strip_prefix("sd") {
         return !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_lowercase());
@@ -321,7 +334,13 @@ fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
             continue;
         }
         match bluestore_fsid(device).as_deref() {
-            None => effective.push(device.clone()),
+            None => {
+                if has_partitions(device) {
+                    tracing::debug!("{device}: has partition table — skipping (system/boot disk)");
+                } else {
+                    effective.push(device.clone());
+                }
+            }
             Some(fsid) if fsid == our_fsid => {
                 tracing::debug!("{device}: our OSD, Rook will re-integrate");
                 effective.push(device.clone());
