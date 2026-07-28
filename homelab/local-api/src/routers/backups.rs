@@ -459,6 +459,11 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
             chrono::Utc::now().format("now-%Y%m%d%H%M%S").to_string(),
         );
     }
+    // copyMethod Direct: read from the live PVC without snapshotting first.
+    // More reliable than Snapshot which requires a working VolumeSnapshotClass —
+    // if the CSI plugin is unhealthy the snapshot never completes and the backup
+    // silently stalls forever. Direct is safe for most apps; the window of
+    // inconsistency (files written mid-backup) is the same as tar-over-a-live-fs.
     let manifest = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationSource",
@@ -474,10 +479,7 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
                 "repository": secret_name,
                 "pruneIntervalDays": 7,
                 "retain": { "daily": 7, "weekly": 4, "monthly": 12 },
-                // Snapshot takes an atomic CephFS VolumeSnapshot before syncing,
-                // giving database apps (postgres, etc.) a consistent backup point.
-                "copyMethod": "Snapshot",
-                "volumeSnapshotClassName": "csi-cephfs-snapclass",
+                "copyMethod": "Direct",
                 "moverSecurityContext": {
                     "runAsUser": 1000,
                     "runAsGroup": 1000,
@@ -1533,6 +1535,7 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
     }
 
     tracing::info!("cluster-backup: snapshot complete ({date})");
+    record_cluster_backup_success();
 
     // 6. Prune old snapshots.
     let _ = Command::new("restic")
@@ -1545,34 +1548,31 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
     Ok(date)
 }
 
-/// Returns hours since the most recent yolab cluster-backup etcd snapshot on disk,
-/// or a large value if none exist. Used to detect missed backups after downtime.
+const LAST_BACKUP_TS_FILE: &str = "/var/lib/yolab/last-cluster-backup";
+
+/// Returns hours since the most recent successful cluster backup, or a large value
+/// if no backup has ever run. Written by do_cluster_backup() on success.
 fn last_cluster_backup_age_hours() -> i64 {
-    let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
-    let Ok(entries) = std::fs::read_dir(snap_dir) else { return i64::MAX };
-    entries
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("yolab-cluster-")
-        })
-        .filter_map(|e| e.metadata().ok()?.modified().ok())
-        .filter_map(|mtime| {
-            mtime
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_secs() as i64)
-        })
-        .max()
-        .map(|newest_secs| {
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            (now_secs - newest_secs) / 3600
-        })
-        .unwrap_or(i64::MAX)
+    let ts: i64 = std::fs::read_to_string(LAST_BACKUP_TS_FILE)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if ts == 0 {
+        return i64::MAX;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    (now - ts) / 3600
+}
+
+fn record_cluster_backup_success() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = std::fs::write(LAST_BACKUP_TS_FILE, now.to_string());
 }
 
 /// Daily scheduler — sleeps until 02:00 UTC then calls do_cluster_backup.
