@@ -19,7 +19,7 @@ pub type Sessions = Arc<RwLock<HashMap<String, i64>>>;
 
 const SESSION_DAYS: i64 = 30;
 const SECRET_NAME: &str = "yolab-sessions";
-const SECRET_NS: &str = "rook-ceph";
+const SECRET_NS: &str = "kube-system";
 
 pub fn new_sessions() -> Sessions {
     Arc::new(RwLock::new(HashMap::new()))

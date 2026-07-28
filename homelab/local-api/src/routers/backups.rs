@@ -474,7 +474,10 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
                 "repository": secret_name,
                 "pruneIntervalDays": 7,
                 "retain": { "daily": 7, "weekly": 4, "monthly": 12 },
-                "copyMethod": "Direct",
+                // Snapshot takes an atomic CephFS VolumeSnapshot before syncing,
+                // giving database apps (postgres, etc.) a consistent backup point.
+                "copyMethod": "Snapshot",
+                "volumeSnapshotClassName": "csi-cephfs-snapclass",
                 "moverSecurityContext": {
                     "runAsUser": 1000,
                     "runAsGroup": 1000,
@@ -1428,6 +1431,11 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
                         let dst = format!("{tmp_dir}/etcd.db");
                         if let Err(e) = std::fs::copy(entry.path(), &dst) {
                             tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
+                        } else {
+                            // Delete the local snapshot file now that it's been copied into
+                            // the backup staging dir (restic will upload it). Without this,
+                            // snapshots accumulate on disk indefinitely.
+                            let _ = std::fs::remove_file(entry.path());
                         }
                         let _ = Command::new("kubectl")
                             .args(["delete", "etcdsnapshotfile", &fname_str.to_string(), "--ignore-not-found"])
@@ -1537,8 +1545,55 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
     Ok(date)
 }
 
+/// Returns hours since the most recent yolab cluster-backup etcd snapshot on disk,
+/// or a large value if none exist. Used to detect missed backups after downtime.
+fn last_cluster_backup_age_hours() -> i64 {
+    let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
+    let Ok(entries) = std::fs::read_dir(snap_dir) else { return i64::MAX };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("yolab-cluster-")
+        })
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .filter_map(|mtime| {
+            mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs() as i64)
+        })
+        .max()
+        .map(|newest_secs| {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            (now_secs - newest_secs) / 3600
+        })
+        .unwrap_or(i64::MAX)
+}
+
 /// Daily scheduler — sleeps until 02:00 UTC then calls do_cluster_backup.
+/// On startup, immediately runs a catch-up backup if the last one was >23 hours ago,
+/// so a node coming back after extended downtime does not wait another full day.
 pub async fn run_cluster_backup(_config: Arc<Config>) {
+    // Give K3s and Ceph ~60 seconds to settle after (re)start before the first backup attempt.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+
+    if last_cluster_backup_age_hours() > 23
+        && !restore_in_progress().await
+        && kubectl_get_secret(MASTER_SECRET, MASTER_NS).await.is_some()
+    {
+        tracing::info!("cluster-backup: missed backup detected — running catch-up now");
+        if let Some(_guard) = BackupGuard::acquire() {
+            if let Err(e) = do_cluster_backup().await {
+                tracing::warn!("cluster-backup catch-up: {e}");
+            }
+        }
+    }
+
     loop {
         let now  = chrono::Utc::now();
         let next = {

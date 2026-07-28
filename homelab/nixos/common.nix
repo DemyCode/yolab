@@ -454,6 +454,59 @@ in
       };
     };
 
+    # ── Storage class default management ─────────────────────────────────────
+    # K3s creates a `local-path` StorageClass on every boot and marks it as
+    # the cluster default.  We deploy `yolab-cephfs` as the real default (set
+    # explicitly after K3s is ready) so that all PVC requests go to CephFS.
+    # Without this, both classes would be marked default — K8s 1.26+ rejects
+    # PVC creation when more than one default class exists.
+    systemd.services.yolab-storageclass-default = {
+      description = "Ensure yolab-cephfs is the only default StorageClass";
+      after = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
+      environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Retry until the API server is ready (K3s may still be initialising).
+        ExecStart = pkgs.writeShellScript "storageclass-default" ''
+          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
+          until kubectl get storageclass local-path 2>/dev/null; do sleep 5; done
+          kubectl annotate storageclass local-path \
+            storageclass.kubernetes.io/is-default-class=false --overwrite
+          kubectl annotate storageclass yolab-cephfs \
+            storageclass.kubernetes.io/is-default-class=true --overwrite 2>/dev/null || true
+        '';
+      };
+    };
+
+    # ── CephFS CSI stale-lock recovery ───────────────────────────────────────
+    # After a node reboot the CephFS CSI plugin (csi-cephfsplugin DaemonSet)
+    # retains in-memory operation locks from the previous session.  Any pod that
+    # tries to mount a CephFS volume immediately after reboot gets:
+    #   "an operation with the given Volume ID … already exists"
+    # until those locks expire (~10 minutes) or the pod is restarted.
+    # Restarting the DaemonSet pods on startup clears the lock state immediately
+    # so app pods and VolSync backup jobs can mount volumes without delay.
+    systemd.services.yolab-csi-recovery = {
+      description = "Restart CephFS CSI plugin to clear stale volume locks";
+      after = [ "k3s.service" ];
+      wantedBy = [ "multi-user.target" ];
+      environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "csi-recovery" ''
+          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
+          # Wait for the CSI DaemonSet to exist — Rook may not have reconciled yet.
+          until kubectl get daemonset csi-cephfsplugin -n rook-ceph 2>/dev/null; do sleep 10; done
+          kubectl rollout restart daemonset/csi-cephfsplugin -n rook-ceph
+          kubectl rollout status  daemonset/csi-cephfsplugin -n rook-ceph --timeout=180s || true
+        '';
+        TimeoutStartSec = "300";
+      };
+    };
+
     # ── Users ─────────────────────────────────────────────────────────────
     users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey ++ [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
