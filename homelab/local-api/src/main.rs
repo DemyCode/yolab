@@ -16,7 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use auth::{auth_middleware, AuthState};
 use config::Config;
-use routers::{apps, backups, ceph, nodes, rebuild, status, terminal, update};
+use routers::{apps, backups, ceph, disks, nodes, rebuild, status, terminal, update};
 
 /// Single shared state threaded through all handlers.
 #[derive(Clone)]
@@ -82,6 +82,9 @@ async fn main() {
         .route("/api/backups/cluster/run-now", post(backups::run_backup_now))
         .route("/api/backups/snapshots/:id/catalog", get(backups::snapshot_catalog))
         .route("/api/backups/restore/from-snapshot", post(backups::restore_from_snapshot))
+        // Disks
+        .route("/api/disks", get(disks::list_disks))
+        .route("/api/disks/:node/:id", axum::routing::put(disks::set_disk_state))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         .route("/api/ceph/detail", get(ceph::storage_detail))

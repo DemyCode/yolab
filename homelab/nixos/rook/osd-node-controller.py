@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, re, time, logging, random
+import json, os, re, time, logging, random
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -10,6 +10,8 @@ NODE_NAME = os.environ['MY_NODE_NAME']
 NAMESPACE = 'rook-ceph'
 CLUSTER   = 'rook-ceph'
 INTERVAL  = 30
+STATUS_CM = 'yolab-disk-status'
+CONFIG_CM = 'yolab-disk-config'
 
 BLUESTORE_MAGIC = b'bluestore block device\n'
 CEPH_FSID_KEY   = b'\x09\x00\x00\x00ceph_fsid'  # 4-byte LE len(9) + key bytes
@@ -177,6 +179,81 @@ def classify_devices(all_devices, our_fsid):
     return sorted(effective)
 
 
+def get_disk_id(device):
+    """Return a stable, ConfigMap-key-safe identifier for a disk."""
+    if re.fullmatch(r'loop\d+', device):
+        try:
+            bf = open(f'/host-sys/block/{device}/loop/backing_file').read().strip()
+            name = re.sub(r'[^a-z0-9]', '-', os.path.basename(bf).lower()).strip('-')
+        except Exception:
+            name = device
+        return f'loop-{name}'
+    try:
+        serial = open(f'/host-sys/block/{device}/device/serial').read().strip()
+        if serial:
+            safe = re.sub(r'[^a-z0-9]', '-', serial.lower()).strip('-')
+            return f'serial-{safe}'
+    except Exception:
+        pass
+    return f'dev-{device}'
+
+
+def get_disk_meta(device, our_fsid):
+    """Return metadata dict for a disk (written to status ConfigMap)."""
+    is_loop = bool(re.fullmatch(r'loop\d+', device))
+    model = 'System disk' if is_loop else ''
+    try:
+        if not is_loop:
+            model = open(f'/host-sys/block/{device}/device/model').read().strip()
+    except Exception:
+        pass
+    size_bytes = 0
+    try:
+        sectors = int(open(f'/host-sys/block/{device}/size').read().strip())
+        size_bytes = sectors * 512
+    except Exception:
+        pass
+    device_fsid = get_bluestore_fsid(device)
+    return {
+        'device': device,
+        'model': model,
+        'size_bytes': size_bytes,
+        'is_loop': is_loop,
+        'is_our_osd': device_fsid == our_fsid if device_fsid else False,
+    }
+
+
+def write_disk_status(core_api, disk_meta):
+    """Update yolab-disk-status ConfigMap with this node's disk info."""
+    data = {NODE_NAME: json.dumps(disk_meta)}
+    try:
+        core_api.patch_namespaced_config_map(STATUS_CM, NAMESPACE, {'data': data})
+    except ApiException as e:
+        if e.status == 404:
+            cm = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(name=STATUS_CM, namespace=NAMESPACE),
+                data=data,
+            )
+            try:
+                core_api.create_namespaced_config_map(NAMESPACE, cm)
+            except ApiException as ce:
+                if ce.status != 409:  # race: another node created it first, safe
+                    log.error(f'Failed to create disk status CM: {ce}')
+        else:
+            log.error(f'Failed to write disk status: {e}')
+
+
+def read_desired(core_api):
+    """Read desired disk states from yolab-disk-config ConfigMap."""
+    try:
+        cm = core_api.read_namespaced_config_map(CONFIG_CM, NAMESPACE)
+        return cm.data or {}
+    except ApiException as e:
+        if e.status != 404:
+            log.error(f'Failed to read disk config: {e}')
+        return {}
+
+
 def is_prepare_job_complete(batch_api):
     """Return True if the Rook OSD prepare job for this node has completed."""
     try:
@@ -293,11 +370,20 @@ def _patch_osd_deployment(apps_api, deploy, new_node):
                 return
 
 
-def reconcile(custom_api, apps_api, batch_api):
+def reconcile(custom_api, apps_api, batch_api, core_api):
     all_devices = get_devices()
     our_fsid    = get_cluster_fsid(custom_api)
-    effective   = classify_devices(all_devices, our_fsid)
 
+    # Publish disk metadata for the UI
+    disk_meta = {get_disk_id(d): get_disk_meta(d, our_fsid) for d in all_devices}
+    write_disk_status(core_api, disk_meta)
+
+    # Read user-set desired states (missing key = default USING)
+    desired = read_desired(core_api)
+    def is_wanted(device):
+        return desired.get(f'{NODE_NAME}--{get_disk_id(device)}', 'USING') == 'USING'
+
+    effective = [d for d in classify_devices(all_devices, our_fsid) if is_wanted(d)]
     log.info(f'Devices this cycle: {effective} (all seen: {all_devices})')
 
     for attempt in range(5):
@@ -350,13 +436,14 @@ config.load_incluster_config()
 custom_api = client.CustomObjectsApi()
 apps_api   = client.AppsV1Api()
 batch_api  = client.BatchV1Api()
+core_api   = client.CoreV1Api()
 
 time.sleep(random.uniform(0, 10))
 log.info(f'osd-node-controller started on {NODE_NAME}')
 
 while True:
     try:
-        reconcile(custom_api, apps_api, batch_api)
+        reconcile(custom_api, apps_api, batch_api, core_api)
     except Exception as e:
         log.error(f'Reconcile error: {e}')
     time.sleep(INTERVAL)
