@@ -277,16 +277,28 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
         let _guard = UpdateGuard;
         let ch = read_channel(&cfg);
 
+        let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
+
+        // Helper: append a line to the rebuild log so background git ops are visible.
+        let log_path = cfg.rebuild_log.clone();
+        let append_log = |msg: String| {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                use std::io::Write;
+                let _ = writeln!(f, "{msg}");
+            }
+        };
+
         // git fetch
-        let fetch_ok = tokio::process::Command::new("git")
+        let fetch_out = tokio::process::Command::new("git")
             .args(["-C", &cfg.repo_path, "fetch", &ch.remote, "--tags"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !fetch_ok { return; }
+            .output()
+            .await;
+        let fetch_ok = fetch_out.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        if !fetch_ok {
+            let stderr = fetch_out.as_ref().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
+            append_log(format!("[trigger] git fetch failed: {stderr}"));
+            return;
+        }
 
         // git reset --hard
         let remote_ref = format!("{}/{}", ch.remote, ch.ref_);
@@ -296,19 +308,22 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
             .map(|o| o.status.success())
             .unwrap_or(false);
         let target = if has_remote { remote_ref } else { ch.ref_.clone() };
-        let reset_ok = tokio::process::Command::new("git")
+        let reset_out = tokio::process::Command::new("git")
             .args(["-C", &cfg.repo_path, "reset", "--hard", &target])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !reset_ok { return; }
+            .output()
+            .await;
+        let reset_ok = reset_out.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        if !reset_ok {
+            let stderr = reset_out.as_ref().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
+            append_log(format!("[trigger] git reset failed: {stderr}"));
+            return;
+        }
+        if let Ok(ref o) = reset_out {
+            append_log(format!("[trigger] git reset: {}", String::from_utf8_lossy(&o.stdout).trim()));
+        }
 
         // nixos-rebuild (detached — survives local-api restart)
         let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
-        let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
         if let (Ok(log_file), Ok(log2)) = (
             std::fs::File::create(&cfg.rebuild_log),
             std::fs::File::create(&cfg.rebuild_log),
