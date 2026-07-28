@@ -19,6 +19,7 @@ pub struct DiskInfo {
     pub size_bytes: u64,
     pub is_loop: bool,
     pub is_our_osd: bool,
+    pub osd_id: Option<i64>,
     pub desired: String,
 }
 
@@ -65,6 +66,7 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
                         size_bytes: v["size_bytes"].as_u64().unwrap_or(0),
                         is_loop: v["is_loop"].as_bool().unwrap_or(false),
                         is_our_osd: v["is_our_osd"].as_bool().unwrap_or(false),
+                        osd_id: v["osd_id"].as_i64(),
                     }
                 })
                 .collect();

@@ -45,6 +45,47 @@ pub async fn run() {
     }
 }
 
+/// Returns the OSD ID that resides on `device` on this node, if any.
+/// Reads the BlueStore OSD UUID from the device header and matches it against
+/// running OSD deployments. Returns None if the device is not a Ceph OSD or
+/// if the OSD can't be identified.
+pub fn osd_id_for_device(device: &str, our_fsid: &str) -> Option<i64> {
+    if device.starts_with("loop") {
+        return None;
+    }
+    if bluestore_fsid(device).as_deref() != Some(our_fsid) {
+        return None;
+    }
+    bluestore_osd_uuid(device).and_then(|uuid| osd_id_from_uuid_sync(&uuid))
+}
+
+fn osd_id_from_uuid_sync(osd_uuid: &str) -> Option<i64> {
+    // OSD deployments have label rook-ceph-osd-id=<id>
+    // We look for deployments whose ROOK_OSD_UUID env var matches.
+    let out = std::process::Command::new("kubectl")
+        .args([
+            "get", "deploy", "-n", NS, "-l", "app=rook-ceph-osd",
+            "-o", "jsonpath={range .items[*]}{.metadata.labels.rook-ceph-osd-id}{\"\\t\"}{.spec.template.spec.containers[0].env}{\"\\n\"}{end}",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let parts: Vec<&str> = line.splitn(2, '\t').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let osd_id_str = parts[0].trim();
+        let env_json = parts[1].trim();
+        if env_json.contains(osd_uuid) {
+            if let Ok(id) = osd_id_str.parse::<i64>() {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
 async fn reconcile(node: &str) -> Result<()> {
     let devices = get_devices();
     let our_fsid = cluster_fsid().await.unwrap_or_default();
@@ -71,8 +112,114 @@ async fn reconcile(node: &str) -> Result<()> {
 
     if !our_fsid.is_empty() {
         migrate_osd_deployments(node, &our_fsid).await;
+        purge_dead_osds(node, &devices, &our_fsid).await;
     }
     Ok(())
+}
+
+/// Detect OSD deployments on this node whose underlying disk has disappeared.
+/// When the activate init container can't find its disk (device wiped or
+/// removed), the pod crashes repeatedly and the OSD can never come back online.
+/// Purging it removes the tombstone from Ceph's OSD map so the cluster can
+/// recover; Rook will re-provision a fresh OSD on the next disk discovery if
+/// the device is still in the CephCluster CR.
+async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
+    // Build the set of OSD UUIDs for every disk that is physically present.
+    let live_uuids: std::collections::HashSet<String> = devices
+        .iter()
+        .filter(|d| !d.starts_with("loop"))
+        .filter(|d| bluestore_fsid(d).as_deref() == Some(our_fsid))
+        .filter_map(|d| bluestore_osd_uuid(d))
+        .collect();
+
+    let Ok(deploys) = kubectl::get_json(&[
+        "get", "deployments", "-n", NS, "-l", "app=rook-ceph-osd", "-o", "json",
+    ]).await else { return };
+
+    for deploy in deploys["items"].as_array().cloned().unwrap_or_default() {
+        let name = deploy["metadata"]["name"].as_str().unwrap_or("");
+        let deploy_node = deploy["spec"]["template"]["spec"]["nodeSelector"]
+            ["kubernetes.io/hostname"].as_str().unwrap_or("");
+        if deploy_node != node {
+            continue;
+        }
+
+        // Check if the pod for this deployment is crashing (not ready).
+        let replicas_ready = deploy["status"]["readyReplicas"].as_u64().unwrap_or(0);
+        if replicas_ready > 0 {
+            continue; // OSD is healthy — leave it alone
+        }
+
+        // Get the OSD UUID from the deployment env.
+        let env = deploy["spec"]["template"]["spec"]["containers"][0]["env"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let osd_uuid = env.iter()
+            .find(|e| e["name"] == "ROOK_OSD_UUID")
+            .and_then(|e| e["value"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let osd_id_str = deploy["metadata"]["labels"]["rook-ceph-osd-id"]
+            .as_str()
+            .unwrap_or("");
+        let Ok(osd_id) = osd_id_str.parse::<i64>() else { continue };
+
+        if osd_uuid.is_empty() || live_uuids.contains(&osd_uuid) {
+            continue; // Disk is still here — may just be temporarily down
+        }
+
+        // The disk is gone. Only purge if the pod has been failing for a while —
+        // avoid racing with a pod that's in its first few restart cycles.
+        let init_restarts: u32 = deploy["status"]["conditions"]
+            .as_array()
+            .and_then(|_| {
+                // Approximate: check if the pod's last-known restart count is high.
+                // We use the deployment's unavailableReplicas as a rough signal.
+                None::<u32>
+            })
+            .unwrap_or(0);
+        let _ = init_restarts; // used implicitly via pod check below
+
+        // Check if the pod has been restarting for >5 minutes (has a restart count > 3).
+        let pod_name_prefix = format!("{name}-");
+        let pods_out = kubectl::get_json(&[
+            "get", "pods", "-n", NS, "-l", &format!("app=rook-ceph-osd,rook-ceph-osd-id={osd_id_str}"),
+            "-o", "json",
+        ]).await;
+        let min_restarts = if let Ok(pods) = pods_out {
+            pods["items"].as_array().cloned().unwrap_or_default()
+                .iter()
+                .filter(|p| p["spec"]["nodeName"].as_str() == Some(node))
+                .flat_map(|p| p["status"]["initContainerStatuses"].as_array().cloned().unwrap_or_default())
+                .map(|c| c["restartCount"].as_u64().unwrap_or(0))
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let _ = pod_name_prefix;
+
+        if min_restarts < 5 {
+            // Not yet sure — too early to purge
+            continue;
+        }
+
+        tracing::warn!(
+            "purge_dead_osds: osd.{osd_id} on {node} has disk UUID {osd_uuid} but disk is gone \
+             ({min_restarts} restart(s)) — purging"
+        );
+        if let Err(e) = crate::kubectl::ceph_exec(&[
+            "osd", "purge", &format!("{osd_id}"), "--yes-i-really-mean-it",
+        ]).await {
+            tracing::warn!("purge_dead_osds: ceph osd purge {osd_id}: {e}");
+            continue;
+        }
+        let _ = kubectl::run(&[
+            "delete", "deployment", name, "-n", NS, "--ignore-not-found",
+        ]).await;
+        tracing::info!("purge_dead_osds: osd.{osd_id} purged and deployment deleted");
+    }
 }
 
 // ── Device discovery ──────────────────────────────────────────────────────────
@@ -240,7 +387,20 @@ fn disk_meta(device: &str, our_fsid: &str) -> Value {
     let is_our_osd = bluestore_fsid(device)
         .map(|f| f == our_fsid)
         .unwrap_or(false);
-    json!({"device": device, "model": model, "size_bytes": size_bytes, "is_loop": is_loop, "is_our_osd": is_our_osd})
+    // Expose OSD ID so the UI can correlate disks with OSD metrics.
+    let osd_id: Option<i64> = if is_our_osd {
+        bluestore_osd_uuid(device).and_then(|uuid| osd_id_from_uuid_sync(&uuid))
+    } else {
+        None
+    };
+    json!({
+        "device": device,
+        "model": model,
+        "size_bytes": size_bytes,
+        "is_loop": is_loop,
+        "is_our_osd": is_our_osd,
+        "osd_id": osd_id,
+    })
 }
 
 // ── ConfigMap helpers ─────────────────────────────────────────────────────────

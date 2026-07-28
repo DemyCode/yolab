@@ -476,6 +476,10 @@ in
         ExecStart = pkgs.writeShellScript "osd-controller-cleanup" ''
           export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
           until kubectl get nodes 2>/dev/null; do sleep 5; done
+          # Remove K3s Addon objects so K3s stops managing these resources.
+          kubectl delete addon rook-osd-controller    -n kube-system --ignore-not-found 2>/dev/null || true
+          kubectl delete addon rook-osd-controller-cm -n kube-system --ignore-not-found 2>/dev/null || true
+          # Remove the K8s resources themselves.
           kubectl delete daemonset    osd-node-controller        -n rook-ceph --ignore-not-found
           kubectl delete serviceaccount osd-node-controller      -n rook-ceph --ignore-not-found
           kubectl delete role         osd-node-controller        -n rook-ceph --ignore-not-found
@@ -632,9 +636,10 @@ in
       # Applies norebalance OSD flag after the cluster is ready. restartPolicy:OnFailure
       # retries until Ceph is up; ttlSecondsAfterFinished cleans it up after success.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster-init.yaml          - - - - ${./rook/cluster-init-job.yaml}"
-      # osd-node-controller DaemonSet removed — disk reconciliation now runs
-      # inside yolab-local-api (src/disks_reconciler.rs). Migration service
-      # below deletes the legacy Kubernetes resources on the next boot.
+      # Remove legacy osd-node-controller manifest files so K3s stops recreating the
+      # DaemonSet. The r directive silently no-ops if the file is already gone.
+      "r /var/lib/rancher/k3s/server/manifests/rook-osd-controller.yaml"
+      "r /var/lib/rancher/k3s/server/manifests/rook-osd-controller-cm.yaml"
       # external-snapshotter: CRDs + RBAC must be applied before the controller.
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"

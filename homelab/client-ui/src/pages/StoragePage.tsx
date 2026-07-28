@@ -149,14 +149,23 @@ function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onCh
         <p className="text-xs text-[#52525b] mt-0.5">
           {fmtSize(disk.size_bytes)}
           {disk.is_loop && <span className="ml-1.5">· System disk</span>}
-          {disk.is_our_osd && !disk.is_loop && <span className="ml-1.5 text-[#4ade80]">· Active OSD</span>}
-          {!disk.is_our_osd && !disk.is_loop && <span className="ml-1.5 text-[#fbbf24]">· Not yet provisioned</span>}
+          {disk.is_our_osd && !disk.is_loop && (
+            <span className="ml-1.5 text-[#4ade80]">
+              · Active OSD{disk.osd_id !== null ? ` (osd.${disk.osd_id})` : ""}
+            </span>
+          )}
+          {!disk.is_our_osd && !disk.is_loop && disk.desired === "USING" && (
+            <span className="ml-1.5 text-[#fbbf24]">· Pending OSD provisioning</span>
+          )}
+          {!disk.is_our_osd && !disk.is_loop && disk.desired === "OFF" && (
+            <span className="ml-1.5 text-[#71717a]">· Removed from cluster</span>
+          )}
         </p>
       </div>
 
       {confirm && (
         <div className="flex items-center gap-1.5 text-xs text-[#fbbf24]">
-          <span>Remove from Ceph?</span>
+          <span>Remove disk from cluster? Data will be migrated first.</span>
           <button
             onClick={() => void toggle()}
             disabled={busy}
@@ -226,7 +235,7 @@ function ManageDisksPanel() {
           </button>
         </div>
         <p className="text-xs text-[#52525b] mt-0.5">
-          Toggle a disk to add or remove it from storage. New disks are added automatically.
+          Toggle a disk on to add it to the storage cluster, or off to remove it. Removal drains data safely before the disk is taken offline.
         </p>
       </CardHeader>
       <CardContent className="p-0">
