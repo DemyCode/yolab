@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff, Loader2 } from "lucide-react";
+import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff, Loader2, Cpu } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { OsdInfo, PoolInfo, StorageDetail, StorageDetailResponse } from "@/types/storage";
+import type { OsdInfo, PoolInfo, StorageDetail, StorageDetailResponse, DiskInfo } from "@/types/storage";
 
 const GiB = 1073741824;
 const TiB = GiB * 1024;
@@ -100,6 +100,155 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
       )}
       {err && <p className="text-xs text-[#f87171]">{err}</p>}
     </div>
+  );
+}
+
+function fmtSize(b: number): string {
+  if (b >= 1e12) return `${(b / 1e12).toFixed(1)} TB`;
+  if (b >= 1e9)  return `${(b / 1e9).toFixed(0)} GB`;
+  if (b >= 1e6)  return `${(b / 1e6).toFixed(0)} MB`;
+  return `${b} B`;
+}
+
+function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function toggle() {
+    const next = disk.desired === "USING" ? "OFF" : "USING";
+    if (next === "OFF" && !confirm) { setConfirm(true); return; }
+    setBusy(true); setErr(null); setConfirm(false);
+    try {
+      const r = await fetch(`/api/disks/${node}/${disk.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ desired: next }),
+      });
+      const d = await r.json() as { ok?: boolean; error?: string };
+      if (!d.ok) setErr(d.error ?? "Unknown error");
+      else onChanged();
+    } catch (e) { setErr(String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const isUsing = disk.desired === "USING";
+
+  return (
+    <div className="flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0">
+      <div className="flex-shrink-0">
+        {disk.is_loop
+          ? <Cpu className="h-4 w-4 text-[#a78bfa]" strokeWidth={1.5} />
+          : <HardDrive className="h-4 w-4 text-[#71717a]" strokeWidth={1.5} />
+        }
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-[#fafafa] truncate">
+          {disk.model || disk.device}
+        </p>
+        <p className="text-xs text-[#52525b] mt-0.5">
+          {fmtSize(disk.size_bytes)}
+          {disk.is_loop && <span className="ml-1.5">· System disk</span>}
+          {disk.is_our_osd && !disk.is_loop && <span className="ml-1.5 text-[#4ade80]">· Active OSD</span>}
+          {!disk.is_our_osd && !disk.is_loop && <span className="ml-1.5 text-[#fbbf24]">· Not yet provisioned</span>}
+        </p>
+      </div>
+
+      {confirm && (
+        <div className="flex items-center gap-1.5 text-xs text-[#fbbf24]">
+          <span>Remove from Ceph?</span>
+          <button
+            onClick={() => void toggle()}
+            disabled={busy}
+            className="px-2 py-0.5 rounded border border-[#f87171]/40 text-[#f87171] hover:bg-[#f87171]/10 transition-colors"
+          >
+            Yes
+          </button>
+          <button
+            onClick={() => setConfirm(false)}
+            className="px-2 py-0.5 rounded border border-[#27272a] text-[#71717a] hover:bg-[#27272a] transition-colors"
+          >
+            No
+          </button>
+        </div>
+      )}
+
+      {!confirm && (
+        <button
+          onClick={() => void toggle()}
+          disabled={busy}
+          className={cn(
+            "flex-shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+            isUsing ? "bg-[#a78bfa]" : "bg-[#3f3f46]",
+            busy && "opacity-50 cursor-not-allowed",
+          )}
+        >
+          <span className={cn(
+            "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
+            isUsing ? "translate-x-5" : "translate-x-0.5",
+          )} />
+        </button>
+      )}
+
+      {err && <p className="text-xs text-[#f87171] ml-2">{err}</p>}
+    </div>
+  );
+}
+
+function ManageDisksPanel() {
+  const [disks, setDisks] = useState<Record<string, DiskInfo[]> | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  function load() {
+    setLoading(true);
+    fetch("/api/disks")
+      .then(r => r.json())
+      .then(d => setDisks(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  const nodes = disks ? Object.keys(disks).sort() : [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Manage Disks</CardTitle>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="text-[#52525b] hover:text-[#a1a1aa] transition-colors"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          </button>
+        </div>
+        <p className="text-xs text-[#52525b] mt-0.5">
+          Toggle a disk to add or remove it from storage. New disks are added automatically.
+        </p>
+      </CardHeader>
+      <CardContent className="p-0">
+        {loading && !disks && (
+          <p className="text-sm text-[#71717a] px-4 py-3">Scanning disks…</p>
+        )}
+        {disks && nodes.length === 0 && (
+          <p className="text-sm text-[#71717a] px-4 py-3">No disks detected yet.</p>
+        )}
+        {nodes.map(node => (
+          <div key={node}>
+            <p className="text-xs font-medium text-[#71717a] uppercase tracking-wider px-4 pt-3 pb-1 flex items-center gap-1.5">
+              <HardDrive className="h-3 w-3" />
+              {node}
+            </p>
+            {(disks![node] ?? []).map(disk => (
+              <DiskRow key={disk.id} node={node} disk={disk} onChanged={load} />
+            ))}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -584,6 +733,7 @@ export function StoragePage() {
             ))}
           </div>
 
+          <ManageDisksPanel />
           <OsdTable osds={detail.osds} onRefresh={load} />
           <ReplicationPanel pools={detail.pools} osds={detail.osds} />
         </>

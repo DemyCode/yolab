@@ -41,3 +41,13 @@ export interface StorageDetailResponse {
   data?: StorageDetail;
   error?: string;
 }
+
+export interface DiskInfo {
+  id: string;
+  device: string;
+  model: string;
+  size_bytes: number;
+  is_loop: boolean;
+  is_our_osd: boolean;
+  desired: "USING" | "OFF";
+}
