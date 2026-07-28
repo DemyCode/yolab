@@ -45,6 +45,29 @@ pub struct ClusterHealth {
     pub mon_quorum_ok: bool,
     /// A disk or pool is full — new writes are blocked, recovery may be stalled.
     pub osd_full: bool,
+    /// Storage is still warming up after a node restart — not an error, just needs time.
+    pub starting: bool,
+    /// A new disk is being prepared as an OSD — storage will grow once ready.
+    pub provisioning: bool,
+}
+
+fn system_uptime_secs() -> u64 {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|f| f as u64)
+        .unwrap_or(u64::MAX)
+}
+
+async fn osd_provisioning_active() -> bool {
+    kubectl::run(&[
+        "get", "pods", "-n", "rook-ceph",
+        "-l", "app=rook-ceph-osd-prepare",
+        "-o", "jsonpath={.items[*].status.phase}",
+    ])
+    .await
+    .map(|s| s.split_whitespace().any(|p| p == "Running" || p == "Pending"))
+    .unwrap_or(false)
 }
 
 pub async fn cluster_health() -> Json<ClusterHealth> {
@@ -52,20 +75,32 @@ pub async fn cluster_health() -> Json<ClusterHealth> {
 }
 
 async fn compute_cluster_health() -> ClusterHealth {
+    let provisioning = osd_provisioning_active().await;
     let raw = match kubectl::run(&[
         "get", "cephcluster", "-n", "rook-ceph", "rook-ceph",
         "-o", "jsonpath={.status.ceph.health}{\"\\n\"}{.status.ceph.details}",
     ]).await {
         Ok(s) => s,
         Err(_) => {
+            let starting = system_uptime_secs() < 900;
             return ClusterHealth {
-                level: HealthLevel::Error,
-                title: "Storage cluster unreachable".into(),
-                message: "Cannot connect to the storage control plane. If a machine just restarted, wait 2–3 minutes.".into(),
+                level: if starting { HealthLevel::Warn } else { HealthLevel::Error },
+                title: if starting {
+                    "Storage is warming up".into()
+                } else {
+                    "Storage cluster unreachable".into()
+                },
+                message: if starting {
+                    "Your storage is starting after a restart. Apps will be available in a few minutes.".into()
+                } else {
+                    "Cannot connect to the storage control plane. Check that Rook is running.".into()
+                },
                 issues: vec![],
                 pg_unavailable: false,
                 mon_quorum_ok: false,
                 osd_full: false,
+                starting,
+                provisioning,
             };
         }
     };
@@ -103,6 +138,8 @@ async fn compute_cluster_health() -> ClusterHealth {
     let osd_full = details.as_object().map_or(false, |obj| {
         obj.contains_key("OSD_FULL") || obj.contains_key("NOSPC") || obj.contains_key("POOL_FULL")
     });
+    // "Starting" when reachable but PGs are still peering/recovering and system just booted.
+    let starting = pg_unavailable && system_uptime_secs() < 900;
 
     match level {
         HealthLevel::Ok => ClusterHealth {
@@ -113,24 +150,46 @@ async fn compute_cluster_health() -> ClusterHealth {
             pg_unavailable,
             mon_quorum_ok: true,
             osd_full,
+            starting: false,
+            provisioning,
         },
         HealthLevel::Warn => ClusterHealth {
-            level: HealthLevel::Warn,
-            title: "Storage has warnings".into(),
-            message: "Your cluster is operational but has non-critical issues.".into(),
+            level: if starting { HealthLevel::Warn } else { HealthLevel::Warn },
+            title: if starting {
+                "Storage is warming up".into()
+            } else {
+                "Storage has warnings".into()
+            },
+            message: if starting {
+                "Your storage is recovering after a restart. Apps will be available shortly.".into()
+            } else {
+                "Your cluster is operational but has non-critical issues.".into()
+            },
             issues,
             pg_unavailable,
             mon_quorum_ok: true,
             osd_full,
+            starting,
+            provisioning,
         },
         HealthLevel::Error => ClusterHealth {
-            level: HealthLevel::Error,
-            title: "Storage cluster has critical errors".into(),
-            message: "One or more critical problems affect your storage. Apps may be unable to read or write data.".into(),
-            issues,
+            level: if starting { HealthLevel::Warn } else { HealthLevel::Error },
+            title: if starting {
+                "Storage is warming up".into()
+            } else {
+                "Storage cluster has critical errors".into()
+            },
+            message: if starting {
+                "Your storage is recovering after a restart. Apps will be available shortly.".into()
+            } else {
+                "One or more critical problems affect your storage. Apps may be unable to read or write data.".into()
+            },
+            issues: if starting { vec![] } else { issues },
             pg_unavailable,
             mon_quorum_ok: true,
             osd_full,
+            starting,
+            provisioning,
         },
     }
 }
@@ -191,6 +250,18 @@ fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<Heal
         "OBJECT_UNFOUND" => (
             "Missing data objects".into(),
             "Some data objects cannot be found on any disk. This is a sign of past data loss.".into(),
+        ),
+        "PG_PEERING" | "PG_NOT_SCRUBBED" | "PG_NOT_DEEP_SCRUBBED" | "PG_NOT_SCRUBBED_SINCE" => {
+            // Normal transient states after startup — suppress them to avoid alarm.
+            return None;
+        }
+        "RECENT_CRASH" => (
+            "A storage process recently crashed".into(),
+            "One of your storage daemons crashed and restarted. It may be a sign of a hardware issue if this happens repeatedly.".into(),
+        ),
+        "POOL_NO_REDUNDANCY" | "POOL_TOTAL_SIZE_MIN_SIZE_REACHED" => (
+            "No disk redundancy".into(),
+            "Your data has no backup copy. If a disk fails, data is lost. This is expected with a single-disk setup.".into(),
         ),
         _ => {
             // Unknown code: surface it but don't translate
