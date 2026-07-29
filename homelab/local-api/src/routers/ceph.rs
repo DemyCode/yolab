@@ -251,10 +251,15 @@ fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<Heal
             "Data redundancy reduced".into(),
             "Some data chunks are stored on fewer disks than configured. Your cluster is recovering.".into(),
         ),
-        "PG_DOWN" | "PG_AVAILABILITY" => (
-            "Some data temporarily unavailable".into(),
-            "Certain data is unreachable right now. Apps reading or writing to affected files will hang until recovery.".into(),
-        ),
+        "PG_DOWN" | "PG_AVAILABILITY" => {
+            // Always critical regardless of Ceph's own severity: apps actively hang
+            // on reads/writes to unavailable PGs, even when Ceph reports HEALTH_WARN.
+            return Some(HealthIssue {
+                level: HealthLevel::Error,
+                title: "Some data temporarily unavailable".into(),
+                description: "Certain data is unreachable right now. Apps reading or writing to affected files will hang until recovery.".into(),
+            });
+        }
         "SLOW_OPS" => (
             "Storage operations are slow".into(),
             "Some storage operations are taking longer than expected. Apps may respond slowly.".into(),
