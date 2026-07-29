@@ -228,6 +228,7 @@ async fn publish_local(node: &str) -> Result<()> {
 
     let mut meta: HashMap<String, Value> = devices
         .iter()
+        .filter(|d| !has_partitions(d)) // partitioned = OS/boot disk; never Ceph-eligible
         .map(|d| (disk_id(d), disk_meta(d, &our_fsid)))
         .collect();
     if system_osd_present() {
