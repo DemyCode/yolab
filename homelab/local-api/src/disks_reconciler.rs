@@ -28,6 +28,79 @@ const INTERVAL_SECS: u64 = 30;
 const BLUESTORE_MAGIC: &[u8] = b"bluestore block device\n";
 const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
 
+// ── Leader election ───────────────────────────────────────────────────────────
+//
+// Every node publishes its own disk inventory, but only ONE node may write the
+// shared CephCluster CR — otherwise concurrent nodes clobber each other's entry
+// in spec.storage.nodes (a JSON merge patch replaces the whole array). A
+// standard coordination.k8s.io Lease elects that single writer.
+mod leader {
+    use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};
+    use kube::api::PostParams;
+
+    const LEASE_NAME: &str = "yolab-disk-reconciler";
+    const LEASE_NS: &str = "rook-ceph";
+    const LEASE_SECS: i32 = 30;
+
+    /// Acquire or renew the reconciler lease. Returns true iff `identity` holds a
+    /// currently-valid lease afterwards. Uses replace() (optimistic concurrency
+    /// via resourceVersion) so a simultaneous take-over by another node loses
+    /// cleanly with a conflict.
+    pub async fn try_acquire(identity: &str) -> bool {
+        let Ok(client) = crate::kubectl::client().await else { return false };
+        let api: kube::Api<Lease> = kube::Api::namespaced(client, LEASE_NS);
+        let now = chrono::Utc::now();
+        match api.get_opt(LEASE_NAME).await {
+            Ok(Some(mut lease)) => {
+                let spec = lease.spec.clone().unwrap_or_default();
+                let holder = spec.holder_identity.clone().unwrap_or_default();
+                let dur = spec.lease_duration_seconds.unwrap_or(LEASE_SECS) as i64;
+                let expired = spec
+                    .renew_time
+                    .as_ref()
+                    .map(|t| (now - t.0).num_seconds() > dur)
+                    .unwrap_or(true);
+                if holder != identity && !expired {
+                    return false; // another node holds a valid lease
+                }
+                lease.spec = Some(LeaseSpec {
+                    holder_identity: Some(identity.to_string()),
+                    lease_duration_seconds: Some(LEASE_SECS),
+                    renew_time: Some(MicroTime(now)),
+                    acquire_time: if holder == identity {
+                        spec.acquire_time
+                    } else {
+                        Some(MicroTime(now))
+                    },
+                    ..Default::default()
+                });
+                api.replace(LEASE_NAME, &PostParams::default(), &lease)
+                    .await
+                    .is_ok()
+            }
+            Ok(None) => {
+                let lease = Lease {
+                    metadata: ObjectMeta {
+                        name: Some(LEASE_NAME.into()),
+                        namespace: Some(LEASE_NS.into()),
+                        ..Default::default()
+                    },
+                    spec: Some(LeaseSpec {
+                        holder_identity: Some(identity.to_string()),
+                        lease_duration_seconds: Some(LEASE_SECS),
+                        renew_time: Some(MicroTime(now)),
+                        acquire_time: Some(MicroTime(now)),
+                        ..Default::default()
+                    }),
+                };
+                api.create(&PostParams::default(), &lease).await.is_ok()
+            }
+            Err(_) => false,
+        }
+    }
+}
+
 pub async fn run() {
     let node = match node_name() {
         Ok(n) => n,
@@ -38,8 +111,16 @@ pub async fn run() {
     };
     tracing::info!("disk reconciler started on {node}");
     loop {
-        if let Err(e) = reconcile(&node).await {
-            tracing::warn!("disk reconcile: {e}");
+        // Every node: publish its own disk inventory + run its own OSD lifecycle.
+        if let Err(e) = publish_local(&node).await {
+            tracing::warn!("disk publish: {e}");
+        }
+        // Exactly one node assembles the CephCluster CR from all published
+        // inventories — a single writer, so no lost-update race.
+        if leader::try_acquire(&node).await {
+            if let Err(e) = reconcile_cluster().await {
+                tracing::warn!("cluster reconcile: {e}");
+            }
         }
         sleep(Duration::from_secs(INTERVAL_SECS)).await;
     }
@@ -86,16 +167,17 @@ fn osd_id_from_uuid_sync(osd_uuid: &str) -> Option<i64> {
     None
 }
 
-async fn reconcile(node: &str) -> Result<()> {
+/// Per-node: publish this node's disk inventory + its effective device list to
+/// the status ConfigMap, and run this node's own OSD lifecycle. No shared-CR
+/// writes happen here, so every node can run it concurrently without racing.
+async fn publish_local(node: &str) -> Result<()> {
     let devices = get_devices();
     let our_fsid = cluster_fsid().await.unwrap_or_default();
 
-    // Publish metadata for the UI
     let meta: HashMap<String, Value> = devices
         .iter()
         .map(|d| (disk_id(d), disk_meta(d, &our_fsid)))
         .collect();
-    write_status(node, &meta).await;
 
     // Read desired states; missing key → default USING
     let desired = read_desired().await;
@@ -108,13 +190,40 @@ async fn reconcile(node: &str) -> Result<()> {
         })
         .collect();
 
-    patch_cephcluster(node, &effective).await?;
+    write_status(node, &meta, &effective).await;
 
     if !our_fsid.is_empty() {
+        // OSD lifecycle acts only on THIS node's own OSDs (deploy_node == node),
+        // so it's safe to run on every node without coordination.
         migrate_osd_deployments(node, &our_fsid).await;
         purge_dead_osds(node, &devices, &our_fsid).await;
     }
     Ok(())
+}
+
+/// Leader-only: read every node's published effective device list and write the
+/// CephCluster CR once, as the single writer of spec.storage.nodes.
+async fn reconcile_cluster() -> Result<()> {
+    let status = kubectl::get_json(&[
+        "get", "configmap", STATUS_CM, "-n", NS, "-o", "jsonpath={.data}",
+    ])
+    .await
+    .unwrap_or(Value::Object(Default::default()));
+
+    let mut node_devices: Vec<(String, Vec<String>)> = Vec::new();
+    if let Some(map) = status.as_object() {
+        for (node, payload) in map {
+            let Some(s) = payload.as_str() else { continue };
+            let Ok(p) = serde_json::from_str::<Value>(s) else { continue };
+            let devs: Vec<String> = p["effective"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|d| d.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            node_devices.push((node.clone(), devs));
+        }
+    }
+    node_devices.sort_by(|a, b| a.0.cmp(&b.0));
+    patch_cephcluster_all(&node_devices).await
 }
 
 /// Detect OSD deployments on this node whose underlying disk has disappeared.
@@ -454,8 +563,11 @@ async fn cluster_fsid() -> Option<String> {
     if fsid.is_empty() { None } else { Some(fsid) }
 }
 
-async fn write_status(node: &str, meta: &HashMap<String, Value>) {
-    let json_val = serde_json::to_string(meta).unwrap_or_default();
+async fn write_status(node: &str, meta: &HashMap<String, Value>, effective: &[String]) {
+    // Each node's value carries both the per-disk metadata (for the UI) and the
+    // effective device list the leader assembles into the CephCluster CR.
+    let payload = json!({ "disks": meta, "effective": effective });
+    let json_val = serde_json::to_string(&payload).unwrap_or_default();
     let patch = json!({"data": {node: json_val}}).to_string();
     if kubectl::run(&[
         "patch",
@@ -506,62 +618,44 @@ async fn read_desired() -> HashMap<String, String> {
 
 // ── CephCluster CR patching ───────────────────────────────────────────────────
 
-async fn patch_cephcluster(node: &str, devices: &[String]) -> Result<()> {
+/// Assemble spec.storage.nodes from every node's published effective device
+/// list and write it in one patch. Run only by the lease holder, so there is a
+/// single writer and no lost-update race. A node that goes offline keeps its
+/// last-published entry (its ConfigMap value persists), so its OSDs are not
+/// yanked from the CR just because it's temporarily down.
+async fn patch_cephcluster_all(node_devices: &[(String, Vec<String>)]) -> Result<()> {
     let cr = kubectl::get_json(&["get", "cephcluster", CLUSTER, "-n", NS, "-o", "json"]).await?;
-
-    let mut nodes: Vec<Value> = cr["spec"]["storage"]["nodes"]
+    let current: Vec<Value> = cr["spec"]["storage"]["nodes"]
         .as_array()
         .cloned()
         .unwrap_or_default();
 
-    let idx = nodes.iter().position(|n| n["name"].as_str() == Some(node));
-
-    let mut current: Vec<String> = idx
-        .map(|i| {
-            nodes[i]["devices"]
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .filter_map(|d| d["name"].as_str().map(String::from))
-                .collect()
+    let desired: Vec<Value> = node_devices
+        .iter()
+        .filter(|(_, devs)| !devs.is_empty())
+        .map(|(node, devs)| {
+            let mut d = devs.clone();
+            d.sort();
+            json!({
+                "name": node,
+                "devices": d.iter().map(|x| json!({"name": x})).collect::<Vec<_>>(),
+            })
         })
-        .unwrap_or_default();
-    current.sort();
+        .collect();
 
-    let mut want = devices.to_vec();
-    want.sort();
-
-    if current == want && idx.map(|i| !nodes[i].get("deviceFilter").is_some()).unwrap_or(true) {
+    if nodes_equal(&current, &desired) {
         return Ok(());
     }
 
-    let devs: Vec<Value> = devices.iter().map(|d| json!({"name": d})).collect();
-    if let Some(i) = idx {
-        nodes[i]["devices"] = json!(devs);
-        if let Some(obj) = nodes[i].as_object_mut() {
-            obj.remove("deviceFilter");
-        }
-    } else {
-        nodes.push(json!({"name": node, "devices": devs}));
-    }
-
-    let patch = json!({"spec": {"storage": {"nodes": nodes}}}).to_string();
+    let patch = json!({"spec": {"storage": {"nodes": desired}}}).to_string();
     for attempt in 0..5u32 {
         match kubectl::run(&[
-            "patch",
-            "cephcluster",
-            CLUSTER,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
+            "patch", "cephcluster", CLUSTER, "-n", NS, "--type", "merge", "-p", &patch,
         ])
         .await
         {
             Ok(_) => {
-                tracing::info!("CephCluster patched: {node} → {devices:?}");
+                tracing::info!("CephCluster storage.nodes reconciled: {} node(s)", desired.len());
                 return Ok(());
             }
             Err(e) if attempt < 4 && e.to_string().contains("conflict") => {
@@ -571,6 +665,26 @@ async fn patch_cephcluster(node: &str, devices: &[String]) -> Result<()> {
         }
     }
     bail!("patch CephCluster: too many conflicts")
+}
+
+/// Compare storage.nodes entries by (name → sorted device names), ignoring
+/// ordering and unrelated fields, so we only patch when it truly changed.
+fn nodes_equal(a: &[Value], b: &[Value]) -> bool {
+    fn norm(nodes: &[Value]) -> std::collections::BTreeMap<String, Vec<String>> {
+        nodes
+            .iter()
+            .filter_map(|n| {
+                let name = n["name"].as_str()?.to_string();
+                let mut devs: Vec<String> = n["devices"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|d| d["name"].as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                devs.sort();
+                Some((name, devs))
+            })
+            .collect()
+    }
+    norm(a) == norm(b)
 }
 
 // ── OSD Deployment migration (disk moved between nodes) ───────────────────────

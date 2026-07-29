@@ -48,8 +48,13 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
 
     if let Some(status_map) = status_raw.as_object() {
         for (node, node_json) in status_map {
-            let disks_raw: HashMap<String, serde_json::Value> =
+            // Each node value is { "disks": {id: meta}, "effective": [...] }.
+            let payload: serde_json::Value =
                 serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
+            let disks_raw: HashMap<String, serde_json::Value> = payload["disks"]
+                .as_object()
+                .map(|o| o.clone().into_iter().collect())
+                .unwrap_or_default();
 
             let mut disks: Vec<DiskInfo> = disks_raw
                 .into_iter()
