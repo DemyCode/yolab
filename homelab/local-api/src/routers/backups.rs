@@ -1897,6 +1897,42 @@ pub async fn restore_from_snapshot(
     Ok(Json(serde_json::json!({ "started": started, "errors": errors })))
 }
 
+/// Background task: every 10 minutes, ensure every user PVC has a VolSync
+/// ReplicationSource and restic secret, if backup is already configured.
+///
+/// This is "backups on by default" — newly installed apps get covered
+/// automatically within one reconcile cycle (≤10 min) after the master
+/// backup config exists. The apply is idempotent so re-running over already
+/// configured PVCs is harmless.
+pub async fn run_replication_source_reconciler() {
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    loop {
+        if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
+            let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+            if !restic_password.is_empty() {
+                let cfg = BackupConfig {
+                    access_key_id:     data.get("access_key_id").cloned().unwrap_or_default(),
+                    secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
+                    bucket:            data.get("bucket").cloned().unwrap_or_default(),
+                    endpoint:          data.get("endpoint").cloned().unwrap_or_default(),
+                    restic_password,
+                };
+                if let Ok(pvcs) = list_user_pvcs().await {
+                    for pvc in pvcs {
+                        if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await {
+                            tracing::debug!("backup-reconciler: restic secret {}/{}: {e}", pvc.namespace, pvc.name);
+                        }
+                        if let Err(e) = ensure_replication_source(&pvc, false).await {
+                            tracing::debug!("backup-reconciler: RS {}/{}: {e}", pvc.namespace, pvc.name);
+                        }
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(600)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
