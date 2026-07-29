@@ -1,4 +1,4 @@
-use std::{convert::Infallible, path::PathBuf, sync::Arc};
+use std::{convert::Infallible, path::PathBuf};
 
 use axum::{
     extract::{Path, State},
@@ -244,17 +244,26 @@ pub async fn account_token(State(state): State<AppState>) -> Result<Json<Account
     Ok(Json(AccountTokenResponse { account_token: token }))
 }
 
-pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainResponse>> {
-    let tunnel = tunnel_config(&state.config)?;
-    let dns_url = tunnel.get("dns_url").and_then(|v| v.as_str()).unwrap_or("");
-    let host = dns_url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
+/// Strip scheme and trailing slash from a dns_url, then drop the leading
+/// subdomain label to yield the apex tunnel domain. A purely numeric first
+/// label (an IP-like host) is kept as-is.
+fn derive_domain(dns_url: &str) -> String {
+    let host = dns_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
     let parts: Vec<&str> = host.split('.').collect();
-    let domain = if parts.len() > 1 && !parts[0].chars().all(|c| c.is_ascii_digit()) {
+    if parts.len() > 1 && !parts[0].chars().all(|c| c.is_ascii_digit()) {
         parts[1..].join(".")
     } else {
         host.to_string()
-    };
-    Ok(Json(DomainResponse { domain }))
+    }
+}
+
+pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainResponse>> {
+    let tunnel = tunnel_config(&state.config)?;
+    let dns_url = tunnel.get("dns_url").and_then(|v| v.as_str()).unwrap_or("");
+    Ok(Json(DomainResponse { domain: derive_domain(dns_url) }))
 }
 
 pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
@@ -688,5 +697,85 @@ pub async fn pod_logs(
         let _ = guard.0.wait().await;
     };
     Sse::new(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn map(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn derive_domain_drops_subdomain() {
+        assert_eq!(derive_domain("https://yolab.10.demycode.ovh"), "10.demycode.ovh");
+        assert_eq!(derive_domain("http://node1.example.com/"), "example.com");
+    }
+
+    #[test]
+    fn derive_domain_keeps_numeric_first_label() {
+        // A purely numeric first label (IP-ish) is kept whole.
+        assert_eq!(derive_domain("https://127.0.0.1"), "127.0.0.1");
+    }
+
+    #[test]
+    fn derive_domain_single_label() {
+        assert_eq!(derive_domain("https://localhost"), "localhost");
+    }
+
+    #[test]
+    fn validate_config_rejects_newline() {
+        let cfg = map(json!({ "domain": "a.com\nmalicious: true" }));
+        assert!(validate_config_values(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_allows_tab_and_normal() {
+        let cfg = map(json!({ "name": "hello world\ttabbed", "size": 10, "on": true }));
+        assert!(validate_config_values(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_config_checks_nested() {
+        let cfg = map(json!({ "outer": { "inner": ["ok", "bad\r"] } }));
+        assert!(validate_config_values(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_oversized() {
+        let big = "x".repeat(8193);
+        let cfg = map(json!({ "blob": big }));
+        assert!(validate_config_values(&cfg).is_err());
+    }
+
+    #[test]
+    fn normalize_outputs_new_format() {
+        let ann = map(json!({
+            ANN_OUTPUTS: r#"[{"key":"url","label":"Web URL","value":"https://x","type":"url"}]"#
+        }));
+        let out = normalize_outputs(&ann);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, "url");
+        assert_eq!(out[0].value, "https://x");
+    }
+
+    #[test]
+    fn normalize_outputs_legacy_format() {
+        // Old shape: [{url, ipv6}] gets expanded into url + ipv6 rows.
+        let ann = map(json!({
+            ANN_OUTPUTS: r#"[{"url":"https://x","ipv6":"fd00::1"}]"#
+        }));
+        let out = normalize_outputs(&ann);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].key, "url");
+        assert_eq!(out[1].key, "ipv6");
+    }
+
+    #[test]
+    fn normalize_outputs_empty() {
+        assert!(normalize_outputs(&serde_json::Map::new()).is_empty());
+    }
 }
 

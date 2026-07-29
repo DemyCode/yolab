@@ -259,7 +259,7 @@ fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<Heal
             "A storage process recently crashed".into(),
             "One of your storage daemons crashed and restarted. It may be a sign of a hardware issue if this happens repeatedly.".into(),
         ),
-        "POOL_NO_REDUNDANCY" | "POOL_TOTAL_SIZE_MIN_SIZE_REACHED" => (
+        "POOL_TOTAL_SIZE_MIN_SIZE_REACHED" => (
             "No disk redundancy".into(),
             "Your data has no backup copy. If a disk fails, data is lost. This is expected with a single-disk setup.".into(),
         ),
