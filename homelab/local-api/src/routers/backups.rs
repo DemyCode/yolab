@@ -77,11 +77,12 @@ impl ClusterBackupGuard {
         });
 
         use tokio::io::AsyncWriteExt;
+        use std::process::Stdio as ProcessStdio;
         let mut child = match Command::new("kubectl")
             .args(["create", "-f", "-"])
-            .stdin(tokio::process::Stdio::piped())
-            .stdout(tokio::process::Stdio::null())
-            .stderr(tokio::process::Stdio::piped())
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::null())
+            .stderr(ProcessStdio::piped())
             .spawn()
         {
             Ok(c) => c,
