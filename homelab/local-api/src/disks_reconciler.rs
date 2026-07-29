@@ -106,6 +106,10 @@ mod leader {
             Err(_) => now,
         };
 
+        // Kubernetes MicroTime requires microsecond precision (.000000Z).
+        // Plain to_rfc3339() emits "Z" without fractional seconds and the
+        // API server rejects it with "cannot parse Z as .000000".
+        let fmt = chrono::SecondsFormat::Micros;
         let manifest = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
@@ -113,8 +117,8 @@ mod leader {
             "spec": {
                 "holderIdentity": identity,
                 "leaseDurationSeconds": LEASE_SECS,
-                "acquireTime": acquire_time.to_rfc3339(),
-                "renewTime": now.to_rfc3339(),
+                "acquireTime": acquire_time.to_rfc3339_opts(fmt, true),
+                "renewTime": now.to_rfc3339_opts(fmt, true),
             },
         });
 
