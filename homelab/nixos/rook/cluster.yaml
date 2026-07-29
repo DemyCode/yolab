@@ -17,12 +17,17 @@ spec:
     enabled: true
     ssl: false
     urlPrefix: /ceph-dashboard
+  # Keep crash + log collection ON: for users who can't SSH, these are the only
+  # way to diagnose an OSD/mon crash remotely. Cost on a laptop is negligible.
   crashCollector:
-    disable: true
+    disable: false
   logCollector:
-    enabled: false
-  skipUpgradeChecks: true
-  continueUpgradeAfterChecksEvenIfNotHealthy: true
+    enabled: true
+    periodicity: daily
+    maxLogSize: 500M
+  # Do NOT bypass upgrade safety. The product auto-updates via nixos-rebuild; a
+  # Ceph image bump must gate on health so a bad upgrade can't proceed through an
+  # unhealthy cluster and get stuck half-migrated. (Both flags default to false.)
   network:
     ipFamily: IPv6
   cephConfig:
