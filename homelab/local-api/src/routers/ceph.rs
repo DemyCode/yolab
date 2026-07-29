@@ -726,14 +726,13 @@ pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::
     }
 }
 
-/// Background job: activate newly provisioned OSDs and keep reweight in sync.
+/// Background job: reconcile OSD active state toward the desired state in the
+/// disk config ConfigMap. Reads desired from `yolab-disk-config`, not from the
+/// Ceph state itself — the Ceph state is actual, the ConfigMap is desired.
 ///
-/// Three cases for (crush_weight, reweight):
-///   (>0, <1) → reweight fell below 1 while weight is set — mark in (restore reweight=1)
-///   (0, >0)  → freshly provisioned by Rook (Rook sets osd "in" = reweight=1, weight=0
-///              because of osd_crush_initial_weight=0). Auto-activate: set weight from
-///              disk size, mark in. This collapses toggle→activate into a single step.
-///   (0,  0)  → user explicitly turned this disk off — leave it alone.
+/// Only handles the activation direction (desired=USING → activate if inactive).
+/// De-activation (desired=OFF) is left to the explicit mark-out endpoint and
+/// Rook's CephCluster CR exclusion, which handles PG drain safely.
 pub async fn run_osd_state_watcher() {
     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     loop {
@@ -745,6 +744,52 @@ pub async fn run_osd_state_watcher() {
 }
 
 async fn osd_state_tick() -> anyhow::Result<()> {
+    // --- desired state: yolab-disk-config CM ---
+    // Keys are "{node}--{disk_id}" → "USING" | "OFF".
+    let config: std::collections::HashMap<String, String> = kubectl::get_json(&[
+        "get", "configmap", "yolab-disk-config", "-n", "rook-ceph",
+        "-o", "jsonpath={.data}",
+    ])
+    .await
+    .ok()
+    .and_then(|v| serde_json::from_value(v).ok())
+    .unwrap_or_default();
+
+    // --- actual disk state: yolab-disk-status CM ---
+    // Keys are "{node}" → JSON: {"disks": {"disk_id": {"osd_id": N, ...}}, ...}
+    let status_val = kubectl::get_json(&[
+        "get", "configmap", "yolab-disk-status", "-n", "rook-ceph",
+        "-o", "jsonpath={.data}",
+    ])
+    .await
+    .ok()
+    .unwrap_or(serde_json::Value::Null);
+
+    // Build: osd_id → desired ("USING" or "OFF").
+    // For OSDs not found in the status CM (e.g., system OSD with osd_id=null,
+    // or disks not yet published), default to "USING".
+    let mut osd_desired: std::collections::HashMap<i64, &'static str> =
+        std::collections::HashMap::new();
+    if let Some(nodes_map) = status_val.as_object() {
+        for (node, payload) in nodes_map {
+            let Some(s) = payload.as_str() else { continue };
+            let Ok(p) = serde_json::from_str::<serde_json::Value>(s) else { continue };
+            if let Some(disks) = p["disks"].as_object() {
+                for (disk_id, meta) in disks {
+                    let Some(osd_id) = meta["osd_id"].as_i64() else { continue };
+                    let cm_key = format!("{node}--{disk_id}");
+                    let desired = if config.get(&cm_key).map(|v| v == "OFF").unwrap_or(false) {
+                        "OFF"
+                    } else {
+                        "USING"
+                    };
+                    osd_desired.insert(osd_id, desired);
+                }
+            }
+        }
+    }
+
+    // --- reconcile ---
     let raw = kubectl::ceph_exec(&["osd", "df", "tree", "-f", "json"]).await?;
     let v: serde_json::Value = serde_json::from_str(&raw)?;
     let nodes = v["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
@@ -754,19 +799,21 @@ async fn osd_state_tick() -> anyhow::Result<()> {
         let reweight     = node["reweight"].as_f64().unwrap_or(1.0);
         let id           = node["id"].as_i64().unwrap_or(-1);
         if id < 0 { continue; }
+
+        // Default to USING for OSDs we can't map (e.g. system OSD).
+        let desired = osd_desired.get(&id).copied().unwrap_or("USING");
         let osd = format!("osd.{id}");
 
-        if crush_weight > 0.0 && reweight < 0.5 {
-            // Weight is set but reweight is 0 — restore it.
-            tracing::info!("{osd}: crush_weight={crush_weight:.5} reweight={reweight:.2} — marking in");
-            let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
-        } else if crush_weight == 0.0 && reweight > 0.5 {
-            // Freshly provisioned OSD: Rook set reweight=1 but weight=0.
-            // Auto-activate by setting crush weight from the actual device size.
-            tracing::info!("{osd}: newly provisioned (weight=0, reweight={reweight:.2}) — auto-activating");
-            activate_osd(id).await;
+        if desired == "USING" {
+            if crush_weight == 0.0 {
+                tracing::info!("{osd}: desired=USING crush_weight=0 — activating");
+                activate_osd(id).await;
+            } else if reweight < 0.5 {
+                tracing::info!("{osd}: desired=USING reweight={reweight:.2} — marking in");
+                let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
+            }
         }
-        // crush_weight==0 && reweight==0: user turned this disk off — leave it.
+        // desired=OFF: Rook drains via CephCluster CR exclusion. Don't auto-mark-out.
     }
     Ok(())
 }
