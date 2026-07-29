@@ -201,11 +201,20 @@ fn render_manifest(
 async fn apply_manifest_stream(
     rendered: &str,
 ) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
-    let tmp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
-    std::fs::write(tmp.path(), rendered).unwrap();
-    let path = tmp.path().to_string_lossy().to_string();
-
+    let rendered = rendered.to_string();
     async_stream::stream! {
+        // Create + write the temp manifest inside the stream so a failure
+        // (e.g. disk full) surfaces as an error event instead of panicking the
+        // handler task and dropping the client connection.
+        let tmp = match tempfile::Builder::new().suffix(".yaml").tempfile() {
+            Ok(t) => t,
+            Err(e) => { yield Ok(Event::default().data(format!("[ERROR] create temp manifest: {e}"))); return; }
+        };
+        if let Err(e) = std::fs::write(tmp.path(), &rendered) {
+            yield Ok(Event::default().data(format!("[ERROR] write manifest: {e}")));
+            return;
+        }
+        let path = tmp.path().to_string_lossy().to_string();
         let _tmp = tmp;
         let child = tokio::process::Command::new("kubectl")
             .args(["apply", "-f", &path])
@@ -618,15 +627,20 @@ pub async fn uninstall_app(
                         &state.config.catalog_dir(), &id, &instance_name,
                         &config, &tunnel_cfg, "uninstall.yaml.j2", Some(&extra),
                     ) {
-                        let tmp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
-                        std::fs::write(tmp.path(), &rendered).ok();
-                        let _ = tokio::process::Command::new("kubectl")
-                            .args(["apply", "-f", &tmp.path().to_string_lossy()])
-                            .output().await;
-                        let _ = tokio::process::Command::new("kubectl")
-                            .args(["wait", "job/uninstall", "-n", &ns,
-                                   "--for=condition=complete", "--timeout=120s"])
-                            .output().await;
+                        // Best-effort cleanup job; if we can't stage the manifest
+                        // (e.g. disk full) skip it rather than panic — the
+                        // namespace delete below still tears the app down.
+                        if let Ok(tmp) = tempfile::Builder::new().suffix(".yaml").tempfile() {
+                            if std::fs::write(tmp.path(), &rendered).is_ok() {
+                                let _ = tokio::process::Command::new("kubectl")
+                                    .args(["apply", "-f", &tmp.path().to_string_lossy()])
+                                    .output().await;
+                                let _ = tokio::process::Command::new("kubectl")
+                                    .args(["wait", "job/uninstall", "-n", &ns,
+                                           "--for=condition=complete", "--timeout=120s"])
+                                    .output().await;
+                            }
+                        }
                     }
                 }
             }
