@@ -113,6 +113,7 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
 function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const [eraseConfirm, setEraseConfirm] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function toggle() {
@@ -132,7 +133,76 @@ function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onCh
     finally { setBusy(false); }
   }
 
+  async function erase() {
+    setBusy(true); setErr(null); setEraseConfirm(false);
+    try {
+      const r = await fetch(`/api/disks/${node}/${disk.id}/erase`, { method: "POST" });
+      const d = await r.json() as { ok?: boolean; error?: string };
+      if (!d.ok) setErr(d.error ?? "Erase failed");
+      else onChanged();
+    } catch (e) { setErr(String(e)); }
+    finally { setBusy(false); }
+  }
+
   const isUsing = disk.desired === "USING";
+
+  // Foreign disk: show a distinct row with an erase-to-use flow.
+  if (disk.foreign_ceph) {
+    return (
+      <div className="flex items-start gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0">
+        <div className="flex-shrink-0 mt-0.5">
+          <AlertTriangle className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-[#fafafa] truncate">{disk.model || disk.device}</p>
+          <p className="text-xs text-[#fbbf24] mt-0.5">
+            {fmtSize(disk.size_bytes)} · Contains data from another system
+          </p>
+          {!eraseConfirm && !err && (
+            <p className="text-xs text-[#52525b] mt-1">
+              This disk has Ceph data from a different cluster. Erase it to add it to this pool.
+            </p>
+          )}
+
+          {eraseConfirm && (
+            <div className="mt-2 space-y-2">
+              <p className="text-xs text-[#f87171] font-medium">
+                Permanently erase all data on this disk? This cannot be undone.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void erase()}
+                  disabled={busy}
+                  className="px-3 py-1 rounded text-xs font-medium bg-[#f87171]/10 border border-[#f87171]/40 text-[#f87171] hover:bg-[#f87171]/20 transition-colors disabled:opacity-50"
+                >
+                  {busy ? "Erasing…" : "Yes, erase disk"}
+                </button>
+                <button
+                  onClick={() => setEraseConfirm(false)}
+                  disabled={busy}
+                  className="px-3 py-1 rounded text-xs border border-[#27272a] text-[#71717a] hover:bg-[#27272a] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!eraseConfirm && (
+            <button
+              onClick={() => setEraseConfirm(true)}
+              disabled={busy}
+              className="mt-2 px-3 py-1 rounded text-xs border border-[#27272a] text-[#a1a1aa] hover:border-[#3f3f46] hover:text-[#fafafa] transition-colors disabled:opacity-50"
+            >
+              Erase and use
+            </button>
+          )}
+
+          {err && <p className="text-xs text-[#f87171] mt-1">{err}</p>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0">

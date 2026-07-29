@@ -580,10 +580,11 @@ fn disk_meta(device: &str, our_fsid: &str) -> Value {
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0)
         * 512;
-    let is_our_osd = bluestore_fsid(device)
-        .map(|f| f == our_fsid)
-        .unwrap_or(false);
-    // Expose OSD ID so the UI can correlate disks with OSD metrics.
+    let fsid = if is_loop { None } else { bluestore_fsid(device) };
+    let is_our_osd = !our_fsid.is_empty() && fsid.as_deref() == Some(our_fsid);
+    // A disk with a BlueStore header from a *different* cluster — data from another
+    // Ceph installation. Never auto-wipe; surface for explicit user confirmation.
+    let foreign_ceph = fsid.is_some() && !is_our_osd;
     let osd_id: Option<i64> = if is_our_osd {
         bluestore_osd_uuid(device).and_then(|uuid| osd_id_from_uuid_sync(&uuid))
     } else {
@@ -595,6 +596,7 @@ fn disk_meta(device: &str, our_fsid: &str) -> Value {
         "size_bytes": size_bytes,
         "is_loop": is_loop,
         "is_our_osd": is_our_osd,
+        "foreign_ceph": foreign_ceph,
         "osd_id": osd_id,
     })
 }
