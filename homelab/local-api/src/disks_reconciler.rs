@@ -266,6 +266,13 @@ async fn publish_local(node: &str) -> Result<()> {
 
     write_status(node, &meta, &effective).await;
 
+    // Auto-register newly discovered OSD disks in the config CM so the UI can
+    // show and toggle them. Missing key already defaults to USING in the reconciler,
+    // but writing it explicitly makes the toggle visible before first user action.
+    if !our_fsid.is_empty() {
+        auto_register_new_osds(node, &meta, &desired).await;
+    }
+
     if !our_fsid.is_empty() {
         // OSD lifecycle acts only on THIS node's own OSDs (deploy_node == node),
         // so it's safe to run on every node without coordination.
@@ -292,42 +299,56 @@ async fn publish_local(node: &str) -> Result<()> {
 ///
 /// Every step is idempotent and reads current state from `ceph osd df tree`, so a
 /// disk that reconnects simply resumes from wherever it was left.
+///
+/// Fallback: any OSD under this node's CRUSH host with crush_weight=0 that could
+/// not be matched to a disk_id (bluestore UUID lookup failed, e.g. USB disk) is
+/// activated from the CRUSH tree's `kb` field. This ensures freshly provisioned
+/// OSDs are activated even when osd_id resolution is unavailable.
 async fn reconcile_local_osds(
     node: &str,
     meta: &HashMap<String, Value>,
     desired: &HashMap<String, String>,
 ) {
-    // Current (crush_weight, reweight) per OSD id.
-    let mut state: HashMap<i64, (f64, f64)> = HashMap::new();
-    if let Ok(raw) = kubectl::ceph_exec(&["osd", "df", "tree", "-f", "json"]).await {
-        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-            for n in v["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
-                if n["type"].as_str() != Some("osd") { continue; }
-                if let Some(id) = n["id"].as_i64() {
-                    let cw = n["crush_weight"].as_f64().unwrap_or(0.0);
-                    let rw = n["reweight"].as_f64().unwrap_or(1.0);
-                    state.insert(id, (cw, rw));
-                }
-            }
+    // Parse CRUSH/reweight state from `ceph osd df tree`. Keep the full node list
+    // so we can also do the host-bucket fallback pass below.
+    let crush_nodes: Vec<Value> = match kubectl::ceph_exec(&["osd", "df", "tree", "-f", "json"]).await {
+        Ok(raw) => serde_json::from_str::<Value>(&raw)
+            .ok()
+            .and_then(|v| v["nodes"].as_array().cloned())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+
+    // (crush_weight, reweight, kb) per OSD id.
+    let mut state: HashMap<i64, (f64, f64, u64)> = HashMap::new();
+    for n in &crush_nodes {
+        if n["type"].as_str() != Some("osd") { continue; }
+        if let Some(id) = n["id"].as_i64() {
+            let cw = n["crush_weight"].as_f64().unwrap_or(0.0);
+            let rw = n["reweight"].as_f64().unwrap_or(1.0);
+            let kb = n["kb"].as_u64().unwrap_or(0);
+            state.insert(id, (cw, rw, kb));
         }
     }
 
+    let mut handled: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
     for (disk_id, m) in meta {
-        let Some(osd_id) = m["osd_id"].as_i64() else { continue }; // not provisioned yet
+        let Some(osd_id) = m["osd_id"].as_i64() else { continue }; // osd_id unresolved → fallback handles it
+        handled.insert(osd_id);
         let key = format!("{node}--{disk_id}");
         let want_on = desired.get(&key).map(|v| v != "OFF").unwrap_or(true);
         let osd = format!("osd.{osd_id}");
-        let (crush_weight, reweight) = state.get(&osd_id).copied().unwrap_or((0.0, 1.0));
+        let (crush_weight, reweight, kb) = state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
 
         if want_on {
             // Fresh OSDs come up with crush_weight 0 (osd_crush_initial_weight=0);
-            // set it from the disk size so PGs can be placed.
+            // set it from disk size (prefer live `kb` from Ceph, fall back to lsblk bytes).
             if crush_weight == 0.0 {
-                let size_bytes = m["size_bytes"].as_u64().unwrap_or(0);
-                if size_bytes > 0 {
-                    let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
-                    tracing::info!("{osd} ({disk_id}): ON, crush_weight=0 — activating (weight={weight})");
-                    let _ = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await;
+                let weight = weight_tib_from(kb, m["size_bytes"].as_u64().unwrap_or(0));
+                if weight > 0.0 {
+                    tracing::info!("{osd} ({disk_id}): ON, crush_weight=0 — activating (weight={weight:.5})");
+                    let _ = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")]).await;
                 }
             }
             if reweight < 0.5 {
@@ -340,6 +361,76 @@ async fn reconcile_local_osds(
             tracing::info!("{osd} ({disk_id}): OFF, reweight={reweight:.2} — draining (osd out)");
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         }
+    }
+
+    // Fallback: activate any OSD under this node's CRUSH host whose osd_id we
+    // couldn't resolve via bluestore header (handled set above). These are OSDs
+    // that Rook provisioned and placed in CRUSH but whose UUID we can't read back
+    // (e.g. USB/external disks, or a failed bluestore read). Since we don't know
+    // which disk_id maps to this OSD we can only activate (not deactivate) here.
+    let host_children: Vec<i64> = crush_nodes.iter()
+        .find(|n| n["type"].as_str() == Some("host") && n["name"].as_str() == Some(node))
+        .and_then(|h| h["children"].as_array())
+        .map(|c| c.iter().filter_map(|v| v.as_i64().filter(|&id| id >= 0)).collect())
+        .unwrap_or_default();
+
+    for osd_id in host_children {
+        if handled.contains(&osd_id) { continue; }
+        let (crush_weight, reweight, kb) = state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
+        if crush_weight == 0.0 && reweight > 0.5 && kb > 0 {
+            let osd = format!("osd.{osd_id}");
+            let weight = weight_tib_from(kb, 0);
+            tracing::info!("{osd}: node={node}, crush_weight=0, osd_id unresolved — activating (weight={weight:.5})");
+            let _ = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")]).await;
+        }
+    }
+}
+
+/// Convert raw capacity to TiB for a CRUSH weight.
+/// Prefers Ceph's own `kb` (from `osd df tree`) over lsblk size_bytes when available.
+fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
+    if kb > 0 {
+        kb as f64 / (1u64 << 30) as f64  // KB → TiB: divide by 2^30 (1 TiB = 2^30 KB)
+    } else if size_bytes > 0 {
+        size_bytes as f64 / (1u64 << 40) as f64
+    } else {
+        0.0
+    }
+}
+
+/// Write a `USING` entry to the config CM for any disk that is our OSD but has
+/// no existing config entry. This makes the UI toggle visible on first plug-in,
+/// without changing runtime behaviour (missing key already defaults to USING).
+async fn auto_register_new_osds(
+    node: &str,
+    meta: &HashMap<String, Value>,
+    desired: &HashMap<String, String>,
+) {
+    let mut new_entries: HashMap<String, String> = HashMap::new();
+    for (disk_id, m) in meta {
+        if !m["is_our_osd"].as_bool().unwrap_or(false) { continue; }
+        let key = format!("{node}--{disk_id}");
+        if !desired.contains_key(&key) {
+            new_entries.insert(key, "USING".to_string());
+        }
+    }
+    if new_entries.is_empty() { return; }
+
+    let patch = json!({"data": new_entries}).to_string();
+    if let Err(e) = kubectl::run(&[
+        "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
+    ]).await {
+        // Config CM may not exist yet on a fresh node; create it first.
+        let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
+        if let Err(e2) = kubectl::run(&[
+            "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
+        ]).await {
+            tracing::warn!("auto_register_new_osds: {e}, then {e2}");
+        } else {
+            tracing::info!("auto_register_new_osds: registered {} new disk(s) on {node}", new_entries.len());
+        }
+    } else {
+        tracing::info!("auto_register_new_osds: registered {} new disk(s) on {node}", new_entries.len());
     }
 }
 
