@@ -124,7 +124,8 @@ async fn main() {
     tokio::spawn(backups::run_cluster_backup(Arc::clone(&cfg)));
     tokio::spawn(backups::run_restore_reconciler());
     tokio::spawn(backups::run_replication_source_reconciler());
-    tokio::spawn(ceph::run_osd_state_watcher());
+    // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
+    // the single actuator for the DISK→ON/OFF config — no separate watcher.
     tokio::spawn(disks_reconciler::run());
     tokio::spawn(topology::run_topology_controller());
 

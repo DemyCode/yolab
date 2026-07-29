@@ -51,13 +51,15 @@ fn system_osd_size_bytes() -> u64 {
 }
 
 fn system_osd_meta() -> Value {
+    // Resolve the system LV's OSD id so it can be driven ON/OFF like any disk.
+    let osd_id = bluestore_osd_uuid(SYSTEM_OSD_DEV).and_then(|u| osd_id_from_uuid_sync(&u));
     json!({
         "device": SYSTEM_OSD_DEV,
         "model": "System disk",
         "size_bytes": system_osd_size_bytes(),
         "is_loop": true, // the UI renders is_loop as the built-in "System disk"
         "is_our_osd": true,
-        "osd_id": Value::Null,
+        "osd_id": osd_id,
     })
 }
 
@@ -270,7 +272,75 @@ async fn publish_local(node: &str) -> Result<()> {
         migrate_osd_deployments(node, &our_fsid).await;
         purge_dead_osds(node, &devices, &our_fsid).await;
     }
+
+    // Drive each local OSD's active state toward the desired ON/OFF in the config
+    // ConfigMap. This is the single actuator for crush weight + in/out — the same
+    // reconcile whether a disk was just provisioned, wrongly left out, or has just
+    // reconnected. Acts only on this node's OSDs (meta is local), so no coordination.
+    reconcile_local_osds(node, &meta, &desired).await;
     Ok(())
+}
+
+/// Reconcile each local OSD's active state toward its desired ON/OFF.
+///
+/// Desired lives in the `yolab-disk-config` ConfigMap keyed by `{node}--{disk_id}`;
+/// "OFF" means off, anything else (or missing) means on. `meta` maps each local
+/// disk_id to its published metadata, including `osd_id` and `size_bytes`.
+///
+///   ON  → make it join and carry data: crush_weight>0 (set from size if 0) + osd in
+///   OFF → make it leave: osd out (drains PGs to other OSDs; fine if slow)
+///
+/// Every step is idempotent and reads current state from `ceph osd df tree`, so a
+/// disk that reconnects simply resumes from wherever it was left.
+async fn reconcile_local_osds(
+    node: &str,
+    meta: &HashMap<String, Value>,
+    desired: &HashMap<String, String>,
+) {
+    // Current (crush_weight, reweight) per OSD id.
+    let mut state: HashMap<i64, (f64, f64)> = HashMap::new();
+    if let Ok(raw) = kubectl::ceph_exec(&["osd", "df", "tree", "-f", "json"]).await {
+        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+            for n in v["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                if n["type"].as_str() != Some("osd") { continue; }
+                if let Some(id) = n["id"].as_i64() {
+                    let cw = n["crush_weight"].as_f64().unwrap_or(0.0);
+                    let rw = n["reweight"].as_f64().unwrap_or(1.0);
+                    state.insert(id, (cw, rw));
+                }
+            }
+        }
+    }
+
+    for (disk_id, m) in meta {
+        let Some(osd_id) = m["osd_id"].as_i64() else { continue }; // not provisioned yet
+        let key = format!("{node}--{disk_id}");
+        let want_on = desired.get(&key).map(|v| v != "OFF").unwrap_or(true);
+        let osd = format!("osd.{osd_id}");
+        let (crush_weight, reweight) = state.get(&osd_id).copied().unwrap_or((0.0, 1.0));
+
+        if want_on {
+            // Fresh OSDs come up with crush_weight 0 (osd_crush_initial_weight=0);
+            // set it from the disk size so PGs can be placed.
+            if crush_weight == 0.0 {
+                let size_bytes = m["size_bytes"].as_u64().unwrap_or(0);
+                if size_bytes > 0 {
+                    let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
+                    tracing::info!("{osd} ({disk_id}): ON, crush_weight=0 — activating (weight={weight})");
+                    let _ = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await;
+                }
+            }
+            if reweight < 0.5 {
+                tracing::info!("{osd} ({disk_id}): ON, reweight={reweight:.2} — marking in");
+                let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
+            }
+        } else if reweight > 0.5 {
+            // OFF: drain by marking out. Keep crush weight so re-enabling is a
+            // single `osd in`. Full removal/purge is a separate, deliberate step.
+            tracing::info!("{osd} ({disk_id}): OFF, reweight={reweight:.2} — draining (osd out)");
+            let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
+        }
+    }
 }
 
 /// Leader-only: read every node's published effective device list and write the
@@ -453,8 +523,15 @@ fn get_devices() -> Vec<String> {
 // ── BlueStore label parsing ───────────────────────────────────────────────────
 
 fn read_bluestore_header(device: &str) -> Option<[u8; 4096]> {
+    // Accept both bare kernel names ("sda") and full paths ("/dev/mapper/pool-ceph"),
+    // so the system OSD LV can be read the same way as pluggable disks.
+    let path = if device.starts_with('/') {
+        device.to_string()
+    } else {
+        format!("/dev/{device}")
+    };
     let mut buf = [0u8; 4096];
-    let mut f = std::fs::File::open(format!("/dev/{device}")).ok()?;
+    let mut f = std::fs::File::open(path).ok()?;
     f.read_exact(&mut buf).ok()?;
     Some(buf)
 }
