@@ -58,10 +58,47 @@ async fn restore_in_progress() -> bool {
         .unwrap_or(false)
 }
 
+/// Detects whether any VolSync backup mover pod is currently running — i.e. a
+/// `volsync-src-*` pod that is actively pushing PVC data to B2. This is the
+/// cluster-level equivalent of the in-memory `BACKUP_IN_PROGRESS` flag, which
+/// only tracks local-api-initiated cluster-metadata backups. Without this, the
+/// frontend would show "backing_up: false" (and allow restores) while VolSync
+/// is mid-sync — misleading and potentially dangerous.
+async fn volsync_backup_in_progress() -> bool {
+    Command::new("kubectl")
+        .args([
+            "get", "pods", "-A",
+            "-l", "app.kubernetes.io/created-by=volsync",
+            "--field-selector=status.phase=Running",
+            "-o", "name",
+        ])
+        .output()
+        .await
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.contains("volsync-src-"))
+        })
+        .unwrap_or(false)
+}
+
+fn local_backup_in_progress() -> bool {
+    BACKUP_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+/// True when any kind of backup is happening — local-api-driven cluster backup
+/// OR a VolSync PVC data sync (mover pod running).
+async fn any_backup_in_progress() -> bool {
+    local_backup_in_progress() || volsync_backup_in_progress().await
+}
+
 /// Refuses to start a new backup/restore action while either is already in progress.
 async fn ensure_no_operation_in_progress() -> anyhow::Result<()> {
-    if BACKUP_IN_PROGRESS.load(Ordering::SeqCst) {
+    if local_backup_in_progress() {
         anyhow::bail!("A backup is currently running — try again once it finishes.");
+    }
+    if volsync_backup_in_progress().await {
+        anyhow::bail!("VolSync is currently backing up PVC data — try again once it finishes.");
     }
     if restore_in_progress().await {
         anyhow::bail!("A restore is currently in progress — try again once it finishes.");
@@ -73,7 +110,7 @@ async fn ensure_no_operation_in_progress() -> anyhow::Result<()> {
 /// backup/restore progress itself.
 pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(serde_json::json!({
-        "backing_up": BACKUP_IN_PROGRESS.load(Ordering::SeqCst),
+        "backing_up": any_backup_in_progress().await,
         "restoring": restore_in_progress().await,
     })))
 }
@@ -1639,6 +1676,9 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
 pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     if restore_in_progress().await {
         return Err(anyhow::anyhow!("A restore is currently in progress — try again once it finishes.").into());
+    }
+    if volsync_backup_in_progress().await {
+        return Err(anyhow::anyhow!("VolSync is already backing up PVC data — try again once it finishes.").into());
     }
     let Some(_guard) = BackupGuard::acquire() else {
         return Err(anyhow::anyhow!("A backup is already running.").into());
