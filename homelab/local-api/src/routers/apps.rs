@@ -86,6 +86,22 @@ pub struct InstallRequest {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Overwrite a namespace annotation, logging (rather than swallowing) failures.
+/// A silently-failed annotate loses an app's persisted config or outputs.
+async fn annotate_ns(ns: &str, key: &str, value: &str) {
+    match tokio::process::Command::new("kubectl")
+        .args(["annotate", "namespace", ns, &format!("{key}={value}"), "--overwrite=true"])
+        .output()
+        .await
+    {
+        Ok(o) if !o.status.success() => {
+            tracing::warn!("annotate {ns} {key} failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Err(e) => tracing::warn!("annotate {ns} {key} spawn failed: {e}"),
+        _ => {}
+    }
+}
+
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
     let text = std::fs::read_to_string(&cfg.config_path)?;
     let table: toml::Table = toml::from_str(&text)?;
@@ -409,11 +425,8 @@ pub async fn install_app(
         tokio::pin!(apply_stream);
         use futures::StreamExt;
         while let Some(ev) = apply_stream.next().await { yield ev; }
-        let _ = tokio::process::Command::new("kubectl")
-            .args(["annotate", "namespace", &format!("yolab-{}", body.instance_name),
-                   &format!("{ANN_CONFIG}={}", serde_json::to_string(&body.config).unwrap()),
-                   "--overwrite=true"])
-            .output().await;
+        let config_json = serde_json::to_string(&body.config).unwrap_or_default();
+        annotate_ns(&format!("yolab-{}", body.instance_name), ANN_CONFIG, &config_json).await;
         yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));
     };
 
@@ -477,11 +490,8 @@ pub async fn update_app(
         use futures::StreamExt;
         while let Some(ev) = apply_stream.next().await { yield ev; }
         // Persist updated config so future updates stay consistent.
-        let _ = tokio::process::Command::new("kubectl")
-            .args(["annotate", "namespace", &ns,
-                   &format!("{ANN_CONFIG}={}", serde_json::to_string(&config).unwrap()),
-                   "--overwrite=true"])
-            .output().await;
+        let config_json = serde_json::to_string(&config).unwrap_or_default();
+        annotate_ns(&ns, ANN_CONFIG, &config_json).await;
         yield Ok(Event::default().data("Restarting deployments..."));
         let child = tokio::process::Command::new("kubectl")
             .args(["rollout", "restart", "deployment", "-n", &ns])
@@ -590,11 +600,8 @@ pub async fn scan_outputs(
         })
         .collect();
 
-    let _ = tokio::process::Command::new("kubectl")
-        .args(["annotate", "namespace", &ns,
-               &format!("{ANN_OUTPUTS}={}", serde_json::to_string(&outputs).unwrap()),
-               "--overwrite=true"])
-        .output().await;
+    let outputs_json = serde_json::to_string(&outputs).unwrap_or_default();
+    annotate_ns(&ns, ANN_OUTPUTS, &outputs_json).await;
 
     Ok(Json(ScanOutputsResponse { outputs }))
 }
