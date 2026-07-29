@@ -117,6 +117,34 @@ fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
     outputs.into_iter().filter_map(|o| serde_json::from_value(o).ok()).collect()
 }
 
+/// Reject config scalars that could break out of a YAML scalar and inject
+/// structure into the rendered manifest. Tera writes context string values
+/// verbatim, so an embedded newline in e.g. a "domain" field could smuggle an
+/// extra key/document into the applied manifest. All current catalog fields are
+/// single-line scalars, so rejecting control characters has no false positives.
+fn validate_config_values(config: &serde_json::Map<String, Value>) -> std::result::Result<(), String> {
+    fn check(v: &Value) -> std::result::Result<(), String> {
+        match v {
+            Value::String(s) => {
+                if s.len() > 8192 {
+                    return Err("value exceeds 8192 bytes".into());
+                }
+                if let Some(c) = s.chars().find(|c| c.is_control() && *c != '\t') {
+                    return Err(format!("value contains illegal control character {c:?}"));
+                }
+                Ok(())
+            }
+            Value::Array(a) => a.iter().try_for_each(check),
+            Value::Object(o) => o.values().try_for_each(check),
+            _ => Ok(()),
+        }
+    }
+    for (k, v) in config {
+        check(v).map_err(|e| format!("field '{k}': {e}"))?;
+    }
+    Ok(())
+}
+
 fn render_manifest(
     catalog_dir: &PathBuf,
     id: &str,
@@ -338,6 +366,9 @@ pub async fn install_app(
     if !body.instance_name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
         return (StatusCode::BAD_REQUEST, "instance_name must be lowercase alphanumeric and hyphens").into_response();
     }
+    if let Err(e) = validate_config_values(&body.config) {
+        return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
+    }
     if !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
     }
@@ -400,6 +431,10 @@ pub async fn update_app(
 
     // Caller may supply a new config; fall back to the stored one.
     let config = body.and_then(|b| b.0.config).unwrap_or(stored_config);
+
+    if let Err(e) = validate_config_values(&config) {
+        return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
+    }
 
     if id.is_empty() || !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();

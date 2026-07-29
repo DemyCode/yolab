@@ -129,17 +129,44 @@ fn verify_password(password: &str, hash: &str) -> bool {
     pwhash::unix::verify(password, hash)
 }
 
-fn is_cluster_internal(req: &Request<Body>) -> bool {
+/// Header carrying the pre-shared cluster token on node→node calls.
+pub const CLUSTER_AUTH_HEADER: &str = "x-yolab-cluster";
+
+/// True only when the request originates from this machine's loopback
+/// interface. Caddy reverse-proxies public UI/API traffic from `[::1]`, and
+/// mac/dev setups hit `localhost` directly — both are loopback. Anything
+/// arriving from a WireGuard address (mesh peers) or a pod IP is NOT loopback.
+fn is_loopback(req: &Request<Body>) -> bool {
     req.extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| match ci.0.ip() {
-            std::net::IpAddr::V6(v6) => {
-                let b = v6.octets()[0];
-                b == 0xfc || b == 0xfd
-            }
-            _ => false,
-        })
+        .map(|ci| ci.0.ip().is_loopback())
         .unwrap_or(false)
+}
+
+/// Constant-time byte comparison so token checks don't leak length/prefix via
+/// timing. Both must be non-empty to ever return true.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// True when the request presents the shared cluster token (node→node call).
+fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
+    let Some(presented) = req
+        .headers()
+        .get(CLUSTER_AUTH_HEADER)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    ct_eq(presented, &cfg.cluster_token())
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -162,12 +189,24 @@ pub async fn auth_middleware(
     if path == "/api/login" {
         return next.run(req).await;
     }
-    if is_cluster_internal(&req) {
+    // Node→node calls authenticate with the pre-shared cluster token, NOT by
+    // source address. The old code trusted any peer in fc00::/7 — but pod IPs
+    // (fd00:42::/…) fall in that range, so any pod could reach a node's private
+    // address and call privileged endpoints (e.g. /api/terminal/exec) unauthed.
+    if has_cluster_token(&req, &state.config) {
         return next.run(req).await;
     }
     let hash = password_hash(&state.config);
     if hash.is_empty() {
-        return next.run(req).await;
+        // No password configured (mac/dev, or a not-yet-provisioned node).
+        // Fail closed for anything off-box; only same-machine loopback callers
+        // — i.e. the Caddy reverse proxy and localhost dev — are allowed
+        // through. A provisioned NixOS node always has a hash, so this branch
+        // never opens the door remotely in production.
+        if is_loopback(&req) {
+            return next.run(req).await;
+        }
+        return (StatusCode::UNAUTHORIZED, r#"{"detail":"Unauthorized"}"#).into_response();
     }
     let token = jar.get("yolab_session").map(|c| c.value().to_string()).unwrap_or_default();
     let valid = if token.is_empty() {
