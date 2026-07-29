@@ -365,9 +365,15 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "local-fs.target" ];
       before = [ "k3s.service" ];
+      # Self-heal: a transient losetup failure used to latch storage down until
+      # a manual reboot — impossible for a non-technical owner. Retry inside the
+      # script, and let systemd keep retrying the unit indefinitely on failure.
+      startLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        Restart = "on-failure";
+        RestartSec = "10s";
         ExecStart = pkgs.writeShellScript "system-osd-start" ''
           set -euo pipefail
           IMG=/var/lib/rook/system-osd.img
@@ -386,11 +392,21 @@ in
           # Attach to /dev/loop0 so the device name is stable across reboots.
           # --direct-io=on bypasses the page cache — Ceph manages its own cache
           # and double-buffering against the backing file creates coherence risks.
-          ATTACHED=$(${pkgs.util-linux}/bin/losetup -j "$IMG" 2>/dev/null | grep "^/dev/loop0:" || true)
-          if [ -z "$ATTACHED" ]; then
+          # Retry a few times: loop0 may be briefly busy right after boot.
+          attach() {
+            ATTACHED=$(${pkgs.util-linux}/bin/losetup -j "$IMG" 2>/dev/null | grep "^/dev/loop0:" || true)
+            [ -n "$ATTACHED" ] && return 0
             ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
             ${pkgs.util-linux}/bin/losetup --direct-io=on /dev/loop0 "$IMG"
-          fi
+          }
+          for i in 1 2 3 4 5; do
+            if attach; then exit 0; fi
+            echo "losetup attempt $i failed; retrying in 3s" >&2
+            sleep 3
+          done
+          # Final attempt — a non-zero exit here trips Restart=on-failure so the
+          # unit keeps retrying rather than leaving the node without storage.
+          attach
         '';
       };
     };
@@ -404,9 +420,12 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "local-fs.target" "yolab-system-osd.service" ];
       before = [ "k3s.service" ];
+      startLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        Restart = "on-failure";
+        RestartSec = "10s";
         ExecStart = pkgs.writeShellScript "virtual-osd-attach" ''
           set -euo pipefail
           OSD_DIR=/var/lib/rook
