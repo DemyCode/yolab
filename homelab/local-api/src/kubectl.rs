@@ -2,6 +2,31 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::process::Stdio;
 use tokio::process::Command;
+use tokio::sync::OnceCell;
+
+// ── Typed kube client ─────────────────────────────────────────────────────────
+//
+// A single lazily-initialised kube-rs client, shared across the crate. Reads the
+// same KUBECONFIG the service already runs with (falls back to in-cluster).
+// Cloning a Client is cheap (it's Arc-backed), so handlers just call client().
+//
+// Not everything is migrated: `run`/`get_json`/`ceph_exec` still shell out to
+// kubectl for arbitrary-arg and exec-based calls, and `apply()` stays on kubectl
+// so it can apply arbitrary multi-document manifests (VolSync CRDs etc.). The
+// typed client covers the hot, well-typed paths: node/secret reads and secret
+// server-side-apply.
+static CLIENT: OnceCell<kube::Client> = OnceCell::const_new();
+
+pub async fn client() -> Result<kube::Client> {
+    CLIENT
+        .get_or_try_init(|| async {
+            kube::Client::try_default()
+                .await
+                .context("initialise kube client")
+        })
+        .await
+        .cloned()
+}
 
 pub async fn run(args: &[&str]) -> Result<String> {
     let out = Command::new("kubectl")
@@ -62,70 +87,77 @@ pub async fn apply(manifest: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read a Secret and return its base64-decoded string data, trimming trailing
+/// Read a Secret and return its decoded string data, trimming trailing
 /// whitespace from each value. `None` if the secret is missing or unreadable.
+/// (kube-rs hands back already-decoded bytes, so there's no base64 step here.)
 pub async fn get_secret(
     name: &str,
     ns: &str,
 ) -> Option<std::collections::HashMap<String, String>> {
-    use base64::Engine as _;
-    let out = Command::new("kubectl")
-        .args(["get", "secret", name, "-n", ns, "-o", "json"])
-        .output()
-        .await
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
-    let data = v.get("data")?.as_object()?;
+    use k8s_openapi::api::core::v1::Secret;
+    let api: kube::Api<Secret> = kube::Api::namespaced(client().await.ok()?, ns);
+    let secret = api.get_opt(name).await.ok()??;
     let mut result = std::collections::HashMap::new();
-    for (k, val) in data {
-        if let Some(encoded) = val.as_str() {
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-                if let Ok(s) = String::from_utf8(bytes) {
-                    result.insert(k.clone(), s.trim().to_string());
-                }
+    if let Some(data) = secret.data {
+        for (k, bytes) in data {
+            if let Ok(s) = String::from_utf8(bytes.0) {
+                result.insert(k, s.trim().to_string());
             }
         }
     }
     Some(result)
 }
 
-/// Create or replace an Opaque Secret from string values (base64-encoded here),
-/// via a JSON manifest to avoid YAML-escaping pitfalls. `labels` are applied to
-/// metadata; pass `&[]` for none.
+/// Create or replace an Opaque Secret from string values via server-side apply.
+/// `labels` are applied to metadata; pass `&[]` for none.
 pub async fn apply_secret(
     name: &str,
     ns: &str,
     data: &[(&str, &str)],
     labels: &[(&str, &str)],
 ) -> Result<()> {
-    use base64::Engine as _;
-    let data_map: serde_json::Map<String, Value> = data
-        .iter()
-        .map(|(k, v)| {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(v.as_bytes());
-            (k.to_string(), Value::String(b64))
-        })
-        .collect();
-    let label_map: serde_json::Map<String, Value> = labels
-        .iter()
-        .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
-        .collect();
-    let manifest = serde_json::json!({
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": { "name": name, "namespace": ns, "labels": label_map },
-        "type": "Opaque",
-        "data": data_map,
-    });
-    apply(&manifest.to_string()).await
+    use k8s_openapi::api::core::v1::Secret;
+    use k8s_openapi::ByteString;
+    use std::collections::BTreeMap;
+
+    let api: kube::Api<Secret> = kube::Api::namespaced(client().await?, ns);
+    let mut secret = Secret {
+        data: Some(
+            data.iter()
+                .map(|(k, v)| (k.to_string(), ByteString(v.as_bytes().to_vec())))
+                .collect::<BTreeMap<_, _>>(),
+        ),
+        ..Default::default()
+    };
+    secret.metadata.name = Some(name.to_string());
+    secret.metadata.namespace = Some(ns.to_string());
+    if !labels.is_empty() {
+        secret.metadata.labels = Some(
+            labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+    }
+    let pp = kube::api::PatchParams::apply("yolab-local-api").force();
+    api.patch(name, &pp, &kube::api::Patch::Apply(&secret))
+        .await
+        .context("server-side apply secret")?;
+    Ok(())
 }
 
 pub async fn get_nodes() -> Result<Vec<Value>> {
-    let v = get_json(&["get", "nodes", "-o", "json"]).await?;
-    Ok(v["items"].as_array().cloned().unwrap_or_default())
+    use k8s_openapi::api::core::v1::Node;
+    let api: kube::Api<Node> = kube::Api::all(client().await?);
+    let list = api.list(&Default::default()).await?;
+    // Callers walk these as serde_json::Value (status.addresses, labels, …).
+    // k8s-openapi serializes to the same JSON shape the API server emits, so
+    // round-tripping to Value keeps every existing call site unchanged.
+    Ok(list
+        .items
+        .into_iter()
+        .map(|n| serde_json::to_value(n).unwrap_or(Value::Null))
+        .collect())
 }
 
 pub async fn get_node_ips() -> Vec<String> {

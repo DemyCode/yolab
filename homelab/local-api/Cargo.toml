@@ -32,3 +32,5 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tempfile = "3"
 time = "0.3"
+kube = { version = "0.99", default-features = false, features = ["client", "openssl-tls"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
