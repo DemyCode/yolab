@@ -52,3 +52,29 @@ export interface DiskInfo {
   osd_id: number | null;
   desired: "USING" | "OFF";
 }
+
+export interface StoragePolicy {
+  mode: "auto" | "manual";
+  size: number;
+  min_size: number;
+  failure_domain: "osd" | "host";
+}
+
+export interface StorageTopology {
+  nodes: number;
+  osds: number;
+}
+
+export interface StorageTarget {
+  size: number;
+  min_size: number;
+  failure_domain: string;
+  mon: number;
+  mgr: number;
+}
+
+export interface StoragePolicyData {
+  policy: StoragePolicy;
+  topology: StorageTopology;
+  target: StorageTarget;
+}
