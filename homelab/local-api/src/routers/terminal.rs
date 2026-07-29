@@ -1,9 +1,10 @@
 use std::convert::Infallible;
 
-use axum::response::{sse::Event, Sse};
+use axum::extract::State;
+use axum::response::{sse::Event, IntoResponse, Response, Sse};
 use serde::Deserialize;
 
-use crate::proc::KillOnDrop;
+use crate::{proc::KillOnDrop, AppState};
 
 #[derive(Deserialize)]
 pub struct ExecRequest {
@@ -11,8 +12,21 @@ pub struct ExecRequest {
 }
 
 pub async fn exec(
+    State(state): State<AppState>,
     axum::Json(req): axum::Json<ExecRequest>,
-) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
+    // This runs an arbitrary command as root. It is only reachable past the
+    // auth middleware (valid session or cluster token), but operators can shut
+    // it off entirely with YOLAB_TERMINAL_ENABLED=0.
+    if !state.config.terminal_enabled {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "terminal exec is disabled on this node",
+        )
+            .into_response();
+    }
+    // Audit every command so root-shell use is traceable in the journal.
+    tracing::warn!(target: "yolab::terminal", "exec: {}", req.command);
     let stream = async_stream::stream! {
         let child = tokio::process::Command::new("bash")
             .args(["-c", &req.command])
@@ -23,7 +37,7 @@ pub async fn exec(
         let mut guard = match child {
             Ok(c) => KillOnDrop(c),
             Err(e) => {
-                yield Ok(Event::default().data(format!("[ERROR] {e}")));
+                yield Ok::<Event, Infallible>(Event::default().data(format!("[ERROR] {e}")));
                 yield Ok(Event::default().data("[EXIT:1]"));
                 return;
             }
@@ -54,5 +68,5 @@ pub async fn exec(
         yield Ok(Event::default().data(format!("[EXIT:{code}]")));
     };
 
-    Sse::new(stream)
+    Sse::new(stream).into_response()
 }
