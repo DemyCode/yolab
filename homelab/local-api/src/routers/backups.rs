@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::{config::Config, error::Result, AppState};
@@ -167,80 +166,26 @@ pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::
 }
 
 // ── kubectl helpers ───────────────────────────────────────────────────────────
+//
+// Thin wrappers over the shared crate::kubectl helpers, preserving the call
+// sites and behavior in this module (secrets here are labelled managed-by=yolab).
+
+const MANAGED_BY: (&str, &str) = ("app.kubernetes.io/managed-by", "yolab");
 
 async fn kubectl_apply(manifest: &str) -> anyhow::Result<()> {
-    let mut child = Command::new("kubectl")
-        .args(["apply", "-f", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(manifest.as_bytes()).await?;
-    }
-    let out = child.wait_with_output().await?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "kubectl apply failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
+    crate::kubectl::apply(manifest).await
 }
 
-/// Returns the decoded Secret data, trimming trailing whitespace from each value.
 async fn kubectl_get_secret(name: &str, ns: &str) -> Option<HashMap<String, String>> {
-    let out = Command::new("kubectl")
-        .args(["get", "secret", name, "-n", ns, "-o", "json"])
-        .output()
-        .await
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    let data = v.get("data")?.as_object()?;
-    let mut result = HashMap::new();
-    for (k, val) in data {
-        if let Some(encoded) = val.as_str() {
-            use base64::Engine as _;
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-                if let Ok(s) = String::from_utf8(bytes) {
-                    result.insert(k.clone(), s.trim().to_string());
-                }
-            }
-        }
-    }
-    Some(result)
+    crate::kubectl::get_secret(name, ns).await
 }
 
-/// Create or replace a Secret using a JSON manifest (avoids YAML escaping issues).
 async fn kubectl_apply_secret(
     name: &str,
     ns: &str,
     data: &[(&str, &str)],
 ) -> anyhow::Result<()> {
-    use base64::Engine as _;
-    let data_map: serde_json::Map<String, serde_json::Value> = data
-        .iter()
-        .map(|(k, v)| {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(v.as_bytes());
-            (k.to_string(), serde_json::Value::String(b64))
-        })
-        .collect();
-
-    let manifest = serde_json::json!({
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {
-            "name": name,
-            "namespace": ns,
-            "labels": { "app.kubernetes.io/managed-by": "yolab" }
-        },
-        "type": "Opaque",
-        "data": data_map,
-    });
-    kubectl_apply(&manifest.to_string()).await
+    crate::kubectl::apply_secret(name, ns, data, &[MANAGED_BY]).await
 }
 
 fn random_hex(bytes: usize) -> String {
