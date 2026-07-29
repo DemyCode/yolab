@@ -666,188 +666,73 @@ pub async fn set_replication(
 }
 
 // ── OSD lifecycle ──────────────────────────────────────────────────────────────
+//
+// There is exactly one source of truth for whether a disk is in the cluster: the
+// `yolab-disk-config` ConfigMap (DISK → USING|OFF). Both the main toggle and these
+// Advanced buttons write that map; the disk reconciler (disks_reconciler.rs) is the
+// single actuator that drives crush weight + in/out to match. So "Re-add" / "Remove
+// safely" here simply set desired ON/OFF for the disk backing this OSD.
 
-/// Mark an OSD `in`: set crush_weight from device size (if currently 0) then mark in.
+/// Re-add the disk backing this OSD: set its desired state to USING.
 pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
-    let osd = format!("osd.{id}");
-
-    // If crush_weight is 0 (new OSD), derive the physical size and set it first.
-    let df_raw = kubectl::ceph_exec(&["osd", "df", &osd, "-f", "json"]).await
-        .unwrap_or_default();
-    let crush_weight = serde_json::from_str::<serde_json::Value>(&df_raw)
-        .ok()
-        .and_then(|v| v["nodes"].as_array()?.first()?.get("crush_weight")?.as_f64())
-        .unwrap_or(0.0);
-
-    if crush_weight == 0.0 {
-        let meta = match kubectl::ceph_exec(&["osd", "metadata", &osd, "-f", "json"]).await {
-            Ok(s) => s,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("metadata: {e}")}))),
-        };
-        let size_bytes: u64 = serde_json::from_str::<serde_json::Value>(&meta)
-            .ok()
-            .and_then(|v| {
-                v["bluestore_bdev_size"].as_str()
-                    .and_then(|s| s.parse().ok())
-                    .or_else(|| v["bluestore_bdev_size"].as_u64())
-            })
-            .unwrap_or(0);
-        if size_bytes == 0 {
-            return (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "cannot determine device size from OSD metadata"})));
-        }
-        let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
-        if let Err(e) = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("crush reweight: {e}")})));
-        }
-    }
-
-    match kubectl::ceph_exec(&["osd", "in", &osd]).await {
-        Ok(_)  => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("osd in: {e}")}))),
-    }
+    set_desired_by_osd(id, "USING").await
 }
 
-/// Mark an OSD `out`: set crush_weight to 0 and mark out.
-/// Ceph drains PGs off it; once safe_to_destroy is true it can be unplugged.
+/// Remove the disk backing this OSD safely: set its desired state to OFF. The
+/// reconciler drains it (osd out); it's fine if draining takes a long time.
 pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
-    let osd = format!("osd.{id}");
-    if let Err(e) = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, "0"]).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("crush reweight: {e}")})));
-    }
-    match kubectl::ceph_exec(&["osd", "out", &osd]).await {
-        Ok(_)  => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("osd out: {e}")}))),
-    }
+    set_desired_by_osd(id, "OFF").await
 }
 
-/// Background job: reconcile OSD active state toward the desired state in the
-/// disk config ConfigMap. Reads desired from `yolab-disk-config`, not from the
-/// Ceph state itself — the Ceph state is actual, the ConfigMap is desired.
-///
-/// Only handles the activation direction (desired=USING → activate if inactive).
-/// De-activation (desired=OFF) is left to the explicit mark-out endpoint and
-/// Rook's CephCluster CR exclusion, which handles PG drain safely.
-pub async fn run_osd_state_watcher() {
-    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-    loop {
-        if let Err(e) = osd_state_tick().await {
-            tracing::debug!("osd state watcher: {e}");
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-    }
-}
-
-async fn osd_state_tick() -> anyhow::Result<()> {
-    // --- desired state: yolab-disk-config CM ---
-    // Keys are "{node}--{disk_id}" → "USING" | "OFF".
-    let config: std::collections::HashMap<String, String> = kubectl::get_json(&[
-        "get", "configmap", "yolab-disk-config", "-n", "rook-ceph",
-        "-o", "jsonpath={.data}",
-    ])
-    .await
-    .ok()
-    .and_then(|v| serde_json::from_value(v).ok())
-    .unwrap_or_default();
-
-    // --- actual disk state: yolab-disk-status CM ---
-    // Keys are "{node}" → JSON: {"disks": {"disk_id": {"osd_id": N, ...}}, ...}
-    let status_val = kubectl::get_json(&[
+/// Resolve an OSD id to its `{node}--{disk_id}` config key (via the disk-status
+/// ConfigMap) and set that key's desired state. Keeps the Advanced buttons on the
+/// same source of truth as the main toggle.
+async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_json::Value>) {
+    let status = kubectl::get_json(&[
         "get", "configmap", "yolab-disk-status", "-n", "rook-ceph",
         "-o", "jsonpath={.data}",
     ])
     .await
-    .ok()
-    .unwrap_or(serde_json::Value::Null);
+    .ok();
 
-    // Build: osd_id → desired ("USING" or "OFF").
-    // For OSDs not found in the status CM (e.g., system OSD with osd_id=null,
-    // or disks not yet published), default to "USING".
-    let mut osd_desired: std::collections::HashMap<i64, &'static str> =
-        std::collections::HashMap::new();
-    if let Some(nodes_map) = status_val.as_object() {
-        for (node, payload) in nodes_map {
+    let mut found: Option<(String, String)> = None;
+    if let Some(map) = status.as_ref().and_then(|v| v.as_object()) {
+        for (node, payload) in map {
             let Some(s) = payload.as_str() else { continue };
             let Ok(p) = serde_json::from_str::<serde_json::Value>(s) else { continue };
             if let Some(disks) = p["disks"].as_object() {
                 for (disk_id, meta) in disks {
-                    let Some(osd_id) = meta["osd_id"].as_i64() else { continue };
-                    let cm_key = format!("{node}--{disk_id}");
-                    let desired = if config.get(&cm_key).map(|v| v == "OFF").unwrap_or(false) {
-                        "OFF"
-                    } else {
-                        "USING"
-                    };
-                    osd_desired.insert(osd_id, desired);
+                    if meta["osd_id"].as_i64() == Some(id) {
+                        found = Some((node.clone(), disk_id.clone()));
+                    }
                 }
             }
         }
     }
 
-    // --- reconcile ---
-    let raw = kubectl::ceph_exec(&["osd", "df", "tree", "-f", "json"]).await?;
-    let v: serde_json::Value = serde_json::from_str(&raw)?;
-    let nodes = v["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-    for node in nodes {
-        if node["type"].as_str() != Some("osd") { continue; }
-        let crush_weight = node["crush_weight"].as_f64().unwrap_or(0.0);
-        let reweight     = node["reweight"].as_f64().unwrap_or(1.0);
-        let id           = node["id"].as_i64().unwrap_or(-1);
-        if id < 0 { continue; }
-
-        // Default to USING for OSDs we can't map (e.g. system OSD).
-        let desired = osd_desired.get(&id).copied().unwrap_or("USING");
-        let osd = format!("osd.{id}");
-
-        if desired == "USING" {
-            if crush_weight == 0.0 {
-                tracing::info!("{osd}: desired=USING crush_weight=0 — activating");
-                activate_osd(id).await;
-            } else if reweight < 0.5 {
-                tracing::info!("{osd}: desired=USING reweight={reweight:.2} — marking in");
-                let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
-            }
-        }
-        // desired=OFF: Rook drains via CephCluster CR exclusion. Don't auto-mark-out.
-    }
-    Ok(())
-}
-
-/// Set crush weight from device size and mark the OSD in.
-/// Shared by auto-activation (watcher) and the manual mark-in endpoint.
-pub async fn activate_osd(id: i64) {
-    let osd = format!("osd.{id}");
-    let meta = match kubectl::ceph_exec(&["osd", "metadata", &osd, "-f", "json"]).await {
-        Ok(s) => s,
-        Err(e) => { tracing::warn!("{osd}: activate: metadata: {e}"); return; }
+    let Some((node, disk_id)) = found else {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({
+            "ok": false, "error": format!("osd.{id} not found in disk inventory")
+        })));
     };
-    let size_bytes: u64 = serde_json::from_str::<serde_json::Value>(&meta)
-        .ok()
-        .and_then(|v| {
-            v["bluestore_bdev_size"].as_str()
-                .and_then(|s| s.parse().ok())
-                .or_else(|| v["bluestore_bdev_size"].as_u64())
-        })
-        .unwrap_or(0);
-    if size_bytes == 0 {
-        tracing::warn!("{osd}: activate: cannot determine device size");
-        return;
+
+    let key = format!("{node}--{disk_id}");
+    let patch = serde_json::json!({"data": {key: desired}}).to_string();
+    if kubectl::run(&[
+        "patch", "configmap", "yolab-disk-config", "-n", "rook-ceph", "--type", "merge", "-p", &patch,
+    ]).await.is_err()
+    {
+        let _ = kubectl::run(&["create", "configmap", "yolab-disk-config", "-n", "rook-ceph"]).await;
+        if kubectl::run(&[
+            "patch", "configmap", "yolab-disk-config", "-n", "rook-ceph", "--type", "merge", "-p", &patch,
+        ]).await.is_err()
+        {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "ok": false, "error": "failed to save disk config"
+            })));
+        }
     }
-    let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
-    if let Err(e) = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await {
-        tracing::warn!("{osd}: activate: crush reweight: {e}");
-        return;
-    }
-    if let Err(e) = kubectl::ceph_exec(&["osd", "in", &osd]).await {
-        tracing::warn!("{osd}: activate: osd in: {e}");
-    } else {
-        tracing::info!("{osd}: activated (weight={weight})");
-    }
+    (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }
 
 pub async fn dashboard_creds() -> Json<serde_json::Value> {
