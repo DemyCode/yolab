@@ -225,7 +225,17 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
         .filter(|p| !p.is_empty() && !p.starts_with(".nfs") && !p.starts_with(".rgw"))
     {
         let cur = pool_size(pool).await;
-        let want = if policy.mode == "manual" { target.size } else { cur.max(target.size) };
+        let want = if policy.mode == "manual" {
+            target.size
+        } else if cur > target.size {
+            // cur > target.size implies cur > available OSDs (target.size is already
+            // OSD-clamped). The pool is already degraded — reducing to the feasible
+            // maximum can only help. If OSDs are added later, the raise-only path below
+            // will grow size back up.
+            target.size
+        } else {
+            cur.max(target.size) // raise-only in auto mode
+        };
         let min = target.min_size.min(want);
 
         let _ = kubectl::ceph_exec(&["osd", "pool", "set", pool, "crush_rule", rule]).await;
