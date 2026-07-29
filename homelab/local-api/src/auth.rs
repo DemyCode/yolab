@@ -287,3 +287,27 @@ pub async fn logout(
 fn jar_with(cookie: Cookie<'static>) -> CookieJar {
     CookieJar::new().add(cookie)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ct_eq_matches_identical() {
+        assert!(ct_eq("s3cret-token", "s3cret-token"));
+    }
+
+    #[test]
+    fn ct_eq_rejects_different() {
+        assert!(!ct_eq("s3cret-token", "s3cret-tokeN"));
+        assert!(!ct_eq("short", "longer-value"));
+    }
+
+    #[test]
+    fn ct_eq_rejects_empty() {
+        // An unreadable/absent token must never authorize a caller.
+        assert!(!ct_eq("", ""));
+        assert!(!ct_eq("", "anything"));
+        assert!(!ct_eq("anything", ""));
+    }
+}

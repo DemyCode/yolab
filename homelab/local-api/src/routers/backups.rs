@@ -1951,3 +1951,37 @@ pub async fn restore_from_snapshot(
 
     Ok(Json(serde_json::json!({ "started": started, "errors": errors })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_pvc_id_passes_through_plain_names() {
+        assert_eq!(canonical_pvc_id("gitea-data"), "gitea-data");
+    }
+
+    #[test]
+    fn canonical_pvc_id_strips_one_restore_layer() {
+        assert_eq!(
+            canonical_pvc_id("volsync-emergency-restore-gitea-data-dest"),
+            "gitea-data"
+        );
+    }
+
+    #[test]
+    fn canonical_pvc_id_strips_nested_restore_layers() {
+        // Re-restoring an already-restored PVC must collapse back to the same id
+        // so RS/secret/S3-path names stay stable instead of growing each time.
+        let mangled =
+            "volsync-emergency-restore-volsync-emergency-restore-gitea-data-dest-dest";
+        assert_eq!(canonical_pvc_id(mangled), "gitea-data");
+    }
+
+    #[test]
+    fn random_hex_length_and_charset() {
+        let h = random_hex(16);
+        assert_eq!(h.len(), 32);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}

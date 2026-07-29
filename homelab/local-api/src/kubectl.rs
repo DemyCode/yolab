@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -204,4 +204,36 @@ pub struct OsdUsage {
     pub used_bytes: u64,
     pub free_bytes: u64,
     pub total_bytes: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_osd_metric_extracts_id_and_value() {
+        // parse_osd_metric receives the text *after* the metric-name prefix.
+        let rest = r#"ceph_daemon="osd.3"} 1073741824"#;
+        assert_eq!(parse_osd_metric(rest), Some((3, 1073741824)));
+    }
+
+    #[test]
+    fn parse_osd_metric_rejects_garbage() {
+        assert_eq!(parse_osd_metric("no osd here } 5"), None);
+        assert_eq!(parse_osd_metric(r#"ceph_daemon="osd.1"}"#), None); // no value
+    }
+
+    #[test]
+    fn shell_escape_wraps_and_escapes_quotes() {
+        assert_eq!(shell_escape("plain"), "'plain'");
+        // A single quote in the arg must be broken out and re-quoted.
+        assert_eq!(shell_escape("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn shell_escape_neutralizes_injection() {
+        // The whole payload stays a single quoted literal — no unescaped metachars.
+        let got = shell_escape("; rm -rf /");
+        assert_eq!(got, "'; rm -rf /'");
+    }
 }
