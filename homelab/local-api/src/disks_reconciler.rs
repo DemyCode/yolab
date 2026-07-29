@@ -2,7 +2,7 @@
 /// Replaces the former Python osd-node-controller DaemonSet.
 ///
 /// Every 30 seconds on each node:
-///   1. Discover block devices from /sys/block
+///   1. Discover block devices via lsblk (type=disk, no partition children)
 ///   2. Classify them (ours / clean / foreign-wipe)
 ///   3. Publish metadata to yolab-disk-status ConfigMap
 ///   4. Read desired states from yolab-disk-config ConfigMap
@@ -74,11 +74,29 @@ mod leader {
 
     pub async fn try_acquire(identity: &str) -> bool {
         let now = chrono::Utc::now();
+        // MicroTime requires microsecond precision (.000000Z).
+        let fmt = chrono::SecondsFormat::Micros;
+
         let lease_json = crate::kubectl::get_json(&[
             "get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json",
         ]).await;
 
-        let acquire_time = match &lease_json {
+        match &lease_json {
+            Err(_) => {
+                // Lease doesn't exist yet. Use kubectl create — only one node wins (atomic).
+                let manifest = serde_json::json!({
+                    "apiVersion": "coordination.k8s.io/v1",
+                    "kind": "Lease",
+                    "metadata": { "name": LEASE_NAME, "namespace": LEASE_NS },
+                    "spec": {
+                        "holderIdentity": identity,
+                        "leaseDurationSeconds": LEASE_SECS,
+                        "acquireTime": now.to_rfc3339_opts(fmt, true),
+                        "renewTime": now.to_rfc3339_opts(fmt, true),
+                    },
+                });
+                crate::kubectl::create(&manifest.to_string()).await.is_ok()
+            }
             Ok(v) => {
                 let spec = &v["spec"];
                 let holder = spec["holderIdentity"].as_str().unwrap_or("");
@@ -90,39 +108,44 @@ mod leader {
                         Some((now - ts.with_timezone(&chrono::Utc)).num_seconds() > dur)
                     })
                     .unwrap_or(true);
+
                 if holder != identity && !expired {
-                    return false;
+                    return false; // someone else holds a live lease
                 }
-                // Preserve original acquireTime when renewing our own lease.
-                if holder == identity {
+
+                let acquire_time = if holder == identity {
+                    // Renewing: preserve original acquireTime.
                     spec["acquireTime"].as_str()
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or(now)
                 } else {
-                    now
-                }
+                    now // taking over from expired holder
+                };
+
+                // Use kubectl replace with the exact resourceVersion from the GET.
+                // The API server rejects with 409 if another node has since written
+                // the resource — prevents two nodes both seeing an expired lease and
+                // both becoming leader (TOCTOU).
+                let resource_version = v["metadata"]["resourceVersion"].as_str().unwrap_or("");
+                let manifest = serde_json::json!({
+                    "apiVersion": "coordination.k8s.io/v1",
+                    "kind": "Lease",
+                    "metadata": {
+                        "name": LEASE_NAME,
+                        "namespace": LEASE_NS,
+                        "resourceVersion": resource_version,
+                    },
+                    "spec": {
+                        "holderIdentity": identity,
+                        "leaseDurationSeconds": LEASE_SECS,
+                        "acquireTime": acquire_time.to_rfc3339_opts(fmt, true),
+                        "renewTime": now.to_rfc3339_opts(fmt, true),
+                    },
+                });
+                crate::kubectl::replace(&manifest.to_string()).await.is_ok()
             }
-            Err(_) => now,
-        };
-
-        // Kubernetes MicroTime requires microsecond precision (.000000Z).
-        // Plain to_rfc3339() emits "Z" without fractional seconds and the
-        // API server rejects it with "cannot parse Z as .000000".
-        let fmt = chrono::SecondsFormat::Micros;
-        let manifest = serde_json::json!({
-            "apiVersion": "coordination.k8s.io/v1",
-            "kind": "Lease",
-            "metadata": { "name": LEASE_NAME, "namespace": LEASE_NS },
-            "spec": {
-                "holderIdentity": identity,
-                "leaseDurationSeconds": LEASE_SECS,
-                "acquireTime": acquire_time.to_rfc3339_opts(fmt, true),
-                "renewTime": now.to_rfc3339_opts(fmt, true),
-            },
-        });
-
-        crate::kubectl::apply(&manifest.to_string()).await.is_ok()
+        }
     }
 
     pub async fn is_holder(identity: &str) -> bool {
@@ -176,20 +199,6 @@ pub async fn run() {
         }
         sleep(Duration::from_secs(INTERVAL_SECS)).await;
     }
-}
-
-/// Returns the OSD ID that resides on `device` on this node, if any.
-/// Reads the BlueStore OSD UUID from the device header and matches it against
-/// running OSD deployments. Returns None if the device is not a Ceph OSD or
-/// if the OSD can't be identified.
-pub fn osd_id_for_device(device: &str, our_fsid: &str) -> Option<i64> {
-    if device.starts_with("loop") {
-        return None;
-    }
-    if bluestore_fsid(device).as_deref() != Some(our_fsid) {
-        return None;
-    }
-    bluestore_osd_uuid(device).and_then(|uuid| osd_id_from_uuid_sync(&uuid))
 }
 
 fn osd_id_from_uuid_sync(osd_uuid: &str) -> Option<i64> {
@@ -299,7 +308,6 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
     // Build the set of OSD UUIDs for every disk that is physically present.
     let live_uuids: std::collections::HashSet<String> = devices
         .iter()
-        .filter(|d| !d.starts_with("loop"))
         .filter(|d| bluestore_fsid(d).as_deref() == Some(our_fsid))
         .filter_map(|d| bluestore_osd_uuid(d))
         .collect();
@@ -341,25 +349,13 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
             continue; // Disk is still here — may just be temporarily down
         }
 
-        // The disk is gone. Only purge if the pod has been failing for a while —
-        // avoid racing with a pod that's in its first few restart cycles.
-        let init_restarts: u32 = deploy["status"]["conditions"]
-            .as_array()
-            .and_then(|_| {
-                // Approximate: check if the pod's last-known restart count is high.
-                // We use the deployment's unavailableReplicas as a rough signal.
-                None::<u32>
-            })
-            .unwrap_or(0);
-        let _ = init_restarts; // used implicitly via pod check below
-
-        // Check if the pod has been restarting for >5 minutes (has a restart count > 3).
-        let pod_name_prefix = format!("{name}-");
+        // Only purge if the pod has been crashing for a while — too early to purge
+        // on first few restart cycles while the disk might just be temporarily slow.
         let pods_out = kubectl::get_json(&[
             "get", "pods", "-n", NS, "-l", &format!("app=rook-ceph-osd,rook-ceph-osd-id={osd_id_str}"),
             "-o", "json",
         ]).await;
-        let min_restarts = if let Ok(pods) = pods_out {
+        let max_restarts = if let Ok(pods) = pods_out {
             pods["items"].as_array().cloned().unwrap_or_default()
                 .iter()
                 .filter(|p| p["spec"]["nodeName"].as_str() == Some(node))
@@ -370,10 +366,8 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
         } else {
             0
         };
-        let _ = pod_name_prefix;
 
-        if min_restarts < 5 {
-            // Not yet sure — too early to purge
+        if max_restarts < 5 {
             continue;
         }
 
@@ -405,7 +399,7 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
 
         tracing::warn!(
             "purge_dead_osds: osd.{osd_id} on {node} has disk UUID {osd_uuid} but disk is gone \
-             ({min_restarts} restart(s)) and is safe-to-destroy — purging"
+             ({max_restarts} restart(s)) and is safe-to-destroy — purging"
         );
         if let Err(e) = crate::kubectl::ceph_exec(&[
             "osd", "purge", &format!("{osd_id}"), "--yes-i-really-mean-it",
@@ -528,20 +522,6 @@ fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
 // ── Stable disk identity ──────────────────────────────────────────────────────
 
 fn disk_id(device: &str) -> String {
-    if device.starts_with("loop") {
-        let bf = std::fs::read_to_string(format!("/sys/block/{device}/loop/backing_file"))
-            .unwrap_or_default();
-        let name = Path::new(bf.trim())
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| device.to_string());
-        let safe: String = name
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect::<String>()
-            .to_lowercase();
-        return format!("loop-{}", safe.trim_matches('-'));
-    }
     if let Ok(serial) = std::fs::read_to_string(format!("/sys/block/{device}/device/serial")) {
         let s = serial.trim();
         if !s.is_empty() {
@@ -557,20 +537,15 @@ fn disk_id(device: &str) -> String {
 }
 
 fn disk_meta(device: &str, our_fsid: &str) -> Value {
-    let is_loop = device.starts_with("loop");
-    let model = if is_loop {
-        "System disk".to_string()
-    } else {
-        std::fs::read_to_string(format!("/sys/block/{device}/device/model"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
-    };
+    let model = std::fs::read_to_string(format!("/sys/block/{device}/device/model"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     let size_bytes: u64 = std::fs::read_to_string(format!("/sys/block/{device}/size"))
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0)
         * 512;
-    let fsid = if is_loop { None } else { bluestore_fsid(device) };
+    let fsid = bluestore_fsid(device);
     let is_our_osd = !our_fsid.is_empty() && fsid.as_deref() == Some(our_fsid);
     // A disk with a BlueStore header from a *different* cluster — data from another
     // Ceph installation. Never auto-wipe; surface for explicit user confirmation.
@@ -584,7 +559,6 @@ fn disk_meta(device: &str, our_fsid: &str) -> Value {
         "device": device,
         "model": model,
         "size_bytes": size_bytes,
-        "is_loop": is_loop,
         "is_our_osd": is_our_osd,
         "foreign_ceph": foreign_ceph,
         "osd_id": osd_id,
@@ -757,7 +731,6 @@ async fn migrate_osd_deployments(node: &str, our_fsid: &str) {
     let devices = get_devices();
     let our_uuids: HashMap<String, String> = devices
         .iter()
-        .filter(|d| !d.starts_with("loop"))
         .filter(|d| bluestore_fsid(d).as_deref() == Some(our_fsid))
         .filter_map(|d| bluestore_osd_uuid(d).map(|u| (u, d.clone())))
         .collect();

@@ -64,6 +64,49 @@ pub async fn apply(manifest: &str) -> Result<()> {
     Ok(())
 }
 
+/// Pipe a manifest to `kubectl create -f -`.
+/// Returns Err if the resource already exists (409) or any other failure.
+pub async fn create(manifest: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new("kubectl")
+        .args(["create", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn kubectl create")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(manifest.as_bytes()).await?;
+    }
+    let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        bail!("kubectl create: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
+/// Pipe a manifest to `kubectl replace -f -`.
+/// Requires `metadata.resourceVersion` in the manifest; fails with 409 if
+/// another writer has since modified the resource (optimistic concurrency CAS).
+pub async fn replace(manifest: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new("kubectl")
+        .args(["replace", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn kubectl replace")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(manifest.as_bytes()).await?;
+    }
+    let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        bail!("kubectl replace: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
 /// Read a Secret and return its decoded string data. `None` if missing.
 pub async fn get_secret(
     name: &str,

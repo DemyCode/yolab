@@ -115,12 +115,21 @@ async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
 
 async fn observe() -> Topology {
     let nodes = kubectl::get_nodes().await.map(|n| n.len() as u32).unwrap_or(0);
+    // Count only deployments with at least one ready replica — dead/pending
+    // deployments that Rook hasn't cleaned up yet must not skew the OSD count.
     let osds = kubectl::get_json(&[
         "get", "deploy", "-n", NS, "-l", "app=rook-ceph-osd", "-o", "json",
     ])
     .await
     .ok()
-    .and_then(|v| v["items"].as_array().map(|a| a.len() as u32))
+    .and_then(|v| {
+        v["items"].as_array().map(|items| {
+            items
+                .iter()
+                .filter(|d| d["status"]["readyReplicas"].as_u64().unwrap_or(0) > 0)
+                .count() as u32
+        })
+    })
     .unwrap_or(0);
     Topology { nodes, osds }
 }
@@ -168,8 +177,13 @@ async fn tick() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Raise-only mon/mgr scaling. We never auto-tear-down mons (a node that's
-/// temporarily offline should not collapse quorum), so this only ever grows.
+/// Scale mon/mgr count toward the target.
+///
+/// Raises immediately. Reductions are only applied when the cluster is healthy
+/// (HEALTH_OK or HEALTH_WARN) — a node that's temporarily offline should not
+/// collapse quorum, so we wait until the cluster is clearly stable before
+/// reducing. HEALTH_ERR blocks the entire topology tick, so a hard-error cluster
+/// never reaches this path; the guard here is for HEALTH_WARN → HEALTH_OK.
 async fn apply_mon_mgr(target: &Target) {
     let Ok(cr) = kubectl::get_json(&["get", "cephcluster", CLUSTER, "-n", NS, "-o", "json"]).await
     else {
@@ -177,8 +191,18 @@ async fn apply_mon_mgr(target: &Target) {
     };
     let cur_mon = cr["spec"]["mon"]["count"].as_u64().unwrap_or(1) as u32;
     let cur_mgr = cr["spec"]["mgr"]["count"].as_u64().unwrap_or(1) as u32;
-    let new_mon = cur_mon.max(target.mon);
-    let new_mgr = cur_mgr.max(target.mgr);
+
+    // Raising is always safe. Reducing requires a stable cluster.
+    let new_mon = if target.mon >= cur_mon {
+        target.mon
+    } else if cluster_health().await != "HEALTH_ERR" {
+        // Only reduce to the target — never below it. Min 1.
+        target.mon.max(1)
+    } else {
+        cur_mon // still unhealthy; don't reduce yet
+    };
+    let new_mgr = cur_mgr.max(target.mgr); // mgr is raise-only (no quorum risk)
+
     if new_mon != cur_mon || new_mgr != cur_mgr {
         let patch = serde_json::json!({"spec": {"mon": {"count": new_mon}, "mgr": {"count": new_mgr}}})
             .to_string();

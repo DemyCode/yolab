@@ -231,6 +231,18 @@ fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<Heal
             "Control node offline".into(),
             "A monitor node is offline. Storage decisions may be delayed or impossible.".into(),
         ),
+        "MON_DISK_LOW" => (
+            "Monitor disk is low on space".into(),
+            "The disk used by the monitor process is nearly full. Free up space on the system drive to keep the cluster healthy.".into(),
+        ),
+        "MON_DISK_CRIT" => (
+            "Monitor disk critically low".into(),
+            "The monitor disk is critically full. Storage decisions are at risk. Free up space on the system drive immediately.".into(),
+        ),
+        "MON_DISK_BIG" => (
+            "Monitor data growing large".into(),
+            "Monitor storage is consuming more disk than expected. Consider trimming old snapshots or logs.".into(),
+        ),
         "MON_CLOCK_SKEW" => (
             "Machine clocks out of sync".into(),
             "The clocks on your machines differ by too much. This can cause storage failures.".into(),
@@ -714,10 +726,14 @@ pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::
     }
 }
 
-/// Background job: keep reweight in sync with crush_weight.
-/// crush_weight is the single source of truth — the UI only ever changes it.
-///   crush_weight  > 0 → osd in  (reweight = 1)
-///   crush_weight == 0 → osd out (reweight = 0)
+/// Background job: activate newly provisioned OSDs and keep reweight in sync.
+///
+/// Three cases for (crush_weight, reweight):
+///   (>0, <1) → reweight fell below 1 while weight is set — mark in (restore reweight=1)
+///   (0, >0)  → freshly provisioned by Rook (Rook sets osd "in" = reweight=1, weight=0
+///              because of osd_crush_initial_weight=0). Auto-activate: set weight from
+///              disk size, mark in. This collapses toggle→activate into a single step.
+///   (0,  0)  → user explicitly turned this disk off — leave it alone.
 pub async fn run_osd_state_watcher() {
     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     loop {
@@ -739,15 +755,52 @@ async fn osd_state_tick() -> anyhow::Result<()> {
         let id           = node["id"].as_i64().unwrap_or(-1);
         if id < 0 { continue; }
         let osd = format!("osd.{id}");
+
         if crush_weight > 0.0 && reweight < 0.5 {
+            // Weight is set but reweight is 0 — restore it.
             tracing::info!("{osd}: crush_weight={crush_weight:.5} reweight={reweight:.2} — marking in");
             let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
         } else if crush_weight == 0.0 && reweight > 0.5 {
-            tracing::info!("{osd}: crush_weight=0 reweight={reweight:.2} — marking out");
-            let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
+            // Freshly provisioned OSD: Rook set reweight=1 but weight=0.
+            // Auto-activate by setting crush weight from the actual device size.
+            tracing::info!("{osd}: newly provisioned (weight=0, reweight={reweight:.2}) — auto-activating");
+            activate_osd(id).await;
         }
+        // crush_weight==0 && reweight==0: user turned this disk off — leave it.
     }
     Ok(())
+}
+
+/// Set crush weight from device size and mark the OSD in.
+/// Shared by auto-activation (watcher) and the manual mark-in endpoint.
+pub async fn activate_osd(id: i64) {
+    let osd = format!("osd.{id}");
+    let meta = match kubectl::ceph_exec(&["osd", "metadata", &osd, "-f", "json"]).await {
+        Ok(s) => s,
+        Err(e) => { tracing::warn!("{osd}: activate: metadata: {e}"); return; }
+    };
+    let size_bytes: u64 = serde_json::from_str::<serde_json::Value>(&meta)
+        .ok()
+        .and_then(|v| {
+            v["bluestore_bdev_size"].as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| v["bluestore_bdev_size"].as_u64())
+        })
+        .unwrap_or(0);
+    if size_bytes == 0 {
+        tracing::warn!("{osd}: activate: cannot determine device size");
+        return;
+    }
+    let weight = format!("{:.5}", size_bytes as f64 / (1u64 << 40) as f64);
+    if let Err(e) = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &weight]).await {
+        tracing::warn!("{osd}: activate: crush reweight: {e}");
+        return;
+    }
+    if let Err(e) = kubectl::ceph_exec(&["osd", "in", &osd]).await {
+        tracing::warn!("{osd}: activate: osd in: {e}");
+    } else {
+        tracing::info!("{osd}: activated (weight={weight})");
+    }
 }
 
 pub async fn dashboard_creds() -> Json<serde_json::Value> {
