@@ -185,14 +185,15 @@ pub async fn ceph_exec(args: &[&str]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Use thread-unique paths so concurrent ceph_exec calls never race on
-    // the same files.  Thread ID is stable for the lifetime of one call.
-    let tid = format!("{:?}", std::thread::current().id())
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>();
-    let key_path  = format!("/tmp/ceph-key-{tid}.keyring");
-    let conf_path = format!("/tmp/ceph-conf-{tid}.conf");
+    // Use a per-call random id so concurrent ceph_exec calls never race on the
+    // same files inside the OSD pod. The previous code keyed these paths on
+    // std::thread::current().id(), but this fn awaits (kubectl exec) and Tokio
+    // multiplexes many tasks onto few worker threads — so two concurrent calls
+    // could share a worker, collide on the same /tmp paths, and clobber or
+    // `rm` each other's keyring mid-run.
+    let uniq: u64 = rand::random();
+    let key_path  = format!("/tmp/ceph-key-{uniq:016x}.keyring");
+    let conf_path = format!("/tmp/ceph-conf-{uniq:016x}.conf");
 
     let shell_cmd = format!(
         "echo {keyring_b64} | base64 -d > {key_path} && \
