@@ -241,45 +241,58 @@ function ClusterHealthBanner({ health }: { health: ClusterHealth | null }) {
     ? "A new disk is being set up as storage. This takes a few minutes."
     : health.message;
 
+  const criticalIssues = health.issues.filter((i) => i.level === "error");
+  const warnIssues = health.issues.filter((i) => i.level !== "error");
+  const hasWarnIssues = warnIssues.length > 0;
+
   return (
-    <div className={cn("border-b px-4 py-3", colors.bg)}>
-      <button
-        className="w-full text-left"
-        onClick={() => setExpanded((e) => !e)}
-        disabled={isStarting || health.issues.length === 0}
-      >
-        <div className="flex items-center gap-2.5">
-          <Icon />
-          <span className={cn("text-sm font-semibold flex-1", colors.title)}>
-            {title}
-          </span>
-          {!isStarting && health.issues.length > 0 && (
-            <ChevronDown
-              className={cn(
-                "h-3.5 w-3.5 flex-shrink-0 transition-transform",
-                colors.chevron,
-                expanded && "rotate-180",
-              )}
-            />
-          )}
+    <div className={cn("border-b", colors.bg)}>
+      {/* Critical issues — always visible, no expand required */}
+      {criticalIssues.map((issue, i) => (
+        <div key={i} className="px-4 py-3 flex items-start gap-2.5 border-b border-[#f87171]/20">
+          <AlertOctagon className="h-4 w-4 text-[#f87171] flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-[#f87171]">{issue.title}</p>
+            <p className="text-xs text-[#fca5a5] mt-0.5">{issue.description}</p>
+          </div>
         </div>
-        <p className={cn("text-xs mt-0.5 ml-6.5", colors.msg)}>{message}</p>
-      </button>
-      {expanded && health.issues.length > 0 && (
-        <div className="mt-2 ml-6 space-y-2">
-          {health.issues.map((issue, i) => (
-            <div key={i} className="text-xs">
-              <span className={cn(
-                "font-medium",
-                issue.level === "error" ? "text-[#f87171]" : "text-[#fbbf24]",
-              )}>
-                {issue.title}:
-              </span>{" "}
-              <span className="text-[#a1a1aa]">{issue.description}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      ))}
+
+      {/* Summary row — collapsible for warn-level issues */}
+      <div className="px-4 py-3">
+        <button
+          className="w-full text-left"
+          onClick={() => setExpanded((e) => !e)}
+          disabled={isStarting || !hasWarnIssues}
+        >
+          <div className="flex items-center gap-2.5">
+            <Icon />
+            <span className={cn("text-sm font-semibold flex-1", colors.title)}>
+              {title}
+            </span>
+            {!isStarting && hasWarnIssues && (
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 flex-shrink-0 transition-transform",
+                  colors.chevron,
+                  expanded && "rotate-180",
+                )}
+              />
+            )}
+          </div>
+          <p className={cn("text-xs mt-0.5 ml-6.5", colors.msg)}>{message}</p>
+        </button>
+        {expanded && hasWarnIssues && (
+          <div className="mt-2 ml-6 space-y-2">
+            {warnIssues.map((issue, i) => (
+              <div key={i} className="text-xs">
+                <span className="font-medium text-[#fbbf24]">{issue.title}:</span>{" "}
+                <span className="text-[#a1a1aa]">{issue.description}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
