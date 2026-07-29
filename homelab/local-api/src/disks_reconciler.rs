@@ -28,6 +28,39 @@ const INTERVAL_SECS: u64 = 30;
 const BLUESTORE_MAGIC: &[u8] = b"bluestore block device\n";
 const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
 
+// The system OSD is a dedicated LVM logical volume created by disko at install
+// (see disk-config.nix). It's always present and always ours, so it's injected
+// directly rather than discovered/classified like pluggable physical disks.
+const SYSTEM_OSD_DEV: &str = "/dev/mapper/pool-ceph";
+const SYSTEM_OSD_ID: &str = "system";
+
+fn system_osd_present() -> bool {
+    Path::new(SYSTEM_OSD_DEV).exists()
+}
+
+/// Size of the system OSD LV: resolve the mapper symlink to dm-N and read
+/// /sys/block/dm-N/size (512-byte sectors). 0 if it can't be determined.
+fn system_osd_size_bytes() -> u64 {
+    std::fs::read_link(SYSTEM_OSD_DEV)
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .and_then(|dm| std::fs::read_to_string(format!("/sys/block/{dm}/size")).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|sectors| sectors * 512)
+        .unwrap_or(0)
+}
+
+fn system_osd_meta() -> Value {
+    json!({
+        "device": SYSTEM_OSD_DEV,
+        "model": "System disk",
+        "size_bytes": system_osd_size_bytes(),
+        "is_loop": true, // the UI renders is_loop as the built-in "System disk"
+        "is_our_osd": true,
+        "osd_id": Value::Null,
+    })
+}
+
 // ── Leader election ───────────────────────────────────────────────────────────
 //
 // Every node publishes its own disk inventory, but only ONE node may write the
@@ -205,21 +238,32 @@ async fn publish_local(node: &str) -> Result<()> {
     let devices = get_devices();
     let our_fsid = cluster_fsid().await.unwrap_or_default();
 
-    let meta: HashMap<String, Value> = devices
+    let mut meta: HashMap<String, Value> = devices
         .iter()
         .map(|d| (disk_id(d), disk_meta(d, &our_fsid)))
         .collect();
+    if system_osd_present() {
+        meta.insert(SYSTEM_OSD_ID.to_string(), system_osd_meta());
+    }
 
     // Read desired states; missing key → default USING
     let desired = read_desired().await;
 
-    let effective: Vec<String> = classify(&devices, &our_fsid)
-        .into_iter()
-        .filter(|d| {
-            let key = format!("{}--{}", node, disk_id(d));
-            desired.get(&key).map(|v| v == "USING").unwrap_or(true)
-        })
-        .collect();
+    // The system OSD LV is included unless the user explicitly turns it off,
+    // then any pluggable disks the user is using.
+    let mut effective: Vec<String> = Vec::new();
+    if system_osd_present() {
+        let key = format!("{node}--{SYSTEM_OSD_ID}");
+        if desired.get(&key).map(|v| v == "USING").unwrap_or(true) {
+            effective.push(SYSTEM_OSD_DEV.to_string());
+        }
+    }
+    for d in classify(&devices, &our_fsid) {
+        let key = format!("{}--{}", node, disk_id(&d));
+        if desired.get(&key).map(|v| v == "USING").unwrap_or(true) {
+            effective.push(d);
+        }
+    }
 
     write_status(node, &meta, &effective).await;
 
@@ -391,15 +435,13 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
 // ── Device discovery ──────────────────────────────────────────────────────────
 
 fn get_devices() -> Vec<String> {
+    // Pluggable physical disks only. The system OSD LV is handled separately
+    // (system_osd_*), and loop devices are no longer used.
     let mut devices = Vec::new();
     let Ok(entries) = std::fs::read_dir("/sys/block") else { return devices };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if is_physical_disk(&name) {
-            devices.push(name);
-        } else if name.starts_with("loop")
-            && Path::new(&format!("/sys/block/{name}/loop/backing_file")).exists()
-        {
             devices.push(name);
         }
     }
@@ -482,10 +524,6 @@ fn is_uuid(s: &str) -> bool {
 fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
     let mut effective = Vec::new();
     for device in devices {
-        if device.starts_with("loop") {
-            effective.push(device.clone());
-            continue;
-        }
         match bluestore_fsid(device).as_deref() {
             None => {
                 if has_partitions(device) {

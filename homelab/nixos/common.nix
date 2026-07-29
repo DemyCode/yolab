@@ -347,110 +347,12 @@ in
     };
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
-    # Creates a loop-file image on the root filesystem (no partitioning) and
-    # attaches it as /dev/loop0 on every boot.
-    #
-    # Image creation is idempotent: fallocate runs only when the file does not
-    # exist, so a fresh install allocates once and subsequent reboots are a
-    # no-op.  fallocate pre-allocates real disk blocks (no sparse regions) so
-    # BlueStore label writes always land on already-allocated blocks — sparse
-    # files can be interrupted mid-allocation, leaving a half-written label.
-    #
-    # There is intentionally NO ExecStop.  Detaching the loop device while
-    # the Ceph OSD pod is running causes the OSD to lose its block device
-    # mid-operation and corrupt the BlueStore label.  nixos-rebuild restarts
-    # this service but the loop must stay attached for as long as the OS runs.
-    systemd.services.yolab-system-osd = {
-      description = "System-disk Ceph OSD (loop-file)";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
-      before = [ "k3s.service" ];
-      # Self-heal: a transient losetup failure used to latch storage down until
-      # a manual reboot — impossible for a non-technical owner. Retry inside the
-      # script, and let systemd keep retrying the unit indefinitely on failure.
-      startLimitIntervalSec = 0;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        Restart = "on-failure";
-        RestartSec = "10s";
-        ExecStart = pkgs.writeShellScript "system-osd-start" ''
-          set -euo pipefail
-          IMG=/var/lib/rook/system-osd.img
-
-          mkdir -p /var/lib/rook
-          if [ ! -f "$IMG" ]; then
-            # 50% of the disk goes to the OSD; 50% stays free for the OS,
-            # nix store, container images, and k3s state.
-            # fallocate pre-allocates real disk blocks so Ceph OSD writes can
-            # never fail due to ENOSPC — sparse files must not be used here.
-            set -- $(${pkgs.coreutils}/bin/df -B1 / | tail -1)
-            TARGET=$(( $2 / 2 ))
-            ${pkgs.util-linux}/bin/fallocate -l "$TARGET" "$IMG"
-          fi
-
-          # Attach to /dev/loop0 so the device name is stable across reboots.
-          # --direct-io=on bypasses the page cache — Ceph manages its own cache
-          # and double-buffering against the backing file creates coherence risks.
-          # Retry a few times: loop0 may be briefly busy right after boot.
-          attach() {
-            ATTACHED=$(${pkgs.util-linux}/bin/losetup -j "$IMG" 2>/dev/null | grep "^/dev/loop0:" || true)
-            [ -n "$ATTACHED" ] && return 0
-            ${pkgs.util-linux}/bin/losetup -d /dev/loop0 2>/dev/null || true
-            ${pkgs.util-linux}/bin/losetup --direct-io=on /dev/loop0 "$IMG"
-          }
-          for i in 1 2 3 4 5; do
-            if attach; then exit 0; fi
-            echo "losetup attempt $i failed; retrying in 3s" >&2
-            sleep 3
-          done
-          # Final attempt — a non-zero exit here trips Restart=on-failure so the
-          # unit keeps retrying rather than leaving the node without storage.
-          attach
-        '';
-      };
-    };
-
-    # ── Virtual OSD loop re-attachment ────────────────────────────────────
-    # On each boot, re-pin every virtual-osd-N.img to /dev/loopN so device
-    # names stay stable and the priority ConfigMap entries remain valid.
-    # Must run before k3s so Rook always finds the devices ready.
-    systemd.services.yolab-virtual-osd-attach = {
-      description = "Re-attach virtual Ceph OSD loop devices";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" "yolab-system-osd.service" ];
-      before = [ "k3s.service" ];
-      startLimitIntervalSec = 0;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        Restart = "on-failure";
-        RestartSec = "10s";
-        ExecStart = pkgs.writeShellScript "virtual-osd-attach" ''
-          set -euo pipefail
-          OSD_DIR=/var/lib/rook
-          [ -d "$OSD_DIR" ] || exit 0
-
-          for img in "$OSD_DIR"/virtual-osd-*.img; do
-            [ -f "$img" ] || continue
-            n=$(basename "$img" .img | sed 's/virtual-osd-//')
-            loopdev="/dev/loop''${n}"
-
-            current=$(${pkgs.util-linux}/bin/losetup -l \
-              --output BACK-FILE --noheadings "$loopdev" 2>/dev/null || true)
-            if [ "$current" = "$img" ]; then
-              echo "$img already on $loopdev"
-              continue
-            fi
-
-            ${pkgs.util-linux}/bin/losetup -d "$loopdev" 2>/dev/null || true
-            ${pkgs.util-linux}/bin/losetup --direct-io=on "$loopdev" "$img" 2>/dev/null || \
-              ${pkgs.util-linux}/bin/losetup "$loopdev" "$img"
-            echo "Attached $img → $loopdev"
-          done
-        '';
-      };
-    };
+    # The system OSD is now a dedicated LVM logical volume (/dev/pool/ceph),
+    # created by disko at install time and activated automatically by LVM on
+    # every boot — so there is no loop-file service to attach or self-heal, and
+    # no ENOSPC coupling between the OSD and the OS root filesystem. Rook consumes
+    # /dev/mapper/pool-ceph directly (see disks_reconciler). Additional whole
+    # disks are consumed as raw devices, discovered by the reconciler.
 
     # ── Local API ──────────────────────────────────────────────────────────
     # Runs on every node.  The node the user opens in their browser queries
