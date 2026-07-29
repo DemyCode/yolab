@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -15,34 +14,101 @@ use crate::{config::Config, error::Result, AppState};
 // tracking its own progress client-side — a page refresh, a second tab, or a lost
 // connection should never desync from what's actually happening on the backend.
 //
-// "Backing up" is an in-memory flag: do_cluster_backup() is fully synchronous
-// within one process, so if local-api restarts mid-backup the child processes it
-// spawned die with it — resetting to "not backing up" on restart is correct, not
-// a bug to work around.
+// "Backing up" is derived from cluster state: a ConfigMap lock for the cluster-
+// metadata backup path, and a kubectl pod check for VolSync mover syncs.  Both
+// are cluster-wide, so state is correct regardless of which node's local-api
+// the frontend hits.  The lock is cleaned up on Drop; if the process crashes
+// hard, the stale-lock path in acquire() removes any lock older than 2 h.
 //
-// "Restoring" is deliberately NOT a flag — it's derived by checking whether any
-// yolab-managed ReplicationDestination still exists. A restore is asynchronous
-// (VolSync jobs run in the cluster independent of local-api's lifetime), so a
-// flag could get stuck forever if the process restarted mid-restore. Deriving it
-// from real cluster state means it's always correct and self-clears the moment
-// dr_apply/apply_emergency_restore removes the last ReplicationDestination.
+// "Restoring" is also derived from real cluster state — checking whether any
+// yolab-managed ReplicationDestination exists.  A flag could get stuck forever
+// if the process restarted mid-restore; kubectl queries don't have that problem.
 
-static BACKUP_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+const LOCK_NAME: &str = "yolab-backup-lock";
+const LOCK_NS: &str = "kube-system";
 
-struct BackupGuard;
+/// Cluster-wide mutex via a ConfigMap.  `kubectl create` is atomic — if two
+/// processes race, the first one wins and the second gets AlreadyExists.
+///
+/// On Drop the lock is released by deleting the ConfigMap.  If this process
+/// crashes hard (kill -9, power loss) the ConfigMap lingers; the stale-lock
+/// path in `acquire()` deletes any lock that is older than 2 hours because no
+/// real backup takes longer than that.
+struct ClusterBackupGuard {
+    acquired: bool,
+}
 
-impl BackupGuard {
-    fn acquire() -> Option<Self> {
-        BACKUP_IN_PROGRESS
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .ok()
-            .map(|_| BackupGuard)
+impl ClusterBackupGuard {
+    async fn acquire() -> Option<Self> {
+        // ── Stale-lock recovery ──────────────────────────────────────
+        let get_out = Command::new("kubectl")
+            .args(["get", "configmap", LOCK_NAME, "-n", LOCK_NS, "-o", "json", "--ignore-not-found"])
+            .output().await.ok()?;  // ok() → if kubectl completely fails, bail
+
+        if get_out.status.success() {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&get_out.stdout) {
+                let ts_str = v["metadata"]["annotations"]["yolab.io/lock-started"]
+                    .as_str().unwrap_or("");
+                if let Ok(ts) = ts_str.parse::<i64>() {
+                    let age_secs = chrono::Utc::now().timestamp() - ts;
+                    if age_secs > 7200 {
+                        tracing::warn!("backup-lock: stale lock ({age_secs}s old) — removing");
+                        let _ = Command::new("kubectl")
+                            .args(["delete", "configmap", LOCK_NAME, "-n", LOCK_NS, "--ignore-not-found"])
+                            .output().await;
+                    } else {
+                        return None; // another node is backing up
+                    }
+                }
+            }
+        }
+
+        // ── Try to acquire ───────────────────────────────────────────
+        let ts = chrono::Utc::now().timestamp().to_string();
+        let manifest = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": LOCK_NAME,
+                "namespace": LOCK_NS,
+                "labels": { "app.kubernetes.io/managed-by": "yolab" },
+                "annotations": { "yolab.io/lock-started": ts, "yolab.io/lock-reason": "backup" },
+            }
+        });
+
+        use tokio::io::AsyncWriteExt;
+        let mut child = match Command::new("kubectl")
+            .args(["create", "-f", "-"])
+            .stdin(tokio::process::Stdio::piped())
+            .stdout(tokio::process::Stdio::null())
+            .stderr(tokio::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(manifest.to_string().as_bytes()).await;
+        }
+        let out = child.wait_with_output().await.ok()?;
+        if out.status.success() {
+            Some(ClusterBackupGuard { acquired: true })
+        } else {
+            // AlreadyExists or any other error → someone else holds the lock
+            None
+        }
     }
 }
 
-impl Drop for BackupGuard {
+impl Drop for ClusterBackupGuard {
     fn drop(&mut self) {
-        BACKUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+        if self.acquired {
+            let _ = std::process::Command::new("kubectl")
+                .args(["delete", "configmap", LOCK_NAME, "-n", LOCK_NS, "--ignore-not-found"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
     }
 }
 
@@ -59,11 +125,8 @@ async fn restore_in_progress() -> bool {
 }
 
 /// Detects whether any VolSync backup mover pod is currently running — i.e. a
-/// `volsync-src-*` pod that is actively pushing PVC data to B2. This is the
-/// cluster-level equivalent of the in-memory `BACKUP_IN_PROGRESS` flag, which
-/// only tracks local-api-initiated cluster-metadata backups. Without this, the
-/// frontend would show "backing_up: false" (and allow restores) while VolSync
-/// is mid-sync — misleading and potentially dangerous.
+/// `volsync-src-*` pod that is actively pushing PVC data to B2.  The cluster-
+/// metadata backup is guarded by a ConfigMap lock; this covers the other half.
 async fn volsync_backup_in_progress() -> bool {
     Command::new("kubectl")
         .args([
@@ -82,19 +145,24 @@ async fn volsync_backup_in_progress() -> bool {
         .unwrap_or(false)
 }
 
-fn local_backup_in_progress() -> bool {
-    BACKUP_IN_PROGRESS.load(Ordering::SeqCst)
+async fn cluster_backup_lock_held() -> bool {
+    Command::new("kubectl")
+        .args(["get", "configmap", LOCK_NAME, "-n", LOCK_NS, "--ignore-not-found", "-o", "name"])
+        .output()
+        .await
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
 }
 
-/// True when any kind of backup is happening — local-api-driven cluster backup
-/// OR a VolSync PVC data sync (mover pod running).
+/// True when any kind of backup is happening — cluster-metadata backup
+/// (guarded by the ConfigMap lock) OR a VolSync PVC data sync.
 async fn any_backup_in_progress() -> bool {
-    local_backup_in_progress() || volsync_backup_in_progress().await
+    cluster_backup_lock_held().await || volsync_backup_in_progress().await
 }
 
 /// Refuses to start a new backup/restore action while either is already in progress.
 async fn ensure_no_operation_in_progress() -> anyhow::Result<()> {
-    if local_backup_in_progress() {
+    if cluster_backup_lock_held().await {
         anyhow::bail!("A backup is currently running — try again once it finishes.");
     }
     if volsync_backup_in_progress().await {
@@ -1634,7 +1702,7 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
         && kubectl_get_secret(MASTER_SECRET, MASTER_NS).await.is_some()
     {
         tracing::info!("cluster-backup: missed backup detected — running catch-up now");
-        if let Some(_guard) = BackupGuard::acquire() {
+        if let Some(_guard) = ClusterBackupGuard::acquire().await {
             if let Err(e) = do_cluster_backup().await {
                 tracing::warn!("cluster-backup catch-up: {e}");
             }
@@ -1659,7 +1727,7 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
             tracing::warn!("cluster-backup: skipping scheduled run — a restore is in progress");
             continue;
         }
-        let Some(_guard) = BackupGuard::acquire() else {
+        let Some(_guard) = ClusterBackupGuard::acquire().await else {
             tracing::warn!("cluster-backup: skipping scheduled run — a backup is already running");
             continue;
         };
@@ -1680,7 +1748,7 @@ pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_
     if volsync_backup_in_progress().await {
         return Err(anyhow::anyhow!("VolSync is already backing up PVC data — try again once it finishes.").into());
     }
-    let Some(_guard) = BackupGuard::acquire() else {
+    let Some(_guard) = ClusterBackupGuard::acquire().await else {
         return Err(anyhow::anyhow!("A backup is already running.").into());
     };
     let mut pvcs: Vec<PvcInfo> = Vec::new();
