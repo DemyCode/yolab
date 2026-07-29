@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::Read,
     path::Path,
 };
 use tokio::time::{sleep, Duration};
@@ -205,9 +205,35 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
             continue;
         }
 
+        // CRITICAL: never purge an OSD that still holds the only copy of data.
+        // `ceph osd safe-to-destroy` returns this OSD's id only when every PG it
+        // carries has copies on other OSDs. A transient BlueStore-header read
+        // failure can make a present-but-flaky disk look "gone", so without this
+        // gate a re-provision (which wipes the disk) would lose data. If it's not
+        // safe, leave the OSD down and surface it for the user rather than purge.
+        let safe_to_destroy = crate::kubectl::ceph_exec(&[
+            "osd", "safe-to-destroy", &format!("osd.{osd_id}"), "-f", "json",
+        ])
+        .await
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| {
+            v["safe_to_destroy"]
+                .as_array()
+                .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
+        })
+        .unwrap_or(false);
+        if !safe_to_destroy {
+            tracing::warn!(
+                "purge_dead_osds: osd.{osd_id} on {node} looks gone but is NOT safe-to-destroy \
+                 (may hold the only copy of some data) — leaving it down for user action, not purging"
+            );
+            continue;
+        }
+
         tracing::warn!(
             "purge_dead_osds: osd.{osd_id} on {node} has disk UUID {osd_uuid} but disk is gone \
-             ({min_restarts} restart(s)) — purging"
+             ({min_restarts} restart(s)) and is safe-to-destroy — purging"
         );
         if let Err(e) = crate::kubectl::ceph_exec(&[
             "osd", "purge", &format!("{osd_id}"), "--yes-i-really-mean-it",
@@ -311,19 +337,6 @@ fn is_uuid(s: &str) -> bool {
             .all(|(&l, p)| p.len() == l && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-fn wipe_device(device: &str) -> Result<()> {
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .open(format!("/dev/{device}"))
-        .context("open device")?;
-    let chunk = [0u8; 64 * 1024];
-    for _ in 0..160 {
-        // 160 × 64 KB = 10 MB
-        f.write_all(&chunk).context("write zeros")?;
-    }
-    Ok(())
-}
-
 // ── Classify devices ──────────────────────────────────────────────────────────
 
 fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
@@ -346,11 +359,13 @@ fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
                 effective.push(device.clone());
             }
             Some(other) => {
-                tracing::warn!("{device}: foreign BlueStore ({other}) — wiping");
-                if let Err(e) = wipe_device(device) {
-                    tracing::error!("wipe {device}: {e}");
-                }
-                // excluded this cycle; re-added clean next cycle
+                // Foreign BlueStore label — data from another Ceph cluster.
+                // NEVER wipe automatically: a relocated disk, a DR reinstall
+                // (which mints a new fsid), or a disk carried over from another
+                // machine would be silently destroyed. Exclude it from Ceph and
+                // surface it to the UI as "contains data from another system";
+                // erasing only happens on explicit user confirmation.
+                tracing::warn!("{device}: foreign BlueStore ({other}) — excluding, NOT wiping");
             }
         }
     }

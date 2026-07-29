@@ -416,10 +416,15 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     let kb64 = kb64.trim().replace('\n', "");
     anyhow::ensure!(!kb64.is_empty(), "cannot read admin keyring");
 
+    // Per-call unique paths: storage_detail is UI-polled, so concurrent calls
+    // would otherwise clobber each other's keyring/conf at fixed /tmp paths.
+    let uniq = format!("{:016x}", rand::random::<u64>());
+    let ck = format!("/tmp/.ck-{uniq}");
+    let cc = format!("/tmp/.cc-{uniq}");
     let script = [
-        format!("echo '{}' | base64 -d > /tmp/.ck 2>/dev/null", kb64),
-        format!("printf '[global]\\nmon_host = {}\\n' > /tmp/.cc", mon_host),
-        "CEPH='ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin'".into(),
+        format!("echo '{}' | base64 -d > {ck} 2>/dev/null", kb64),
+        format!("printf '[global]\\nmon_host = {}\\n' > {cc}", mon_host),
+        format!("CEPH='ceph -c {cc} --keyring {ck} -n client.admin'"),
         r#"echo '{"osd_df":'  "#.into(),
         "$CEPH osd df tree -f json 2>/dev/null || echo '{}'".into(),
         r#"echo ',"pool_detail":'"#.into(),
@@ -451,7 +456,7 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
         r#"done"#.into(),
         r#"echo "{\"ok_to_stop\":[$OK_LIST]}""#.into(),
         "echo '}'".into(),
-        "rm -f /tmp/.ck /tmp/.cc".into(),
+        format!("rm -f {ck} {cc}"),
     ].join("\n");
 
     let raw = kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await?;
@@ -621,10 +626,13 @@ pub async fn set_replication(
     // size=1 requires --yes-i-really-mean-it; the flag is harmless for size>1
     let really = if size == 1 { " --yes-i-really-mean-it" } else { "" };
 
+    let uniq = format!("{:016x}", rand::random::<u64>());
+    let ck = format!("/tmp/.ck-{uniq}");
+    let cc = format!("/tmp/.cc-{uniq}");
     let script = [
-        format!("echo '{}' | base64 -d > /tmp/.ck 2>/dev/null", kb64),
-        format!("printf '[global]\\nmon_host = {}\\n' > /tmp/.cc", mon_host),
-        "CEPH='ceph -c /tmp/.cc --keyring /tmp/.ck -n client.admin'".into(),
+        format!("echo '{}' | base64 -d > {ck} 2>/dev/null", kb64),
+        format!("printf '[global]\\nmon_host = {}\\n' > {cc}", mon_host),
+        format!("CEPH='ceph -c {cc} --keyring {ck} -n client.admin'"),
         "set -e".into(),
         // Create OSD-level rule if needed (replicated_rule already exists for host)
         format!("if ! $CEPH osd crush rule ls 2>/dev/null | grep -qx {rule}; then $CEPH osd crush rule create-replicated {rule} default {fd}; fi", rule = rule_name, fd = fd),
@@ -636,7 +644,7 @@ pub async fn set_replication(
         format!("  $CEPH osd pool set $POOL min_size {min_size}", min_size = min_size),
         "  echo \"Updated pool $POOL\"".into(),
         "done".into(),
-        "rm -f /tmp/.ck /tmp/.cc".into(),
+        format!("rm -f {ck} {cc}"),
     ].join("\n");
 
     match kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await {
