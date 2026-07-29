@@ -36,6 +36,93 @@ pub async fn get_json(args: &[&str]) -> Result<Value> {
     serde_json::from_str(&out).context("JSON parse")
 }
 
+// ── Shared apply / secret helpers ─────────────────────────────────────────────
+//
+// One implementation for the whole crate. Previously auth.rs, backups.rs, and
+// apps.rs each carried their own copies (auth.rs even shelled out to `base64 -d`
+// on the load path); those all funnel here now.
+
+/// Pipe a manifest to `kubectl apply -f -`.
+pub async fn apply(manifest: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new("kubectl")
+        .args(["apply", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn kubectl apply")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(manifest.as_bytes()).await?;
+    }
+    let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        bail!("kubectl apply: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
+/// Read a Secret and return its base64-decoded string data, trimming trailing
+/// whitespace from each value. `None` if the secret is missing or unreadable.
+pub async fn get_secret(
+    name: &str,
+    ns: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    use base64::Engine as _;
+    let out = Command::new("kubectl")
+        .args(["get", "secret", name, "-n", ns, "-o", "json"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let data = v.get("data")?.as_object()?;
+    let mut result = std::collections::HashMap::new();
+    for (k, val) in data {
+        if let Some(encoded) = val.as_str() {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+                if let Ok(s) = String::from_utf8(bytes) {
+                    result.insert(k.clone(), s.trim().to_string());
+                }
+            }
+        }
+    }
+    Some(result)
+}
+
+/// Create or replace an Opaque Secret from string values (base64-encoded here),
+/// via a JSON manifest to avoid YAML-escaping pitfalls. `labels` are applied to
+/// metadata; pass `&[]` for none.
+pub async fn apply_secret(
+    name: &str,
+    ns: &str,
+    data: &[(&str, &str)],
+    labels: &[(&str, &str)],
+) -> Result<()> {
+    use base64::Engine as _;
+    let data_map: serde_json::Map<String, Value> = data
+        .iter()
+        .map(|(k, v)| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(v.as_bytes());
+            (k.to_string(), Value::String(b64))
+        })
+        .collect();
+    let label_map: serde_json::Map<String, Value> = labels
+        .iter()
+        .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+        .collect();
+    let manifest = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": { "name": name, "namespace": ns, "labels": label_map },
+        "type": "Opaque",
+        "data": data_map,
+    });
+    apply(&manifest.to_string()).await
+}
+
 pub async fn get_nodes() -> Result<Vec<Value>> {
     let v = get_json(&["get", "nodes", "-o", "json"]).await?;
     Ok(v["items"].as_array().cloned().unwrap_or_default())

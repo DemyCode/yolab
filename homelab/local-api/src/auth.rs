@@ -35,67 +35,32 @@ fn now_secs() -> i64 {
 // ── K8s Secret persistence ────────────────────────────────────────────────────
 
 async fn load_sessions_from_k8s() -> HashMap<String, i64> {
-    let out = tokio::process::Command::new("kubectl")
-        .args([
-            "get", "secret", SECRET_NAME, "-n", SECRET_NS,
-            "-o", "jsonpath={.data.sessions}",
-        ])
-        .output()
-        .await;
-    let Ok(out) = out else { return HashMap::new() };
-    let b64 = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if b64.is_empty() {
-        return HashMap::new();
-    }
-    // base64-decode the value stored by kubectl
-    let Ok(decoded) = std::process::Command::new("base64")
-        .args(["-d"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut c| {
-            use std::io::Write;
-            c.stdin.as_mut().unwrap().write_all(b64.as_bytes()).ok();
-            c.wait_with_output()
-        })
-    else {
+    let Some(data) = crate::kubectl::get_secret(SECRET_NAME, SECRET_NS).await else {
         return HashMap::new();
     };
-    let json = String::from_utf8_lossy(&decoded.stdout);
+    let Some(json) = data.get("sessions") else {
+        return HashMap::new();
+    };
     let now = now_secs();
-    serde_json::from_str::<HashMap<String, i64>>(&json)
+    serde_json::from_str::<HashMap<String, i64>>(json)
         .unwrap_or_default()
         .into_iter()
-        .filter(|(_, exp)| *exp > now)   // drop expired sessions on load
+        .filter(|(_, exp)| *exp > now) // drop expired sessions on load
         .collect()
 }
 
 async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
     let json = serde_json::to_string(sessions).unwrap_or_default();
-    // kubectl create/apply a Secret with the JSON as a string data field.
-    // Using --dry-run=client + apply avoids "already exists" errors.
-    let manifest = format!(
-        r#"{{"apiVersion":"v1","kind":"Secret","metadata":{{"name":"{SECRET_NAME}","namespace":"{SECRET_NS}"}},"stringData":{{"sessions":{}}}}}"#,
-        serde_json::to_string(&json).unwrap_or_default()
-    );
-    // Use spawn_blocking + std::process::Command so we can write to stdin synchronously.
-    // tokio::process::ChildStdin only implements AsyncWrite, not std::io::Write.
-    tokio::task::spawn_blocking(move || {
-        use std::io::Write;
-        let Ok(mut child) = std::process::Command::new("kubectl")
-            .args(["apply", "-f", "-"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        else {
-            return;
-        };
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(manifest.as_bytes());
-        }
-        let _ = child.wait();
-    });
+    if let Err(e) = crate::kubectl::apply_secret(
+        SECRET_NAME,
+        SECRET_NS,
+        &[("sessions", &json)],
+        &[],
+    )
+    .await
+    {
+        tracing::warn!("failed to persist sessions to k8s: {e}");
+    }
 }
 
 // ── Public init ───────────────────────────────────────────────────────────────
