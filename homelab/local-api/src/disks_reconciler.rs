@@ -228,7 +228,6 @@ async fn publish_local(node: &str) -> Result<()> {
 
     let mut meta: HashMap<String, Value> = devices
         .iter()
-        .filter(|d| !has_partitions(d)) // partitioned = OS/boot disk; never Ceph-eligible
         .map(|d| (disk_id(d), disk_meta(d, &our_fsid)))
         .collect();
     if system_osd_present() {
@@ -423,45 +422,38 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
 
 // ── Device discovery ──────────────────────────────────────────────────────────
 
+/// Returns pluggable physical disks without partition tables.
+/// Uses `lsblk -J` so device-type classification and partition detection are
+/// handled by the kernel rather than manual prefix matching on device names.
+/// Disks WITH partition children are OS/boot disks — excluded here so they
+/// never appear in the Ceph disk list.
 fn get_devices() -> Vec<String> {
-    // Pluggable physical disks only. The system OSD LV is handled separately
-    // (system_osd_*), and loop devices are no longer used.
+    let out = std::process::Command::new("lsblk")
+        .args(["-J", "-o", "NAME,TYPE"])
+        .output()
+        .ok();
+    let Some(out) = out else { return vec![] };
+    let Ok(json) = serde_json::from_slice::<Value>(&out.stdout) else { return vec![] };
     let mut devices = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/sys/block") else { return devices };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if is_physical_disk(&name) {
-            devices.push(name);
+    if let Some(devs) = json["blockdevices"].as_array() {
+        for dev in devs {
+            if dev["type"].as_str() != Some("disk") {
+                continue;
+            }
+            let name = dev["name"].as_str().unwrap_or("").to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let has_parts = dev["children"].as_array()
+                .map(|c| c.iter().any(|ch| ch["type"].as_str() == Some("part")))
+                .unwrap_or(false);
+            if !has_parts {
+                devices.push(name);
+            }
         }
     }
     devices.sort();
     devices
-}
-
-/// Returns true if the device has any partition entries in /sys/block/{dev}/{dev}*.
-/// Used to exclude system/boot disks that have a partition table.
-fn has_partitions(device: &str) -> bool {
-    std::fs::read_dir(format!("/sys/block/{device}"))
-        .ok()
-        .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().starts_with(device)
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn is_physical_disk(name: &str) -> bool {
-    if let Some(rest) = name.strip_prefix("sd") {
-        return !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_lowercase());
-    }
-    if let Some(rest) = name.strip_prefix("nvme") {
-        return rest.contains('n') && rest.bytes().all(|b| b.is_ascii_digit() || b == b'n');
-    }
-    if let Some(rest) = name.strip_prefix("vd") {
-        return !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_lowercase());
-    }
-    false
 }
 
 // ── BlueStore label parsing ───────────────────────────────────────────────────
@@ -511,27 +503,20 @@ fn is_uuid(s: &str) -> bool {
 // ── Classify devices ──────────────────────────────────────────────────────────
 
 fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
+    // devices from get_devices() are already partition-free physical disks.
     let mut effective = Vec::new();
     for device in devices {
         match bluestore_fsid(device).as_deref() {
-            None => {
-                if has_partitions(device) {
-                    tracing::debug!("{device}: has partition table — skipping (system/boot disk)");
-                } else {
-                    effective.push(device.clone());
-                }
-            }
+            None => effective.push(device.clone()),
             Some(fsid) if fsid == our_fsid => {
                 tracing::debug!("{device}: our OSD, Rook will re-integrate");
                 effective.push(device.clone());
             }
             Some(other) => {
                 // Foreign BlueStore label — data from another Ceph cluster.
-                // NEVER wipe automatically: a relocated disk, a DR reinstall
-                // (which mints a new fsid), or a disk carried over from another
-                // machine would be silently destroyed. Exclude it from Ceph and
-                // surface it to the UI as "contains data from another system";
-                // erasing only happens on explicit user confirmation.
+                // NEVER wipe automatically. Exclude from Ceph and surface to
+                // the UI as "contains data from another system"; erasing only
+                // happens on explicit user confirmation.
                 tracing::warn!("{device}: foreign BlueStore ({other}) — excluding, NOT wiping");
             }
         }

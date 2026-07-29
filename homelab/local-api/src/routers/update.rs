@@ -232,6 +232,7 @@ pub async fn update(
             if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
                 .args(["switch", "--flake", &flake,
                        "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
+                       "--impure",  // allows nix to read gitignored files (e.g. config.toml)
                        "--cores", "1", "--max-jobs", "1"])
                 .stdin(std::process::Stdio::null())
                 .stdout(log_file)
@@ -331,6 +332,7 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
             if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
                 .args(["switch", "--flake", &flake,
                        "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
+                       "--impure",
                        "--cores", "1", "--max-jobs", "1"])
                 .stdin(std::process::Stdio::null())
                 .stdout(log_file)
