@@ -65,93 +65,77 @@ fn system_osd_meta() -> Value {
 //
 // Every node publishes its own disk inventory, but only ONE node may write the
 // shared CephCluster CR — otherwise concurrent nodes clobber each other's entry
-// in spec.storage.nodes (a JSON merge patch replaces the whole array). A
-// standard coordination.k8s.io Lease elects that single writer.
+// in spec.storage.nodes. A coordination.k8s.io Lease elects that single writer.
+// Implemented via kubectl CLI so it works without a working kube-rs client.
 mod leader {
-    use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};
-    use kube::api::PostParams;
-
     const LEASE_NAME: &str = "yolab-disk-reconciler";
     const LEASE_NS: &str = "rook-ceph";
     const LEASE_SECS: i32 = 30;
 
-    /// Acquire or renew the reconciler lease. Returns true iff `identity` holds a
-    /// currently-valid lease afterwards. Uses replace() (optimistic concurrency
-    /// via resourceVersion) so a simultaneous take-over by another node loses
-    /// cleanly with a conflict.
     pub async fn try_acquire(identity: &str) -> bool {
-        let Ok(client) = crate::kubectl::client().await else { return false };
-        let api: kube::Api<Lease> = kube::Api::namespaced(client, LEASE_NS);
         let now = chrono::Utc::now();
-        match api.get_opt(LEASE_NAME).await {
-            Ok(Some(mut lease)) => {
-                let spec = lease.spec.clone().unwrap_or_default();
-                let holder = spec.holder_identity.clone().unwrap_or_default();
-                let dur = spec.lease_duration_seconds.unwrap_or(LEASE_SECS) as i64;
-                let expired = spec
-                    .renew_time
-                    .as_ref()
-                    .map(|t| (now - t.0).num_seconds() > dur)
+        let lease_json = crate::kubectl::get_json(&[
+            "get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json",
+        ]).await;
+
+        let acquire_time = match &lease_json {
+            Ok(v) => {
+                let spec = &v["spec"];
+                let holder = spec["holderIdentity"].as_str().unwrap_or("");
+                let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS as i64);
+                let expired = spec["renewTime"]
+                    .as_str()
+                    .and_then(|t| {
+                        let ts = chrono::DateTime::parse_from_rfc3339(t).ok()?;
+                        Some((now - ts.with_timezone(&chrono::Utc)).num_seconds() > dur)
+                    })
                     .unwrap_or(true);
                 if holder != identity && !expired {
-                    return false; // another node holds a valid lease
+                    return false;
                 }
-                lease.spec = Some(LeaseSpec {
-                    holder_identity: Some(identity.to_string()),
-                    lease_duration_seconds: Some(LEASE_SECS),
-                    renew_time: Some(MicroTime(now)),
-                    acquire_time: if holder == identity {
-                        spec.acquire_time
-                    } else {
-                        Some(MicroTime(now))
-                    },
-                    ..Default::default()
-                });
-                api.replace(LEASE_NAME, &PostParams::default(), &lease)
-                    .await
-                    .is_ok()
+                // Preserve original acquireTime when renewing our own lease.
+                if holder == identity {
+                    spec["acquireTime"].as_str()
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or(now)
+                } else {
+                    now
+                }
             }
-            Ok(None) => {
-                let lease = Lease {
-                    metadata: ObjectMeta {
-                        name: Some(LEASE_NAME.into()),
-                        namespace: Some(LEASE_NS.into()),
-                        ..Default::default()
-                    },
-                    spec: Some(LeaseSpec {
-                        holder_identity: Some(identity.to_string()),
-                        lease_duration_seconds: Some(LEASE_SECS),
-                        renew_time: Some(MicroTime(now)),
-                        acquire_time: Some(MicroTime(now)),
-                        ..Default::default()
-                    }),
-                };
-                api.create(&PostParams::default(), &lease).await.is_ok()
-            }
-            Err(_) => false,
-        }
+            Err(_) => now,
+        };
+
+        let manifest = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": LEASE_NS },
+            "spec": {
+                "holderIdentity": identity,
+                "leaseDurationSeconds": LEASE_SECS,
+                "acquireTime": acquire_time.to_rfc3339(),
+                "renewTime": now.to_rfc3339(),
+            },
+        });
+
+        crate::kubectl::apply(&manifest.to_string()).await.is_ok()
     }
 
-    /// Read-only: does `identity` currently hold a valid (unexpired) lease?
-    /// Does not renew — used by other leader-only controllers to gate work.
     pub async fn is_holder(identity: &str) -> bool {
-        let Ok(client) = crate::kubectl::client().await else { return false };
-        let api: kube::Api<Lease> = kube::Api::namespaced(client, LEASE_NS);
-        match api.get_opt(LEASE_NAME).await {
-            Ok(Some(lease)) => {
-                let spec = lease.spec.unwrap_or_default();
-                let holder = spec.holder_identity.unwrap_or_default();
-                let dur = spec.lease_duration_seconds.unwrap_or(LEASE_SECS) as i64;
-                let fresh = spec
-                    .renew_time
-                    .as_ref()
-                    .map(|t| (chrono::Utc::now() - t.0).num_seconds() <= dur)
-                    .unwrap_or(false);
-                holder == identity && fresh
-            }
-            _ => false,
-        }
+        let Ok(v) = crate::kubectl::get_json(&[
+            "get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json",
+        ]).await else { return false };
+        let spec = &v["spec"];
+        let holder = spec["holderIdentity"].as_str().unwrap_or("");
+        let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS as i64);
+        let fresh = spec["renewTime"]
+            .as_str()
+            .and_then(|t| {
+                let ts = chrono::DateTime::parse_from_rfc3339(t).ok()?;
+                Some((chrono::Utc::now() - ts.with_timezone(&chrono::Utc)).num_seconds() <= dur)
+            })
+            .unwrap_or(false);
+        holder == identity && fresh
     }
 }
 
