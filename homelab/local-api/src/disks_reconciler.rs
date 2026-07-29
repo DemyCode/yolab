@@ -99,6 +99,37 @@ mod leader {
             Err(_) => false,
         }
     }
+
+    /// Read-only: does `identity` currently hold a valid (unexpired) lease?
+    /// Does not renew — used by other leader-only controllers to gate work.
+    pub async fn is_holder(identity: &str) -> bool {
+        let Ok(client) = crate::kubectl::client().await else { return false };
+        let api: kube::Api<Lease> = kube::Api::namespaced(client, LEASE_NS);
+        match api.get_opt(LEASE_NAME).await {
+            Ok(Some(lease)) => {
+                let spec = lease.spec.unwrap_or_default();
+                let holder = spec.holder_identity.unwrap_or_default();
+                let dur = spec.lease_duration_seconds.unwrap_or(LEASE_SECS) as i64;
+                let fresh = spec
+                    .renew_time
+                    .as_ref()
+                    .map(|t| (chrono::Utc::now() - t.0).num_seconds() <= dur)
+                    .unwrap_or(false);
+                holder == identity && fresh
+            }
+            _ => false,
+        }
+    }
+}
+
+/// True if this node currently holds the disk-reconciler lease. Other
+/// leader-only controllers (e.g. the topology controller) gate on this so the
+/// whole cluster has a single writer.
+pub async fn is_reconcile_leader() -> bool {
+    match node_name() {
+        Ok(node) => leader::is_holder(&node).await,
+        Err(_) => false,
+    }
 }
 
 pub async fn run() {

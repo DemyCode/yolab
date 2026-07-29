@@ -5,6 +5,7 @@ mod error;
 mod kubectl;
 mod proc;
 mod routers;
+mod topology;
 
 use std::sync::Arc;
 
@@ -86,6 +87,8 @@ async fn main() {
         // Disks
         .route("/api/disks", get(disks::list_disks))
         .route("/api/disks/:node/:id", axum::routing::put(disks::set_disk_state))
+        // Storage topology policy (auto/manual)
+        .route("/api/storage/policy", get(topology::get_policy).put(topology::set_policy))
         // Ceph
         .route("/api/ceph/status", get(ceph::ceph_status))
         .route("/api/ceph/detail", get(ceph::storage_detail))
@@ -121,6 +124,7 @@ async fn main() {
     tokio::spawn(backups::run_restore_reconciler());
     tokio::spawn(ceph::run_osd_state_watcher());
     tokio::spawn(disks_reconciler::run());
+    tokio::spawn(topology::run_topology_controller());
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
