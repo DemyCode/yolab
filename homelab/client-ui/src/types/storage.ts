@@ -49,6 +49,7 @@ export interface DiskInfo {
   size_bytes: number;
   is_loop: boolean;
   is_our_osd: boolean;
+  foreign_ceph: boolean;
   osd_id: number | null;
   desired: "USING" | "OFF";
 }

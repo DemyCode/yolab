@@ -87,6 +87,7 @@ async fn main() {
         // Disks
         .route("/api/disks", get(disks::list_disks))
         .route("/api/disks/:node/:id", axum::routing::put(disks::set_disk_state))
+        .route("/api/disks/:node/:id/erase", post(disks::erase_disk))
         // Storage topology policy (auto/manual)
         .route("/api/storage/policy", get(topology::get_policy).put(topology::set_policy))
         // Ceph

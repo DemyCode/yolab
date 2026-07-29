@@ -19,6 +19,7 @@ pub struct DiskInfo {
     pub size_bytes: u64,
     pub is_loop: bool,
     pub is_our_osd: bool,
+    pub foreign_ceph: bool,
     pub osd_id: Option<i64>,
     pub desired: String,
 }
@@ -48,7 +49,6 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
 
     if let Some(status_map) = status_raw.as_object() {
         for (node, node_json) in status_map {
-            // Each node value is { "disks": {id: meta}, "effective": [...] }.
             let payload: serde_json::Value =
                 serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
             let disks_raw: HashMap<String, serde_json::Value> = payload["disks"]
@@ -71,6 +71,7 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
                         size_bytes: v["size_bytes"].as_u64().unwrap_or(0),
                         is_loop: v["is_loop"].as_bool().unwrap_or(false),
                         is_our_osd: v["is_our_osd"].as_bool().unwrap_or(false),
+                        foreign_ceph: v["foreign_ceph"].as_bool().unwrap_or(false),
                         osd_id: v["osd_id"].as_i64(),
                     }
                 })
@@ -108,7 +109,6 @@ pub async fn set_disk_state(
     .await
     .is_err()
     {
-        // ConfigMap doesn't exist yet — create it, then patch
         let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
         if kubectl::run(&[
             "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
@@ -121,4 +121,84 @@ pub async fn set_disk_state(
     }
 
     Json(serde_json::json!({"ok": true}))
+}
+
+/// Erase a foreign-Ceph disk so it can be provisioned as an OSD.
+///
+/// Zeros the first 100 MiB to destroy the BlueStore superblock and any backup
+/// copies. Only operates on the local node; returns an error if the disk belongs
+/// to a different node so the caller knows to hit that node's API instead.
+pub async fn erase_disk(
+    Path((node, id)): Path<(String, String)>,
+    State(_s): State<AppState>,
+) -> Json<serde_json::Value> {
+    let this_node = std::fs::read_to_string("/etc/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if node != this_node {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("disk is on node '{node}', not this node ('{this_node}')")
+        }));
+    }
+
+    // Read the disk's published metadata from the status ConfigMap.
+    let status_raw = kubectl::get_json(&[
+        "get", "configmap", STATUS_CM, "-n", NS, "-o", "jsonpath={.data}",
+    ])
+    .await
+    .unwrap_or_default();
+
+    let node_payload: serde_json::Value = status_raw[&node]
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+
+    let meta = &node_payload["disks"][&id];
+    if meta.is_null() {
+        return Json(serde_json::json!({"ok": false, "error": "disk not found in inventory"}));
+    }
+
+    // Safety gate: only erase disks explicitly flagged as foreign Ceph.
+    if meta["foreign_ceph"].as_bool() != Some(true) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "disk does not contain foreign Ceph data — refusing to erase"
+        }));
+    }
+
+    let device = meta["device"].as_str().unwrap_or("");
+    // Block any path traversal: device must be a bare kernel name (sda, nvme0n1, …).
+    if device.is_empty() || device.contains('/') || device.contains('.') {
+        return Json(serde_json::json!({"ok": false, "error": "invalid device name"}));
+    }
+
+    let dev_path = format!("/dev/{device}");
+    tracing::warn!("erase_disk: zeroing foreign BlueStore disk {dev_path} on {node}");
+
+    // Zero 100 MiB — enough to destroy the BlueStore superblock at offset 0
+    // and any backup copies stored in the first few megabytes.
+    let out = tokio::process::Command::new("dd")
+        .args([
+            "if=/dev/zero",
+            &format!("of={dev_path}"),
+            "bs=1M",
+            "count=100",
+            "oflag=direct",
+        ])
+        .output()
+        .await;
+
+    match out {
+        Ok(o) if o.status.success() => {
+            tracing::info!("erase_disk: {dev_path} erased successfully");
+            Json(serde_json::json!({"ok": true}))
+        }
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            tracing::error!("erase_disk: dd failed on {dev_path}: {err}");
+            Json(serde_json::json!({"ok": false, "error": err}))
+        }
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
 }
