@@ -248,30 +248,30 @@ async fn publish_local(node: &str) -> Result<()> {
     // Read desired states; missing key → default USING
     let desired = read_desired().await;
 
-    // The system OSD LV is included unless the user explicitly turns it off,
-    // then any pluggable disks the user is using.
+    // Build effective device list: devices the user has explicitly set to ON (or legacy USING).
+    // Default is OFF for new disks — they must be explicitly enabled.
+    let want_on = |key: &str| desired.get(key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
+
     let mut effective: Vec<String> = Vec::new();
     if system_osd_present() {
         let key = format!("{node}--{SYSTEM_OSD_ID}");
-        if desired.get(&key).map(|v| v == "USING").unwrap_or(true) {
+        if want_on(&key) {
             effective.push(SYSTEM_OSD_DEV.to_string());
         }
     }
     for d in classify(&devices, &our_fsid) {
         let key = format!("{}--{}", node, disk_id(&d));
-        if desired.get(&key).map(|v| v == "USING").unwrap_or(true) {
+        if want_on(&key) {
             effective.push(d);
         }
     }
 
     write_status(node, &meta, &effective).await;
 
-    // Auto-register newly discovered OSD disks in the config CM so the UI can
-    // show and toggle them. Missing key already defaults to USING in the reconciler,
-    // but writing it explicitly makes the toggle visible before first user action.
-    if !our_fsid.is_empty() {
-        auto_register_new_osds(node, &meta, &desired).await;
-    }
+    // Register every newly detected disk in the config CM on first sight.
+    // System disk defaults ON (it's the primary storage); all others default OFF
+    // so the user must explicitly enable external disks.
+    auto_register_all_disks(node, &meta, &desired).await;
 
     if !our_fsid.is_empty() {
         // OSD lifecycle acts only on THIS node's own OSDs (deploy_node == node),
@@ -337,7 +337,7 @@ async fn reconcile_local_osds(
         let Some(osd_id) = m["osd_id"].as_i64() else { continue }; // osd_id unresolved → fallback handles it
         handled.insert(osd_id);
         let key = format!("{node}--{disk_id}");
-        let want_on = desired.get(&key).map(|v| v != "OFF").unwrap_or(true);
+        let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
         let osd = format!("osd.{osd_id}");
         let (crush_weight, reweight, kb) = state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
 
@@ -398,7 +398,7 @@ async fn reconcile_local_osds(
             }
         });
 
-        let want_on = matched.map(|(_, state, _)| state != "OFF").unwrap_or(true);
+        let want_on = matched.map(|(_, state, _)| state == "ON" || state == "USING").unwrap_or(false);
 
         if want_on {
             if crush_weight == 0.0 && reweight > 0.5 && kb > 0 {
@@ -425,21 +425,21 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
     }
 }
 
-/// Write a `USING` entry to the config CM for any disk that is our OSD but has
-/// no existing config entry. This makes the UI toggle visible on first plug-in,
-/// without changing runtime behaviour (missing key already defaults to USING).
-async fn auto_register_new_osds(
+/// Register every newly detected disk in the config CM on first sight.
+/// System disk (is_loop) defaults ON — it's always the primary storage.
+/// All other disks default OFF; the user must explicitly enable them.
+/// Foreign-Ceph disks are registered too so they show in the UI.
+async fn auto_register_all_disks(
     node: &str,
     meta: &HashMap<String, Value>,
     desired: &HashMap<String, String>,
 ) {
     let mut new_entries: HashMap<String, String> = HashMap::new();
     for (disk_id, m) in meta {
-        if !m["is_our_osd"].as_bool().unwrap_or(false) { continue; }
         let key = format!("{node}--{disk_id}");
-        if !desired.contains_key(&key) {
-            new_entries.insert(key, "USING".to_string());
-        }
+        if desired.contains_key(&key) { continue; }
+        let default = if m["is_loop"].as_bool().unwrap_or(false) { "ON" } else { "OFF" };
+        new_entries.insert(key, default.to_string());
     }
     if new_entries.is_empty() { return; }
 
@@ -447,17 +447,16 @@ async fn auto_register_new_osds(
     if let Err(e) = kubectl::run(&[
         "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
     ]).await {
-        // Config CM may not exist yet on a fresh node; create it first.
         let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
         if let Err(e2) = kubectl::run(&[
             "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
         ]).await {
-            tracing::warn!("auto_register_new_osds: {e}, then {e2}");
+            tracing::warn!("auto_register_all_disks: {e}, then {e2}");
         } else {
-            tracing::info!("auto_register_new_osds: registered {} new disk(s) on {node}", new_entries.len());
+            tracing::info!("auto_register_all_disks: registered {} new disk(s) on {node}", new_entries.len());
         }
     } else {
-        tracing::info!("auto_register_new_osds: registered {} new disk(s) on {node}", new_entries.len());
+        tracing::info!("auto_register_all_disks: registered {} new disk(s) on {node}", new_entries.len());
     }
 }
 

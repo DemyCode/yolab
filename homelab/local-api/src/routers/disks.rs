@@ -31,14 +31,14 @@ pub struct SetState {
 }
 
 pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<DiskInfo>>> {
-    let status_raw = kubectl::get_json(&[
-        "get", "configmap", STATUS_CM, "-n", NS, "-o", "jsonpath={.data}",
+    let config_raw = kubectl::get_json(&[
+        "get", "configmap", CONFIG_CM, "-n", NS, "-o", "jsonpath={.data}",
     ])
     .await
     .unwrap_or(serde_json::Value::Object(Default::default()));
 
-    let config_raw = kubectl::get_json(&[
-        "get", "configmap", CONFIG_CM, "-n", NS, "-o", "jsonpath={.data}",
+    let status_raw = kubectl::get_json(&[
+        "get", "configmap", STATUS_CM, "-n", NS, "-o", "jsonpath={.data}",
     ])
     .await
     .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -46,71 +46,49 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
     let desired: HashMap<String, String> =
         serde_json::from_value(config_raw).unwrap_or_default();
 
-    let mut result: HashMap<String, Vec<DiskInfo>> = HashMap::new();
-
+    // Build a lookup: node → disk_id → live metadata (only if currently connected)
+    let mut live: HashMap<String, HashMap<String, serde_json::Value>> = HashMap::new();
     if let Some(status_map) = status_raw.as_object() {
         for (node, node_json) in status_map {
             let payload: serde_json::Value =
                 serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
-            let disks_raw: HashMap<String, serde_json::Value> = payload["disks"]
-                .as_object()
-                .map(|o| o.clone().into_iter().collect())
-                .unwrap_or_default();
-
-            let mut disks: Vec<DiskInfo> = disks_raw
-                .into_iter()
-                .map(|(disk_id, v)| {
-                    let cm_key = format!("{}--{}", node, disk_id);
-                    DiskInfo {
-                        desired: desired
-                            .get(&cm_key)
-                            .cloned()
-                            .unwrap_or_else(|| "USING".into()),
-                        id: disk_id,
-                        device: v["device"].as_str().unwrap_or("").to_string(),
-                        model: v["model"].as_str().unwrap_or("").to_string(),
-                        size_bytes: v["size_bytes"].as_u64().unwrap_or(0),
-                        is_loop: v["is_loop"].as_bool().unwrap_or(false),
-                        is_our_osd: v["is_our_osd"].as_bool().unwrap_or(false),
-                        foreign_ceph: v["foreign_ceph"].as_bool().unwrap_or(false),
-                        osd_id: v["osd_id"].as_i64(),
-                        connected: true,
-                    }
-                })
-                .collect();
-
-            // Connected first, then loop first, then largest first
-            disks.sort_by(|a, b| {
-                b.connected
-                    .cmp(&a.connected)
-                    .then(b.is_loop.cmp(&a.is_loop))
-                    .then(b.size_bytes.cmp(&a.size_bytes))
-            });
-
-            result.insert(node.clone(), disks);
+            if let Some(disks) = payload["disks"].as_object() {
+                live.entry(node.clone()).or_default()
+                    .extend(disks.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
         }
     }
 
-    // Add phantom entries for disks in config CM but not currently visible in status.
-    // This keeps disconnected disks visible in the UI with their ON/OFF state.
+    // Config CM is the authoritative list of all known disks.
+    // Status CM enriches connected disks with live metadata.
+    let mut result: HashMap<String, Vec<DiskInfo>> = HashMap::new();
     for (cm_key, desired_val) in &desired {
-        if let Some((node, disk_id)) = cm_key.split_once("--") {
-            let node_disks = result.entry(node.to_string()).or_default();
-            if !node_disks.iter().any(|d| d.id == disk_id) {
-                node_disks.push(DiskInfo {
-                    id: disk_id.to_string(),
-                    device: String::new(),
-                    model: String::new(),
-                    size_bytes: 0,
-                    is_loop: false,
-                    is_our_osd: true,
-                    foreign_ceph: false,
-                    osd_id: None,
-                    desired: desired_val.clone(),
-                    connected: false,
-                });
-            }
-        }
+        let Some((node, disk_id)) = cm_key.split_once("--") else { continue };
+        let meta = live.get(node).and_then(|m| m.get(disk_id));
+        let connected = meta.is_some();
+        let info = DiskInfo {
+            id: disk_id.to_string(),
+            desired: desired_val.clone(),
+            connected,
+            device: meta.and_then(|v| v["device"].as_str()).unwrap_or("").to_string(),
+            model: meta.and_then(|v| v["model"].as_str()).unwrap_or("").to_string(),
+            size_bytes: meta.and_then(|v| v["size_bytes"].as_u64()).unwrap_or(0),
+            is_loop: meta.and_then(|v| v["is_loop"].as_bool()).unwrap_or(false),
+            is_our_osd: meta.and_then(|v| v["is_our_osd"].as_bool()).unwrap_or(false),
+            foreign_ceph: meta.and_then(|v| v["foreign_ceph"].as_bool()).unwrap_or(false),
+            osd_id: meta.and_then(|v| v["osd_id"].as_i64()),
+        };
+        result.entry(node.to_string()).or_default().push(info);
+    }
+
+    // Sort each node's list: connected first, then system disk, then by size desc
+    for disks in result.values_mut() {
+        disks.sort_by(|a, b| {
+            b.connected
+                .cmp(&a.connected)
+                .then(b.is_loop.cmp(&a.is_loop))
+                .then(b.size_bytes.cmp(&a.size_bytes))
+        });
     }
 
     Json(result)
@@ -121,8 +99,8 @@ pub async fn set_disk_state(
     State(_s): State<AppState>,
     Json(body): Json<SetState>,
 ) -> Json<serde_json::Value> {
-    if body.desired != "USING" && body.desired != "OFF" {
-        return Json(serde_json::json!({"ok": false, "error": "desired must be USING or OFF"}));
+    if body.desired != "ON" && body.desired != "OFF" {
+        return Json(serde_json::json!({"ok": false, "error": "desired must be ON or OFF"}));
     }
 
     let cm_key = format!("{}--{}", node, id);

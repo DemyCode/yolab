@@ -51,7 +51,8 @@ export interface DiskInfo {
   is_our_osd: boolean;
   foreign_ceph: boolean;
   osd_id: number | null;
-  desired: "USING" | "OFF";
+  /** "ON" = user wants in cluster, "OFF" = excluded. Legacy "USING" treated as ON. */
+  desired: "ON" | "OFF" | "USING";
   connected: boolean;
 }
 
