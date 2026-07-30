@@ -6,8 +6,13 @@
 ///   2. Classify them (ours / clean / foreign-wipe)
 ///   3. Publish metadata to yolab-disk-status ConfigMap
 ///   4. Read desired states from yolab-disk-config ConfigMap
-///   5. Patch CephCluster CR to match (USING = include, OFF = exclude)
-///   6. Migrate OSD Deployments if a disk moved to this node
+///   5. Patch CephCluster CR to match (ON = include, OFF = exclude)
+///
+/// Division of labour with Rook:
+///   - We own: desired-state mapping (ON/OFF), CephCluster spec, osd in/out, crush weight
+///   - Rook owns: provisioning, deployment lifecycle, purge (removeOSDsIfOutAndSafeToRemove)
+///   We never touch OSD deployments or call osd purge — that eliminates the race
+///   where Rook immediately recreates a deployment we just deleted.
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -291,23 +296,17 @@ async fn publish_local(node: &str) -> Result<()> {
     write_status(node, &meta, &effective).await;
     auto_register_all_disks(node, &meta, &desired).await;
 
-    if !our_fsid.is_empty() {
-        migrate_osd_deployments(node, &our_fsid).await;
-        purge_dead_osds(node, &devices, &our_fsid).await;
-    }
-
     reconcile_local_osds(node, &meta, &desired, &disk_to_osd).await;
     Ok(())
 }
 
 /// Reconcile each local OSD's active state toward its desired ON/OFF.
 ///
-///   ON  → crush_weight > 0 (set from disk size if zero) + osd in
-///   OFF → osd out (drains PGs; full purge is a separate deliberate step)
+///   ON  → crush_weight > 0 (set from disk size if 0) + osd in
+///   OFF → osd out (starts draining; Rook's removeOSDsIfOutAndSafeToRemove
+///         handles purge + deployment deletion once data has migrated)
 ///
-/// `disk_to_osd` comes from `fetch_disk_to_osd` which calls `ceph osd metadata`
-/// — Ceph's own authoritative mapping. Every disk gets exactly one code path;
-/// no bluestore header parsing, no size heuristics, no fallback loops.
+/// We never touch OSD deployments or call osd purge — that's Rook's job.
 async fn reconcile_local_osds(
     node: &str,
     meta: &HashMap<String, Value>,
@@ -322,7 +321,6 @@ async fn reconcile_local_osds(
         Err(_) => return,
     };
 
-    // (crush_weight, reweight, kb) per osd id
     let mut osd_state: HashMap<i64, (f64, f64, u64)> = HashMap::new();
     for n in &crush_nodes {
         if n["type"].as_str() != Some("osd") { continue; }
@@ -338,7 +336,6 @@ async fn reconcile_local_osds(
     for (disk_id, m) in meta {
         let key = format!("{node}--{disk_id}");
         let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
-        // If ceph osd metadata has no entry for this disk it's not yet an OSD — skip.
         let Some(&osd_id) = disk_to_osd.get(disk_id) else { continue };
         let (crush_weight, reweight, kb) = osd_state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
         let osd = format!("osd.{osd_id}");
@@ -356,52 +353,10 @@ async fn reconcile_local_osds(
                 let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
             }
         } else if reweight > 0.5 {
-            // Still in — start draining.
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
-        } else {
-            // Already out (draining or drained). Purge once all PGs have migrated away.
-            // Ceph requires the OSD to be 'down' before purge, so we must stop the
-            // Rook deployment first and wait for the pod to exit before calling purge.
-            let safe = kubectl::ceph_exec(&["osd", "safe-to-destroy", &osd, "-f", "json"])
-                .await
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .and_then(|v| {
-                    v["safe_to_destroy"]
-                        .as_array()
-                        .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-                })
-                .unwrap_or(false);
-            if safe {
-                let deploy = format!("rook-ceph-osd-{osd_id}");
-                // Check if the OSD pod is still running. If so, delete the
-                // deployment now and wait for the next cycle — Ceph needs the
-                // daemon to stop before it marks the OSD 'down', and purge
-                // only works on a 'down' OSD.
-                let pod_ready = kubectl::get_json(&[
-                    "get", "deployment", &deploy, "-n", NS,
-                    "-o", "jsonpath={.status.readyReplicas}",
-                ]).await.ok().and_then(|v| v.as_u64()).unwrap_or(0);
-
-                if pod_ready > 0 {
-                    tracing::info!("{osd} ({disk_id}): safe-to-destroy — deleting deployment so OSD goes down");
-                    let _ = kubectl::run(&["delete", "deployment", &deploy, "-n", NS, "--ignore-not-found"]).await;
-                } else {
-                    // Deployment is gone / pod not ready — OSD should be down, purge now.
-                    tracing::info!("{osd} ({disk_id}): desired=OFF, OSD down — purging");
-                    if let Err(e) = kubectl::ceph_exec(&[
-                        "osd", "purge", &osd_id.to_string(), "--yes-i-really-mean-it",
-                    ]).await {
-                        tracing::warn!("{osd}: purge failed (will retry): {e}");
-                    } else {
-                        tracing::info!("{osd} ({disk_id}): purged");
-                    }
-                }
-            } else {
-                tracing::debug!("{osd} ({disk_id}): desired=OFF, draining — waiting for PGs to migrate");
-            }
         }
+        // reweight ≤ 0.5 + desired=OFF: already draining, Rook will purge when safe
     }
 }
 
@@ -477,137 +432,6 @@ async fn reconcile_cluster() -> Result<()> {
     patch_cephcluster_all(&node_devices).await
 }
 
-/// Detect OSD deployments on this node whose underlying disk has disappeared.
-/// When the activate init container can't find its disk (device wiped or
-/// removed), the pod crashes repeatedly and the OSD can never come back online.
-/// Purging it removes the tombstone from Ceph's OSD map so the cluster can
-/// recover; Rook will re-provision a fresh OSD on the next disk discovery if
-/// the device is still in the CephCluster CR.
-async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
-    // Build the set of OSD UUIDs for every disk that is physically present.
-    let live_uuids: std::collections::HashSet<String> = devices
-        .iter()
-        .filter(|d| bluestore_fsid(d).as_deref() == Some(our_fsid))
-        .filter_map(|d| bluestore_osd_uuid(d))
-        .collect();
-
-    let Ok(deploys) = kubectl::get_json(&[
-        "get", "deployments", "-n", NS, "-l", "app=rook-ceph-osd", "-o", "json",
-    ]).await else { return };
-
-    for deploy in deploys["items"].as_array().cloned().unwrap_or_default() {
-        let name = deploy["metadata"]["name"].as_str().unwrap_or("");
-        let deploy_node = deploy["spec"]["template"]["spec"]["nodeSelector"]
-            ["kubernetes.io/hostname"].as_str().unwrap_or("");
-        if deploy_node != node {
-            continue;
-        }
-
-        // Check if the pod for this deployment is crashing (not ready).
-        let replicas_ready = deploy["status"]["readyReplicas"].as_u64().unwrap_or(0);
-        if replicas_ready > 0 {
-            continue; // OSD is healthy — leave it alone
-        }
-
-        // Get the OSD UUID from the deployment env.
-        let env = deploy["spec"]["template"]["spec"]["containers"][0]["env"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let osd_uuid = env.iter()
-            .find(|e| e["name"] == "ROOK_OSD_UUID")
-            .and_then(|e| e["value"].as_str())
-            .unwrap_or("")
-            .to_string();
-        let osd_id_str = deploy["metadata"]["labels"]["rook-ceph-osd-id"]
-            .as_str()
-            .unwrap_or("");
-        let Ok(osd_id) = osd_id_str.parse::<i64>() else { continue };
-
-        if osd_uuid.is_empty() || live_uuids.contains(&osd_uuid) {
-            continue; // Disk is still here — may just be temporarily down
-        }
-
-        // Only purge if the pod has been crashing for a while — too early to purge
-        // on first few restart cycles while the disk might just be temporarily slow.
-        let pods_out = kubectl::get_json(&[
-            "get", "pods", "-n", NS, "-l", &format!("app=rook-ceph-osd,rook-ceph-osd-id={osd_id_str}"),
-            "-o", "json",
-        ]).await;
-        let max_restarts = if let Ok(pods) = pods_out {
-            pods["items"].as_array().cloned().unwrap_or_default()
-                .iter()
-                .filter(|p| p["spec"]["nodeName"].as_str() == Some(node))
-                .flat_map(|p| p["status"]["initContainerStatuses"].as_array().cloned().unwrap_or_default())
-                .map(|c| c["restartCount"].as_u64().unwrap_or(0))
-                .max()
-                .unwrap_or(0)
-        } else {
-            0
-        };
-
-        if max_restarts < 5 {
-            continue;
-        }
-
-        // CRITICAL: never purge an OSD that still holds the only copy of data.
-        // `ceph osd safe-to-destroy` returns this OSD's id only when every PG it
-        // carries has copies on other OSDs. A transient BlueStore-header read
-        // failure can make a present-but-flaky disk look "gone", so without this
-        // gate a re-provision (which wipes the disk) would lose data. If it's not
-        // safe, leave the OSD down and surface it for the user rather than purge.
-        let stod = crate::kubectl::ceph_exec(&[
-            "osd", "safe-to-destroy", &format!("osd.{osd_id}"), "-f", "json",
-        ]).await;
-
-        // If safe-to-destroy fails because osd.N no longer exists in the OSD map
-        // (it was already purged elsewhere, e.g. by reconcile_local_osds), the
-        // deployment is just a stale leftover — delete it and move on.
-        if let Err(ref e) = stod {
-            let msg = e.to_string();
-            if msg.contains("does not exist") || msg.contains("ENOENT") || msg.contains("Unknown") {
-                tracing::warn!(
-                    "purge_dead_osds: osd.{osd_id} on {node} is no longer in the OSD map \
-                     but its deployment is crashing — deleting stale deployment"
-                );
-                let _ = kubectl::run(&["delete", "deployment", name, "-n", NS, "--ignore-not-found"]).await;
-                continue;
-            }
-        }
-
-        let safe_to_destroy = stod.ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| {
-                v["safe_to_destroy"]
-                    .as_array()
-                    .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-            })
-            .unwrap_or(false);
-        if !safe_to_destroy {
-            tracing::warn!(
-                "purge_dead_osds: osd.{osd_id} on {node} looks gone but is NOT safe-to-destroy \
-                 (may hold the only copy of some data) — leaving it down for user action, not purging"
-            );
-            continue;
-        }
-
-        tracing::warn!(
-            "purge_dead_osds: osd.{osd_id} on {node} has disk UUID {osd_uuid} but disk is gone \
-             ({max_restarts} restart(s)) and is safe-to-destroy — purging"
-        );
-        if let Err(e) = crate::kubectl::ceph_exec(&[
-            "osd", "purge", &format!("{osd_id}"), "--yes-i-really-mean-it",
-        ]).await {
-            tracing::warn!("purge_dead_osds: ceph osd purge {osd_id}: {e}");
-            continue;
-        }
-        let _ = kubectl::run(&[
-            "delete", "deployment", name, "-n", NS, "--ignore-not-found",
-        ]).await;
-        tracing::info!("purge_dead_osds: osd.{osd_id} purged and deployment deleted");
-    }
-}
-
 // ── Device discovery ──────────────────────────────────────────────────────────
 
 /// Returns pluggable physical disks without partition tables.
@@ -675,15 +499,6 @@ fn bluestore_fsid(device: &str) -> Option<String> {
     }
     let fsid = std::str::from_utf8(&buf[vs + 4..vs + 40]).ok()?;
     is_uuid(fsid).then(|| fsid.to_string())
-}
-
-fn bluestore_osd_uuid(device: &str) -> Option<String> {
-    let buf = read_bluestore_header(device)?;
-    if !buf.starts_with(BLUESTORE_MAGIC) {
-        return None;
-    }
-    let uuid = std::str::from_utf8(&buf[23..59]).ok()?;
-    is_uuid(uuid).then(|| uuid.to_string())
 }
 
 fn is_uuid(s: &str) -> bool {
@@ -862,7 +677,10 @@ async fn patch_cephcluster_all(node_devices: &[(String, Vec<String>)]) -> Result
         return Ok(());
     }
 
-    let patch = json!({"spec": {"storage": {"nodes": desired}}}).to_string();
+    let patch = json!({"spec": {
+        "storage": {"nodes": desired},
+        "removeOSDsIfOutAndSafeToRemove": true,
+    }}).to_string();
     for attempt in 0..5u32 {
         match kubectl::run(&[
             "patch", "cephcluster", CLUSTER, "-n", NS, "--type", "merge", "-p", &patch,
@@ -900,134 +718,6 @@ fn nodes_equal(a: &[Value], b: &[Value]) -> bool {
             .collect()
     }
     norm(a) == norm(b)
-}
-
-// ── OSD Deployment migration (disk moved between nodes) ───────────────────────
-
-async fn migrate_osd_deployments(node: &str, our_fsid: &str) {
-    // Only run if Rook's prepare job for this node has completed
-    let job_done = kubectl::run(&[
-        "get",
-        "job",
-        &format!("rook-ceph-osd-prepare-{node}"),
-        "-n",
-        NS,
-        "-o",
-        "jsonpath={.status.completionTime}",
-    ])
-    .await
-    .map(|s| !s.is_empty())
-    .unwrap_or(false);
-
-    if !job_done {
-        return;
-    }
-
-    // Map OSD UUID → device for disks physically present on this node
-    let devices = get_devices();
-    let our_uuids: HashMap<String, String> = devices
-        .iter()
-        .filter(|d| bluestore_fsid(d).as_deref() == Some(our_fsid))
-        .filter_map(|d| bluestore_osd_uuid(d).map(|u| (u, d.clone())))
-        .collect();
-
-    if our_uuids.is_empty() {
-        return;
-    }
-
-    let Ok(deploys) = kubectl::get_json(&[
-        "get",
-        "deployments",
-        "-n",
-        NS,
-        "-l",
-        "app=rook-ceph-osd",
-        "-o",
-        "json",
-    ])
-    .await
-    else {
-        return;
-    };
-
-    let items = deploys["items"].as_array().cloned().unwrap_or_default();
-    for deploy in items {
-        let name = deploy["metadata"]["name"].as_str().unwrap_or("");
-        let containers = &deploy["spec"]["template"]["spec"]["containers"];
-        let env = containers[0]["env"].as_array().cloned().unwrap_or_default();
-
-        let osd_uuid = env
-            .iter()
-            .find(|e| e["name"] == "ROOK_OSD_UUID")
-            .and_then(|e| e["value"].as_str())
-            .unwrap_or("");
-
-        if !our_uuids.contains_key(osd_uuid) {
-            continue;
-        }
-
-        let current_node = deploy["spec"]["template"]["spec"]["nodeSelector"]
-            ["kubernetes.io/hostname"]
-            .as_str()
-            .unwrap_or("");
-        if current_node == node {
-            continue;
-        }
-
-        tracing::info!("{name}: disk {osd_uuid} moved from {current_node} → {node}, patching");
-        patch_osd_deployment(name, &env, node).await;
-    }
-}
-
-async fn patch_osd_deployment(deploy_name: &str, env: &[Value], new_node: &str) {
-    // Update ROOK_NODE_NAME / ROOK_CRUSHMAP_HOSTNAME, preserve others
-    let new_env: Vec<Value> = env
-        .iter()
-        .map(|e| {
-            let name = e["name"].as_str().unwrap_or("");
-            if name == "ROOK_NODE_NAME" || name == "ROOK_CRUSHMAP_HOSTNAME" {
-                json!({"name": name, "value": new_node})
-            } else {
-                e.clone()
-            }
-        })
-        .collect();
-
-    let patch = json!({
-        "spec": {"template": {"spec": {
-            "nodeSelector": {"kubernetes.io/hostname": new_node},
-            "containers": [{"name": "osd", "env": new_env}],
-        }}}
-    })
-    .to_string();
-
-    for attempt in 0..5u32 {
-        match kubectl::run(&[
-            "patch",
-            "deployment",
-            deploy_name,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await
-        {
-            Ok(_) => {
-                tracing::info!("{deploy_name} patched → {new_node}");
-                return;
-            }
-            Err(e) if attempt < 4 && e.to_string().contains("conflict") => {
-                sleep(Duration::from_millis(500 + u64::from(attempt) * 500)).await;
-            }
-            Err(e) => {
-                tracing::error!("patch {deploy_name}: {e}");
-                return;
-            }
-        }
-    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
