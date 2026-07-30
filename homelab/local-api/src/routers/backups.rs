@@ -1233,151 +1233,304 @@ pub async fn apply_emergency_restore(
 
 // ── Disaster-recovery bulk restore ───────────────────────────────────────────
 
-/// POST /api/backups/dr/start
-/// For every ReplicationSource whose sourcePVC is Lost/NotFound, triggers an
-/// emergency restore (scale-down → delete PVC → pull from B2).
-pub async fn dr_start(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    ensure_no_operation_in_progress().await?;
-    let rs_out = Command::new("kubectl")
-        .args(["get", "replicationsource", "-A", "-o", "json"])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let rs_v: serde_json::Value =
-        serde_json::from_slice(&rs_out.stdout).unwrap_or(serde_json::json!({"items": []}));
-
-    let pvc_phase_map: HashMap<(String, String), String> = Command::new("kubectl")
-        .args(["get", "pvc", "-A", "-o", "json"])
-        .output()
-        .await
-        .ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| v["items"].as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| {
-            let ns = item["metadata"]["namespace"].as_str()?.to_string();
-            let name = item["metadata"]["name"].as_str()?.to_string();
-            let phase = item["status"]["phase"].as_str().unwrap_or("Unknown").to_string();
-            Some(((ns, name), phase))
-        })
-        .collect();
-
-    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
-    let mut started: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-
-    for item in rs_v["items"].as_array().cloned().unwrap_or_default() {
-        let namespace = item["metadata"]["namespace"].as_str().unwrap_or("").to_string();
-        let pvc_name = item["spec"]["sourcePVC"].as_str().unwrap_or("").to_string();
-
-        if namespace.is_empty() || pvc_name.is_empty() || EXCLUDED_NS.contains(&namespace.as_str()) {
-            continue;
-        }
-
-        let phase = pvc_phase_map
-            .get(&(namespace.clone(), pvc_name.clone()))
-            .cloned()
-            .unwrap_or_else(|| "NotFound".to_string());
-
-        if phase != "Lost" && phase != "NotFound" {
-            skipped.push(format!("{namespace}/{pvc_name} (phase: {phase})"));
-            continue;
-        }
-
-        // Skip if this restore is already in progress.
-        let dest_name = format!("emergency-restore-{pvc_name}");
-        let rd_exists = Command::new("kubectl")
-            .args(["get", "replicationdestination", &dest_name, "-n", &namespace])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if rd_exists {
-            skipped.push(format!("{namespace}/{pvc_name} (already restoring)"));
-            continue;
-        }
-
-        // Read PVC spec for capacity / storage-class / access-mode.
-        let (capacity, storage_class, access_mode) = {
-            let pvc_out = Command::new("kubectl")
-                .args(["get", "pvc", &pvc_name, "-n", &namespace, "-o", "json"])
-                .output()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))?;
-            if pvc_out.status.success() {
-                let pv: serde_json::Value =
-                    serde_json::from_slice(&pvc_out.stdout).unwrap_or_default();
-                (
-                    pv["spec"]["resources"]["requests"]["storage"]
-                        .as_str().unwrap_or("10Gi").to_string(),
-                    pv["spec"]["storageClassName"]
-                        .as_str().unwrap_or("yolab-cephfs").to_string(),
-                    pv["spec"]["accessModes"].as_array()
-                        .and_then(|a| a.first())
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("ReadWriteMany")
-                        .to_string(),
-                )
-            } else {
-                ("10Gi".to_string(), "yolab-cephfs".to_string(), "ReadWriteMany".to_string())
-            }
+/// Polls until CephFilesystem yolab-fs reports phase=Ready (filesystem is mountable).
+/// Returns immediately if already ready. Creating a PVC on a down CephFS hangs the
+/// CSI provisioner indefinitely, so DR restore gates on this before any PVC work.
+async fn wait_for_cephfs_ready(timeout_secs: u64) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let out = Command::new("kubectl")
+            .args(["get", "cephfilesystem", "yolab-fs", "-n", "rook-ceph",
+                   "-o", "jsonpath={.status.phase}"])
+            .output().await;
+        let phase = match out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => String::new(),
         };
-
-        // Scale down any deployments using this PVC.
-        let deploys = find_deployments_for_pvc(&namespace, &pvc_name)
-            .await
-            .unwrap_or_default();
-        for d in &deploys {
-            let _ = scale_deployment(&namespace, d, 0).await;
+        if phase == "Ready" {
+            return Ok(());
         }
-
-        // Delete the Lost PVC and wait for it to actually be gone, then recreate it fresh
-        // under the exact same name — restoring in place, not into a differently-named
-        // "-dest" PVC, so the app's Deployment (and its catalog manifest, on any future
-        // Update) keeps pointing at the right place with no repointing step required.
-        if let Err(e) = delete_pvc_and_wait(&namespace, &pvc_name).await {
-            tracing::warn!("DR start: {e}");
-            continue;
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!(
+                "timed out after {timeout_secs}s waiting for CephFilesystem to be Ready \
+                 (current: {phase:?}) — surviving OSDs may need more time to recover"
+            );
         }
-        let restored_pvc = pvc_name.clone();
-        if let Err(e) = ensure_destination_pvc(&restored_pvc, &namespace, &capacity, &storage_class, &access_mode).await {
-            tracing::warn!("DR start: failed to create destination PVC for {namespace}/{pvc_name}: {e}");
-            continue;
-        }
+        tracing::info!("dr: CephFilesystem phase={phase:?} — waiting for Ready");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+}
 
-        let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc_name));
-        let manifest = serde_json::json!({
-            "apiVersion": "volsync.backube/v1alpha1",
-            "kind": "ReplicationDestination",
-            "metadata": {
-                "name": dest_name,
-                "namespace": namespace,
-                "labels": { "app.kubernetes.io/managed-by": "yolab" }
-            },
-            "spec": {
-                "trigger": { "manual": format!("dr-{timestamp}") },
-                "restic": {
-                    "repository": secret_name,
-                    "copyMethod": "Direct",
-                    "cacheStorageClassName": "yolab-cephfs",
-                    "destinationPVC": restored_pvc,
-                    "moverSecurityContext": {
-                        "runAsUser": 1000,
-                        "runAsGroup": 1000,
-                        "fsGroup": 1000
+#[derive(Deserialize)]
+pub struct DrStartBody {
+    pub snapshot_id: String,
+    #[serde(default)]
+    pub all: bool,
+    #[serde(default)]
+    pub namespaces: Vec<String>,
+}
+
+/// POST /api/backups/dr/start
+///
+/// Single DR restore path for all scenarios:
+///   - Storage healthy: restores one or all namespaces from a snapshot, in place.
+///   - Storage recovering (lost disk): waits up to 10 min for CephFS to become
+///     mountable, then restores. The reconciler (purge_drained_osds + Rook) handles
+///     OSD cleanup in the background; we just gate on the result.
+///
+/// Flow:
+///   1. Extract catalog.json from snapshot (PVC list + total size).
+///   2. Space pre-flight: ceph df available bytes vs catalog total_pvc_bytes × 1.2.
+///   3. Wait for CephFilesystem phase=Ready (instant if storage is healthy).
+///   4. For each namespace: apply K8s YAML (deploy/svc/secret/configmap),
+///      scale all deployments to 0, delete PVCs, create fresh PVCs, create RDs.
+///   5. Background reconciler (reconcile_restores) scales each deployment back up
+///      when its PVC's ReplicationDestination reports Successful.
+pub async fn dr_start(
+    State(_state): State<AppState>,
+    Json(body): Json<DrStartBody>,
+) -> Result<Json<serde_json::Value>> {
+    ensure_no_operation_in_progress().await?;
+
+    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
+        return Err(anyhow::anyhow!("backup not configured").into());
+    };
+    let cfg = BackupConfig {
+        access_key_id:     data.get("access_key_id").cloned().unwrap_or_default(),
+        secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
+        bucket:            data.get("bucket").cloned().unwrap_or_default(),
+        endpoint:          data.get("endpoint").cloned().unwrap_or_default(),
+        restic_password:   data.get("restic_password").cloned().unwrap_or_default(),
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+
+    // ── 1. Extract catalog from snapshot ─────────────────────────────────────
+    let cat_target = format!("/tmp/yolab-dr-catalog-{}", random_hex(8));
+    let restore_out = Command::new("restic")
+        .args(["restore", &body.snapshot_id, "--target", &cat_target, "--include", "**/catalog.json"])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output().await
+        .map_err(|e| anyhow::anyhow!("restic unavailable: {e}"))?;
+
+    if !restore_out.status.success() {
+        let _ = tokio::fs::remove_dir_all(&cat_target).await;
+        return Err(anyhow::anyhow!(
+            "could not extract catalog from snapshot: {}",
+            String::from_utf8_lossy(&restore_out.stderr).trim()
+        ).into());
+    }
+    let find_out = Command::new("find")
+        .args([&cat_target, "-name", "catalog.json", "-type", "f"])
+        .output().await.map_err(|e| anyhow::anyhow!("find: {e}"))?;
+    let cat_path = String::from_utf8_lossy(&find_out.stdout).trim().to_string();
+    let catalog: serde_json::Value = if !cat_path.is_empty() {
+        tokio::fs::read(&cat_path).await.ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let _ = tokio::fs::remove_dir_all(&cat_target).await;
+
+    // ── 2. Resolve namespace list ─────────────────────────────────────────────
+    let namespaces: Vec<String> = if body.all {
+        catalog["namespaces"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    } else {
+        body.namespaces.clone()
+    };
+    if namespaces.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no namespaces found — snapshot may predate this feature, or pass namespaces[] explicitly"
+        ).into());
+    }
+
+    // ── 3. Space pre-flight ───────────────────────────────────────────────────
+    let total_pvc_bytes = catalog["total_pvc_bytes"].as_u64().unwrap_or(0);
+    if total_pvc_bytes > 0 {
+        match crate::kubectl::ceph_exec(&["df", "-f", "json"]).await {
+            Ok(df_raw) => {
+                if let Ok(df) = serde_json::from_str::<serde_json::Value>(&df_raw) {
+                    let avail = df["stats"]["total_avail_bytes"].as_u64().unwrap_or(u64::MAX);
+                    let need  = total_pvc_bytes * 6 / 5;
+                    if avail < need {
+                        return Err(anyhow::anyhow!(
+                            "insufficient storage: {avail} bytes available, ~{need} bytes needed \
+                             ({total_pvc_bytes} bytes of PVC data + 20% headroom). \
+                             Add more disks or reduce replication before restoring."
+                        ).into());
                     }
+                    tracing::info!("dr: space pre-flight ok — {avail} avail, {total_pvc_bytes} needed");
                 }
             }
-        });
-
-        match kubectl_apply(&manifest.to_string()).await {
-            Ok(_) => started.push(format!("{namespace}/{pvc_name}")),
-            Err(e) => tracing::warn!("DR start: failed RD for {namespace}/{pvc_name}: {e}"),
+            Err(e) => tracing::warn!("dr: space pre-flight skipped (ceph unavailable: {e})"),
         }
     }
 
-    Ok(Json(serde_json::json!({ "started": started, "skipped": skipped })))
+    // ── 4. Wait for CephFilesystem to be mountable ───────────────────────────
+    // If storage is recovering (disk loss), the reconciler is already bringing OSDs
+    // back in; we just wait for the outcome. Instant if storage is already healthy.
+    wait_for_cephfs_ready(600).await?;
+
+    // ── 5. Pin PVC restores to snapshot time ─────────────────────────────────
+    let restore_as_of: Option<String> = Command::new("restic")
+        .args(["snapshots", &body.snapshot_id, "--json"])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output().await.ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v.as_array()?.first()?["time"].as_str().map(String::from));
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+    let mut started: Vec<String> = Vec::new();
+    let mut errors:  Vec<String> = Vec::new();
+
+    // ── 6. Restore each namespace ─────────────────────────────────────────────
+    for ns in &namespaces {
+        // Ensure namespace exists with the managed label (needed on a fresh cluster).
+        let ns_exists = Command::new("kubectl")
+            .args(["get", "namespace", ns]).output().await
+            .map(|o| o.status.success()).unwrap_or(false);
+        if !ns_exists {
+            if let Err(e) = kubectl_apply(&serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {
+                    "name": ns,
+                    "labels": { "yolab.io/managed": "true" }
+                }
+            }).to_string()).await {
+                errors.push(format!("{ns}: create namespace: {e}"));
+                continue;
+            }
+        }
+
+        // Apply K8s objects from snapshot YAML. The backup no longer includes PVCs or
+        // ReplicationSources — those had stale claimRefs/triggers that caused apply
+        // failures. Deployments, Services, Secrets, and ConfigMaps are safe to re-apply.
+        {
+            let yaml_target = format!("/tmp/yolab-dr-yaml-{}", random_hex(8));
+            let pattern = format!("**/{ns}.yaml");
+            let r = Command::new("restic")
+                .args(["restore", &body.snapshot_id, "--target", &yaml_target, "--include", &pattern])
+                .env("RESTIC_REPOSITORY", &repo)
+                .env("RESTIC_PASSWORD", &cfg.restic_password)
+                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+                .output().await;
+            if let Ok(o) = r {
+                if o.status.success() {
+                    let f = Command::new("find")
+                        .args([&yaml_target, "-name", &format!("{ns}.yaml"), "-type", "f"])
+                        .output().await;
+                    if let Ok(f) = f {
+                        let yaml_path = String::from_utf8_lossy(&f.stdout).trim().to_string();
+                        if !yaml_path.is_empty() {
+                            if let Ok(bytes) = tokio::fs::read(&yaml_path).await {
+                                if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
+                                    tracing::warn!("dr: {ns}: YAML apply partial: {e}");
+                                } else {
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = tokio::fs::remove_dir_all(&yaml_target).await;
+        }
+
+        // Scale all deployments to 0 — they'll be scaled back up per-PVC by reconcile_restores.
+        let _ = Command::new("kubectl")
+            .args(["scale", "deployment", "--all", "-n", ns, "--replicas=0"])
+            .output().await;
+
+        // Get PVCs for this namespace from the catalog.
+        let catalog_pvcs: Vec<(String, String)> = catalog["services"].as_array()
+            .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(ns.as_str())))
+            .and_then(|s| s["pvcs"].as_array())
+            .map(|pvcs| pvcs.iter().filter_map(|p| {
+                let name     = p["name"].as_str()?.to_string();
+                let capacity = p["capacity"].as_str().unwrap_or("10Gi").to_string();
+                Some((name, capacity))
+            }).collect())
+            .unwrap_or_default();
+
+        if catalog_pvcs.is_empty() {
+            started.push(format!("{ns} (no PVCs — YAML applied)"));
+            continue;
+        }
+
+        for (pvc_name, capacity) in &catalog_pvcs {
+            // Ensure restic secret and ReplicationSource for future backups.
+            if let Err(e) = ensure_restic_secret(ns, pvc_name, &cfg).await {
+                tracing::warn!("dr: {ns}/{pvc_name}: restic secret: {e}");
+            }
+            let _ = ensure_replication_source(&PvcInfo { namespace: ns.clone(), name: pvc_name.clone() }, false).await;
+
+            // Idempotent: skip if this PVC's restore is already running.
+            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(pvc_name));
+            let rd_exists = Command::new("kubectl")
+                .args(["get", "replicationdestination", &dest_name, "-n", ns])
+                .output().await.map(|o| o.status.success()).unwrap_or(false);
+            if rd_exists {
+                started.push(format!("{ns}/{pvc_name} (already in progress)"));
+                continue;
+            }
+
+            // Recreate PVC under the exact same name (restore in place) so no deployment
+            // repointing is needed — catalog manifests always reference the original name.
+            if let Err(e) = delete_pvc_and_wait(ns, pvc_name).await {
+                errors.push(format!("{ns}/{pvc_name}: delete pvc: {e}"));
+                continue;
+            }
+            if let Err(e) = ensure_destination_pvc(pvc_name, ns, capacity, "yolab-cephfs", "ReadWriteMany").await {
+                errors.push(format!("{ns}/{pvc_name}: create pvc: {e}"));
+                continue;
+            }
+
+            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(pvc_name));
+            let mut restic_spec = serde_json::json!({
+                "repository": secret_name,
+                "copyMethod": "Direct",
+                "cacheStorageClassName": "yolab-cephfs",
+                "destinationPVC": pvc_name,
+                "moverSecurityContext": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "fsGroup": 1000
+                }
+            });
+            if let Some(ref t) = restore_as_of {
+                restic_spec["restoreAsOf"] = serde_json::Value::String(t.clone());
+            }
+            let manifest = serde_json::json!({
+                "apiVersion": "volsync.backube/v1alpha1",
+                "kind": "ReplicationDestination",
+                "metadata": {
+                    "name": dest_name,
+                    "namespace": ns,
+                    "labels": { "app.kubernetes.io/managed-by": "yolab" }
+                },
+                "spec": {
+                    "trigger": { "manual": format!("dr-{timestamp}") },
+                    "restic": restic_spec
+                }
+            });
+            match kubectl_apply(&manifest.to_string()).await {
+                Ok(_)  => started.push(format!("{ns}/{pvc_name}")),
+                Err(e) => errors.push(format!("{ns}/{pvc_name}: RD: {e}")),
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "started": started, "errors": errors })))
 }
 
 /// GET /api/backups/dr/status
@@ -1510,6 +1663,15 @@ pub async fn run_restore_reconciler() {
 
 // ── Background cluster backup task ───────────────────────────────────────────
 
+fn parse_capacity_bytes(s: &str) -> u64 {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix("Ti") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024 * 1024; }
+    if let Some(n) = s.strip_suffix("Gi") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024; }
+    if let Some(n) = s.strip_suffix("Mi") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024; }
+    if let Some(n) = s.strip_suffix("Ki") { return n.trim().parse::<u64>().unwrap_or(0) * 1024; }
+    s.parse::<u64>().unwrap_or(0)
+}
+
 /// Core backup logic — called by both the daily scheduler and the manual trigger.
 async fn do_cluster_backup() -> anyhow::Result<String> {
     let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
@@ -1578,7 +1740,7 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
         for ns in String::from_utf8_lossy(&o.stdout).split_whitespace() {
             namespaces.push(ns.to_string());
             let obj_out = Command::new("kubectl")
-                .args(["get", "deploy,svc,pvc,secret,configmap,replicationsource",
+                .args(["get", "deploy,svc,secret,configmap",
                        "-n", ns, "-o", "yaml", "--ignore-not-found"])
                 .output().await;
             if let Ok(obj) = obj_out {
@@ -1614,10 +1776,15 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
             .collect();
         services.push(serde_json::json!({ "namespace": ns, "pvcs": pvcs }));
     }
+    let total_pvc_bytes: u64 = services.iter()
+        .flat_map(|s| s["pvcs"].as_array().cloned().unwrap_or_default())
+        .map(|p| parse_capacity_bytes(p["capacity"].as_str().unwrap_or("0")))
+        .sum();
     let catalog = serde_json::json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "namespaces": namespaces,
         "services": services,
+        "total_pvc_bytes": total_pvc_bytes,
     });
     let _ = tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await;
 
@@ -1867,304 +2034,6 @@ pub async fn snapshot_catalog(
 
     let _ = tokio::fs::remove_dir_all(&target).await;
     Ok(Json(catalog))
-}
-
-/// POST /api/backups/restore/from-snapshot
-/// Body: { snapshot_id: string, namespaces: string[] } or { snapshot_id: string, all: true }
-///
-/// When `all` is true, reads the catalog.json embedded in the snapshot to
-/// discover every namespace that was backed up and restores all of them —
-/// this is a single-click full-cluster disaster recovery.
-///
-/// For each namespace:
-///   - Create the namespace if it doesn't exist yet.
-///   - Extract the namespace YAML from the snapshot and apply it (reconstructs
-///     deployments, services, configmaps, secrets — the full service definition).
-///   - Scale down deployments, delete PVCs, create ReplicationDestinations.
-#[derive(Deserialize)]
-pub struct RestoreFromSnapshotBody {
-    pub snapshot_id: String,
-    #[serde(default)]
-    pub all: bool,
-    #[serde(default)]
-    pub namespaces:  Vec<String>,
-}
-
-pub async fn restore_from_snapshot(
-    State(_state): State<AppState>,
-    Json(body): Json<RestoreFromSnapshotBody>,
-) -> Result<Json<serde_json::Value>> {
-    ensure_no_operation_in_progress().await?;
-    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
-        return Err(anyhow::anyhow!("backup not configured").into());
-    };
-    let cfg = BackupConfig {
-        access_key_id:     data.get("access_key_id").cloned().unwrap_or_default(),
-        secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
-        bucket:            data.get("bucket").cloned().unwrap_or_default(),
-        endpoint:          data.get("endpoint").cloned().unwrap_or_default(),
-        restic_password:   data.get("restic_password").cloned().unwrap_or_default(),
-    };
-    let repo      = cfg.restic_repo("cluster-backup");
-    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
-
-    // Resolve namespace list — from catalog.json when `all` is true.
-    let namespaces: Vec<String> = if body.all {
-        let target = format!("/tmp/yolab-restore-catalog-{}", random_hex(8));
-        let restore_out = Command::new("restic")
-            .args(["restore", &body.snapshot_id, "--target", &target,
-                   "--include", "**/catalog.json"])
-            .env("RESTIC_REPOSITORY", &repo)
-            .env("RESTIC_PASSWORD", &cfg.restic_password)
-            .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-            .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!("restic not available: {e}"))?;
-        if !restore_out.status.success() {
-            let _ = tokio::fs::remove_dir_all(&target).await;
-            return Err(anyhow::anyhow!(
-                "failed to extract catalog from snapshot: {}",
-                String::from_utf8_lossy(&restore_out.stderr).trim()
-            ).into());
-        }
-        let find_out = Command::new("find")
-            .args([&target, "-name", "catalog.json", "-type", "f"])
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!("find failed: {e}"))?;
-        let catalog_path = String::from_utf8_lossy(&find_out.stdout).trim().to_string();
-        let ns_list: Vec<String> = if catalog_path.is_empty() {
-            Vec::new()
-        } else {
-            let bytes = tokio::fs::read(&catalog_path).await
-                .map_err(|e| anyhow::anyhow!("read catalog.json: {e}"))?;
-            let catalog: serde_json::Value = serde_json::from_slice(&bytes)
-                .unwrap_or(serde_json::json!({"namespaces": []}));
-            catalog["namespaces"].as_array()
-                .map(|a| a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect())
-                .unwrap_or_default()
-        };
-        let _ = tokio::fs::remove_dir_all(&target).await;
-        if ns_list.is_empty() {
-            return Err(anyhow::anyhow!("snapshot contains no yolab-managed namespaces").into());
-        }
-        ns_list
-    } else {
-        body.namespaces.clone()
-    };
-
-    if namespaces.is_empty() {
-        return Err(anyhow::anyhow!("no namespaces specified — pass namespaces[] or all: true").into());
-    }
-
-    // Pin each PVC's restore to (at most) this snapshot's time — otherwise VolSync just pulls
-    // the latest data from each PVC's own ongoing backup stream regardless of which snapshot
-    // was picked, defeating the entire point of a point-in-time restore.
-    let restore_as_of: Option<String> = Command::new("restic")
-        .args(["snapshots", &body.snapshot_id, "--json"])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await
-        .ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| v.as_array()?.first()?["time"].as_str().map(String::from));
-
-    let mut started: Vec<String> = Vec::new();
-    let mut errors:  Vec<String> = Vec::new();
-
-    for ns in &namespaces {
-        let ns_exists = Command::new("kubectl")
-            .args(["get", "namespace", ns])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        if !ns_exists {
-            if let Err(e) = kubectl_apply(&serde_json::json!({
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": ns,
-                    "labels": { "yolab.io/managed": "true" }
-                }
-            }).to_string()).await {
-                errors.push(format!("{ns}: failed to create namespace: {e}"));
-                continue;
-            }
-        }
-
-        // Reconstruct the full service from the snapshot YAML — deployments,
-        // services, configmaps, secrets — regardless of whether the namespace
-        // already existed. This makes the restore idempotent and handles the
-        // "service partially destroyed" case correctly.
-        {
-            let target = format!("/tmp/yolab-restore-yaml-{}", random_hex(8));
-            let pattern = format!("**/{ns}.yaml");
-
-            let restore_out = Command::new("restic")
-                .args(["restore", &body.snapshot_id, "--target", &target, "--include", &pattern])
-                .env("RESTIC_REPOSITORY", &repo)
-                .env("RESTIC_PASSWORD", &cfg.restic_password)
-                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-                .output()
-                .await;
-
-            let yaml_applied = match restore_out {
-                Ok(o) if o.status.success() => {
-                    let find = Command::new("find")
-                        .args([&target, "-name", &format!("{ns}.yaml"), "-type", "f"])
-                        .output()
-                        .await;
-
-                    let mut ok = false;
-                    if let Ok(f) = find {
-                        let yaml_path = String::from_utf8_lossy(&f.stdout).trim().to_string();
-                        if !yaml_path.is_empty() {
-                            if let Ok(yaml_bytes) = tokio::fs::read(&yaml_path).await {
-                                if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&yaml_bytes)).await {
-                                    errors.push(format!("{ns}: YAML apply: {e}"));
-                                } else {
-                                    ok = true;
-                                }
-                            }
-                        }
-                    }
-                    ok
-                }
-                _ => false,
-            };
-            let _ = tokio::fs::remove_dir_all(&target).await;
-            if !yaml_applied {
-                tracing::warn!("restore: {ns}: could not extract YAML from snapshot");
-            } else {
-                // Give K8s a moment to process the apply before we query PVCs.
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        }
-
-        let pvcs: Vec<PvcInfo> = list_user_pvcs()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|p| p.namespace == *ns)
-            .collect();
-
-        if pvcs.is_empty() {
-            // No PVCs in this namespace — the service may be stateless.
-            // The YAML was still applied above, which is correct.
-            started.push(format!("{ns} (no PVCs — YAML applied)"));
-            continue;
-        }
-
-        for pvc in &pvcs {
-            // Recreate restic secret (always needed for new namespaces, harmless for existing).
-            if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await {
-                errors.push(format!("{}/{}: secret: {e}", pvc.namespace, pvc.name));
-                continue;
-            }
-
-            // Ensure a ReplicationSource exists for future backups.
-            let _ = ensure_replication_source(pvc, false).await;
-
-            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&pvc.name));
-            let rd_exists = Command::new("kubectl")
-                .args(["get", "replicationdestination", &dest_name, "-n", &pvc.namespace])
-                .output()
-                .await
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if rd_exists {
-                started.push(format!("{}/{} (already in progress)", pvc.namespace, pvc.name));
-                continue;
-            }
-
-            let pvc_out = Command::new("kubectl")
-                .args(["get", "pvc", &pvc.name, "-n", &pvc.namespace, "-o", "json"])
-                .output()
-                .await;
-
-            let (capacity, storage_class, access_mode) = match pvc_out {
-                Ok(o) if o.status.success() => {
-                    let pv: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
-                    (
-                        pv["spec"]["resources"]["requests"]["storage"].as_str().unwrap_or("10Gi").to_string(),
-                        pv["spec"]["storageClassName"].as_str().unwrap_or("yolab-cephfs").to_string(),
-                        pv["spec"]["accessModes"].as_array()
-                            .and_then(|a| a.first())
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("ReadWriteMany")
-                            .to_string(),
-                    )
-                }
-                _ => ("10Gi".to_string(), "yolab-cephfs".to_string(), "ReadWriteMany".to_string()),
-            };
-
-            let deploys = find_deployments_for_pvc(&pvc.namespace, &pvc.name).await.unwrap_or_default();
-            for d in &deploys {
-                let _ = scale_deployment(&pvc.namespace, d, 0).await;
-            }
-
-            // Restore in place: delete the PVC, wait for it to actually be gone, then recreate
-            // it fresh under the exact same name — not a differently-named "-dest" PVC that
-            // deployments would need repointing at. Anything that re-applies this app's
-            // catalog manifest later (an Update, a reinstall) expects its data at this exact
-            // name; a differently-named restore is invisible to that and gets silently
-            // orphaned the next time it happens.
-            if let Err(e) = delete_pvc_and_wait(&pvc.namespace, &pvc.name).await {
-                errors.push(format!("{}/{}: {e}", pvc.namespace, pvc.name));
-                continue;
-            }
-            let restored_pvc = pvc.name.clone();
-            if let Err(e) = ensure_destination_pvc(&restored_pvc, &pvc.namespace, &capacity, &storage_class, &access_mode).await {
-                errors.push(format!("{}/{}: destination pvc: {e}", pvc.namespace, pvc.name));
-                continue;
-            }
-
-            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc.name));
-            let mut restic_spec = serde_json::json!({
-                "repository": secret_name,
-                "copyMethod": "Direct",
-                "cacheStorageClassName": "yolab-cephfs",
-                "destinationPVC": restored_pvc,
-                "moverSecurityContext": {
-                    "runAsUser": 1000,
-                    "runAsGroup": 1000,
-                    "fsGroup": 1000
-                }
-            });
-            if let Some(ref t) = restore_as_of {
-                restic_spec["restoreAsOf"] = serde_json::Value::String(t.clone());
-            }
-            let manifest = serde_json::json!({
-                "apiVersion": "volsync.backube/v1alpha1",
-                "kind": "ReplicationDestination",
-                "metadata": {
-                    "name": dest_name,
-                    "namespace": pvc.namespace,
-                    "labels": { "app.kubernetes.io/managed-by": "yolab" }
-                },
-                "spec": {
-                    "trigger": { "manual": format!("snapshot-restore-{timestamp}") },
-                    "restic": restic_spec
-                }
-            });
-
-            match kubectl_apply(&manifest.to_string()).await {
-                Ok(_) => started.push(format!("{}/{}", pvc.namespace, pvc.name)),
-                Err(e) => errors.push(format!("{}/{}: {e}", pvc.namespace, pvc.name)),
-            }
-        }
-    }
-
-    Ok(Json(serde_json::json!({ "started": started, "errors": errors })))
 }
 
 /// Background task: every 10 minutes, ensure every user PVC has a VolSync
