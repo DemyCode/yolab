@@ -206,14 +206,18 @@ pub async fn run() {
 /// OSD, which is the exact device it opened — no heuristics, no UUID parsing.
 async fn fetch_disk_to_osd(node: &str, meta: &HashMap<String, Value>) -> HashMap<String, i64> {
     // Build full device path → disk_id from our local inventory.
-    let device_to_disk_id: HashMap<String, String> = meta
-        .iter()
-        .filter_map(|(disk_id, m)| {
-            let dev = m["device"].as_str()?;
-            let full = if dev.starts_with('/') { dev.to_string() } else { format!("/dev/{dev}") };
-            Some((full, disk_id.clone()))
-        })
-        .collect();
+    // Index both the stored path and its canonical (symlink-resolved) path so
+    // that /dev/mapper/pool-ceph (a symlink → /dev/dm-1) matches whichever
+    // path Ceph actually opened and reports in bluestore_bdev_dev_node.
+    let mut device_to_disk_id: HashMap<String, String> = HashMap::new();
+    for (disk_id, m) in meta {
+        let Some(dev) = m["device"].as_str() else { continue };
+        let full = if dev.starts_with('/') { dev.to_string() } else { format!("/dev/{dev}") };
+        if let Ok(canonical) = std::fs::canonicalize(&full) {
+            device_to_disk_id.insert(canonical.to_string_lossy().to_string(), disk_id.clone());
+        }
+        device_to_disk_id.insert(full, disk_id.clone());
+    }
 
     let raw = match kubectl::ceph_exec(&["osd", "metadata", "-f", "json"]).await {
         Ok(r) => r,
