@@ -113,7 +113,86 @@ impl Drop for ClusterBackupGuard {
     }
 }
 
+const DR_LOCK_NAME: &str = "yolab-dr-lock";
+
+/// Cluster-wide mutex for DR restores, symmetric to ClusterBackupGuard.
+/// Acquired before spawning the background restore task so restore_in_progress()
+/// returns true from the moment dr_start accepts a request — not only after the
+/// first ReplicationDestination is created (which can be minutes later if
+/// CephFS is recovering).
+struct DrRestoreGuard;
+
+impl DrRestoreGuard {
+    async fn acquire() -> Option<Self> {
+        let get_out = Command::new("kubectl")
+            .args(["get", "configmap", DR_LOCK_NAME, "-n", LOCK_NS,
+                   "-o", "json", "--ignore-not-found"])
+            .output().await.ok()?;
+        if get_out.status.success() {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&get_out.stdout) {
+                let ts_str = v["metadata"]["annotations"]["yolab.io/lock-started"]
+                    .as_str().unwrap_or("");
+                if let Ok(ts) = ts_str.parse::<i64>() {
+                    let age_secs = chrono::Utc::now().timestamp() - ts;
+                    if age_secs > 7200 {
+                        tracing::warn!("dr-lock: stale lock ({age_secs}s old) — removing");
+                        let _ = Command::new("kubectl")
+                            .args(["delete", "configmap", DR_LOCK_NAME, "-n", LOCK_NS,
+                                   "--ignore-not-found"])
+                            .output().await;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+        let ts = chrono::Utc::now().timestamp().to_string();
+        let manifest = serde_json::json!({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {
+                "name": DR_LOCK_NAME, "namespace": LOCK_NS,
+                "labels": { "app.kubernetes.io/managed-by": "yolab" },
+                "annotations": { "yolab.io/lock-started": ts, "yolab.io/lock-reason": "dr-restore" },
+            }
+        });
+        use tokio::io::AsyncWriteExt;
+        use std::process::Stdio as ProcessStdio;
+        let mut child = Command::new("kubectl")
+            .args(["create", "-f", "-"])
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::null())
+            .stderr(ProcessStdio::piped())
+            .spawn().ok()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(manifest.to_string().as_bytes()).await;
+        }
+        let out = child.wait_with_output().await.ok()?;
+        if out.status.success() { Some(DrRestoreGuard) } else { None }
+    }
+}
+
+impl Drop for DrRestoreGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kubectl")
+            .args(["delete", "configmap", DR_LOCK_NAME, "-n", LOCK_NS, "--ignore-not-found"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
 async fn restore_in_progress() -> bool {
+    // Check the DR lock first — it's held from before the first RD is created
+    // until the entire restore task completes, so this is reliable even during
+    // the CephFS-wait phase when no ReplicationDestinations exist yet.
+    let lock_held = Command::new("kubectl")
+        .args(["get", "configmap", DR_LOCK_NAME, "-n", LOCK_NS,
+               "--ignore-not-found", "-o", "name"])
+        .output().await
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    if lock_held { return true; }
+    // Fallback: catch restores started without the lock (pre-lock binary versions).
     Command::new("kubectl")
         .args([
             "get", "replicationdestination", "-A",
@@ -1011,7 +1090,7 @@ pub async fn dr_start(
     };
     let repo = cfg.restic_repo("cluster-backup");
 
-    // ── 1. Extract catalog from snapshot ─────────────────────────────────────
+    // ── 1. Extract catalog from snapshot (synchronous — needed for pre-flight) ─
     let cat_target = format!("/tmp/yolab-dr-catalog-{}", random_hex(8));
     let restore_out = Command::new("restic")
         .args(["restore", &body.snapshot_id, "--target", &cat_target, "--include", "**/catalog.json"])
@@ -1021,7 +1100,6 @@ pub async fn dr_start(
         .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
         .output().await
         .map_err(|e| anyhow::anyhow!("restic unavailable: {e}"))?;
-
     if !restore_out.status.success() {
         let _ = tokio::fs::remove_dir_all(&cat_target).await;
         return Err(anyhow::anyhow!(
@@ -1056,7 +1134,7 @@ pub async fn dr_start(
         ).into());
     }
 
-    // ── 3. Space pre-flight ───────────────────────────────────────────────────
+    // ── 3. Space pre-flight (ceph df talks to MON, available even mid-recovery) ─
     let total_pvc_bytes = catalog["total_pvc_bytes"].as_u64().unwrap_or(0);
     if total_pvc_bytes > 0 {
         match crate::kubectl::ceph_exec(&["df", "-f", "json"]).await {
@@ -1078,192 +1156,188 @@ pub async fn dr_start(
         }
     }
 
-    // ── 4. Wait for CephFilesystem to be mountable ───────────────────────────
-    // If storage is recovering (disk loss), the reconciler is already bringing OSDs
-    // back in; we just wait for the outcome. Instant if storage is already healthy.
-    wait_for_cephfs_ready(600).await?;
+    // ── 4. Acquire DR lock before spawning — restore_in_progress() is true
+    //       from this point onward, not only after the first RD is created. ────
+    let Some(guard) = DrRestoreGuard::acquire().await else {
+        return Err(anyhow::anyhow!("A restore is already in progress.").into());
+    };
 
-    // ── 5. Pin PVC restores to snapshot time ─────────────────────────────────
-    let restore_as_of: Option<String> = Command::new("restic")
-        .args(["snapshots", &body.snapshot_id, "--json"])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output().await.ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| v.as_array()?.first()?["time"].as_str().map(String::from));
+    let snapshot_id = body.snapshot_id.clone();
 
-    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
-    let mut started: Vec<String> = Vec::new();
-    let mut errors:  Vec<String> = Vec::new();
+    // ── 5. Background: wait for CephFS + full per-namespace restore ───────────
+    // Moved out of the handler so a gateway/proxy timeout (~60 s) cannot cancel
+    // the restore mid-flight. CephFS recovery alone can take up to 600 s;
+    // the per-namespace restore loop adds further time per PVC (delete + restic
+    // restore from B2). The frontend polls /api/backups/state for progress.
+    tokio::spawn(async move {
+        let _guard = guard; // DrRestoreGuard released when this task exits
 
-    // ── 6. Restore each namespace ─────────────────────────────────────────────
-    for ns in &namespaces {
-        // Ensure namespace exists with the managed label (needed on a fresh cluster).
-        let ns_exists = Command::new("kubectl")
-            .args(["get", "namespace", ns]).output().await
-            .map(|o| o.status.success()).unwrap_or(false);
-        if !ns_exists {
-            if let Err(e) = kubectl_apply(&serde_json::json!({
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": ns,
-                    "labels": { "yolab.io/managed": "true" }
-                }
-            }).to_string()).await {
-                errors.push(format!("{ns}: create namespace: {e}"));
-                continue;
-            }
+        if let Err(e) = wait_for_cephfs_ready(600).await {
+            tracing::warn!("dr: aborting restore — {e}");
+            return;
         }
 
-        // Apply K8s objects from snapshot YAML. The backup no longer includes PVCs or
-        // ReplicationSources — those had stale claimRefs/triggers that caused apply
-        // failures. Deployments, Services, Secrets, and ConfigMaps are safe to re-apply.
-        {
-            let yaml_target = format!("/tmp/yolab-dr-yaml-{}", random_hex(8));
-            let pattern = format!("**/{ns}.yaml");
-            let r = Command::new("restic")
-                .args(["restore", &body.snapshot_id, "--target", &yaml_target, "--include", &pattern])
-                .env("RESTIC_REPOSITORY", &repo)
-                .env("RESTIC_PASSWORD", &cfg.restic_password)
-                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-                .output().await;
-            if let Ok(o) = r {
-                if o.status.success() {
-                    let f = Command::new("find")
-                        .args([&yaml_target, "-name", &format!("{ns}.yaml"), "-type", "f"])
-                        .output().await;
-                    if let Ok(f) = f {
-                        let yaml_path = String::from_utf8_lossy(&f.stdout).trim().to_string();
-                        if !yaml_path.is_empty() {
-                            if let Ok(bytes) = tokio::fs::read(&yaml_path).await {
-                                if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
-                                    tracing::warn!("dr: {ns}: YAML apply partial: {e}");
-                                } else {
-                                    tokio::time::sleep(Duration::from_secs(2)).await;
+        let restore_as_of: Option<String> = Command::new("restic")
+            .args(["snapshots", &snapshot_id, "--json"])
+            .env("RESTIC_REPOSITORY", &repo)
+            .env("RESTIC_PASSWORD", &cfg.restic_password)
+            .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+            .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+            .output().await.ok()
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|v| v.as_array()?.first()?["time"].as_str().map(String::from));
+
+        let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+
+        for ns in &namespaces {
+            let ns_exists = Command::new("kubectl")
+                .args(["get", "namespace", ns]).output().await
+                .map(|o| o.status.success()).unwrap_or(false);
+            if !ns_exists {
+                if let Err(e) = kubectl_apply(&serde_json::json!({
+                    "apiVersion": "v1", "kind": "Namespace",
+                    "metadata": { "name": ns, "labels": { "yolab.io/managed": "true" } }
+                }).to_string()).await {
+                    tracing::warn!("dr: {ns}: create namespace: {e}");
+                    continue;
+                }
+            }
+
+            // Apply K8s objects from snapshot YAML. The backup no longer includes PVCs or
+            // ReplicationSources — those had stale claimRefs/triggers that caused apply
+            // failures. Deployments, Services, Secrets, and ConfigMaps are safe to re-apply.
+            {
+                let yaml_target = format!("/tmp/yolab-dr-yaml-{}", random_hex(8));
+                let pattern = format!("**/{ns}.yaml");
+                let r = Command::new("restic")
+                    .args(["restore", &snapshot_id, "--target", &yaml_target, "--include", &pattern])
+                    .env("RESTIC_REPOSITORY", &repo)
+                    .env("RESTIC_PASSWORD", &cfg.restic_password)
+                    .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+                    .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+                    .output().await;
+                if let Ok(o) = r {
+                    if o.status.success() {
+                        let f = Command::new("find")
+                            .args([&yaml_target, "-name", &format!("{ns}.yaml"), "-type", "f"])
+                            .output().await;
+                        if let Ok(f) = f {
+                            let yaml_path = String::from_utf8_lossy(&f.stdout).trim().to_string();
+                            if !yaml_path.is_empty() {
+                                if let Ok(bytes) = tokio::fs::read(&yaml_path).await {
+                                    if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
+                                        tracing::warn!("dr: {ns}: YAML apply partial: {e}");
+                                    } else {
+                                        tokio::time::sleep(Duration::from_secs(2)).await;
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                let _ = tokio::fs::remove_dir_all(&yaml_target).await;
             }
-            let _ = tokio::fs::remove_dir_all(&yaml_target).await;
-        }
 
-        // Scale all deployments to 0 — they'll be scaled back up per-PVC by reconcile_restores.
-        let _ = Command::new("kubectl")
-            .args(["scale", "deployment", "--all", "-n", ns, "--replicas=0"])
-            .output().await;
+            let _ = Command::new("kubectl")
+                .args(["scale", "deployment", "--all", "-n", ns, "--replicas=0"])
+                .output().await;
 
-        // Get PVCs for this namespace from the catalog.
-        let catalog_pvcs: Vec<(String, String)> = catalog["services"].as_array()
-            .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(ns.as_str())))
-            .and_then(|s| s["pvcs"].as_array())
-            .map(|pvcs| pvcs.iter().filter_map(|p| {
-                let name     = p["name"].as_str()?.to_string();
-                let capacity = p["capacity"].as_str().unwrap_or("10Gi").to_string();
-                Some((name, capacity))
-            }).collect())
-            .unwrap_or_default();
+            let catalog_pvcs: Vec<(String, String)> = catalog["services"].as_array()
+                .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(ns.as_str())))
+                .and_then(|s| s["pvcs"].as_array())
+                .map(|pvcs| pvcs.iter().filter_map(|p| {
+                    let name     = p["name"].as_str()?.to_string();
+                    let capacity = p["capacity"].as_str().unwrap_or("10Gi").to_string();
+                    Some((name, capacity))
+                }).collect())
+                .unwrap_or_default();
 
-        if catalog_pvcs.is_empty() {
-            started.push(format!("{ns} (no PVCs — YAML applied)"));
-            continue;
-        }
-
-        for (pvc_name, capacity) in &catalog_pvcs {
-            // Ensure restic secret and ReplicationSource for future backups.
-            if let Err(e) = ensure_restic_secret(ns, pvc_name, &cfg).await {
-                tracing::warn!("dr: {ns}/{pvc_name}: restic secret: {e}");
-            }
-            let _ = ensure_replication_source(&PvcInfo { namespace: ns.clone(), name: pvc_name.clone() }, false).await;
-
-            // Idempotent: skip if this PVC's restore is already running.
-            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(pvc_name));
-            let rd_exists = Command::new("kubectl")
-                .args(["get", "replicationdestination", &dest_name, "-n", ns])
-                .output().await.map(|o| o.status.success()).unwrap_or(false);
-            if rd_exists {
-                started.push(format!("{ns}/{pvc_name} (already in progress)"));
+            if catalog_pvcs.is_empty() {
+                tracing::info!("dr: {ns}: no PVCs — YAML applied only");
                 continue;
             }
 
-            // Pre-flight: verify a restic snapshot exists for this PVC before
-            // destroying the live volume. If the PVC was never backed up (installed
-            // within the last 24 h, backup not yet configured) destroying it now
-            // would result in permanent data loss with nothing to restore from.
-            let pvc_repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(pvc_name)));
-            let has_snapshot = Command::new("restic")
-                .args(["snapshots", "--json", "--last"])
-                .env("RESTIC_REPOSITORY", &pvc_repo)
-                .env("RESTIC_PASSWORD", &cfg.restic_password)
-                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-                .output().await
-                .ok()
-                .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-                .and_then(|v| v.as_array().map(|a| !a.is_empty()))
-                .unwrap_or(false);
-            if !has_snapshot {
-                errors.push(format!(
-                    "{ns}/{pvc_name}: no backup snapshot found — PVC preserved. \
-                     Run a backup first before restoring."
-                ));
-                continue;
-            }
-
-            // Recreate PVC under the exact same name (restore in place) so no deployment
-            // repointing is needed — catalog manifests always reference the original name.
-            if let Err(e) = delete_pvc_and_wait(ns, pvc_name).await {
-                errors.push(format!("{ns}/{pvc_name}: delete pvc: {e}"));
-                continue;
-            }
-            if let Err(e) = ensure_destination_pvc(pvc_name, ns, capacity, "yolab-cephfs", "ReadWriteMany").await {
-                errors.push(format!("{ns}/{pvc_name}: create pvc: {e}"));
-                continue;
-            }
-
-            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(pvc_name));
-            let mut restic_spec = serde_json::json!({
-                "repository": secret_name,
-                "copyMethod": "Direct",
-                "cacheStorageClassName": "yolab-cephfs",
-                "destinationPVC": pvc_name,
-                // Run as root — same reasoning as the ReplicationSource mover: apps may
-                // write as any uid, root can read and restore ownership for all of them.
-                "moverSecurityContext": {
-                    "runAsUser": 0,
-                    "runAsGroup": 0,
-                    "fsGroup": 0
+            for (pvc_name, capacity) in &catalog_pvcs {
+                if let Err(e) = ensure_restic_secret(ns, pvc_name, &cfg).await {
+                    tracing::warn!("dr: {ns}/{pvc_name}: restic secret: {e}");
                 }
-            });
-            if let Some(ref t) = restore_as_of {
-                restic_spec["restoreAsOf"] = serde_json::Value::String(t.clone());
-            }
-            let manifest = serde_json::json!({
-                "apiVersion": "volsync.backube/v1alpha1",
-                "kind": "ReplicationDestination",
-                "metadata": {
-                    "name": dest_name,
-                    "namespace": ns,
-                    "labels": { "app.kubernetes.io/managed-by": "yolab" }
-                },
-                "spec": {
-                    "trigger": { "manual": format!("dr-{timestamp}") },
-                    "restic": restic_spec
+                let _ = ensure_replication_source(
+                    &PvcInfo { namespace: ns.clone(), name: pvc_name.clone() }, false,
+                ).await;
+
+                let dest_name = format!("emergency-restore-{}", canonical_pvc_id(pvc_name));
+                let rd_exists = Command::new("kubectl")
+                    .args(["get", "replicationdestination", &dest_name, "-n", ns])
+                    .output().await.map(|o| o.status.success()).unwrap_or(false);
+                if rd_exists {
+                    tracing::info!("dr: {ns}/{pvc_name}: already in progress — skipping");
+                    continue;
                 }
-            });
-            match kubectl_apply(&manifest.to_string()).await {
-                Ok(_)  => started.push(format!("{ns}/{pvc_name}")),
-                Err(e) => errors.push(format!("{ns}/{pvc_name}: RD: {e}")),
+
+                let pvc_repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(pvc_name)));
+                let has_snapshot = Command::new("restic")
+                    .args(["snapshots", "--json", "--last"])
+                    .env("RESTIC_REPOSITORY", &pvc_repo)
+                    .env("RESTIC_PASSWORD", &cfg.restic_password)
+                    .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+                    .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+                    .output().await.ok()
+                    .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                    .and_then(|v| v.as_array().map(|a| !a.is_empty()))
+                    .unwrap_or(false);
+                if !has_snapshot {
+                    tracing::warn!(
+                        "dr: {ns}/{pvc_name}: no backup snapshot found — PVC preserved. \
+                         Run a backup first before restoring."
+                    );
+                    continue;
+                }
+
+                if let Err(e) = delete_pvc_and_wait(ns, pvc_name).await {
+                    tracing::warn!("dr: {ns}/{pvc_name}: delete pvc: {e}");
+                    continue;
+                }
+                if let Err(e) = ensure_destination_pvc(
+                    pvc_name, ns, capacity, "yolab-cephfs", "ReadWriteMany",
+                ).await {
+                    tracing::warn!("dr: {ns}/{pvc_name}: create pvc: {e}");
+                    continue;
+                }
+
+                let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(pvc_name));
+                let mut restic_spec = serde_json::json!({
+                    "repository": secret_name,
+                    "copyMethod": "Direct",
+                    "cacheStorageClassName": "yolab-cephfs",
+                    "destinationPVC": pvc_name,
+                    "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
+                });
+                if let Some(ref t) = restore_as_of {
+                    restic_spec["restoreAsOf"] = serde_json::Value::String(t.clone());
+                }
+                let manifest = serde_json::json!({
+                    "apiVersion": "volsync.backube/v1alpha1",
+                    "kind": "ReplicationDestination",
+                    "metadata": {
+                        "name": dest_name, "namespace": ns,
+                        "labels": { "app.kubernetes.io/managed-by": "yolab" }
+                    },
+                    "spec": {
+                        "trigger": { "manual": format!("dr-{timestamp}") },
+                        "restic": restic_spec
+                    }
+                });
+                match kubectl_apply(&manifest.to_string()).await {
+                    Ok(_)  => tracing::info!("dr: {ns}/{pvc_name}: ReplicationDestination created"),
+                    Err(e) => tracing::warn!("dr: {ns}/{pvc_name}: RD: {e}"),
+                }
             }
         }
-    }
 
-    Ok(Json(serde_json::json!({ "started": started, "errors": errors })))
+        tracing::info!("dr: restore setup complete for {} namespace(s)", namespaces.len());
+    });
+
+    Ok(Json(serde_json::json!({ "ok": true, "started": true })))
 }
 
 /// GET /api/backups/dr/status
