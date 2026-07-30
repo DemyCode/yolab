@@ -357,6 +357,8 @@ async fn reconcile_local_osds(
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         } else {
             // Already out (draining or drained). Purge once all PGs have migrated away.
+            // Ceph requires the OSD to be 'down' before purge, so we must stop the
+            // Rook deployment first and wait for the pod to exit before calling purge.
             let safe = kubectl::ceph_exec(&["osd", "safe-to-destroy", &osd, "-f", "json"])
                 .await
                 .ok()
@@ -368,15 +370,29 @@ async fn reconcile_local_osds(
                 })
                 .unwrap_or(false);
             if safe {
-                tracing::info!("{osd} ({disk_id}): desired=OFF, safe-to-destroy — purging");
-                if let Err(e) = kubectl::ceph_exec(&[
-                    "osd", "purge", &osd_id.to_string(), "--yes-i-really-mean-it",
-                ]).await {
-                    tracing::warn!("{osd}: purge failed: {e}");
-                } else {
-                    let deploy = format!("rook-ceph-osd-{osd_id}");
+                let deploy = format!("rook-ceph-osd-{osd_id}");
+                // Check if the OSD pod is still running. If so, delete the
+                // deployment now and wait for the next cycle — Ceph needs the
+                // daemon to stop before it marks the OSD 'down', and purge
+                // only works on a 'down' OSD.
+                let pod_ready = kubectl::get_json(&[
+                    "get", "deployment", &deploy, "-n", NS,
+                    "-o", "jsonpath={.status.readyReplicas}",
+                ]).await.ok().and_then(|v| v.as_u64()).unwrap_or(0);
+
+                if pod_ready > 0 {
+                    tracing::info!("{osd} ({disk_id}): safe-to-destroy — deleting deployment so OSD goes down");
                     let _ = kubectl::run(&["delete", "deployment", &deploy, "-n", NS, "--ignore-not-found"]).await;
-                    tracing::info!("{osd} ({disk_id}): purged and deployment deleted");
+                } else {
+                    // Deployment is gone / pod not ready — OSD should be down, purge now.
+                    tracing::info!("{osd} ({disk_id}): desired=OFF, OSD down — purging");
+                    if let Err(e) = kubectl::ceph_exec(&[
+                        "osd", "purge", &osd_id.to_string(), "--yes-i-really-mean-it",
+                    ]).await {
+                        tracing::warn!("{osd}: purge failed (will retry): {e}");
+                    } else {
+                        tracing::info!("{osd} ({disk_id}): purged");
+                    }
                 }
             } else {
                 tracing::debug!("{osd} ({disk_id}): desired=OFF, draining — waiting for PGs to migrate");
