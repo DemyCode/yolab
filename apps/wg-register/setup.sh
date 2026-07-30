@@ -55,6 +55,38 @@ if [ "$REUSE" = "1" ]; then
     fi
 fi
 
+# Re-assert the DNS binding whenever we reuse a tunnel.
+#
+# The tunnel existing on the platform (200 above) does NOT prove the DNS record
+# still points at *this* tunnel's IPv6. After a backup restore, the cached state
+# carries an OLD tunnel/IPv6, while the live DNS record for this service name may
+# have been repointed at a newer tunnel — leaving the app unreachable even though
+# the reused tunnel is valid. POST /records is an upsert-by-name on the platform
+# (it deletes any existing record with the same name, then inserts), so re-asserting
+# here makes the DNS name always resolve to whatever tunnel we are actually running.
+# This is what makes "restore" self-healing: no manual state cleanup required.
+if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
+    echo "Re-asserting DNS record '$SERVICE_NAME' -> $SUB_IPV6..."
+    REASSERT_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
+        -X POST "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/records" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+        -d "{\"record_type\":\"AAAA\",\"name\":\"$SERVICE_NAME\",\"value\":\"$SUB_IPV6\"}")
+    REASSERT_HTTP=$(printf '%s' "$REASSERT_RESP" | tail -1)
+    REASSERT_BODY=$(printf '%s' "$REASSERT_RESP" | head -n -1)
+    if [ "$REASSERT_HTTP" -ge 200 ] && [ "$REASSERT_HTTP" -lt 300 ]; then
+        FQDN=$(printf '%s' "$REASSERT_BODY" | jq -r .fqdn)
+        # Persist the (possibly refreshed) FQDN back to state.
+        TMP_STATE=$(mktemp)
+        jq --arg fqdn "$FQDN" '.fqdn = $fqdn' "$STATE_FILE" > "$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
+        echo "DNS record re-asserted: $FQDN -> $SUB_IPV6"
+    else
+        # Non-fatal: keep serving with cached state. If DNS was already correct the
+        # app stays reachable; if it had drifted, the next restart retries.
+        echo "WARNING: DNS re-assert returned HTTP $REASSERT_HTTP: $REASSERT_BODY (continuing with cached state)"
+    fi
+fi
+
 if [ "$REUSE" = "0" ]; then
     echo "Generating WireGuard keypair..."
     PRIVATE_KEY=$(wg genkey)
