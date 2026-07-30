@@ -631,7 +631,8 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
                 "moverSecurityContext": {
                     "runAsUser": 0,
                     "runAsGroup": 0,
-                    "fsGroup": 0
+                    "fsGroup": 0,
+                    "privileged": true
                 }
             }
         }
@@ -1310,7 +1311,7 @@ pub async fn dr_start(
                     "copyMethod": "Direct",
                     "cacheStorageClassName": "yolab-cephfs",
                     "destinationPVC": pvc_name,
-                    "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
+                    "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0, "privileged": true }
                 });
                 if let Some(ref t) = restore_as_of {
                     restic_spec["restoreAsOf"] = serde_json::Value::String(t.clone());
