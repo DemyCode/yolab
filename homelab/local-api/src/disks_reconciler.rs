@@ -556,18 +556,33 @@ async fn purge_dead_osds(node: &str, devices: &[String], our_fsid: &str) {
         // failure can make a present-but-flaky disk look "gone", so without this
         // gate a re-provision (which wipes the disk) would lose data. If it's not
         // safe, leave the OSD down and surface it for the user rather than purge.
-        let safe_to_destroy = crate::kubectl::ceph_exec(&[
+        let stod = crate::kubectl::ceph_exec(&[
             "osd", "safe-to-destroy", &format!("osd.{osd_id}"), "-f", "json",
-        ])
-        .await
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| {
-            v["safe_to_destroy"]
-                .as_array()
-                .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-        })
-        .unwrap_or(false);
+        ]).await;
+
+        // If safe-to-destroy fails because osd.N no longer exists in the OSD map
+        // (it was already purged elsewhere, e.g. by reconcile_local_osds), the
+        // deployment is just a stale leftover — delete it and move on.
+        if let Err(ref e) = stod {
+            let msg = e.to_string();
+            if msg.contains("does not exist") || msg.contains("ENOENT") || msg.contains("Unknown") {
+                tracing::warn!(
+                    "purge_dead_osds: osd.{osd_id} on {node} is no longer in the OSD map \
+                     but its deployment is crashing — deleting stale deployment"
+                );
+                let _ = kubectl::run(&["delete", "deployment", name, "-n", NS, "--ignore-not-found"]).await;
+                continue;
+            }
+        }
+
+        let safe_to_destroy = stod.ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| {
+                v["safe_to_destroy"]
+                    .as_array()
+                    .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
+            })
+            .unwrap_or(false);
         if !safe_to_destroy {
             tracing::warn!(
                 "purge_dead_osds: osd.{osd_id} on {node} looks gone but is NOT safe-to-destroy \
