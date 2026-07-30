@@ -352,8 +352,35 @@ async fn reconcile_local_osds(
                 let _ = kubectl::ceph_exec(&["osd", "in", &osd]).await;
             }
         } else if reweight > 0.5 {
+            // Still in — start draining.
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
+        } else {
+            // Already out (draining or drained). Purge once all PGs have migrated away.
+            let safe = kubectl::ceph_exec(&["osd", "safe-to-destroy", &osd, "-f", "json"])
+                .await
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| {
+                    v["safe_to_destroy"]
+                        .as_array()
+                        .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
+                })
+                .unwrap_or(false);
+            if safe {
+                tracing::info!("{osd} ({disk_id}): desired=OFF, safe-to-destroy — purging");
+                if let Err(e) = kubectl::ceph_exec(&[
+                    "osd", "purge", &osd_id.to_string(), "--yes-i-really-mean-it",
+                ]).await {
+                    tracing::warn!("{osd}: purge failed: {e}");
+                } else {
+                    let deploy = format!("rook-ceph-osd-{osd_id}");
+                    let _ = kubectl::run(&["delete", "deployment", &deploy, "-n", NS, "--ignore-not-found"]).await;
+                    tracing::info!("{osd} ({disk_id}): purged and deployment deleted");
+                }
+            } else {
+                tracing::debug!("{osd} ({disk_id}): desired=OFF, draining — waiting for PGs to migrate");
+            }
         }
     }
 }
