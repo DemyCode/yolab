@@ -22,6 +22,7 @@ pub struct DiskInfo {
     pub foreign_ceph: bool,
     pub osd_id: Option<i64>,
     pub desired: String,
+    pub connected: bool,
 }
 
 #[derive(Deserialize)]
@@ -73,18 +74,42 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
                         is_our_osd: v["is_our_osd"].as_bool().unwrap_or(false),
                         foreign_ceph: v["foreign_ceph"].as_bool().unwrap_or(false),
                         osd_id: v["osd_id"].as_i64(),
+                        connected: true,
                     }
                 })
                 .collect();
 
-            // System disk (loop) first, then largest first
+            // Connected first, then loop first, then largest first
             disks.sort_by(|a, b| {
-                b.is_loop
-                    .cmp(&a.is_loop)
+                b.connected
+                    .cmp(&a.connected)
+                    .then(b.is_loop.cmp(&a.is_loop))
                     .then(b.size_bytes.cmp(&a.size_bytes))
             });
 
             result.insert(node.clone(), disks);
+        }
+    }
+
+    // Add phantom entries for disks in config CM but not currently visible in status.
+    // This keeps disconnected disks visible in the UI with their ON/OFF state.
+    for (cm_key, desired_val) in &desired {
+        if let Some((node, disk_id)) = cm_key.split_once("--") {
+            let node_disks = result.entry(node.to_string()).or_default();
+            if !node_disks.iter().any(|d| d.id == disk_id) {
+                node_disks.push(DiskInfo {
+                    id: disk_id.to_string(),
+                    device: String::new(),
+                    model: String::new(),
+                    size_bytes: 0,
+                    is_loop: false,
+                    is_our_osd: true,
+                    foreign_ceph: false,
+                    osd_id: None,
+                    desired: desired_val.clone(),
+                    connected: false,
+                });
+            }
         }
     }
 
