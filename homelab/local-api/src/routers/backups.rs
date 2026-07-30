@@ -506,6 +506,15 @@ async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupCo
     })
 }
 
+/// Annotate a namespace to allow VolSync movers to run with elevated privileges.
+/// Required so the restic mover can call lchown to restore original file ownership.
+async fn annotate_ns_privileged_movers(ns: &str) {
+    let _ = Command::new("kubectl")
+        .args(["annotate", "namespace", ns,
+               "volsync.backube/privileged-movers=true", "--overwrite"])
+        .output().await;
+}
+
 /// Create (or update) the per-PVC restic secret in its namespace.
 /// Contains the full repo URL so VolSync knows where to read/write.
 /// Keyed by the canonical PVC id so the repo path (and thus backup history) survives restores.
@@ -719,6 +728,7 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
     let mut sources: Vec<String> = Vec::new();
 
     for pvc in &pvcs {
+        annotate_ns_privileged_movers(&pvc.namespace).await;
         ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await?;
         ensure_replication_source(pvc, false).await?;
         sources.push(format!("{}/{}", pvc.namespace, pvc.name));
@@ -1304,6 +1314,7 @@ pub async fn dr_start(
                     continue;
                 }
 
+                annotate_ns_privileged_movers(ns).await;
                 let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(pvc_name));
                 let mut restic_spec = serde_json::json!({
                     "repository": secret_name,
@@ -1836,6 +1847,7 @@ async fn trigger_and_wait_volsync(
     since: chrono::DateTime<chrono::Utc>,
 ) {
     for pvc in pvcs {
+        annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await;
         let _ = ensure_replication_source(pvc, true).await;
     }
@@ -2009,6 +2021,7 @@ pub async fn setup_namespace_backup(namespace: &str) {
     };
     let Ok(pvcs) = list_user_pvcs().await else { return };
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
+        annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
         let _ = ensure_replication_source(&pvc, false).await;
     }
@@ -2065,6 +2078,7 @@ pub async fn run_replication_source_reconciler() {
                 };
                 if let Ok(pvcs) = list_user_pvcs().await {
                     for pvc in pvcs {
+                        annotate_ns_privileged_movers(&pvc.namespace).await;
                         if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await {
                             tracing::debug!("backup-reconciler: restic secret {}/{}: {e}", pvc.namespace, pvc.name);
                         }
