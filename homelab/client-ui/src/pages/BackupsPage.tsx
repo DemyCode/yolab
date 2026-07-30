@@ -51,9 +51,17 @@ interface DrStatusResponse {
   all_complete: boolean;
 }
 
+interface LastBackupResult {
+  status: "success" | "partial" | "failed";
+  finished_at: string;
+  stale_pvcs: string[];
+  error: string | null;
+}
+
 interface OperationState {
   backing_up: boolean;
   restoring: boolean;
+  last_backup?: LastBackupResult | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -718,6 +726,31 @@ export function BackupsPage() {
               ? "Backup in progress — other backup actions are disabled until it finishes."
               : "Restore in progress — other backup actions are disabled until it finishes."}
           </p>
+        </div>
+      )}
+
+      {!opBusy && opState.last_backup && opState.last_backup.status !== "success" && (
+        <div className="rounded-lg border border-[#7f1d1d] bg-[#1a0000] px-4 py-3 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 text-[#f87171] flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-[#f87171]">
+            {opState.last_backup.status === "failed" ? (
+              <p className="font-medium">
+                The last backup failed{opState.last_backup.error ? `: ${opState.last_backup.error}` : "."} Your previous
+                backups are still safe — try running a new backup.
+              </p>
+            ) : (
+              <>
+                <p className="font-medium">
+                  The last backup completed, but some volumes could not be backed up in time and kept their previous
+                  snapshot:
+                </p>
+                <ul className="mt-1 list-disc list-inside text-[#fca5a5]">
+                  {opState.last_backup.stale_pvcs.map((p) => <li key={p}>{p}</li>)}
+                </ul>
+                <p className="mt-1 text-[#fca5a5]">Run another backup once the cluster is idle to capture their latest data.</p>
+              </>
+            )}
+          </div>
         </div>
       )}
 
