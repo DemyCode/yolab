@@ -64,9 +64,9 @@ spec:
     useAllNodes: false
     useAllDevices: false
     # nodes list managed by osd-node-controller DaemonSet
-  # Do NOT auto-remove OSDs — disk reconnection must re-integrate cleanly.
-  # Intentional decommission requires explicit manual steps (osd out → purge).
-  removeOSDsIfOutAndSafeToRemove: false
+  # Rook auto-purges OSDs that are out + safe-to-destroy. Our reconciler drives
+  # osd-out; Rook handles the deployment teardown and purge from here.
+  removeOSDsIfOutAndSafeToRemove: true
   disruptionManagement:
     # Pod disruption budgets can block node drains and K3s upgrades on single-node.
     managePodBudgets: false
