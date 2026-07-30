@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff, Loader2, Cpu } from "lucide-react";
+import { RefreshCw, HardDrive, AlertTriangle, ChevronDown, Copy, Check, ExternalLink, Eye, EyeOff, Loader2, Cpu, WifiOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -110,15 +110,42 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
   );
 }
 
+type DiskState = "active" | "pending" | "missing" | "draining" | "excluded" | "historical" | "foreign";
+
+function diskState(disk: DiskInfo): DiskState {
+  if (disk.foreign_ceph) return "foreign";
+  const on = disk.desired === "ON" || disk.desired === "USING";
+  if (on && disk.connected && disk.is_our_osd) return "active";
+  if (on && disk.connected) return "pending";
+  if (on && !disk.connected) return "missing";
+  if (!on && disk.connected && disk.is_our_osd) return "draining";
+  if (!on && disk.connected) return "excluded";
+  return "historical";
+}
+
+const STATE_META: Record<DiskState, { label: string; color: string; dot: string; pulse?: boolean }> = {
+  active:    { label: "Active in cluster",       color: "text-[#4ade80]", dot: "bg-[#4ade80]" },
+  pending:   { label: "Setting up…",             color: "text-[#fbbf24]", dot: "bg-[#fbbf24]", pulse: true },
+  missing:   { label: "Missing — not connected", color: "text-[#f87171]", dot: "bg-[#f87171]", pulse: true },
+  draining:  { label: "Draining — being removed",color: "text-[#fbbf24]", dot: "bg-[#fbbf24]", pulse: true },
+  excluded:  { label: "Connected, not in cluster",color: "text-[#71717a]", dot: "bg-[#52525b]" },
+  historical:{ label: "Not connected",           color: "text-[#52525b]", dot: "bg-[#3f3f46]" },
+  foreign:   { label: "Foreign data — erase to use", color: "text-[#fbbf24]", dot: "bg-[#fbbf24]" },
+};
+
 function DiskRow({ node, disk, osd, onChanged }: { node: string; disk: DiskInfo; osd?: OsdInfo; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [eraseConfirm, setEraseConfirm] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const state = diskState(disk);
+  const sm = STATE_META[state];
+  const isOn = disk.desired === "ON" || disk.desired === "USING";
+
   async function toggle() {
-    const next = disk.desired === "USING" ? "OFF" : "USING";
-    if (next === "OFF" && !confirm && disk.connected) { setConfirm(true); return; }
+    const next = isOn ? "OFF" : "ON";
+    if (next === "OFF" && disk.is_our_osd && !confirm) { setConfirm(true); return; }
     setBusy(true); setErr(null); setConfirm(false);
     try {
       const r = await fetch(`/api/disks/${node}/${disk.id}`, {
@@ -144,135 +171,54 @@ function DiskRow({ node, disk, osd, onChanged }: { node: string; disk: DiskInfo;
     finally { setBusy(false); }
   }
 
-  const isUsing = disk.desired === "USING";
-
-  // Foreign disk: show a distinct row with an erase-to-use flow.
-  if (disk.foreign_ceph) {
-    return (
-      <div className="flex items-start gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0">
-        <div className="flex-shrink-0 mt-0.5">
-          <AlertTriangle className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.5} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-[#fafafa] truncate">{disk.model || disk.device}</p>
-          <p className="text-xs text-[#fbbf24] mt-0.5">
-            {fmtSize(disk.size_bytes)} · Contains data from another system
-          </p>
-          {!eraseConfirm && !err && (
-            <p className="text-xs text-[#52525b] mt-1">
-              This disk has Ceph data from a different cluster. Erase it to add it to this pool.
-            </p>
-          )}
-
-          {eraseConfirm && (
-            <div className="mt-2 space-y-2">
-              <p className="text-xs text-[#f87171] font-medium">
-                Permanently erase all data on this disk? This cannot be undone.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => void erase()}
-                  disabled={busy}
-                  className="px-3 py-1 rounded text-xs font-medium bg-[#f87171]/10 border border-[#f87171]/40 text-[#f87171] hover:bg-[#f87171]/20 transition-colors disabled:opacity-50"
-                >
-                  {busy ? "Erasing…" : "Yes, erase disk"}
-                </button>
-                <button
-                  onClick={() => setEraseConfirm(false)}
-                  disabled={busy}
-                  className="px-3 py-1 rounded text-xs border border-[#27272a] text-[#71717a] hover:bg-[#27272a] transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!eraseConfirm && (
-            <button
-              onClick={() => setEraseConfirm(true)}
-              disabled={busy}
-              className="mt-2 px-3 py-1 rounded text-xs border border-[#27272a] text-[#a1a1aa] hover:border-[#3f3f46] hover:text-[#fafafa] transition-colors disabled:opacity-50"
-            >
-              Erase and use
-            </button>
-          )}
-
-          {err && <p className="text-xs text-[#f87171] mt-1">{err}</p>}
-        </div>
-      </div>
-    );
-  }
-
-  // Disconnected disk (in config CM but not visible in status)
-  if (!disk.connected) {
-    return (
-      <div className="flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0 opacity-60">
-        <div className="flex-shrink-0">
-          <HardDrive className="h-4 w-4 text-[#3f3f46]" strokeWidth={1.5} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-[#71717a] truncate font-mono text-xs">{disk.id}</p>
-            <Badge variant="muted" className="text-xs shrink-0">Offline</Badge>
-          </div>
-          <p className="text-xs text-[#3f3f46] mt-0.5">
-            Not connected · {isUsing ? "Will re-join when plugged in" : "Set to off"}
-          </p>
-        </div>
-        <button
-          onClick={() => void toggle()}
-          disabled={busy}
-          className={cn(
-            "flex-shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-            isUsing ? "bg-[#52525b]" : "bg-[#3f3f46]",
-            busy && "opacity-50 cursor-not-allowed",
-          )}
-        >
-          <span className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-white/60 shadow transition-transform",
-            isUsing ? "translate-x-5" : "translate-x-0.5",
-          )} />
-        </button>
-        {err && <p className="text-xs text-[#f87171] ml-2">{err}</p>}
-      </div>
-    );
-  }
+  const label = disk.model || disk.device || disk.id;
+  const isMissing = state === "missing";
+  const isHistorical = state === "historical";
 
   return (
-    <div className="flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0">
+    <div className={cn(
+      "flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0 transition-colors",
+      isMissing && "bg-[#f87171]/5 border-[#f87171]/20",
+      isHistorical && "opacity-50",
+    )}>
+      {/* Icon */}
       <div className="flex-shrink-0">
-        {disk.is_loop
+        {state === "missing"
+          ? <WifiOff className="h-4 w-4 text-[#f87171]" strokeWidth={1.5} />
+          : disk.is_loop
           ? <Cpu className="h-4 w-4 text-[#a78bfa]" strokeWidth={1.5} />
-          : <HardDrive className="h-4 w-4 text-[#71717a]" strokeWidth={1.5} />
+          : <HardDrive className={cn("h-4 w-4", isHistorical ? "text-[#3f3f46]" : "text-[#71717a]")} strokeWidth={1.5} />
         }
       </div>
+
+      {/* Identity + state */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm text-[#fafafa] truncate">
-            {disk.model || disk.device}
+          <p className={cn("text-sm truncate", isHistorical ? "text-[#52525b]" : "text-[#fafafa]")}>
+            {label}
           </p>
-          {disk.is_our_osd && disk.osd_id !== null && (
+          {disk.is_our_osd && disk.osd_id !== null && disk.connected && (
             <span className="text-xs font-mono text-[#a78bfa] shrink-0">osd.{disk.osd_id}</span>
           )}
         </div>
-        <p className="text-xs text-[#52525b] mt-0.5">
-          {fmtSize(disk.size_bytes)}
-          {disk.is_loop && <span className="ml-1.5">· System disk</span>}
-          {disk.is_our_osd && !disk.is_loop && !osd && (
-            <span className="ml-1.5 text-[#4ade80]">· Active OSD</span>
-          )}
-          {!disk.is_our_osd && !disk.is_loop && disk.desired === "USING" && (
-            <span className="ml-1.5 text-[#fbbf24]">· Pending provisioning</span>
-          )}
-          {!disk.is_our_osd && !disk.is_loop && disk.desired === "OFF" && (
-            <span className="ml-1.5">· Removed from cluster</span>
-          )}
-        </p>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span className={cn(
+            "inline-block h-1.5 w-1.5 rounded-full shrink-0",
+            sm.dot,
+            sm.pulse && "animate-pulse",
+          )} />
+          <p className={cn("text-xs", sm.color)}>
+            {sm.label}
+            {disk.connected && disk.size_bytes > 0 && (
+              <span className="text-[#52525b] ml-1.5">· {fmtSize(disk.size_bytes)}</span>
+            )}
+            {disk.is_loop && <span className="text-[#52525b] ml-1.5">· System disk</span>}
+          </p>
+        </div>
       </div>
 
-      {/* Fused OSD stats — fill bar + used/free */}
-      {osd && (
+      {/* OSD fill stats — only for active disks */}
+      {osd && state === "active" && (
         <div className="hidden sm:flex flex-col items-end gap-0.5 shrink-0 min-w-[140px]">
           <FillBar pct={osd.utilization} />
           <p className="text-xs text-[#52525b] tabular-nums">
@@ -281,43 +227,65 @@ function DiskRow({ node, disk, osd, onChanged }: { node: string; disk: DiskInfo;
         </div>
       )}
 
+      {/* Foreign disk: erase flow */}
+      {state === "foreign" && (
+        <div className="shrink-0">
+          {eraseConfirm ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[#f87171]">Erase all data?</span>
+              <button onClick={() => void erase()} disabled={busy}
+                className="px-2 py-0.5 rounded text-xs border border-[#f87171]/40 text-[#f87171] hover:bg-[#f87171]/10 transition-colors disabled:opacity-50">
+                {busy ? "…" : "Yes"}
+              </button>
+              <button onClick={() => setEraseConfirm(false)}
+                className="px-2 py-0.5 rounded text-xs border border-[#27272a] text-[#71717a] hover:bg-[#27272a] transition-colors">
+                No
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setEraseConfirm(true)} disabled={busy}
+              className="px-3 py-1 rounded text-xs border border-[#27272a] text-[#a1a1aa] hover:border-[#3f3f46] hover:text-[#fafafa] transition-colors disabled:opacity-50">
+              Erase and use
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Confirm removing active OSD */}
       {confirm && (
-        <div className="flex items-center gap-1.5 text-xs text-[#fbbf24] shrink-0">
-          <span className="hidden sm:inline">Remove disk? Data migrates first.</span>
-          <button
-            onClick={() => void toggle()}
-            disabled={busy}
-            className="px-2 py-0.5 rounded border border-[#f87171]/40 text-[#f87171] hover:bg-[#f87171]/10 transition-colors"
-          >
-            Yes
+        <div className="flex items-center gap-1.5 text-xs shrink-0">
+          <span className="text-[#fbbf24] hidden sm:inline">Data will migrate first.</span>
+          <button onClick={() => void toggle()} disabled={busy}
+            className="px-2 py-0.5 rounded border border-[#f87171]/40 text-[#f87171] hover:bg-[#f87171]/10 transition-colors">
+            Confirm
           </button>
-          <button
-            onClick={() => setConfirm(false)}
-            className="px-2 py-0.5 rounded border border-[#27272a] text-[#71717a] hover:bg-[#27272a] transition-colors"
-          >
-            No
+          <button onClick={() => setConfirm(false)}
+            className="px-2 py-0.5 rounded border border-[#27272a] text-[#71717a] hover:bg-[#27272a] transition-colors">
+            Cancel
           </button>
         </div>
       )}
 
-      {!confirm && (
+      {/* ON/OFF toggle — not shown for foreign disks or during confirm */}
+      {state !== "foreign" && !confirm && (
         <button
           onClick={() => void toggle()}
           disabled={busy}
+          title={isOn ? "Turn OFF" : "Turn ON"}
           className={cn(
             "flex-shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-            isUsing ? "bg-[#a78bfa]" : "bg-[#3f3f46]",
+            isOn ? "bg-[#a78bfa]" : "bg-[#3f3f46]",
             busy && "opacity-50 cursor-not-allowed",
           )}
         >
           <span className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-            isUsing ? "translate-x-5" : "translate-x-0.5",
+            "inline-block h-3.5 w-3.5 rounded-full shadow transition-transform",
+            isOn ? "translate-x-5 bg-white" : "translate-x-0.5 bg-white/70",
           )} />
         </button>
       )}
 
-      {err && <p className="text-xs text-[#f87171] ml-2">{err}</p>}
+      {err && <p className="text-xs text-[#f87171] ml-1 shrink-0">{err}</p>}
     </div>
   );
 }
@@ -358,7 +326,7 @@ function ManageDisksPanel({ osds }: { osds: OsdInfo[] }) {
           </button>
         </div>
         <p className="text-xs text-[#52525b] mt-0.5">
-          Toggle a disk on to add it to the storage pool, or off to remove it safely. Removal migrates your data before taking the disk offline.
+          All disks ever connected to this machine appear here. Turn a disk ON to add it to the storage pool. New disks default to OFF — nothing happens until you enable them.
         </p>
       </CardHeader>
       <CardContent className="p-0">
