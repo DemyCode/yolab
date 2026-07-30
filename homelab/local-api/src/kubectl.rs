@@ -166,17 +166,26 @@ pub async fn get_nodes() -> Result<Vec<Value>> {
 const CEPH_NS: &str = "rook-ceph";
 
 async fn ceph_exec_pod() -> Result<String> {
-    let name = run(&[
+    // Get all Running-phase OSD pods as JSON and pick the first one where the
+    // Ready condition is True. This skips pods in CrashLoopBackOff, which have
+    // phase=Running at the pod level but no ready containers to exec into.
+    let out = run(&[
         "get", "pod", "-n", CEPH_NS,
         "-l", "app=rook-ceph-osd",
         "--field-selector=status.phase=Running",
-        "-o", "jsonpath={.items[0].metadata.name}",
-    ])
-    .await?;
-    if name.is_empty() {
-        bail!("No running rook-ceph-osd pod found");
+        "-o", "json",
+    ]).await?;
+    let pods: Value = serde_json::from_str(&out).context("parse pods JSON")?;
+    for pod in pods["items"].as_array().unwrap_or(&vec![]) {
+        let name = pod["metadata"]["name"].as_str().unwrap_or("");
+        let ready = pod["status"]["conditions"].as_array()
+            .and_then(|cs| cs.iter().find(|c| c["type"] == "Ready"))
+            .and_then(|c| c["status"].as_str()) == Some("True");
+        if !name.is_empty() && ready {
+            return Ok(name.to_string());
+        }
     }
-    Ok(name)
+    bail!("No ready rook-ceph-osd pod found")
 }
 
 pub async fn ceph_exec(args: &[&str]) -> Result<String> {
