@@ -545,10 +545,14 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
                 "retain": { "daily": 7, "weekly": 4, "monthly": 12 },
                 "copyMethod": "Direct",
                 "cacheStorageClassName": "yolab-cephfs",
+                // Run as root so the mover can read files regardless of the app's uid.
+                // App containers vary: some write as uid 0, some as uid 1000, some as
+                // arbitrary UIDs. Running as 1000 silently skips root-owned files; running
+                // as root reads everything and restores correct ownership on the way back.
                 "moverSecurityContext": {
-                    "runAsUser": 1000,
-                    "runAsGroup": 1000,
-                    "fsGroup": 1000
+                    "runAsUser": 0,
+                    "runAsGroup": 0,
+                    "fsGroup": 0
                 }
             }
         }
@@ -644,13 +648,12 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
     Ok(Json(serde_json::json!({
         "provisioned": true,
         "pvcs_configured": sources,
-        "schedule": "daily at 03:00 UTC",
-        "etcd_snapshots": "daily at 02:00 UTC (background task)",
+        "backup": "PVC data + cluster state snapshotted together daily at 02:00 UTC",
     })))
 }
 
 /// A PVC hasn't synced in this long → flag it as stale rather than silently "Pending" forever.
-/// Chosen to comfortably exceed the daily 03:00 UTC schedule plus retry slack.
+/// 36 h comfortably exceeds the daily 02:00 UTC backup window plus retry slack.
 const STALE_AFTER_HOURS: i64 = 36;
 
 fn hours_since(timestamp: &str) -> Option<i64> {
@@ -1188,6 +1191,30 @@ pub async fn dr_start(
                 continue;
             }
 
+            // Pre-flight: verify a restic snapshot exists for this PVC before
+            // destroying the live volume. If the PVC was never backed up (installed
+            // within the last 24 h, backup not yet configured) destroying it now
+            // would result in permanent data loss with nothing to restore from.
+            let pvc_repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(pvc_name)));
+            let has_snapshot = Command::new("restic")
+                .args(["snapshots", "--json", "--last"])
+                .env("RESTIC_REPOSITORY", &pvc_repo)
+                .env("RESTIC_PASSWORD", &cfg.restic_password)
+                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+                .output().await
+                .ok()
+                .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                .and_then(|v| v.as_array().map(|a| !a.is_empty()))
+                .unwrap_or(false);
+            if !has_snapshot {
+                errors.push(format!(
+                    "{ns}/{pvc_name}: no backup snapshot found — PVC preserved. \
+                     Run a backup first before restoring."
+                ));
+                continue;
+            }
+
             // Recreate PVC under the exact same name (restore in place) so no deployment
             // repointing is needed — catalog manifests always reference the original name.
             if let Err(e) = delete_pvc_and_wait(ns, pvc_name).await {
@@ -1205,10 +1232,12 @@ pub async fn dr_start(
                 "copyMethod": "Direct",
                 "cacheStorageClassName": "yolab-cephfs",
                 "destinationPVC": pvc_name,
+                // Run as root — same reasoning as the ReplicationSource mover: apps may
+                // write as any uid, root can read and restore ownership for all of them.
                 "moverSecurityContext": {
-                    "runAsUser": 1000,
-                    "runAsGroup": 1000,
-                    "fsGroup": 1000
+                    "runAsUser": 0,
+                    "runAsGroup": 0,
+                    "fsGroup": 0
                 }
             });
             if let Some(ref t) = restore_as_of {
@@ -1323,11 +1352,30 @@ async fn reconcile_restores() -> (Vec<String>, Vec<String>) {
             _ => continue,
         };
 
-        let successful = item["status"]["latestMoverStatus"]["result"]
+        let result = item["status"]["latestMoverStatus"]["result"]
             .as_str()
             .unwrap_or("")
-            .eq_ignore_ascii_case("successful");
-        if !successful {
+            .to_lowercase();
+
+        if result == "failed" {
+            // The restore mover failed — the PVC exists but is empty.
+            // Scale deployments back up so the app is at least running (even
+            // with empty data) rather than stuck at 0 replicas silently forever.
+            let deployments = find_deployments_for_pvc(&namespace, &pvc_name)
+                .await
+                .unwrap_or_default();
+            for deploy in &deployments {
+                let _ = scale_deployment(&namespace, deploy, 1).await;
+            }
+            delete_replication_destination_without_touching_pvc(&name, &namespace).await;
+            errors.push(format!(
+                "{namespace}/{pvc_name}: restore FAILED — app restarted with empty volume. \
+                 Check VolSync mover logs and re-run DR when storage is healthy."
+            ));
+            continue;
+        }
+
+        if result != "successful" {
             continue;
         }
 
@@ -1367,6 +1415,55 @@ pub async fn run_restore_reconciler() {
 
 // ── Background cluster backup task ───────────────────────────────────────────
 
+/// Strips K8s-assigned runtime fields from exported objects so they can be
+/// cleanly re-applied to a new or existing cluster without conflicts.
+///
+/// Fields removed:
+///   - metadata: resourceVersion, uid, creationTimestamp, generation,
+///     managedFields, selfLink, ownerReferences, finalizers
+///   - annotations: last-applied, deployment revision (set by K8s controllers)
+///   - status: entirely (always rebuilt by controllers after apply)
+///   - Service spec.clusterIP / clusterIPs: cluster-specific; a pinned value
+///     blocks re-apply if the IP is already taken or out of range
+///
+/// Service-account-token Secrets are dropped entirely — they are cluster-local
+/// credentials that cannot be re-used across clusters.
+fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    const META_DROP: &[&str] = &[
+        "resourceVersion", "uid", "creationTimestamp", "generation",
+        "managedFields", "selfLink", "ownerReferences", "finalizers",
+    ];
+    const ANN_DROP: &[&str] = &[
+        "kubectl.kubernetes.io/last-applied-configuration",
+        "deployment.kubernetes.io/revision",
+        "control-plane.alpha.kubernetes.io/leader",
+    ];
+    items.iter().filter_map(|item| {
+        let kind = item["kind"].as_str().unwrap_or("");
+        if kind == "Secret"
+            && item["type"].as_str() == Some("kubernetes.io/service-account-token")
+        {
+            return None;
+        }
+        let mut obj = item.clone();
+        if let Some(meta) = obj["metadata"].as_object_mut() {
+            for &f in META_DROP { meta.remove(f); }
+            if let Some(anns) = meta.get_mut("annotations").and_then(|a| a.as_object_mut()) {
+                for &f in ANN_DROP { anns.remove(f); }
+                if anns.is_empty() { meta.remove("annotations"); }
+            }
+        }
+        if let Some(m) = obj.as_object_mut() { m.remove("status"); }
+        if kind == "Service" {
+            if let Some(spec) = obj["spec"].as_object_mut() {
+                spec.remove("clusterIP");
+                spec.remove("clusterIPs");
+            }
+        }
+        Some(obj)
+    }).collect()
+}
+
 fn parse_capacity_bytes(s: &str) -> u64 {
     let s = s.trim();
     if let Some(n) = s.strip_suffix("Ti") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024 * 1024; }
@@ -1398,7 +1495,10 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
 
     tokio::fs::create_dir_all(&tmp_dir).await?;
 
-    // 1. etcd snapshot.
+    // 1. etcd snapshot — archived as etcd.db in this restic snapshot.
+    //    NOTE: etcd.db is NOT consumed by dr_start. It is used exclusively by
+    //    the external dr-restore.sh script, which runs before K3s/local-api are
+    //    started and restores the etcd database directly.
     let snap_name = format!("yolab-cluster-{date}");
     let snap_saved = Command::new("k3s")
         .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
@@ -1445,10 +1545,23 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
             namespaces.push(ns.to_string());
             let obj_out = Command::new("kubectl")
                 .args(["get", "deploy,svc,secret,configmap",
-                       "-n", ns, "-o", "yaml", "--ignore-not-found"])
+                       "-n", ns, "-o", "json", "--ignore-not-found"])
                 .output().await;
             if let Ok(obj) = obj_out {
-                let _ = tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), &obj.stdout).await;
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&obj.stdout) {
+                    let raw = v["items"].as_array().cloned().unwrap_or_default();
+                    let sanitized = sanitize_k8s_items_for_backup(&raw);
+                    if !sanitized.is_empty() {
+                        let list = serde_json::json!({
+                            "apiVersion": "v1",
+                            "kind": "List",
+                            "items": sanitized,
+                        });
+                        if let Ok(s) = serde_json::to_string_pretty(&list) {
+                            let _ = tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), s.as_bytes()).await;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1559,6 +1672,8 @@ fn record_cluster_backup_success() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    // Ensure the directory exists — on a brand-new install it may not yet.
+    let _ = std::fs::create_dir_all("/var/lib/yolab");
     let _ = std::fs::write(LAST_BACKUP_TS_FILE, now.to_string());
 }
 
@@ -1569,14 +1684,26 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
     // Give K3s and Ceph ~60 seconds to settle after (re)start before the first backup attempt.
     tokio::time::sleep(Duration::from_secs(60)).await;
 
-    if last_cluster_backup_age_hours() > 23
-        && !restore_in_progress().await
-        && kubectl_get_secret(MASTER_SECRET, MASTER_NS).await.is_some()
-    {
-        tracing::info!("cluster-backup: missed backup detected — running catch-up now");
-        if let Some(_guard) = ClusterBackupGuard::acquire().await {
-            if let Err(e) = do_cluster_backup().await {
-                tracing::warn!("cluster-backup catch-up: {e}");
+    if last_cluster_backup_age_hours() > 23 && !restore_in_progress().await {
+        if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
+            tracing::info!("cluster-backup: missed backup detected — running catch-up now");
+            if let Some(_guard) = ClusterBackupGuard::acquire().await {
+                let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+                if !restic_password.is_empty() {
+                    let cfg = BackupConfig {
+                        access_key_id:     data.get("access_key_id").cloned().unwrap_or_default(),
+                        secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
+                        bucket:            data.get("bucket").cloned().unwrap_or_default(),
+                        endpoint:          data.get("endpoint").cloned().unwrap_or_default(),
+                        restic_password,
+                    };
+                    let pvcs = list_user_pvcs().await.unwrap_or_default();
+                    let since = chrono::Utc::now();
+                    trigger_and_wait_volsync(&cfg, &pvcs, since).await;
+                }
+                if let Err(e) = do_cluster_backup().await {
+                    tracing::warn!("cluster-backup catch-up: {e}");
+                }
             }
         }
     }
@@ -1792,12 +1919,44 @@ pub async fn setup_namespace_backup(namespace: &str) {
     }
 }
 
+/// One-time migration: patches the independent `schedule` out of any managed
+/// ReplicationSources that still carry the old `0 3 * * *` cron trigger.
+/// After this, RSes only fire when the backup job explicitly stamps a `manual` trigger.
+async fn strip_rs_schedules() {
+    let out = match Command::new("kubectl")
+        .args(["get", "replicationsource", "-A",
+               "-l", "app.kubernetes.io/managed-by=yolab", "-o", "json"])
+        .output().await
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!({"items": []}));
+    for item in v["items"].as_array().cloned().unwrap_or_default() {
+        let name = item["metadata"]["name"].as_str().unwrap_or("");
+        let ns   = item["metadata"]["namespace"].as_str().unwrap_or("");
+        if name.is_empty() || ns.is_empty() { continue; }
+        if item["spec"]["trigger"]["schedule"].as_str().is_none() { continue; }
+        tracing::info!("backup-reconciler: {ns}/{name} — removing legacy schedule trigger");
+        let _ = Command::new("kubectl")
+            .args([
+                "patch", "replicationsource", name, "-n", ns,
+                "--type=json",
+                r#"-p=[{"op":"remove","path":"/spec/trigger/schedule"}]"#,
+            ])
+            .output().await;
+    }
+}
+
 /// Self-healing reconciler — runs hourly to catch any PVCs whose RS/secret was
 /// missed at install time (e.g. race between app deploy and local-api restart).
 /// Never overwrites a live manual trigger set by the backup job (ensure_replication_source
 /// skips PVCs where an RS already exists when trigger_now=false).
 pub async fn run_replication_source_reconciler() {
     tokio::time::sleep(Duration::from_secs(120)).await;
+    // Migrate any pre-existing RSes that still carry an independent schedule.
+    strip_rs_schedules().await;
     loop {
         if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
             let restic_password = data.get("restic_password").cloned().unwrap_or_default();
