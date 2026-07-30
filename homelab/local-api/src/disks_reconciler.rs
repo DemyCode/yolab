@@ -9,10 +9,11 @@
 ///   5. Patch CephCluster CR to match (ON = include, OFF = exclude)
 ///
 /// Division of labour with Rook:
-///   - We own: desired-state mapping (ON/OFF), CephCluster spec, osd in/out, crush weight
-///   - Rook owns: provisioning, deployment lifecycle, purge (removeOSDsIfOutAndSafeToRemove)
-///   We never touch OSD deployments or call osd purge — that eliminates the race
-///   where Rook immediately recreates a deployment we just deleted.
+///   - We own: desired-state mapping (ON/OFF), CephCluster spec, osd in/out, crush weight,
+///             final Ceph-level purge once a disk is physically gone
+///   - Rook owns: provisioning, deployment lifecycle (removeOSDsIfOutAndSafeToRemove)
+///   We call `ceph osd purge` only AFTER Rook has already deleted the deployment —
+///   never while the daemon is still running, which eliminates the EBUSY race.
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -300,13 +301,13 @@ async fn publish_local(node: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reconcile each local OSD's active state toward its desired ON/OFF.
+/// Reconcile each local OSD's active state toward its desired ON/OFF, then
+/// purge any OSDs whose disk has physically left the node and whose deployment
+/// Rook has already cleaned up.
 ///
 ///   ON  → crush_weight > 0 (set from disk size if 0) + osd in
-///   OFF → osd out (starts draining; Rook's removeOSDsIfOutAndSafeToRemove
-///         handles purge + deployment deletion once data has migrated)
-///
-/// We never touch OSD deployments or call osd purge — that's Rook's job.
+///   OFF → osd out (drains PGs); Rook's removeOSDsIfOutAndSafeToRemove deletes
+///         the deployment; we call `ceph osd purge` once the deployment is gone
 async fn reconcile_local_osds(
     node: &str,
     meta: &HashMap<String, Value>,
@@ -356,7 +357,75 @@ async fn reconcile_local_osds(
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         }
-        // reweight ≤ 0.5 + desired=OFF: already draining, Rook will purge when safe
+    }
+
+    purge_drained_osds(node, &crush_nodes, disk_to_osd).await;
+}
+
+/// Purge OSDs on this node that have been fully drained and whose Rook
+/// deployment is already gone. Safe conditions (all must hold):
+///   1. OSD is in the CRUSH tree under this node's host bucket
+///   2. Disk is no longer locally present (not in disk_to_osd)
+///   3. OSD is down + reweight ≤ 0.5 (out)
+///   4. Rook deployment is gone (no EBUSY — daemon is not running)
+///   5. `ceph osd safe-to-destroy` confirms no PG data remains
+async fn purge_drained_osds(
+    node: &str,
+    crush_nodes: &[Value],
+    disk_to_osd: &HashMap<String, i64>,
+) {
+    // OSD IDs that belong to this node's host bucket in the CRUSH tree.
+    let host_osd_ids: std::collections::HashSet<i64> = crush_nodes
+        .iter()
+        .find(|n| n["type"].as_str() == Some("host") && n["name"].as_str() == Some(node))
+        .and_then(|h| h["children"].as_array())
+        .map(|c| c.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default();
+
+    // OSD IDs whose disk is currently present on this node.
+    let active_osd_ids: std::collections::HashSet<i64> = disk_to_osd.values().copied().collect();
+
+    for n in crush_nodes {
+        if n["type"].as_str() != Some("osd") { continue; }
+        let Some(osd_id) = n["id"].as_i64() else { continue };
+        if !host_osd_ids.contains(&osd_id) { continue; }   // not this node's OSD
+        if active_osd_ids.contains(&osd_id) { continue; }  // disk still here, main loop handles it
+
+        let reweight = n["reweight"].as_f64().unwrap_or(1.0);
+        let status   = n["status"].as_str().unwrap_or("up");
+        if reweight > 0.5 || status != "down" { continue; } // not fully drained/stopped
+
+        // Rook deployment must already be gone — never call purge while daemon runs.
+        let deploy = format!("rook-ceph-osd-{osd_id}");
+        if kubectl::run(&["get", "deploy", &deploy, "-n", NS]).await.is_ok() {
+            tracing::debug!("osd.{osd_id}: deployment still exists, skipping purge (Rook will clean it)");
+            continue;
+        }
+
+        // Confirm no PG data remains before destroying the OSD record.
+        let safe = kubectl::ceph_exec(&[
+            "osd", "safe-to-destroy", &format!("osd.{osd_id}"), "-f", "json",
+        ])
+        .await
+        .ok()
+        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        .and_then(|v| {
+            v["safe_to_destroy"]
+                .as_array()
+                .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
+        })
+        .unwrap_or(false);
+
+        if !safe {
+            tracing::info!("osd.{osd_id}: deployment gone but not yet safe-to-destroy — waiting");
+            continue;
+        }
+
+        tracing::info!("osd.{osd_id}: deployment gone, out, safe-to-destroy — purging from Ceph");
+        match kubectl::ceph_exec(&["osd", "purge", &format!("osd.{osd_id}"), "--yes-i-really-mean-it"]).await {
+            Ok(_) => tracing::info!("osd.{osd_id}: purged"),
+            Err(e) => tracing::warn!("osd.{osd_id}: purge failed: {e}"),
+        }
     }
 }
 
