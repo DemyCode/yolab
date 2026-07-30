@@ -411,13 +411,7 @@ pub struct SetReplicationReq {
 }
 
 async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
-    let pod = kubectl::run(&[
-        "get", "pod", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
-        "--field-selector=status.phase=Running",
-        "-o", "jsonpath={.items[0].metadata.name}",
-    ]).await?;
-    let pod = pod.trim().to_string();
-    anyhow::ensure!(!pod.is_empty(), "no running OSD pod found");
+    let pod = kubectl::ceph_exec_pod().await?;
 
     let mon_raw = kubectl::run(&[
         "get", "cm", "-n", "rook-ceph", "rook-ceph-mon-endpoints",
@@ -619,13 +613,9 @@ pub async fn set_replication(
     let size = req.size;
     let min_size = req.min_size;
 
-    let pod = match kubectl::run(&[
-        "get", "pod", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
-        "--field-selector=status.phase=Running",
-        "-o", "jsonpath={.items[0].metadata.name}",
-    ]).await {
-        Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
-        _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "no running OSD pod"}))),
+    let pod = match kubectl::ceph_exec_pod().await {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
     };
 
     let mon_raw = kubectl::run(&[
