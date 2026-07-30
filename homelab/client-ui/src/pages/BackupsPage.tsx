@@ -455,10 +455,12 @@ function SnapshotExplorer({
   runningNamespaces,
   onBackupDone,
   disabled,
+  backupInProgress,
 }: {
   runningNamespaces: Set<string>;
   onBackupDone: () => void;
   disabled: boolean;
+  backupInProgress: boolean;
 }) {
   const [snapshots, setSnapshots] = useState<ResticSnapshot[] | null>(null);
   const [backingUp, setBackingUp] = useState(false);
@@ -479,14 +481,27 @@ function SnapshotExplorer({
 
   useEffect(() => { void load(); }, [load]);
 
+  // The backup runs in the background on the server (it outlives the HTTP request).
+  // When the global backup-in-progress flag flips from true → false, the new
+  // snapshot exists — reload the list so it appears without a manual refresh.
+  const prevBackingUp = useRef(false);
+  useEffect(() => {
+    if (prevBackingUp.current && !backupInProgress) {
+      void load();
+      onBackupDone();
+    }
+    prevBackingUp.current = backupInProgress;
+  }, [backupInProgress, load, onBackupDone]);
+
   async function handleBackupNow() {
     setBackingUp(true);
     setBackupError(null);
     try {
       const res = await fetch("/api/backups/cluster/run-now", { method: "POST" });
       if (!res.ok) throw new Error(await res.text());
-      await load();
-      onBackupDone();
+      // Backup now runs detached on the server and survives this request ending.
+      // Progress is tracked by the global backup-state poll (the "Backup in progress"
+      // banner); the effect above refreshes the snapshot list when it completes.
     } catch (e) {
       setBackupError(e instanceof Error ? e.message : "Backup failed");
     } finally {
@@ -510,7 +525,7 @@ function SnapshotExplorer({
           variant="outline"
           className="flex-shrink-0 h-8 px-3 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] disabled:opacity-40"
         >
-          {backingUp
+          {backingUp || backupInProgress
             ? <><RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />Backing up…</>
             : <><RotateCcw className="h-3 w-3 mr-1.5" />Backup Now</>}
         </Button>
@@ -724,6 +739,7 @@ export function BackupsPage() {
             runningNamespaces={runningNamespaces}
             onBackupDone={load}
             disabled={opBusy}
+            backupInProgress={opState.backing_up}
           />
         </div>
       )}
