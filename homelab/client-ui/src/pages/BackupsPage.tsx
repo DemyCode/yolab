@@ -163,17 +163,13 @@ function RestoreFlow({
     setError(null);
     setStep("restoring");
     try {
-      const res = await fetch("/api/backups/restore/from-snapshot", {
+      const res = await fetch("/api/backups/dr/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ snapshot_id: snapshot.id, namespaces: [...selected] }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as { started: string[]; errors: string[] };
-      if (data.errors.length && !data.started.length) {
-        throw new Error(data.errors.join(", "));
-      }
-      setTotal(data.started.length);
+      // Restore runs in the background on the server — poll dr/status + state for progress.
       startPolling();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
