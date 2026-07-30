@@ -426,10 +426,13 @@ pub async fn install_app(
         use futures::StreamExt;
         while let Some(ev) = apply_stream.next().await { yield ev; }
         // Must be set at install time — backup only exports labeled namespaces.
+        let ns_full = format!("yolab-{}", body.instance_name);
         let _ = tokio::process::Command::new("kubectl")
-            .args(["label", "namespace", &format!("yolab-{}", body.instance_name),
+            .args(["label", "namespace", &ns_full,
                    &format!("{LABEL_MANAGED}=true"), "--overwrite=true"])
             .output().await;
+        // Wire up VolSync ReplicationSource(s) for any PVCs this app created.
+        crate::routers::backups::setup_namespace_backup(&ns_full).await;
         let config_json = serde_json::to_string(&body.config).unwrap_or_default();
         annotate_ns(&format!("yolab-{}", body.instance_name), ANN_CONFIG, &config_json).await;
         yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));

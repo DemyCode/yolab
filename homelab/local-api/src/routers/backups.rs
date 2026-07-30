@@ -493,23 +493,36 @@ async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 
 // ── VolSync ReplicationSource ─────────────────────────────────────────────────
 
-/// `trigger_now`: also stamp a fresh `trigger.manual` value so VolSync syncs this PVC's data
-/// immediately, instead of only (re)confirming its daily schedule. Without this, "Backup Now"
-/// would create a cluster-metadata snapshot but silently leave PVC file data untouched until
-/// the next 3am UTC run — while the UI claims the snapshot is "K8s state + PVC data" right now.
+/// Ensures a ReplicationSource exists for `pvc`. When `trigger_now` is true, stamps a fresh
+/// manual trigger so VolSync starts a sync immediately.
+///
+/// VolSync RSes have NO independent schedule — they only run when the backup explicitly
+/// triggers them. This makes every backup a single coherent point-in-time: VolSync runs,
+/// completes, then the cluster snapshot is taken.
+///
+/// When `trigger_now` is false and the RS already exists, this is a no-op — the existing RS
+/// (and any in-progress manual trigger set by the backup) is left untouched.
 async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::Result<()> {
-    // Keyed by the canonical id (not the current PVC name) so that re-running this after a
-    // restore updates the same ReplicationSource in place instead of minting a duplicate
-    // under the restore-mangled name.
     let cid = canonical_pvc_id(&pvc.name);
     let rs_name = format!("volsync-{cid}");
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
-    let mut trigger = serde_json::json!({ "schedule": "0 3 * * *" });
-    if trigger_now {
-        trigger["manual"] = serde_json::Value::String(
-            chrono::Utc::now().format("now-%Y%m%d%H%M%S").to_string(),
-        );
+
+    // Self-healing path: only create if missing — never overwrite a live manual trigger.
+    if !trigger_now {
+        let exists = crate::kubectl::run(&["get", "replicationsource", &rs_name,
+                                          "-n", &pvc.namespace]).await.is_ok();
+        if exists {
+            return Ok(());
+        }
     }
+
+    let trigger = if trigger_now {
+        serde_json::json!({
+            "manual": chrono::Utc::now().format("backup-%Y%m%d%H%M%S").to_string()
+        })
+    } else {
+        serde_json::json!({})
+    };
     // copyMethod Direct: read from the live PVC without snapshotting first.
     // More reliable than Snapshot which requires a working VolumeSnapshotClass —
     // if the CSI plugin is unhealthy the snapshot never completes and the backup
@@ -543,11 +556,14 @@ async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::
     kubectl_apply(&manifest.to_string()).await
 }
 
-/// Polls all ReplicationSources until every PVC's last sync reports Successful,
-/// or the deadline passes. Returns immediately if there are no PVCs to wait on.
-/// VolSync jobs are asynchronous — without this, "Backup Now" would return
-/// before PVC filesystem data has actually been written to B2.
-async fn wait_for_volsync_sync(pvcs: &[PvcInfo], timeout_secs: u64) -> anyhow::Result<()> {
+/// Polls until every PVC's ReplicationSource reports Successful with a `lastSyncTime`
+/// newer than `since` (the moment we triggered this backup session). The `since` guard
+/// prevents a stale Successful from a previous session from satisfying the wait.
+async fn wait_for_volsync_sync(
+    pvcs: &[PvcInfo],
+    since: chrono::DateTime<chrono::Utc>,
+    timeout_secs: u64,
+) -> anyhow::Result<()> {
     if pvcs.is_empty() {
         return Ok(());
     }
@@ -570,28 +586,29 @@ async fn wait_for_volsync_sync(pvcs: &[PvcInfo], timeout_secs: u64) -> anyhow::R
         for pvc in pvcs {
             let cid = canonical_pvc_id(&pvc.name);
             let rs_name = format!("volsync-{cid}");
-            let status = v["items"]
-                .as_array()
-                .and_then(|items| {
-                    items.iter().find(|i| {
-                        i["metadata"]["name"].as_str() == Some(&rs_name)
-                            && i["metadata"]["namespace"].as_str() == Some(&pvc.namespace)
-                    })
+            let item = v["items"].as_array().and_then(|items| {
+                items.iter().find(|i| {
+                    i["metadata"]["name"].as_str() == Some(&rs_name)
+                        && i["metadata"]["namespace"].as_str() == Some(&pvc.namespace)
                 })
-                .and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str());
+            });
+            let result = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str());
+            let synced_after_trigger = item
+                .and_then(|i| i["status"]["lastSyncTime"].as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc) >= since)
+                .unwrap_or(false);
 
-            match status {
-                Some("Successful") => {
-                    // This PVC's backup completed.
-                }
-                Some(s) => {
-                    all_ok = false;
-                    pending.push(format!("{}/{}: {s}", pvc.namespace, pvc.name));
-                }
-                None => {
-                    all_ok = false;
-                    pending.push(format!("{}/{}: waiting…", pvc.namespace, pvc.name));
-                }
+            if result == Some("Successful") && synced_after_trigger {
+                // This PVC's backup completed in this session.
+            } else {
+                all_ok = false;
+                let label = format!("{}/{}", pvc.namespace, pvc.name);
+                pending.push(match result {
+                    Some(s) if !synced_after_trigger => format!("{label}: {s} (previous session)"),
+                    Some(s) => format!("{label}: {s}"),
+                    None    => format!("{label}: waiting…"),
+                });
             }
         }
 
@@ -1586,9 +1603,43 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
             tracing::warn!("cluster-backup: skipping scheduled run — a backup is already running");
             continue;
         };
+        // Trigger VolSync for all PVCs before capturing the cluster snapshot so
+        // both K8s state and PVC filesystem data come from the same session.
+        if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
+            let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+            if !restic_password.is_empty() {
+                let cfg = BackupConfig {
+                    access_key_id:     data.get("access_key_id").cloned().unwrap_or_default(),
+                    secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
+                    bucket:            data.get("bucket").cloned().unwrap_or_default(),
+                    endpoint:          data.get("endpoint").cloned().unwrap_or_default(),
+                    restic_password,
+                };
+                let pvcs = list_user_pvcs().await.unwrap_or_default();
+                let since = chrono::Utc::now();
+                trigger_and_wait_volsync(&cfg, &pvcs, since).await;
+            }
+        }
         if let Err(e) = do_cluster_backup().await {
             tracing::warn!("cluster-backup: {e}");
         }
+    }
+}
+
+/// Triggers VolSync for every user PVC and waits for all to finish.
+/// `since` is set just before triggering — prevents accepting a stale
+/// Successful from a previous session as completion proof.
+async fn trigger_and_wait_volsync(
+    cfg: &BackupConfig,
+    pvcs: &[PvcInfo],
+    since: chrono::DateTime<chrono::Utc>,
+) {
+    for pvc in pvcs {
+        let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await;
+        let _ = ensure_replication_source(pvc, true).await;
+    }
+    if let Err(e) = wait_for_volsync_sync(pvcs, since, 1800).await {
+        tracing::warn!("volsync wait: {e} — proceeding with cluster backup anyway");
     }
 }
 
@@ -1606,21 +1657,11 @@ pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_
     let Some(_guard) = ClusterBackupGuard::acquire().await else {
         return Err(anyhow::anyhow!("A backup is already running.").into());
     };
-    let mut pvcs: Vec<PvcInfo> = Vec::new();
     if let Some((url, token)) = ye_creds(&state.config) {
         let cfg = ensure_master_config(&url, &token).await?;
-        pvcs = list_user_pvcs().await.unwrap_or_default();
-        for pvc in &pvcs {
-            let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
-            let _ = ensure_replication_source(pvc, true).await;
-        }
-    }
-    // Wait up to 30 minutes for PVC filesystem data to be written to B2
-    // before capturing the cluster-metadata snapshot.
-    if let Err(e) = wait_for_volsync_sync(&pvcs, 1800).await {
-        // Non-fatal: the cluster backup still captures K8s state; PVC data
-        // will be uploaded on the next successful VolSync sync.
-        tracing::warn!("run_backup_now: {e} — proceeding with cluster backup anyway");
+        let pvcs = list_user_pvcs().await.unwrap_or_default();
+        let since = chrono::Utc::now();
+        trigger_and_wait_volsync(&cfg, &pvcs, since).await;
     }
     let date = do_cluster_backup().await?;
     Ok(Json(serde_json::json!({ "ok": true, "snapshot": date })))
@@ -1730,6 +1771,31 @@ pub async fn snapshot_catalog(
 /// automatically within one reconcile cycle (≤10 min) after the master
 /// backup config exists. The apply is idempotent so re-running over already
 /// configured PVCs is harmless.
+/// Creates the restic secret and ReplicationSource for a single namespace at
+/// install time. Called by apps.rs immediately after the namespace is created.
+/// `namespace` is the raw app namespace (e.g. "yolab-gitea"), not the instance name.
+pub async fn setup_namespace_backup(namespace: &str) {
+    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else { return };
+    let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+    if restic_password.is_empty() { return }
+    let cfg = BackupConfig {
+        access_key_id:     data.get("access_key_id").cloned().unwrap_or_default(),
+        secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
+        bucket:            data.get("bucket").cloned().unwrap_or_default(),
+        endpoint:          data.get("endpoint").cloned().unwrap_or_default(),
+        restic_password,
+    };
+    let Ok(pvcs) = list_user_pvcs().await else { return };
+    for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
+        let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
+        let _ = ensure_replication_source(&pvc, false).await;
+    }
+}
+
+/// Self-healing reconciler — runs hourly to catch any PVCs whose RS/secret was
+/// missed at install time (e.g. race between app deploy and local-api restart).
+/// Never overwrites a live manual trigger set by the backup job (ensure_replication_source
+/// skips PVCs where an RS already exists when trigger_now=false).
 pub async fn run_replication_source_reconciler() {
     tokio::time::sleep(Duration::from_secs(120)).await;
     loop {
@@ -1755,7 +1821,7 @@ pub async fn run_replication_source_reconciler() {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(600)).await;
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     }
 }
 
