@@ -677,10 +677,7 @@ async fn patch_cephcluster_all(node_devices: &[(String, Vec<String>)]) -> Result
         return Ok(());
     }
 
-    let patch = json!({"spec": {
-        "storage": {"nodes": desired},
-        "removeOSDsIfOutAndSafeToRemove": true,
-    }}).to_string();
+    let patch = json!({"spec": {"storage": {"nodes": desired}}}).to_string();
     for attempt in 0..5u32 {
         match kubectl::run(&[
             "patch", "cephcluster", CLUSTER, "-n", NS, "--type", "merge", "-p", &patch,
