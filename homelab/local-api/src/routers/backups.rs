@@ -1781,17 +1781,38 @@ pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_
     if volsync_backup_in_progress().await {
         return Err(anyhow::anyhow!("VolSync is already backing up PVC data — try again once it finishes.").into());
     }
-    let Some(_guard) = ClusterBackupGuard::acquire().await else {
+    let Some(guard) = ClusterBackupGuard::acquire().await else {
         return Err(anyhow::anyhow!("A backup is already running.").into());
     };
-    if let Some((url, token)) = ye_creds(&state.config) {
-        let cfg = ensure_master_config(&url, &token).await?;
-        let pvcs = list_user_pvcs().await.unwrap_or_default();
-        let since = chrono::Utc::now();
-        trigger_and_wait_volsync(&cfg, &pvcs, since).await;
-    }
-    let date = do_cluster_backup().await?;
-    Ok(Json(serde_json::json!({ "ok": true, "snapshot": date })))
+    let creds = ye_creds(&state.config);
+
+    // Run the backup in a detached task so it survives the HTTP request ending.
+    // A manual backup takes minutes (VolSync sync + cluster snapshot). If we did
+    // this work inline, a gateway/proxy timeout (~60s) or the user navigating away
+    // would cancel the handler future at its next await point, drop the guard, and
+    // abandon the backup *after* VolSync had already run — leaving PVC data backed
+    // up but no cluster snapshot, and nothing in the backup list. The guard is moved
+    // into the task so the cluster-wide lock is held for the real duration of the
+    // work, not the lifetime of the request. The frontend polls /api/backups/state.
+    tokio::spawn(async move {
+        let _guard = guard; // released only when this task finishes
+        if let Some((url, token)) = creds {
+            match ensure_master_config(&url, &token).await {
+                Ok(cfg) => {
+                    let pvcs = list_user_pvcs().await.unwrap_or_default();
+                    let since = chrono::Utc::now();
+                    trigger_and_wait_volsync(&cfg, &pvcs, since).await;
+                }
+                Err(e) => tracing::warn!("run_backup_now: master config: {e}"),
+            }
+        }
+        match do_cluster_backup().await {
+            Ok(date) => tracing::info!("run_backup_now: cluster snapshot complete ({date})"),
+            Err(e)   => tracing::warn!("run_backup_now: cluster backup failed: {e}"),
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "ok": true, "started": true })))
 }
 
 /// GET /api/backups/snapshots — list available cluster-backup restic snapshots.
