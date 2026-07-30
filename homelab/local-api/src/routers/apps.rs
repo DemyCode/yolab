@@ -425,6 +425,11 @@ pub async fn install_app(
         tokio::pin!(apply_stream);
         use futures::StreamExt;
         while let Some(ev) = apply_stream.next().await { yield ev; }
+        // Must be set at install time — backup only exports labeled namespaces.
+        let _ = tokio::process::Command::new("kubectl")
+            .args(["label", "namespace", &format!("yolab-{}", body.instance_name),
+                   &format!("{LABEL_MANAGED}=true"), "--overwrite=true"])
+            .output().await;
         let config_json = serde_json::to_string(&body.config).unwrap_or_default();
         annotate_ns(&format!("yolab-{}", body.instance_name), ANN_CONFIG, &config_json).await;
         yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));

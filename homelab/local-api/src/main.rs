@@ -83,7 +83,6 @@ async fn main() {
         .route("/api/backups/snapshots", get(backups::list_snapshots))
         .route("/api/backups/cluster/run-now", post(backups::run_backup_now))
         .route("/api/backups/snapshots/:id/catalog", get(backups::snapshot_catalog))
-        .route("/api/backups/restore/from-snapshot", post(backups::restore_from_snapshot))
         // Disks
         .route("/api/disks", get(disks::list_disks))
         .route("/api/disks/:node/:id", axum::routing::put(disks::set_disk_state))
