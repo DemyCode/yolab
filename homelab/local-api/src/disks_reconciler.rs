@@ -363,25 +363,52 @@ async fn reconcile_local_osds(
         }
     }
 
-    // Fallback: activate any OSD under this node's CRUSH host whose osd_id we
-    // couldn't resolve via bluestore header (handled set above). These are OSDs
-    // that Rook provisioned and placed in CRUSH but whose UUID we can't read back
-    // (e.g. USB/external disks, or a failed bluestore read). Since we don't know
-    // which disk_id maps to this OSD we can only activate (not deactivate) here.
+    // Fallback: handle OSDs under this node's CRUSH host whose osd_id we couldn't
+    // resolve via bluestore header (e.g. USB/external disks). We use disk size as
+    // a proxy to match unresolved disks to unresolved OSD IDs (Ceph's `kb` field
+    // vs lsblk's size_bytes; within 10% is treated as the same device).
     let host_children: Vec<i64> = crush_nodes.iter()
         .find(|n| n["type"].as_str() == Some("host") && n["name"].as_str() == Some(node))
         .and_then(|h| h["children"].as_array())
         .map(|c| c.iter().filter_map(|v| v.as_i64().filter(|&id| id >= 0)).collect())
         .unwrap_or_default();
 
+    // Collect unresolved disks: (disk_id, desired_state, size_bytes)
+    let unresolved_disks: Vec<(String, String, u64)> = meta
+        .iter()
+        .filter(|(_, m)| m["osd_id"].is_null() && m["is_our_osd"].as_bool().unwrap_or(false))
+        .map(|(disk_id, m)| {
+            let key = format!("{node}--{disk_id}");
+            let want = desired.get(&key).cloned().unwrap_or_else(|| "USING".into());
+            (disk_id.clone(), want, m["size_bytes"].as_u64().unwrap_or(0))
+        })
+        .collect();
+
     for osd_id in host_children {
         if handled.contains(&osd_id) { continue; }
         let (crush_weight, reweight, kb) = state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
-        if crush_weight == 0.0 && reweight > 0.5 && kb > 0 {
-            let osd = format!("osd.{osd_id}");
-            let weight = weight_tib_from(kb, 0);
-            tracing::info!("{osd}: node={node}, crush_weight=0, osd_id unresolved — activating (weight={weight:.5})");
-            let _ = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")]).await;
+        let osd_bytes = kb * 1024; // Ceph kb = kibibytes
+        let osd = format!("osd.{osd_id}");
+
+        // Try to match this OSD to a disk by size (within 10%)
+        let matched = unresolved_disks.iter().find(|(_, _, disk_bytes)| {
+            *disk_bytes > 0 && osd_bytes > 0 && {
+                let ratio = *disk_bytes as f64 / osd_bytes as f64;
+                ratio > 0.9 && ratio < 1.1
+            }
+        });
+
+        let want_on = matched.map(|(_, state, _)| state != "OFF").unwrap_or(true);
+
+        if want_on {
+            if crush_weight == 0.0 && reweight > 0.5 && kb > 0 {
+                let weight = weight_tib_from(kb, 0);
+                tracing::info!("{osd}: node={node}, crush_weight=0, osd_id unresolved — activating (weight={weight:.5})");
+                let _ = kubectl::ceph_exec(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")]).await;
+            }
+        } else if reweight > 0.5 {
+            tracing::info!("{osd}: node={node}, osd_id unresolved (size match), desired=OFF — marking out");
+            let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         }
     }
 }
