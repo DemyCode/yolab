@@ -165,7 +165,7 @@ pub async fn get_nodes() -> Result<Vec<Value>> {
 
 const CEPH_NS: &str = "rook-ceph";
 
-async fn ceph_exec_pod() -> Result<String> {
+pub async fn ceph_exec_pod() -> Result<String> {
     // Get all Running-phase OSD pods as JSON and pick the first one where the
     // Ready condition is True. This skips pods in CrashLoopBackOff, which have
     // phase=Running at the pod level but no ready containers to exec into.
