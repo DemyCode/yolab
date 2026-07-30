@@ -110,7 +110,7 @@ function OsdActions({ osd, onRefresh }: { osd: OsdInfo; onRefresh: () => void })
   );
 }
 
-function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onChanged: () => void }) {
+function DiskRow({ node, disk, osd, onChanged }: { node: string; disk: DiskInfo; osd?: OsdInfo; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [eraseConfirm, setEraseConfirm] = useState(false);
@@ -118,7 +118,7 @@ function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onCh
 
   async function toggle() {
     const next = disk.desired === "USING" ? "OFF" : "USING";
-    if (next === "OFF" && !confirm) { setConfirm(true); return; }
+    if (next === "OFF" && !confirm && disk.connected) { setConfirm(true); return; }
     setBusy(true); setErr(null); setConfirm(false);
     try {
       const r = await fetch(`/api/disks/${node}/${disk.id}`, {
@@ -204,6 +204,41 @@ function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onCh
     );
   }
 
+  // Disconnected disk (in config CM but not visible in status)
+  if (!disk.connected) {
+    return (
+      <div className="flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0 opacity-60">
+        <div className="flex-shrink-0">
+          <HardDrive className="h-4 w-4 text-[#3f3f46]" strokeWidth={1.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-[#71717a] truncate font-mono text-xs">{disk.id}</p>
+            <Badge variant="muted" className="text-xs shrink-0">Offline</Badge>
+          </div>
+          <p className="text-xs text-[#3f3f46] mt-0.5">
+            Not connected · {isUsing ? "Will re-join when plugged in" : "Set to off"}
+          </p>
+        </div>
+        <button
+          onClick={() => void toggle()}
+          disabled={busy}
+          className={cn(
+            "flex-shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+            isUsing ? "bg-[#52525b]" : "bg-[#3f3f46]",
+            busy && "opacity-50 cursor-not-allowed",
+          )}
+        >
+          <span className={cn(
+            "inline-block h-3.5 w-3.5 rounded-full bg-white/60 shadow transition-transform",
+            isUsing ? "translate-x-5" : "translate-x-0.5",
+          )} />
+        </button>
+        {err && <p className="text-xs text-[#f87171] ml-2">{err}</p>}
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-4 py-3 px-4 border-b border-[#27272a]/50 last:border-0">
       <div className="flex-shrink-0">
@@ -213,29 +248,42 @@ function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onCh
         }
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-[#fafafa] truncate">
-          {disk.model || disk.device}
-        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-sm text-[#fafafa] truncate">
+            {disk.model || disk.device}
+          </p>
+          {disk.is_our_osd && disk.osd_id !== null && (
+            <span className="text-xs font-mono text-[#a78bfa] shrink-0">osd.{disk.osd_id}</span>
+          )}
+        </div>
         <p className="text-xs text-[#52525b] mt-0.5">
           {fmtSize(disk.size_bytes)}
           {disk.is_loop && <span className="ml-1.5">· System disk</span>}
-          {disk.is_our_osd && !disk.is_loop && (
-            <span className="ml-1.5 text-[#4ade80]">
-              · Active OSD{disk.osd_id !== null ? ` (osd.${disk.osd_id})` : ""}
-            </span>
+          {disk.is_our_osd && !disk.is_loop && !osd && (
+            <span className="ml-1.5 text-[#4ade80]">· Active OSD</span>
           )}
           {!disk.is_our_osd && !disk.is_loop && disk.desired === "USING" && (
-            <span className="ml-1.5 text-[#fbbf24]">· Pending OSD provisioning</span>
+            <span className="ml-1.5 text-[#fbbf24]">· Pending provisioning</span>
           )}
           {!disk.is_our_osd && !disk.is_loop && disk.desired === "OFF" && (
-            <span className="ml-1.5 text-[#71717a]">· Removed from cluster</span>
+            <span className="ml-1.5">· Removed from cluster</span>
           )}
         </p>
       </div>
 
+      {/* Fused OSD stats — fill bar + used/free */}
+      {osd && (
+        <div className="hidden sm:flex flex-col items-end gap-0.5 shrink-0 min-w-[140px]">
+          <FillBar pct={osd.utilization} />
+          <p className="text-xs text-[#52525b] tabular-nums">
+            {fmtBytes(osd.used_bytes)} / {fmtBytes(osd.avail_bytes)}
+          </p>
+        </div>
+      )}
+
       {confirm && (
-        <div className="flex items-center gap-1.5 text-xs text-[#fbbf24]">
-          <span>Remove disk from cluster? Data will be migrated first.</span>
+        <div className="flex items-center gap-1.5 text-xs text-[#fbbf24] shrink-0">
+          <span className="hidden sm:inline">Remove disk? Data migrates first.</span>
           <button
             onClick={() => void toggle()}
             disabled={busy}
@@ -274,7 +322,7 @@ function DiskRow({ node, disk, onChanged }: { node: string; disk: DiskInfo; onCh
   );
 }
 
-function ManageDisksPanel() {
+function ManageDisksPanel({ osds }: { osds: OsdInfo[] }) {
   const [disks, setDisks] = useState<Record<string, DiskInfo[]> | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -290,6 +338,11 @@ function ManageDisksPanel() {
   useEffect(() => { load(); }, []);
 
   const nodes = disks ? Object.keys(disks).sort() : [];
+
+  function getOsd(disk: DiskInfo): OsdInfo | undefined {
+    if (disk.osd_id === null) return undefined;
+    return osds.find(o => o.id === disk.osd_id);
+  }
 
   return (
     <Card>
@@ -322,7 +375,7 @@ function ManageDisksPanel() {
               {node}
             </p>
             {(disks![node] ?? []).map(disk => (
-              <DiskRow key={disk.id} node={node} disk={disk} onChanged={load} />
+              <DiskRow key={disk.id} node={node} disk={disk} osd={getOsd(disk)} onChanged={load} />
             ))}
           </div>
         ))}
@@ -958,7 +1011,7 @@ export function StoragePage() {
             ))}
           </div>
 
-          <ManageDisksPanel />
+          <ManageDisksPanel osds={detail.osds} />
 
           <StorageModePanel
             policyData={policyData}

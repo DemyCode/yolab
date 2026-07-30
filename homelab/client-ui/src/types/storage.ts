@@ -52,6 +52,7 @@ export interface DiskInfo {
   foreign_ceph: boolean;
   osd_id: number | null;
   desired: "USING" | "OFF";
+  connected: boolean;
 }
 
 export interface StoragePolicy {
