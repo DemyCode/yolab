@@ -260,6 +260,10 @@ pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serd
     Ok(Json(serde_json::json!({
         "backing_up": any_backup_in_progress().await,
         "restoring": restore_in_progress().await,
+        // Summary of the last finished backup: { status: success|partial|failed,
+        // finished_at, stale_pvcs[], error }. null until the first backup completes.
+        // Lets the UI show "last backup had issues" instead of a silent idle spinner.
+        "last_backup": read_backup_result(),
     })))
 }
 
@@ -1151,15 +1155,24 @@ pub async fn dr_start(
             Ok(df_raw) => {
                 if let Ok(df) = serde_json::from_str::<serde_json::Value>(&df_raw) {
                     let avail = df["stats"]["total_avail_bytes"].as_u64().unwrap_or(u64::MAX);
-                    let need  = total_pvc_bytes * 6 / 5;
-                    if avail < need {
+                    // An in-place restore deletes each existing PVC before recreating it, so
+                    // the space those PVCs currently occupy will be reclaimed and is effectively
+                    // available to us. Without crediting it back, a machine that is "full" only
+                    // because it already holds this very data would refuse to restore over itself.
+                    let reclaimable = reclaimable_pvc_bytes(&namespaces).await;
+                    let effective_avail = avail.saturating_add(reclaimable);
+                    let need = total_pvc_bytes * 6 / 5;
+                    if effective_avail < need {
                         return Err(anyhow::anyhow!(
-                            "insufficient storage: {avail} bytes available, ~{need} bytes needed \
+                            "insufficient storage: {avail} bytes free (+{reclaimable} reclaimable \
+                             from PVCs being replaced), ~{need} bytes needed \
                              ({total_pvc_bytes} bytes of PVC data + 20% headroom). \
                              Add more disks or reduce replication before restoring."
                         ).into());
                     }
-                    tracing::info!("dr: space pre-flight ok — {avail} avail, {total_pvc_bytes} needed");
+                    tracing::info!(
+                        "dr: space pre-flight ok — {avail} free + {reclaimable} reclaimable, {need} needed"
+                    );
                 }
             }
             Err(e) => tracing::warn!("dr: space pre-flight skipped (ceph unavailable: {e})"),
@@ -1558,6 +1571,30 @@ fn parse_capacity_bytes(s: &str) -> u64 {
     s.parse::<u64>().unwrap_or(0)
 }
 
+/// Sums the requested capacity of existing app PVCs in the given namespaces — the
+/// space an in-place restore will free (each PVC is deleted before being recreated)
+/// and can therefore reuse. VolSync's own `volsync-*` cache PVCs are excluded, same
+/// as everywhere else, since they aren't part of the restored app data.
+async fn reclaimable_pvc_bytes(namespaces: &[String]) -> u64 {
+    let mut total = 0u64;
+    for ns in namespaces {
+        let out = Command::new("kubectl")
+            .args(["get", "pvc", "-n", ns, "-o", "json"])
+            .output().await;
+        let pvcs = out.ok()
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|v| v["items"].as_array().cloned())
+            .unwrap_or_default();
+        for item in pvcs {
+            let name = item["metadata"]["name"].as_str().unwrap_or("");
+            if name.starts_with("volsync-") { continue; }
+            let cap = item["spec"]["resources"]["requests"]["storage"].as_str().unwrap_or("0");
+            total = total.saturating_add(parse_capacity_bytes(cap));
+        }
+    }
+    total
+}
+
 /// Core backup logic — called by both the daily scheduler and the manual trigger.
 async fn do_cluster_backup() -> anyhow::Result<String> {
     let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
@@ -1762,6 +1799,33 @@ fn record_cluster_backup_success() {
     let _ = std::fs::write(LAST_BACKUP_TS_FILE, now.to_string());
 }
 
+const LAST_BACKUP_RESULT_FILE: &str = "/var/lib/yolab/last-backup-result.json";
+
+/// Persists a machine-readable summary of the most recent backup attempt so the UI
+/// can distinguish "fully succeeded" from "completed but some volumes were stale"
+/// from "failed" — instead of a spinner silently flipping back to idle. Read by
+/// GET /api/backups/state; written at the end of every manual/scheduled backup.
+///
+/// `status` is one of: "success", "partial", "failed".
+fn record_backup_result(status: &str, stale_pvcs: &[String], error: Option<&str>) {
+    let _ = std::fs::create_dir_all("/var/lib/yolab");
+    let now = chrono::Utc::now().to_rfc3339();
+    let payload = serde_json::json!({
+        "status": status,
+        "finished_at": now,
+        "stale_pvcs": stale_pvcs,
+        "error": error,
+    });
+    let _ = std::fs::write(LAST_BACKUP_RESULT_FILE, payload.to_string());
+}
+
+fn read_backup_result() -> serde_json::Value {
+    std::fs::read_to_string(LAST_BACKUP_RESULT_FILE)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!(null))
+}
+
 /// Daily scheduler — sleeps until 02:00 UTC then calls do_cluster_backup.
 /// On startup, immediately runs a catch-up backup if the last one was >23 hours ago,
 /// so a node coming back after extended downtime does not wait another full day.
@@ -1784,10 +1848,18 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
                     };
                     let pvcs = list_user_pvcs().await.unwrap_or_default();
                     let since = chrono::Utc::now();
-                    trigger_and_wait_volsync(&cfg, &pvcs, since).await;
-                }
-                if let Err(e) = do_cluster_backup().await {
-                    tracing::warn!("cluster-backup catch-up: {e}");
+                    let stale = trigger_and_wait_volsync(&cfg, &pvcs, since).await;
+                    match do_cluster_backup().await {
+                        Ok(_) if stale.is_empty() => record_backup_result("success", &[], None),
+                        Ok(_) => {
+                            tracing::warn!("cluster-backup catch-up: partial — stale volumes: {stale:?}");
+                            record_backup_result("partial", &stale, None);
+                        }
+                        Err(e) => {
+                            tracing::warn!("cluster-backup catch-up: {e}");
+                            record_backup_result("failed", &stale, Some(&e.to_string()));
+                        }
+                    }
                 }
             }
         }
@@ -1817,6 +1889,7 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
         };
         // Trigger VolSync for all PVCs before capturing the cluster snapshot so
         // both K8s state and PVC filesystem data come from the same session.
+        let mut stale: Vec<String> = Vec::new();
         if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
             let restic_password = data.get("restic_password").cloned().unwrap_or_default();
             if !restic_password.is_empty() {
@@ -1829,11 +1902,19 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
                 };
                 let pvcs = list_user_pvcs().await.unwrap_or_default();
                 let since = chrono::Utc::now();
-                trigger_and_wait_volsync(&cfg, &pvcs, since).await;
+                stale = trigger_and_wait_volsync(&cfg, &pvcs, since).await;
             }
         }
-        if let Err(e) = do_cluster_backup().await {
-            tracing::warn!("cluster-backup: {e}");
+        match do_cluster_backup().await {
+            Ok(_) if stale.is_empty() => record_backup_result("success", &[], None),
+            Ok(_) => {
+                tracing::warn!("cluster-backup: partial — stale volumes: {stale:?}");
+                record_backup_result("partial", &stale, None);
+            }
+            Err(e) => {
+                tracing::warn!("cluster-backup: {e}");
+                record_backup_result("failed", &stale, Some(&e.to_string()));
+            }
         }
     }
 }
@@ -1841,19 +1922,61 @@ pub async fn run_cluster_backup(_config: Arc<Config>) {
 /// Triggers VolSync for every user PVC and waits for all to finish.
 /// `since` is set just before triggering — prevents accepting a stale
 /// Successful from a previous session as completion proof.
+///
+/// Returns the list of PVCs (`namespace/name`) that did NOT reach a fresh
+/// Successful within the timeout. An empty list means every volume backed up
+/// cleanly; a non-empty list is surfaced to the user as a "partial backup" so
+/// stale-but-not-lost data never hides behind a green checkmark.
 async fn trigger_and_wait_volsync(
     cfg: &BackupConfig,
     pvcs: &[PvcInfo],
     since: chrono::DateTime<chrono::Utc>,
-) {
+) -> Vec<String> {
     for pvc in pvcs {
         annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await;
         let _ = ensure_replication_source(pvc, true).await;
     }
-    if let Err(e) = wait_for_volsync_sync(pvcs, since, 1800).await {
-        tracing::warn!("volsync wait: {e} — proceeding with cluster backup anyway");
+    match wait_for_volsync_sync(pvcs, since, 1800).await {
+        Ok(()) => Vec::new(),
+        Err(e) => {
+            tracing::warn!("volsync wait: {e} — proceeding with cluster backup anyway");
+            unsynced_pvcs(pvcs, since).await
+        }
     }
+}
+
+/// Re-checks each PVC's ReplicationSource and returns those that have not reported
+/// a Successful sync newer than `since`. Used to build the "partial backup" report
+/// when the wait loop times out.
+async fn unsynced_pvcs(pvcs: &[PvcInfo], since: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    let rs_out = Command::new("kubectl")
+        .args(["get", "replicationsource", "-A", "-o", "json"])
+        .output().await;
+    let v: serde_json::Value = rs_out.ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or(serde_json::json!({"items": []}));
+    let mut stale = Vec::new();
+    for pvc in pvcs {
+        let rs_name = format!("volsync-{}", canonical_pvc_id(&pvc.name));
+        let item = v["items"].as_array().and_then(|items| {
+            items.iter().find(|i| {
+                i["metadata"]["name"].as_str() == Some(&rs_name)
+                    && i["metadata"]["namespace"].as_str() == Some(&pvc.namespace)
+            })
+        });
+        let ok = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str())
+            == Some("Successful")
+            && item
+                .and_then(|i| i["status"]["lastSyncTime"].as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc) >= since)
+                .unwrap_or(false);
+        if !ok {
+            stale.push(format!("{}/{}", pvc.namespace, pvc.name));
+        }
+    }
+    stale
 }
 
 /// POST /api/backups/cluster/run-now — manual trigger.
@@ -1882,19 +2005,31 @@ pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_
     // work, not the lifetime of the request. The frontend polls /api/backups/state.
     tokio::spawn(async move {
         let _guard = guard; // released only when this task finishes
+        let mut stale: Vec<String> = Vec::new();
         if let Some((url, token)) = creds {
             match ensure_master_config(&url, &token).await {
                 Ok(cfg) => {
                     let pvcs = list_user_pvcs().await.unwrap_or_default();
                     let since = chrono::Utc::now();
-                    trigger_and_wait_volsync(&cfg, &pvcs, since).await;
+                    stale = trigger_and_wait_volsync(&cfg, &pvcs, since).await;
                 }
                 Err(e) => tracing::warn!("run_backup_now: master config: {e}"),
             }
         }
         match do_cluster_backup().await {
-            Ok(date) => tracing::info!("run_backup_now: cluster snapshot complete ({date})"),
-            Err(e)   => tracing::warn!("run_backup_now: cluster backup failed: {e}"),
+            Ok(date) => {
+                tracing::info!("run_backup_now: cluster snapshot complete ({date})");
+                if stale.is_empty() {
+                    record_backup_result("success", &[], None);
+                } else {
+                    tracing::warn!("run_backup_now: partial — stale volumes: {stale:?}");
+                    record_backup_result("partial", &stale, None);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("run_backup_now: cluster backup failed: {e}");
+                record_backup_result("failed", &stale, Some(&e.to_string()));
+            }
         }
     });
 
