@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Database, RefreshCw, CheckCircle, AlertCircle,
-  AlertTriangle, ChevronDown, ChevronRight, RotateCcw,
+  AlertTriangle, ChevronDown, ChevronRight, RotateCcw, KeyRound, Copy,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -62,6 +62,11 @@ interface OperationState {
   backing_up: boolean;
   restoring: boolean;
   last_backup?: LastBackupResult | null;
+}
+
+interface RecoveryKeyResponse {
+  configured: boolean;
+  recovery_key?: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -568,6 +573,95 @@ function SnapshotExplorer({
   );
 }
 
+// ── Recovery key overlay ──────────────────────────────────────────────────────
+//
+// The restic encryption password is generated locally and is never sent to
+// yolab-external — that's what guarantees yolab-external can never read your data,
+// even with full account access. The tradeoff: this key is the ONLY way to decrypt
+// your B2 backups if this machine is lost, so it must be shown to the user and
+// explicitly saved somewhere durable (password manager, printed copy, etc).
+//
+// `mandatory` controls whether it can be dismissed without acknowledging — true
+// right after enabling backups (first and most important viewing), false when
+// reopened later via "View recovery key" (already presumably saved once).
+function RecoveryKeyOverlay({
+  recoveryKey,
+  mandatory,
+  onClose,
+}: {
+  recoveryKey: string;
+  mandatory: boolean;
+  onClose: () => void;
+}) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(recoveryKey);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard unavailable — user can still select-and-copy */ }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-[#09090b]/95 backdrop-blur-sm flex items-center justify-center p-6">
+      <div className="max-w-lg w-full border border-[#3f3f46] rounded-lg bg-[#0f0f11] p-6 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0 bg-[#2d2a1a]">
+            <KeyRound className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.75} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-[#fafafa]">Your backup recovery key</p>
+            <p className="text-xs text-[#a1a1aa] mt-1">
+              This is the only way to decrypt your backups if this machine is lost or destroyed.
+              YoLab does not store a copy anywhere else. Save it now in a password manager or
+              print it — without it, your backups on Backblaze B2 are permanently unreadable.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-sm font-mono text-[#fafafa] bg-[#18181b] border border-[#3f3f46] rounded px-3 py-2 break-all select-all">
+            {recoveryKey}
+          </code>
+          <Button
+            onClick={handleCopy}
+            variant="outline"
+            className="flex-shrink-0 h-9 px-3 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa]"
+          >
+            {copied ? <CheckCircle className="h-3.5 w-3.5 text-[#4ade80]" /> : <Copy className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+
+        {mandatory && (
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              onChange={() => setAcknowledged(a => !a)}
+              className="mt-0.5 h-4 w-4 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa]"
+            />
+            <span className="text-xs text-[#a1a1aa]">
+              I've saved this recovery key somewhere safe and durable.
+            </span>
+          </label>
+        )}
+
+        <div className="flex justify-end">
+          <Button
+            onClick={onClose}
+            disabled={mandatory && !acknowledged}
+            className="h-8 px-4 text-xs bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium disabled:opacity-40"
+          >
+            {mandatory ? "I've saved it — continue" : "Close"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Enable card ───────────────────────────────────────────────────────────────
 
 function EnableCard({ onEnable, disabled }: { onEnable: () => Promise<void>; disabled: boolean }) {
@@ -667,6 +761,18 @@ export function BackupsPage() {
   const [lostCount, setLostCount]       = useState(0);
   const [loading, setLoading]           = useState(true);
   const [opState, setOpState]           = useState<OperationState>({ backing_up: false, restoring: false });
+  const [recoveryKey, setRecoveryKey]   = useState<string | null>(null);
+  const [recoveryMandatory, setRecoveryMandatory] = useState(false);
+
+  async function showRecoveryKey(mandatory: boolean) {
+    try {
+      const data = await fetch("/api/backups/recovery-key").then(r => r.json()) as RecoveryKeyResponse;
+      if (data.configured && data.recovery_key) {
+        setRecoveryKey(data.recovery_key);
+        setRecoveryMandatory(mandatory);
+      }
+    } catch { /* network blip — user can retry via "View recovery key" */ }
+  }
 
   const load = useCallback(async () => {
     const [s3Res, statusRes] = await Promise.all([
@@ -707,15 +813,37 @@ export function BackupsPage() {
     const res = await fetch("/api/backups/s3/enable", { method: "POST" });
     if (!res.ok) throw new Error(await res.text() || `Server error ${res.status}`);
     await load();
+    // First and most important viewing — the key was just generated, and this
+    // is the only moment the user is guaranteed to still be in the setup flow.
+    await showRecoveryKey(true);
   }
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-xl font-semibold text-[#fafafa]">Backups</h1>
-        <p className="text-sm text-[#71717a] mt-0.5">
-          Each backup is a full snapshot of the cluster — K8s state, service configs, and all PVC data — encrypted and stored in Backblaze B2.
-        </p>
+      {recoveryKey && (
+        <RecoveryKeyOverlay
+          recoveryKey={recoveryKey}
+          mandatory={recoveryMandatory}
+          onClose={() => setRecoveryKey(null)}
+        />
+      )}
+
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-xl font-semibold text-[#fafafa]">Backups</h1>
+          <p className="text-sm text-[#71717a] mt-0.5">
+            Each backup is a full snapshot of the cluster — K8s state, service configs, and all PVC data — encrypted and stored in Backblaze B2.
+          </p>
+        </div>
+        {s3Status?.provisioned && (
+          <button
+            onClick={() => void showRecoveryKey(false)}
+            className="flex-shrink-0 flex items-center gap-1.5 text-xs text-[#71717a] hover:text-[#fafafa]"
+          >
+            <KeyRound className="h-3.5 w-3.5" />
+            View recovery key
+          </button>
+        )}
       </div>
 
       {opBusy && (

@@ -67,6 +67,7 @@ async fn main() {
         // Rebuild log
         .route("/api/rebuild-log", get(rebuild::rebuild_log))
         // Backups
+        .route("/api/backups/recovery-key", get(backups::get_recovery_key))
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
         .route("/api/backups/sftp", get(backups::get_sftp))
