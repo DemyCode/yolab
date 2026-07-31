@@ -3,6 +3,7 @@ mod config;
 mod disks_reconciler;
 mod error;
 mod kubectl;
+mod lease;
 mod proc;
 mod routers;
 mod topology;
@@ -25,6 +26,17 @@ use routers::{apps, backups, ceph, disks, nodes, rebuild, status, terminal, upda
 pub struct AppState {
     pub config: Arc<Config>,
     pub auth: AuthState,
+}
+
+/// Process-lifetime identity for the BackupRun/RestoreRun reconcile Lease. Doesn't need
+/// to be stable across restarts — if this process dies, the lease it held simply expires
+/// and whichever process (this one restarted, or another node) next acquires it takes
+/// over with a fresh identity; see lease.rs.
+fn random_holder_id() -> String {
+    use rand::RngCore as _;
+    let mut buf = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut buf);
+    format!("local-api-{}", hex::encode(buf))
 }
 
 #[tokio::main]
@@ -70,12 +82,12 @@ async fn main() {
         .route("/api/backups/recovery-key", get(backups::get_recovery_key))
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
+        .route("/api/backups/credentials/refresh", post(backups::refresh_credentials))
         .route("/api/backups/sftp", get(backups::get_sftp))
         .route("/api/backups/status", get(backups::backup_status))
         .route("/api/backups/state", get(backups::operation_state))
         .route("/api/backups/dr/start", post(backups::dr_start))
         .route("/api/backups/dr/status", get(backups::dr_status))
-        .route("/api/backups/dr/apply", post(backups::dr_apply))
         .route("/api/backups/snapshots", get(backups::list_snapshots))
         .route("/api/backups/cluster/run-now", post(backups::run_backup_now))
         .route("/api/backups/snapshots/:id/catalog", get(backups::snapshot_catalog))
@@ -116,8 +128,10 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
-    tokio::spawn(backups::run_cluster_backup(Arc::clone(&cfg)));
-    tokio::spawn(backups::run_restore_reconciler());
+    // Single reconcile loop drives both BackupRun and RestoreRun objects (see
+    // routers/backup_run.rs's module doc for why this replaced three separate
+    // ConfigMap-lock-guarded timers).
+    tokio::spawn(routers::backup_run::run(random_holder_id()));
     tokio::spawn(backups::run_replication_source_reconciler());
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISK→ON/OFF config — no separate watcher.

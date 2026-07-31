@@ -572,6 +572,12 @@ in
       # VolumeSnapshotClass for Rook CephFS CSI — used by VolSync ReplicationSources.
       # Applied after VolSync so the CRD (from external-snapshotter) exists first.
       "L+ /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml           - - - - ${./volsync/snapshotclass.yaml}"
+      # BackupRun/RestoreRun CRDs — local-api's backup/restore orchestration state
+      # lives in these objects (see homelab/local-api/src/routers/backup_run.rs and
+      # restore_run.rs) instead of ConfigMap flags, so a crashed local-api or a stuck
+      # step can always be recomputed from status instead of getting stuck forever.
+      "L+ /var/lib/rancher/k3s/server/manifests/yolab-crd-backuprun.yaml             - - - - ${./yolab-crds/backuprun-crd.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/yolab-crd-restorerun.yaml            - - - - ${./yolab-crds/restorerun-crd.yaml}"
     ];
 
     system.activationScripts.yolabVersion = ''

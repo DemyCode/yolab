@@ -1,9 +1,12 @@
 pub mod apps;
+pub mod backup_common;
+pub mod backup_run;
 pub mod backups;
 pub mod ceph;
 pub mod disks;
 pub mod nodes;
 pub mod rebuild;
+pub mod restore_run;
 pub mod status;
 pub mod terminal;
 pub mod update;

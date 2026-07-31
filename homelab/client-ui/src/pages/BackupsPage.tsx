@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  Database, RefreshCw, CheckCircle, AlertCircle,
+  Database, RefreshCw, CheckCircle, AlertCircle, Circle,
   AlertTriangle, ChevronDown, ChevronRight, RotateCcw, KeyRound, Copy,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -37,31 +37,49 @@ interface DiffEntry {
   mode: "adding" | "recovering";
 }
 
-interface DrRestoreItem {
-  namespace: string;
+// Mirrors backup_run.rs's BackupRun.status shape.
+interface BackupRunStatus {
+  phase: "Pending" | "SyncingVolumes" | "SnapshottingCluster" | "Pruning" | "Succeeded" | "Partial" | "Failed";
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string | null;
+  stalePvcs?: string[];
+  snapshotId?: string;
+}
+
+// Mirrors restore_run.rs's RestoreRun.status shape.
+interface VolumeStatus {
   pvc: string;
-  result: string;
+  phase: "Pending" | "Restoring" | "Succeeded" | "Failed" | "Skipped";
+}
+
+interface NamespaceRestoreStatus {
+  namespace: string;
+  scaledDeployments: string[];
+  volumes: VolumeStatus[];
+}
+
+interface RestoreRunStatus {
+  phase: "Validating" | "WaitingForStorage" | "RestoringVolumes" | "Applying" | "Succeeded" | "Partial" | "Failed";
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string | null;
+  snapshotId?: string;
+  restoreAsOf?: string | null;
+  namespaces?: NamespaceRestoreStatus[];
 }
 
 interface DrStatusResponse {
-  restores: DrRestoreItem[];
-  total: number;
-  done: number;
-  failed: number;
-  all_complete: boolean;
-}
-
-interface LastBackupResult {
-  status: "success" | "partial" | "failed";
-  finished_at: string;
-  stale_pvcs: string[];
-  error: string | null;
+  active: RestoreRunStatus | null;
+  last: RestoreRunStatus | null;
 }
 
 interface OperationState {
   backing_up: boolean;
   restoring: boolean;
-  last_backup?: LastBackupResult | null;
+  backup_run: BackupRunStatus | null;
+  restore_run: RestoreRunStatus | null;
+  last_backup: BackupRunStatus | null;
 }
 
 interface RecoveryKeyResponse {
@@ -97,33 +115,216 @@ function timeAgo(iso: string): string {
   return `${m}m ago`;
 }
 
-// ── Restore flow ──────────────────────────────────────────────────────────────
+// ── Restore takeover — full-page while a RestoreRun is active ─────────────────
+//
+// A restore touches live, mounted data: apps get scaled to 0, PVCs get deleted and
+// recreated, ReplicationDestinations pull from B2. Letting the user start a second
+// backup/restore or navigate the rest of this page mid-flight would race against
+// that. So instead of an inline card, this replaces the ENTIRE backups page for as
+// long as a RestoreRun is non-terminal — the same full-page treatment as, say, an
+// OS installer, since the operation is just as disruptive and just as important to
+// watch to completion (or at least to a safe terminal state).
 
-type RestoreStep = "diff" | "restoring" | "done";
+const RESTORE_PHASES: { key: RestoreRunStatus["phase"]; label: string }[] = [
+  { key: "Validating", label: "Validating snapshot" },
+  { key: "WaitingForStorage", label: "Waiting for storage" },
+  { key: "RestoringVolumes", label: "Restoring volumes" },
+  { key: "Applying", label: "Bringing services back up" },
+];
+
+function isTerminalRestorePhase(phase: string): boolean {
+  return phase === "Succeeded" || phase === "Partial" || phase === "Failed";
+}
+
+function VolumePhaseIcon({ phase }: { phase: VolumeStatus["phase"] }) {
+  switch (phase) {
+    case "Succeeded":
+      return <CheckCircle className="h-4 w-4 text-[#4ade80] flex-shrink-0" />;
+    case "Failed":
+      return <AlertCircle className="h-4 w-4 text-[#f87171] flex-shrink-0" />;
+    case "Skipped":
+      return <AlertTriangle className="h-4 w-4 text-[#fbbf24] flex-shrink-0" />;
+    case "Restoring":
+      return <RefreshCw className="h-4 w-4 text-[#a78bfa] animate-spin flex-shrink-0" />;
+    default:
+      return <Circle className="h-4 w-4 text-[#3f3f46] flex-shrink-0" />;
+  }
+}
+
+function volumePhaseLabel(phase: VolumeStatus["phase"]): string {
+  switch (phase) {
+    case "Succeeded": return "Restored";
+    case "Failed": return "Failed";
+    case "Skipped": return "No backup found — kept as-is";
+    case "Restoring": return "Restoring…";
+    default: return "Pending";
+  }
+}
+
+function RestoreTakeover({ onDone }: { onDone: () => void }) {
+  const [status, setStatus] = useState<RestoreRunStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const data = await fetch("/api/backups/dr/status").then(r => r.json()) as DrStatusResponse;
+        if (cancelled) return;
+        setStatus(data.active ?? data.last ?? null);
+      } catch { /* network blip */ }
+    }
+    void poll();
+    const id = window.setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  if (!status) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+        <RefreshCw className="h-6 w-6 text-[#a78bfa] animate-spin" />
+        <p className="text-sm text-[#a1a1aa]">Starting restore…</p>
+      </div>
+    );
+  }
+
+  const terminal = isTerminalRestorePhase(status.phase);
+  const currentIndex = RESTORE_PHASES.findIndex(p => p.key === status.phase);
+  const namespaces = status.namespaces ?? [];
+  const totalVolumes = namespaces.reduce((n, ns) => n + ns.volumes.length, 0);
+  const succeededVolumes = namespaces.reduce(
+    (n, ns) => n + ns.volumes.filter(v => v.phase === "Succeeded").length, 0
+  );
+
+  return (
+    <div className="min-h-[70vh] flex flex-col max-w-3xl mx-auto w-full">
+      <div className="mb-8">
+        <h1 className="text-xl font-semibold text-[#fafafa]">Restoring from backup</h1>
+        <p className="text-sm text-[#71717a] mt-0.5">
+          {status.snapshotId ? `Snapshot ${status.snapshotId.slice(0, 8)}` : "Restore in progress"}
+          {status.restoreAsOf ? ` · as of ${formatDate(status.restoreAsOf)}` : ""}
+          {" — "}other backup and restore actions are disabled until this finishes.
+        </p>
+      </div>
+
+      {/* Phase stepper */}
+      {!terminal && (
+        <div className="flex items-center mb-8">
+          {RESTORE_PHASES.map((p, i) => (
+            <div key={p.key} className="flex items-center flex-1 last:flex-none">
+              <div className="flex flex-col items-center gap-2">
+                <div className={`h-8 w-8 rounded-full flex items-center justify-center border-2 ${
+                  i < currentIndex ? "border-[#4ade80] bg-[#4ade80]/10" :
+                  i === currentIndex ? "border-[#a78bfa] bg-[#a78bfa]/10" :
+                  "border-[#3f3f46]"
+                }`}>
+                  {i < currentIndex ? (
+                    <CheckCircle className="h-4 w-4 text-[#4ade80]" />
+                  ) : i === currentIndex ? (
+                    <RefreshCw className="h-4 w-4 text-[#a78bfa] animate-spin" />
+                  ) : (
+                    <span className="text-xs text-[#52525b]">{i + 1}</span>
+                  )}
+                </div>
+                <span className={`text-xs whitespace-nowrap ${i === currentIndex ? "text-[#fafafa] font-medium" : "text-[#52525b]"}`}>
+                  {p.label}
+                </span>
+              </div>
+              {i < RESTORE_PHASES.length - 1 && (
+                <div className={`flex-1 h-px mx-2 ${i < currentIndex ? "bg-[#4ade80]" : "bg-[#3f3f46]"}`} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Terminal banner */}
+      {terminal && (
+        <div className={`rounded-lg border px-4 py-3 mb-8 flex items-start gap-2 ${
+          status.phase === "Succeeded" ? "border-[#14532d] bg-[#0f1f0f]" :
+          status.phase === "Partial" ? "border-[#78350f] bg-[#1a1000]" :
+          "border-[#7f1d1d] bg-[#1a0000]"
+        }`}>
+          {status.phase === "Succeeded" ? (
+            <CheckCircle className="h-4 w-4 text-[#4ade80] flex-shrink-0 mt-0.5" />
+          ) : (
+            <AlertTriangle className={`h-4 w-4 flex-shrink-0 mt-0.5 ${status.phase === "Partial" ? "text-[#fbbf24]" : "text-[#f87171]"}`} />
+          )}
+          <div className="text-sm">
+            <p className={`font-medium ${
+              status.phase === "Succeeded" ? "text-[#4ade80]" :
+              status.phase === "Partial" ? "text-[#fbbf24]" : "text-[#f87171]"
+            }`}>
+              {status.phase === "Succeeded" && `Restore complete — ${succeededVolumes}/${totalVolumes || 0} volume${totalVolumes === 1 ? "" : "s"} restored.`}
+              {status.phase === "Partial" && `Restore finished with issues — ${succeededVolumes}/${totalVolumes} volumes restored. Affected services are running with their previous or empty data.`}
+              {status.phase === "Failed" && `Restore failed${status.error ? `: ${status.error}` : "."}`}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Per-namespace / per-volume progress */}
+      {namespaces.length > 0 && (
+        <div className="space-y-3 flex-1">
+          {namespaces.map(ns => (
+            <Card key={ns.namespace} className="border-[#27272a]">
+              <CardContent className="pt-4 pb-4">
+                <p className="text-sm font-medium text-[#fafafa] mb-2">{serviceNameFromNamespace(ns.namespace)}</p>
+                {ns.volumes.length === 0 ? (
+                  <p className="text-xs text-[#52525b]">No volumes — configuration restored only.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {ns.volumes.map(v => (
+                      <div key={v.pvc} className="flex items-center gap-2 text-xs">
+                        <VolumePhaseIcon phase={v.phase} />
+                        <span className="text-[#a1a1aa] font-mono">{v.pvc}</span>
+                        <span className="text-[#52525b] ml-auto">{volumePhaseLabel(v.phase)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {terminal && (
+        <div className="flex justify-end mt-6">
+          <Button
+            onClick={onDone}
+            className="h-9 px-4 text-sm bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium"
+          >
+            Back to Backups
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Restore flow (confirm step) ───────────────────────────────────────────────
+//
+// Once accepted, the RestoreRun takes over the whole page (see RestoreTakeover
+// above) — this component's job ends at kicking the restore off.
 
 function RestoreFlow({
   snapshot,
   catalog,
   runningNamespaces,
   onCancel,
+  onStarted,
 }: {
   snapshot: ResticSnapshot;
   catalog: SnapshotCatalog;
   runningNamespaces: Set<string>;
   onCancel: () => void;
+  onStarted: () => void;
 }) {
-  const [step, setStep] = useState<RestoreStep>("diff");
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(catalog.namespaces)
   );
-  const [restoreItems, setRestoreItems] = useState<DrRestoreItem[]>([]);
-  const [done, setDone] = useState(0);
-  const [total, setTotal] = useState(0);
-  const [failed, setFailed] = useState(0);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<number | null>(null);
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   const services: ServiceEntry[] = catalog.services ??
     catalog.namespaces.map(ns => ({ namespace: ns, pvcs: [] }));
@@ -141,40 +342,14 @@ function RestoreFlow({
   function toggle(ns: string) {
     setSelected(prev => {
       const next = new Set(prev);
-      next.has(ns) ? next.delete(ns) : next.add(ns);
+      if (next.has(ns)) { next.delete(ns); } else { next.add(ns); }
       return next;
     });
   }
 
-  function startPolling() {
-    if (pollRef.current) return;
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const [s, state] = await Promise.all([
-          fetch("/api/backups/dr/status").then(r => r.json()) as Promise<DrStatusResponse>,
-          fetch("/api/backups/state").then(r => r.json()) as Promise<{ restoring: boolean }>,
-        ]);
-        setRestoreItems(s.restores);
-        setDone(s.done);
-        setTotal(s.total);
-        setFailed(s.failed);
-        // The backend's reconciler applies each restore on its own (scales the app back up,
-        // cleans up its ReplicationDestination) — we never call /dr/apply ourselves. We just
-        // wait for state.restoring to flip false, which only happens once every
-        // ReplicationDestination is gone, i.e. fully applied. This page doesn't need to stay
-        // open for the restore to finish; it's just watching.
-        if (!state.restoring) {
-          clearInterval(pollRef.current!);
-          pollRef.current = null;
-          setStep("done");
-        }
-      } catch { /* network blip */ }
-    }, 5000);
-  }
-
   async function handleAccept() {
     setError(null);
-    setStep("restoring");
+    setStarting(true);
     try {
       const res = await fetch("/api/backups/dr/start", {
         method: "POST",
@@ -182,131 +357,80 @@ function RestoreFlow({
         body: JSON.stringify({ snapshot_id: snapshot.id, namespaces: [...selected] }),
       });
       if (!res.ok) throw new Error(await res.text());
-      // Restore runs in the background on the server — poll dr/status + state for progress.
-      startPolling();
+      onStarted();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
-      setStep("diff");
+      setStarting(false);
     }
   }
 
-  // ── diff view ──
-  if (step === "diff") {
-    return (
-      <div className="border border-[#3f3f46] rounded-lg p-4 space-y-4 bg-[#0f0f11]">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-[#fafafa]">
-            Restore from {formatDate(snapshot.time)}
-          </p>
-          <button onClick={onCancel} className="text-xs text-[#52525b] hover:text-[#a1a1aa]">✕ Cancel</button>
-        </div>
+  return (
+    <div className="border border-[#3f3f46] rounded-lg p-4 space-y-4 bg-[#0f0f11]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-[#fafafa]">
+          Restore from {formatDate(snapshot.time)}
+        </p>
+        <button onClick={onCancel} className="text-xs text-[#52525b] hover:text-[#a1a1aa]">✕ Cancel</button>
+      </div>
 
-        <div className="space-y-2">
-          {diff.map(entry => (
-            <label key={entry.namespace} className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={selected.has(entry.namespace)}
-                onChange={() => toggle(entry.namespace)}
-                className="mt-0.5 h-4 w-4 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa]"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-[#fafafa] font-medium">{entry.serviceName}</span>
-                  {entry.mode === "adding" ? (
-                    <span className="text-xs text-[#4ade80] font-medium">Adding</span>
-                  ) : (
-                    <span className="text-xs text-[#fbbf24] font-medium">Recovering</span>
-                  )}
-                </div>
-                {entry.pvcs.length > 0 && (
-                  <p className="text-xs text-[#52525b] mt-0.5">
-                    {entry.pvcs.map(p => `${p.name} (${p.capacity})`).join(" · ")}
-                  </p>
+      <div className="space-y-2">
+        {diff.map(entry => (
+          <label key={entry.namespace} className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.has(entry.namespace)}
+              onChange={() => toggle(entry.namespace)}
+              className="mt-0.5 h-4 w-4 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa]"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-[#fafafa] font-medium">{entry.serviceName}</span>
+                {entry.mode === "adding" ? (
+                  <span className="text-xs text-[#4ade80] font-medium">Adding</span>
+                ) : (
+                  <span className="text-xs text-[#fbbf24] font-medium">Recovering</span>
                 )}
               </div>
-            </label>
-          ))}
-        </div>
-
-        {selected.size > 0 && (
-          <div className="rounded border border-[#7f1d1d] bg-[#1c0a0a] px-3 py-2 text-xs text-[#fca5a5] space-y-0.5">
-            <p className="font-medium flex items-center gap-1.5">
-              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
-              This cannot be undone — current data will be replaced.
-            </p>
-            {addingCount > 0 && <p>· {addingCount} service{addingCount !== 1 ? "s" : ""} will be created from backup.</p>}
-            {recoveringCount > 0 && <p>· {recoveringCount} running service{recoveringCount !== 1 ? "s" : ""} will be stopped and restored.</p>}
-          </div>
-        )}
-
-        {error && <p className="text-xs text-[#f87171]">{error}</p>}
-
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            onClick={onCancel}
-            className="h-8 px-3 text-xs border-[#3f3f46] text-[#71717a] hover:text-[#fafafa]"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleAccept}
-            disabled={selected.size === 0}
-            className="h-8 px-4 text-xs bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 font-medium disabled:opacity-40"
-          >
-            Accept & Restore ({selected.size})
-          </Button>
-        </div>
+              {entry.pvcs.length > 0 && (
+                <p className="text-xs text-[#52525b] mt-0.5">
+                  {entry.pvcs.map(p => `${p.name} (${p.capacity})`).join(" · ")}
+                </p>
+              )}
+            </div>
+          </label>
+        ))}
       </div>
-    );
-  }
 
-  // ── restoring ──
-  if (step === "restoring") {
-    const allSynced = total > 0 && done + failed === total;
-    return (
-      <div className="border border-[#78350f] rounded-lg p-4 space-y-3 bg-[#1a1000]">
-        <p className="text-sm font-semibold text-[#fbbf24] flex items-center gap-2">
-          <RefreshCw className="h-4 w-4 animate-spin" />
-          {allSynced
-            ? "Data restored — starting services…"
-            : `Pulling data from cloud… ${done}/${total || "?"}`}
-        </p>
-        {restoreItems.length > 0 && (
-          <div className="space-y-1.5">
-            {restoreItems.map(r => (
-              <div key={`${r.namespace}/${r.pvc}`} className="flex items-center gap-2 text-xs">
-                {r.result.toLowerCase() === "successful"
-                  ? <CheckCircle className="h-3.5 w-3.5 text-[#4ade80] flex-shrink-0" />
-                  : r.result.toLowerCase() === "failed"
-                  ? <AlertCircle className="h-3.5 w-3.5 text-[#f87171] flex-shrink-0" />
-                  : <RefreshCw className="h-3.5 w-3.5 text-[#fbbf24] animate-spin flex-shrink-0" />}
-                <span className="text-[#fafafa]">{serviceNameFromNamespace(r.namespace)}</span>
-                <span className="text-[#52525b] font-mono text-[11px]">{r.pvc}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {failed > 0 && <p className="text-xs text-[#f87171]">{failed} failed — check VolSync logs.</p>}
+      {selected.size > 0 && (
+        <div className="rounded border border-[#7f1d1d] bg-[#1c0a0a] px-3 py-2 text-xs text-[#fca5a5] space-y-0.5">
+          <p className="font-medium flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+            This cannot be undone — current data will be replaced.
+          </p>
+          {addingCount > 0 && <p>· {addingCount} service{addingCount !== 1 ? "s" : ""} will be created from backup.</p>}
+          {recoveringCount > 0 && <p>· {recoveringCount} running service{recoveringCount !== 1 ? "s" : ""} will be stopped and restored.</p>}
+        </div>
+      )}
+
+      {error && <p className="text-xs text-[#f87171]">{error}</p>}
+
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          onClick={onCancel}
+          disabled={starting}
+          className="h-8 px-3 text-xs border-[#3f3f46] text-[#71717a] hover:text-[#fafafa]"
+        >
+          Cancel
+        </Button>
+        <Button
+          onClick={handleAccept}
+          disabled={selected.size === 0 || starting}
+          className="h-8 px-4 text-xs bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 font-medium disabled:opacity-40"
+        >
+          {starting ? <><RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />Starting…</> : `Accept & Restore (${selected.size})`}
+        </Button>
       </div>
-    );
-  }
-
-  // ── done ──
-  return (
-    <div className="border border-[#14532d] rounded-lg p-4 flex items-center justify-between gap-4 bg-[#0f1f0f]">
-      <p className="text-sm font-semibold text-[#4ade80] flex items-center gap-2">
-        <CheckCircle className="h-4 w-4" />
-        Restore complete.
-      </p>
-      <Button
-        onClick={onCancel}
-        variant="outline"
-        className="h-8 px-3 text-xs border-[#14532d] text-[#4ade80] hover:bg-[#14532d]"
-      >
-        Done
-      </Button>
     </div>
   );
 }
@@ -320,6 +444,7 @@ function SnapshotCard({
   disabled,
   onRestoreStart,
   onRestoreEnd,
+  onRestoreStarted,
 }: {
   snapshot: ResticSnapshot;
   runningNamespaces: Set<string>;
@@ -327,6 +452,7 @@ function SnapshotCard({
   disabled: boolean;
   onRestoreStart: () => void;
   onRestoreEnd: () => void;
+  onRestoreStarted: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [catalog, setCatalog] = useState<SnapshotCatalog | null>(null);
@@ -449,6 +575,7 @@ function SnapshotCard({
                 catalog={catalog}
                 runningNamespaces={runningNamespaces}
                 onCancel={handleRestoreEnd}
+                onStarted={onRestoreStarted}
               />
             )}
           </div>
@@ -465,11 +592,13 @@ function SnapshotExplorer({
   onBackupDone,
   disabled,
   backupInProgress,
+  onRestoreStarted,
 }: {
   runningNamespaces: Set<string>;
   onBackupDone: () => void;
   disabled: boolean;
   backupInProgress: boolean;
+  onRestoreStarted: () => void;
 }) {
   const [snapshots, setSnapshots] = useState<ResticSnapshot[] | null>(null);
   const [backingUp, setBackingUp] = useState(false);
@@ -566,6 +695,7 @@ function SnapshotExplorer({
             disabled={disabled}
             onRestoreStart={() => setActiveRestore(snap.id)}
             onRestoreEnd={() => { setActiveRestore(null); void load(); }}
+            onRestoreStarted={onRestoreStarted}
           />
         ))
       )}
@@ -711,7 +841,7 @@ function EnableCard({ onEnable, disabled }: { onEnable: () => Promise<void>; dis
 
 // ── DR banner (auto-detected Lost PVCs) ───────────────────────────────────────
 
-function DrBanner({ lostCount, disabled }: { lostCount: number; disabled: boolean }) {
+function DrBanner({ lostCount, disabled, onRestoreStarted }: { lostCount: number; disabled: boolean; onRestoreStarted: () => void }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -719,11 +849,19 @@ function DrBanner({ lostCount, disabled }: { lostCount: number; disabled: boolea
     setStarting(true);
     setError(null);
     try {
-      const res = await fetch("/api/backups/dr/start", { method: "POST" });
+      const res = await fetch("/api/backups/dr/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Emergency restore = every managed namespace, from the latest snapshot
+        // (omitting snapshot_id resolves to the latest cluster-backup snapshot).
+        body: JSON.stringify({ all: true }),
+      });
       if (!res.ok) throw new Error(await res.text());
+      onRestoreStarted();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
-    } finally { setStarting(false); }
+      setStarting(false);
+    }
   }
 
   return (
@@ -760,7 +898,9 @@ export function BackupsPage() {
   const [runningNamespaces, setRunning] = useState<Set<string>>(new Set());
   const [lostCount, setLostCount]       = useState(0);
   const [loading, setLoading]           = useState(true);
-  const [opState, setOpState]           = useState<OperationState>({ backing_up: false, restoring: false });
+  const [opState, setOpState]           = useState<OperationState>({
+    backing_up: false, restoring: false, backup_run: null, restore_run: null, last_backup: null,
+  });
   const [recoveryKey, setRecoveryKey]   = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
 
@@ -794,18 +934,22 @@ export function BackupsPage() {
   // Single source of truth for "is a backup or restore currently running" — read from the
   // backend on a timer, never tracked locally, so a page refresh or a second tab can't
   // desync from what's actually happening.
+  const pollOpState = useCallback(async () => {
+    try {
+      const s = await fetch("/api/backups/state").then(r => r.json()) as OperationState;
+      setOpState(s);
+      return s;
+    } catch {
+      return null; // network blip
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    async function poll() {
-      try {
-        const s = await fetch("/api/backups/state").then(r => r.json()) as OperationState;
-        if (!cancelled) setOpState(s);
-      } catch { /* network blip */ }
-    }
-    void poll();
-    const id = window.setInterval(poll, 5000);
+    const id = window.setInterval(() => { if (!cancelled) void pollOpState(); }, 5000);
+    void pollOpState();
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [pollOpState]);
 
   const opBusy = opState.backing_up || opState.restoring;
 
@@ -816,6 +960,19 @@ export function BackupsPage() {
     // First and most important viewing — the key was just generated, and this
     // is the only moment the user is guaranteed to still be in the setup flow.
     await showRecoveryKey(true);
+  }
+
+  // A RestoreRun is disruptive enough (deployments scaled to 0, PVCs deleted and
+  // recreated) that it takes over the entire page — see RestoreTakeover's doc comment.
+  if (opState.restoring) {
+    return (
+      <RestoreTakeover
+        onDone={() => {
+          void pollOpState();
+          void load();
+        }}
+      />
+    );
   }
 
   return (
@@ -846,22 +1003,22 @@ export function BackupsPage() {
         )}
       </div>
 
-      {opBusy && (
+      {opState.backing_up && (
         <div className="rounded-lg border border-[#78350f] bg-[#1a1000] px-4 py-3 flex items-center gap-2">
           <RefreshCw className="h-4 w-4 text-[#fbbf24] animate-spin flex-shrink-0" />
           <p className="text-sm text-[#fbbf24] font-medium">
-            {opState.backing_up
-              ? "Backup in progress — other backup actions are disabled until it finishes."
-              : "Restore in progress — other backup actions are disabled until it finishes."}
+            Backup in progress
+            {opState.backup_run ? ` (${opState.backup_run.phase})` : ""}
+            {" "}— other backup actions are disabled until it finishes.
           </p>
         </div>
       )}
 
-      {!opBusy && opState.last_backup && opState.last_backup.status !== "success" && (
+      {!opBusy && opState.last_backup && opState.last_backup.phase !== "Succeeded" && (
         <div className="rounded-lg border border-[#7f1d1d] bg-[#1a0000] px-4 py-3 flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 text-[#f87171] flex-shrink-0 mt-0.5" />
           <div className="text-sm text-[#f87171]">
-            {opState.last_backup.status === "failed" ? (
+            {opState.last_backup.phase === "Failed" ? (
               <p className="font-medium">
                 The last backup failed{opState.last_backup.error ? `: ${opState.last_backup.error}` : "."} Your previous
                 backups are still safe — try running a new backup.
@@ -873,7 +1030,7 @@ export function BackupsPage() {
                   snapshot:
                 </p>
                 <ul className="mt-1 list-disc list-inside text-[#fca5a5]">
-                  {opState.last_backup.stale_pvcs.map((p) => <li key={p}>{p}</li>)}
+                  {(opState.last_backup.stalePvcs ?? []).map((p) => <li key={p}>{p}</li>)}
                 </ul>
                 <p className="mt-1 text-[#fca5a5]">Run another backup once the cluster is idle to capture their latest data.</p>
               </>
@@ -891,12 +1048,19 @@ export function BackupsPage() {
         <EnableCard onEnable={handleEnable} disabled={opBusy} />
       ) : (
         <div className="space-y-4">
-          {lostCount > 0 && <DrBanner lostCount={lostCount} disabled={opBusy} />}
+          {lostCount > 0 && (
+            <DrBanner
+              lostCount={lostCount}
+              disabled={opBusy}
+              onRestoreStarted={() => void pollOpState()}
+            />
+          )}
           <SnapshotExplorer
             runningNamespaces={runningNamespaces}
             onBackupDone={load}
             disabled={opBusy}
             backupInProgress={opState.backing_up}
+            onRestoreStarted={() => void pollOpState()}
           />
         </div>
       )}

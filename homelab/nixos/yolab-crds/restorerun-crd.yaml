@@ -1,0 +1,41 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: restoreruns.yolab.io
+spec:
+  group: yolab.io
+  scope: Cluster
+  names:
+    kind: RestoreRun
+    listKind: RestoreRunList
+    plural: restoreruns
+    singular: restorerun
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Snapshot
+          type: string
+          jsonPath: .spec.snapshotID
+        - name: Started
+          type: date
+          jsonPath: .status.startedAt
+        - name: Finished
+          type: date
+          jsonPath: .status.finishedAt
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

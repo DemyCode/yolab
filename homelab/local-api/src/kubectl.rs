@@ -254,6 +254,84 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+// ── Generic CRD helpers (yolab.io custom resources) ──────────────────────────
+//
+// BackupRun/RestoreRun (see routers/backup_run.rs, routers/restore_run.rs) are
+// schemaless CRDs (`x-kubernetes-preserve-unknown-fields`) — spec/status are just
+// serde_json::Value, so one small generic client covers both instead of hand-rolled
+// get/create/patch boilerplate per kind.
+
+#[derive(Clone, Copy)]
+pub struct Crd {
+    pub group: &'static str,
+    pub version: &'static str,
+    pub plural: &'static str,
+    pub kind: &'static str,
+}
+
+impl Crd {
+    fn res(&self) -> String {
+        format!("{}.{}", self.plural, self.group)
+    }
+
+    fn api_version(&self) -> String {
+        format!("{}/{}", self.group, self.version)
+    }
+
+    pub async fn get(&self, name: &str) -> Option<Value> {
+        let raw = run(&["get", &self.res(), name, "-o", "json", "--ignore-not-found"]).await.ok()?;
+        if raw.trim().is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Lists every object of this kind (cluster-scoped), newest-created first.
+    pub async fn list(&self) -> Vec<Value> {
+        let raw = match run(&["get", &self.res(), "-o", "json"]).await {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut items = serde_json::from_str::<Value>(&raw)
+            .ok()
+            .and_then(|v| v["items"].as_array().cloned())
+            .unwrap_or_default();
+        items.sort_by(|a, b| {
+            let ta = a["metadata"]["creationTimestamp"].as_str().unwrap_or("");
+            let tb = b["metadata"]["creationTimestamp"].as_str().unwrap_or("");
+            tb.cmp(ta)
+        });
+        items
+    }
+
+    pub async fn create(&self, name: &str, spec: Value, labels: &[(&str, &str)]) -> Result<()> {
+        let mut label_map = serde_json::Map::new();
+        for (k, v) in labels {
+            label_map.insert(k.to_string(), Value::String(v.to_string()));
+        }
+        let manifest = serde_json::json!({
+            "apiVersion": self.api_version(),
+            "kind": self.kind,
+            "metadata": { "name": name, "labels": label_map },
+            "spec": spec,
+        });
+        create(&manifest.to_string()).await
+    }
+
+    /// Merge-patches `.status`. Requires the CRD's status subresource (both CRDs do).
+    pub async fn patch_status(&self, name: &str, status: Value) -> Result<()> {
+        let patch = serde_json::json!({ "status": status }).to_string();
+        run(&[
+            "patch", &self.res(), name,
+            "--type=merge", "--subresource=status", "-p", &patch,
+        ]).await.map(|_| ())
+    }
+
+    pub async fn delete(&self, name: &str) {
+        let _ = run(&["delete", &self.res(), name, "--ignore-not-found"]).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
