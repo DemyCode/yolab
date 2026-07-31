@@ -441,6 +441,39 @@ impl BackupConfig {
     }
 }
 
+/// Removes any restic lock that `restic` itself determines is stale (its owning
+/// process/host is no longer alive) from the given repo. Without this, a mover pod
+/// killed mid-sync or a local-api restart mid-backup leaves a lock that blocks every
+/// future backup/restore against that repo forever — restic's own staleness check
+/// (not `--remove-all`) is what keeps this safe to call unconditionally before any
+/// operation, since it never touches a lock that's still actively held.
+async fn restic_unlock(repo: &str, password: &str, key_id: &str, secret_key: &str) {
+    let out = Command::new("restic")
+        .args(["unlock"])
+        .env("RESTIC_REPOSITORY", repo)
+        .env("RESTIC_PASSWORD", password)
+        .env("AWS_ACCESS_KEY_ID", key_id)
+        .env("AWS_SECRET_ACCESS_KEY", secret_key)
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => {
+            let msg = String::from_utf8_lossy(&o.stdout);
+            if !msg.trim().is_empty() {
+                tracing::info!("restic unlock ({repo}): {}", msg.trim());
+            }
+        }
+        Ok(o) => tracing::debug!("restic unlock ({repo}): {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => tracing::debug!("restic unlock ({repo}): {e}"),
+    }
+}
+
+impl BackupConfig {
+    async fn unlock(&self, path: &str) {
+        restic_unlock(&self.restic_repo(path), &self.restic_password, &self.access_key_id, &self.secret_access_key).await;
+    }
+}
+
 async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupConfig> {
     if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
         let restic_password = data.get("restic_password").cloned().unwrap_or_default();
@@ -508,6 +541,48 @@ async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupCo
         endpoint: s3.endpoint,
         restic_password,
     })
+}
+
+/// Formats a hex secret as a human-copyable recovery key: uppercase, hyphenated in
+/// groups of 5 (e.g. "A1B2C-3D4E5-..."). This is the restic encryption password itself,
+/// not a derivation of it — anyone who has this key can decrypt the B2 backups directly
+/// with `restic`, so it must be treated with the same care as the password itself.
+fn format_recovery_key(hex: &str) -> String {
+    hex.to_uppercase()
+        .as_bytes()
+        .chunks(5)
+        .map(|c| String::from_utf8_lossy(c).to_string())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// GET /api/backups/recovery-key
+///
+/// Surfaces the restic encryption password as a one-time-displayable recovery key.
+/// This is the ONLY copy of the key that exists outside of etcd (which is itself
+/// backed up encrypted with this same password) — on total machine loss, this is
+/// the sole way to decrypt the B2 backups. The frontend is expected to show this
+/// once at backup-enable time with an explicit "I've saved this" acknowledgment,
+/// and to offer it again on request (e.g. a "View recovery key" action) since a
+/// user may need to re-copy it later (new password manager, printed copy lost, etc).
+///
+/// Deliberately NOT escrowed with yolab-external by default: the whole point of
+/// generating this password locally (see `ensure_master_config`) is that yolab-
+/// external cannot decrypt the user's backups even with full account access.
+/// Escrowing it would be a real product/security tradeoff that needs an explicit,
+/// opt-in decision — not something to silently wire up as a side effect of a bug-fix pass.
+pub async fn get_recovery_key(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await else {
+        return Ok(Json(serde_json::json!({ "configured": false })));
+    };
+    let restic_password = data.get("restic_password").cloned().unwrap_or_default();
+    if restic_password.is_empty() {
+        return Ok(Json(serde_json::json!({ "configured": false })));
+    }
+    Ok(Json(serde_json::json!({
+        "configured": true,
+        "recovery_key": format_recovery_key(&restic_password),
+    })))
 }
 
 /// Annotate a namespace to allow VolSync movers to run with elevated privileges.
@@ -1103,6 +1178,7 @@ pub async fn dr_start(
         restic_password:   data.get("restic_password").cloned().unwrap_or_default(),
     };
     let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock("cluster-backup").await;
 
     // ── 1. Extract catalog from snapshot (synchronous — needed for pre-flight) ─
     let cat_target = format!("/tmp/yolab-dr-catalog-{}", random_hex(8));
@@ -1298,6 +1374,7 @@ pub async fn dr_start(
                 }
 
                 let pvc_repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(pvc_name)));
+                restic_unlock(&pvc_repo, &cfg.restic_password, &cfg.access_key_id, &cfg.secret_access_key).await;
                 let has_snapshot = Command::new("restic")
                     .args(["snapshots", "--json", "--last"])
                     .env("RESTIC_REPOSITORY", &pvc_repo)
@@ -1728,6 +1805,7 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
     let _ = tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await;
 
     // 4. Init restic repo if needed.
+    restic_unlock(&repo, &restic_password, &key_id, &secret_key).await;
     let check = Command::new("restic").args(["snapshots"])
         .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &restic_password)
         .env("AWS_ACCESS_KEY_ID", &key_id).env("AWS_SECRET_ACCESS_KEY", &secret_key)
@@ -1760,12 +1838,24 @@ async fn do_cluster_backup() -> anyhow::Result<String> {
     record_cluster_backup_success();
 
     // 6. Prune old snapshots.
-    let _ = Command::new("restic")
-        .args(["forget", "--tag", "cluster-backup",
+    //    --group-by tags (not the default host,paths): the staging dir is
+    //    /tmp/yolab-cluster-backup-{date}, unique per run, so grouping by paths (the
+    //    default) put every single snapshot in its own group of one — keep-daily/weekly/
+    //    monthly then each kept "the 1 snapshot in this group" and nothing was ever pruned.
+    //    Every snapshot shares the same "cluster-backup" tag, so grouping by tag is what
+    //    actually buckets them together for retention to apply across.
+    let forget = Command::new("restic")
+        .args(["forget", "--tag", "cluster-backup", "--group-by", "tags",
                "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "12", "--prune"])
         .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &restic_password)
         .env("AWS_ACCESS_KEY_ID", &key_id).env("AWS_SECRET_ACCESS_KEY", &secret_key)
         .output().await;
+    match forget {
+        Ok(o) if !o.status.success() =>
+            tracing::warn!("cluster-backup: forget/prune failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => tracing::warn!("cluster-backup: forget/prune: {e}"),
+        _ => {}
+    }
 
     Ok(date)
 }
@@ -2054,6 +2144,7 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
     }
 
     let repo = format!("s3:{}/{}/cluster-backup", endpoint.trim_end_matches('/'), bucket);
+    restic_unlock(&repo, &restic_password, &key_id, &secret_key).await;
 
     let out = Command::new("restic")
         .args(["snapshots", "--json", "--tag", "cluster-backup"])
@@ -2092,6 +2183,7 @@ pub async fn snapshot_catalog(
     let endpoint        = data.get("endpoint").cloned().unwrap_or_default();
     let restic_password = data.get("restic_password").cloned().unwrap_or_default();
     let repo = format!("s3:{}/{}/cluster-backup", endpoint.trim_end_matches('/'), bucket);
+    restic_unlock(&repo, &restic_password, &key_id, &secret_key).await;
 
     let target = format!("/tmp/yolab-catalog-{}", random_hex(8));
 
@@ -2231,6 +2323,11 @@ pub async fn run_replication_source_reconciler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_recovery_key_groups_and_uppercases() {
+        assert_eq!(format_recovery_key("abcdef0123456789"), "ABCDE-F0123-45678-9");
+    }
 
     #[test]
     fn canonical_pvc_id_passes_through_plain_names() {
