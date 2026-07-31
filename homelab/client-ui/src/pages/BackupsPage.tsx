@@ -903,6 +903,11 @@ export function BackupsPage() {
   });
   const [recoveryKey, setRecoveryKey]   = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
+  // Separate from opState.restoring: that flips false the instant the RestoreRun reaches
+  // a terminal phase, which would unmount the takeover before its Succeeded/Partial/Failed
+  // banner ever rendered. This stays true until the user explicitly dismisses the takeover
+  // (its "Back to Backups" button), so the terminal result is always seen.
+  const [showRestoreView, setShowRestoreView] = useState(false);
 
   async function showRecoveryKey(mandatory: boolean) {
     try {
@@ -951,6 +956,12 @@ export function BackupsPage() {
     return () => { cancelled = true; clearInterval(id); };
   }, [pollOpState]);
 
+  // Latch onto the takeover as soon as a restore is observed running — whether it just
+  // started (from this tab's own action) or was already in progress on page load.
+  useEffect(() => {
+    if (opState.restoring) setShowRestoreView(true);
+  }, [opState.restoring]);
+
   const opBusy = opState.backing_up || opState.restoring;
 
   async function handleEnable() {
@@ -964,10 +975,11 @@ export function BackupsPage() {
 
   // A RestoreRun is disruptive enough (deployments scaled to 0, PVCs deleted and
   // recreated) that it takes over the entire page — see RestoreTakeover's doc comment.
-  if (opState.restoring) {
+  if (showRestoreView) {
     return (
       <RestoreTakeover
         onDone={() => {
+          setShowRestoreView(false);
           void pollOpState();
           void load();
         }}

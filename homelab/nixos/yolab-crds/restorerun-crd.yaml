@@ -22,7 +22,7 @@ spec:
           jsonPath: .status.phase
         - name: Snapshot
           type: string
-          jsonPath: .spec.snapshotID
+          jsonPath: .spec.snapshotId
         - name: Started
           type: date
           jsonPath: .status.startedAt

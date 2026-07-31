@@ -104,6 +104,18 @@ pub async fn start(triggered_by: &str) -> anyhow::Result<String> {
     Ok(name)
 }
 
+/// True if this run has already been finalized by someone else — specifically,
+/// reconcile_tick's timeout sweep marking it Failed because this executor blew its
+/// phase deadline. Without this check, a slow-but-still-alive executor would keep
+/// patching phases after being timed out, potentially clobbering the Failed status
+/// and racing a second run the reconciler started once it saw no active run.
+async fn is_superseded(name: &str) -> bool {
+    match BACKUP_RUN.get(name).await {
+        Some(run) => is_terminal(run["status"]["phase"].as_str().unwrap_or("")),
+        None => true, // run deleted out from under us (pruned) — definitely stop
+    }
+}
+
 /// The full phase-by-phase backup, patching BackupRun.status at every transition.
 /// If this task dies mid-run (process killed), the run is left non-terminal past its
 /// phaseDeadline — reconcile_tick's timeout sweep is what turns that into a clean
@@ -139,16 +151,29 @@ async fn execute(name: String) {
 
     let stale = poll_volsync_sync(&name, &pvcs, since, sync_deadline).await;
 
+    if is_superseded(&name).await {
+        tracing::warn!("backup-run {name}: superseded (timed out) after SyncingVolumes — stopping");
+        return;
+    }
+
     // ── SnapshottingCluster ──────────────────────────────────────────────────
+    const SNAPSHOTTING_BUDGET_SECS: u64 = 900;
     let _ = BACKUP_RUN.patch_status(&name, json!({
         "phase": PHASE_SNAPSHOTTING,
-        "phaseDeadline": deadline_after(900),
+        "phaseDeadline": deadline_after(SNAPSHOTTING_BUDGET_SECS as i64),
     })).await;
 
-    let snapshot_result = snapshot_cluster(&cfg).await;
+    // Enforced here, not just observed after the fact by reconcile_tick's deadline sweep —
+    // otherwise the phaseDeadline patched above is purely aspirational (snapshot_cluster
+    // has no internal bound of its own) and a slow restic upload could run concurrently
+    // with a second run the reconciler starts once it times this one out.
+    let snapshot_result = tokio::time::timeout(
+        Duration::from_secs(SNAPSHOTTING_BUDGET_SECS),
+        snapshot_cluster(&cfg),
+    ).await;
     let snapshot_id = match snapshot_result {
-        Ok(id) => id,
-        Err(e) => {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => {
             let _ = BACKUP_RUN.patch_status(&name, json!({
                 "phase": PHASE_FAILED,
                 "finishedAt": Utc::now().to_rfc3339(),
@@ -157,7 +182,21 @@ async fn execute(name: String) {
             })).await;
             return;
         }
+        Err(_) => {
+            let _ = BACKUP_RUN.patch_status(&name, json!({
+                "phase": PHASE_FAILED,
+                "finishedAt": Utc::now().to_rfc3339(),
+                "error": format!("snapshot step exceeded its {SNAPSHOTTING_BUDGET_SECS}s budget"),
+                "stalePvcs": stale,
+            })).await;
+            return;
+        }
     };
+
+    if is_superseded(&name).await {
+        tracing::warn!("backup-run {name}: superseded (timed out) after SnapshottingCluster — stopping");
+        return;
+    }
 
     // ── Pruning ───────────────────────────────────────────────────────────────
     let _ = BACKUP_RUN.patch_status(&name, json!({
@@ -253,13 +292,32 @@ async fn poll_volsync_sync(
 /// staging path (not date-suffixed, unlike the pre-operator version) so every run's
 /// restic snapshot shares the same `paths`, which is what makes `--group-by tags`
 /// retention actually able to bucket them together. Returns the snapshot date/id.
+///
+/// This directory holds every Secret in every yolab-managed namespace in plaintext
+/// (etcd.db + the sanitized k8s object export) while staging, however briefly — it must
+/// never be left world-readable, and it must never be left behind on a failure exit.
+/// Both are handled by this thin wrapper rather than the several `?`-early-return points
+/// inside `snapshot_cluster_inner`, so no future new failure path can reintroduce either
+/// problem by forgetting a cleanup call at its own return site.
 async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<String> {
-    let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
-    let repo = cfg.restic_repo("cluster-backup");
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
     tokio::fs::create_dir_all(&tmp_dir).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
+    }
+
+    let result = snapshot_cluster_inner(cfg, &tmp_dir).await;
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    result
+}
+
+async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Result<String> {
+    let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
+    let repo = cfg.restic_repo("cluster-backup");
 
     // 1. etcd snapshot — archived as etcd.db in this restic snapshot.
     //    NOTE: etcd.db is NOT consumed by RestoreRun. It is used exclusively by the
@@ -366,19 +424,19 @@ async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<String> {
             .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
             .output().await?;
         if !init.status.success() {
-            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
             anyhow::bail!("restic init failed: {}", String::from_utf8_lossy(&init.stderr).trim());
         }
     }
 
-    // 5. Backup.
+    // 5. Backup. kill_on_drop: this is the one step that can genuinely run long (a full
+    // B2 upload); if the caller's tokio::time::timeout fires, dropping this future must
+    // actually kill the restic process rather than orphan it still holding the repo lock.
     let backup = Command::new("restic")
-        .args(["backup", &tmp_dir, "--tag", "cluster-backup"])
+        .kill_on_drop(true)
+        .args(["backup", tmp_dir, "--tag", "cluster-backup"])
         .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
         .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
         .output().await?;
-
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     if !backup.status.success() {
         anyhow::bail!("restic backup failed: {}", String::from_utf8_lossy(&backup.stderr).trim());
@@ -388,6 +446,20 @@ async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<String> {
     Ok(date)
 }
 
+/// Extracts `.status` from a listed CRD item and folds in `metadata.name` — callers
+/// (the frontend) want the run's name + status fields flattened, not the full
+/// apiVersion/kind/metadata/spec/status envelope `Crd::list`/`get` return.
+fn flatten_status(item: &Value) -> Value {
+    let mut status = item["status"].clone();
+    if !status.is_object() {
+        status = json!({});
+    }
+    if let Some(name) = item["metadata"]["name"].as_str() {
+        status["name"] = Value::String(name.to_string());
+    }
+    status
+}
+
 /// GET /api/backups/state consumes this: the active run's live phase/progress if one
 /// exists, plus the most recently finished run's terminal summary either way.
 pub async fn current_status() -> Value {
@@ -395,10 +467,10 @@ pub async fn current_status() -> Value {
     let active = runs.iter().find(|r| {
         let phase = r["status"]["phase"].as_str().unwrap_or(PHASE_PENDING);
         !is_terminal(phase)
-    }).cloned();
+    }).map(flatten_status);
     let last_finished = runs.iter().find(|r| {
         is_terminal(r["status"]["phase"].as_str().unwrap_or(""))
-    }).cloned();
+    }).map(flatten_status);
     json!({ "active": active, "last": last_finished })
 }
 
