@@ -57,12 +57,26 @@ pub async fn is_active() -> bool {
     })
 }
 
+/// Extracts `.status` from a listed CRD item and folds in `metadata.name` — callers
+/// (the frontend) want the run's name + status fields flattened, not the full
+/// apiVersion/kind/metadata/spec/status envelope `Crd::list`/`get` return.
+fn flatten_status(item: &Value) -> Value {
+    let mut status = item["status"].clone();
+    if !status.is_object() {
+        status = json!({});
+    }
+    if let Some(name) = item["metadata"]["name"].as_str() {
+        status["name"] = Value::String(name.to_string());
+    }
+    status
+}
+
 /// GET /api/backups/dr/status consumes this — the active run's full status (phase,
 /// per-namespace/per-volume progress), or the most recently finished one.
 pub async fn current_status() -> Value {
     let runs = RESTORE_RUN.list().await; // newest-created first
-    let active = runs.iter().find(|r| !is_terminal(r["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING))).cloned();
-    let last_finished = runs.iter().find(|r| is_terminal(r["status"]["phase"].as_str().unwrap_or(""))).cloned();
+    let active = runs.iter().find(|r| !is_terminal(r["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING))).map(flatten_status);
+    let last_finished = runs.iter().find(|r| is_terminal(r["status"]["phase"].as_str().unwrap_or(""))).map(flatten_status);
     json!({ "active": active, "last": last_finished })
 }
 
@@ -82,6 +96,18 @@ pub async fn start(snapshot_id: Option<String>, all: bool, namespaces: Vec<Strin
     })).await?;
     tokio::spawn(execute(name.clone()));
     Ok(name)
+}
+
+/// True if this run has already been finalized by someone else — specifically,
+/// reconcile_tick's timeout sweep marking it Failed because this executor blew its
+/// phase deadline. Same rationale as backup_run.rs's `is_superseded`: without this,
+/// a slow-but-still-alive executor keeps mutating a run the reconciler already closed
+/// out, and could run concurrently with whatever the reconciler lets start next.
+async fn is_superseded(name: &str) -> bool {
+    match RESTORE_RUN.get(name).await {
+        Some(run) => is_terminal(run["status"]["phase"].as_str().unwrap_or("")),
+        None => true, // run deleted out from under us (pruned) — definitely stop
+    }
 }
 
 async fn fail(name: &str, err: impl std::fmt::Display) {
@@ -115,13 +141,21 @@ async fn execute(name: String) {
     let snapshot_id = match requested_snapshot {
         Some(id) => id,
         None => {
+            // `restic snapshots --json` returns ascending by time, not descending — take
+            // the max by `time` explicitly rather than assuming array order or relying on
+            // `--last`/`--latest` flag semantics, since getting this wrong here means
+            // "restore from the latest backup" silently restores the OLDEST retained one.
             let latest = Command::new("restic")
-                .args(["snapshots", "--json", "--tag", "cluster-backup", "--last"])
+                .args(["snapshots", "--json", "--tag", "cluster-backup"])
                 .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
                 .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
                 .output().await.ok()
                 .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-                .and_then(|v| v.as_array()?.first()?["id"].as_str().map(String::from));
+                .and_then(|v| {
+                    v.as_array()?.iter()
+                        .max_by_key(|s| s["time"].as_str().unwrap_or("").to_string())?
+                        ["id"].as_str().map(String::from)
+                });
             match latest {
                 Some(id) => id,
                 None => { fail(&name, "no snapshot specified and no cluster-backup snapshot exists").await; return; }
@@ -221,6 +255,11 @@ async fn execute(name: String) {
     // ── WaitingForStorage ─────────────────────────────────────────────────────
     if let Err(e) = wait_for_cephfs_ready(600).await {
         fail(&name, e).await;
+        return;
+    }
+
+    if is_superseded(&name).await {
+        tracing::warn!("restore-run {name}: superseded (timed out) after WaitingForStorage — stopping");
         return;
     }
 
@@ -365,6 +404,11 @@ async fn execute(name: String) {
     }
 
     let _ = RESTORE_RUN.patch_status(&name, json!({ "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() })).await;
+
+    if is_superseded(&name).await {
+        tracing::warn!("restore-run {name}: superseded (timed out) during per-namespace setup — stopping");
+        return;
+    }
 
     // Poll RDs until every non-Skipped/non-Failed volume reaches a terminal state,
     // or the phase deadline passes.
