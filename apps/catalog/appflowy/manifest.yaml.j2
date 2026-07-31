@@ -54,6 +54,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gateway
@@ -187,6 +189,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: cloud
@@ -276,6 +280,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: worker
@@ -316,6 +322,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gotrue
@@ -401,6 +409,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: minio
@@ -463,6 +473,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres
@@ -522,6 +534,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: redis

@@ -39,6 +39,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gateway
@@ -142,6 +144,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: immich-server
@@ -219,6 +223,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: immich-ml
@@ -258,6 +264,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: redis
@@ -294,6 +302,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres
