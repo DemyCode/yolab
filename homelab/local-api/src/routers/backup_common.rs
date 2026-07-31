@@ -382,12 +382,16 @@ pub(crate) async fn list_managed_namespaces() -> Vec<String> {
 /// Ensures a ReplicationSource exists for `pvc`. When `trigger_now` is true, stamps a fresh
 /// manual trigger so VolSync starts a sync immediately.
 ///
-/// VolSync RSes have NO independent schedule — they only run when the backup explicitly
-/// triggers them. This makes every backup a single coherent point-in-time: VolSync runs,
-/// completes, then the cluster snapshot is taken.
+/// VolSync RSes have NO independent schedule — they only run when explicitly triggered by
+/// a concrete `trigger.manual` value, and otherwise idle in "Waiting for manual trigger".
+/// This makes every backup a single coherent point-in-time: VolSync runs, completes, then
+/// the cluster snapshot is taken.
 ///
 /// When `trigger_now` is false and the RS already exists, this is a no-op — the existing RS
-/// (and any in-progress manual trigger set by the backup) is left untouched.
+/// (and any in-progress manual trigger set by the backup) is left untouched. When it does NOT
+/// yet exist (first call for a PVC — install time, or the hourly self-heal reconciler picking
+/// up something new), it's still created with a concrete one-off manual value rather than an
+/// empty trigger, so it syncs exactly once and then idles rather than looping continuously.
 pub(crate) async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::Result<()> {
     let cid = canonical_pvc_id(&pvc.name);
     let rs_name = format!("volsync-{cid}");
@@ -402,13 +406,20 @@ pub(crate) async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) 
         }
     }
 
-    let trigger = if trigger_now {
-        serde_json::json!({
-            "manual": chrono::Utc::now().format("backup-%Y%m%d%H%M%S").to_string()
-        })
-    } else {
-        serde_json::json!({})
-    };
+    // A completely empty trigger ({}) does NOT mean "sync once and wait" — VolSync
+    // treats it as "no schedule, no manual value to wait for", which in practice makes
+    // the mover resync continuously in a tight back-to-back loop with no pause at all.
+    // Observed live: a freshly-installed app's RS (trigger_now=false, first creation)
+    // sat there spinning up a new mover pod every ~20s indefinitely, since nothing ever
+    // gave it a concrete manual value to settle on until the next real backup ran.
+    // Every RS this function creates — trigger_now true or false — must get a concrete
+    // manual value so VolSync syncs exactly once and then idles in "Waiting for manual
+    // trigger" until the next real backup changes it.
+    let trigger = serde_json::json!({
+        "manual": chrono::Utc::now()
+            .format(if trigger_now { "backup-%Y%m%d%H%M%S" } else { "init-%Y%m%d%H%M%S" })
+            .to_string()
+    });
     // copyMethod Direct: read from the live PVC without snapshotting first.
     // More reliable than Snapshot which requires a working VolumeSnapshotClass —
     // if the CSI plugin is unhealthy the snapshot never completes and the backup
