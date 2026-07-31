@@ -47,6 +47,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gateway
@@ -232,6 +234,8 @@ metadata:
   namespace: yolab-{{ instance_name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres
