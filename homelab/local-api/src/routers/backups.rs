@@ -253,9 +253,6 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
         })
         .collect();
 
-    let dr_mode = pvcs
-        .iter()
-        .any(|p| matches!(p["pvc_phase"].as_str(), Some("Lost") | Some("NotFound")));
     let backup_alert = pvcs.iter().any(|p| {
         p["stale"].as_bool().unwrap_or(false) || p["stuck_terminating"].as_bool().unwrap_or(false)
     });
@@ -284,7 +281,6 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     Ok(Json(serde_json::json!({
         "pvcs": pvcs,
         "etcd_last_snapshot": etcd_last,
-        "dr_mode": dr_mode,
         "backup_alert": backup_alert,
     })))
 }

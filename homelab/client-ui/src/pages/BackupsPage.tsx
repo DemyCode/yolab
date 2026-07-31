@@ -839,64 +839,11 @@ function EnableCard({ onEnable, disabled }: { onEnable: () => Promise<void>; dis
   );
 }
 
-// ── DR banner (auto-detected Lost PVCs) ───────────────────────────────────────
-
-function DrBanner({ lostCount, disabled, onRestoreStarted }: { lostCount: number; disabled: boolean; onRestoreStarted: () => void }) {
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handle() {
-    setStarting(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/backups/dr/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // Emergency restore = every managed namespace, from the latest snapshot
-        // (omitting snapshot_id resolves to the latest cluster-backup snapshot).
-        body: JSON.stringify({ all: true }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      onRestoreStarted();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed");
-      setStarting(false);
-    }
-  }
-
-  return (
-    <div className="rounded-lg border border-[#7f1d1d] bg-[#1c0a0a] p-4 space-y-2">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-sm font-semibold text-[#f87171] flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4" />
-            Disk failure detected
-          </p>
-          <p className="text-xs text-[#71717a] mt-1">
-            {lostCount} volume{lostCount !== 1 ? "s" : ""} lost. Restore all data from the last backup.
-          </p>
-        </div>
-        <Button
-          onClick={handle}
-          disabled={starting || disabled}
-          className="flex-shrink-0 bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 text-sm h-9 px-4 disabled:opacity-40"
-        >
-          {starting
-            ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Starting…</>
-            : "Emergency Restore"}
-        </Button>
-      </div>
-      {error && <p className="text-xs text-[#f87171]">{error}</p>}
-    </div>
-  );
-}
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function BackupsPage() {
   const [s3Status, setS3Status]         = useState<{ provisioned: boolean } | null>(null);
   const [runningNamespaces, setRunning] = useState<Set<string>>(new Set());
-  const [lostCount, setLostCount]       = useState(0);
   const [loading, setLoading]           = useState(true);
   const [opState, setOpState]           = useState<OperationState>({
     backing_up: false, restoring: false, backup_run: null, restore_run: null, last_backup: null,
@@ -929,7 +876,6 @@ export function BackupsPage() {
     const status = statusRes as { pvcs?: { namespace: string; pvc_phase?: string }[] } | null;
     if (status?.pvcs) {
       setRunning(new Set(status.pvcs.map(p => p.namespace)));
-      setLostCount(status.pvcs.filter(p => p.pvc_phase === "Lost" || p.pvc_phase === "NotFound").length);
     }
     setLoading(false);
   }, []);
@@ -1060,13 +1006,6 @@ export function BackupsPage() {
         <EnableCard onEnable={handleEnable} disabled={opBusy} />
       ) : (
         <div className="space-y-4">
-          {lostCount > 0 && (
-            <DrBanner
-              lostCount={lostCount}
-              disabled={opBusy}
-              onRestoreStarted={() => void pollOpState()}
-            />
-          )}
           <SnapshotExplorer
             runningNamespaces={runningNamespaces}
             onBackupDone={load}
