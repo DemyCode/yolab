@@ -72,7 +72,7 @@ function AppIcon({ icon }: { icon: string }) {
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   function copy() {
-    navigator.clipboard.writeText(text).catch(() => {});
+    navigator.clipboard.writeText(text).catch(() => { });
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
@@ -254,12 +254,12 @@ export function AppsPage() {
         setInstalled(JSON.parse(cached) as AppInfo[]);
         setStale(true);
       }
-    } catch {}
+    } catch { }
 
     const catalogP = fetch("/api/apps/catalog")
       .then((r) => r.json())
       .then((c) => setCatalog(c as CatalogApp[]))
-      .catch(() => {});
+      .catch(() => { });
     void Promise.all([catalogP, loadInstalled()]).finally(() =>
       setLoading(false),
     );
@@ -435,11 +435,11 @@ export function AppInstallPage() {
         const found = catalog.find((a) => a.id === appId);
         if (found) setApp(found);
       })
-      .catch(() => {});
+      .catch(() => { });
     fetch("/api/tunnel/domain")
       .then((r) => r.json())
       .then((d: DomainResponse) => setTunnelDomain(d.domain))
-      .catch(() => {});
+      .catch(() => { });
   }, [appId]);
 
   useEffect(() => {
@@ -619,14 +619,14 @@ export function InstalledDetailPage() {
           setReconfData(found.config as object);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }
 
   function loadPods() {
     fetch(`/api/apps/${instanceName}/pods`)
       .then((r) => r.json())
       .then((p) => setPods(p as PodInfo[]))
-      .catch(() => {});
+      .catch(() => { });
   }
 
   function scanOutputs(): Promise<void> {
@@ -635,7 +635,7 @@ export function InstalledDetailPage() {
       .then((data: ScanOutputsResponse) =>
         setApp((prev) => (prev ? { ...prev, outputs: data.outputs } : prev)),
       )
-      .catch(() => {});
+      .catch(() => { });
   }
 
   useEffect(() => {
@@ -657,7 +657,7 @@ export function InstalledDetailPage() {
         const found = c.find((a) => a.id === app.app_id);
         if (found) setCatalogApp(found);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [app?.app_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
