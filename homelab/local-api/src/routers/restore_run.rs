@@ -3,22 +3,39 @@
 //
 // Phases: Validating → WaitingForStorage → RestoringVolumes → Applying →
 // Succeeded|Partial|Failed. Same rationale as BackupRun (see backup_run.rs's module
-// doc) — the previous design's ConfigMap-lock + "does any ReplicationDestination
-// exist" checks meant a stuck restore blocked every future backup/restore forever,
-// and every failure branch in the per-PVC loop was a bare `continue` after the
-// namespace had already been scaled to 0 — so a single bad PVC (no backup snapshot,
-// a delete timeout, ...) could leave a whole app dark with no path back up. Here,
-// every non-terminal phase has a deadline, and the Applying phase unconditionally
-// scales every namespace's deployments back up — succeeded, failed, or skipped —
-// so "restore didn't work" degrades to "app running with old/empty data", never to
-// "app permanently stopped".
+// doc for the full argument) — every non-terminal phase has a deadline, and the
+// Applying phase unconditionally scales every namespace's deployments back up —
+// succeeded, failed, or skipped — so "restore didn't work" degrades to "app running
+// with old/empty data", never to "app permanently stopped".
+//
+// ── Level-triggered, not edge-triggered ──────────────────────────────────────────────
+//
+// Same redesign as BackupRun, for the same reason, proven by the same live incident:
+// this used to be one `tokio::spawn`ed task running the whole restore start-to-finish,
+// including an internal poll loop that could run for up to 90 minutes. When the node
+// rebooted mid-restore, that task died with it — the CRD sat in `RestoringVolumes`
+// forever, both affected apps stuck at 0 replicas, because nothing else knew how to
+// finish the job or even scale them back up. The phase/deadline timeout sweep could
+// only mark the run `Failed` once its deadline eventually passed — it had no path to
+// actually complete the restore or run the recovery-scale-up logic, because that logic
+// lived only inside the one task that had already died.
+//
+// There is no spawned task anymore. `start()` only creates the object. The reconcile
+// tick calls `step()` once per non-terminal run, every tick: read the CRD's current
+// phase and the real cluster state, do exactly one bounded unit of work, return. A
+// crash between any two ticks is invisible to the next one — it just sees the same
+// status and keeps going, because every phase is built from operations that are safe
+// to redo (`ensure_*` helpers, idempotent `kubectl apply`, delete-if-exists checks).
+// Anything a phase computes that a *later* phase needs (the resolved namespace list,
+// the per-namespace PVC catalog, the restore point-in-time) is written into the CRD
+// status during that phase, specifically so a later step reading it back doesn't care
+// which process wrote it or when.
 
 use crate::kubectl::Crd;
 use crate::lease;
 use crate::routers::backup_common::*;
 use chrono::Utc;
 use serde_json::{json, Value};
-use std::time::Duration;
 use tokio::process::Command;
 
 pub(crate) const RESTORE_RUN: Crd = Crd {
@@ -48,6 +65,13 @@ fn is_terminal(phase: &str) -> bool {
 
 fn deadline_after(secs: i64) -> String {
     (Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339()
+}
+
+fn parse_deadline(v: &Value) -> Option<chrono::DateTime<Utc>> {
+    v["status"]["phaseDeadline"]
+        .as_str()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc))
 }
 
 pub async fn is_active() -> bool {
@@ -80,8 +104,10 @@ pub async fn current_status() -> Value {
     json!({ "active": active, "last": last_finished })
 }
 
-/// Creates a RestoreRun and spawns its execution. `snapshot_id` of `None` resolves to
-/// the latest cluster-backup snapshot once execution reaches Validating.
+/// Creates a RestoreRun in Validating phase and returns immediately. There is no
+/// spawned task — the next reconcile tick picks it up, and every tick after that. See
+/// the module doc: nothing about this run's progress depends on this process staying
+/// alive.
 pub async fn start(snapshot_id: Option<String>, all: bool, namespaces: Vec<String>) -> anyhow::Result<String> {
     let name = format!("restore-{}", Utc::now().format("%Y%m%d%H%M%S"));
     RESTORE_RUN.create(&name, json!({
@@ -94,20 +120,7 @@ pub async fn start(snapshot_id: Option<String>, all: bool, namespaces: Vec<Strin
         "phaseDeadline": deadline_after(120),
         "startedAt": Utc::now().to_rfc3339(),
     })).await?;
-    tokio::spawn(execute(name.clone()));
     Ok(name)
-}
-
-/// True if this run has already been finalized by someone else — specifically,
-/// reconcile_tick's timeout sweep marking it Failed because this executor blew its
-/// phase deadline. Same rationale as backup_run.rs's `is_superseded`: without this,
-/// a slow-but-still-alive executor keeps mutating a run the reconciler already closed
-/// out, and could run concurrently with whatever the reconciler lets start next.
-async fn is_superseded(name: &str) -> bool {
-    match RESTORE_RUN.get(name).await {
-        Some(run) => is_terminal(run["status"]["phase"].as_str().unwrap_or("")),
-        None => true, // run deleted out from under us (pruned) — definitely stop
-    }
 }
 
 async fn fail(name: &str, err: impl std::fmt::Display) {
@@ -119,15 +132,31 @@ async fn fail(name: &str, err: impl std::fmt::Display) {
     })).await;
 }
 
-async fn execute(name: String) {
+/// Advances `name` by exactly one bounded step from whatever phase it is CURRENTLY in.
+/// Called once per non-terminal run on every reconcile tick.
+async fn step(name: &str) {
+    let Some(run) = RESTORE_RUN.get(name).await else { return };
+    let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING).to_string();
+
     let Some(cfg) = read_master_config().await else {
-        fail(&name, "backup not configured").await;
+        fail(name, "backup not configured").await;
         return;
     };
-    let run = match RESTORE_RUN.get(&name).await {
-        Some(r) => r,
-        None => return,
-    };
+
+    match phase.as_str() {
+        PHASE_VALIDATING => step_validating(name, &run, &cfg).await,
+        PHASE_WAITING_STORAGE => step_waiting_storage(name).await,
+        PHASE_RESTORING => step_restoring(name, &run, &cfg).await,
+        PHASE_APPLYING => step_applying(name, &run).await,
+        _ => {} // terminal — reconcile_tick already filters these out before calling step()
+    }
+}
+
+/// Validating: resolve the snapshot id, extract catalog.json, resolve the namespace
+/// list, run the space pre-flight. Entirely read-only against the cluster (no
+/// namespace/PVC mutations happen until RestoringVolumes), so safe to redo in full on
+/// a retry — nothing here needs a "have I already done this" marker.
+async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     let requested_snapshot = run["spec"]["snapshotId"].as_str().map(String::from);
     let want_all = run["spec"]["all"].as_bool().unwrap_or(false);
     let requested_namespaces: Vec<String> = run["spec"]["namespaces"].as_array()
@@ -137,7 +166,6 @@ async fn execute(name: String) {
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
 
-    // ── Validating ────────────────────────────────────────────────────────────
     let snapshot_id = match requested_snapshot {
         Some(id) => id,
         None => {
@@ -158,7 +186,7 @@ async fn execute(name: String) {
                 });
             match latest {
                 Some(id) => id,
-                None => { fail(&name, "no snapshot specified and no cluster-backup snapshot exists").await; return; }
+                None => { fail(name, "no snapshot specified and no cluster-backup snapshot exists").await; return; }
             }
         }
     };
@@ -189,10 +217,10 @@ async fn execute(name: String) {
         }
         Ok(o) => {
             let _ = tokio::fs::remove_dir_all(&cat_target).await;
-            fail(&name, format!("could not extract catalog from snapshot: {}", String::from_utf8_lossy(&o.stderr).trim())).await;
+            fail(name, format!("could not extract catalog from snapshot: {}", String::from_utf8_lossy(&o.stderr).trim())).await;
             return;
         }
-        Err(e) => { fail(&name, format!("restic unavailable: {e}")).await; return; }
+        Err(e) => { fail(name, format!("restic unavailable: {e}")).await; return; }
     };
 
     let namespaces: Vec<String> = if want_all {
@@ -203,7 +231,7 @@ async fn execute(name: String) {
         requested_namespaces
     };
     if namespaces.is_empty() {
-        fail(&name, "no namespaces found — snapshot may predate this feature, or pass namespaces[] explicitly").await;
+        fail(name, "no namespaces found — snapshot may predate this feature, or pass namespaces[] explicitly").await;
         return;
     }
 
@@ -218,7 +246,7 @@ async fn execute(name: String) {
                     let effective_avail = avail.saturating_add(reclaimable);
                     let need = total_pvc_bytes * 6 / 5;
                     if effective_avail < need {
-                        fail(&name, format!(
+                        fail(name, format!(
                             "insufficient storage: {avail} bytes free (+{reclaimable} reclaimable \
                              from PVCs being replaced), ~{need} bytes needed \
                              ({total_pvc_bytes} bytes of PVC data + 20% headroom). \
@@ -244,32 +272,73 @@ async fn execute(name: String) {
     let namespaces_status: Vec<Value> = namespaces.iter().map(|ns| json!({
         "namespace": ns, "scaledDeployments": Value::Array(vec![]), "volumes": Value::Array(vec![]),
     })).collect();
-    let _ = RESTORE_RUN.patch_status(&name, json!({
+    // resolvedNamespaces + catalog are written here so later phases (which only ever
+    // read the CRD, never a local variable) can pick up exactly what Validating found
+    // — regardless of whether the same process is still running.
+    let _ = RESTORE_RUN.patch_status(name, json!({
         "phase": PHASE_WAITING_STORAGE,
         "phaseDeadline": deadline_after(700),
         "snapshotId": snapshot_id,
         "restoreAsOf": restore_as_of,
         "namespaces": namespaces_status,
+        "resolvedNamespaces": namespaces,
+        "catalog": catalog,
     })).await;
+}
 
-    // ── WaitingForStorage ─────────────────────────────────────────────────────
-    if let Err(e) = wait_for_cephfs_ready(600).await {
-        fail(&name, e).await;
+/// WaitingForStorage: a single non-blocking check of whether CephFS is mountable right
+/// now — no internal sleep loop. Stays in this phase (reconcile_tick will call again
+/// next tick) until it observes Ready, or until the phase deadline passes and the
+/// timeout sweep fails the run.
+async fn step_waiting_storage(name: &str) {
+    let out = Command::new("kubectl")
+        .args(["get", "cephfilesystem", "yolab-fs", "-n", "rook-ceph",
+               "-o", "jsonpath={.status.phase}"])
+        .output().await;
+    let phase = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => String::new(),
+    };
+    if phase != "Ready" {
+        tracing::info!("restore-run {name}: CephFilesystem phase={phase:?} — waiting for Ready");
         return;
     }
 
-    if is_superseded(&name).await {
-        tracing::warn!("restore-run {name}: superseded (timed out) after WaitingForStorage — stopping");
-        return;
-    }
-
-    // ── RestoringVolumes ──────────────────────────────────────────────────────
-    let restoring_deadline = Utc::now() + chrono::Duration::seconds(5400);
-    let _ = RESTORE_RUN.patch_status(&name, json!({
+    let _ = RESTORE_RUN.patch_status(name, json!({
         "phase": PHASE_RESTORING,
-        "phaseDeadline": restoring_deadline.to_rfc3339(),
+        "phaseDeadline": deadline_after(5400),
     })).await;
+}
 
+/// RestoringVolumes has two sub-steps, distinguished by the `volumesInitialized`
+/// marker (persisted in status, not in memory — that's what makes resuming after a
+/// crash "read the marker and pick the right branch" instead of needing to remember
+/// anything):
+///
+/// 1. Not yet initialized: do the full per-namespace setup (apply YAML, scale to 0,
+///    delete/recreate each PVC, create ReplicationDestinations) and record the result.
+///    Safe to redo in full from scratch — every operation here is idempotent
+///    (`kubectl apply`, `ensure_*` helpers) or already handles "already gone"/"already
+///    exists" as success, so re-running this after a crash wastes at most some
+///    already-started data-pull progress, never corrupts anything.
+/// 2. Initialized: a single observation of every "Restoring" volume's
+///    ReplicationDestination — no internal poll loop. Transitions to Applying once
+///    every volume is terminal, or once the phase deadline passes (whichever first).
+async fn step_restoring(name: &str, run: &Value, cfg: &BackupConfig) {
+    if !run["status"]["volumesInitialized"].as_bool().unwrap_or(false) {
+        step_restoring_setup(name, run, cfg).await;
+    } else {
+        step_restoring_poll(name, run).await;
+    }
+}
+
+async fn step_restoring_setup(name: &str, run: &Value, cfg: &BackupConfig) {
+    let namespaces: Vec<String> = run["status"]["resolvedNamespaces"].as_array().cloned().unwrap_or_default()
+        .into_iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    let catalog = run["status"]["catalog"].clone();
+    let snapshot_id = run["status"]["snapshotId"].as_str().unwrap_or("").to_string();
+    let restore_as_of = run["status"]["restoreAsOf"].as_str().map(String::from);
+    let repo = cfg.restic_repo("cluster-backup");
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
     let mut ns_state: Vec<NamespaceState> = Vec::new();
 
@@ -303,8 +372,6 @@ async fn execute(name: String) {
                         if let Ok(bytes) = tokio::fs::read(&yaml_path).await {
                             if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
                                 tracing::warn!("restore-run {name}: {ns}: YAML apply partial: {e}");
-                            } else {
-                                tokio::time::sleep(Duration::from_secs(2)).await;
                             }
                         }
                     }
@@ -313,7 +380,9 @@ async fn execute(name: String) {
         }
         let _ = tokio::fs::remove_dir_all(&yaml_target).await;
 
-        // Record what we're about to scale down so Applying can always undo it.
+        // Record what we're about to scale down so Applying can always undo it. If this
+        // is a redo after a crash, the deployments may already be at 0 from the previous
+        // attempt — that's fine, `kubectl get` still reports their names correctly.
         let existing_deployments: Vec<String> = Command::new("kubectl")
             .args(["get", "deployments", "-n", ns, "-o", "jsonpath={.items[*].metadata.name}"])
             .output().await.ok()
@@ -335,7 +404,7 @@ async fn execute(name: String) {
         for (pvc_name, capacity) in &catalog_pvcs {
             let mut vol = VolumeState { pvc: pvc_name.clone(), phase: "Pending".to_string() };
 
-            if let Err(e) = ensure_restic_secret(ns, pvc_name, &cfg).await {
+            if let Err(e) = ensure_restic_secret(ns, pvc_name, cfg).await {
                 tracing::warn!("restore-run {name}: {ns}/{pvc_name}: restic secret: {e}");
             }
             let _ = ensure_replication_source(&PvcInfo { namespace: ns.clone(), name: pvc_name.clone() }, false).await;
@@ -403,61 +472,72 @@ async fn execute(name: String) {
         ns_state.push(state);
     }
 
-    let _ = RESTORE_RUN.patch_status(&name, json!({ "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() })).await;
+    let _ = RESTORE_RUN.patch_status(name, json!({
+        "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
+        "volumesInitialized": true,
+    })).await;
+}
 
-    if is_superseded(&name).await {
-        tracing::warn!("restore-run {name}: superseded (timed out) during per-namespace setup — stopping");
+async fn step_restoring_poll(name: &str, run: &Value) {
+    let deadline = parse_deadline(run).unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(5400));
+    let mut ns_state = parse_ns_state(run);
+
+    let rds = Command::new("kubectl").args(["get", "replicationdestination", "-A", "-o", "json"]).output().await;
+    let rd_items: Vec<Value> = rds.ok()
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default();
+
+    let mut all_terminal = true;
+    for state in ns_state.iter_mut() {
+        for vol in state.volumes.iter_mut() {
+            if vol.phase != "Restoring" { continue; }
+            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&vol.pvc));
+            let item = rd_items.iter().find(|i| {
+                i["metadata"]["name"].as_str() == Some(dest_name.as_str())
+                    && i["metadata"]["namespace"].as_str() == Some(state.namespace.as_str())
+            });
+            let result = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str()).unwrap_or("").to_lowercase();
+            match result.as_str() {
+                "successful" => vol.phase = "Succeeded".to_string(),
+                "failed" => vol.phase = "Failed".to_string(),
+                _ => all_terminal = false,
+            }
+        }
+    }
+
+    let past_deadline = Utc::now() > deadline;
+    if !all_terminal && !past_deadline {
+        let _ = RESTORE_RUN.patch_status(name, json!({
+            "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
+        })).await;
         return;
     }
 
-    // Poll RDs until every non-Skipped/non-Failed volume reaches a terminal state,
-    // or the phase deadline passes.
-    loop {
-        let rds = Command::new("kubectl").args(["get", "replicationdestination", "-A", "-o", "json"]).output().await;
-        let rd_items: Vec<Value> = rds.ok()
-            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-            .and_then(|v| v["items"].as_array().cloned())
-            .unwrap_or_default();
-
-        let mut all_terminal = true;
+    if past_deadline {
         for state in ns_state.iter_mut() {
             for vol in state.volumes.iter_mut() {
-                if vol.phase != "Restoring" { continue; }
-                let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&vol.pvc));
-                let item = rd_items.iter().find(|i| {
-                    i["metadata"]["name"].as_str() == Some(dest_name.as_str())
-                        && i["metadata"]["namespace"].as_str() == Some(state.namespace.as_str())
-                });
-                let result = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str()).unwrap_or("").to_lowercase();
-                match result.as_str() {
-                    "successful" => vol.phase = "Succeeded".to_string(),
-                    "failed" => vol.phase = "Failed".to_string(),
-                    _ => all_terminal = false,
+                if vol.phase == "Restoring" {
+                    tracing::warn!("restore-run {name}: {}/{}: timed out", state.namespace, vol.pvc);
+                    vol.phase = "Failed".to_string();
                 }
             }
         }
-        let _ = RESTORE_RUN.patch_status(&name, json!({ "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() })).await;
-
-        if all_terminal || Utc::now() > restoring_deadline {
-            for state in ns_state.iter_mut() {
-                for vol in state.volumes.iter_mut() {
-                    if vol.phase == "Restoring" {
-                        tracing::warn!("restore-run {name}: {}/{}: timed out", state.namespace, vol.pvc);
-                        vol.phase = "Failed".to_string();
-                    }
-                }
-            }
-            break;
-        }
-        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 
-    // ── Applying ──────────────────────────────────────────────────────────────
-    let _ = RESTORE_RUN.patch_status(&name, json!({
+    let _ = RESTORE_RUN.patch_status(name, json!({
         "phase": PHASE_APPLYING,
         "phaseDeadline": deadline_after(300),
         "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
     })).await;
+}
+
+/// Applying: scale every namespace's deployments back up unconditionally, clean up
+/// completed ReplicationDestinations, compute the terminal phase. Safe to redo in
+/// full — scaling to an already-current replica count is a no-op, RD delete ignores
+/// not-found.
+async fn step_applying(name: &str, run: &Value) {
+    let ns_state = parse_ns_state(run);
 
     for state in &ns_state {
         // Unconditional: whatever happened to the data, the app must not stay dark.
@@ -486,7 +566,7 @@ async fn execute(name: String) {
         PHASE_PARTIAL
     };
 
-    let _ = RESTORE_RUN.patch_status(&name, json!({
+    let _ = RESTORE_RUN.patch_status(name, json!({
         "phase": phase,
         "finishedAt": Utc::now().to_rfc3339(),
         "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
@@ -515,9 +595,31 @@ impl NamespaceState {
     }
 }
 
+/// Reconstructs `NamespaceState` from `status.namespaces` — the only place this data
+/// lives between ticks (never in a task-local variable), so any tick, in any process,
+/// reads the exact same state the previous tick left behind.
+fn parse_ns_state(run: &Value) -> Vec<NamespaceState> {
+    run["status"]["namespaces"].as_array().cloned().unwrap_or_default()
+        .into_iter()
+        .map(|n| NamespaceState {
+            namespace: n["namespace"].as_str().unwrap_or("").to_string(),
+            scaled_deployments: n["scaledDeployments"].as_array().cloned().unwrap_or_default()
+                .into_iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            volumes: n["volumes"].as_array().cloned().unwrap_or_default()
+                .into_iter()
+                .map(|v| VolumeState {
+                    pvc: v["pvc"].as_str().unwrap_or("").to_string(),
+                    phase: v["phase"].as_str().unwrap_or("Pending").to_string(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// Reconcile tick: only the lease holder acts. Times out any run stuck past its phase
-/// deadline. Unlike BackupRun there's no scheduling decision here — restores are only
-/// ever started explicitly (manual snapshot pick, or the DR banner's emergency restore).
+/// deadline, then advances every still-active run by exactly one step. Unlike
+/// BackupRun there's no scheduling decision here — restores are only ever started
+/// explicitly (manual snapshot pick, or the DR banner's emergency restore).
 pub async fn reconcile_tick(holder: &str) {
     let Some(_guard) = lease::acquire(LEASE_NAME, holder, LEASE_DURATION_SECS).await else {
         return;
@@ -535,24 +637,38 @@ pub async fn reconcile_tick(holder: &str) {
         }
     }
 
+    let mut timed_out: std::collections::HashSet<String> = std::collections::HashSet::new();
     for run in RESTORE_RUN.list().await {
         let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING).to_string();
         if is_terminal(&phase) {
             continue;
         }
-        let deadline = run["status"]["phaseDeadline"].as_str()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|t| t.with_timezone(&Utc));
-        if let Some(dl) = deadline {
+        if let Some(dl) = parse_deadline(&run) {
             if Utc::now() > dl {
                 let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
-                tracing::warn!("restore-run {name}: timed out in phase {phase} — the executing task should have already handled this; forcing terminal");
+                tracing::warn!("restore-run {name}: timed out in phase {phase}");
                 let _ = RESTORE_RUN.patch_status(&name, json!({
                     "phase": PHASE_FAILED,
                     "finishedAt": Utc::now().to_rfc3339(),
-                    "error": format!("timed out in phase {phase} (executor task may have died)"),
+                    "error": format!("timed out in phase {phase}"),
                 })).await;
+                timed_out.insert(name);
             }
         }
+    }
+
+    // Advance every still-active run by exactly one step. This is the whole
+    // reconciler now — no separate executor task exists anywhere for this to race
+    // against, which is exactly what leaves a restore fully recoverable across a
+    // crash or reboot instead of stranded mid-flight.
+    for run in RESTORE_RUN.list().await {
+        let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
+        if name.is_empty() || timed_out.contains(&name) {
+            continue;
+        }
+        if is_terminal(run["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING)) {
+            continue;
+        }
+        step(&name).await;
     }
 }

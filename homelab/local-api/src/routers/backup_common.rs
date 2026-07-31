@@ -675,36 +675,6 @@ pub(crate) async fn delete_pvc_and_wait(namespace: &str, pvc_name: &str) -> anyh
     );
 }
 
-/// Polls until CephFilesystem yolab-fs reports phase=Ready (filesystem is mountable).
-/// Returns immediately if already ready. Creating a PVC on a down CephFS hangs the
-/// CSI provisioner indefinitely, so DR restore gates on this before any PVC work.
-/// Bounded by `timeout_secs`, which the caller should keep well inside the owning
-/// RestoreRun phase's deadline.
-pub(crate) async fn wait_for_cephfs_ready(timeout_secs: u64) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        let out = Command::new("kubectl")
-            .args(["get", "cephfilesystem", "yolab-fs", "-n", "rook-ceph",
-                   "-o", "jsonpath={.status.phase}"])
-            .output().await;
-        let phase = match out {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-            _ => String::new(),
-        };
-        if phase == "Ready" {
-            return Ok(());
-        }
-        if std::time::Instant::now() > deadline {
-            anyhow::bail!(
-                "timed out after {timeout_secs}s waiting for CephFilesystem to be Ready \
-                 (current: {phase:?}) — surviving OSDs may need more time to recover"
-            );
-        }
-        tracing::info!("dr: CephFilesystem phase={phase:?} — waiting for Ready");
-        tokio::time::sleep(Duration::from_secs(10)).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

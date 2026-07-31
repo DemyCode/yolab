@@ -13,6 +13,32 @@
 // non-terminal simply means "this run failed", full stop — there is no "wait, maybe it's
 // still going" ambiguity to get wrong.
 //
+// ── Level-triggered, not edge-triggered ──────────────────────────────────────────────
+//
+// Earlier versions of this reconciler still had a bug class the phase/deadline design
+// was supposed to eliminate: each BackupRun was driven by a single `tokio::spawn`ed task
+// that ran the whole thing start-to-finish, in-process, with internal `sleep()` polling
+// loops lasting up to 30 minutes. If the process restarted (a crash, an OOM, a reboot —
+// exactly what happened live once, taking two apps down until someone noticed), that
+// task just vanished. The phase/deadline system caught it *eventually* (once the
+// deadline passed) but had no way to actually finish the work — it could only mark the
+// run Failed, because "resume this specific in-flight task" was never a thing that
+// existed anywhere outside that one process's memory.
+//
+// This version has no such task. `start()` only creates the object; there is no spawn.
+// The reconcile tick (`run()`, firing every RECONCILE_TICK_SECS) is the *only* thing
+// that ever touches a BackupRun's status, and on every tick it calls `step()` once for
+// every non-terminal run: read the CRD's current phase, do exactly one bounded unit of
+// work for that phase, and return. No sleeping inside `step()` for anything longer than
+// a single phase's bounded operation. All state that matters lives in the CRD status,
+// never in a task's stack — so it does not matter *at all* whether the process driving
+// tick N is the same process that drove tick N-1. A crash between any two ticks just
+// means the next tick (this process restarted, or a fresh one) reads the same status
+// and keeps going, because every phase's work is built from operations that are safe to
+// redo (the `ensure_*` helpers, idempotent `kubectl apply`, restic commands that are
+// safe to re-run) — redoing a phase from scratch after a crash is always safe, even if
+// it wastes some partial progress.
+//
 // Scheduling is wall-clock derived ("no run succeeded in the last 24h and none is active
 // → start one") instead of a single `tokio::time::sleep` until 02:00 UTC — the latter
 // uses CLOCK_MONOTONIC, which does not advance across laptop suspend, so a suspended
@@ -23,6 +49,7 @@ use crate::lease;
 use crate::routers::backup_common::*;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -91,7 +118,10 @@ pub async fn volsync_mover_running() -> bool {
         .unwrap_or(false)
 }
 
-/// Creates a new BackupRun and spawns its execution. Returns the run's name.
+/// Creates a new BackupRun in Pending phase and returns immediately. There is no
+/// spawned task — the next reconcile tick (within RECONCILE_TICK_SECS) is what actually
+/// starts driving it, and every tick after that. Nothing about this run's progress is
+/// tied to the lifetime of the process that created it.
 pub async fn start(triggered_by: &str) -> anyhow::Result<String> {
     let name = format!("backup-{}", Utc::now().format("%Y%m%d%H%M%S"));
     BACKUP_RUN.create(&name, json!({ "triggeredBy": triggered_by }), &[("app.kubernetes.io/managed-by", "yolab")]).await?;
@@ -100,116 +130,178 @@ pub async fn start(triggered_by: &str) -> anyhow::Result<String> {
         "phaseDeadline": deadline_after(30),
         "startedAt": Utc::now().to_rfc3339(),
     })).await?;
-    tokio::spawn(execute(name.clone()));
     Ok(name)
 }
 
-/// True if this run has already been finalized by someone else — specifically,
-/// reconcile_tick's timeout sweep marking it Failed because this executor blew its
-/// phase deadline. Without this check, a slow-but-still-alive executor would keep
-/// patching phases after being timed out, potentially clobbering the Failed status
-/// and racing a second run the reconciler started once it saw no active run.
-async fn is_superseded(name: &str) -> bool {
-    match BACKUP_RUN.get(name).await {
-        Some(run) => is_terminal(run["status"]["phase"].as_str().unwrap_or("")),
-        None => true, // run deleted out from under us (pruned) — definitely stop
-    }
-}
+/// Advances `name` by exactly one bounded step from whatever phase it is CURRENTLY in
+/// (read fresh from the CRD, not from any caller-held state). Called once per
+/// non-terminal run on every reconcile tick — see the module doc for why this
+/// replaces the old spawned-task design.
+async fn step(name: &str) {
+    let Some(run) = BACKUP_RUN.get(name).await else { return };
+    let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING).to_string();
 
-/// The full phase-by-phase backup, patching BackupRun.status at every transition.
-/// If this task dies mid-run (process killed), the run is left non-terminal past its
-/// phaseDeadline — reconcile_tick's timeout sweep is what turns that into a clean
-/// `Failed` instead of leaving it stuck forever.
-async fn execute(name: String) {
     let Some(cfg) = read_master_config().await else {
-        let _ = BACKUP_RUN.patch_status(&name, json!({
+        let _ = BACKUP_RUN.patch_status(name, json!({
             "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
             "error": "backup not configured",
         })).await;
         return;
     };
 
-    // ── SyncingVolumes ──────────────────────────────────────────────────────
+    match phase.as_str() {
+        PHASE_PENDING => step_pending(name, &cfg).await,
+        PHASE_SYNCING => step_syncing(name, &run).await,
+        PHASE_SNAPSHOTTING => step_snapshotting(name, &run, &cfg).await,
+        PHASE_PRUNING => step_pruning(name, &run, &cfg).await,
+        _ => {} // terminal — reconcile_tick already filters these out before calling step()
+    }
+}
+
+/// Pending → SyncingVolumes. Lists every managed PVC, ensures each has a restic secret
+/// and ReplicationSource, and stamps a fresh manual trigger on each. Safe to redo in
+/// full: `ensure_restic_secret`/`ensure_replication_source` are idempotent "ensure"
+/// operations, and re-stamping a manual trigger on a retry after a crash is harmless —
+/// worst case, one extra redundant VolSync sync, never lost or duplicated data.
+async fn step_pending(name: &str, cfg: &BackupConfig) {
     let pvcs = list_user_pvcs().await.unwrap_or_default();
     let since = Utc::now();
-    let sync_deadline = Utc::now() + chrono::Duration::seconds(1800);
+    let sync_deadline = since + chrono::Duration::seconds(1800);
     let pvc_status: Vec<Value> = pvcs.iter()
         .map(|p| json!({ "namespace": p.namespace, "name": p.name, "phase": "Syncing" }))
         .collect();
-    let _ = BACKUP_RUN.patch_status(&name, json!({
+
+    for pvc in &pvcs {
+        annotate_ns_privileged_movers(&pvc.namespace).await;
+        let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await;
+        let _ = ensure_replication_source(pvc, true).await;
+    }
+
+    let _ = BACKUP_RUN.patch_status(name, json!({
         "phase": PHASE_SYNCING,
         "phaseDeadline": sync_deadline.to_rfc3339(),
         "syncSince": since.to_rfc3339(),
         "pvcs": pvc_status,
     })).await;
+}
+
+/// SyncingVolumes: a single observation of every tracked PVC's ReplicationSource — no
+/// internal sleep loop. Updates status.pvcs with the latest observed phase on every
+/// tick (so the frontend's live per-volume progress keeps moving even across a crash-
+/// and-restart of this process); transitions to SnapshottingCluster once every PVC has
+/// synced, or once the phase deadline passes (proceeding with whatever synced — a
+/// partial backup beats no backup).
+async fn step_syncing(name: &str, run: &Value) {
+    let since = run["status"]["syncSince"].as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let deadline = parse_deadline(run).unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(1800));
+    let pvcs: Vec<PvcInfo> = run["status"]["pvcs"].as_array().cloned().unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| Some(PvcInfo {
+            namespace: p["namespace"].as_str()?.to_string(),
+            name: p["name"].as_str()?.to_string(),
+        }))
+        .collect();
+
+    let rs = get_replication_sources().await;
+    let mut pvc_status = Vec::with_capacity(pvcs.len());
+    let mut stale = Vec::new();
+    let mut all_done = true;
+    let past_deadline = Utc::now() > deadline;
 
     for pvc in &pvcs {
-        annotate_ns_privileged_movers(&pvc.namespace).await;
-        let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
-        let _ = ensure_replication_source(pvc, true).await;
+        let cid = canonical_pvc_id(&pvc.name);
+        let rs_name = format!("volsync-{cid}");
+        let item = rs["items"].as_array().and_then(|items| {
+            items.iter().find(|i| {
+                i["metadata"]["name"].as_str() == Some(rs_name.as_str())
+                    && i["metadata"]["namespace"].as_str() == Some(pvc.namespace.as_str())
+            })
+        });
+        let result = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str());
+        let synced_after_trigger = item
+            .and_then(|i| i["status"]["lastSyncTime"].as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc) >= since)
+            .unwrap_or(false);
+
+        let phase = if result == Some("Successful") && synced_after_trigger {
+            "Synced"
+        } else if past_deadline {
+            stale.push(format!("{}/{}", pvc.namespace, pvc.name));
+            "TimedOut"
+        } else {
+            all_done = false;
+            "Syncing"
+        };
+        pvc_status.push(json!({ "namespace": pvc.namespace, "name": pvc.name, "phase": phase }));
     }
 
-    let stale = poll_volsync_sync(&name, &pvcs, since, sync_deadline).await;
-
-    if is_superseded(&name).await {
-        tracing::warn!("backup-run {name}: superseded (timed out) after SyncingVolumes — stopping");
-        return;
+    if all_done || past_deadline {
+        const SNAPSHOTTING_BUDGET_SECS: i64 = 900;
+        let _ = BACKUP_RUN.patch_status(name, json!({
+            "phase": PHASE_SNAPSHOTTING,
+            "phaseDeadline": deadline_after(SNAPSHOTTING_BUDGET_SECS),
+            "pvcs": pvc_status,
+            "stalePvcs": stale,
+        })).await;
+    } else {
+        let _ = BACKUP_RUN.patch_status(name, json!({ "pvcs": pvc_status })).await;
     }
+}
 
-    // ── SnapshottingCluster ──────────────────────────────────────────────────
-    const SNAPSHOTTING_BUDGET_SECS: u64 = 900;
-    let _ = BACKUP_RUN.patch_status(&name, json!({
-        "phase": PHASE_SNAPSHOTTING,
-        "phaseDeadline": deadline_after(SNAPSHOTTING_BUDGET_SECS as i64),
-    })).await;
+/// SnapshottingCluster: runs the etcd/k8s/restic export as one bounded call, budgeted
+/// to whatever time remains before this phase's deadline (not a fresh budget every
+/// retry — the deadline is authoritative, and reconcile_tick's timeout sweep would
+/// already have failed this run before step() ever runs again if that deadline had
+/// passed). If the process dies mid-call, the next tick re-enters this same phase and
+/// redoes the whole export from scratch — safe because every sub-step inside
+/// `snapshot_cluster` (etcd snapshot, k8s export, restic backup) is independently safe
+/// to re-run.
+async fn step_snapshotting(name: &str, run: &Value, cfg: &BackupConfig) {
+    let budget = parse_deadline(run)
+        .map(|dl| (dl - Utc::now()).num_seconds().max(30))
+        .unwrap_or(900) as u64;
+    let stale = run["status"]["stalePvcs"].clone();
 
-    // Enforced here, not just observed after the fact by reconcile_tick's deadline sweep —
-    // otherwise the phaseDeadline patched above is purely aspirational (snapshot_cluster
-    // has no internal bound of its own) and a slow restic upload could run concurrently
-    // with a second run the reconciler starts once it times this one out.
     let snapshot_result = tokio::time::timeout(
-        Duration::from_secs(SNAPSHOTTING_BUDGET_SECS),
-        snapshot_cluster(&cfg),
+        Duration::from_secs(budget),
+        snapshot_cluster(cfg),
     ).await;
-    let snapshot_id = match snapshot_result {
-        Ok(Ok(id)) => id,
-        Ok(Err(e)) => {
-            let _ = BACKUP_RUN.patch_status(&name, json!({
-                "phase": PHASE_FAILED,
-                "finishedAt": Utc::now().to_rfc3339(),
-                "error": e.to_string(),
-                "stalePvcs": stale,
+
+    match snapshot_result {
+        Ok(Ok(snapshot_id)) => {
+            let _ = BACKUP_RUN.patch_status(name, json!({
+                "phase": PHASE_PRUNING,
+                "phaseDeadline": deadline_after(300),
+                "snapshotId": snapshot_id,
             })).await;
-            return;
+        }
+        Ok(Err(e)) => {
+            let _ = BACKUP_RUN.patch_status(name, json!({
+                "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
+                "error": e.to_string(), "stalePvcs": stale,
+            })).await;
         }
         Err(_) => {
-            let _ = BACKUP_RUN.patch_status(&name, json!({
-                "phase": PHASE_FAILED,
-                "finishedAt": Utc::now().to_rfc3339(),
-                "error": format!("snapshot step exceeded its {SNAPSHOTTING_BUDGET_SECS}s budget"),
-                "stalePvcs": stale,
+            let _ = BACKUP_RUN.patch_status(name, json!({
+                "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
+                "error": format!("snapshot step exceeded its {budget}s budget"), "stalePvcs": stale,
             })).await;
-            return;
         }
-    };
-
-    if is_superseded(&name).await {
-        tracing::warn!("backup-run {name}: superseded (timed out) after SnapshottingCluster — stopping");
-        return;
     }
+}
 
-    // ── Pruning ───────────────────────────────────────────────────────────────
-    let _ = BACKUP_RUN.patch_status(&name, json!({
-        "phase": PHASE_PRUNING,
-        "phaseDeadline": deadline_after(300),
-        "snapshotId": snapshot_id,
-    })).await;
-
+/// Pruning: restic forget/prune, then terminal. Safe to redo — re-running `restic
+/// forget` when there is nothing new to prune is a no-op.
+async fn step_pruning(name: &str, run: &Value, cfg: &BackupConfig) {
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
-    // --group-by tags (not the default host,paths): the staging dir is unique per run
-    // so grouping by paths put every snapshot in its own group of one and nothing was
-    // ever pruned. Every snapshot shares the "cluster-backup" tag.
+    // --group-by tags (not the default host,paths): the staging dir is fixed across
+    // runs now, but this still matters — every snapshot shares the "cluster-backup"
+    // tag, which is what actually buckets them together for retention to apply across.
     let forget = Command::new("restic")
         .args(["forget", "--tag", "cluster-backup", "--group-by", "tags",
                "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "12", "--prune"])
@@ -222,70 +314,16 @@ async fn execute(name: String) {
         }
     }
 
-    // ── Terminal ──────────────────────────────────────────────────────────────
+    let stale: Vec<String> = run["status"]["stalePvcs"].as_array().cloned().unwrap_or_default()
+        .into_iter().filter_map(|v| v.as_str().map(String::from)).collect();
     let phase = if stale.is_empty() { PHASE_SUCCEEDED } else { PHASE_PARTIAL };
-    let _ = BACKUP_RUN.patch_status(&name, json!({
+    let snapshot_id = run["status"]["snapshotId"].as_str().unwrap_or("").to_string();
+    let _ = BACKUP_RUN.patch_status(name, json!({
         "phase": phase,
         "finishedAt": Utc::now().to_rfc3339(),
         "stalePvcs": stale,
     })).await;
     tracing::info!("backup-run {name}: {phase} (snapshot {snapshot_id})");
-}
-
-/// Polls each PVC's ReplicationSource until Successful-after-`since` or the phase
-/// deadline passes, updating BackupRun.status.pvcs as it goes so the frontend can show
-/// live per-volume progress instead of a single "syncing…" spinner. Returns the PVCs
-/// that never reached a fresh Successful (the "partial backup" list).
-async fn poll_volsync_sync(
-    name: &str,
-    pvcs: &[PvcInfo],
-    since: DateTime<Utc>,
-    deadline: DateTime<Utc>,
-) -> Vec<String> {
-    if pvcs.is_empty() {
-        return Vec::new();
-    }
-    loop {
-        let rs = get_replication_sources().await;
-        let mut pvc_status = Vec::with_capacity(pvcs.len());
-        let mut stale = Vec::new();
-        let mut all_done = true;
-
-        for pvc in pvcs {
-            let cid = canonical_pvc_id(&pvc.name);
-            let rs_name = format!("volsync-{cid}");
-            let item = rs["items"].as_array().and_then(|items| {
-                items.iter().find(|i| {
-                    i["metadata"]["name"].as_str() == Some(&rs_name)
-                        && i["metadata"]["namespace"].as_str() == Some(&pvc.namespace)
-                })
-            });
-            let result = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str());
-            let synced_after_trigger = item
-                .and_then(|i| i["status"]["lastSyncTime"].as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|t| t.with_timezone(&Utc) >= since)
-                .unwrap_or(false);
-
-            let phase = if result == Some("Successful") && synced_after_trigger {
-                "Synced"
-            } else if Utc::now() > deadline {
-                stale.push(format!("{}/{}", pvc.namespace, pvc.name));
-                "TimedOut"
-            } else {
-                all_done = false;
-                "Syncing"
-            };
-            pvc_status.push(json!({ "namespace": pvc.namespace, "name": pvc.name, "phase": phase }));
-        }
-
-        let _ = BACKUP_RUN.patch_status(name, json!({ "pvcs": pvc_status })).await;
-
-        if all_done || Utc::now() > deadline {
-            return stale;
-        }
-        tokio::time::sleep(Duration::from_secs(10)).await;
-    }
 }
 
 /// Cluster-metadata snapshot: etcd + k8s objects + catalog.json, uploaded to a FIXED
@@ -475,8 +513,8 @@ pub async fn current_status() -> Value {
 }
 
 /// Reconcile tick: only the lease holder acts, so at most one process (today: always
-/// true since there's one node; matters once there are 2-3) decides "time out this run"
-/// or "start a new one" on any given tick.
+/// true since there's one node; matters once there are 2-3) drives BackupRuns forward
+/// on any given tick.
 pub async fn reconcile_tick(holder: &str) {
     let Some(_guard) = lease::acquire(LEASE_NAME, holder, LEASE_DURATION_SECS).await else {
         return;
@@ -484,6 +522,7 @@ pub async fn reconcile_tick(holder: &str) {
 
     // Time out any run stuck past its phase deadline — a crashed process or a hung
     // kubectl/restic call must not block every future backup forever.
+    let mut timed_out: HashSet<String> = HashSet::new();
     for run in BACKUP_RUN.list().await {
         let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING).to_string();
         if is_terminal(&phase) {
@@ -498,11 +537,25 @@ pub async fn reconcile_tick(holder: &str) {
                     "finishedAt": Utc::now().to_rfc3339(),
                     "error": format!("timed out in phase {phase}"),
                 })).await;
+                timed_out.insert(name);
             }
         }
     }
 
     prune_old_runs().await;
+
+    // Advance every still-active run by exactly one step. This is the whole reconciler
+    // now — no separate executor task exists anywhere for this to race against.
+    for run in BACKUP_RUN.list().await {
+        let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
+        if name.is_empty() || timed_out.contains(&name) {
+            continue;
+        }
+        if is_terminal(run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING)) {
+            continue;
+        }
+        step(&name).await;
+    }
 
     if is_active().await || volsync_mover_running().await {
         return;
@@ -527,8 +580,8 @@ pub async fn reconcile_tick(holder: &str) {
     };
     if due {
         match start("schedule").await {
-            Ok(name) => tracing::info!("backup-run {name}: started (schedule)"),
-            Err(e) => tracing::warn!("backup-run: failed to start scheduled run: {e}"),
+            Ok(name) => tracing::info!("backup-run {name}: created (schedule)"),
+            Err(e) => tracing::warn!("backup-run: failed to create scheduled run: {e}"),
         }
     }
 }
