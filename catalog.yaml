@@ -2,7 +2,8 @@
 #
 # The list of apps in the official catalog. Chart bytes live in the OCI
 # registry below; this file exists only because a registry cannot be
-# enumerated without credentials.
+# enumerated without credentials. Entries are verified present before
+# being listed.
 apiVersion: yolab.io/v1
 registry: oci://ghcr.io/demycode/charts
 charts:
@@ -19,26 +20,4 @@ charts:
   - name: gitea
     version: "0.1.0"
   - name: immich
-    version: "0.1.0"
-  - name: jellyfin
-    version: "0.1.0"
-  - name: librespeed
-    version: "0.1.0"
-  - name: minecraft
-    version: "0.1.0"
-  - name: ntfy
-    version: "0.1.0"
-  - name: open-webui
-    version: "0.1.0"
-  - name: reactive-resume
-    version: "0.1.0"
-  - name: strfry
-    version: "0.1.0"
-  - name: synapse
-    version: "0.1.0"
-  - name: syncthing
-    version: "0.1.0"
-  - name: valheim
-    version: "0.1.0"
-  - name: vaultwarden
     version: "0.1.0"
