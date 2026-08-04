@@ -565,15 +565,45 @@ in
     nix.settings.cores = 2;
     nix.gc.automatic = true;
 
-    # One fixed swapfile, not swapspace as well. Running both meant a static 8 GB plus a
-    # daemon adding more on demand — and swap growing under memory pressure is the worst
-    # case for Ceph, whose OSDs perform badly when paged out (hence vm.swappiness = 10
-    # above). A predictable ceiling is the point.
-    swapDevices = [
-      {
-        device = "/var/lib/swapfile";
-        size = 8192;
-      }
-    ];
+    # Swap is allocated on demand rather than reserved up front. The fixed 8 GB swapfile
+    # this replaces sat on the root LV permanently, used or not, and root is whatever is
+    # left after disko hands 100%FREE to Ceph — so it was 8 GB taken from the smaller of
+    # the two volumes to cover a case that mostly never happens.
+    #
+    # With vm.swappiness = 10 the kernel avoids swapping anyway, so in the common case
+    # swapspace allocates nothing at all.
+    swapDevices = [ ];
+    services.swapspace = {
+      enable = true;
+      settings = {
+        # Per-file cap. The module default is "2t", which on a laptop is not a limit.
+        max_swapsize = "4g";
+        # swapspace stops when the disk fills and then backs off for `cooldown` seconds,
+        # but total swap is otherwise bounded only by free space — and this LV also holds
+        # /nix. A full root here does not just mean swap thrashing, it means
+        # nixos-rebuild can no longer write, i.e. the node loses the ability to update or
+        # roll back. Keeping a larger free margin than the default (20/60/30) is cheap
+        # insurance against the one failure this product cannot recover from remotely.
+        lower_freelimit = 15;
+        freetarget = 25;
+      };
+    };
+
+    # Reclaim the old fixed swapfile from nodes that were built before the switch —
+    # guarded, because deleting a file the kernel is actively swapping to would take the
+    # machine down. After a reboot it is no longer in /proc/swaps and can go.
+    systemd.services.yolab-drop-legacy-swapfile = {
+      description = "Remove the pre-swapspace fixed swapfile once it is inactive";
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "drop-legacy-swapfile" ''
+          if [ -f /var/lib/swapfile ] && ! ${pkgs.gnugrep}/bin/grep -q '/var/lib/swapfile' /proc/swaps; then
+            rm -f /var/lib/swapfile && echo "removed legacy /var/lib/swapfile"
+          fi
+        '';
+      };
+    };
   };
 }
