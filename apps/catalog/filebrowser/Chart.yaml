@@ -1,0 +1,34 @@
+apiVersion: v2
+name: filebrowser
+description: Web-based file manager for your storage
+type: application
+# Chart version — bump on any packaging change. This is what a backup records and a
+# restore pins to, so "which version wrote this data" stops being a guess.
+version: 0.1.0
+# Upstream application version this chart tracks.
+appVersion: "2"
+
+dependencies:
+  - name: yolab-common
+    version: 0.1.0
+    repository: "file://../yolab-common"
+
+# YoLab-specific metadata Helm has no field for. Annotations are the standard escape
+# hatch, and keeping them here means one file describes the whole app instead of the
+# five (app.toml / schema.json / uischema.json / outputs.json / manifest) it took before.
+annotations:
+  yolab.io/display-name: "File Browser"
+  yolab.io/icon: "🗂️"
+  yolab.io/category: "utilities"
+  # RJSF layout hints for the install form; the form's JSON Schema itself lives in
+  # values.schema.json under `properties.config`.
+  yolab.io/uischema: |
+    {
+      "subdomain": { "ui:widget": "TunnelWidget" },
+      "password": { "ui:widget": "PasswordWidget" }
+    }
+  # Values scraped out of pod logs after install (regex, capture group 1).
+  yolab.io/outputs: |
+    [
+      { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" }
+    ]

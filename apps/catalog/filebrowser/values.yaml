@@ -1,0 +1,23 @@
+# Everything under `config` is user-facing: it is exactly what the install form edits,
+# and its schema (values.schema.json → properties.config) is what local-api serves to
+# the UI. Everything under `yolab` is injected by local-api at install time and is not
+# the user's business.
+
+config:
+  subdomain: filebrowser
+  # No default on purpose — values.schema.json marks it required, so a chart installed
+  # without one fails loudly at render time instead of silently creating an
+  # empty-password admin account.
+  password: ""
+  storage_size: 50Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  # The tunnel subdomain actually requested — local-api resolves this from whichever
+  # config field is marked `format: tunnel` in the schema.
+  serviceName: ""
+  gateway:
+    # Caddy proxies to the filebrowser Service; the app runs in its own pod here rather
+    # than inside the gateway pod.
+    upstream: filebrowser:80

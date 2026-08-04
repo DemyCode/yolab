@@ -51,3 +51,8 @@ installer/nixos/frontend/dist
 *.tsbuildinfo
 homelab/local-api/target
 homelab/local-api/target/
+
+# Helm chart dependencies — vendored from apps/catalog/yolab-common at build time
+# (see the yolab-chart-deps activation step), never committed.
+apps/catalog/*/charts/
+apps/catalog/*/Chart.lock

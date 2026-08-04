@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "50Gi" | quote }}
+---
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-admin
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  {{- /* Held in a Secret rather than interpolated into the init container's shell command.
+       The old Jinja template inlined the raw password inside a double-quoted shell
+       string, so a password containing a double quote broke out of it — silently
+       corrupting the install at best, executing whatever followed at worst. Config
+       validation rejects control characters but not quotes, so this was reachable. */}}
+  password: {{ required "config.password is required" .Values.config.password | quote }}

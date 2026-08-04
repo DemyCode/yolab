@@ -1,0 +1,108 @@
+{{- $image := "filebrowser/filebrowser:v2@sha256:a469ea076d4a1b4b1d86a41d130f2f536cd9da996a2b1fb39c0d7635f9d89b9a" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebrowser
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: filebrowser
+  template:
+    metadata:
+      labels:
+        app: filebrowser
+      annotations:
+        {{- /* Roll the pods when the admin password changes; without this an upgrade
+             that only alters the Secret leaves the old password in place until
+             something else happens to restart the pod. */}}
+        checksum/admin-secret: {{ .Values.config.password | sha256sum }}
+    spec:
+      initContainers:
+        - name: fix-perms
+          image: busybox:1@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "chown -R 1000:1000 /db /srv"]
+          volumeMounts:
+            - name: data
+              mountPath: /db
+              subPath: {{ printf "%s/db" .Release.Name | quote }}
+            - name: data
+              mountPath: /srv
+              subPath: {{ printf "%s/files" .Release.Name | quote }}
+        - name: init-db
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FB_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-admin
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              DB=/db/filebrowser.db
+              if [ ! -f "$DB" ]; then
+                filebrowser config init --database "$DB"
+                filebrowser users add admin "$FB_ADMIN_PASSWORD" --perm.admin --database "$DB"
+              else
+                filebrowser users update admin --password "$FB_ADMIN_PASSWORD" --database "$DB"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /db
+              subPath: {{ printf "%s/db" .Release.Name | quote }}
+      containers:
+        - name: filebrowser
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          env:
+            - name: FB_DATABASE
+              value: /db/filebrowser.db
+            - name: FB_ROOT
+              value: /srv
+            - name: FB_PORT
+              value: "80"
+            - name: FB_ADDRESS
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: data
+              mountPath: /srv
+              subPath: {{ printf "%s/files" .Release.Name | quote }}
+            - name: data
+              mountPath: /db
+              subPath: {{ printf "%s/db" .Release.Name | quote }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filebrowser
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: filebrowser
+  ports:
+    - port: 80
+      targetPort: 80
