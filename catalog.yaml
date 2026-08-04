@@ -9,35 +9,83 @@ registry: oci://ghcr.io/demycode/charts
 charts:
   - name: 2fauth
     version: "0.1.0"
+  - name: actual
+    version: "0.1.0"
   - name: appflowy
+    version: "0.1.0"
+  - name: audiobookshelf
+    version: "0.1.0"
+  - name: calibre-web
+    version: "0.1.0"
+  - name: changedetection
     version: "0.1.0"
   - name: cinny
     version: "0.1.0"
+  - name: code-server
+    version: "0.1.0"
   - name: dawarich
+    version: "0.1.0"
+  - name: excalidraw
     version: "0.1.0"
   - name: filebrowser
     version: "0.1.0"
+  - name: freshrss
+    version: "0.1.0"
   - name: gitea
+    version: "0.1.0"
+  - name: grafana
+    version: "0.1.0"
+  - name: homepage
     version: "0.1.0"
   - name: immich
     version: "0.1.0"
+  - name: it-tools
+    version: "0.1.0"
   - name: jellyfin
+    version: "0.1.0"
+  - name: jellyseerr
+    version: "0.1.0"
+  - name: kavita
     version: "0.1.0"
   - name: librespeed
     version: "0.1.0"
+  - name: mealie
+    version: "0.1.0"
+  - name: memos
+    version: "0.1.0"
+  - name: metube
+    version: "0.1.0"
   - name: minecraft
+    version: "0.1.0"
+  - name: miniflux
+    version: "0.1.0"
+  - name: n8n
+    version: "0.1.0"
+  - name: navidrome
     version: "0.1.0"
   - name: ntfy
     version: "0.1.0"
   - name: open-webui
     version: "0.1.0"
+  - name: photoprism
+    version: "0.1.0"
+  - name: qbittorrent
+    version: "0.1.0"
   - name: reactive-resume
+    version: "0.1.0"
+  - name: searxng
+    version: "0.1.0"
+  - name: stirling-pdf
     version: "0.1.0"
   - name: strfry
     version: "0.1.0"
   - name: synapse
     version: "0.1.0"
   - name: syncthing
+    version: "0.1.0"
+  - name: umami
+    version: "0.1.0"
+  - name: uptime-kuma
     version: "0.1.0"
   - name: valheim
     version: "0.1.0"
