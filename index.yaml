@@ -10,13 +10,13 @@ entries:
       yolab.io/uischema: |
         {"subdomain": {"ui:autofocus": true}}
     apiVersion: v2
-    created: "2026-08-04T19:40:23.665631381Z"
+    created: "2026-08-04T19:41:49.060324771Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Web app for managing two-factor authentication codes
-    digest: d70b629ea23737e4116f66d86e48185c5e6f34bd13a4b2fd301f5b54dfee3699
+    digest: 41b4c5cf5de0890361708ddbb6b13f5cba1ec36443db2f74a376e11d4558efeb
     name: 2fauth
     type: application
     urls:
@@ -39,14 +39,14 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.665976457Z"
+    created: "2026-08-04T19:41:49.060800421Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Open-source alternative to Notion. Docs, wikis, and projects in one
       place.
-    digest: bc099d224c4c4f6a13a71254d206946ff370803a7d215252d1be2067209e145a
+    digest: 7d254bf95887a9fd6ccf7b54910c751e67fc4247ee3c7335b5cac5d74f19a772
     name: appflowy
     type: application
     urls:
@@ -62,13 +62,13 @@ entries:
       yolab.io/uischema: |
         {"subdomain": {"ui:autofocus": true}}
     apiVersion: v2
-    created: "2026-08-04T19:40:23.666263215Z"
+    created: "2026-08-04T19:41:49.061181174Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Modern Matrix web client
-    digest: d3d54c41dad3231f5c69f1a0c43f49254728e4ecbe59e618385c55ad0220f383
+    digest: 39b51f7480dbf4cf771fce9ebfc493c8373108da7ec6b0aa865d39d961fd6bdf
     name: cinny
     type: application
     urls:
@@ -88,13 +88,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.666551366Z"
+    created: "2026-08-04T19:41:49.061538773Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Self-hosted location history and travel tracking
-    digest: 47975f1f09953664d50461567dcbdb653c00de2fa8c95d08bd04017baaaadb24
+    digest: 26cb7e8d6b0f0777fb6567df5ca036ef01af30d4c359d09d22a355dba8a17891
     name: dawarich
     type: application
     urls:
@@ -116,13 +116,13 @@ entries:
         }
     apiVersion: v2
     appVersion: "2"
-    created: "2026-08-04T19:40:23.666849151Z"
+    created: "2026-08-04T19:41:49.061985199Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Web-based file manager for your storage
-    digest: 92c0d089c5db12c0c70e1accc307c7ef2b23bd4de9bfc70ee08eaacfad4584da
+    digest: 22041e9a4694ac970109d9edcfa5491eb2bd870b25e1cc246bfa40a4ce85d8be
     name: filebrowser
     type: application
     urls:
@@ -142,13 +142,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.667162729Z"
+    created: "2026-08-04T19:41:49.062350613Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Lightweight self-hosted Git service
-    digest: b4ca186ff0e6585a7696c55788cf900eed56fc9c2d9dc0d3182b80d5099465c2
+    digest: 5ddb6bdc7ae9f492caf4f88a5f17ad31b7855442d1ba2d285cfe596fddb86bc9
     name: gitea
     type: application
     urls:
@@ -168,13 +168,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.667427024Z"
+    created: "2026-08-04T19:41:49.062750652Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Self-hosted photo and video backup
-    digest: 35f1b25a490cacd1ad76106e80c3ffbaef87006c1fdcefe0d4f9b9862c3d26f0
+    digest: 1618845dac42a2feafc67ab893ccb13c6b34440dc26906732f10959816c727f7
     name: immich
     type: application
     urls:
@@ -194,13 +194,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.667670798Z"
+    created: "2026-08-04T19:41:49.063088704Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Free and open source media server
-    digest: 27e0d9b5fc956751389fac503de42da1dd1cb86a62f41fd44d283790eb58697a
+    digest: 9cb1cebe3c04ad49f5459051ec052da521ba636a84108105d3f47ff413ad0d82
     name: jellyfin
     type: application
     urls:
@@ -223,13 +223,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.667951117Z"
+    created: "2026-08-04T19:41:49.063445332Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Self-hosted internet speed test
-    digest: 2af0377533972553e1459914101618e41b0e3f9d3517285337477ac013371c68
+    digest: 5cf47f2dee7306572ceb737c19bfaf139cd3c8789d35386dbc121eb7a7f10cda
     name: librespeed
     type: application
     urls:
@@ -249,13 +249,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.668404344Z"
+    created: "2026-08-04T19:41:49.063844659Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Minecraft Java Edition server
-    digest: 4f5b9524f14994ccdc5978492730314eae5349292c19a171c408342dc1047354
+    digest: 9ce42fe4e4d8aa2e07e14050f3a1757c3af8cb7e2eb8b19239fe5035f9cdaeee
     name: minecraft
     type: application
     urls:
@@ -271,13 +271,13 @@ entries:
       yolab.io/uischema: |
         {"subdomain": {"ui:autofocus": true}}
     apiVersion: v2
-    created: "2026-08-04T19:40:23.669011301Z"
+    created: "2026-08-04T19:41:49.064196989Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Self-hosted push notification service
-    digest: 770c220586a017c5908244f1c7c1e1f17bbbbbdf4a1cccd1803939c84a492b6a
+    digest: a051ec1b084fe9756ff3c9e2f3eca167bcd25ae45d2ceb480b63122eef127a3e
     name: ntfy
     type: application
     urls:
@@ -297,13 +297,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.66928472Z"
+    created: "2026-08-04T19:41:49.064562182Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: AI chat interface powered by Ollama — run LLMs locally
-    digest: ce7b8748553566481a068bff9403d4336d3c3a8f0a385eef81351055a8acf585
+    digest: 72f32f733e9c6d269d2cfaf988f2f87b74b050ecd5b6bf564380925fefa9080c
     name: open-webui
     type: application
     urls:
@@ -323,13 +323,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.669560472Z"
+    created: "2026-08-04T19:41:49.065056958Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Free and open source resume builder
-    digest: 1f946c3b6a6d274bd98d608cf400c8d85e88a1f521bf6ed684c1e2032044611a
+    digest: 863313349a3a371aa78d2a42dbacc159815ea88668ddac2e3b0916c88e41134f
     name: reactive-resume
     type: application
     urls:
@@ -345,13 +345,13 @@ entries:
       yolab.io/uischema: |
         {"subdomain": {"ui:autofocus": true}}
     apiVersion: v2
-    created: "2026-08-04T19:40:23.669804606Z"
+    created: "2026-08-04T19:41:49.065398949Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Nostr relay
-    digest: 2585fc9323c1b73afe1dddf6aa231a75194e7624a403fb1a9ee0fb806c02a50d
+    digest: e5d05cf45e52e8152c020f44227a49e39b57b422d48cf4eb2f3a9027c54e3dd4
     name: strfry
     type: application
     urls:
@@ -371,14 +371,14 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.670098526Z"
+    created: "2026-08-04T19:41:49.065819966Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Self-hosted Matrix homeserver with Element Web client. Federated,
       encrypted messaging.
-    digest: 96d3d87037aa782921f6292215e0e17903ab3736233cdd149c546586bf4bc643
+    digest: 6dfc2f88293bae2916b655433404df39cf8bdaabca791ad169f79e6a8a754419
     name: synapse
     type: application
     urls:
@@ -394,13 +394,13 @@ entries:
       yolab.io/uischema: |
         {"subdomain": {"ui:autofocus": true}, "storage_size": {"ui:widget": "select"}}
     apiVersion: v2
-    created: "2026-08-04T19:40:23.670346877Z"
+    created: "2026-08-04T19:41:49.066753404Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Continuous file synchronization between your devices
-    digest: a286e79d0808525f890721f5e62805b038da25842e9461df77c3bc8c233a8ce5
+    digest: 3c937b96106f753711f8530687c207263e75f287a93b9dd556abd2bc5833e7ee
     name: syncthing
     type: application
     urls:
@@ -420,13 +420,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.670593225Z"
+    created: "2026-08-04T19:41:49.067379158Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Valheim dedicated game server
-    digest: 84ada3f15180e6e6e40c83735bc4aa3158bd5ab82b43faf2fd9b86d173deeb41
+    digest: ce5e7c50f9ceef4a085df49cfb90698f943b1822c0ecb3185e0eba8c12e50c0e
     name: valheim
     type: application
     urls:
@@ -446,13 +446,13 @@ entries:
           }
         }
     apiVersion: v2
-    created: "2026-08-04T19:40:23.6708378Z"
+    created: "2026-08-04T19:41:49.067768377Z"
     dependencies:
     - name: yolab-common
       repository: file://../yolab-common
       version: 0.1.0
     description: Lightweight Bitwarden-compatible password manager
-    digest: df2cff9477829bc9caaf20e4a29e12036fd264f7c908860da67f746215de815f
+    digest: b18065236c86694ea777b7d27e2e38f200562c5cc4105bb2c0bbcd9eabf886b2
     name: vaultwarden
     type: application
     urls:
@@ -460,17 +460,17 @@ entries:
     version: 0.1.0
   yolab-common:
   - apiVersion: v2
-    created: "2026-08-04T19:40:23.670992612Z"
+    created: "2026-08-04T19:41:49.067980664Z"
     description: 'Shared building blocks every YoLab app needs to be reachable: the
       wg-register init container, the WireGuard sidecar, and the Caddy gateway that
       terminates the tunnel. Before this existed the same ~40 lines were copy-pasted
       into all 18 app manifests, byte-identical, which meant a change to the tunnel
       plumbing was an 18-file edit and a policy like "only the gateway may run privileged"
       was unexpressible.'
-    digest: e413e3f1589016e10a559399379e4ad27da1bd5f127ff30cbbcc84bfa93203e3
+    digest: 6928256e04c010ddc6c15e98fa3e35904b17464b12b61f47aaa9eda5becb52a7
     name: yolab-common
     type: library
     urls:
     - https://DemyCode.github.io/yolab/yolab-common-0.1.0.tgz
     version: 0.1.0
-generated: "2026-08-04T19:40:23.665203101Z"
+generated: "2026-08-04T19:41:49.059731851Z"
