@@ -22,6 +22,11 @@ export interface AppInfo {
 
 export interface CatalogApp {
   id: string;
+  /// Repository the chart came from. "official" is the curated catalog; anything else
+  /// was added by the user and can create arbitrary cluster objects, so the UI must be
+  /// able to tell them apart rather than presenting all apps as equally vouched-for.
+  repo: string;
+  chart_version: string;
   name: string;
   description: string;
   icon: string;

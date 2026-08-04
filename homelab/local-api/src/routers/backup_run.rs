@@ -46,7 +46,7 @@
 
 use crate::kubectl::Crd;
 use crate::lease;
-use crate::routers::apps::{ANN_APP_ID, ANN_CHART_VERSION};
+use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
 use crate::routers::backup_common::*;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -468,6 +468,7 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
         // Which chart version produced this app. Together with the image digests below,
         // this is the full answer to "what was running when this data was written".
+        let chart_repo = ann.get(ANN_CHART_REPO).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let chart_version = ann.get(ANN_CHART_VERSION).and_then(|v| v.as_str()).unwrap_or("").to_string();
 
         let pvc_out = Command::new("kubectl")
@@ -499,6 +500,7 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         services.push(json!({
             "namespace": ns,
             "app_id": app_id,
+            "chart_repo": chart_repo,
             "chart_version": chart_version,
             "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
             "pvcs": pvcs,
