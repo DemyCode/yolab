@@ -667,8 +667,19 @@ pub async fn install_app(
         // `upgrade --install` rather than `install`: a retry after a partial failure then
         // converges instead of erroring with "release already exists" and leaving the user
         // stuck with a half-installed app they can't retry or remove from the UI.
+        // --dependency-update resolves the chart's declared dependencies if they are not
+        // already vendored. Charts pulled from the registry arrive self-contained (the
+        // packaged tarball includes charts/yolab-common), so this is a no-op for them; it
+        // only does work for a chart resolved from the bundled source directory, whose
+        // charts/ is a build artifact and therefore gitignored.
+        //
+        // This replaces a boot-time systemd unit that vendored every bundled chart up
+        // front. That unit could not earn its keep once the library became an oci://
+        // dependency: it needed the network to do its job, so it failed in exactly the
+        // situation its fallback existed for, and listing the catalog never needed
+        // dependencies at all — only rendering does.
         let args: Vec<String> = vec![
-            "upgrade".into(), "--install".into(),
+            "upgrade".into(), "--install".into(), "--dependency-update".into(),
             body.instance_name.clone(), chart_dir.to_string_lossy().to_string(),
             "-n".into(), ns.clone(),
             "--values".into(), tmp.path().to_string_lossy().to_string(),
@@ -756,8 +767,19 @@ pub async fn update_app(
         }
 
         yield Ok(Event::default().data("Upgrading release..."));
+        // --dependency-update resolves the chart's declared dependencies if they are not
+        // already vendored. Charts pulled from the registry arrive self-contained (the
+        // packaged tarball includes charts/yolab-common), so this is a no-op for them; it
+        // only does work for a chart resolved from the bundled source directory, whose
+        // charts/ is a build artifact and therefore gitignored.
+        //
+        // This replaces a boot-time systemd unit that vendored every bundled chart up
+        // front. That unit could not earn its keep once the library became an oci://
+        // dependency: it needed the network to do its job, so it failed in exactly the
+        // situation its fallback existed for, and listing the catalog never needed
+        // dependencies at all — only rendering does.
         let args: Vec<String> = vec![
-            "upgrade".into(), "--install".into(),
+            "upgrade".into(), "--install".into(), "--dependency-update".into(),
             instance_name.clone(), chart_dir.to_string_lossy().to_string(),
             "-n".into(), ns.clone(),
             "--values".into(), tmp.path().to_string_lossy().to_string(),
