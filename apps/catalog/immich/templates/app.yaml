@@ -1,0 +1,298 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: gen-secrets
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - "SECRETS=/state/secrets.env\nif [ ! -f \"$SECRETS\" ]; then\n  TMP=$(mktemp \"${SECRETS}.XXXXXX\")\n  printf 'DB_PASSWORD=%s\\n' \"$(tr -dc a-f0-9 </dev/urandom | head -c 32)\" > \"$TMP\"\n  mv \"$TMP\" \"$SECRETS\"\nfi\n"
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: {{ .Release.Name }}/yolab-state
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-server
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: immich-server
+  template:
+    metadata:
+      labels:
+        app: immich-server
+    spec:
+      containers:
+      - name: immich-server
+        image: ghcr.io/immich-app/immich-server:release@sha256:c15bff75068effb03f4355997d03dc7e0fc58720c2b54ad6f7f10d1bc57efaa5
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          httpGet:
+            path: /api/server/ping
+            port: 2283
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/server/ping
+            port: 2283
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        - 'until [ -f /state/secrets.env ]; do sleep 2; done
+
+          . /state/secrets.env
+
+          exec node /usr/src/app/dist/main.js
+
+          '
+        env:
+        - name: DB_HOSTNAME
+          value: postgres.{{ .Release.Namespace }}.svc.cluster.local
+        - name: DB_USERNAME
+          value: postgres
+        - name: DB_DATABASE_NAME
+          value: immich
+        - name: REDIS_HOSTNAME
+          value: redis.{{ .Release.Namespace }}.svc.cluster.local
+        - name: REDIS_PORT
+          value: '6379'
+        - name: IMMICH_MACHINE_LEARNING_URL
+          value: http://immich-ml:3003
+        - name: VIPS_NOVECTOR
+          value: '1'
+        volumeMounts:
+        - name: data
+          mountPath: /usr/src/app/upload
+          subPath: {{ .Release.Name }}/uploads
+        - name: data
+          mountPath: /state
+          subPath: {{ .Release.Name }}/yolab-state
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-server
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: immich-server
+  ports:
+  - port: 2283
+    targetPort: 2283
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-ml
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: immich-ml
+  template:
+    metadata:
+      labels:
+        app: immich-ml
+    spec:
+      containers:
+      - name: immich-ml
+        image: ghcr.io/immich-app/immich-machine-learning:release@sha256:a2501141440f10516d329fdfba2c68082e19eb9ba6016c061ac80d23beadf7f3
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: data
+          mountPath: /cache
+          subPath: {{ .Release.Name }}/ml-cache
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-ml
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: immich-ml
+  ports:
+  - port: 3003
+    targetPort: 3003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: docker.io/valkey/valkey:8-bookworm@sha256:fea8b3e67b15729d4bb70589eb03367bab9ad1ee89c876f54327fc7c6e618571
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        - 'until [ -f /state/secrets.env ]; do sleep 2; done
+
+          . /state/secrets.env
+
+          export POSTGRES_PASSWORD="$DB_PASSWORD"
+
+          exec docker-entrypoint.sh postgres
+
+          '
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_DB
+          value: immich
+        - name: POSTGRES_INITDB_ARGS
+          value: --data-checksums
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ .Release.Name }}/postgres
+        - name: data
+          mountPath: /state
+          subPath: {{ .Release.Name }}/yolab-state
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

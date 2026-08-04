@@ -533,7 +533,40 @@ in
         fuse3
         qrencode
         restic
+        kubernetes-helm # apps are Helm charts; local-api shells out to `helm`
       ];
+
+    # ── Helm chart dependencies ───────────────────────────────────────────────
+    # Every app chart depends on the yolab-common library chart (the tunnel gateway).
+    # Helm resolves `file://../yolab-common` into charts/*.tgz, which is a build
+    # artifact rather than source, so it is gitignored and materialised here instead —
+    # otherwise `git reset --hard` during an update would delete it and every install
+    # would fail with "found in Chart.yaml, but missing in charts/ directory".
+    #
+    # Runs before local-api so a freshly-updated node can never serve an install from a
+    # chart whose dependency hasn't been vendored yet.
+    systemd.services.yolab-chart-deps = {
+      description = "Vendor Helm chart dependencies for the app catalog";
+      before = [ "yolab-local-api.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "yolab-chart-deps" ''
+          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
+          CATALOG="${config.yolab.repoPath}/apps/catalog"
+          [ -d "$CATALOG" ] || exit 0
+          for chart in "$CATALOG"/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue
+            grep -q '^dependencies:' "$chart/Chart.yaml" || continue
+            # `dependency update` rather than `build`: Chart.lock is gitignored too, so
+            # there is not always a lock to build from.
+            ${pkgs.kubernetes-helm}/bin/helm dependency update "$chart" >/dev/null 2>&1 \
+              || echo "warning: could not vendor deps for $chart" >&2
+          done
+        '';
+      };
+    };
 
     # ── Rook / Ceph ───────────────────────────────────────────────────────────
 

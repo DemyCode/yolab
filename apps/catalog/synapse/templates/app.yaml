@@ -1,0 +1,173 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: gen-secrets
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - "SECRETS=/state/secrets.env\nif [ ! -f \"$SECRETS\" ]; then\n  TMP=$(mktemp \"${SECRETS}.XXXXXX\")\n  printf 'REGISTRATION_SHARED_SECRET=%s\\n' \"$(tr -dc a-f0-9 </dev/urandom | head -c 64)\" > \"$TMP\"\n  mv \"$TMP\" \"$SECRETS\"\nfi\ncp \"$SECRETS\" /yolab/secrets.env\n"
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: {{ .Release.Name }}/yolab-state
+        - name: yolab
+          mountPath: /yolab
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: synapse
+        image: matrixdotorg/synapse:latest@sha256:6345789f58048687f3024a99d3d59b5444fc9cc1de61d2947000cbac89573fcb
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          httpGet:
+            path: /_matrix/client/versions
+            port: 8008
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /_matrix/client/versions
+            port: 8008
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - ". /yolab/env\n. /yolab/secrets.env\nSYNAPSE_DATA=/data/synapse\nmkdir -p \"$SYNAPSE_DATA\"\nif [ ! -f \"$SYNAPSE_DATA/homeserver.yaml\" ]; then\n  python -m synapse.app.homeserver \\\n    --server-name \"$YOLAB_FQDN\" \\\n    --config-path \"$SYNAPSE_DATA/homeserver.yaml\" \\\n    --generate-config \\\n    --report-stats=no\n  sed -i \"s|database:|database:\\n  name: psycopg2\\n  args:\\n    user: synapse\\n    password: synapse\\n    database: synapse\\n    host: postgres.{{ .Release.Namespace }}.svc.cluster.local\\n    cp_min: 5\\n    cp_max: 10\\n#|\" \"$SYNAPSE_DATA/homeserver.yaml\" || true\n  echo \"registration_shared_secret: $REGISTRATION_SHARED_SECRET\" >> \"$SYNAPSE_DATA/homeserver.yaml\"\n  echo \"suppress_key_server_warning: true\" >> \"$SYNAPSE_DATA/homeserver.yaml\"\nfi\nexec python -m synapse.app.homeserver \\\n  --config-path \"$SYNAPSE_DATA/homeserver.yaml\"\n"
+        env:
+        - name: SYNAPSE_REPORT_STATS
+          value: 'no'
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ .Release.Name }}
+        - name: yolab
+          mountPath: /yolab
+      - name: element
+        image: vectorim/element-web:latest@sha256:9f9b546280e67e492d56f6e775c449e74356bffb98daaf211abc755276713fad
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - ". /yolab/env\ncat > /app/config.json <<EOF\n{\n  \"default_server_config\": {\n    \"m.homeserver\": {\n      \"base_url\": \"https://$YOLAB_FQDN\",\n      \"server_name\": \"$YOLAB_FQDN\"\n    }\n  },\n  \"brand\": \"Element\",\n  \"integrations_ui_url\": \"\",\n  \"integrations_rest_url\": \"\",\n  \"integrations_widgets_urls\": [],\n  \"bug_report_endpoint_url\": \"\",\n  \"showLabsSettings\": false\n}\nEOF\nexec nginx -g 'daemon off;'\n"
+        volumeMounts:
+        - name: yolab
+          mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - synapse
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - synapse
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          value: synapse
+        - name: POSTGRES_PASSWORD
+          value: synapse
+        - name: POSTGRES_DB
+          value: synapse
+        - name: POSTGRES_INITDB_ARGS
+          value: --encoding=UTF-8 --lc-collate=C --lc-ctype=C
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ .Release.Name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

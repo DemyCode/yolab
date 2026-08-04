@@ -1,0 +1,77 @@
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      initContainers:
+        {{- include "yolab-common.wgRegisterInit" . | nindent 8 }}
+      containers:
+        {{- /* A game server exposes raw TCP through the tunnel — no Caddy, so this
+               composes the WireGuard sidecar alone rather than the full gateway. */}}
+        {{- include "yolab-common.wireguardContainer" . | nindent 8 }}
+        - name: minecraft
+          image: itzg/minecraft-server:latest@sha256:bb1cf73b342bdf6fa03b9d689b699bd1f8c6989f81ea07d520985eb2f18e6f30
+          imagePullPolicy: IfNotPresent
+          stdin: true
+          tty: true
+          readinessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          livenessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 3
+          env:
+            - name: EULA
+              value: "TRUE"
+            - name: DIFFICULTY
+              value: {{ .Values.config.difficulty | default "normal" | quote }}
+            - name: ENABLE_WHITELIST
+              value: {{ if .Values.config.whitelist }}"true"{{ else }}"false"{{ end }}
+            {{- with .Values.config.ops }}
+            - name: OPS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.whitelist }}
+            - name: WHITELIST
+              value: {{ . | quote }}
+            - name: EXISTING_WHITELIST_FILE
+              value: "SYNCHRONIZE"
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              subPath: {{ printf "%s/minecraft" .Release.Name | quote }}
+      volumes:
+        {{- include "yolab-common.tunnelVolumes" . | nindent 8 }}

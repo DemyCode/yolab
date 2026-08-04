@@ -66,6 +66,16 @@ each app chart is what makes "only the gateway may be privileged" a rule that ca
 actually be enforced against third-party charts later.
 */}}
 {{- define "yolab-common.gatewayContainers" -}}
+{{ include "yolab-common.wireguardContainer" . }}
+{{ include "yolab-common.caddyContainer" . }}
+{{- end -}}
+
+{{/*
+The tunnel itself, without an HTTP proxy in front. Game servers (minecraft, valheim)
+expose raw TCP/UDP ports straight through WireGuard and have no Caddy at all, so they
+compose this plus wgRegisterInit and nothing else.
+*/}}
+{{- define "yolab-common.wireguardContainer" -}}
 - name: wireguard
   image: {{ include "yolab-common.image.wgSidecar" . }}
   imagePullPolicy: IfNotPresent
@@ -74,6 +84,9 @@ actually be enforced against third-party charts later.
   volumeMounts:
     - name: wireguard
       mountPath: /etc/wireguard
+{{- end -}}
+
+{{- define "yolab-common.caddyContainer" -}}
 - name: caddy
   image: {{ include "yolab-common.image.caddy" . }}
   imagePullPolicy: IfNotPresent
@@ -112,13 +125,21 @@ Volumes the pieces above require. `data` is the app's own PVC — the gateway sh
 rather than claiming its own, keeping one volume per app.
 */}}
 {{- define "yolab-common.gatewayVolumes" -}}
+{{ include "yolab-common.tunnelVolumes" . }}
+- name: caddy-config
+  configMap:
+    name: {{ printf "%s-caddy" .Release.Name }}
+{{- end -}}
+
+{{/*
+Volumes needed by wg-register + the WireGuard sidecar alone — no Caddyfile ConfigMap,
+since a Caddy-less app never creates one. Pairs with wireguardContainer.
+*/}}
+{{- define "yolab-common.tunnelVolumes" -}}
 - name: wireguard
   emptyDir: {}
 - name: yolab
   emptyDir: {}
-- name: caddy-config
-  configMap:
-    name: {{ printf "%s-caddy" .Release.Name }}
 - name: data
   persistentVolumeClaim:
     claimName: {{ include "yolab-common.gateway.pvcName" . }}

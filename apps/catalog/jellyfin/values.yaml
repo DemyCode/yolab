@@ -1,0 +1,11 @@
+# `config` is user-facing: exactly what the install form edits, and the subtree
+# local-api serves to the UI as its JSON Schema. `yolab` is injected at install
+# time by local-api and is not the user's business.
+config:
+  subdomain: jellyfin
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8096

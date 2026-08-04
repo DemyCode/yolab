@@ -1,6 +1,0 @@
-[app]
-id = "ntfy"
-name = "ntfy"
-description = "Self-hosted push notification service"
-icon = "🔔"
-category = "utilities"

@@ -1,4 +1,4 @@
-use std::{convert::Infallible, path::PathBuf};
+use std::convert::Infallible;
 
 use axum::{
     extract::{Path, State},
@@ -15,6 +15,10 @@ const LABEL_MANAGED: &str = "yolab.io/managed";
 /// Shared with backup_run.rs, which exports this annotation so a restored namespace
 /// keeps its app identity — a single definition so the two can never drift apart.
 pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
+/// Chart version this instance was installed from. Captured in backups alongside the
+/// image digests, so a restore can say which packaging produced the data rather than
+/// leaving the user to find out from a crash loop.
+pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
 const LOGS_SCAN_TAIL: u32 = 500;
@@ -113,6 +117,190 @@ fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
         .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))
 }
 
+// ── Chart metadata ────────────────────────────────────────────────────────────
+//
+// Apps are Helm charts. What used to be five files per app (app.toml, schema.json,
+// uischema.json, outputs.json, manifest.yaml.j2) is now Chart.yaml + values.schema.json
+// + templates/, with the YoLab-specific bits carried as chart annotations — the standard
+// escape hatch for metadata Helm has no field for. Reading them here rather than from a
+// bespoke layout is what lets a chart from someone else's repo work unmodified.
+
+const ANN_DISPLAY_NAME: &str = "yolab.io/display-name";
+const ANN_ICON: &str = "yolab.io/icon";
+const ANN_CATEGORY: &str = "yolab.io/category";
+const ANN_UISCHEMA: &str = "yolab.io/uischema";
+const ANN_CHART_OUTPUTS: &str = "yolab.io/outputs";
+
+#[derive(Deserialize, Default)]
+struct ChartYaml {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default, rename = "type")]
+    type_: String,
+    #[serde(default)]
+    annotations: std::collections::HashMap<String, String>,
+}
+
+struct ChartMeta {
+    chart: ChartYaml,
+    /// The user-facing form schema: values.schema.json's `properties.config`. Nesting it
+    /// under `config` keeps Helm able to validate the WHOLE values object (including the
+    /// platform-injected `yolab` subtree) while leaving the form schema extractable
+    /// exactly as the UI already expects it.
+    schema: Value,
+}
+
+impl ChartMeta {
+    fn ann(&self, key: &str) -> &str {
+        self.chart.annotations.get(key).map(String::as_str).unwrap_or("")
+    }
+    /// Annotations hold JSON as a string (YAML block scalar); parse or fall back.
+    fn ann_json(&self, key: &str) -> Value {
+        serde_json::from_str(self.ann(key)).unwrap_or(Value::Null)
+    }
+    fn display_name(&self) -> String {
+        let n = self.ann(ANN_DISPLAY_NAME);
+        if n.is_empty() { self.chart.name.clone() } else { n.to_string() }
+    }
+}
+
+fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
+    let chart: ChartYaml =
+        serde_norway::from_str(&std::fs::read_to_string(dir.join("Chart.yaml")).ok()?).ok()?;
+    // Library charts (yolab-common) are building blocks, not installable apps.
+    if chart.type_ == "library" {
+        return None;
+    }
+    let schema = std::fs::read_to_string(dir.join("values.schema.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|v| v["properties"]["config"].clone())
+        .unwrap_or(Value::Null);
+    Some(ChartMeta { chart, schema })
+}
+
+/// The chart's log-scraping output specs (`yolab.io/outputs`). Empty when the chart
+/// declares none, or when the app was installed from a chart no longer in the catalog.
+fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
+    if id.is_empty() {
+        return Vec::new();
+    }
+    read_chart(&catalog_dir.join(id))
+        .map(|m| m.ann_json(ANN_CHART_OUTPUTS))
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
+/// The tunnel subdomain the user asked for: the value of whichever config field the
+/// chart's schema marks `format: tunnel`. wg-register needs it to claim the subdomain.
+fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
+    schema["properties"]
+        .as_object()
+        .and_then(|props| {
+            props.iter().find_map(|(k, v)| {
+                (v["format"].as_str() == Some("tunnel")).then(|| k.clone())
+            })
+        })
+        .and_then(|f| config.get(&f).cloned())
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Values file handed to Helm. Everything the user chose goes under `config`; everything
+/// the platform injects goes under `yolab`, so a chart can never confuse the two and a
+/// malicious chart's values cannot smuggle in a different account token.
+fn build_values(
+    config: &serde_json::Map<String, Value>,
+    tunnel_cfg: &toml::Table,
+    service_name: &str,
+) -> String {
+    serde_json::json!({
+        "config": config,
+        "yolab": {
+            "platformApiUrl": tunnel_cfg.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or(""),
+            "accountToken": tunnel_cfg.get("account_token").and_then(|v| v.as_str()).unwrap_or(""),
+            "serviceName": service_name,
+        },
+    })
+    // A values file is YAML, and JSON is valid YAML — so this needs no YAML serializer
+    // and cannot produce the indentation bugs hand-built YAML is prone to.
+    .to_string()
+}
+
+/// Runs a helm command, streaming stdout+stderr to the client as SSE.
+///
+/// Helm writes progress and errors to stderr, so both are forwarded — the old
+/// `kubectl apply` streamer only forwarded stdout, which is why a failed apply surfaced
+/// as a bare exit code with no explanation.
+fn helm_stream(args: Vec<String>) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
+    async_stream::stream! {
+        let child = tokio::process::Command::new("helm")
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut guard = match child {
+            Ok(c) => KillOnDrop(c),
+            Err(e) => {
+                yield Ok(Event::default().data(format!("[ERROR] could not run helm: {e}")));
+                return;
+            }
+        };
+        use tokio::io::AsyncBufReadExt;
+        let stdout = guard.0.stdout.take();
+        let stderr = guard.0.stderr.take();
+        let mut out = stdout.map(|s| tokio::io::BufReader::new(s).lines());
+        let mut err = stderr.map(|s| tokio::io::BufReader::new(s).lines());
+        let mut out_done = out.is_none();
+        let mut err_done = err.is_none();
+        while !out_done || !err_done {
+            tokio::select! {
+                l = async { out.as_mut().unwrap().next_line().await }, if !out_done => match l {
+                    Ok(Some(line)) => yield Ok(Event::default().data(line)),
+                    _ => out_done = true,
+                },
+                l = async { err.as_mut().unwrap().next_line().await }, if !err_done => match l {
+                    Ok(Some(line)) => yield Ok(Event::default().data(line)),
+                    _ => err_done = true,
+                },
+            }
+        }
+        let rc = guard.0.wait().await.map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+        if rc != 0 {
+            yield Ok(Event::default().data(format!("[ERROR] helm exited {rc}")));
+        }
+    }
+}
+
+/// Creates the app's namespace with the labels and annotations YoLab depends on.
+///
+/// Deliberately NOT part of the chart. `yolab.io/managed` is what the backup's PVC
+/// inventory and cluster export select on, and `yolab.io/app-id` is what identifies the
+/// app after a restore — leaving those to chart authors would mean a third-party chart
+/// could silently opt itself out of being backed up.
+async fn ensure_app_namespace(ns: &str, app_id: &str, chart_version: &str) -> anyhow::Result<()> {
+    crate::kubectl::apply(
+        &serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Namespace",
+            "metadata": {
+                "name": ns,
+                "labels": { LABEL_MANAGED: "true" },
+                "annotations": {
+                    ANN_APP_ID: app_id,
+                    ANN_CHART_VERSION: chart_version,
+                    "volsync.backube/privileged-movers": "true",
+                },
+            },
+        })
+        .to_string(),
+    )
+    .await
+}
+
 fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
     let raw = ann.get(ANN_OUTPUTS).and_then(|v| v.as_str()).unwrap_or("");
     if raw.is_empty() {
@@ -163,96 +351,10 @@ fn validate_config_values(config: &serde_json::Map<String, Value>) -> std::resul
     Ok(())
 }
 
-fn render_manifest(
-    catalog_dir: &PathBuf,
-    id: &str,
-    instance_name: &str,
-    config: &serde_json::Map<String, Value>,
-    tunnel_cfg: &toml::Table,
-    template_file: &str,
-    extra_vars: Option<&serde_json::Map<String, Value>>,
-) -> anyhow::Result<String> {
-    let app_dir = catalog_dir.join(id);
-    let schema_path = app_dir.join("schema.json");
-    let schema: Value = if schema_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&schema_path)?)?
-    } else {
-        Value::Null
-    };
-
-    // Find tunnel field from schema
-    let tunnel_field = schema["properties"]
-        .as_object()
-        .and_then(|props| {
-            props.iter().find_map(|(k, v)| {
-                if v["format"].as_str() == Some("tunnel") { Some(k.clone()) } else { None }
-            })
-        });
-    let service_name = tunnel_field
-        .as_ref()
-        .and_then(|f| config.get(f))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let template_text = std::fs::read_to_string(app_dir.join(template_file))?;
-    let mut tera = tera::Tera::default();
-    tera.add_raw_template("t", &template_text)?;
-
-    let mut ctx = tera::Context::new();
-    ctx.insert("instance_name", instance_name);
-    ctx.insert("app_id", id);
-    ctx.insert("platform_api_url", tunnel_cfg.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or(""));
-    ctx.insert("account_token", tunnel_cfg.get("account_token").and_then(|v| v.as_str()).unwrap_or(""));
-    ctx.insert("service_name", service_name);
-    for (k, v) in config {
-        ctx.insert(k, v);
-    }
-    if let Some(extra) = extra_vars {
-        for (k, v) in extra {
-            ctx.insert(k, v);
-        }
-    }
-
-    Ok(tera.render("t", &ctx)?)
-}
-
-async fn apply_manifest_stream(
-    rendered: &str,
-) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
-    let rendered = rendered.to_string();
-    async_stream::stream! {
-        // Create + write the temp manifest inside the stream so a failure
-        // (e.g. disk full) surfaces as an error event instead of panicking the
-        // handler task and dropping the client connection.
-        let tmp = match tempfile::Builder::new().suffix(".yaml").tempfile() {
-            Ok(t) => t,
-            Err(e) => { yield Ok(Event::default().data(format!("[ERROR] create temp manifest: {e}"))); return; }
-        };
-        if let Err(e) = std::fs::write(tmp.path(), &rendered) {
-            yield Ok(Event::default().data(format!("[ERROR] write manifest: {e}")));
-            return;
-        }
-        let path = tmp.path().to_string_lossy().to_string();
-        let _tmp = tmp;
-        let child = tokio::process::Command::new("kubectl")
-            .args(["apply", "-f", &path])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        let Ok(c) = child else { return; };
-        let mut guard = KillOnDrop(c);
-        use tokio::io::AsyncBufReadExt;
-        let stdout = guard.0.stdout.take().unwrap();
-        let mut lines = tokio::io::BufReader::new(stdout).lines();
-        while let Ok(Some(l)) = lines.next_line().await {
-            yield Ok(Event::default().data(l));
-        }
-        let rc = guard.0.wait().await.map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-        if rc != 0 {
-            yield Ok(Event::default().data(format!("[ERROR] kubectl apply failed (exit {rc})")));
-        }
-    }
-}
+// render_manifest + apply_manifest_stream lived here. Both are gone: Helm renders the
+// chart and applies the result itself, so there is no hand-rolled template context to
+// keep in sync with each app's variable names, and no separate "write a temp manifest,
+// kubectl apply it, hope stderr wasn't important" path.
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -298,24 +400,19 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
     let Ok(rd) = std::fs::read_dir(&catalog_dir) else { return Json(vec![]) };
     let mut apps = vec![];
     for entry in rd.flatten() {
-        let app_dir = entry.path();
-        let toml_path = app_dir.join("app.toml");
-        if !toml_path.exists() { continue; }
-        let Ok(text) = std::fs::read_to_string(&toml_path) else { continue };
-        let Ok(table) = toml::from_str::<toml::Table>(&text) else { continue };
-        let Some(meta) = table.get("app").and_then(|v| v.as_table()) else { continue };
-        let schema = app_dir.join("schema.json");
-        let uischema = app_dir.join("uischema.json");
+        let Some(meta) = read_chart(&entry.path()) else { continue };
         apps.push(CatalogApp {
-            id: meta.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            name: meta.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            description: meta.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            icon: meta.get("icon").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            category: meta.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            schema: schema.exists().then(|| serde_json::from_str(&std::fs::read_to_string(&schema).unwrap_or_default()).unwrap_or(Value::Null)).unwrap_or(Value::Null),
-            uischema: uischema.exists().then(|| serde_json::from_str(&std::fs::read_to_string(&uischema).unwrap_or_default()).unwrap_or(Value::Null)).unwrap_or(Value::Null),
+            id: meta.chart.name.clone(),
+            name: meta.display_name(),
+            description: meta.chart.description.clone(),
+            icon: meta.ann(ANN_ICON).to_string(),
+            category: meta.ann(ANN_CATEGORY).to_string(),
+            schema: meta.schema.clone(),
+            uischema: meta.ann_json(ANN_UISCHEMA),
         });
     }
+    // read_dir order is filesystem-dependent; sort so the storefront is stable.
+    apps.sort_by_key(|a| a.name.to_lowercase());
     Json(apps)
 }
 
@@ -374,12 +471,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
 
-        let outputs_spec_path = if !id.is_empty() { Some(catalog_dir.join(&id).join("outputs.json")) } else { None };
-        let outputs_spec = outputs_spec_path
-            .filter(|p| p.exists())
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok())
-            .unwrap_or_default()
+        let outputs_spec = chart_outputs_spec(&catalog_dir, &id)
             .into_iter()
             .filter(|o| o["type"].as_str() != Some("hidden"))
             .filter_map(|o| Some(OutputSpec {
@@ -414,29 +506,54 @@ pub async fn install_app(
             yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
             return;
         };
-        yield Ok(Event::default().data("Rendering manifest..."));
-        let rendered = match render_manifest(&state.config.catalog_dir(), &id, &body.instance_name, &body.config, &tunnel_cfg, "manifest.yaml.j2", None) {
-            Ok(r) => r,
-            Err(e) => {
-                yield Ok(Event::default().data(format!("[ERROR] template render failed: {e}")));
-                return;
-            }
+        let chart_dir = state.config.catalog_dir().join(&id);
+        let Some(meta) = read_chart(&chart_dir) else {
+            yield Ok(Event::default().data(format!("[ERROR] {id} is not a valid chart")));
+            return;
         };
-        yield Ok(Event::default().data("Applying manifests to cluster..."));
-        let apply_stream = apply_manifest_stream(&rendered).await;
-        tokio::pin!(apply_stream);
+
+        let ns = format!("yolab-{}", body.instance_name);
+        // Namespace first: the chart's resources are namespaced, and the labels/
+        // annotations set here are what the backup layer selects on.
+        yield Ok(Event::default().data("Preparing namespace..."));
+        if let Err(e) = ensure_app_namespace(&ns, &id, &meta.chart.version).await {
+            yield Ok(Event::default().data(format!("[ERROR] create namespace: {e}")));
+            return;
+        }
+
+        let service_name = resolve_service_name(&meta.schema, &body.config);
+        let values = build_values(&body.config, &tunnel_cfg, &service_name);
+        let tmp = match tempfile::Builder::new().suffix(".json").tempfile() {
+            Ok(t) => t,
+            Err(e) => { yield Ok(Event::default().data(format!("[ERROR] staging values: {e}"))); return; }
+        };
+        if let Err(e) = std::fs::write(tmp.path(), &values) {
+            yield Ok(Event::default().data(format!("[ERROR] write values: {e}")));
+            return;
+        }
+
+        yield Ok(Event::default().data("Installing chart..."));
+        // `upgrade --install` rather than `install`: a retry after a partial failure then
+        // converges instead of erroring with "release already exists" and leaving the user
+        // stuck with a half-installed app they can't retry or remove from the UI.
+        let args: Vec<String> = vec![
+            "upgrade".into(), "--install".into(),
+            body.instance_name.clone(), chart_dir.to_string_lossy().to_string(),
+            "-n".into(), ns.clone(),
+            "--values".into(), tmp.path().to_string_lossy().to_string(),
+        ];
+        let s = helm_stream(args);
+        tokio::pin!(s);
         use futures::StreamExt;
-        while let Some(ev) = apply_stream.next().await { yield ev; }
-        // Must be set at install time — backup only exports labeled namespaces.
-        let ns_full = format!("yolab-{}", body.instance_name);
-        let _ = tokio::process::Command::new("kubectl")
-            .args(["label", "namespace", &ns_full,
-                   &format!("{LABEL_MANAGED}=true"), "--overwrite=true"])
-            .output().await;
+        while let Some(ev) = s.next().await { yield ev; }
+        drop(tmp);
+
         // Wire up VolSync ReplicationSource(s) for any PVCs this app created.
-        crate::routers::backups::setup_namespace_backup(&ns_full).await;
+        crate::routers::backups::setup_namespace_backup(&ns).await;
+        // Persisted on the namespace (not only in Helm's release Secret) because the
+        // backup's identity export reads namespace annotations.
         let config_json = serde_json::to_string(&body.config).unwrap_or_default();
-        annotate_ns(&format!("yolab-{}", body.instance_name), ANN_CONFIG, &config_json).await;
+        annotate_ns(&ns, ANN_CONFIG, &config_json).await;
         yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));
     };
 
@@ -486,38 +603,42 @@ pub async fn update_app(
             yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
             return;
         };
-        yield Ok(Event::default().data("Rendering manifest..."));
-        let rendered = match render_manifest(&state.config.catalog_dir(), &id, &instance_name, &config, &tunnel_cfg, "manifest.yaml.j2", None) {
-            Ok(r) => r,
-            Err(e) => {
-                yield Ok(Event::default().data(format!("[ERROR] template render failed: {e}")));
-                return;
-            }
+        let chart_dir = state.config.catalog_dir().join(&id);
+        let Some(meta) = read_chart(&chart_dir) else {
+            yield Ok(Event::default().data(format!("[ERROR] {id} is not a valid chart")));
+            return;
         };
-        yield Ok(Event::default().data("Applying updated manifests..."));
-        let apply_stream = apply_manifest_stream(&rendered).await;
-        tokio::pin!(apply_stream);
+
+        let service_name = resolve_service_name(&meta.schema, &config);
+        let values = build_values(&config, &tunnel_cfg, &service_name);
+        let tmp = match tempfile::Builder::new().suffix(".json").tempfile() {
+            Ok(t) => t,
+            Err(e) => { yield Ok(Event::default().data(format!("[ERROR] staging values: {e}"))); return; }
+        };
+        if let Err(e) = std::fs::write(tmp.path(), &values) {
+            yield Ok(Event::default().data(format!("[ERROR] write values: {e}")));
+            return;
+        }
+
+        yield Ok(Event::default().data("Upgrading release..."));
+        let args: Vec<String> = vec![
+            "upgrade".into(), "--install".into(),
+            instance_name.clone(), chart_dir.to_string_lossy().to_string(),
+            "-n".into(), ns.clone(),
+            "--values".into(), tmp.path().to_string_lossy().to_string(),
+        ];
+        let s = helm_stream(args);
+        tokio::pin!(s);
         use futures::StreamExt;
-        while let Some(ev) = apply_stream.next().await { yield ev; }
-        // Persist updated config so future updates stay consistent.
+        while let Some(ev) = s.next().await { yield ev; }
+        drop(tmp);
+
+        // No explicit `kubectl rollout restart` any more. Helm diffs the rendered
+        // manifests and restarts only what actually changed — and charts that need a
+        // restart on a config-only change (e.g. a password held in a Secret) carry a
+        // checksum annotation on the pod template, which is the idiomatic way to say so.
         let config_json = serde_json::to_string(&config).unwrap_or_default();
         annotate_ns(&ns, ANN_CONFIG, &config_json).await;
-        yield Ok(Event::default().data("Restarting deployments..."));
-        let child = tokio::process::Command::new("kubectl")
-            .args(["rollout", "restart", "deployment", "-n", &ns])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        if let Ok(c) = child {
-            let mut guard = KillOnDrop(c);
-            use tokio::io::AsyncBufReadExt;
-            if let Some(stdout) = guard.0.stdout.take() {
-                let mut lines = tokio::io::BufReader::new(stdout).lines();
-                while let Ok(Some(l)) = lines.next_line().await {
-                    yield Ok(Event::default().data(l));
-                }
-            }
-        }
         yield Ok(Event::default().data(format!("[DONE] {id} updated")));
     };
 
@@ -535,11 +656,10 @@ pub async fn scan_outputs(
     let ns_v: Value = serde_json::from_slice(&ns_out.stdout)?;
     let ann = ns_v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
     let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let outputs_json = state.config.catalog_dir().join(&id).join("outputs.json");
-    if !outputs_json.exists() {
+    let outputs_spec = chart_outputs_spec(&state.config.catalog_dir(), &id);
+    if outputs_spec.is_empty() {
         return Ok(Json(ScanOutputsResponse { outputs: normalize_outputs(&ann) }));
     }
-    let outputs_spec: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&outputs_json)?)?;
 
     // Compile regex patterns once — recompiling inside the inner log-line loop
     // is O(patterns × lines) compilations which blows up on long logs.
@@ -617,51 +737,32 @@ pub async fn scan_outputs(
 }
 
 pub async fn uninstall_app(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Path(instance_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let ns = format!("yolab-{instance_name}");
-    if let Ok(out) = tokio::process::Command::new("kubectl")
-        .args(["get", "namespace", &ns, "-o", "json", "--ignore-not-found=true"])
-        .output().await
-    {
-        if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) {
-            let ann = v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-            let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let uninstall_j2 = state.config.catalog_dir().join(&id).join("uninstall.yaml.j2");
-            if !id.is_empty() && uninstall_j2.exists() {
-                let config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or_default();
-                let outputs = normalize_outputs(&ann);
-                let mut extra: serde_json::Map<String, Value> = Default::default();
-                for o in &outputs {
-                    extra.insert(format!("output_{}", o.key), Value::String(o.value.clone()));
-                }
-                if let Ok(tunnel_cfg) = tunnel_config(&state.config) {
-                    if let Ok(rendered) = render_manifest(
-                        &state.config.catalog_dir(), &id, &instance_name,
-                        &config, &tunnel_cfg, "uninstall.yaml.j2", Some(&extra),
-                    ) {
-                        // Best-effort cleanup job; if we can't stage the manifest
-                        // (e.g. disk full) skip it rather than panic — the
-                        // namespace delete below still tears the app down.
-                        if let Ok(tmp) = tempfile::Builder::new().suffix(".yaml").tempfile() {
-                            if std::fs::write(tmp.path(), &rendered).is_ok() {
-                                let _ = tokio::process::Command::new("kubectl")
-                                    .args(["apply", "-f", &tmp.path().to_string_lossy()])
-                                    .output().await;
-                                let _ = tokio::process::Command::new("kubectl")
-                                    .args(["wait", "job/uninstall", "-n", &ns,
-                                           "--for=condition=complete", "--timeout=120s"])
-                                    .output().await;
-                            }
-                        }
-                    }
-                }
-            }
+
+    // `helm uninstall` runs the chart's pre-delete hook (tunnel cleanup) and waits for
+    // it before removing anything. That replaces rendering an uninstall template by
+    // hand, applying it, and polling `kubectl wait job/uninstall --timeout=120s` — and
+    // unlike that version, a hook that fails shows up in the output instead of being
+    // silently skipped on its way to deleting the namespace anyway.
+    let out = tokio::process::Command::new("helm")
+        .args(["uninstall", &instance_name, "-n", &ns, "--ignore-not-found", "--wait"])
+        .output()
+        .await;
+    match out {
+        Ok(o) if !o.status.success() => {
+            // Not fatal: the namespace delete below still tears the app down. But it
+            // must be visible, because the thing that most commonly fails here is the
+            // tunnel cleanup, which leaves an orphaned tunnel on the platform.
+            tracing::warn!(
+                "uninstall {instance_name}: helm uninstall failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
         }
+        Err(e) => tracing::warn!("uninstall {instance_name}: could not run helm: {e}"),
+        _ => {}
     }
 
     tokio::process::Command::new("kubectl")

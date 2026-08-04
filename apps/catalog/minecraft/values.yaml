@@ -1,0 +1,15 @@
+# `config` is user-facing: exactly what the install form edits, and the subtree
+# local-api serves to the UI as its JSON Schema. `yolab` is injected at install
+# time by local-api and is not the user's business.
+config:
+  difficulty: normal
+  # Empty means "no operators" / "no whitelist" — both blocks are omitted entirely
+  # rather than passed as empty env vars, which is what the Jinja {% if %} did.
+  ops: ""
+  whitelist: ""
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  # Minecraft registers a raw port rather than an HTTP subdomain, so wg-register is
+  # given an empty SERVICE_NAME.
+  serviceName: ""

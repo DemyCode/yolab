@@ -1,6 +1,0 @@
-[app]
-id = "cinny"
-name = "Cinny"
-description = "Modern Matrix web client"
-icon = "💬"
-category = "communication"
