@@ -1,4 +1,5 @@
 mod auth;
+mod charts;
 mod config;
 mod disks_reconciler;
 mod error;
@@ -111,6 +112,9 @@ async fn main() {
         .route("/api/nodes/traffic", get(nodes::traffic))
         .route("/api/cluster/join-info", get(nodes::join_info))
         // Apps
+        .route("/api/apps/repos", get(apps::list_repos).post(apps::add_repo))
+        .route("/api/apps/repos/:name", delete(apps::remove_repo))
+        .route("/api/apps/repos/sync", post(apps::sync_repos))
         .route("/api/account/token", get(apps::account_token))
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
@@ -137,6 +141,8 @@ async fn main() {
     // the single actuator for the DISK→ON/OFF config — no separate watcher.
     tokio::spawn(disks_reconciler::run());
     tokio::spawn(topology::run_topology_controller());
+    // Keeps the app catalog current without a nixos-rebuild — see charts.rs.
+    tokio::spawn(charts::run_chart_sync());
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");

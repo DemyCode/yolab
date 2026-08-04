@@ -27,10 +27,6 @@ pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
 /// nothing has been installed yet, avoids a migration later against live data.
 pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 
-/// The built-in catalog. Charts currently resolve from a local directory, so everything
-/// belongs to this repo; once remote repos exist this becomes whichever repo the chart
-/// was resolved from, and the UI badges anything that isn't this one as third-party.
-pub(crate) const OFFICIAL_REPO: &str = "official";
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
 const LOGS_SCAN_TAIL: u32 = 500;
@@ -419,27 +415,97 @@ pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainR
     Ok(Json(DomainResponse { domain: derive_domain(dns_url) }))
 }
 
+/// The storefront: every chart across every configured source.
+///
+/// Sources are visited in resolution order (synced repos first, the bundled directory
+/// last), and the first chart seen for a given id wins — so a published fix supersedes the
+/// copy shipped in the system closure without anyone rebuilding the OS.
 pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
     let catalog_dir = state.config.catalog_dir();
-    let Ok(rd) = std::fs::read_dir(&catalog_dir) else { return Json(vec![]) };
-    let mut apps = vec![];
-    for entry in rd.flatten() {
-        let Some(meta) = read_chart(&entry.path()) else { continue };
-        apps.push(CatalogApp {
-            id: meta.chart.name.clone(),
-            repo: OFFICIAL_REPO.to_string(),
-            name: meta.display_name(),
-            description: meta.chart.description.clone(),
-            icon: meta.ann(ANN_ICON).to_string(),
-            category: meta.ann(ANN_CATEGORY).to_string(),
-            chart_version: meta.chart.version.clone(),
-            schema: meta.schema.clone(),
-            uischema: meta.ann_json(ANN_UISCHEMA),
-        });
+    let mut apps: Vec<CatalogApp> = vec![];
+    let mut seen: std::collections::HashSet<String> = Default::default();
+
+    for (repo, dir) in crate::charts::chart_sources(&catalog_dir).await {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let Some(meta) = read_chart(&entry.path()) else { continue };
+            // An id can legitimately exist in several repos; the earlier source wins, and
+            // the UI shows which repo it came from so "gitea from someone else's repo"
+            // can never masquerade as the curated one.
+            if !seen.insert(meta.chart.name.clone()) {
+                continue;
+            }
+            apps.push(CatalogApp {
+                id: meta.chart.name.clone(),
+                repo: repo.clone(),
+                name: meta.display_name(),
+                description: meta.chart.description.clone(),
+                icon: meta.ann(ANN_ICON).to_string(),
+                category: meta.ann(ANN_CATEGORY).to_string(),
+                chart_version: meta.chart.version.clone(),
+                schema: meta.schema.clone(),
+                uischema: meta.ann_json(ANN_UISCHEMA),
+            });
+        }
     }
     // read_dir order is filesystem-dependent; sort so the storefront is stable.
     apps.sort_by_key(|a| a.name.to_lowercase());
     Json(apps)
+}
+
+// ── Chart repositories ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AddRepoBody {
+    pub name: String,
+    pub url: String,
+}
+
+pub async fn list_repos(State(_s): State<AppState>) -> Json<Vec<crate::charts::ChartRepo>> {
+    Json(crate::charts::list_repos().await)
+}
+
+pub async fn add_repo(
+    State(_s): State<AppState>,
+    Json(body): Json<AddRepoBody>,
+) -> impl IntoResponse {
+    if let Err(e) = crate::charts::add_repo(&body.name, &body.url).await {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+    // Sync immediately so the storefront reflects the new repo without a second call.
+    let repos = crate::charts::list_repos().await;
+    if let Some(r) = repos.iter().find(|r| r.name == body.name) {
+        if let Err(e) = crate::charts::sync_repo(r).await {
+            // The repo is registered but unusable — surface it rather than leaving an
+            // empty section in the UI with no explanation.
+            return (StatusCode::BAD_GATEWAY, format!("added, but sync failed: {e}")).into_response();
+        }
+    }
+    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+}
+
+pub async fn remove_repo(
+    State(_s): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match crate::charts::remove_repo(&name).await {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// Refreshes every repo. Also runs on a timer (see `run_chart_sync`) so a node picks up
+/// newly published apps on its own.
+pub async fn sync_repos(State(_s): State<AppState>) -> Json<serde_json::Value> {
+    let mut results = serde_json::Map::new();
+    for repo in crate::charts::list_repos().await {
+        let entry = match crate::charts::sync_repo(&repo).await {
+            Ok(n) => serde_json::json!({ "ok": true, "charts": n }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        };
+        results.insert(repo.name.clone(), entry);
+    }
+    Json(Value::Object(results))
 }
 
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
@@ -532,7 +598,10 @@ pub async fn install_app(
             yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
             return;
         };
-        let chart_dir = state.config.catalog_dir().join(&id);
+        let Some((repo, chart_dir)) = crate::charts::resolve_chart(&state.config.catalog_dir(), &id, None).await else {
+            yield Ok(Event::default().data(format!("[ERROR] no chart named {id} in any configured repository")));
+            return;
+        };
         let Some(meta) = read_chart(&chart_dir) else {
             yield Ok(Event::default().data(format!("[ERROR] {id} is not a valid chart")));
             return;
@@ -542,7 +611,7 @@ pub async fn install_app(
         // Namespace first: the chart's resources are namespaced, and the labels/
         // annotations set here are what the backup layer selects on.
         yield Ok(Event::default().data("Preparing namespace..."));
-        if let Err(e) = ensure_app_namespace(&ns, &id, OFFICIAL_REPO, &meta.chart.version).await {
+        if let Err(e) = ensure_app_namespace(&ns, &id, &repo, &meta.chart.version).await {
             yield Ok(Event::default().data(format!("[ERROR] create namespace: {e}")));
             return;
         }
@@ -629,7 +698,11 @@ pub async fn update_app(
             yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
             return;
         };
-        let chart_dir = state.config.catalog_dir().join(&id);
+        let installed_repo = ann.get(ANN_CHART_REPO).and_then(|v| v.as_str()).map(String::from);
+        let Some((_, chart_dir)) = crate::charts::resolve_chart(&state.config.catalog_dir(), &id, installed_repo.as_deref()).await else {
+            yield Ok(Event::default().data(format!("[ERROR] chart {id} is no longer available in {:?}", installed_repo)));
+            return;
+        };
         let Some(meta) = read_chart(&chart_dir) else {
             yield Ok(Event::default().data(format!("[ERROR] {id} is not a valid chart")));
             return;

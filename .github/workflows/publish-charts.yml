@@ -1,0 +1,105 @@
+# Publishes the official app catalog as a Helm chart repository on GitHub Pages.
+#
+# A CLASSIC repo (index.yaml + .tgz over HTTP), deliberately not OCI. OCI registries
+# have no chart index — `helm search` cannot enumerate them — so a storefront built on
+# OCI would require users to already know a chart's name. index.yaml is what makes the
+# catalog browsable, and it is what lets a node discover that new apps exist without a
+# nixos-rebuild, which is the entire point of decoupling the catalog.
+#
+# Charts stay in-tree; this only packages and indexes them. The published repo and the
+# copy shipped in the system closure are the same charts, so a node can seed its cache
+# from disk and only reach the network for versions it does not already have.
+
+name: Publish chart repository
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/catalog/**"
+      - ".github/workflows/publish-charts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Two runs publishing to gh-pages at once would clobber each other's index.yaml.
+  group: publish-charts
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Package charts
+        run: |
+          set -euo pipefail
+          mkdir -p .cr-release-packages
+          for chart in apps/catalog/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue
+            # The library chart is a dependency, not an installable app, but it must be
+            # published too — otherwise `helm dependency update` against the published
+            # repo cannot resolve it for anyone building on top of the catalog.
+            helm dependency update "$chart" >/dev/null
+            helm package "$chart" --destination .cr-release-packages
+          done
+          ls -la .cr-release-packages
+
+      - name: Lint every chart
+        run: |
+          set -euo pipefail
+          fail=0
+          for chart in apps/catalog/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue
+            grep -q '^type: library' "$chart/Chart.yaml" && continue
+            # Charts whose schema marks fields required legitimately fail lint against
+            # default values, so lint with a filled-in set — the point here is catching
+            # template errors, not re-testing the schema.
+            helm lint "$chart" \
+              --set config.password=PlaceholderPw2026 \
+              --set config.admin_password=PlaceholderPw2026 \
+              --set config.admin_email=admin@example.com \
+              --set config.server_name=example \
+              --set config.server_pass=PlaceholderPw2026 \
+              --set config.subdomain=example || fail=1
+          done
+          exit $fail
+
+      - name: Publish to gh-pages
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Merge with whatever is already published so older chart versions survive.
+          # A restore from an old backup may need a chart version that has since been
+          # superseded; dropping them would make old backups unrestorable.
+          git fetch origin gh-pages || true
+          if git rev-parse --verify origin/gh-pages >/dev/null 2>&1; then
+            git worktree add /tmp/pages origin/gh-pages
+          else
+            git worktree add --detach /tmp/pages
+            (cd /tmp/pages && git checkout --orphan gh-pages && git rm -rf . >/dev/null 2>&1 || true)
+          fi
+
+          cp .cr-release-packages/*.tgz /tmp/pages/
+          helm repo index /tmp/pages --url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+
+          cd /tmp/pages
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no chart changes to publish"
+          else
+            git commit -m "Publish charts from ${GITHUB_SHA::7}"
+            git push origin HEAD:gh-pages
+          fi
