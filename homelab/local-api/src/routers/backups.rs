@@ -257,26 +257,10 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
         p["stale"].as_bool().unwrap_or(false) || p["stuck_terminating"].as_bool().unwrap_or(false)
     });
 
-    // Latest etcd snapshot from K3s CRD.
-    let etcd_last = Command::new("kubectl")
-        .args(["get", "etcdsnapshotfile", "-o", "json"])
-        .output()
-        .await
-        .ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| {
-            v["items"]
-                .as_array()?
-                .iter()
-                .filter(|i| {
-                    i["metadata"]["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .starts_with("etcd-daily-")
-                })
-                .filter_map(|i| i["status"]["creationTime"].as_str().map(String::from))
-                .max()
-        });
+    // When cluster state (etcd) was last captured — sourced from the BackupRun that
+    // actually included it, not from the transient etcdsnapshotfile CRD (see
+    // backup_run::last_etcd_snapshot for why that never worked).
+    let etcd_last = backup_run::last_etcd_snapshot().await;
 
     Ok(Json(serde_json::json!({
         "pvcs": pvcs,

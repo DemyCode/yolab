@@ -60,6 +60,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -77,7 +78,8 @@ spec:
           subPath: "{{ instance_name }}/yolab-state"
 
       - name: gen-secrets
-        image: busybox:1.37
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -99,6 +101,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -107,6 +110,7 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 443
@@ -134,7 +138,8 @@ spec:
           mountPath: /yolab
 
       - name: synapse
-        image: matrixdotorg/synapse:latest
+        image: matrixdotorg/synapse:latest@sha256:6345789f58048687f3024a99d3d59b5444fc9cc1de61d2947000cbac89573fcb
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /_matrix/client/versions
@@ -178,7 +183,8 @@ spec:
           mountPath: /yolab
 
       - name: element
-        image: vectorim/element-web:latest
+        image: vectorim/element-web:latest@sha256:9f9b546280e67e492d56f6e775c449e74356bffb98daaf211abc755276713fad
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 80
@@ -246,7 +252,8 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "synapse"]

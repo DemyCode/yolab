@@ -12,7 +12,9 @@ use serde_json::Value;
 use crate::{config::Config, error::Result, proc::KillOnDrop, AppState};
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
-const ANN_APP_ID: &str = "yolab.io/app-id";
+/// Shared with backup_run.rs, which exports this annotation so a restored namespace
+/// keeps its app identity — a single definition so the two can never drift apart.
+pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
 const LOGS_SCAN_TAIL: u32 = 500;

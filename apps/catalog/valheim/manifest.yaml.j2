@@ -41,6 +41,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -60,6 +61,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -67,7 +69,8 @@ spec:
           mountPath: /etc/wireguard
 
       - name: valheim
-        image: ghcr.io/community-valheim-tools/valheim-server:latest
+        image: ghcr.io/community-valheim-tools/valheim-server:latest@sha256:e8b13da3c44f54a38511c8ac224f2959a437c0b2626cf916683ca7acc8dfb146
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 2456

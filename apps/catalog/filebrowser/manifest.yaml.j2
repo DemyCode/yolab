@@ -52,6 +52,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -71,6 +72,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -79,6 +81,7 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -139,7 +142,8 @@ spec:
     spec:
       initContainers:
       - name: fix-perms
-        image: busybox:1
+        image: busybox:1@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
+        imagePullPolicy: IfNotPresent
         command: ['sh', '-c', 'chown -R 1000:1000 /db /srv']
         volumeMounts:
         - name: data
@@ -149,7 +153,8 @@ spec:
           mountPath: /srv
           subPath: {{ instance_name }}/files
       - name: init-db
-        image: filebrowser/filebrowser:v2
+        image: filebrowser/filebrowser:v2@sha256:a469ea076d4a1b4b1d86a41d130f2f536cd9da996a2b1fb39c0d7635f9d89b9a
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -167,7 +172,8 @@ spec:
           subPath: {{ instance_name }}/db
       containers:
       - name: filebrowser
-        image: filebrowser/filebrowser:v2
+        image: filebrowser/filebrowser:v2@sha256:a469ea076d4a1b4b1d86a41d130f2f536cd9da996a2b1fb39c0d7635f9d89b9a
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /

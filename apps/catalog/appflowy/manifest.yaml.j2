@@ -67,6 +67,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -84,7 +85,8 @@ spec:
           subPath: "{{ instance_name }}/yolab-state"
 
       - name: gen-secrets
-        image: busybox:1.37
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -111,6 +113,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -119,6 +122,7 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 80
@@ -146,7 +150,8 @@ spec:
           mountPath: /yolab
 
       - name: app
-        image: appflowyinc/appflowy_web:latest
+        image: appflowyinc/appflowy_web:latest@sha256:67852883fa09c4494207755a2c73722362d8b831e8894cbb0c7df65de1ed695f
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /
@@ -201,7 +206,8 @@ spec:
     spec:
       containers:
       - name: cloud
-        image: appflowyinc/appflowy_cloud:latest
+        image: appflowyinc/appflowy_cloud:latest@sha256:92821ef7b9057c5a0c4878df21ed550be38a389b2cd16ad9ac1a349f352274dd
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 8000
@@ -292,7 +298,8 @@ spec:
     spec:
       containers:
       - name: worker
-        image: appflowyinc/appflowy_worker:latest
+        image: appflowyinc/appflowy_worker:latest@sha256:badc04dcd007b3b3f94d2982dc512c5c9a1fb16cdb6f87103cd5a967a05a676a
+        imagePullPolicy: IfNotPresent
         env:
         - name: RUST_LOG
           value: info
@@ -334,7 +341,8 @@ spec:
     spec:
       containers:
       - name: gotrue
-        image: appflowyinc/gotrue:latest
+        image: appflowyinc/gotrue:latest@sha256:87149e0003af9462824548d47f9ecc3e2b5e3c85501f4c8eb37b5efb55abc6a7
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /health
@@ -421,7 +429,8 @@ spec:
     spec:
       containers:
       - name: minio
-        image: minio/minio:latest
+        image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /minio/health/live
@@ -485,7 +494,8 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "appflowy"]
@@ -546,7 +556,8 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.4-alpine
+        image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
             command: ["redis-cli", "ping"]

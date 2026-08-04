@@ -16,12 +16,21 @@ interface PvcEntry {
 interface ServiceEntry {
   namespace: string;
   pvcs: PvcEntry[];
+  /// Catalog app id (e.g. "gitea"), captured at backup time from the namespace's
+  /// yolab.io/app-id annotation. Absent on snapshots taken before identity was exported.
+  app_id?: string;
+  instance_name?: string;
+  /// Exact images the namespace was running — with the catalog digest-pinned, this
+  /// identifies the version the data belongs to.
+  images?: string[];
 }
 
 interface SnapshotCatalog {
   timestamp: string;
   namespaces: string[];
   services?: ServiceEntry[];
+  /// Repo commit the node was built from when this backup was taken.
+  catalog_version?: string | null;
 }
 
 interface ResticSnapshot {
@@ -33,6 +42,7 @@ interface ResticSnapshot {
 interface DiffEntry {
   namespace: string;
   serviceName: string;
+  appId?: string;
   pvcs: PvcEntry[];
   mode: "adding" | "recovering";
 }
@@ -45,18 +55,32 @@ interface BackupRunStatus {
   error?: string | null;
   stalePvcs?: string[];
   snapshotId?: string;
+  /// Whether the etcd (cluster state) half of the backup actually made it in — a run
+  /// can otherwise succeed on volumes alone with cluster state silently missing.
+  etcdIncluded?: boolean;
 }
 
 // Mirrors restore_run.rs's RestoreRun.status shape.
 interface VolumeStatus {
   pvc: string;
-  phase: "Pending" | "Restoring" | "Succeeded" | "Failed" | "Skipped";
+  /// Deleting: the old PVC has been asked to go away and we're waiting it out across
+  /// reconcile ticks (nothing blocks server-side), after which the restore target is
+  /// recreated and the data pulled back.
+  phase: "Pending" | "Deleting" | "Restoring" | "Succeeded" | "Failed" | "Skipped";
+}
+
+interface DeploymentScale {
+  name: string;
+  replicas: number;
 }
 
 interface NamespaceRestoreStatus {
   namespace: string;
-  scaledDeployments: string[];
+  /// Recorded before scaling to zero, so the original replica count is restored rather
+  /// than everything being flattened to 1.
+  scaledDeployments: DeploymentScale[];
   volumes: VolumeStatus[];
+  setupComplete?: boolean;
 }
 
 interface RestoreRunStatus {
@@ -67,6 +91,12 @@ interface RestoreRunStatus {
   snapshotId?: string;
   restoreAsOf?: string | null;
   namespaces?: NamespaceRestoreStatus[];
+  /// Set when the run hit a timeout or hard error and was routed through recovery
+  /// (scaling apps back up) instead of stopping where it was. Present means the final
+  /// phase is Partial/Failed even if individual volumes succeeded.
+  abortReason?: string | null;
+  /// Repo commit the restored data was backed up from.
+  restoredFromVersion?: string | null;
 }
 
 interface DrStatusResponse {
@@ -144,6 +174,7 @@ function VolumePhaseIcon({ phase }: { phase: VolumeStatus["phase"] }) {
       return <AlertCircle className="h-4 w-4 text-[#f87171] flex-shrink-0" />;
     case "Skipped":
       return <AlertTriangle className="h-4 w-4 text-[#fbbf24] flex-shrink-0" />;
+    case "Deleting":
     case "Restoring":
       return <RefreshCw className="h-4 w-4 text-[#a78bfa] animate-spin flex-shrink-0" />;
     default:
@@ -156,6 +187,7 @@ function volumePhaseLabel(phase: VolumeStatus["phase"]): string {
     case "Succeeded": return "Restored";
     case "Failed": return "Failed";
     case "Skipped": return "No backup found — kept as-is";
+    case "Deleting": return "Clearing old volume…";
     case "Restoring": return "Restoring…";
     default: return "Pending";
   }
@@ -258,6 +290,14 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
               {status.phase === "Partial" && `Restore finished with issues — ${succeededVolumes}/${totalVolumes} volumes restored. Affected services are running with their previous or empty data.`}
               {status.phase === "Failed" && `Restore failed${status.error ? `: ${status.error}` : "."}`}
             </p>
+            {/* A run that timed out or hit a hard error still runs recovery before
+                finishing, so the apps are back up — say so explicitly rather than
+                leaving the user wondering whether anything is still running. */}
+            {status.abortReason && (
+              <p className="text-xs text-[#a1a1aa] mt-1">
+                {status.abortReason} — services were scaled back up automatically.
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -332,6 +372,9 @@ function RestoreFlow({
   const diff: DiffEntry[] = services.map(svc => ({
     namespace: svc.namespace,
     serviceName: serviceNameFromNamespace(svc.namespace),
+    // Only worth showing when the instance was named something other than the app it
+    // came from ("myfiles" running filebrowser) — otherwise it just repeats the title.
+    appId: svc.app_id && svc.app_id !== svc.instance_name ? svc.app_id : undefined,
     pvcs: svc.pvcs,
     mode: runningNamespaces.has(svc.namespace) ? "recovering" : "adding",
   }));
@@ -385,6 +428,9 @@ function RestoreFlow({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-[#fafafa] font-medium">{entry.serviceName}</span>
+                {entry.appId && (
+                  <span className="text-xs text-[#52525b]">{entry.appId}</span>
+                )}
                 {entry.mode === "adding" ? (
                   <span className="text-xs text-[#4ade80] font-medium">Adding</span>
                 ) : (

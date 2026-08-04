@@ -52,6 +52,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -69,7 +70,8 @@ spec:
           subPath: "{{ instance_name }}/yolab-state"
 
       - name: gen-secrets
-        image: busybox:1.37
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -91,6 +93,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -99,6 +102,7 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 80
@@ -126,7 +130,8 @@ spec:
           mountPath: /yolab
 
       - name: app
-        image: amruthpillai/reactive-resume:latest
+        image: amruthpillai/reactive-resume:latest@sha256:ff5d74fed8f8611b3e3182b9420b6b6ed7020aa39db9b5f8e9d8fb090a9374e9
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /
@@ -205,7 +210,8 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "rxresume"]
@@ -264,7 +270,8 @@ spec:
     spec:
       containers:
       - name: minio
-        image: minio/minio:latest
+        image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /minio/health/live
@@ -324,7 +331,8 @@ spec:
     spec:
       containers:
       - name: chrome
-        image: ghcr.io/browserless/chromium:v2.18.0
+        image: ghcr.io/browserless/chromium:v2.18.0@sha256:b0adebacc9b737505e3de46b1feec1f184410b22091a778f94fd09bcc48806f1
+        imagePullPolicy: IfNotPresent
         env:
         - name: TIMEOUT
           value: "10000"
