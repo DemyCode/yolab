@@ -7,6 +7,15 @@ spec:
   cephVersion:
     image: quay.io/ceph/ceph:v19.2.0
   dataDirHostPath: /var/lib/rook
+  # BOOTSTRAP VALUES ONLY. topology.rs owns mon/mgr count at runtime and raises them
+  # (1 → 3 mons, 1 → 2 mgrs) once there are 3+ nodes.
+  #
+  # k3s re-applies this manifest whenever it restarts, which resets these to 1 and makes
+  # Rook scale mons back down. The topology controller re-asserts the correct count on
+  # its next tick, so this is churn rather than breakage — but do not "tidy" these into
+  # the real target values, and do not treat them as authoritative: on a fresh
+  # single-node cluster Rook's own default of 3 mons cannot be scheduled, so something
+  # has to say 1 here.
   mon:
     count: 1
     allowMultiplePerNode: true
@@ -63,7 +72,11 @@ spec:
   storage:
     useAllNodes: false
     useAllDevices: false
-    # nodes list managed by osd-node-controller DaemonSet
+    # spec.storage.nodes is written by disks_reconciler.rs (local-api), which is the
+    # single writer — elected by a lease so concurrent nodes cannot clobber each other's
+    # entry. Deliberately absent here: k3s re-applying this manifest leaves the
+    # reconciler's list intact because the field is not declared, which is exactly why
+    # it must stay undeclared.
   # Rook auto-purges OSDs that are out + safe-to-destroy. Our reconciler drives
   # osd-out; Rook handles the deployment teardown and purge from here.
   removeOSDsIfOutAndSafeToRemove: true
