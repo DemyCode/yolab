@@ -1,0 +1,11 @@
+apiVersion: v2
+name: yolab-common
+description: >-
+  Shared building blocks every YoLab app needs to be reachable: the wg-register
+  init container, the WireGuard sidecar, and the Caddy gateway that terminates the
+  tunnel. Before this existed the same ~40 lines were copy-pasted into all 18 app
+  manifests, byte-identical, which meant a change to the tunnel plumbing was an
+  18-file edit and a policy like "only the gateway may run privileged" was
+  unexpressible.
+type: library
+version: 0.1.0

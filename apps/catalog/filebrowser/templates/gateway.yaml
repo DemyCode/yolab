@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  {{- /* Recreate, not RollingUpdate: the gateway mounts the app's ReadWriteMany PVC
+       and holds the WireGuard interface. A rolling update briefly runs two pods
+       registering the same tunnel subdomain, which is how this crash-looped. */}}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+        {{- include "yolab-common.wgRegisterInit" . | nindent 8 }}
+      containers:
+        {{- include "yolab-common.gatewayContainers" . | nindent 8 }}
+      volumes:
+        {{- include "yolab-common.gatewayVolumes" . | nindent 8 }}
