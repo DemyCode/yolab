@@ -10,7 +10,9 @@ spec:
   targetNamespace: rook-ceph
   createNamespace: true
   valuesContent: |-
-    allowLoopDevices: true
+    # allowLoopDevices was needed when the system OSD was a loop-mounted file. It is now
+    # a real LVM logical volume (/dev/mapper/pool-ceph, see disk-config.nix), no loop
+    # devices exist on a node, and leaving it enabled would let Rook claim a stray one.
     resources:
       limits:
         memory: 256Mi

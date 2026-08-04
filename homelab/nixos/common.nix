@@ -39,17 +39,10 @@ in
   };
 
   config = {
-    # glances 4.5.5: REST tests race a locally-started server (connection
-    # refused). Remove those two files in postPatch so pytest never sees them.
-    nixpkgs.overlays = [
-      (_final: prev: {
-        glances = prev.glances.overrideAttrs (old: {
-          postPatch = (old.postPatch or "") + ''
-            rm -f tests/test_restful.py tests/test_browser_restful.py
-          '';
-        });
-      })
-    ];
+    # An overlay used to patch out two racy glances REST tests. It is gone because
+    # unmodified glances 4.5.5 now builds — and because overriding the derivation meant
+    # every node compiled glances from source, test suite and all, instead of taking the
+    # prebuilt one from cache.nixos.org. An overlay that outlives its bug is not free.
 
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
@@ -385,33 +378,6 @@ in
       };
     };
 
-    # ── osd-node-controller legacy cleanup ───────────────────────────────────
-    # Disk reconciliation moved into yolab-local-api (Rust). Delete the old
-    # Python DaemonSet and its RBAC once the cluster is reachable.
-    systemd.services.yolab-osd-controller-cleanup = {
-      description = "Remove legacy osd-node-controller DaemonSet";
-      after = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
-      environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "osd-controller-cleanup" ''
-          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
-          until kubectl get nodes 2>/dev/null; do sleep 5; done
-          # Remove K3s Addon objects so K3s stops managing these resources.
-          kubectl delete addon rook-osd-controller    -n kube-system --ignore-not-found 2>/dev/null || true
-          kubectl delete addon rook-osd-controller-cm -n kube-system --ignore-not-found 2>/dev/null || true
-          # Remove the K8s resources themselves.
-          kubectl delete daemonset    osd-node-controller        -n rook-ceph --ignore-not-found
-          kubectl delete serviceaccount osd-node-controller      -n rook-ceph --ignore-not-found
-          kubectl delete role         osd-node-controller        -n rook-ceph --ignore-not-found
-          kubectl delete rolebinding  osd-node-controller        -n rook-ceph --ignore-not-found
-          kubectl delete configmap    osd-node-controller-script -n rook-ceph --ignore-not-found
-        '';
-      };
-    };
-
     # ── Storage class default management ─────────────────────────────────────
     # K3s creates a `local-path` StorageClass on every boot and marks it as
     # the cluster default.  We deploy `yolab-cephfs` as the real default (set
@@ -458,8 +424,13 @@ in
           export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
           # Wait for the CSI DaemonSet to exist — Rook may not have reconciled yet.
           until kubectl get daemonset csi-cephfsplugin -n rook-ceph 2>/dev/null; do sleep 10; done
-          kubectl rollout restart daemonset/csi-cephfsplugin -n rook-ceph
-          kubectl rollout status  daemonset/csi-cephfsplugin -n rook-ceph --timeout=180s || true
+          # Delete only THIS node's plugin pod. The stale locks being cleared are held in
+          # the local plugin's memory from the session before this node rebooted, so a
+          # `rollout restart` of the whole DaemonSet — which is what this used to do —
+          # bounced the plugin on every other node too, interrupting their live CephFS
+          # mounts for a problem they do not have.
+          kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin \
+            --field-selector "spec.nodeName=$(cat /etc/hostname)" --ignore-not-found || true
         '';
         TimeoutStartSec = "300";
       };
@@ -560,10 +531,6 @@ in
       # Applies norebalance OSD flag after the cluster is ready. restartPolicy:OnFailure
       # retries until Ceph is up; ttlSecondsAfterFinished cleans it up after success.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster-init.yaml          - - - - ${./rook/cluster-init-job.yaml}"
-      # Remove legacy osd-node-controller manifest files so K3s stops recreating the
-      # DaemonSet. The r directive silently no-ops if the file is already gone.
-      "r /var/lib/rancher/k3s/server/manifests/rook-osd-controller.yaml"
-      "r /var/lib/rancher/k3s/server/manifests/rook-osd-controller-cm.yaml"
       # external-snapshotter: CRDs + RBAC must be applied before the controller.
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
@@ -598,12 +565,15 @@ in
     nix.settings.cores = 2;
     nix.gc.automatic = true;
 
+    # One fixed swapfile, not swapspace as well. Running both meant a static 8 GB plus a
+    # daemon adding more on demand — and swap growing under memory pressure is the worst
+    # case for Ceph, whose OSDs perform badly when paged out (hence vm.swappiness = 10
+    # above). A predictable ceiling is the point.
     swapDevices = [
       {
         device = "/var/lib/swapfile";
         size = 8192;
       }
     ];
-    services.swapspace.enable = true;
   };
 }
