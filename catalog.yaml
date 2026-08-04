@@ -21,3 +21,25 @@ charts:
     version: "0.1.0"
   - name: immich
     version: "0.1.0"
+  - name: jellyfin
+    version: "0.1.0"
+  - name: librespeed
+    version: "0.1.0"
+  - name: minecraft
+    version: "0.1.0"
+  - name: ntfy
+    version: "0.1.0"
+  - name: open-webui
+    version: "0.1.0"
+  - name: reactive-resume
+    version: "0.1.0"
+  - name: strfry
+    version: "0.1.0"
+  - name: synapse
+    version: "0.1.0"
+  - name: syncthing
+    version: "0.1.0"
+  - name: valheim
+    version: "0.1.0"
+  - name: vaultwarden
+    version: "0.1.0"
