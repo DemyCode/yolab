@@ -61,27 +61,211 @@ jobs:
           push: true
           tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
 
-  build-nixos:
+  # build-nixos:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install Nix
+  #       uses: cachix/install-nix-action@v27
+  #       with:
+  #         nix_path: nixpkgs=channel:nixos-unstable
+  #         extra_nix_config: |
+  #           experimental-features = nix-command flakes
+  #           extra-substituters = https://cache.nixos.org
+  #           trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+  #
+  #     - name: Provide CI config stub
+  #       run: cp homelab/ci-config.toml homelab/ignored/config.toml
+  #
+  #     - name: Build NixOS toplevel
+  #       run: >
+  #         nix build path:.#nixosConfigurations.yolab.config.system.build.toplevel
+  #         --print-build-logs --accept-flake-config
+
+
+
+  # ── App catalog ─────────────────────────────────────────────────────────────
+  #
+  # Publishes every branch, matching how the images above are branch-tagged. Charts are
+  # versioned <chart-version>-<branch> on anything but main, which is a semver prerelease
+  # and therefore sorts below the release — so a branch build can never be picked up as
+  # an upgrade by a node tracking the official catalog.
+  #
+  # The subtlety branch publishing forces: every app chart declares yolab-common at an
+  # exact version. Package a branch naively and each app resolves the library from main,
+  # so the branch would be testing its charts against a library it is not shipping. The
+  # dependency version is rewritten to match before packaging, and the library is pushed
+  # first so the apps can actually resolve it.
+  charts:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    concurrency:
+      group: charts-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
+      - name: Install Helm
+        uses: azure/setup-helm@v4
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            extra-substituters = https://cache.nixos.org
-            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+          version: v3.16.3
 
-      - name: Provide CI config stub
-        run: cp homelab/ci-config.toml homelab/ignored/config.toml
+      - name: Resolve registry and version suffix
+        run: |
+          set -euo pipefail
+          # OCI repository names must be lowercase — the spec requires it and GHCR
+          # enforces it — while github.repository_owner preserves the account's casing.
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "REGISTRY=oci://ghcr.io/${owner}/charts" >> "$GITHUB_ENV"
 
-      - name: Build NixOS toplevel
-        run: >
-          nix build path:.#nixosConfigurations.yolab.config.system.build.toplevel
-          --print-build-logs --accept-flake-config
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "SUFFIX=" >> "$GITHUB_ENV"
+          else
+            # A semver prerelease identifier may contain only [0-9A-Za-z-], so anything
+            # else in the branch name (slashes, underscores, dots) has to be folded to a
+            # hyphen or `helm package --version` rejects it.
+            tag=$(echo '${{ github.ref_name }}' | sed 's|[^0-9A-Za-z]|-|g')
+            echo "SUFFIX=-${tag}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish the library chart
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pkg
+          base=$(grep '^version:' apps/catalog/yolab-common/Chart.yaml | head -1 | awk '{print $2}' | tr -d '"')
+          echo "LIB_VERSION=${base}${SUFFIX}" >> "$GITHUB_ENV"
+          helm package apps/catalog/yolab-common --version "${base}${SUFFIX}" --destination /tmp/pkg
+          # Must land before any app chart is packaged: they resolve it from the registry,
+          # not from disk, so nothing else can build until it exists at this version.
+          for attempt in 1 2 3 4 5; do
+            helm push /tmp/pkg/yolab-common-*.tgz "${REGISTRY}" && break
+            sleep $((attempt * 15))
+          done
+          rm -f /tmp/pkg/yolab-common-*.tgz
+
+      - name: Lint, package and push app charts
+        id: push
+        run: |
+          set -uo pipefail
+          failed=""
+          for chart in apps/catalog/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue
+            grep -q '^type: library' "$chart/Chart.yaml" && continue
+            name=$(grep '^name:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
+            base=$(grep '^version:' "$chart/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+
+            # Point the dependency at the version just published. Without this a branch
+            # build vendors main's library and silently tests the wrong thing.
+            sed -i "/- name: yolab-common/{n;s|version: .*|version: \"${LIB_VERSION}\"|}" "$chart/Chart.yaml"
+            helm dependency update "$chart" >/dev/null
+
+            # Charts whose schema marks fields required legitimately fail lint against
+            # default values, so lint with a filled-in set — the point is catching
+            # template errors, not re-testing the schema.
+            helm lint "$chart" \
+              --set config.password=PlaceholderPw2026 \
+              --set config.admin_password=PlaceholderPw2026 \
+              --set config.admin_email=admin@example.com \
+              --set config.server_name=example \
+              --set config.server_pass=PlaceholderPw2026 \
+              --set config.subdomain=example || { failed="$failed $name(lint)"; continue; }
+
+            helm package "$chart" --version "${base}${SUFFIX}" --destination /tmp/pkg
+
+            # GitHub rate-limits creating new container packages, and each chart is its
+            # own package: the first run of this pushed 7 of 19 before a hard 403. Retry
+            # with backoff, and never let one chart's failure abort the rest.
+            pushed=""
+            for attempt in 1 2 3 4 5; do
+              # Pushing an existing name:version is a no-op, so retries and re-runs are
+              # both safe. Published versions are never deleted — a restore from an old
+              # backup may need one.
+              if helm push "/tmp/pkg/${name}-${base}${SUFFIX}.tgz" "${REGISTRY}"; then pushed=1; break; fi
+              sleep $((attempt * 15))
+            done
+            [ -n "$pushed" ] || failed="$failed $name"
+            sleep 3
+          done
+          # The Chart.yaml edits above are build-time only; never let them reach a commit.
+          git checkout -- apps/catalog
+          echo "failed=${failed}" >> "$GITHUB_OUTPUT"
+          [ -z "$failed" ] || echo "::warning::failed:${failed}"
+
+      - name: Generate the catalog manifest
+        run: |
+          set -euo pipefail
+          registry_path="${REGISTRY#oci://ghcr.io/}"
+          # Built from what the registry ACTUALLY serves, not from what we meant to push.
+          # A manifest advertising a chart that is not there makes every node's sync log a
+          # pull failure for it, forever — the manifest is a promise about the registry,
+          # so it has to be checked against the registry.
+          {
+            echo "# Generated by .github/workflows/push.yml — do not edit."
+            echo "#"
+            echo "# The list of apps in the official catalog. Chart bytes live in the OCI"
+            echo "# registry below; this file exists only because a registry cannot be"
+            echo "# enumerated without credentials. Entries are verified present before"
+            echo "# being listed."
+            echo "apiVersion: yolab.io/v1"
+            echo "registry: ${REGISTRY}"
+            echo "charts:"
+            for chart in apps/catalog/*/; do
+              [ -f "$chart/Chart.yaml" ] || continue
+              grep -q '^type: library' "$chart/Chart.yaml" && continue
+              name=$(grep '^name:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
+              base=$(grep '^version:' "$chart/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+              code=$(curl -sS -o /dev/null -w "%{http_code}" \
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:${registry_path}/${name}:pull")
+              if [ "$code" = "200" ]; then
+                echo "  - name: ${name}"
+                echo "    version: \"${base}${SUFFIX}\""
+              else
+                echo "::warning::${name} is not readable in the registry (HTTP ${code}) — omitted" >&2
+              fi
+            done
+          } > catalog.yaml
+          cat catalog.yaml
+
+      - name: Upload the branch catalog manifest
+        if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          # Branch charts are published but not discoverable — main's catalog.yaml is the
+          # only one committed. Serve this artifact somewhere (or set
+          # YOLAB_OFFICIAL_CHART_REPO at it) to install a branch's catalog on a test node.
+          name: catalog-${{ github.ref_name }}
+          path: catalog.yaml
+          retention-days: 7
+
+      - name: Commit the catalog manifest
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add catalog.yaml
+          if git diff --cached --quiet; then
+            echo "catalog unchanged"
+            exit 0
+          fi
+          # [skip ci] because this push lands on main and would otherwise re-trigger.
+          git commit -m "Update catalog manifest from ${GITHUB_SHA::7} [skip ci]"
+          git push
+
+      - name: Report unpublished charts
+        if: steps.push.outputs.failed != ''
+        run: |
+          # Deliberately last: on main the manifest for everything that DID publish is
+          # already committed, so a partial run still moves the catalog forward and the
+          # next run retries the rest. Failing here only makes the gap visible.
+          echo "charts that did not publish:${{ steps.push.outputs.failed }}"
+          exit 1
 
   build-iso:
     runs-on: ubuntu-latest
