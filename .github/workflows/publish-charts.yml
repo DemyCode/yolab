@@ -95,7 +95,19 @@ jobs:
           # on the 8th — not a permissions problem (the 7 that landed are anonymously
           # pullable), just too many new packages at once. So: retry with backoff, and
           # never let one chart's failure abort the rest.
+          # yolab-common goes first, and must succeed. Every app chart now declares it as
+          # an oci:// dependency, so on a fresh registry nothing else can even package
+          # until the library is published — and alphabetical order would put it last.
           failed=""
+          lib=$(ls /tmp/pkg/yolab-common-*.tgz 2>/dev/null | head -1)
+          if [ -n "$lib" ]; then
+            for attempt in 1 2 3 4 5; do
+              helm push "$lib" "${REGISTRY}" && break
+              sleep $((attempt * 15))
+            done
+            mv "$lib" /tmp/pushed-lib.tgz
+          fi
+
           for tgz in /tmp/pkg/*.tgz; do
             name=$(basename "$tgz" .tgz)
             pushed=""

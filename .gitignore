@@ -52,7 +52,7 @@ installer/nixos/frontend/dist
 homelab/local-api/target
 homelab/local-api/target/
 
-# Helm chart dependencies — vendored from apps/catalog/yolab-common at build time
-# (see the yolab-chart-deps activation step), never committed.
+# Vendored Helm chart dependencies, materialised by `helm dependency build` from the
+# committed Chart.lock (see the yolab-chart-deps unit). Build output, not source —
+# Chart.lock IS committed, since it pins an external artifact in the OCI registry.
 apps/catalog/*/charts/
-apps/catalog/*/Chart.lock
