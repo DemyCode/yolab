@@ -4,6 +4,7 @@ import validator from "@rjsf/validator-ajv8";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
+import { fetchList } from "@/lib/api";
 import {
   ArrowLeft,
   Copy,
@@ -226,33 +227,30 @@ export function AppsPage() {
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
 
-  function loadInstalled() {
-    return fetch("/api/apps")
-      .then((r) => r.json())
-      .then((a: AppInfo[]) => {
-        if (a.length > 0) {
-          localStorage.setItem(APPS_CACHE_KEY, JSON.stringify(a));
-          setInstalled(a);
-          setStale(false);
-        } else {
-          // Empty — K3s may be unreachable, keep cached data
-          setInstalled((prev) => {
-            if (prev.length > 0) { setStale(true); return prev; }
-            return a;
-          });
-        }
-      })
-      .catch(() => {
-        setStale(true);
-      });
+  async function loadInstalled() {
+    const res = await fetchList<AppInfo>("/api/apps");
+    if (res.ok) {
+      // A 200 with a list is authoritative — INCLUDING an empty one. Treating "no apps"
+      // as "cluster might be down" meant uninstalling your last app left the deleted app
+      // on screen under a red unreachable banner, forever, because the cache was only
+      // ever overwritten by a non-empty response.
+      localStorage.setItem(APPS_CACHE_KEY, JSON.stringify(res.data));
+      setInstalled(res.data);
+      setStale(false);
+    } else {
+      // Couldn't ask — keep showing whatever is on screen, flagged as stale.
+      setStale(true);
+    }
   }
 
   useEffect(() => {
     try {
       const cached = localStorage.getItem(APPS_CACHE_KEY);
       if (cached) {
+        // Render the cache immediately so the page isn't blank, but don't call it stale
+        // yet — the fetch below is about to say whether it actually is. Flagging it up
+        // front made the warning flash on every single page load.
         setInstalled(JSON.parse(cached) as AppInfo[]);
-        setStale(true);
       }
     } catch { }
 

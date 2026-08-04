@@ -28,9 +28,15 @@ pub struct JoinInfo {
     pub platform_api_url: String,
 }
 
-pub async fn nodes() -> Json<Vec<NodeInfo>> {
-    let items = kubectl::get_nodes().await.unwrap_or_default();
-    Json(
+/// Returns an error (not an empty list) when the cluster can't be reached.
+///
+/// This used to `unwrap_or_default()`, so "kubectl failed" and "there are no nodes"
+/// both came back as `200 []` — leaving the UI no way to tell a real answer from a
+/// broken one, which it then guessed at by assuming any empty list meant the control
+/// plane was down.
+pub async fn nodes() -> Result<Json<Vec<NodeInfo>>> {
+    let items = kubectl::get_nodes().await?;
+    Ok(Json(
         items.iter().map(|item| {
             let meta = &item["metadata"];
             let roles = meta["labels"].as_object().map(|l| {
@@ -53,7 +59,7 @@ pub async fn nodes() -> Json<Vec<NodeInfo>> {
                 joined_at: meta["creationTimestamp"].as_str().unwrap_or("").to_string(),
             }
         }).collect(),
-    )
+    ))
 }
 
 pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLink>>> {

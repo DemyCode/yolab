@@ -9,6 +9,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import type { NodeInfo, NodeLink } from "@/types/nodes";
+import { fetchList } from "@/lib/api";
 
 const CACHE_KEY = "yolab:nodes";
 
@@ -21,27 +22,22 @@ export function NodesPage() {
     try {
       const cached = localStorage.getItem(CACHE_KEY);
       if (cached) {
+        // Shown immediately so the page isn't blank; the fetch below decides whether
+        // it's actually stale, rather than warning before we've even asked.
         setNodes(JSON.parse(cached) as NodeInfo[]);
-        setStale(true);
       }
     } catch {}
 
-    fetch("/api/nodes")
-      .then((r) => r.json())
-      .then((n: NodeInfo[]) => {
-        if (n.length > 0) {
-          localStorage.setItem(CACHE_KEY, JSON.stringify(n));
-          setNodes(n);
-          setStale(false);
-        } else {
-          setStale(true);
-          setNodes((prev) => prev ?? []);
-        }
-      })
-      .catch(() => {
+    void fetchList<NodeInfo>("/api/nodes").then((res) => {
+      if (res.ok) {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(res.data));
+        setNodes(res.data);
+        setStale(false);
+      } else {
         setStale(true);
         setNodes((prev) => prev ?? []);
-      });
+      }
+    });
 
     fetch("/api/nodes/links")
       .then((r) => r.json())
