@@ -10,8 +10,8 @@ appVersion: "2"
 
 dependencies:
   - name: yolab-common
-    version: 0.1.0
-    repository: "file://../yolab-common"
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
 
 # YoLab-specific metadata Helm has no field for. Annotations are the standard escape
 # hatch, and keeping them here means one file describes the whole app instead of the

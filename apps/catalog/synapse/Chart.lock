@@ -1,0 +1,6 @@
+dependencies:
+- name: yolab-common
+  repository: oci://ghcr.io/demycode/charts
+  version: 0.1.0
+digest: sha256:9b1c5f9c3eb0a151bbbfe711d3aa3ea17fd904eed8120792410a2c4815cc3247
+generated: "2026-08-04T23:04:16.398483088+02:00"

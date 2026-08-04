@@ -559,9 +559,12 @@ in
           for chart in "$CATALOG"/*/; do
             [ -f "$chart/Chart.yaml" ] || continue
             grep -q '^dependencies:' "$chart/Chart.yaml" || continue
-            # `dependency update` rather than `build`: Chart.lock is gitignored too, so
-            # there is not always a lock to build from.
-            ${pkgs.kubernetes-helm}/bin/helm dependency update "$chart" >/dev/null 2>&1 \
+            # `build` resolves exactly what Chart.lock pins, so a node vendors the same
+            # dependency the chart was tested against rather than whatever the registry
+            # currently advertises. Falls back to `update` only when there is no usable
+            # lock, which should not happen for charts from this repo.
+            ${pkgs.kubernetes-helm}/bin/helm dependency build "$chart" >/dev/null 2>&1 \
+              || ${pkgs.kubernetes-helm}/bin/helm dependency update "$chart" >/dev/null 2>&1 \
               || echo "warning: could not vendor deps for $chart" >&2
           done
         '';
