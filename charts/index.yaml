@@ -1,0 +1,476 @@
+apiVersion: v1
+entries:
+  2fauth:
+  - annotations:
+      yolab.io/category: security
+      yolab.io/display-name: 2FAuth
+      yolab.io/icon: "\U0001F511"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {"subdomain": {"ui:autofocus": true}}
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.422780186+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Web app for managing two-factor authentication codes
+    digest: 6db00be07f4eaebd4b76cb7948f751ab677ebfcfb4a2b7a84c048128f6df6ade
+    name: 2fauth
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/2fauth-0.1.0.tgz
+    version: 0.1.0
+  appflowy:
+  - annotations:
+      yolab.io/category: productivity
+      yolab.io/display-name: AppFlowy
+      yolab.io/icon: https://raw.githubusercontent.com/AppFlowy-IO/AppFlowy/main/frontend/resources/flowy_icons/ic_appflowy.png
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          },
+          "admin_password": {
+            "ui:widget": "PasswordWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.422980362+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Open-source alternative to Notion. Docs, wikis, and projects in one
+      place.
+    digest: 00d1ca12e1219df181c0634d5dcd16246f53774bfb8aa81c601861d8903c602a
+    name: appflowy
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/appflowy-0.1.0.tgz
+    version: 0.1.0
+  cinny:
+  - annotations:
+      yolab.io/category: communication
+      yolab.io/display-name: Cinny
+      yolab.io/icon: "\U0001F4AC"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {"subdomain": {"ui:autofocus": true}}
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.423132958+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Modern Matrix web client
+    digest: d3247ee6970d901c2e7da42827f89815b1d2ed33ad159034e623cf9f11a11ee2
+    name: cinny
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/cinny-0.1.0.tgz
+    version: 0.1.0
+  dawarich:
+  - annotations:
+      yolab.io/category: productivity
+      yolab.io/display-name: Dawarich
+      yolab.io/icon: "\U0001F5FA️"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.423318637+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Self-hosted location history and travel tracking
+    digest: 009f81af3e3120b15fca558b9e50106e74041b9c0988fa6aa3067dd9a79e21d8
+    name: dawarich
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/dawarich-0.1.0.tgz
+    version: 0.1.0
+  filebrowser:
+  - annotations:
+      yolab.io/category: utilities
+      yolab.io/display-name: File Browser
+      yolab.io/icon: "\U0001F5C2️"
+      yolab.io/outputs: |
+        [
+          { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" }
+        ]
+      yolab.io/uischema: |
+        {
+          "subdomain": { "ui:widget": "TunnelWidget" },
+          "password": { "ui:widget": "PasswordWidget" }
+        }
+    apiVersion: v2
+    appVersion: "2"
+    created: "2026-08-04T21:59:20.423486562+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Web-based file manager for your storage
+    digest: 6bc19013d0e2d5b72718589d9efe8bc5945f65ad05731973d21daf6ba8f5d441
+    name: filebrowser
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/filebrowser-0.1.0.tgz
+    version: 0.1.0
+  gitea:
+  - annotations:
+      yolab.io/category: development
+      yolab.io/display-name: Gitea
+      yolab.io/icon: "\U0001F419"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.423637114+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Lightweight self-hosted Git service
+    digest: c804f992239d1b4bbffc5eb3d88cab865d84c35a9bac4b8590701c44a5ef3400
+    name: gitea
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/gitea-0.1.0.tgz
+    version: 0.1.0
+  immich:
+  - annotations:
+      yolab.io/category: media
+      yolab.io/display-name: Immich
+      yolab.io/icon: "\U0001F4F8"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.423785583+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Self-hosted photo and video backup
+    digest: d797844add5ae01bfbcdcf4485826ec0446a4b10277500016658db65916ba7a6
+    name: immich
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/immich-0.1.0.tgz
+    version: 0.1.0
+  jellyfin:
+  - annotations:
+      yolab.io/category: media
+      yolab.io/display-name: Jellyfin
+      yolab.io/icon: "\U0001F3AC"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.423921588+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Free and open source media server
+    digest: e04aa0ed1f9bfbcc20457224c2a38c812ae59970be9515fa61481d0f58bf604d
+    name: jellyfin
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/jellyfin-0.1.0.tgz
+    version: 0.1.0
+  librespeed:
+  - annotations:
+      yolab.io/category: utilities
+      yolab.io/display-name: LibreSpeed
+      yolab.io/icon: ⚡
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          },
+          "password": {
+            "ui:widget": "PasswordWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.424077531+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Self-hosted internet speed test
+    digest: 105eea2a6d20f1af51431ee2edb7756ce2fd214b9a7f4df7a82c7e9172e014f5
+    name: librespeed
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/librespeed-0.1.0.tgz
+    version: 0.1.0
+  minecraft:
+  - annotations:
+      yolab.io/category: gaming
+      yolab.io/display-name: Minecraft
+      yolab.io/icon: ⛏️
+      yolab.io/outputs: |
+        [{"key": "ipv6", "label": "IPv6 Address", "type": "text", "pattern": "YOLAB_OUTPUT ipv6 (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.424239805+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Minecraft Java Edition server
+    digest: c720cadcccdb4b3c36570e32bd260844cb7e0d740941db69fbe8abcac848ecb6
+    name: minecraft
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/minecraft-0.1.0.tgz
+    version: 0.1.0
+  ntfy:
+  - annotations:
+      yolab.io/category: utilities
+      yolab.io/display-name: ntfy
+      yolab.io/icon: "\U0001F514"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {"subdomain": {"ui:autofocus": true}}
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.424400307+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Self-hosted push notification service
+    digest: 7973145f04e79c7b2ed3410150ce2c2d0621caed1194073fb078293190f2424c
+    name: ntfy
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/ntfy-0.1.0.tgz
+    version: 0.1.0
+  open-webui:
+  - annotations:
+      yolab.io/category: ai
+      yolab.io/display-name: Open WebUI
+      yolab.io/icon: "\U0001F916"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.424552222+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: AI chat interface powered by Ollama — run LLMs locally
+    digest: c94321fdc2dca57d255dc8361aeff1c2bb6f478fae754de07ccb4baa0bc192a7
+    name: open-webui
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/open-webui-0.1.0.tgz
+    version: 0.1.0
+  reactive-resume:
+  - annotations:
+      yolab.io/category: productivity
+      yolab.io/display-name: Reactive Resume
+      yolab.io/icon: "\U0001F4C4"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.424711911+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Free and open source resume builder
+    digest: 404e2e96f08f922322885eabb475c973fa0e93eac03530774081d43c03fbe01a
+    name: reactive-resume
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/reactive-resume-0.1.0.tgz
+    version: 0.1.0
+  strfry:
+  - annotations:
+      yolab.io/category: communication
+      yolab.io/display-name: Strfry
+      yolab.io/icon: "\U0001F4E1"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {"subdomain": {"ui:autofocus": true}}
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.424878674+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Nostr relay
+    digest: 8dc1ba90f8a558c1c9ae575016c11a5f1babd4c22db48dffad4a062b5659f2ab
+    name: strfry
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/strfry-0.1.0.tgz
+    version: 0.1.0
+  synapse:
+  - annotations:
+      yolab.io/category: communication
+      yolab.io/display-name: Matrix Synapse
+      yolab.io/icon: https://matrix.org/images/matrix-logo.svg
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.425031541+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Self-hosted Matrix homeserver with Element Web client. Federated,
+      encrypted messaging.
+    digest: 1e2d31abd116bffef4791fbce30cb0d925b5a85c202f458388e4b5f03220fdeb
+    name: synapse
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/synapse-0.1.0.tgz
+    version: 0.1.0
+  syncthing:
+  - annotations:
+      yolab.io/category: utilities
+      yolab.io/display-name: Syncthing
+      yolab.io/icon: "\U0001F504"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web UI", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {"subdomain": {"ui:autofocus": true}, "storage_size": {"ui:widget": "select"}}
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.425178026+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Continuous file synchronization between your devices
+    digest: 42028912daa52ae9d8807495a122bea6f4335a6178f4b28d0f6ba38e3eb6df7e
+    name: syncthing
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/syncthing-0.1.0.tgz
+    version: 0.1.0
+  valheim:
+  - annotations:
+      yolab.io/category: gaming
+      yolab.io/display-name: Valheim
+      yolab.io/icon: ⚔️
+      yolab.io/outputs: |
+        [{"key": "ipv6", "label": "IPv6 Address", "type": "text", "pattern": "YOLAB_OUTPUT ipv6 (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "server_pass": {
+            "ui:widget": "PasswordWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.425323479+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Valheim dedicated game server
+    digest: 93c1dcf971215b7c7ca79792803cafc019ec295d185e5e5e3831340a9354c243
+    name: valheim
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/valheim-0.1.0.tgz
+    version: 0.1.0
+  vaultwarden:
+  - annotations:
+      yolab.io/category: productivity
+      yolab.io/display-name: Vaultwarden
+      yolab.io/icon: "\U0001F510"
+      yolab.io/outputs: |
+        [{"key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)"}]
+      yolab.io/uischema: |
+        {
+          "subdomain": {
+            "ui:widget": "TunnelWidget"
+          }
+        }
+    apiVersion: v2
+    created: "2026-08-04T21:59:20.425471597+02:00"
+    dependencies:
+    - name: yolab-common
+      repository: file://../yolab-common
+      version: 0.1.0
+    description: Lightweight Bitwarden-compatible password manager
+    digest: 480024a8046ed22156d9c951ed539fbebb6f2afcb7b6375382b39da6dfbbe8b7
+    name: vaultwarden
+    type: application
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/vaultwarden-0.1.0.tgz
+    version: 0.1.0
+  yolab-common:
+  - apiVersion: v2
+    created: "2026-08-04T21:59:20.425544514+02:00"
+    description: 'Shared building blocks every YoLab app needs to be reachable: the
+      wg-register init container, the WireGuard sidecar, and the Caddy gateway that
+      terminates the tunnel. Before this existed the same ~40 lines were copy-pasted
+      into all 18 app manifests, byte-identical, which meant a change to the tunnel
+      plumbing was an 18-file edit and a policy like "only the gateway may run privileged"
+      was unexpressible.'
+    digest: fd986a660453765c12f05e6f732e75ef65fa8ef0d0c030cd7ca11802c4e24d80
+    name: yolab-common
+    type: library
+    urls:
+    - https://raw.githubusercontent.com/DemyCode/yolab/main/charts/yolab-common-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-08-04T21:59:20.42245202+02:00"

@@ -8,9 +8,16 @@
 //!
 //! ## Classic repos, not OCI
 //!
-//! OCI registries have no chart index — `helm search` cannot enumerate them, so a catalog
-//! built on OCI would require the user to already know a chart's name. `index.yaml` is
-//! what makes a repository browsable, which is the whole job here.
+//! OCI registries have no chart index. Verified against GHCR: both the OCI registry-wide
+//! catalog endpoint (`/v2/_catalog`) and the GitHub Packages API return 401 to an
+//! unauthenticated caller, so there is no way for a node to ask "what apps exist?"
+//! without shipping it a GitHub token. Pulling a known chart by name works fine — but
+//! enumeration is the storefront, so the catalog needs an index either way.
+//!
+//! That index is a plain `index.yaml` committed to the yolab repo and served over
+//! raw.githubusercontent.com, which is the whole hosting story: no GitHub Pages, no
+//! gh-pages branch, no server. It is a standard Helm repository, so third parties can
+//! publish one anywhere that serves static files and `helm repo add` just works.
 //!
 //! ## Trust
 //!
@@ -52,11 +59,17 @@ fn yes() -> bool {
     true
 }
 
-/// The official repo's URL. Configurable so a fork or a self-hosted deployment can point
-/// the curated catalog somewhere else without patching code.
+/// The official repo's URL — the `charts/` directory of the yolab repo, served as static
+/// files. `helm repo add` appends `index.yaml`, so this is a normal Helm repository that
+/// happens to be hosted by the same place the source lives.
+///
+/// Configurable because this URL is baked into every deployed node: moving the catalog
+/// later (to a CDN, or to a route on yolab-external for a stable own-domain address)
+/// must not require patching code, and the old URL has to keep working until the fleet
+/// has rolled over.
 fn official_url() -> String {
     std::env::var("YOLAB_OFFICIAL_CHART_REPO")
-        .unwrap_or_else(|_| "https://demycode.github.io/yolab/".into())
+        .unwrap_or_else(|_| "https://raw.githubusercontent.com/DemyCode/yolab/main/charts/".into())
 }
 
 /// Every configured repo, official first.
