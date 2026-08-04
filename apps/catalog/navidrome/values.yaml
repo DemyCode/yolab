@@ -1,0 +1,18 @@
+# Everything under `config` is user-facing: it is exactly what the install form
+# edits, and its schema (values.schema.json -> properties.config) is what local-api
+# serves to the UI. Everything under `yolab` is injected by local-api at install
+# time and is not the user's business.
+
+config:
+  subdomain: navidrome
+  storage_size: 100Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  # The tunnel subdomain actually requested — local-api resolves this from whichever
+  # config field is marked `format: tunnel` in the schema.
+  serviceName: ""
+  gateway:
+    # Caddy proxies to the app, which runs in the gateway pod.
+    upstream: localhost:4533

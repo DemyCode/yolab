@@ -172,6 +172,7 @@ jobs:
               --set config.password=PlaceholderPw2026 \
               --set config.admin_password=PlaceholderPw2026 \
               --set config.admin_email=admin@example.com \
+              --set config.app_secret=PlaceholderPw2026 \
               --set config.server_name=example \
               --set config.server_pass=PlaceholderPw2026 \
               --set config.subdomain=example || { failed="$failed $name(lint)"; continue; }

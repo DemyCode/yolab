@@ -10,4 +10,32 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
-    upstream: gotrue.yolab-{{
+    # AppFlowy is four services behind one hostname, so it needs a full Caddyfile
+    # rather than a single upstream. The Tera-to-Helm conversion collapsed this to
+    # `upstream`, which both dropped the /gotrue, /minio-api, /ws and /api routes and
+    # truncated the hostname at the space inside the old `{{ instance_name }}`
+    # expression — leaving the gateway proxying everything to a host that does not
+    # resolve.
+    #
+    # Short Service names are enough: Caddy runs in this release's namespace, so
+    # `cloud:8000` resolves to the same place the old fully-qualified name did, and
+    # unlike the FQDN it needs no templating (values are not re-rendered by Helm).
+    caddyfile: |-
+      {$YOLAB_FQDN} {
+        handle /gotrue/* {
+          reverse_proxy gotrue:9999
+        }
+        handle /minio-api/* {
+          uri strip_prefix /minio-api
+          reverse_proxy minio:9000
+        }
+        handle /ws/* {
+          reverse_proxy cloud:8000
+        }
+        handle /api/* {
+          reverse_proxy cloud:8000
+        }
+        handle {
+          reverse_proxy localhost:3000
+        }
+      }

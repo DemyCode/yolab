@@ -1,0 +1,39 @@
+apiVersion: v2
+name: calibre-web
+description: "Web interface for browsing and reading a Calibre ebook library"
+type: application
+# Chart version — bump on any packaging change. This is what a backup records and a
+# restore pins to, so "which version wrote this data" stops being a guess.
+version: 0.1.0
+# Upstream application version this chart tracks.
+appVersion: "0"
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+# YoLab-specific metadata Helm has no field for. Annotations are the standard escape
+# hatch, and keeping them here means one file describes the whole app.
+annotations:
+  yolab.io/display-name: "Calibre-Web"
+  yolab.io/icon: "📚"
+  yolab.io/category: "media"
+  # RJSF layout hints for the install form; the form's JSON Schema itself lives in
+  # values.schema.json under `properties.config`.
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }
+  # Values scraped out of pod logs after install (regex, capture group 1).
+  yolab.io/outputs: |
+    [
+      {
+        "key": "url",
+        "label": "Web URL",
+        "type": "url",
+        "pattern": "YOLAB_OUTPUT url (\\S+)"
+      }
+    ]

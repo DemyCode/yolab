@@ -42,22 +42,28 @@ spec:
         readinessProbe:
           httpGet:
             path: /v1/health
-            port: 80
+            port: 2586
           initialDelaySeconds: 5
           periodSeconds: 10
         livenessProbe:
           httpGet:
             path: /v1/health
-            port: 80
+            port: 2586
           initialDelaySeconds: 15
           periodSeconds: 20
           failureThreshold: 3
         command:
         - /bin/sh
         - -c
+        {{- /* ntfy defaults to listening on :80, which is the port Caddy already binds
+               in this same pod — containers in a pod share one network namespace, so
+               whichever started second failed to bind. Moving ntfy to :2586 (its own
+               documented alternate port) is what makes the two coexist. */}}
         - '. /yolab/env
 
           export NTFY_BASE_URL="https://$YOLAB_FQDN"
+
+          export NTFY_LISTEN_HTTP=":2586"
 
           export NTFY_CACHE_FILE=/var/lib/ntfy/cache.db
 
