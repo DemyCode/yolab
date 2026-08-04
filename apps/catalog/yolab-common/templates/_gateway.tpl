@@ -33,6 +33,15 @@ Values consumed (all under `.Values.yolab`):
 {{- end -}}
 
 {{/*
+Secret holding the platform account token, created per-namespace by local-api rather
+than by the chart — a chart must not be able to choose where its credentials come from,
+and keeping it out of values means it never lands in the Helm release Secret either.
+*/}}
+{{- define "yolab-common.tunnelSecretName" -}}
+yolab-tunnel-credentials
+{{- end -}}
+
+{{/*
 wg-register: claims the tunnel subdomain with the platform and drops a WireGuard
 config + /yolab/env for the sidecar and Caddy to consume.
 */}}
@@ -43,8 +52,20 @@ config + /yolab/env for the sidecar and Caddy to consume.
   env:
     - name: PLATFORM_API_URL
       value: {{ ((.Values.yolab).platformApiUrl) | default "" | quote }}
+    {{- /* The platform account token reaches ONLY this container, and only by
+           reference. It used to be a literal env value, which put it in the pod spec
+           — readable via `kubectl get deploy -o yaml`, present in the Helm release
+           Secret because it was a chart value, and captured in every backup. That
+           token is the whole account: it can read the raw B2 credentials from
+           /storage/s3, manage tunnels and DNS, and it doubles as the x-yolab-cluster
+           header that bypasses local-api auth entirely, including the root-shell
+           endpoint. A single compromised app container should not be able to read it,
+           and now the app's own containers never see it at all. */}}
     - name: ACCOUNT_TOKEN
-      value: {{ ((.Values.yolab).accountToken) | default "" | quote }}
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "yolab-common.tunnelSecretName" . }}
+          key: account-token
     - name: SERVICE_NAME
       value: {{ ((.Values.yolab).serviceName) | default "" | quote }}
   volumeMounts:

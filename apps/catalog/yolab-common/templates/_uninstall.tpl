@@ -33,8 +33,14 @@ spec:
           image: {{ include "yolab-common.image.wgRegister" . }}
           imagePullPolicy: IfNotPresent
           env:
+            {{- /* By reference, same as wg-register — see the note there. This hook is
+                   the only other thing that legitimately needs the account token, since
+                   deleting the tunnel is an account-scoped operation. */}}
             - name: ACCOUNT_TOKEN
-              value: {{ ((.Values.yolab).accountToken) | default "" | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yolab-common.tunnelSecretName" . }}
+                  key: account-token
             - name: PLATFORM_API_URL
               value: {{ ((.Values.yolab).platformApiUrl) | default "" | quote }}
           command: ["/bin/sh", "-c"]
