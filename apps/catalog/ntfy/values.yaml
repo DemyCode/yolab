@@ -8,4 +8,4 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
-    upstream: localhost:80
+    upstream: localhost:2586
