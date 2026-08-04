@@ -17,7 +17,8 @@
         "password": {
           "type": "string",
           "title": "Admin password",
-          "minLength": 1
+          "description": "At least 12 characters — File Browser rejects anything shorter.",
+          "minLength": 12
         },
         "storage_size": {
           "type": "string",
