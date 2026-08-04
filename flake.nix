@@ -87,6 +87,8 @@
           # Shell / Docker
           shellcheck
           hadolint
+          # Apps are Helm charts — needed to lint/template them locally.
+          kubernetes-helm
           # Rust (version from rust-toolchain.toml)
           rustToolchain
           pkg-config

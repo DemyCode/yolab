@@ -1,0 +1,224 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitea
+  template:
+    metadata:
+      labels:
+        app: gitea
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: ssh-host-keys
+        image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - "mkdir -p /ssh-store\nif [ ! -f /ssh-store/ssh_host_ed25519_key ]; then\n  ssh-keygen -t ed25519 -f /ssh-store/ssh_host_ed25519_key -N \"\"\nfi\ncp /ssh-store/ssh_host_ed25519_key /ssh-live/ssh_host_ed25519_key\nchmod 600 /ssh-live/ssh_host_ed25519_key\n"
+        volumeMounts:
+        - name: data
+          mountPath: /ssh-store
+          subPath: {{ .Release.Name }}/gitea-ssh
+        - name: ssh-host-keys
+          mountPath: /ssh-live
+      - name: regenerate-auth-keys
+        image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - 'mkdir -p /data/git/.ssh
+
+          gitea admin regenerate keys || true
+
+          '
+        env:
+        - name: GITEA__database__DB_TYPE
+          value: postgres
+        - name: GITEA__database__HOST
+          value: postgres.{{ .Release.Namespace }}.svc.cluster.local:5432
+        - name: GITEA__database__NAME
+          value: gitea
+        - name: GITEA__database__USER
+          value: gitea
+        - name: GITEA__database__PASSWD
+          value: gitea
+        - name: GITEA__server__SSH_KEY_PATH
+          value: /data/git/.ssh/authorized_keys
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ .Release.Name }}/gitea
+        - name: git-home
+          mountPath: /data/git
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: gitea
+        image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          httpGet:
+            path: /api/healthz
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/healthz
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        - '. /yolab/env
+
+          export GITEA__server__DOMAIN=$YOLAB_FQDN
+
+          export GITEA__server__ROOT_URL=https://$YOLAB_FQDN
+
+          export GITEA__server__SSH_DOMAIN=$YOLAB_FQDN
+
+          exec /usr/bin/entrypoint
+
+          '
+        env:
+        - name: USER_UID
+          value: '1000'
+        - name: USER_GID
+          value: '1000'
+        - name: GITEA__server__HTTP_PORT
+          value: '3000'
+        - name: GITEA__server__SSH_PORT
+          value: '22'
+        - name: GITEA__database__DB_TYPE
+          value: postgres
+        - name: GITEA__database__HOST
+          value: postgres.{{ .Release.Namespace }}.svc.cluster.local:5432
+        - name: GITEA__database__NAME
+          value: gitea
+        - name: GITEA__database__USER
+          value: gitea
+        - name: GITEA__database__PASSWD
+          value: gitea
+        - name: GITEA__log__MODE
+          value: console
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ .Release.Name }}/gitea
+        - name: ssh-host-keys
+          mountPath: /data/ssh
+        - name: git-home
+          mountPath: /data/git
+        - name: yolab
+          mountPath: /yolab
+      - name: anubis
+        image: ghcr.io/techarohq/anubis:latest@sha256:5cf4c0d6c7ea01a356c6685a779971bdd28d6a5a4a6719201f73a9c4ae108db0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: BIND
+          value: :3001
+        - name: TARGET
+          value: http://localhost:3000
+        - name: OG_PASSTHROUGH
+          value: 'true'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      - name: ssh-host-keys
+        emptyDir: {}
+      - name: git-home
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - gitea
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - gitea
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          value: gitea
+        - name: POSTGRES_PASSWORD
+          value: gitea
+        - name: POSTGRES_DB
+          value: gitea
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ .Release.Name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

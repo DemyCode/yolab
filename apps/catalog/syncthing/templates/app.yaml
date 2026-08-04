@@ -1,0 +1,65 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "20Gi" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: syncthing
+        image: syncthing/syncthing:latest@sha256:4464f4161dd0251e20d46bb3aec83363db75d80cef1abdd5d5fd4054b04a004d
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          httpGet:
+            path: /rest/noauth/health
+            port: 8384
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /rest/noauth/health
+            port: 8384
+          initialDelaySeconds: 20
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: STNOUPGRADE
+          value: '1'
+        - name: STGUIADDRESS
+          value: 0.0.0.0:8384
+        volumeMounts:
+        - name: data
+          mountPath: /var/syncthing
+          subPath: {{ .Release.Name }}/syncthing
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

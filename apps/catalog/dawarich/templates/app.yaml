@@ -1,0 +1,316 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: gen-secrets
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - "SECRETS=/state/secrets.env\nif [ ! -f \"$SECRETS\" ]; then\n  TMP=$(mktemp \"${SECRETS}.XXXXXX\")\n  printf 'SECRET_KEY_BASE=%s\\n' \"$(tr -dc a-f0-9 </dev/urandom | head -c 128)\" > \"$TMP\"\n  mv \"$TMP\" \"$SECRETS\"\nfi\ncp \"$SECRETS\" /yolab/secrets.env\n"
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: {{ .Release.Name }}/yolab-state
+        - name: yolab
+          mountPath: /yolab
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: app
+        image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - '. /yolab/env
+
+          . /yolab/secrets.env
+
+          export APPLICATION_HOSTS="localhost,$YOLAB_FQDN,127.0.0.1,::1"
+
+          exec web-entrypoint.sh bin/rails server -p 3000 -b ::
+
+          '
+        env:
+        - name: RAILS_ENV
+          value: production
+        - name: REDIS_URL
+          value: redis://redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+        - name: DATABASE_HOST
+          value: postgres.{{ .Release.Namespace }}.svc.cluster.local
+        - name: DATABASE_PORT
+          value: '5432'
+        - name: DATABASE_USERNAME
+          value: dawarich
+        - name: DATABASE_PASSWORD
+          value: dawarich
+        - name: DATABASE_NAME
+          value: dawarich
+        - name: APPLICATION_PROTOCOL
+          value: https
+        - name: TIME_ZONE
+          value: {{ .Values.config.time_zone | default "UTC" }}
+        - name: RAILS_LOG_TO_STDOUT
+          value: 'true'
+        - name: SELF_HOSTED
+          value: 'true'
+        - name: STORE_GEODATA
+          value: 'true'
+        volumeMounts:
+        - name: data
+          mountPath: /var/app/public
+          subPath: {{ .Release.Name }}/dawarich/public
+        - name: data
+          mountPath: /var/app/tmp/imports/watched
+          subPath: {{ .Release.Name }}/dawarich/imports
+        - name: data
+          mountPath: /var/app/storage
+          subPath: {{ .Release.Name }}/dawarich/storage
+        - name: yolab
+          mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sidekiq
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sidekiq
+  template:
+    metadata:
+      labels:
+        app: sidekiq
+    spec:
+      containers:
+      - name: sidekiq
+        image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'until [ -f /state/secrets.env ]; do sleep 2; done
+
+          . /state/secrets.env
+
+          exec sidekiq-entrypoint.sh sidekiq
+
+          '
+        env:
+        - name: RAILS_ENV
+          value: production
+        - name: REDIS_URL
+          value: redis://redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+        - name: DATABASE_HOST
+          value: postgres.{{ .Release.Namespace }}.svc.cluster.local
+        - name: DATABASE_PORT
+          value: '5432'
+        - name: DATABASE_USERNAME
+          value: dawarich
+        - name: DATABASE_PASSWORD
+          value: dawarich
+        - name: DATABASE_NAME
+          value: dawarich
+        - name: RAILS_LOG_TO_STDOUT
+          value: 'true'
+        - name: SELF_HOSTED
+          value: 'true'
+        - name: STORE_GEODATA
+          value: 'true'
+        - name: BACKGROUND_PROCESSING_CONCURRENCY
+          value: '10'
+        volumeMounts:
+        - name: data
+          mountPath: /var/app/public
+          subPath: {{ .Release.Name }}/dawarich/public
+        - name: data
+          mountPath: /var/app/tmp/imports/watched
+          subPath: {{ .Release.Name }}/dawarich/imports
+        - name: data
+          mountPath: /var/app/storage
+          subPath: {{ .Release.Name }}/dawarich/storage
+        - name: data
+          mountPath: /state
+          subPath: {{ .Release.Name }}/yolab-state
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgis/postgis:17-3.5-alpine@sha256:978a2e6671c956d650d1f240dba7c73b8519a5f5af8685165fca616cc4ae3568
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - dawarich
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - dawarich
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          value: dawarich
+        - name: POSTGRES_PASSWORD
+          value: dawarich
+        - name: POSTGRES_DB
+          value: dawarich
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: {{ .Release.Name }}/postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+        command:
+        - redis-server
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ .Release.Name }}/redis
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379

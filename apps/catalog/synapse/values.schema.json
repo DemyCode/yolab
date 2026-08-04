@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Matrix Synapse",
+      "type": "object",
+      "required": [
+        "subdomain"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "synapse"
+        }
+      }
+    },
+    "yolab": {
+      "type": "object",
+      "description": "Injected by local-api at install time; not user-editable.",
+      "properties": {
+        "platformApiUrl": {
+          "type": "string"
+        },
+        "accountToken": {
+          "type": "string"
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "images": {
+          "type": "object"
+        },
+        "gateway": {
+          "type": "object",
+          "properties": {
+            "upstream": {
+              "type": "string"
+            },
+            "caddyfile": {
+              "type": "string"
+            },
+            "pvcName": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

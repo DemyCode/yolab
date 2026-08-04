@@ -1,0 +1,29 @@
+apiVersion: v2
+name: valheim
+description: "Valheim dedicated game server"
+type: application
+# Chart version — bump on any packaging change. A backup records this, and a restore
+# pins to it, so "which version wrote this data" stops being a guess.
+version: 0.1.0
+
+dependencies:
+  - name: yolab-common
+    version: 0.1.0
+    repository: "file://../yolab-common"
+
+# YoLab metadata Helm has no field for. Chart.yaml's own `icon` wants a URL, so the
+# emoji lives in an annotation alongside the rest.
+annotations:
+  yolab.io/display-name: "Valheim"
+  yolab.io/icon: "⚔️"
+  yolab.io/category: "gaming"
+  # RJSF layout hints; the form's schema itself is values.schema.json properties.config.
+  yolab.io/uischema: |
+    {
+      "server_pass": {
+        "ui:widget": "PasswordWidget"
+      }
+    }
+  # Values scraped from pod logs after install (regex, capture group 1).
+  yolab.io/outputs: |
+    [{"key": "ipv6", "label": "IPv6 Address", "type": "text", "pattern": "YOLAB_OUTPUT ipv6 (\\S+)"}]
