@@ -231,11 +231,15 @@ fn build_values(
     tunnel_cfg: &toml::Table,
     service_name: &str,
 ) -> String {
+    // No accountToken here on purpose. Chart values are persisted verbatim in the Helm
+    // release Secret and echoed by `helm get values`, so passing the token as a value
+    // would put the account's master credential in one more durable, readable place —
+    // and into every backup. It reaches the one container that needs it through a
+    // namespace Secret instead (see ensure_tunnel_credentials).
     serde_json::json!({
         "config": config,
         "yolab": {
             "platformApiUrl": tunnel_cfg.get("platform_api_url").and_then(|v| v.as_str()).unwrap_or(""),
-            "accountToken": tunnel_cfg.get("account_token").and_then(|v| v.as_str()).unwrap_or(""),
             "serviceName": service_name,
         },
     })
@@ -295,6 +299,33 @@ fn helm_stream(args: Vec<String>) -> impl futures::Stream<Item = std::result::Re
 /// inventory and cluster export select on, and `yolab.io/app-id` is what identifies the
 /// app after a restore — leaving those to chart authors would mean a third-party chart
 /// could silently opt itself out of being backed up.
+/// Puts the platform account token in the app's namespace as a Secret.
+///
+/// Created by local-api, not by the chart: a chart must not get to choose where its
+/// credentials come from, or a hostile one could point the reference at a Secret it
+/// controls. Only `yolab-common.wgRegisterInit` and the pre-delete hook reference it, so
+/// the app's own containers never receive it in their environment.
+///
+/// This is a containment measure, not a fix. The token is still the whole account — it
+/// can read the raw B2 credentials from /storage/s3, manage tunnels and DNS, and it
+/// doubles as the x-yolab-cluster header that bypasses local-api auth entirely. Anything
+/// that can read Secrets in the namespace can still reach it. The real fix is minting a
+/// per-app credential scoped to "register one tunnel for one service", which needs a new
+/// endpoint on yolab-external.
+async fn ensure_tunnel_credentials(ns: &str, tunnel_cfg: &toml::Table) -> anyhow::Result<()> {
+    let token = tunnel_cfg
+        .get("account_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    crate::kubectl::apply_secret(
+        "yolab-tunnel-credentials",
+        ns,
+        &[("account-token", token)],
+        &[("app.kubernetes.io/managed-by", "yolab")],
+    )
+    .await
+}
+
 async fn ensure_app_namespace(
     ns: &str,
     app_id: &str,
@@ -613,6 +644,11 @@ pub async fn install_app(
         yield Ok(Event::default().data("Preparing namespace..."));
         if let Err(e) = ensure_app_namespace(&ns, &id, &repo, &meta.chart.version).await {
             yield Ok(Event::default().data(format!("[ERROR] create namespace: {e}")));
+            return;
+        }
+        // The one container that needs the account token reads it from here.
+        if let Err(e) = ensure_tunnel_credentials(&ns, &tunnel_cfg).await {
+            yield Ok(Event::default().data(format!("[ERROR] stage tunnel credentials: {e}")));
             return;
         }
 
