@@ -1,14 +1,16 @@
-# Publishes the official app catalog as a Helm chart repository on GitHub Pages.
+# Publishes the official app catalog as a Helm chart repository served straight out of
+# this repo, via raw.githubusercontent.com.
 #
-# A CLASSIC repo (index.yaml + .tgz over HTTP), deliberately not OCI. OCI registries
-# have no chart index — `helm search` cannot enumerate them — so a storefront built on
-# OCI would require users to already know a chart's name. index.yaml is what makes the
-# catalog browsable, and it is what lets a node discover that new apps exist without a
-# nixos-rebuild, which is the entire point of decoupling the catalog.
+# No gh-pages branch and no GitHub Pages: the repository is a plain `index.yaml` plus
+# version-named tarballs committed under charts/, which is the entire hosting story. The
+# manifest is reviewable in a PR alongside the charts it describes, and a node adds it
+# with a normal `helm repo add` — nothing about it is YoLab-specific.
 #
-# Charts stay in-tree; this only packages and indexes them. The published repo and the
-# copy shipped in the system closure are the same charts, so a node can seed its cache
-# from disk and only reach the network for versions it does not already have.
+# Two things to know about this host. GitHub does not position raw.githubusercontent.com
+# as production infrastructure and rate-limits it, which is fine at this scale but is not
+# a promise; and the URL is baked into every deployed node, so moving off it later means
+# the old URL has to keep working. Both are acceptable trade-offs for not maintaining a
+# second publishing surface — see charts.rs for how a node consumes this.
 
 name: Publish chart repository
 
@@ -24,7 +26,7 @@ permissions:
   contents: write
 
 concurrency:
-  # Two runs publishing to gh-pages at once would clobber each other's index.yaml.
+  # Two runs committing to charts/ at once would conflict on index.yaml.
   group: publish-charts
   cancel-in-progress: false
 
@@ -33,27 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
           version: v3.16.3
-
-      - name: Package charts
-        run: |
-          set -euo pipefail
-          mkdir -p .cr-release-packages
-          for chart in apps/catalog/*/; do
-            [ -f "$chart/Chart.yaml" ] || continue
-            # The library chart is a dependency, not an installable app, but it must be
-            # published too — otherwise `helm dependency update` against the published
-            # repo cannot resolve it for anyone building on top of the catalog.
-            helm dependency update "$chart" >/dev/null
-            helm package "$chart" --destination .cr-release-packages
-          done
-          ls -la .cr-release-packages
 
       - name: Lint every chart
         run: |
@@ -61,9 +47,10 @@ jobs:
           fail=0
           for chart in apps/catalog/*/; do
             [ -f "$chart/Chart.yaml" ] || continue
+            helm dependency update "$chart" >/dev/null
             grep -q '^type: library' "$chart/Chart.yaml" && continue
             # Charts whose schema marks fields required legitimately fail lint against
-            # default values, so lint with a filled-in set — the point here is catching
+            # default values, so lint with a filled-in set — the point is catching
             # template errors, not re-testing the schema.
             helm lint "$chart" \
               --set config.password=PlaceholderPw2026 \
@@ -75,31 +62,33 @@ jobs:
           done
           exit $fail
 
-      - name: Publish to gh-pages
+      - name: Package and index
+        run: |
+          set -euo pipefail
+          mkdir -p charts
+          for chart in apps/catalog/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue
+            # The library chart is published too: without it, `helm dependency update`
+            # against this repo cannot resolve it for anyone building on the catalog.
+            helm package "$chart" --destination charts
+          done
+          # Regenerate over the existing directory so previously published versions are
+          # kept. Old chart versions must stay fetchable — a restore from an old backup
+          # may need one, and pruning them would quietly make old backups unrestorable.
+          helm repo index charts \
+            --url "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/charts/"
+
+      - name: Commit
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Merge with whatever is already published so older chart versions survive.
-          # A restore from an old backup may need a chart version that has since been
-          # superseded; dropping them would make old backups unrestorable.
-          git fetch origin gh-pages || true
-          if git rev-parse --verify origin/gh-pages >/dev/null 2>&1; then
-            git worktree add /tmp/pages origin/gh-pages
-          else
-            git worktree add --detach /tmp/pages
-            (cd /tmp/pages && git checkout --orphan gh-pages && git rm -rf . >/dev/null 2>&1 || true)
-          fi
-
-          cp .cr-release-packages/*.tgz /tmp/pages/
-          helm repo index /tmp/pages --url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
-
-          cd /tmp/pages
-          git add -A
+          git add charts
           if git diff --cached --quiet; then
             echo "no chart changes to publish"
-          else
-            git commit -m "Publish charts from ${GITHUB_SHA::7}"
-            git push origin HEAD:gh-pages
+            exit 0
           fi
+          # [skip ci] because this push lands on main, and the workflow's own path filter
+          # would otherwise have to be trusted to break the loop by itself.
+          git commit -m "Publish charts from ${GITHUB_SHA::7} [skip ci]"
+          git push
