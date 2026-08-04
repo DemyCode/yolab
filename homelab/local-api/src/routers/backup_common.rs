@@ -645,35 +645,11 @@ pub(crate) async fn ensure_destination_pvc(
     kubectl_apply(&manifest.to_string()).await
 }
 
-/// Deletes `pvc_name` if present and waits (bounded) for it to actually finish deleting.
-///
-/// Restoring in place — recreating a PVC under the exact same name the app already uses,
-/// instead of a differently-named "-dest" PVC that then needs deployments repointed at it —
-/// means the caller can never have two PVC objects share a name even momentarily. The caller
-/// must have already scaled down whatever was mounting the old PVC; this just waits out the
-/// window between issuing the delete and the pvc-protection finalizer actually clearing.
-pub(crate) async fn delete_pvc_and_wait(namespace: &str, pvc_name: &str) -> anyhow::Result<()> {
-    let _ = Command::new("kubectl")
-        .args(["delete", "pvc", pvc_name, "-n", namespace, "--wait=false", "--ignore-not-found"])
-        .output()
-        .await;
-    for _ in 0..40 {
-        let exists = Command::new("kubectl")
-            .args(["get", "pvc", pvc_name, "-n", namespace])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !exists {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_secs(3)).await;
-    }
-    anyhow::bail!(
-        "timed out waiting for PVC {namespace}/{pvc_name} to finish deleting — \
-         a pod may still be mounting it"
-    );
-}
+// NOTE: the old `delete_pvc_and_wait` lived here and blocked for up to 120s per PVC.
+// It was the single biggest reason a restore `step()` could outlive its 90s lease and
+// stall BackupRun reconciliation alongside it. Restores now issue a non-blocking delete
+// and wait it out ACROSS reconcile ticks via the per-volume `Deleting` sub-phase — see
+// `advance_volume` in restore_run.rs. Nothing in a step blocks on the cluster any more.
 
 #[cfg(test)]
 mod tests {

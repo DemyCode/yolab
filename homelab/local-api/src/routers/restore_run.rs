@@ -10,32 +10,52 @@
 //
 // ── Level-triggered, not edge-triggered ──────────────────────────────────────────────
 //
-// Same redesign as BackupRun, for the same reason, proven by the same live incident:
-// this used to be one `tokio::spawn`ed task running the whole restore start-to-finish,
-// including an internal poll loop that could run for up to 90 minutes. When the node
-// rebooted mid-restore, that task died with it — the CRD sat in `RestoringVolumes`
-// forever, both affected apps stuck at 0 replicas, because nothing else knew how to
-// finish the job or even scale them back up. The phase/deadline timeout sweep could
-// only mark the run `Failed` once its deadline eventually passed — it had no path to
-// actually complete the restore or run the recovery-scale-up logic, because that logic
-// lived only inside the one task that had already died.
+// There is no spawned task. `start()` only creates the object. The reconcile tick calls
+// `step()` once per non-terminal run, every tick: read the CRD's current phase and the
+// real cluster state, do exactly one bounded unit of work, return. A crash between any
+// two ticks is invisible to the next one — it just sees the same status and keeps going,
+// because every phase is built from operations that are safe to redo (`ensure_*` helpers,
+// idempotent `kubectl apply`, delete-if-exists checks). Anything a phase computes that a
+// *later* phase needs (resolved namespaces, PVC catalog, restore point-in-time) is
+// written into CRD status during that phase.
 //
-// There is no spawned task anymore. `start()` only creates the object. The reconcile
-// tick calls `step()` once per non-terminal run, every tick: read the CRD's current
-// phase and the real cluster state, do exactly one bounded unit of work, return. A
-// crash between any two ticks is invisible to the next one — it just sees the same
-// status and keeps going, because every phase is built from operations that are safe
-// to redo (`ensure_*` helpers, idempotent `kubectl apply`, delete-if-exists checks).
-// Anything a phase computes that a *later* phase needs (the resolved namespace list,
-// the per-namespace PVC catalog, the restore point-in-time) is written into the CRD
-// status during that phase, specifically so a later step reading it back doesn't care
-// which process wrote it or when.
+// ── Recovery is unskippable ──────────────────────────────────────────────────────────
+//
+// `step_applying` is the ONLY code that scales deployments back up, and terminal runs are
+// never stepped again. So any path that jumps straight from a mutating phase to a terminal
+// phase leaves every app in the restore at 0 replicas, permanently, with nothing able to
+// fix it — which is exactly the live incident this whole reconciler was written to prevent,
+// and it survived the previous rewrite because `reconcile_tick`'s timeout sweep set
+// `Failed` (terminal) *before* the step loop ran, making `step_restoring`'s own
+// past-deadline handling unreachable.
+//
+// Every give-up path now goes through `terminate()`, which routes to Applying whenever the
+// run has already scaled something down, carrying `abortReason` so the eventual terminal
+// phase is still honest about having failed. Only phases that provably haven't touched the
+// cluster yet (Validating, WaitingForStorage) may fail flat.
+//
+// ── Bounded steps ────────────────────────────────────────────────────────────────────
+//
+// RestoringVolumes used to do the entire per-namespace setup — including a blocking
+// `delete_pvc_and_wait` of up to 120s *per PVC*, sequentially — inside one `step()` call,
+// against a 90s lease, while also blocking BackupRun's reconciliation (the tick loop is
+// sequential). Now every volume carries its own sub-phase:
+//
+//   Pending → Deleting → Restoring → Succeeded|Failed     (or Pending → Skipped)
+//
+// and each tick advances each volume by one non-blocking observation, under an overall
+// STEP_BUDGET_SECS wall-clock cap. Nothing inside a step ever waits on the cluster; it
+// observes, records, and returns. Per-namespace one-time work (create namespace, apply
+// YAML, record + zero replica counts) is guarded by a persisted `setupComplete` marker,
+// and `scaledDeployments` is persisted *before* the scale-down so a crash in that window
+// can never lose the replica counts needed to bring the apps back.
 
 use crate::kubectl::Crd;
 use crate::lease;
 use crate::routers::backup_common::*;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use std::time::Instant;
 use tokio::process::Command;
 
 pub(crate) const RESTORE_RUN: Crd = Crd {
@@ -51,6 +71,17 @@ const LEASE_DURATION_SECS: i64 = 90;
 /// detail) than BackupRun's — keep fewer around.
 const KEEP_TERMINAL_RUNS: usize = 10;
 
+/// Wall-clock cap on a single `step()` call. Must stay comfortably below
+/// LEASE_DURATION_SECS: the lease is renewed once per tick, so a step that outlives it
+/// lets another process take over mid-operation. Progress is persisted as it goes, so
+/// running out of budget simply means the next tick picks up where this one stopped.
+const STEP_BUDGET_SECS: u64 = 30;
+
+/// How long a PVC may sit in `Deleting` before the volume is declared failed. Generous:
+/// the pvc-protection finalizer only clears once every mounting pod is gone, and eviction
+/// on a loaded node is not fast.
+const PVC_DELETE_TIMEOUT_SECS: i64 = 180;
+
 const PHASE_VALIDATING: &str = "Validating";
 const PHASE_WAITING_STORAGE: &str = "WaitingForStorage";
 const PHASE_RESTORING: &str = "RestoringVolumes";
@@ -59,19 +90,117 @@ const PHASE_SUCCEEDED: &str = "Succeeded";
 const PHASE_PARTIAL: &str = "Partial";
 const PHASE_FAILED: &str = "Failed";
 
+// Per-volume sub-phases within RestoringVolumes.
+const VOL_PENDING: &str = "Pending";
+const VOL_DELETING: &str = "Deleting";
+const VOL_RESTORING: &str = "Restoring";
+const VOL_SUCCEEDED: &str = "Succeeded";
+const VOL_FAILED: &str = "Failed";
+/// No backup snapshot exists for this PVC — the live PVC is left untouched rather than
+/// being replaced with nothing.
+const VOL_SKIPPED: &str = "Skipped";
+
 fn is_terminal(phase: &str) -> bool {
     matches!(phase, PHASE_SUCCEEDED | PHASE_PARTIAL | PHASE_FAILED)
+}
+
+fn vol_is_terminal(phase: &str) -> bool {
+    matches!(phase, VOL_SUCCEEDED | VOL_FAILED | VOL_SKIPPED)
 }
 
 fn deadline_after(secs: i64) -> String {
     (Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339()
 }
 
-fn parse_deadline(v: &Value) -> Option<chrono::DateTime<Utc>> {
+fn parse_deadline(v: &Value) -> Option<DateTime<Utc>> {
     v["status"]["phaseDeadline"]
         .as_str()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|t| t.with_timezone(&Utc))
+}
+
+// ── Pure decision functions ───────────────────────────────────────────────────
+//
+// Kept free of I/O so the transitions that actually matter — what a timeout does, when a
+// volume advances, what the final phase is — are unit-testable. Every bug this module has
+// shipped was in one of these decisions, not in the kubectl plumbing around them.
+
+/// Where a run that can no longer make progress must go.
+///
+/// `Applying` is the only code that scales deployments back up, so any run that has
+/// already scaled something down MUST pass through it even when it has failed — otherwise
+/// the apps stay dark forever. A run that hasn't touched the cluster yet can fail flat.
+///
+/// Applying itself is the exception: it IS the recovery, so routing it back into itself
+/// on a timeout would re-arm the deadline every tick and never terminate. By the time it
+/// can time out the scale-up has already been attempted at least once, so it ends there.
+fn abort_phase(current_phase: &str, ns_state: &[NamespaceState]) -> &'static str {
+    if current_phase == PHASE_APPLYING {
+        return PHASE_FAILED;
+    }
+    if ns_state.iter().any(|n| !n.scaled_deployments.is_empty()) {
+        PHASE_APPLYING
+    } else {
+        PHASE_FAILED
+    }
+}
+
+/// Maps a ReplicationDestination's latest mover result onto a terminal volume phase.
+/// `None` means "still running, leave it alone".
+fn rd_result_to_phase(result: Option<&str>) -> Option<&'static str> {
+    match result.map(str::to_ascii_lowercase).as_deref() {
+        Some("successful") => Some(VOL_SUCCEEDED),
+        Some("failed") => Some(VOL_FAILED),
+        _ => None,
+    }
+}
+
+fn delete_timed_out(deleting_since: Option<&str>, now: DateTime<Utc>) -> bool {
+    match deleting_since.and_then(|s| DateTime::parse_from_rfc3339(s).ok()) {
+        Some(t) => (now - t.with_timezone(&Utc)).num_seconds() > PVC_DELETE_TIMEOUT_SECS,
+        // No timestamp recorded (shouldn't happen) — don't strand the volume forever.
+        None => true,
+    }
+}
+
+/// Final phase for a run, from its per-volume outcomes. `aborted` is true when the run
+/// reached Applying via `terminate()` rather than by completing normally — in that case
+/// the best possible outcome is Partial, never Succeeded, even if every volume happened
+/// to land Succeeded before the abort.
+fn terminal_phase(volumes: &[&VolumeState], aborted: bool) -> &'static str {
+    let total = volumes.len();
+    if total == 0 {
+        // No PVCs to restore — a YAML-only namespace applied fine, unless we got here
+        // by aborting.
+        return if aborted { PHASE_FAILED } else { PHASE_SUCCEEDED };
+    }
+    let succeeded = volumes.iter().filter(|v| v.phase == VOL_SUCCEEDED).count();
+    let failed = volumes.iter().filter(|v| v.phase == VOL_FAILED).count();
+    let skipped = volumes.iter().filter(|v| v.phase == VOL_SKIPPED).count();
+
+    if failed == 0 && !aborted {
+        return PHASE_SUCCEEDED; // includes the all-skipped case: nothing was lost
+    }
+    if succeeded == 0 && skipped == 0 {
+        return PHASE_FAILED;
+    }
+    PHASE_PARTIAL
+}
+
+/// Newest snapshot id from `restic snapshots --json` output.
+///
+/// restic returns snapshots ascending by time, so `.first()` is the OLDEST — taking it
+/// means "restore the latest backup" silently restores the oldest retained one. `--last`
+/// / `--latest` are not used: `--last` is deprecated and removed in current restic, and
+/// when the flag is rejected the command fails, which every caller then has to
+/// distinguish from "no snapshots exist" (see `snapshots_exist`).
+fn latest_snapshot_id(snapshots: &Value) -> Option<String> {
+    snapshots
+        .as_array()?
+        .iter()
+        .max_by_key(|s| s["time"].as_str().unwrap_or("").to_string())?["id"]
+        .as_str()
+        .map(String::from)
 }
 
 pub async fn is_active() -> bool {
@@ -99,67 +228,114 @@ fn flatten_status(item: &Value) -> Value {
 /// per-namespace/per-volume progress), or the most recently finished one.
 pub async fn current_status() -> Value {
     let runs = RESTORE_RUN.list().await; // newest-created first
-    let active = runs.iter().find(|r| !is_terminal(r["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING))).map(flatten_status);
-    let last_finished = runs.iter().find(|r| is_terminal(r["status"]["phase"].as_str().unwrap_or(""))).map(flatten_status);
+    let active = runs
+        .iter()
+        .find(|r| !is_terminal(r["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING)))
+        .map(flatten_status);
+    let last_finished = runs
+        .iter()
+        .find(|r| is_terminal(r["status"]["phase"].as_str().unwrap_or("")))
+        .map(flatten_status);
     json!({ "active": active, "last": last_finished })
 }
 
 /// Creates a RestoreRun in Validating phase and returns immediately. There is no
-/// spawned task — the next reconcile tick picks it up, and every tick after that. See
-/// the module doc: nothing about this run's progress depends on this process staying
-/// alive.
-pub async fn start(snapshot_id: Option<String>, all: bool, namespaces: Vec<String>) -> anyhow::Result<String> {
+/// spawned task — the next reconcile tick picks it up, and every tick after that.
+pub async fn start(
+    snapshot_id: Option<String>,
+    all: bool,
+    namespaces: Vec<String>,
+) -> anyhow::Result<String> {
     let name = format!("restore-{}", Utc::now().format("%Y%m%d%H%M%S"));
-    RESTORE_RUN.create(&name, json!({
-        "snapshotId": snapshot_id,
-        "all": all,
-        "namespaces": namespaces,
-    }), &[("app.kubernetes.io/managed-by", "yolab")]).await?;
-    RESTORE_RUN.patch_status(&name, json!({
-        "phase": PHASE_VALIDATING,
-        "phaseDeadline": deadline_after(120),
-        "startedAt": Utc::now().to_rfc3339(),
-    })).await?;
+    RESTORE_RUN
+        .create(
+            &name,
+            json!({ "snapshotId": snapshot_id, "all": all, "namespaces": namespaces }),
+            &[("app.kubernetes.io/managed-by", "yolab")],
+        )
+        .await?;
+    RESTORE_RUN
+        .patch_status(
+            &name,
+            json!({
+                "phase": PHASE_VALIDATING,
+                "phaseDeadline": deadline_after(120),
+                "startedAt": Utc::now().to_rfc3339(),
+            }),
+        )
+        .await?;
     Ok(name)
 }
 
-async fn fail(name: &str, err: impl std::fmt::Display) {
-    tracing::warn!("restore-run {name}: failed: {err}");
-    let _ = RESTORE_RUN.patch_status(name, json!({
-        "phase": PHASE_FAILED,
-        "finishedAt": Utc::now().to_rfc3339(),
-        "error": err.to_string(),
-    })).await;
+/// The single give-up path. Routes through Applying whenever the run has already scaled
+/// deployments down, so the apps always get turned back on; records `abortReason` so the
+/// terminal phase computed later is Partial/Failed rather than Succeeded.
+///
+/// Every failure path in this module goes through here. Nothing else may write a terminal
+/// phase directly except `step_applying`, which is the end of the line by construction.
+async fn terminate(name: &str, run: &Value, reason: impl std::fmt::Display) {
+    let ns_state = parse_ns_state(run);
+    let current = run["status"]["phase"].as_str().unwrap_or("");
+    let target = abort_phase(current, &ns_state);
+    if target == PHASE_APPLYING {
+        tracing::warn!("restore-run {name}: {reason} — running recovery (scaling apps back up)");
+        let _ = RESTORE_RUN
+            .patch_status(
+                name,
+                json!({
+                    "phase": PHASE_APPLYING,
+                    "phaseDeadline": deadline_after(300),
+                    "abortReason": reason.to_string(),
+                }),
+            )
+            .await;
+    } else {
+        tracing::warn!("restore-run {name}: failed: {reason}");
+        let _ = RESTORE_RUN
+            .patch_status(
+                name,
+                json!({
+                    "phase": PHASE_FAILED,
+                    "finishedAt": Utc::now().to_rfc3339(),
+                    "error": reason.to_string(),
+                }),
+            )
+            .await;
+    }
 }
 
 /// Advances `name` by exactly one bounded step from whatever phase it is CURRENTLY in.
-/// Called once per non-terminal run on every reconcile tick.
 async fn step(name: &str) {
-    let Some(run) = RESTORE_RUN.get(name).await else { return };
-    let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING).to_string();
+    let Some(run) = RESTORE_RUN.get(name).await else {
+        return;
+    };
+    let phase = run["status"]["phase"]
+        .as_str()
+        .unwrap_or(PHASE_VALIDATING)
+        .to_string();
 
     let Some(cfg) = read_master_config().await else {
-        fail(name, "backup not configured").await;
+        terminate(name, &run, "backup not configured").await;
         return;
     };
 
     match phase.as_str() {
         PHASE_VALIDATING => step_validating(name, &run, &cfg).await,
-        PHASE_WAITING_STORAGE => step_waiting_storage(name).await,
+        PHASE_WAITING_STORAGE => step_waiting_storage(name, &run).await,
         PHASE_RESTORING => step_restoring(name, &run, &cfg).await,
         PHASE_APPLYING => step_applying(name, &run).await,
-        _ => {} // terminal — reconcile_tick already filters these out before calling step()
+        _ => {} // terminal — reconcile_tick filters these out before calling step()
     }
 }
 
 /// Validating: resolve the snapshot id, extract catalog.json, resolve the namespace
-/// list, run the space pre-flight. Entirely read-only against the cluster (no
-/// namespace/PVC mutations happen until RestoringVolumes), so safe to redo in full on
-/// a retry — nothing here needs a "have I already done this" marker.
+/// list, run the space pre-flight. Entirely read-only against the cluster, so safe to
+/// redo in full on a retry.
 async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     let requested_snapshot = run["spec"]["snapshotId"].as_str().map(String::from);
     let want_all = run["spec"]["all"].as_bool().unwrap_or(false);
-    let requested_namespaces: Vec<String> = run["spec"]["namespaces"].as_array()
+    let requested_namespaces: Vec<String> = run["spec"]["namespaces"]
+        .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
@@ -169,44 +345,80 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     let snapshot_id = match requested_snapshot {
         Some(id) => id,
         None => {
-            // `restic snapshots --json` returns ascending by time, not descending — take
-            // the max by `time` explicitly rather than assuming array order or relying on
-            // `--last`/`--latest` flag semantics, since getting this wrong here means
-            // "restore from the latest backup" silently restores the OLDEST retained one.
-            let latest = Command::new("restic")
+            let out = Command::new("restic")
                 .args(["snapshots", "--json", "--tag", "cluster-backup"])
-                .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-                .output().await.ok()
-                .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-                .and_then(|v| {
-                    v.as_array()?.iter()
-                        .max_by_key(|s| s["time"].as_str().unwrap_or("").to_string())?
-                        ["id"].as_str().map(String::from)
-                });
-            match latest {
+                .env("RESTIC_REPOSITORY", &repo)
+                .env("RESTIC_PASSWORD", &cfg.restic_password)
+                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+                .output()
+                .await;
+            // A failed query is NOT "no snapshots" — conflating the two is how a restore
+            // silently turns into a no-op that reports success.
+            let parsed = match out {
+                Ok(o) if o.status.success() => serde_json::from_slice::<Value>(&o.stdout).ok(),
+                Ok(o) => {
+                    terminate(
+                        name,
+                        run,
+                        format!(
+                            "could not list snapshots: {}",
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                Err(e) => {
+                    terminate(name, run, format!("restic unavailable: {e}")).await;
+                    return;
+                }
+            };
+            match parsed.as_ref().and_then(latest_snapshot_id) {
                 Some(id) => id,
-                None => { fail(name, "no snapshot specified and no cluster-backup snapshot exists").await; return; }
+                None => {
+                    terminate(
+                        name,
+                        run,
+                        "no snapshot specified and no cluster-backup snapshot exists",
+                    )
+                    .await;
+                    return;
+                }
             }
         }
     };
 
     let cat_target = format!("/tmp/yolab-dr-catalog-{}", random_hex(8));
     let restore_out = Command::new("restic")
-        .args(["restore", &snapshot_id, "--target", &cat_target, "--include", "**/catalog.json"])
-        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output().await;
+        .args([
+            "restore",
+            &snapshot_id,
+            "--target",
+            &cat_target,
+            "--include",
+            "**/catalog.json",
+        ])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await;
     let catalog: Value = match restore_out {
         Ok(o) if o.status.success() => {
             let find_out = Command::new("find")
                 .args([&cat_target, "-name", "catalog.json", "-type", "f"])
-                .output().await;
-            let cat_path = find_out.ok()
+                .output()
+                .await;
+            let cat_path = find_out
+                .ok()
                 .map(|f| String::from_utf8_lossy(&f.stdout).trim().to_string())
                 .unwrap_or_default();
             let c = if !cat_path.is_empty() {
-                tokio::fs::read(&cat_path).await.ok()
+                tokio::fs::read(&cat_path)
+                    .await
+                    .ok()
                     .and_then(|b| serde_json::from_slice(&b).ok())
                     .unwrap_or(json!({}))
             } else {
@@ -217,21 +429,38 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
         }
         Ok(o) => {
             let _ = tokio::fs::remove_dir_all(&cat_target).await;
-            fail(name, format!("could not extract catalog from snapshot: {}", String::from_utf8_lossy(&o.stderr).trim())).await;
+            terminate(
+                name,
+                run,
+                format!(
+                    "could not extract catalog from snapshot: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            )
+            .await;
             return;
         }
-        Err(e) => { fail(name, format!("restic unavailable: {e}")).await; return; }
+        Err(e) => {
+            terminate(name, run, format!("restic unavailable: {e}")).await;
+            return;
+        }
     };
 
     let namespaces: Vec<String> = if want_all {
-        catalog["namespaces"].as_array()
+        catalog["namespaces"]
+            .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default()
     } else {
         requested_namespaces
     };
     if namespaces.is_empty() {
-        fail(name, "no namespaces found — snapshot may predate this feature, or pass namespaces[] explicitly").await;
+        terminate(
+            name,
+            run,
+            "no namespaces found — snapshot may predate this feature, or pass namespaces[] explicitly",
+        )
+        .await;
         return;
     }
 
@@ -246,7 +475,7 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
                     let effective_avail = avail.saturating_add(reclaimable);
                     let need = total_pvc_bytes * 6 / 5;
                     if effective_avail < need {
-                        fail(name, format!(
+                        terminate(name, run, format!(
                             "insufficient storage: {avail} bytes free (+{reclaimable} reclaimable \
                              from PVCs being replaced), ~{need} bytes needed \
                              ({total_pvc_bytes} bytes of PVC data + 20% headroom). \
@@ -257,44 +486,72 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
                     tracing::info!("restore-run {name}: space pre-flight ok — {avail} free + {reclaimable} reclaimable, {need} needed");
                 }
             }
-            Err(e) => tracing::warn!("restore-run {name}: space pre-flight skipped (ceph unavailable: {e})"),
+            Err(e) => {
+                tracing::warn!("restore-run {name}: space pre-flight skipped (ceph unavailable: {e})")
+            }
         }
     }
 
     let restore_as_of: Option<String> = Command::new("restic")
         .args(["snapshots", &snapshot_id, "--json"])
-        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output().await.ok()
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await
+        .ok()
         .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
         .and_then(|v| v.as_array()?.first()?["time"].as_str().map(String::from));
 
-    let namespaces_status: Vec<Value> = namespaces.iter().map(|ns| json!({
-        "namespace": ns, "scaledDeployments": Value::Array(vec![]), "volumes": Value::Array(vec![]),
-    })).collect();
+    let namespaces_status: Vec<Value> = namespaces
+        .iter()
+        .map(|ns| {
+            NamespaceState {
+                namespace: ns.clone(),
+                setup_complete: false,
+                scaled_deployments: Vec::new(),
+                volumes: Vec::new(),
+            }
+            .to_json()
+        })
+        .collect();
+
     // resolvedNamespaces + catalog are written here so later phases (which only ever
-    // read the CRD, never a local variable) can pick up exactly what Validating found
-    // — regardless of whether the same process is still running.
-    let _ = RESTORE_RUN.patch_status(name, json!({
-        "phase": PHASE_WAITING_STORAGE,
-        "phaseDeadline": deadline_after(700),
-        "snapshotId": snapshot_id,
-        "restoreAsOf": restore_as_of,
-        "namespaces": namespaces_status,
-        "resolvedNamespaces": namespaces,
-        "catalog": catalog,
-    })).await;
+    // read the CRD, never a local variable) can pick up exactly what Validating found.
+    let _ = RESTORE_RUN
+        .patch_status(
+            name,
+            json!({
+                "phase": PHASE_WAITING_STORAGE,
+                "phaseDeadline": deadline_after(700),
+                "snapshotId": snapshot_id,
+                "restoreAsOf": restore_as_of,
+                "namespaces": namespaces_status,
+                "resolvedNamespaces": namespaces,
+                "catalog": catalog,
+                // Surfaced by the UI so the user can see which build the data came from.
+                "restoredFromVersion": catalog["catalog_version"].clone(),
+            }),
+        )
+        .await;
 }
 
 /// WaitingForStorage: a single non-blocking check of whether CephFS is mountable right
-/// now — no internal sleep loop. Stays in this phase (reconcile_tick will call again
-/// next tick) until it observes Ready, or until the phase deadline passes and the
-/// timeout sweep fails the run.
-async fn step_waiting_storage(name: &str) {
+/// now. Stays in this phase until it observes Ready, or until the deadline passes.
+async fn step_waiting_storage(name: &str, run: &Value) {
     let out = Command::new("kubectl")
-        .args(["get", "cephfilesystem", "yolab-fs", "-n", "rook-ceph",
-               "-o", "jsonpath={.status.phase}"])
-        .output().await;
+        .args([
+            "get",
+            "cephfilesystem",
+            "yolab-fs",
+            "-n",
+            "rook-ceph",
+            "-o",
+            "jsonpath={.status.phase}",
+        ])
+        .output()
+        .await;
     let phase = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => String::new(),
@@ -303,285 +560,529 @@ async fn step_waiting_storage(name: &str) {
         tracing::info!("restore-run {name}: CephFilesystem phase={phase:?} — waiting for Ready");
         return;
     }
-
-    let _ = RESTORE_RUN.patch_status(name, json!({
-        "phase": PHASE_RESTORING,
-        "phaseDeadline": deadline_after(5400),
-    })).await;
+    let _ = run; // deadline handled by the sweep
+    let _ = RESTORE_RUN
+        .patch_status(
+            name,
+            json!({ "phase": PHASE_RESTORING, "phaseDeadline": deadline_after(5400) }),
+        )
+        .await;
 }
 
-/// RestoringVolumes has two sub-steps, distinguished by the `volumesInitialized`
-/// marker (persisted in status, not in memory — that's what makes resuming after a
-/// crash "read the marker and pick the right branch" instead of needing to remember
-/// anything):
-///
-/// 1. Not yet initialized: do the full per-namespace setup (apply YAML, scale to 0,
-///    delete/recreate each PVC, create ReplicationDestinations) and record the result.
-///    Safe to redo in full from scratch — every operation here is idempotent
-///    (`kubectl apply`, `ensure_*` helpers) or already handles "already gone"/"already
-///    exists" as success, so re-running this after a crash wastes at most some
-///    already-started data-pull progress, never corrupts anything.
-/// 2. Initialized: a single observation of every "Restoring" volume's
-///    ReplicationDestination — no internal poll loop. Transitions to Applying once
-///    every volume is terminal, or once the phase deadline passes (whichever first).
+// ── RestoringVolumes ──────────────────────────────────────────────────────────
+
+/// One bounded pass: finish any namespace that still needs one-time setup, then advance
+/// every non-terminal volume by exactly one observation. Never blocks on the cluster.
 async fn step_restoring(name: &str, run: &Value, cfg: &BackupConfig) {
-    if !run["status"]["volumesInitialized"].as_bool().unwrap_or(false) {
-        step_restoring_setup(name, run, cfg).await;
-    } else {
-        step_restoring_poll(name, run).await;
+    let started = Instant::now();
+    let mut ns_state = parse_ns_state(run);
+
+    // A run created before `resolvedNamespaces` existed, or one whose namespaces array
+    // got truncated, still needs entries to work from.
+    let resolved: Vec<String> = run["status"]["resolvedNamespaces"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    for ns in &resolved {
+        if !ns_state.iter().any(|s| &s.namespace == ns) {
+            ns_state.push(NamespaceState {
+                namespace: ns.clone(),
+                setup_complete: false,
+                scaled_deployments: Vec::new(),
+                volumes: Vec::new(),
+            });
+        }
+    }
+
+    // ── Phase A: one-time per-namespace setup ────────────────────────────────
+    let mut i = 0;
+    while i < ns_state.len() {
+        if !ns_state[i].setup_complete {
+            setup_namespace(name, &mut ns_state, i, run, cfg).await;
+            persist_namespaces(name, &ns_state).await;
+            if started.elapsed().as_secs() >= STEP_BUDGET_SECS {
+                return; // next tick continues with the next namespace
+            }
+        }
+        i += 1;
+    }
+
+    // ── Phase B: advance each volume by one observation ──────────────────────
+    let rd_items = list_replication_destinations().await;
+    let live_pvcs = list_pvc_keys().await;
+    let restore_as_of = run["status"]["restoreAsOf"].as_str().map(String::from);
+    let catalog = run["status"]["catalog"].clone();
+    let now = Utc::now();
+    let mut budget_hit = false;
+
+    for si in 0..ns_state.len() {
+        for vi in 0..ns_state[si].volumes.len() {
+            if vol_is_terminal(&ns_state[si].volumes[vi].phase) {
+                continue;
+            }
+            if started.elapsed().as_secs() >= STEP_BUDGET_SECS {
+                budget_hit = true;
+                break;
+            }
+            advance_volume(
+                name,
+                &mut ns_state,
+                si,
+                vi,
+                cfg,
+                &catalog,
+                restore_as_of.as_deref(),
+                &rd_items,
+                &live_pvcs,
+                now,
+            )
+            .await;
+        }
+        if budget_hit {
+            break;
+        }
+    }
+
+    persist_namespaces(name, &ns_state).await;
+
+    let all_done = ns_state
+        .iter()
+        .flat_map(|s| &s.volumes)
+        .all(|v| vol_is_terminal(&v.phase));
+    if all_done && !budget_hit {
+        let _ = RESTORE_RUN
+            .patch_status(
+                name,
+                json!({ "phase": PHASE_APPLYING, "phaseDeadline": deadline_after(300) }),
+            )
+            .await;
     }
 }
 
-async fn step_restoring_setup(name: &str, run: &Value, cfg: &BackupConfig) {
-    let namespaces: Vec<String> = run["status"]["resolvedNamespaces"].as_array().cloned().unwrap_or_default()
-        .into_iter().filter_map(|v| v.as_str().map(String::from)).collect();
-    let catalog = run["status"]["catalog"].clone();
+/// One-time work for a namespace: create it, re-apply its backed-up objects (which is
+/// what restores its `yolab.io/*` annotations, so the app keeps its identity, config and
+/// outputs in the UI), record the original replica counts, then scale to zero.
+///
+/// `scaledDeployments` is persisted BEFORE the scale-down: a crash in that window would
+/// otherwise lose the counts, and a redo would read the already-zeroed deployments and
+/// "restore" them to 0.
+async fn setup_namespace(
+    name: &str,
+    ns_state: &mut [NamespaceState],
+    idx: usize,
+    run: &Value,
+    cfg: &BackupConfig,
+) {
+    let ns = ns_state[idx].namespace.clone();
     let snapshot_id = run["status"]["snapshotId"].as_str().unwrap_or("").to_string();
-    let restore_as_of = run["status"]["restoreAsOf"].as_str().map(String::from);
+    let catalog = run["status"]["catalog"].clone();
     let repo = cfg.restic_repo("cluster-backup");
-    let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
-    let mut ns_state: Vec<NamespaceState> = Vec::new();
 
-    for ns in &namespaces {
-        let mut state = NamespaceState { namespace: ns.clone(), scaled_deployments: Vec::new(), volumes: Vec::new() };
-
-        let ns_exists = Command::new("kubectl").args(["get", "namespace", ns]).output().await
-            .map(|o| o.status.success()).unwrap_or(false);
-        if !ns_exists {
-            if let Err(e) = kubectl_apply(&json!({
+    let ns_exists = Command::new("kubectl")
+        .args(["get", "namespace", &ns])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ns_exists {
+        if let Err(e) = kubectl_apply(
+            &json!({
                 "apiVersion": "v1", "kind": "Namespace",
-                "metadata": { "name": ns, "labels": { "yolab.io/managed": "true" } }
-            }).to_string()).await {
-                tracing::warn!("restore-run {name}: {ns}: create namespace: {e}");
-            }
+                "metadata": { "name": &ns, "labels": { "yolab.io/managed": "true" } }
+            })
+            .to_string(),
+        )
+        .await
+        {
+            tracing::warn!("restore-run {name}: {ns}: create namespace: {e}");
         }
+    }
 
-        // Apply K8s objects from snapshot YAML (deployments/services/secrets/configmaps).
-        let yaml_target = format!("/tmp/yolab-dr-yaml-{}", random_hex(8));
-        let pattern = format!("**/{ns}.yaml");
-        let r = Command::new("restic")
-            .args(["restore", &snapshot_id, "--target", &yaml_target, "--include", &pattern])
-            .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-            .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-            .output().await;
-        if let Ok(o) = r {
-            if o.status.success() {
-                if let Ok(f) = Command::new("find").args([&yaml_target, "-name", &format!("{ns}.yaml"), "-type", "f"]).output().await {
-                    let yaml_path = String::from_utf8_lossy(&f.stdout).trim().to_string();
-                    if !yaml_path.is_empty() {
-                        if let Ok(bytes) = tokio::fs::read(&yaml_path).await {
-                            if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
-                                tracing::warn!("restore-run {name}: {ns}: YAML apply partial: {e}");
-                            }
+    // Apply the backed-up objects. The export now leads with the Namespace itself, so
+    // this is also what puts yolab.io/app-id, yolab.io/config and yolab.io/outputs back.
+    let yaml_target = format!("/tmp/yolab-dr-yaml-{}", random_hex(8));
+    let pattern = format!("**/{ns}.yaml");
+    let r = Command::new("restic")
+        .args([
+            "restore",
+            &snapshot_id,
+            "--target",
+            &yaml_target,
+            "--include",
+            &pattern,
+        ])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await;
+    if let Ok(o) = r {
+        if o.status.success() {
+            if let Ok(f) = Command::new("find")
+                .args([&yaml_target, "-name", &format!("{ns}.yaml"), "-type", "f"])
+                .output()
+                .await
+            {
+                let yaml_path = String::from_utf8_lossy(&f.stdout).trim().to_string();
+                if !yaml_path.is_empty() {
+                    if let Ok(bytes) = tokio::fs::read(&yaml_path).await {
+                        if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
+                            tracing::warn!("restore-run {name}: {ns}: YAML apply partial: {e}");
                         }
                     }
                 }
             }
         }
-        let _ = tokio::fs::remove_dir_all(&yaml_target).await;
+    }
+    let _ = tokio::fs::remove_dir_all(&yaml_target).await;
 
-        // Record what we're about to scale down so Applying can always undo it. If this
-        // is a redo after a crash, the deployments may already be at 0 from the previous
-        // attempt — that's fine, `kubectl get` still reports their names correctly.
-        let existing_deployments: Vec<String> = Command::new("kubectl")
-            .args(["get", "deployments", "-n", ns, "-o", "jsonpath={.items[*].metadata.name}"])
-            .output().await.ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect())
-            .unwrap_or_default();
-        state.scaled_deployments = existing_deployments;
-        let _ = Command::new("kubectl").args(["scale", "deployment", "--all", "-n", ns, "--replicas=0"]).output().await;
+    // Record replica counts, but never overwrite counts a previous attempt already
+    // recorded — after a crash the deployments may already be at 0, and re-reading them
+    // would bake that in as "the original".
+    if ns_state[idx].scaled_deployments.is_empty() {
+        ns_state[idx].scaled_deployments = read_deployment_scales(&ns).await;
+        persist_namespaces(name, ns_state).await;
+    }
 
-        let catalog_pvcs: Vec<(String, String)> = catalog["services"].as_array()
+    let _ = Command::new("kubectl")
+        .args(["scale", "deployment", "--all", "-n", &ns, "--replicas=0"])
+        .output()
+        .await;
+
+    // Seed the volume list from the snapshot's catalog.
+    if ns_state[idx].volumes.is_empty() {
+        ns_state[idx].volumes = catalog["services"]
+            .as_array()
             .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(ns.as_str())))
             .and_then(|s| s["pvcs"].as_array())
-            .map(|pvcs| pvcs.iter().filter_map(|p| {
-                let n = p["name"].as_str()?.to_string();
-                let cap = p["capacity"].as_str().unwrap_or("10Gi").to_string();
-                Some((n, cap))
-            }).collect())
+            .map(|pvcs| {
+                pvcs.iter()
+                    .filter_map(|p| {
+                        Some(VolumeState {
+                            pvc: p["name"].as_str()?.to_string(),
+                            phase: VOL_PENDING.to_string(),
+                            deleting_since: None,
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
+    }
 
-        for (pvc_name, capacity) in &catalog_pvcs {
-            let mut vol = VolumeState { pvc: pvc_name.clone(), phase: "Pending".to_string() };
+    ns_state[idx].setup_complete = true;
+}
 
-            if let Err(e) = ensure_restic_secret(ns, pvc_name, cfg).await {
-                tracing::warn!("restore-run {name}: {ns}/{pvc_name}: restic secret: {e}");
+/// Advance one volume by exactly one non-blocking observation.
+#[allow(clippy::too_many_arguments)]
+async fn advance_volume(
+    name: &str,
+    ns_state: &mut [NamespaceState],
+    si: usize,
+    vi: usize,
+    cfg: &BackupConfig,
+    catalog: &Value,
+    restore_as_of: Option<&str>,
+    rd_items: &[Value],
+    live_pvcs: &std::collections::HashSet<(String, String)>,
+    now: DateTime<Utc>,
+) {
+    let ns = ns_state[si].namespace.clone();
+    let pvc = ns_state[si].volumes[vi].pvc.clone();
+    let phase = ns_state[si].volumes[vi].phase.clone();
+
+    match phase.as_str() {
+        VOL_PENDING => {
+            if let Err(e) = ensure_restic_secret(&ns, &pvc, cfg).await {
+                tracing::warn!("restore-run {name}: {ns}/{pvc}: restic secret: {e}");
             }
-            let _ = ensure_replication_source(&PvcInfo { namespace: ns.clone(), name: pvc_name.clone() }, false).await;
+            let _ = ensure_replication_source(
+                &PvcInfo { namespace: ns.clone(), name: pvc.clone() },
+                false,
+            )
+            .await;
 
-            let pvc_repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(pvc_name)));
-            restic_unlock(&pvc_repo, &cfg.restic_password, &cfg.access_key_id, &cfg.secret_access_key).await;
-            let has_snapshot = Command::new("restic")
-                .args(["snapshots", "--json", "--last"])
-                .env("RESTIC_REPOSITORY", &pvc_repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-                .output().await.ok()
-                .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-                .and_then(|v| v.as_array().map(|a| !a.is_empty()))
-                .unwrap_or(false);
+            let pvc_repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(&pvc)));
+            restic_unlock(
+                &pvc_repo,
+                &cfg.restic_password,
+                &cfg.access_key_id,
+                &cfg.secret_access_key,
+            )
+            .await;
 
-            if !has_snapshot {
-                tracing::warn!("restore-run {name}: {ns}/{pvc_name}: no backup snapshot found — PVC preserved");
-                vol.phase = "Skipped".to_string();
-                state.volumes.push(vol);
-                continue;
+            match snapshots_exist(&pvc_repo, cfg).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        "restore-run {name}: {ns}/{pvc}: no backup snapshot found — PVC preserved"
+                    );
+                    ns_state[si].volumes[vi].phase = VOL_SKIPPED.to_string();
+                    return;
+                }
+                Err(e) => {
+                    // Could not tell — treat as failure rather than silently skipping,
+                    // which would report a successful restore that changed nothing.
+                    tracing::warn!("restore-run {name}: {ns}/{pvc}: snapshot check failed: {e}");
+                    ns_state[si].volumes[vi].phase = VOL_FAILED.to_string();
+                    return;
+                }
             }
 
-            if let Err(e) = delete_pvc_and_wait(ns, pvc_name).await {
-                tracing::warn!("restore-run {name}: {ns}/{pvc_name}: delete pvc: {e}");
-                vol.phase = "Failed".to_string();
-                state.volumes.push(vol);
-                continue;
-            }
-            if let Err(e) = ensure_destination_pvc(pvc_name, ns, capacity, "yolab-cephfs", "ReadWriteMany").await {
-                tracing::warn!("restore-run {name}: {ns}/{pvc_name}: create pvc: {e}");
-                vol.phase = "Failed".to_string();
-                state.volumes.push(vol);
-                continue;
+            // Non-blocking delete; the Deleting branch below waits it out across ticks.
+            let _ = Command::new("kubectl")
+                .args([
+                    "delete", "pvc", &pvc, "-n", &ns, "--wait=false", "--ignore-not-found",
+                ])
+                .output()
+                .await;
+            ns_state[si].volumes[vi].phase = VOL_DELETING.to_string();
+            ns_state[si].volumes[vi].deleting_since = Some(now.to_rfc3339());
+        }
+
+        VOL_DELETING => {
+            if live_pvcs.contains(&(ns.clone(), pvc.clone())) {
+                if delete_timed_out(ns_state[si].volumes[vi].deleting_since.as_deref(), now) {
+                    tracing::warn!(
+                        "restore-run {name}: {ns}/{pvc}: PVC still present after \
+                         {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
+                    );
+                    ns_state[si].volumes[vi].phase = VOL_FAILED.to_string();
+                }
+                return; // still deleting — check again next tick
             }
 
-            annotate_ns_privileged_movers(ns).await;
-            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(pvc_name));
+            let capacity = catalog_capacity(catalog, &ns, &pvc);
+            if let Err(e) =
+                ensure_destination_pvc(&pvc, &ns, &capacity, "yolab-cephfs", "ReadWriteMany").await
+            {
+                tracing::warn!("restore-run {name}: {ns}/{pvc}: create pvc: {e}");
+                ns_state[si].volumes[vi].phase = VOL_FAILED.to_string();
+                return;
+            }
+
+            annotate_ns_privileged_movers(&ns).await;
+            let secret_name = format!("{}{RESTIC_SECRET_SUFFIX}", canonical_pvc_id(&pvc));
             let mut restic_spec = json!({
                 "repository": secret_name,
                 "copyMethod": "Direct",
                 "cacheStorageClassName": "yolab-cephfs",
-                "destinationPVC": pvc_name,
+                "destinationPVC": pvc,
                 "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
             });
-            if let Some(ref t) = restore_as_of {
-                restic_spec["restoreAsOf"] = Value::String(t.clone());
+            if let Some(t) = restore_as_of {
+                restic_spec["restoreAsOf"] = Value::String(t.to_string());
             }
-            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(pvc_name));
+            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&pvc));
             let manifest = json!({
                 "apiVersion": "volsync.backube/v1alpha1",
                 "kind": "ReplicationDestination",
-                "metadata": { "name": dest_name, "namespace": ns, "labels": { "app.kubernetes.io/managed-by": "yolab" } },
-                "spec": { "trigger": { "manual": format!("dr-{timestamp}") }, "restic": restic_spec }
+                "metadata": {
+                    "name": dest_name, "namespace": ns,
+                    "labels": { "app.kubernetes.io/managed-by": "yolab" }
+                },
+                "spec": {
+                    "trigger": { "manual": format!("dr-{}", now.format("%Y%m%d%H%M%S")) },
+                    "restic": restic_spec
+                }
             });
             match kubectl_apply(&manifest.to_string()).await {
-                Ok(_) => { vol.phase = "Restoring".to_string(); }
+                Ok(_) => ns_state[si].volumes[vi].phase = VOL_RESTORING.to_string(),
                 Err(e) => {
-                    tracing::warn!("restore-run {name}: {ns}/{pvc_name}: RD: {e}");
-                    vol.phase = "Failed".to_string();
-                }
-            }
-            state.volumes.push(vol);
-        }
-
-        ns_state.push(state);
-    }
-
-    let _ = RESTORE_RUN.patch_status(name, json!({
-        "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
-        "volumesInitialized": true,
-    })).await;
-}
-
-async fn step_restoring_poll(name: &str, run: &Value) {
-    let deadline = parse_deadline(run).unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(5400));
-    let mut ns_state = parse_ns_state(run);
-
-    let rds = Command::new("kubectl").args(["get", "replicationdestination", "-A", "-o", "json"]).output().await;
-    let rd_items: Vec<Value> = rds.ok()
-        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-        .and_then(|v| v["items"].as_array().cloned())
-        .unwrap_or_default();
-
-    let mut all_terminal = true;
-    for state in ns_state.iter_mut() {
-        for vol in state.volumes.iter_mut() {
-            if vol.phase != "Restoring" { continue; }
-            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&vol.pvc));
-            let item = rd_items.iter().find(|i| {
-                i["metadata"]["name"].as_str() == Some(dest_name.as_str())
-                    && i["metadata"]["namespace"].as_str() == Some(state.namespace.as_str())
-            });
-            let result = item.and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str()).unwrap_or("").to_lowercase();
-            match result.as_str() {
-                "successful" => vol.phase = "Succeeded".to_string(),
-                "failed" => vol.phase = "Failed".to_string(),
-                _ => all_terminal = false,
-            }
-        }
-    }
-
-    let past_deadline = Utc::now() > deadline;
-    if !all_terminal && !past_deadline {
-        let _ = RESTORE_RUN.patch_status(name, json!({
-            "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
-        })).await;
-        return;
-    }
-
-    if past_deadline {
-        for state in ns_state.iter_mut() {
-            for vol in state.volumes.iter_mut() {
-                if vol.phase == "Restoring" {
-                    tracing::warn!("restore-run {name}: {}/{}: timed out", state.namespace, vol.pvc);
-                    vol.phase = "Failed".to_string();
+                    tracing::warn!("restore-run {name}: {ns}/{pvc}: RD: {e}");
+                    ns_state[si].volumes[vi].phase = VOL_FAILED.to_string();
                 }
             }
         }
-    }
 
-    let _ = RESTORE_RUN.patch_status(name, json!({
-        "phase": PHASE_APPLYING,
-        "phaseDeadline": deadline_after(300),
-        "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
-    })).await;
+        VOL_RESTORING => {
+            let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&pvc));
+            let result = rd_items
+                .iter()
+                .find(|i| {
+                    i["metadata"]["name"].as_str() == Some(dest_name.as_str())
+                        && i["metadata"]["namespace"].as_str() == Some(ns.as_str())
+                })
+                .and_then(|i| i["status"]["latestMoverStatus"]["result"].as_str());
+            if let Some(next) = rd_result_to_phase(result) {
+                ns_state[si].volumes[vi].phase = next.to_string();
+            }
+        }
+
+        _ => {}
+    }
 }
 
-/// Applying: scale every namespace's deployments back up unconditionally, clean up
-/// completed ReplicationDestinations, compute the terminal phase. Safe to redo in
-/// full — scaling to an already-current replica count is a no-op, RD delete ignores
-/// not-found.
+/// Applying: scale every namespace's deployments back to their ORIGINAL replica count,
+/// clean up completed ReplicationDestinations, compute the terminal phase. Safe to redo
+/// in full — scaling to an already-current count is a no-op, RD delete ignores not-found.
+///
+/// This is the only code that turns the apps back on, and the only place a terminal phase
+/// is written for a run that got as far as touching the cluster.
 async fn step_applying(name: &str, run: &Value) {
     let ns_state = parse_ns_state(run);
+    let abort_reason = run["status"]["abortReason"].as_str().map(String::from);
 
     for state in &ns_state {
         // Unconditional: whatever happened to the data, the app must not stay dark.
         for deploy in &state.scaled_deployments {
-            let _ = scale_deployment(&state.namespace, deploy, 1).await;
+            if let Err(e) = scale_deployment(&state.namespace, &deploy.name, deploy.replicas).await {
+                tracing::warn!(
+                    "restore-run {name}: {}/{}: scale to {}: {e}",
+                    state.namespace,
+                    deploy.name,
+                    deploy.replicas
+                );
+            }
         }
         for vol in &state.volumes {
-            if vol.phase == "Succeeded" || vol.phase == "Failed" {
+            if vol.phase == VOL_SUCCEEDED || vol.phase == VOL_FAILED {
                 let dest_name = format!("emergency-restore-{}", canonical_pvc_id(&vol.pvc));
-                delete_replication_destination_without_touching_pvc(&dest_name, &state.namespace).await;
+                delete_replication_destination_without_touching_pvc(&dest_name, &state.namespace)
+                    .await;
             }
         }
     }
 
-    let total_volumes: usize = ns_state.iter().map(|s| s.volumes.len()).sum();
-    let succeeded: usize = ns_state.iter().flat_map(|s| &s.volumes).filter(|v| v.phase == "Succeeded").count();
-    let failed: usize = ns_state.iter().flat_map(|s| &s.volumes).filter(|v| v.phase == "Failed").count();
+    let all_volumes: Vec<&VolumeState> = ns_state.iter().flat_map(|s| &s.volumes).collect();
+    let succeeded = all_volumes.iter().filter(|v| v.phase == VOL_SUCCEEDED).count();
+    let total = all_volumes.len();
+    let phase = terminal_phase(&all_volumes, abort_reason.is_some());
 
-    let phase = if total_volumes == 0 {
-        PHASE_SUCCEEDED // no PVCs to restore — YAML-only namespaces applied fine
-    } else if failed == 0 && succeeded == total_volumes {
-        PHASE_SUCCEEDED
-    } else if succeeded == 0 && failed == total_volumes {
-        PHASE_FAILED
-    } else {
-        PHASE_PARTIAL
-    };
-
-    let _ = RESTORE_RUN.patch_status(name, json!({
+    let mut status = json!({
         "phase": phase,
         "finishedAt": Utc::now().to_rfc3339(),
         "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>(),
-    })).await;
-    tracing::info!("restore-run {name}: {phase} ({succeeded}/{total_volumes} volumes restored)");
+    });
+    if let Some(reason) = &abort_reason {
+        status["error"] = Value::String(reason.clone());
+    }
+    let _ = RESTORE_RUN.patch_status(name, status).await;
+    tracing::info!("restore-run {name}: {phase} ({succeeded}/{total} volumes restored)");
 }
 
+// ── Cluster observation helpers (dumb I/O, no decisions) ─────────────────────
+
+async fn list_replication_destinations() -> Vec<Value> {
+    Command::new("kubectl")
+        .args(["get", "replicationdestination", "-A", "-o", "json"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default()
+}
+
+/// (namespace, name) of every PVC that currently exists — one call, so the Deleting
+/// branch can check every volume without a `kubectl get` each.
+async fn list_pvc_keys() -> std::collections::HashSet<(String, String)> {
+    Command::new("kubectl")
+        .args(["get", "pvc", "-A", "-o", "json"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| {
+            Some((
+                i["metadata"]["namespace"].as_str()?.to_string(),
+                i["metadata"]["name"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+async fn read_deployment_scales(ns: &str) -> Vec<DeploymentScale> {
+    Command::new("kubectl")
+        .args(["get", "deployments", "-n", ns, "-o", "json"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| {
+            Some(DeploymentScale {
+                name: d["metadata"]["name"].as_str()?.to_string(),
+                // An absent spec.replicas means 1 per the Deployment defaulting rules.
+                replicas: d["spec"]["replicas"].as_u64().unwrap_or(1) as u32,
+            })
+        })
+        .collect()
+}
+
+/// Whether a per-PVC restic repo has any snapshot. `Err` means "couldn't tell" and must
+/// NOT be collapsed into `false` — that is what turns a broken restore into a silent
+/// "Skipped, everything fine".
+async fn snapshots_exist(repo: &str, cfg: &BackupConfig) -> anyhow::Result<bool> {
+    let out = Command::new("restic")
+        .args(["snapshots", "--json"])
+        .env("RESTIC_REPOSITORY", repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // A repo that was never initialised legitimately has no snapshots.
+        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
+            return Ok(false);
+        }
+        anyhow::bail!("{}", stderr.trim());
+    }
+    let v: Value = serde_json::from_slice(&out.stdout)?;
+    Ok(v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+}
+
+fn catalog_capacity(catalog: &Value, ns: &str, pvc: &str) -> String {
+    catalog["services"]
+        .as_array()
+        .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(ns)))
+        .and_then(|s| s["pvcs"].as_array())
+        .and_then(|pvcs| pvcs.iter().find(|p| p["name"].as_str() == Some(pvc)))
+        .and_then(|p| p["capacity"].as_str())
+        .unwrap_or("10Gi")
+        .to_string()
+}
+
+async fn persist_namespaces(name: &str, ns_state: &[NamespaceState]) {
+    let _ = RESTORE_RUN
+        .patch_status(
+            name,
+            json!({ "namespaces": ns_state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() }),
+        )
+        .await;
+}
+
+// ── State model ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
 struct VolumeState {
     pvc: String,
     phase: String,
+    /// When the PVC delete was issued — bounds the Deleting sub-phase.
+    deleting_since: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct DeploymentScale {
+    name: String,
+    replicas: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct NamespaceState {
     namespace: String,
-    scaled_deployments: Vec<String>,
+    setup_complete: bool,
+    scaled_deployments: Vec<DeploymentScale>,
     volumes: Vec<VolumeState>,
 }
 
@@ -589,44 +1090,82 @@ impl NamespaceState {
     fn to_json(&self) -> Value {
         json!({
             "namespace": self.namespace,
-            "scaledDeployments": self.scaled_deployments,
-            "volumes": self.volumes.iter().map(|v| json!({ "pvc": v.pvc, "phase": v.phase })).collect::<Vec<_>>(),
+            "setupComplete": self.setup_complete,
+            "scaledDeployments": self.scaled_deployments.iter()
+                .map(|d| json!({ "name": d.name, "replicas": d.replicas }))
+                .collect::<Vec<_>>(),
+            "volumes": self.volumes.iter().map(|v| {
+                let mut o = json!({ "pvc": v.pvc, "phase": v.phase });
+                if let Some(ts) = &v.deleting_since {
+                    o["deletingSince"] = Value::String(ts.clone());
+                }
+                o
+            }).collect::<Vec<_>>(),
         })
     }
+}
+
+/// Accepts both the current `[{name, replicas}]` shape and the older bare-`[name]` shape,
+/// so a run created by a previous build still finishes correctly after an upgrade.
+fn parse_scaled_deployments(v: &Value) -> Vec<DeploymentScale> {
+    v.as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| {
+            if let Some(n) = d.as_str() {
+                // Old shape recorded names only; 1 is what that build always scaled to.
+                return Some(DeploymentScale { name: n.to_string(), replicas: 1 });
+            }
+            Some(DeploymentScale {
+                name: d["name"].as_str()?.to_string(),
+                replicas: d["replicas"].as_u64().unwrap_or(1) as u32,
+            })
+        })
+        .collect()
 }
 
 /// Reconstructs `NamespaceState` from `status.namespaces` — the only place this data
 /// lives between ticks (never in a task-local variable), so any tick, in any process,
 /// reads the exact same state the previous tick left behind.
 fn parse_ns_state(run: &Value) -> Vec<NamespaceState> {
-    run["status"]["namespaces"].as_array().cloned().unwrap_or_default()
+    run["status"]["namespaces"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
         .into_iter()
         .map(|n| NamespaceState {
             namespace: n["namespace"].as_str().unwrap_or("").to_string(),
-            scaled_deployments: n["scaledDeployments"].as_array().cloned().unwrap_or_default()
-                .into_iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-            volumes: n["volumes"].as_array().cloned().unwrap_or_default()
+            setup_complete: n["setupComplete"].as_bool().unwrap_or(false),
+            scaled_deployments: parse_scaled_deployments(&n["scaledDeployments"]),
+            volumes: n["volumes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
                 .into_iter()
                 .map(|v| VolumeState {
                     pvc: v["pvc"].as_str().unwrap_or("").to_string(),
-                    phase: v["phase"].as_str().unwrap_or("Pending").to_string(),
+                    phase: v["phase"].as_str().unwrap_or(VOL_PENDING).to_string(),
+                    deleting_since: v["deletingSince"].as_str().map(String::from),
                 })
                 .collect(),
         })
         .collect()
 }
 
-/// Reconcile tick: only the lease holder acts. Times out any run stuck past its phase
-/// deadline, then advances every still-active run by exactly one step. Unlike
-/// BackupRun there's no scheduling decision here — restores are only ever started
-/// explicitly (manual snapshot pick, or the DR banner's emergency restore).
+// ── Reconcile tick ────────────────────────────────────────────────────────────
+
+/// Only the lease holder acts. Times out any run stuck past its phase deadline — routing
+/// it through recovery rather than straight to terminal — then advances every still-active
+/// run by exactly one step.
 pub async fn reconcile_tick(holder: &str) {
     let Some(_guard) = lease::acquire(LEASE_NAME, holder, LEASE_DURATION_SECS).await else {
         return;
     };
 
     let mut seen_terminal = 0usize;
-    for run in RESTORE_RUN.list().await { // newest-created first
+    for run in RESTORE_RUN.list().await {
+        // newest-created first
         if is_terminal(run["status"]["phase"].as_str().unwrap_or("")) {
             seen_terminal += 1;
             if seen_terminal > KEEP_TERMINAL_RUNS {
@@ -637,38 +1176,236 @@ pub async fn reconcile_tick(holder: &str) {
         }
     }
 
-    let mut timed_out: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Timeout sweep. Unlike before, a timed-out run is NOT marked Failed here — that is
+    // terminal, and terminal runs are never stepped, so it would strand every scaled-down
+    // deployment at 0 replicas forever. `terminate` routes it into Applying instead when
+    // there is anything to recover, and the run reaches a terminal phase from there.
+    let mut swept: std::collections::HashSet<String> = std::collections::HashSet::new();
     for run in RESTORE_RUN.list().await {
-        let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING).to_string();
+        let phase = run["status"]["phase"]
+            .as_str()
+            .unwrap_or(PHASE_VALIDATING)
+            .to_string();
         if is_terminal(&phase) {
             continue;
         }
         if let Some(dl) = parse_deadline(&run) {
             if Utc::now() > dl {
                 let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
-                tracing::warn!("restore-run {name}: timed out in phase {phase}");
-                let _ = RESTORE_RUN.patch_status(&name, json!({
-                    "phase": PHASE_FAILED,
-                    "finishedAt": Utc::now().to_rfc3339(),
-                    "error": format!("timed out in phase {phase}"),
-                })).await;
-                timed_out.insert(name);
+                if name.is_empty() {
+                    continue;
+                }
+                terminate(&name, &run, format!("timed out in phase {phase}")).await;
+                swept.insert(name);
             }
         }
     }
 
-    // Advance every still-active run by exactly one step. This is the whole
-    // reconciler now — no separate executor task exists anywhere for this to race
-    // against, which is exactly what leaves a restore fully recoverable across a
-    // crash or reboot instead of stranded mid-flight.
+    // Advance every still-active run by exactly one step. Runs that were just swept are
+    // skipped this tick — they have a fresh Applying deadline and get stepped next tick.
     for run in RESTORE_RUN.list().await {
         let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
-        if name.is_empty() || timed_out.contains(&name) {
+        if name.is_empty() || swept.contains(&name) {
             continue;
         }
         if is_terminal(run["status"]["phase"].as_str().unwrap_or(PHASE_VALIDATING)) {
             continue;
         }
         step(&name).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ns(name: &str, scaled: &[(&str, u32)], vols: &[(&str, &str)]) -> NamespaceState {
+        NamespaceState {
+            namespace: name.into(),
+            setup_complete: true,
+            scaled_deployments: scaled
+                .iter()
+                .map(|(n, r)| DeploymentScale { name: (*n).into(), replicas: *r })
+                .collect(),
+            volumes: vols
+                .iter()
+                .map(|(p, ph)| VolumeState {
+                    pvc: (*p).into(),
+                    phase: (*ph).into(),
+                    deleting_since: None,
+                })
+                .collect(),
+        }
+    }
+
+    // ── abort_phase: the invariant that keeps apps from staying dark ──────────
+
+    #[test]
+    fn abort_routes_through_applying_once_anything_was_scaled_down() {
+        // THE regression test for this module: a run that scaled deployments down must
+        // reach Applying even when it is giving up, because Applying is the only code
+        // that scales them back up. Marking it Failed here is what left two real apps at
+        // 0 replicas until a human noticed.
+        let state = [ns("yolab-gitea", &[("gitea", 1)], &[("gitea-data", VOL_RESTORING)])];
+        assert_eq!(abort_phase(PHASE_RESTORING, &state), PHASE_APPLYING);
+    }
+
+    #[test]
+    fn abort_fails_flat_when_nothing_was_touched() {
+        // Validating/WaitingForStorage never mutate the cluster — nothing to recover.
+        let state = [ns("yolab-gitea", &[], &[])];
+        assert_eq!(abort_phase(PHASE_VALIDATING, &state), PHASE_FAILED);
+        assert_eq!(abort_phase(PHASE_WAITING_STORAGE, &[]), PHASE_FAILED);
+    }
+
+    #[test]
+    fn abort_routes_through_applying_even_with_no_volumes() {
+        // A namespace with no PVCs still had its deployments scaled to 0.
+        let state = [ns("yolab-cinny", &[("cinny", 2)], &[])];
+        assert_eq!(abort_phase(PHASE_RESTORING, &state), PHASE_APPLYING);
+    }
+
+    #[test]
+    fn aborting_from_applying_terminates_instead_of_looping() {
+        // Applying IS the recovery. Routing it back into itself on a timeout would
+        // re-arm the deadline on every tick and the run would never finish — a restore
+        // stuck "Bringing services back up" forever, which reads to the user exactly
+        // like the hang this whole design exists to prevent.
+        let state = [ns("yolab-gitea", &[("gitea", 1)], &[("gitea-data", VOL_SUCCEEDED)])];
+        assert_eq!(abort_phase(PHASE_APPLYING, &state), PHASE_FAILED);
+    }
+
+    // ── terminal_phase ───────────────────────────────────────────────────────
+
+    #[test]
+    fn terminal_all_succeeded_is_success() {
+        let s = ns("a", &[], &[("p1", VOL_SUCCEEDED), ("p2", VOL_SUCCEEDED)]);
+        let v: Vec<&VolumeState> = s.volumes.iter().collect();
+        assert_eq!(terminal_phase(&v, false), PHASE_SUCCEEDED);
+    }
+
+    #[test]
+    fn terminal_all_skipped_is_success_not_failure() {
+        // Nothing was restored because nothing had ever been backed up — the live PVCs
+        // were deliberately left alone. That is not a failed restore.
+        let s = ns("a", &[], &[("p1", VOL_SKIPPED)]);
+        let v: Vec<&VolumeState> = s.volumes.iter().collect();
+        assert_eq!(terminal_phase(&v, false), PHASE_SUCCEEDED);
+    }
+
+    #[test]
+    fn terminal_all_failed_is_failure() {
+        let s = ns("a", &[], &[("p1", VOL_FAILED), ("p2", VOL_FAILED)]);
+        let v: Vec<&VolumeState> = s.volumes.iter().collect();
+        assert_eq!(terminal_phase(&v, false), PHASE_FAILED);
+    }
+
+    #[test]
+    fn terminal_mixed_is_partial() {
+        let s = ns("a", &[("d", 1)], &[("p1", VOL_SUCCEEDED), ("p2", VOL_FAILED)]);
+        let v: Vec<&VolumeState> = s.volumes.iter().collect();
+        assert_eq!(terminal_phase(&v, false), PHASE_PARTIAL);
+    }
+
+    #[test]
+    fn terminal_aborted_run_is_never_reported_as_success() {
+        // Even if every volume finished, reaching Applying via terminate() means the run
+        // hit a timeout or a hard error — saying "Succeeded" would be a lie.
+        let s = ns("a", &[("d", 1)], &[("p1", VOL_SUCCEEDED)]);
+        let v: Vec<&VolumeState> = s.volumes.iter().collect();
+        assert_eq!(terminal_phase(&v, true), PHASE_PARTIAL);
+        assert_eq!(terminal_phase(&[], true), PHASE_FAILED);
+    }
+
+    // ── volume progression ───────────────────────────────────────────────────
+
+    #[test]
+    fn rd_result_mapping_is_case_insensitive_and_conservative() {
+        assert_eq!(rd_result_to_phase(Some("Successful")), Some(VOL_SUCCEEDED));
+        assert_eq!(rd_result_to_phase(Some("successful")), Some(VOL_SUCCEEDED));
+        assert_eq!(rd_result_to_phase(Some("Failed")), Some(VOL_FAILED));
+        // Anything else (missing status, in-progress, unknown string) means "keep waiting".
+        assert_eq!(rd_result_to_phase(None), None);
+        assert_eq!(rd_result_to_phase(Some("")), None);
+        assert_eq!(rd_result_to_phase(Some("InProgress")), None);
+    }
+
+    #[test]
+    fn delete_timeout_respects_the_recorded_timestamp() {
+        let now = Utc::now();
+        let recent = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        let ancient = (now - chrono::Duration::seconds(PVC_DELETE_TIMEOUT_SECS + 1)).to_rfc3339();
+        assert!(!delete_timed_out(Some(&recent), now));
+        assert!(delete_timed_out(Some(&ancient), now));
+        // A missing timestamp must not strand the volume in Deleting forever.
+        assert!(delete_timed_out(None, now));
+    }
+
+    // ── snapshot selection ───────────────────────────────────────────────────
+
+    #[test]
+    fn latest_snapshot_takes_newest_not_first() {
+        // restic returns ascending by time; taking .first() restores the OLDEST backup.
+        let snaps = json!([
+            { "id": "oldest", "time": "2026-07-01T00:00:00Z" },
+            { "id": "middle", "time": "2026-07-15T00:00:00Z" },
+            { "id": "newest", "time": "2026-07-30T00:00:00Z" }
+        ]);
+        assert_eq!(latest_snapshot_id(&snaps).as_deref(), Some("newest"));
+    }
+
+    #[test]
+    fn latest_snapshot_handles_empty_and_malformed() {
+        assert_eq!(latest_snapshot_id(&json!([])), None);
+        assert_eq!(latest_snapshot_id(&json!({})), None);
+    }
+
+    // ── status round-tripping ────────────────────────────────────────────────
+
+    #[test]
+    fn ns_state_round_trips_through_status_json() {
+        let original = vec![ns(
+            "yolab-gitea",
+            &[("gitea", 3)],
+            &[("gitea-data", VOL_RESTORING)],
+        )];
+        let encoded = json!({
+            "status": { "namespaces": original.iter().map(NamespaceState::to_json).collect::<Vec<_>>() }
+        });
+        assert_eq!(parse_ns_state(&encoded), original);
+    }
+
+    #[test]
+    fn parse_accepts_legacy_bare_string_deployments() {
+        // Runs created before replica counts were recorded must still finish after an
+        // upgrade, defaulting to the 1 replica that build would have applied.
+        let legacy = json!({ "status": { "namespaces": [{
+            "namespace": "yolab-gitea",
+            "scaledDeployments": ["gitea", "gateway"],
+            "volumes": [{ "pvc": "gitea-data", "phase": "Restoring" }]
+        }]}});
+        let parsed = parse_ns_state(&legacy);
+        assert_eq!(
+            parsed[0].scaled_deployments,
+            vec![
+                DeploymentScale { name: "gitea".into(), replicas: 1 },
+                DeploymentScale { name: "gateway".into(), replicas: 1 },
+            ]
+        );
+        // Legacy status had no setupComplete — must not re-run destructive setup blindly;
+        // false here is safe because setup is idempotent and re-reads nothing it shouldn't.
+        assert!(!parsed[0].setup_complete);
+    }
+
+    #[test]
+    fn replica_counts_survive_the_round_trip() {
+        // The bug this guards: Applying used to scale everything to 1 unconditionally,
+        // silently rewriting the scale of any app that ran more than one replica.
+        let state = [ns("a", &[("web", 3), ("worker", 2)], &[])];
+        let encoded =
+            json!({ "status": { "namespaces": state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() } });
+        let parsed = parse_ns_state(&encoded);
+        assert_eq!(parsed[0].scaled_deployments[0].replicas, 3);
+        assert_eq!(parsed[0].scaled_deployments[1].replicas, 2);
     }
 }

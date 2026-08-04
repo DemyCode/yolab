@@ -52,6 +52,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -69,7 +70,8 @@ spec:
           subPath: "{{ instance_name }}/yolab-state"
 
       - name: gen-secrets
-        image: busybox:1.37
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -91,6 +93,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -99,6 +102,7 @@ spec:
 
       - name: caddy
         image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
             port: 80
@@ -126,7 +130,8 @@ spec:
           mountPath: /yolab
 
       - name: app
-        image: freikin/dawarich:latest
+        image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
             path: /
@@ -216,7 +221,8 @@ spec:
     spec:
       containers:
       - name: sidekiq
-        image: freikin/dawarich:latest
+        image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
@@ -284,7 +290,8 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgis/postgis:17-3.5-alpine
+        image: postgis/postgis:17-3.5-alpine@sha256:978a2e6671c956d650d1f240dba7c73b8519a5f5af8685165fca616cc4ae3568
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "dawarich"]
@@ -343,7 +350,8 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.4-alpine
+        image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+        imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
             command: ["redis-cli", "ping"]

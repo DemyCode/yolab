@@ -41,6 +41,7 @@ spec:
       initContainers:
       - name: wg-register
         image: ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7
+        imagePullPolicy: IfNotPresent
         env:
         - name: PLATFORM_API_URL
           value: "{{ platform_api_url }}"
@@ -60,6 +61,7 @@ spec:
       containers:
       - name: wireguard
         image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -68,6 +70,7 @@ spec:
 
       - name: minecraft
         image: itzg/minecraft-server:latest@sha256:bb1cf73b342bdf6fa03b9d689b699bd1f8c6989f81ea07d520985eb2f18e6f30
+        imagePullPolicy: IfNotPresent
         stdin: true
         tty: true
         readinessProbe:

@@ -46,6 +46,7 @@
 
 use crate::kubectl::Crd;
 use crate::lease;
+use crate::routers::apps::ANN_APP_ID;
 use crate::routers::backup_common::*;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -272,11 +273,15 @@ async fn step_snapshotting(name: &str, run: &Value, cfg: &BackupConfig) {
     ).await;
 
     match snapshot_result {
-        Ok(Ok(snapshot_id)) => {
+        Ok(Ok(outcome)) => {
             let _ = BACKUP_RUN.patch_status(name, json!({
                 "phase": PHASE_PRUNING,
                 "phaseDeadline": deadline_after(300),
-                "snapshotId": snapshot_id,
+                "snapshotId": outcome.date,
+                // Whether the etcd database made it into this snapshot. Reported to the
+                // user as the "cluster state" backup age; a run can otherwise succeed
+                // with volumes backed up but etcd silently missing.
+                "etcdIncluded": outcome.etcd_included,
             })).await;
         }
         Ok(Err(e)) => {
@@ -337,7 +342,17 @@ async fn step_pruning(name: &str, run: &Value, cfg: &BackupConfig) {
 /// Both are handled by this thin wrapper rather than the several `?`-early-return points
 /// inside `snapshot_cluster_inner`, so no future new failure path can reintroduce either
 /// problem by forgetting a cleanup call at its own return site.
-async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<String> {
+pub(crate) struct SnapshotOutcome {
+    /// Date/id of the restic snapshot this run produced.
+    pub date: String,
+    /// Whether the etcd database actually made it in. The etcd step is best-effort (a
+    /// backup of app data is still worth having without it), so this has to be reported
+    /// rather than inferred — a run can otherwise show "Succeeded" while the cluster-state
+    /// half was silently missing.
+    pub etcd_included: bool,
+}
+
+async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<SnapshotOutcome> {
     let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -353,7 +368,7 @@ async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<String> {
     result
 }
 
-async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Result<String> {
+async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Result<SnapshotOutcome> {
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
 
@@ -366,6 +381,7 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
         .output().await;
 
+    let mut etcd_included = false;
     match snap_saved {
         Ok(o) if o.status.success() => {
             let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
@@ -378,14 +394,18 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
                         if let Err(e) = std::fs::copy(entry.path(), &dst) {
                             tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
                         } else {
+                            etcd_included = true;
                             let _ = std::fs::remove_file(entry.path());
                         }
                         let _ = Command::new("kubectl")
-                            .args(["delete", "etcdsnapshotfile", &fname_str.to_string(), "--ignore-not-found"])
+                            .args(["delete", "etcdsnapshotfile", fname_str.as_ref(), "--ignore-not-found"])
                             .output().await;
                         break;
                     }
                 }
+            }
+            if !etcd_included {
+                tracing::warn!("cluster-backup: etcd snapshot {snap_name} saved but not found in {snap_dir}");
             }
         }
         Ok(o) => tracing::warn!("cluster-backup: etcd-snapshot: {}", String::from_utf8_lossy(&o.stderr).trim()),
@@ -394,29 +414,59 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
 
     // 2. Export K8s objects for all yolab-managed namespaces.
     let namespaces = list_managed_namespaces().await;
+    let mut services: Vec<Value> = Vec::new();
+
     for ns in &namespaces {
+        let mut items: Vec<Value> = Vec::new();
+
+        // The Namespace object itself, FIRST in the list so `kubectl apply` creates it
+        // before anything scoped to it.
+        //
+        // Its annotations — yolab.io/app-id, yolab.io/config, yolab.io/outputs — are the
+        // app's entire identity. Exporting only the workload objects (which is what this
+        // used to do) restores the data but brings the app back anonymous: no name or icon
+        // in the UI, "App not found in catalog" on update, no uninstall hook, and every
+        // setting the user chose — including app passwords — gone. That is a restore that
+        // looks like it half-worked, which is worse than one that visibly failed.
+        let ns_obj: Option<Value> = Command::new("kubectl")
+            .args(["get", "namespace", ns, "-o", "json"])
+            .output().await.ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
+        if let Some(v) = &ns_obj {
+            items.push(v.clone());
+        }
+
         let obj_out = Command::new("kubectl")
             .args(["get", "deploy,svc,secret,configmap",
                    "-n", ns, "-o", "json", "--ignore-not-found"])
             .output().await;
-        if let Ok(obj) = obj_out {
-            if let Ok(v) = serde_json::from_slice::<Value>(&obj.stdout) {
-                let raw = v["items"].as_array().cloned().unwrap_or_default();
-                let sanitized = sanitize_k8s_items_for_backup(&raw);
-                if !sanitized.is_empty() {
-                    let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
-                    if let Ok(s) = serde_json::to_string_pretty(&list) {
-                        let _ = tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), s.as_bytes()).await;
-                    }
-                }
+        let workloads: Vec<Value> = obj_out.ok()
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+            .and_then(|v| v["items"].as_array().cloned())
+            .unwrap_or_default();
+        items.extend(workloads.iter().cloned());
+
+        let sanitized = sanitize_k8s_items_for_backup(&items);
+        if !sanitized.is_empty() {
+            let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
+            if let Ok(s) = serde_json::to_string_pretty(&list) {
+                let _ = tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), s.as_bytes()).await;
             }
         }
-    }
 
-    // 3. catalog.json — per-namespace PVC info so the restore UI can show service
-    //    names, PVC counts, and storage sizes without extra API calls.
-    let mut services: Vec<Value> = Vec::new();
-    for ns in &namespaces {
+        // 3. Per-namespace catalog entry. Everything here is served to the browser by
+        //    GET /api/backups/snapshots/:id/catalog to render the restore picker, so it
+        //    carries only display-safe fields. yolab.io/config and yolab.io/outputs are
+        //    deliberately NOT copied in — config holds app passwords, and it already
+        //    travels (encrypted) inside {ns}.yaml above, which is the copy the restore
+        //    actually applies.
+        let ann = ns_obj
+            .as_ref()
+            .and_then(|v| v["metadata"]["annotations"].as_object().cloned())
+            .unwrap_or_default();
+        let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
         let pvc_out = Command::new("kubectl")
             .args(["get", "pvc", "-n", ns, "-o", "json"])
             .output().await;
@@ -436,8 +486,22 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
                 Some(json!({ "name": name, "capacity": capacity }))
             })
             .collect();
-        services.push(json!({ "namespace": ns, "pvcs": pvcs }));
+
+        // Which images this namespace was actually running. With the catalog now
+        // digest-pinned, this is an exact record of the version the data belongs to —
+        // so a restore can report what it brought back instead of leaving the user to
+        // find out from a crash loop.
+        let images = collect_images(&workloads);
+
+        services.push(json!({
+            "namespace": ns,
+            "app_id": app_id,
+            "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
+            "pvcs": pvcs,
+            "images": images,
+        }));
     }
+
     let total_pvc_bytes: u64 = services.iter()
         .flat_map(|s| s["pvcs"].as_array().cloned().unwrap_or_default())
         .map(|p| parse_capacity_bytes(p["capacity"].as_str().unwrap_or("0")))
@@ -447,6 +511,7 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         "namespaces": namespaces,
         "services": services,
         "total_pvc_bytes": total_pvc_bytes,
+        "catalog_version": built_hash(),
     });
     let _ = tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await;
 
@@ -480,8 +545,38 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         anyhow::bail!("restic backup failed: {}", String::from_utf8_lossy(&backup.stderr).trim());
     }
 
-    tracing::info!("cluster-backup: snapshot complete ({date})");
-    Ok(date)
+    tracing::info!("cluster-backup: snapshot complete ({date}, etcd_included={etcd_included})");
+    Ok(SnapshotOutcome { date, etcd_included })
+}
+
+/// Every container image referenced by a namespace's workloads, deduplicated and sorted.
+/// Init containers count: they run migrations and seed databases, so they are part of
+/// "which version wrote this data" just as much as the main containers are.
+fn collect_images(workloads: &[Value]) -> Vec<String> {
+    let mut images: Vec<String> = Vec::new();
+    for w in workloads {
+        let spec = &w["spec"]["template"]["spec"];
+        for key in ["initContainers", "containers"] {
+            for c in spec[key].as_array().unwrap_or(&Vec::new()) {
+                if let Some(img) = c["image"].as_str() {
+                    if !images.iter().any(|e| e == img) {
+                        images.push(img.to_string());
+                    }
+                }
+            }
+        }
+    }
+    images.sort();
+    images
+}
+
+/// The repo commit this node was built from, written by the `yolabVersion` activation
+/// script. Recorded in every backup so a restore can say which build produced the data.
+fn built_hash() -> Option<String> {
+    std::fs::read_to_string("/var/lib/yolab/built-hash")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Extracts `.status` from a listed CRD item and folds in `metadata.name` — callers
@@ -510,6 +605,30 @@ pub async fn current_status() -> Value {
         is_terminal(r["status"]["phase"].as_str().unwrap_or(""))
     }).map(flatten_status);
     json!({ "active": active, "last": last_finished })
+}
+
+/// When the cluster state (etcd) was last captured, from the most recent run that
+/// actually included it.
+///
+/// This used to be read from the `etcdsnapshotfile` CRD, filtering on an `etcd-daily-`
+/// name prefix — but these snapshots are named `yolab-cluster-{date}` and the CRD object
+/// is deleted immediately after the file is folded into the restic snapshot, so that
+/// query was structurally incapable of ever returning anything. It reported "never" for
+/// the entire life of the feature, which is exactly the wrong direction for a field whose
+/// whole job is to warn you that cluster-state backups have stopped.
+pub async fn last_etcd_snapshot() -> Option<String> {
+    BACKUP_RUN
+        .list()
+        .await // newest-created first
+        .iter()
+        .find(|r| {
+            r["status"]["etcdIncluded"].as_bool().unwrap_or(false)
+                && matches!(
+                    r["status"]["phase"].as_str(),
+                    Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)
+                )
+        })
+        .and_then(|r| r["status"]["finishedAt"].as_str().map(String::from))
 }
 
 /// Reconcile tick: only the lease holder acts, so at most one process (today: always
