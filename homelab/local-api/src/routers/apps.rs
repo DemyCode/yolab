@@ -19,6 +19,18 @@ pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
 /// image digests, so a restore can say which packaging produced the data rather than
 /// leaving the user to find out from a crash loop.
 pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
+/// Which repository the chart came from.
+///
+/// `app-id` alone is ambiguous the moment more than one repo is configured — two repos
+/// can both ship a chart called `gitea`, and `app-id` is what the backup identity export
+/// and the restore path use to decide what an app *is*. Recording the repo now, while
+/// nothing has been installed yet, avoids a migration later against live data.
+pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
+
+/// The built-in catalog. Charts currently resolve from a local directory, so everything
+/// belongs to this repo; once remote repos exist this becomes whichever repo the chart
+/// was resolved from, and the UI badges anything that isn't this one as third-party.
+pub(crate) const OFFICIAL_REPO: &str = "official";
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
 const LOGS_SCAN_TAIL: u32 = 500;
@@ -54,10 +66,16 @@ pub struct AppInfo {
 #[derive(Serialize)]
 pub struct CatalogApp {
     pub id: String,
+    /// Repository this chart came from. The UI uses it to distinguish the curated
+    /// catalog from charts a user added themselves — which matters, because a chart can
+    /// create arbitrary cluster objects, so "who published this" is a security fact and
+    /// not decoration.
+    pub repo: String,
     pub name: String,
     pub description: String,
     pub icon: String,
     pub category: String,
+    pub chart_version: String,
     pub schema: Value,
     pub uischema: Value,
 }
@@ -281,7 +299,12 @@ fn helm_stream(args: Vec<String>) -> impl futures::Stream<Item = std::result::Re
 /// inventory and cluster export select on, and `yolab.io/app-id` is what identifies the
 /// app after a restore — leaving those to chart authors would mean a third-party chart
 /// could silently opt itself out of being backed up.
-async fn ensure_app_namespace(ns: &str, app_id: &str, chart_version: &str) -> anyhow::Result<()> {
+async fn ensure_app_namespace(
+    ns: &str,
+    app_id: &str,
+    repo: &str,
+    chart_version: &str,
+) -> anyhow::Result<()> {
     crate::kubectl::apply(
         &serde_json::json!({
             "apiVersion": "v1",
@@ -291,6 +314,7 @@ async fn ensure_app_namespace(ns: &str, app_id: &str, chart_version: &str) -> an
                 "labels": { LABEL_MANAGED: "true" },
                 "annotations": {
                     ANN_APP_ID: app_id,
+                    ANN_CHART_REPO: repo,
                     ANN_CHART_VERSION: chart_version,
                     "volsync.backube/privileged-movers": "true",
                 },
@@ -403,10 +427,12 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
         let Some(meta) = read_chart(&entry.path()) else { continue };
         apps.push(CatalogApp {
             id: meta.chart.name.clone(),
+            repo: OFFICIAL_REPO.to_string(),
             name: meta.display_name(),
             description: meta.chart.description.clone(),
             icon: meta.ann(ANN_ICON).to_string(),
             category: meta.ann(ANN_CATEGORY).to_string(),
+            chart_version: meta.chart.version.clone(),
             schema: meta.schema.clone(),
             uischema: meta.ann_json(ANN_UISCHEMA),
         });
@@ -516,7 +542,7 @@ pub async fn install_app(
         // Namespace first: the chart's resources are namespaced, and the labels/
         // annotations set here are what the backup layer selects on.
         yield Ok(Event::default().data("Preparing namespace..."));
-        if let Err(e) = ensure_app_namespace(&ns, &id, &meta.chart.version).await {
+        if let Err(e) = ensure_app_namespace(&ns, &id, OFFICIAL_REPO, &meta.chart.version).await {
             yield Ok(Event::default().data(format!("[ERROR] create namespace: {e}")));
             return;
         }
