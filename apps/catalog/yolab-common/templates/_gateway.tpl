@@ -187,3 +187,67 @@ data:
     }
     {{- end }}
 {{- end -}}
+
+{{/*
+Same `/yolab/env` contract as the gateway pod, for an app that runs in its OWN pod.
+
+Apps whose image listens on 80 or 443 cannot share the gateway pod — Caddy already
+binds those there — so they get their own Deployment. But `/yolab/env` is an emptyDir
+scoped to the gateway pod, which leaves a separate pod with no way to learn the
+hostname the platform actually handed out. That matters for the apps that need to know
+their own public URL: Nextcloud rejects a Host it does not trust, BookStack builds
+every link from APP_URL, Ghost will not boot without one.
+
+wg-register also persists its registration to the shared RWX PVC, so the FQDN is
+readable from there. This init container waits for that file and writes exactly the
+same `/yolab/env` the gateway pod's containers source, so an app container's startup
+line is identical either way:
+
+    . /yolab/env && export APP_URL="$YOLAB_URL" && exec …
+
+It waits rather than races: on a first install this pod can easily start before the
+platform has confirmed the subdomain, and reading a half-written or absent state file
+would bake a blank URL into the app's config on its very first run — which for several
+of these apps is the run that writes the permanent installation record.
+
+Pairs with `yolab-common.yolabEnvVolumes`.
+*/}}
+{{- define "yolab-common.yolabEnvInit" -}}
+- name: yolab-env
+  {{- /* The wg-register image is reused purely because it already carries sh + jq. */}}
+  image: {{ include "yolab-common.image.wgRegister" . }}
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      until [ -s /state/wg-state.json ]; do
+        echo "waiting for the tunnel to be registered..."
+        sleep 2
+      done
+      FQDN=$(jq -r '.fqdn // empty' /state/wg-state.json)
+      if [ -z "$FQDN" ]; then
+        echo "wg-state.json carries no fqdn — refusing to start with a blank URL" >&2
+        exit 1
+      fi
+      printf 'export YOLAB_FQDN=%s\nexport YOLAB_URL=https://%s\n' "$FQDN" "$FQDN" > /yolab/env
+      echo "resolved YOLAB_FQDN=$FQDN"
+  volumeMounts:
+    - name: data
+      mountPath: /state
+      subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+    - name: yolab
+      mountPath: /yolab
+{{- end -}}
+
+{{/*
+Volumes for a pod using `yolabEnvInit`: the shared app PVC (where wg-register left its
+state) and the emptyDir the resolved env lands in.
+*/}}
+{{- define "yolab-common.yolabEnvVolumes" -}}
+- name: yolab
+  emptyDir: {}
+- name: data
+  persistentVolumeClaim:
+    claimName: {{ include "yolab-common.gateway.pvcName" . }}
+{{- end -}}
