@@ -72,6 +72,9 @@
   --shadow-pop: 0 16px 40px -12px rgb(40 30 15 / 0.22);
 
   --grain-opacity: 0.035;
+
+  /* App logos sit on their own plate — see AppIconTile. */
+  --icon-plate: #ffffff;
 }
 
 .dark {
@@ -101,6 +104,10 @@
   --shadow-pop: 0 16px 40px -12px rgb(0 0 0 / 0.65);
 
   --grain-opacity: 0.05;
+
+  /* A warm off-white rather than pure white, so a grid of plates on a dark
+     page does not glare. */
+  --icon-plate: #ece8e1;
 }
 
 /* `inline` so the generated utilities dereference the custom property at use

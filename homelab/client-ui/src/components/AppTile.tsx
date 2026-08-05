@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { AppIcon } from "@/components/AppIcon";
+import { AppIconTile } from "@/components/AppIcon";
 import { StatusDot } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/feedback";
 import { cn } from "@/lib/utils";
@@ -40,9 +40,12 @@ export function AppTile({
       )}
     >
       <div className="relative mb-3">
-        <div className="flex h-16 w-16 items-center justify-center rounded-tile border border-border bg-surface shadow-[var(--shadow-card)] transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-lift)]">
-          <AppIcon icon={icon} name={name} className="h-9 w-9 text-3xl" />
-        </div>
+        <AppIconTile
+          appId={app.app_id}
+          icon={icon}
+          name={name}
+          className="shadow-[var(--shadow-card)] transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-lift)]"
+        />
         <StatusDot
           tone={tone}
           pulse={state === "starting"}

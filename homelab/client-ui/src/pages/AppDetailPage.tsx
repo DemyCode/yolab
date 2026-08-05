@@ -10,7 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
-import { AppIcon } from "@/components/AppIcon";
+import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/sheet";
@@ -309,13 +309,7 @@ export function AppDetailPage() {
       </Link>
 
       <header className="mb-6 flex items-center gap-4">
-        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-tile bg-surface-2">
-          <AppIcon
-            icon={entry?.icon ?? ""}
-            name={name}
-            className="h-9 w-9 text-3xl"
-          />
-        </div>
+        <AppIconTile appId={app.app_id} icon={entry?.icon} name={name} />
         <div className="min-w-0">
           <h1 className="font-display text-3xl text-fg">{name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">
