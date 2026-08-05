@@ -1,8 +1,99 @@
 @import "tailwindcss";
 
-@theme {
+/* Manual theme switching, not just `prefers-color-scheme`.
+   The box is often set up on a laptop in a bright room and then used from a
+   phone in bed; letting the person choose beats guessing from the OS. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Tokens ───────────────────────────────────────────────────────────────
+   Every colour in the app comes from here. The previous UI hardcoded hex
+   literals in ~40 files, which is why it was dark-only: there was no single
+   place a second theme could exist.
+
+   Light is the default. Dark-by-default reads as "developer tool", and this is
+   meant to feel like something that belongs in a home. */
+:root {
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --surface-2: #f0f0f2;
+  --surface-3: #e6e6ea;
+  --border: #e3e3e7;
+  --border-strong: #d1d1d8;
+  --fg: #18181b;
+  --fg-muted: #6b6b76;
+  --fg-subtle: #9a9aa4;
+
+  --primary: #6d4ee6;
+  --primary-fg: #ffffff;
+  --primary-soft: #f0ecfe;
+
+  --success: #15803d;
+  --success-soft: #e6f5ec;
+  --warning: #b45309;
+  --warning-soft: #fdf1e0;
+  --danger: #c62828;
+  --danger-soft: #fdeceb;
+
+  --shadow-card: 0 1px 2px rgb(24 24 27 / 0.05);
+  --shadow-pop: 0 12px 32px -8px rgb(24 24 27 / 0.18);
+}
+
+.dark {
+  --bg: #0c0c0f;
+  --surface: #17171b;
+  --surface-2: #202026;
+  --surface-3: #2b2b33;
+  --border: #292930;
+  --border-strong: #3a3a44;
+  --fg: #f4f4f5;
+  --fg-muted: #a0a0ab;
+  --fg-subtle: #6f6f7a;
+
+  --primary: #a78bfa;
+  --primary-fg: #17171b;
+  --primary-soft: #241f3a;
+
+  --success: #4ade80;
+  --success-soft: #12291c;
+  --warning: #fbbf24;
+  --warning-soft: #2c220e;
+  --danger: #f87171;
+  --danger-soft: #2e1616;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+}
+
+/* `inline` so the generated utilities dereference the custom property at use
+   time — that is what makes `.dark` overrides apply without regenerating any
+   classes. */
+@theme inline {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Fira Code", monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+
+  --color-primary: var(--primary);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --radius-card: 1rem;
+  --radius-tile: 1.25rem;
 }
 
 *,
@@ -19,159 +110,92 @@ body,
 
 body {
   margin: 0;
-  background-color: #09090b;
-  color: #fafafa;
+  background-color: var(--bg);
+  color: var(--fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Scrollbar */
+/* Invisible until used, and never a light scrollbar on a dark page. */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: var(--border-strong);
+  border-radius: 4px;
 }
 
-/* ── RJSF dark theme ─────────────────────────────────────────────────────── */
-.yolab-form .form-group {
-  margin-bottom: 1rem;
+/* The blue flash on tap makes tiles feel like a web page rather than an app;
+   we render our own press state instead. */
+* {
+  -webkit-tap-highlight-color: transparent;
 }
 
-.yolab-form label {
-  display: block;
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: #a1a1aa;
-  margin-bottom: 0.35rem;
-  letter-spacing: 0.01em;
-}
-
-.yolab-form input[type="text"],
-.yolab-form input[type="password"],
-.yolab-form input[type="number"],
-.yolab-form input[type="email"],
-.yolab-form input[type="url"],
-.yolab-form select,
-.yolab-form textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.5rem 0.75rem;
-  background: #09090b;
-  color: #fafafa;
-  border: 1px solid #27272a;
-  border-radius: 6px;
-  font-size: 0.875rem;
-  font-family: var(--font-sans);
-  transition: border-color 0.15s;
-}
-
-.yolab-form input:focus,
-.yolab-form select:focus,
-.yolab-form textarea:focus {
-  outline: none;
-  border-color: #a78bfa;
-  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.12);
-}
-
-.yolab-form select {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2371717a' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.75rem center;
-  padding-right: 2rem;
-}
-
-.yolab-form p.field-description {
-  font-size: 0.75rem;
-  color: #52525b;
-  margin: 0.3rem 0 0;
-}
-
-.yolab-form .text-danger,
-.yolab-form .errors,
-.yolab-form .error-detail {
-  color: #f87171;
-  font-size: 0.75rem;
-  margin-top: 0.25rem;
-}
-
-.yolab-form fieldset {
-  border: 1px solid #27272a;
-  border-radius: 8px;
-  padding: 1rem;
-  margin: 0 0 1rem;
-}
-
-.yolab-form legend {
-  font-size: 0.8rem;
-  color: #71717a;
-  padding: 0 0.4rem;
-  font-weight: 500;
-}
-
-.yolab-form .array-item {
-  display: flex;
-  gap: 0.5rem;
-  align-items: flex-start;
-  margin-bottom: 0.5rem;
-}
-
-.yolab-form .array-item-toolbox {
-  display: flex;
-  gap: 0.25rem;
-  padding-top: 0.25rem;
-}
-
-.yolab-form .btn-add,
-.yolab-form .btn-danger {
-  font-size: 0.75rem;
-  padding: 0.3rem 0.7rem;
-  border-radius: 5px;
-  border: 1px solid #27272a;
-  background: #18181b;
-  color: #a1a1aa;
-  cursor: pointer;
-  font-family: var(--font-sans);
-  transition:
-    background 0.15s,
-    border-color 0.15s;
-}
-
-.yolab-form .btn-add:hover {
-  background: #27272a;
-  border-color: #3f3f46;
-}
-.yolab-form .btn-danger:hover {
-  background: #450a0a;
-  border-color: #f87171;
-  color: #f87171;
-}
-
-.yolab-form .required {
-  color: #f87171;
-  margin-left: 2px;
-}
-
-/* Animate pulse for status dots */
-@keyframes pulse-dot {
-  0%,
+@keyframes shimmer {
   100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
+    transform: translateX(100%);
   }
 }
-.animate-pulse-dot {
-  animation: pulse-dot 2s ease-in-out infinite;
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(127 127 140 / 0.12),
+    transparent
+  );
+  animation: shimmer 1.6s infinite;
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+@keyframes sheet-in-mobile {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+.animate-sheet-in {
+  animation: sheet-in-mobile 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+}
+@media (min-width: 640px) {
+  .animate-sheet-in {
+    animation: sheet-in 0.18s ease-out;
+  }
+}
+
+/* Someone who gets motion sick should not have to endure our transitions to
+   use their own photo library. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

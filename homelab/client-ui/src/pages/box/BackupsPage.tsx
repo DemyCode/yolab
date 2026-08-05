@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  Database, RefreshCw, CheckCircle, AlertCircle, Circle,
-  AlertTriangle, ChevronDown, ChevronRight, RotateCcw, KeyRound, Copy,
+  Database,
+  RefreshCw,
+  CheckCircle,
+  AlertCircle,
+  Circle,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  RotateCcw,
+  KeyRound,
+  Copy,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -49,7 +58,14 @@ interface DiffEntry {
 
 // Mirrors backup_run.rs's BackupRun.status shape.
 interface BackupRunStatus {
-  phase: "Pending" | "SyncingVolumes" | "SnapshottingCluster" | "Pruning" | "Succeeded" | "Partial" | "Failed";
+  phase:
+    | "Pending"
+    | "SyncingVolumes"
+    | "SnapshottingCluster"
+    | "Pruning"
+    | "Succeeded"
+    | "Partial"
+    | "Failed";
   startedAt?: string;
   finishedAt?: string;
   error?: string | null;
@@ -66,7 +82,13 @@ interface VolumeStatus {
   /// Deleting: the old PVC has been asked to go away and we're waiting it out across
   /// reconcile ticks (nothing blocks server-side), after which the restore target is
   /// recreated and the data pulled back.
-  phase: "Pending" | "Deleting" | "Restoring" | "Succeeded" | "Failed" | "Skipped";
+  phase:
+    | "Pending"
+    | "Deleting"
+    | "Restoring"
+    | "Succeeded"
+    | "Failed"
+    | "Skipped";
 }
 
 interface DeploymentScale {
@@ -84,7 +106,14 @@ interface NamespaceRestoreStatus {
 }
 
 interface RestoreRunStatus {
-  phase: "Validating" | "WaitingForStorage" | "RestoringVolumes" | "Applying" | "Succeeded" | "Partial" | "Failed";
+  phase:
+    | "Validating"
+    | "WaitingForStorage"
+    | "RestoringVolumes"
+    | "Applying"
+    | "Succeeded"
+    | "Partial"
+    | "Failed";
   startedAt?: string;
   finishedAt?: string;
   error?: string | null;
@@ -120,7 +149,9 @@ interface RecoveryKeyResponse {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function Shimmer({ className }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-[#27272a] ${className ?? ""}`} />;
+  return (
+    <div className={`animate-pulse rounded bg-border ${className ?? ""}`} />
+  );
 }
 
 function serviceNameFromNamespace(ns: string): string {
@@ -130,8 +161,11 @@ function serviceNameFromNamespace(ns: string): string {
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
-    year: "numeric", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -169,27 +203,35 @@ function isTerminalRestorePhase(phase: string): boolean {
 function VolumePhaseIcon({ phase }: { phase: VolumeStatus["phase"] }) {
   switch (phase) {
     case "Succeeded":
-      return <CheckCircle className="h-4 w-4 text-[#4ade80] flex-shrink-0" />;
+      return <CheckCircle className="h-4 w-4 text-success flex-shrink-0" />;
     case "Failed":
-      return <AlertCircle className="h-4 w-4 text-[#f87171] flex-shrink-0" />;
+      return <AlertCircle className="h-4 w-4 text-danger flex-shrink-0" />;
     case "Skipped":
-      return <AlertTriangle className="h-4 w-4 text-[#fbbf24] flex-shrink-0" />;
+      return <AlertTriangle className="h-4 w-4 text-warning flex-shrink-0" />;
     case "Deleting":
     case "Restoring":
-      return <RefreshCw className="h-4 w-4 text-[#a78bfa] animate-spin flex-shrink-0" />;
+      return (
+        <RefreshCw className="h-4 w-4 text-primary animate-spin flex-shrink-0" />
+      );
     default:
-      return <Circle className="h-4 w-4 text-[#3f3f46] flex-shrink-0" />;
+      return <Circle className="h-4 w-4 text-border-strong flex-shrink-0" />;
   }
 }
 
 function volumePhaseLabel(phase: VolumeStatus["phase"]): string {
   switch (phase) {
-    case "Succeeded": return "Restored";
-    case "Failed": return "Failed";
-    case "Skipped": return "No backup found — kept as-is";
-    case "Deleting": return "Clearing old volume…";
-    case "Restoring": return "Restoring…";
-    default: return "Pending";
+    case "Succeeded":
+      return "Restored";
+    case "Failed":
+      return "Failed";
+    case "Skipped":
+      return "No backup found — kept as-is";
+    case "Deleting":
+      return "Clearing old volume…";
+    case "Restoring":
+      return "Restoring…";
+    default:
+      return "Pending";
   }
 }
 
@@ -200,41 +242,54 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
     let cancelled = false;
     async function poll() {
       try {
-        const data = await fetch("/api/backups/dr/status").then(r => r.json()) as DrStatusResponse;
+        const data = (await fetch("/api/backups/dr/status").then((r) =>
+          r.json(),
+        )) as DrStatusResponse;
         if (cancelled) return;
         setStatus(data.active ?? data.last ?? null);
-      } catch { /* network blip */ }
+      } catch {
+        /* network blip */
+      }
     }
     void poll();
     const id = window.setInterval(poll, 3000);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   if (!status) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <RefreshCw className="h-6 w-6 text-[#a78bfa] animate-spin" />
-        <p className="text-sm text-[#a1a1aa]">Starting restore…</p>
+        <RefreshCw className="h-6 w-6 text-primary animate-spin" />
+        <p className="text-sm text-fg-muted">Starting restore…</p>
       </div>
     );
   }
 
   const terminal = isTerminalRestorePhase(status.phase);
-  const currentIndex = RESTORE_PHASES.findIndex(p => p.key === status.phase);
+  const currentIndex = RESTORE_PHASES.findIndex((p) => p.key === status.phase);
   const namespaces = status.namespaces ?? [];
   const totalVolumes = namespaces.reduce((n, ns) => n + ns.volumes.length, 0);
   const succeededVolumes = namespaces.reduce(
-    (n, ns) => n + ns.volumes.filter(v => v.phase === "Succeeded").length, 0
+    (n, ns) => n + ns.volumes.filter((v) => v.phase === "Succeeded").length,
+    0,
   );
 
   return (
     <div className="min-h-[70vh] flex flex-col max-w-3xl mx-auto w-full">
       <div className="mb-8">
-        <h1 className="text-xl font-semibold text-[#fafafa]">Restoring from backup</h1>
-        <p className="text-sm text-[#71717a] mt-0.5">
-          {status.snapshotId ? `Snapshot ${status.snapshotId.slice(0, 8)}` : "Restore in progress"}
-          {status.restoreAsOf ? ` · as of ${formatDate(status.restoreAsOf)}` : ""}
-          {" — "}other backup and restore actions are disabled until this finishes.
+        <h1 className="text-xl font-semibold text-fg">Restoring from backup</h1>
+        <p className="text-sm text-fg-muted mt-0.5">
+          {status.snapshotId
+            ? `Snapshot ${status.snapshotId.slice(0, 8)}`
+            : "Restore in progress"}
+          {status.restoreAsOf
+            ? ` · as of ${formatDate(status.restoreAsOf)}`
+            : ""}
+          {" — "}other backup and restore actions are disabled until this
+          finishes.
         </p>
       </div>
 
@@ -242,27 +297,38 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
       {!terminal && (
         <div className="flex items-center mb-8">
           {RESTORE_PHASES.map((p, i) => (
-            <div key={p.key} className="flex items-center flex-1 last:flex-none">
+            <div
+              key={p.key}
+              className="flex items-center flex-1 last:flex-none"
+            >
               <div className="flex flex-col items-center gap-2">
-                <div className={`h-8 w-8 rounded-full flex items-center justify-center border-2 ${
-                  i < currentIndex ? "border-[#4ade80] bg-[#4ade80]/10" :
-                  i === currentIndex ? "border-[#a78bfa] bg-[#a78bfa]/10" :
-                  "border-[#3f3f46]"
-                }`}>
+                <div
+                  className={`h-8 w-8 rounded-full flex items-center justify-center border-2 ${
+                    i < currentIndex
+                      ? "border-success bg-success/10"
+                      : i === currentIndex
+                        ? "border-primary bg-primary/10"
+                        : "border-border-strong"
+                  }`}
+                >
                   {i < currentIndex ? (
-                    <CheckCircle className="h-4 w-4 text-[#4ade80]" />
+                    <CheckCircle className="h-4 w-4 text-success" />
                   ) : i === currentIndex ? (
-                    <RefreshCw className="h-4 w-4 text-[#a78bfa] animate-spin" />
+                    <RefreshCw className="h-4 w-4 text-primary animate-spin" />
                   ) : (
-                    <span className="text-xs text-[#52525b]">{i + 1}</span>
+                    <span className="text-xs text-fg-subtle">{i + 1}</span>
                   )}
                 </div>
-                <span className={`text-xs whitespace-nowrap ${i === currentIndex ? "text-[#fafafa] font-medium" : "text-[#52525b]"}`}>
+                <span
+                  className={`text-xs whitespace-nowrap ${i === currentIndex ? "text-fg font-medium" : "text-fg-subtle"}`}
+                >
                   {p.label}
                 </span>
               </div>
               {i < RESTORE_PHASES.length - 1 && (
-                <div className={`flex-1 h-px mx-2 ${i < currentIndex ? "bg-[#4ade80]" : "bg-[#3f3f46]"}`} />
+                <div
+                  className={`flex-1 h-px mx-2 ${i < currentIndex ? "bg-success" : "bg-border-strong"}`}
+                />
               )}
             </div>
           ))}
@@ -271,31 +337,46 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
 
       {/* Terminal banner */}
       {terminal && (
-        <div className={`rounded-lg border px-4 py-3 mb-8 flex items-start gap-2 ${
-          status.phase === "Succeeded" ? "border-[#14532d] bg-[#0f1f0f]" :
-          status.phase === "Partial" ? "border-[#78350f] bg-[#1a1000]" :
-          "border-[#7f1d1d] bg-[#1a0000]"
-        }`}>
+        <div
+          className={`rounded-lg border px-4 py-3 mb-8 flex items-start gap-2 ${
+            status.phase === "Succeeded"
+              ? "border-success-soft bg-success-soft"
+              : status.phase === "Partial"
+                ? "border-warning-soft bg-warning-soft"
+                : "border-danger-soft bg-danger-soft"
+          }`}
+        >
           {status.phase === "Succeeded" ? (
-            <CheckCircle className="h-4 w-4 text-[#4ade80] flex-shrink-0 mt-0.5" />
+            <CheckCircle className="h-4 w-4 text-success flex-shrink-0 mt-0.5" />
           ) : (
-            <AlertTriangle className={`h-4 w-4 flex-shrink-0 mt-0.5 ${status.phase === "Partial" ? "text-[#fbbf24]" : "text-[#f87171]"}`} />
+            <AlertTriangle
+              className={`h-4 w-4 flex-shrink-0 mt-0.5 ${status.phase === "Partial" ? "text-warning" : "text-danger"}`}
+            />
           )}
           <div className="text-sm">
-            <p className={`font-medium ${
-              status.phase === "Succeeded" ? "text-[#4ade80]" :
-              status.phase === "Partial" ? "text-[#fbbf24]" : "text-[#f87171]"
-            }`}>
-              {status.phase === "Succeeded" && `Restore complete — ${succeededVolumes}/${totalVolumes || 0} volume${totalVolumes === 1 ? "" : "s"} restored.`}
-              {status.phase === "Partial" && `Restore finished with issues — ${succeededVolumes}/${totalVolumes} volumes restored. Affected services are running with their previous or empty data.`}
-              {status.phase === "Failed" && `Restore failed${status.error ? `: ${status.error}` : "."}`}
+            <p
+              className={`font-medium ${
+                status.phase === "Succeeded"
+                  ? "text-success"
+                  : status.phase === "Partial"
+                    ? "text-warning"
+                    : "text-danger"
+              }`}
+            >
+              {status.phase === "Succeeded" &&
+                `Restore complete — ${succeededVolumes}/${totalVolumes || 0} volume${totalVolumes === 1 ? "" : "s"} restored.`}
+              {status.phase === "Partial" &&
+                `Restore finished with issues — ${succeededVolumes}/${totalVolumes} volumes restored. Affected services are running with their previous or empty data.`}
+              {status.phase === "Failed" &&
+                `Restore failed${status.error ? `: ${status.error}` : "."}`}
             </p>
             {/* A run that timed out or hit a hard error still runs recovery before
                 finishing, so the apps are back up — say so explicitly rather than
                 leaving the user wondering whether anything is still running. */}
             {status.abortReason && (
-              <p className="text-xs text-[#a1a1aa] mt-1">
-                {status.abortReason} — services were scaled back up automatically.
+              <p className="text-xs text-fg-muted mt-1">
+                {status.abortReason} — services were scaled back up
+                automatically.
               </p>
             )}
           </div>
@@ -305,19 +386,28 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
       {/* Per-namespace / per-volume progress */}
       {namespaces.length > 0 && (
         <div className="space-y-3 flex-1">
-          {namespaces.map(ns => (
-            <Card key={ns.namespace} className="border-[#27272a]">
+          {namespaces.map((ns) => (
+            <Card key={ns.namespace} className="border-border">
               <CardContent className="pt-4 pb-4">
-                <p className="text-sm font-medium text-[#fafafa] mb-2">{serviceNameFromNamespace(ns.namespace)}</p>
+                <p className="text-sm font-medium text-fg mb-2">
+                  {serviceNameFromNamespace(ns.namespace)}
+                </p>
                 {ns.volumes.length === 0 ? (
-                  <p className="text-xs text-[#52525b]">No volumes — configuration restored only.</p>
+                  <p className="text-xs text-fg-subtle">
+                    No volumes — configuration restored only.
+                  </p>
                 ) : (
                   <div className="space-y-1.5">
-                    {ns.volumes.map(v => (
-                      <div key={v.pvc} className="flex items-center gap-2 text-xs">
+                    {ns.volumes.map((v) => (
+                      <div
+                        key={v.pvc}
+                        className="flex items-center gap-2 text-xs"
+                      >
                         <VolumePhaseIcon phase={v.phase} />
-                        <span className="text-[#a1a1aa] font-mono">{v.pvc}</span>
-                        <span className="text-[#52525b] ml-auto">{volumePhaseLabel(v.phase)}</span>
+                        <span className="text-fg-muted font-mono">{v.pvc}</span>
+                        <span className="text-fg-subtle ml-auto">
+                          {volumePhaseLabel(v.phase)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -332,7 +422,7 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
         <div className="flex justify-end mt-6">
           <Button
             onClick={onDone}
-            className="h-9 px-4 text-sm bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium"
+            className="h-9 px-4 text-sm bg-primary hover:bg-primary text-bg font-medium"
           >
             Back to Backups
           </Button>
@@ -361,31 +451,41 @@ function RestoreFlow({
   onStarted: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(catalog.namespaces)
+    () => new Set(catalog.namespaces),
   );
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const services: ServiceEntry[] = catalog.services ??
-    catalog.namespaces.map(ns => ({ namespace: ns, pvcs: [] }));
+  const services: ServiceEntry[] =
+    catalog.services ??
+    catalog.namespaces.map((ns) => ({ namespace: ns, pvcs: [] }));
 
-  const diff: DiffEntry[] = services.map(svc => ({
+  const diff: DiffEntry[] = services.map((svc) => ({
     namespace: svc.namespace,
     serviceName: serviceNameFromNamespace(svc.namespace),
     // Only worth showing when the instance was named something other than the app it
     // came from ("myfiles" running filebrowser) — otherwise it just repeats the title.
-    appId: svc.app_id && svc.app_id !== svc.instance_name ? svc.app_id : undefined,
+    appId:
+      svc.app_id && svc.app_id !== svc.instance_name ? svc.app_id : undefined,
     pvcs: svc.pvcs,
     mode: runningNamespaces.has(svc.namespace) ? "recovering" : "adding",
   }));
 
-  const addingCount     = diff.filter(e => e.mode === "adding"     && selected.has(e.namespace)).length;
-  const recoveringCount = diff.filter(e => e.mode === "recovering" && selected.has(e.namespace)).length;
+  const addingCount = diff.filter(
+    (e) => e.mode === "adding" && selected.has(e.namespace),
+  ).length;
+  const recoveringCount = diff.filter(
+    (e) => e.mode === "recovering" && selected.has(e.namespace),
+  ).length;
 
   function toggle(ns: string) {
-    setSelected(prev => {
+    setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(ns)) { next.delete(ns); } else { next.add(ns); }
+      if (next.has(ns)) {
+        next.delete(ns);
+      } else {
+        next.add(ns);
+      }
       return next;
     });
   }
@@ -397,7 +497,10 @@ function RestoreFlow({
       const res = await fetch("/api/backups/dr/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ snapshot_id: snapshot.id, namespaces: [...selected] }),
+        body: JSON.stringify({
+          snapshot_id: snapshot.id,
+          namespaces: [...selected],
+        }),
       });
       if (!res.ok) throw new Error(await res.text());
       onStarted();
@@ -408,38 +511,54 @@ function RestoreFlow({
   }
 
   return (
-    <div className="border border-[#3f3f46] rounded-lg p-4 space-y-4 bg-[#0f0f11]">
+    <div className="border border-border-strong rounded-lg p-4 space-y-4 bg-surface">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-[#fafafa]">
+        <p className="text-sm font-semibold text-fg">
           Restore from {formatDate(snapshot.time)}
         </p>
-        <button onClick={onCancel} className="text-xs text-[#52525b] hover:text-[#a1a1aa]">✕ Cancel</button>
+        <button
+          onClick={onCancel}
+          className="text-xs text-fg-subtle hover:text-fg-muted"
+        >
+          ✕ Cancel
+        </button>
       </div>
 
       <div className="space-y-2">
-        {diff.map(entry => (
-          <label key={entry.namespace} className="flex items-start gap-3 cursor-pointer">
+        {diff.map((entry) => (
+          <label
+            key={entry.namespace}
+            className="flex items-start gap-3 cursor-pointer"
+          >
             <input
               type="checkbox"
               checked={selected.has(entry.namespace)}
               onChange={() => toggle(entry.namespace)}
-              className="mt-0.5 h-4 w-4 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa]"
+              className="mt-0.5 h-4 w-4 rounded border-border-strong bg-surface-2 accent-primary"
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-[#fafafa] font-medium">{entry.serviceName}</span>
+                <span className="text-sm text-fg font-medium">
+                  {entry.serviceName}
+                </span>
                 {entry.appId && (
-                  <span className="text-xs text-[#52525b]">{entry.appId}</span>
+                  <span className="text-xs text-fg-subtle">{entry.appId}</span>
                 )}
                 {entry.mode === "adding" ? (
-                  <span className="text-xs text-[#4ade80] font-medium">Adding</span>
+                  <span className="text-xs text-success font-medium">
+                    Adding
+                  </span>
                 ) : (
-                  <span className="text-xs text-[#fbbf24] font-medium">Recovering</span>
+                  <span className="text-xs text-warning font-medium">
+                    Recovering
+                  </span>
                 )}
               </div>
               {entry.pvcs.length > 0 && (
-                <p className="text-xs text-[#52525b] mt-0.5">
-                  {entry.pvcs.map(p => `${p.name} (${p.capacity})`).join(" · ")}
+                <p className="text-xs text-fg-subtle mt-0.5">
+                  {entry.pvcs
+                    .map((p) => `${p.name} (${p.capacity})`)
+                    .join(" · ")}
                 </p>
               )}
             </div>
@@ -448,33 +567,50 @@ function RestoreFlow({
       </div>
 
       {selected.size > 0 && (
-        <div className="rounded border border-[#7f1d1d] bg-[#1c0a0a] px-3 py-2 text-xs text-[#fca5a5] space-y-0.5">
+        <div className="rounded border border-danger-soft bg-danger-soft px-3 py-2 text-xs text-danger space-y-0.5">
           <p className="font-medium flex items-center gap-1.5">
             <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
             This cannot be undone — current data will be replaced.
           </p>
-          {addingCount > 0 && <p>· {addingCount} service{addingCount !== 1 ? "s" : ""} will be created from backup.</p>}
-          {recoveringCount > 0 && <p>· {recoveringCount} running service{recoveringCount !== 1 ? "s" : ""} will be stopped and restored.</p>}
+          {addingCount > 0 && (
+            <p>
+              · {addingCount} service{addingCount !== 1 ? "s" : ""} will be
+              created from backup.
+            </p>
+          )}
+          {recoveringCount > 0 && (
+            <p>
+              · {recoveringCount} running service
+              {recoveringCount !== 1 ? "s" : ""} will be stopped and restored.
+            </p>
+          )}
         </div>
       )}
 
-      {error && <p className="text-xs text-[#f87171]">{error}</p>}
+      {error && <p className="text-xs text-danger">{error}</p>}
 
       <div className="flex justify-end gap-2">
         <Button
           variant="outline"
           onClick={onCancel}
           disabled={starting}
-          className="h-8 px-3 text-xs border-[#3f3f46] text-[#71717a] hover:text-[#fafafa]"
+          className="h-8 px-3 text-xs border-border-strong text-fg-muted hover:text-fg"
         >
           Cancel
         </Button>
         <Button
           onClick={handleAccept}
           disabled={selected.size === 0 || starting}
-          className="h-8 px-4 text-xs bg-[#dc2626] hover:bg-[#b91c1c] text-white border-0 font-medium disabled:opacity-40"
+          className="h-8 px-4 text-xs bg-danger hover:bg-danger text-white border-0 font-medium disabled:opacity-40"
         >
-          {starting ? <><RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />Starting…</> : `Accept & Restore (${selected.size})`}
+          {starting ? (
+            <>
+              <RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />
+              Starting…
+            </>
+          ) : (
+            `Accept & Restore (${selected.size})`
+          )}
         </Button>
       </div>
     </div>
@@ -515,7 +651,9 @@ function SnapshotCard({
     setLoading(true);
     setError(null);
     try {
-      const data = await fetch(`/api/backups/snapshots/${snapshot.id}/catalog`).then(r => r.json()) as SnapshotCatalog;
+      const data = (await fetch(
+        `/api/backups/snapshots/${snapshot.id}/catalog`,
+      ).then((r) => r.json())) as SnapshotCatalog;
       setCatalog(data);
       return data;
     } catch (e) {
@@ -527,7 +665,10 @@ function SnapshotCard({
   }
 
   async function expand() {
-    if (catalog) { setExpanded(e => !e); return; }
+    if (catalog) {
+      setExpanded((e) => !e);
+      return;
+    }
     setExpanded(true);
     await ensureCatalogLoaded();
   }
@@ -546,10 +687,12 @@ function SnapshotCard({
     onRestoreEnd();
   }
 
-  const serviceCount = catalog ? (catalog.services?.length ?? catalog.namespaces.length) : null;
+  const serviceCount = catalog
+    ? (catalog.services?.length ?? catalog.namespaces.length)
+    : null;
 
   return (
-    <Card className="border-[#27272a]">
+    <Card className="border-border">
       <CardContent className="pt-4 pb-4">
         {/* Header row */}
         <div className="flex items-center gap-3">
@@ -557,14 +700,20 @@ function SnapshotCard({
             onClick={expand}
             className="flex items-center gap-2 flex-1 min-w-0 text-left"
           >
-            {expanded
-              ? <ChevronDown className="h-4 w-4 text-[#52525b] flex-shrink-0" />
-              : <ChevronRight className="h-4 w-4 text-[#52525b] flex-shrink-0" />}
+            {expanded ? (
+              <ChevronDown className="h-4 w-4 text-fg-subtle flex-shrink-0" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-fg-subtle flex-shrink-0" />
+            )}
             <div className="flex-1 min-w-0">
-              <span className="text-sm font-medium text-[#fafafa]">{formatDate(snapshot.time)}</span>
-              <span className="ml-2 text-xs text-[#52525b]">{timeAgo(snapshot.time)}</span>
+              <span className="text-sm font-medium text-fg">
+                {formatDate(snapshot.time)}
+              </span>
+              <span className="ml-2 text-xs text-fg-subtle">
+                {timeAgo(snapshot.time)}
+              </span>
               {serviceCount !== null && (
-                <span className="ml-2 text-xs text-[#71717a]">
+                <span className="ml-2 text-xs text-fg-muted">
                   · {serviceCount} service{serviceCount !== 1 ? "s" : ""}
                 </span>
               )}
@@ -575,9 +724,13 @@ function SnapshotCard({
               onClick={handleRestoreClick}
               disabled={loading || disabled}
               variant="outline"
-              className="flex-shrink-0 h-7 px-3 text-xs border-[#3f3f46] text-[#a78bfa] hover:border-[#a78bfa] hover:text-[#a78bfa] disabled:opacity-30"
+              className="flex-shrink-0 h-7 px-3 text-xs border-border-strong text-primary hover:border-primary hover:text-primary disabled:opacity-30"
             >
-              {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Restore from here"}
+              {loading ? (
+                <RefreshCw className="h-3 w-3 animate-spin" />
+              ) : (
+                "Restore from here"
+              )}
             </Button>
           )}
         </div>
@@ -586,27 +739,32 @@ function SnapshotCard({
         {expanded && (
           <div className="mt-3 pl-6 space-y-3">
             {loading && <Shimmer className="h-12 w-full" />}
-            {error && <p className="text-xs text-[#f87171]">{error}</p>}
+            {error && <p className="text-xs text-danger">{error}</p>}
 
             {catalog && !restoring && (
               <div className="space-y-2">
-                {(catalog.services ?? catalog.namespaces.map(ns => ({ namespace: ns, pvcs: [] }))).map(svc => (
+                {(
+                  catalog.services ??
+                  catalog.namespaces.map((ns) => ({ namespace: ns, pvcs: [] }))
+                ).map((svc) => (
                   <div key={svc.namespace} className="flex items-start gap-3">
-                    <Database className="h-3.5 w-3.5 text-[#52525b] mt-0.5 flex-shrink-0" />
+                    <Database className="h-3.5 w-3.5 text-fg-subtle mt-0.5 flex-shrink-0" />
                     <div>
-                      <span className="text-sm text-[#a1a1aa]">
+                      <span className="text-sm text-fg-muted">
                         {serviceNameFromNamespace(svc.namespace)}
                       </span>
                       {svc.pvcs.length > 0 && (
-                        <span className="ml-2 text-xs text-[#52525b]">
-                          {svc.pvcs.map(p => `${p.name} ${p.capacity}`).join(" · ")}
+                        <span className="ml-2 text-xs text-fg-subtle">
+                          {svc.pvcs
+                            .map((p) => `${p.name} ${p.capacity}`)
+                            .join(" · ")}
                         </span>
                       )}
                       <span className="ml-2 text-xs">
                         {runningNamespaces.has(svc.namespace) ? (
-                          <span className="text-[#fbbf24]">Recovering</span>
+                          <span className="text-warning">Recovering</span>
                         ) : (
-                          <span className="text-[#4ade80]">Adding</span>
+                          <span className="text-success">Adding</span>
                         )}
                       </span>
                     </div>
@@ -653,9 +811,11 @@ function SnapshotExplorer({
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/backups/snapshots").then(r => r.json()) as { snapshots: ResticSnapshot[] };
+      const res = (await fetch("/api/backups/snapshots").then((r) =>
+        r.json(),
+      )) as { snapshots: ResticSnapshot[] };
       const sorted = (res.snapshots ?? []).sort(
-        (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()
+        (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
       );
       setSnapshots(sorted);
     } catch {
@@ -663,7 +823,9 @@ function SnapshotExplorer({
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // The backup runs in the background on the server (it outlives the HTTP request).
   // When the global backup-in-progress flag flips from true → false, the new
@@ -681,7 +843,9 @@ function SnapshotExplorer({
     setBackingUp(true);
     setBackupError(null);
     try {
-      const res = await fetch("/api/backups/cluster/run-now", { method: "POST" });
+      const res = await fetch("/api/backups/cluster/run-now", {
+        method: "POST",
+      });
       if (!res.ok) throw new Error(await res.text());
       // Backup now runs detached on the server and survives this request ending.
       // Progress is tracked by the global backup-state poll (the "Backup in progress"
@@ -698,41 +862,60 @@ function SnapshotExplorer({
       {/* Header + Backup Now */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-[#fafafa]">Backup Snapshots</p>
-          <p className="text-xs text-[#52525b] mt-0.5">
-            Each snapshot is a full picture of the cluster at that moment — K8s state + PVC data.
+          <p className="text-sm font-semibold text-fg">Backup Snapshots</p>
+          <p className="text-xs text-fg-subtle mt-0.5">
+            Each snapshot is a full picture of the cluster at that moment — K8s
+            state + PVC data.
           </p>
         </div>
         <Button
           onClick={handleBackupNow}
           disabled={backingUp || disabled}
           variant="outline"
-          className="flex-shrink-0 h-8 px-3 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa] disabled:opacity-40"
+          className="flex-shrink-0 h-8 px-3 text-xs border-border-strong text-fg-muted hover:text-fg disabled:opacity-40"
         >
-          {backingUp || backupInProgress
-            ? <><RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />Backing up…</>
-            : <><RotateCcw className="h-3 w-3 mr-1.5" />Backup Now</>}
+          {backingUp || backupInProgress ? (
+            <>
+              <RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />
+              Backing up…
+            </>
+          ) : (
+            <>
+              <RotateCcw className="h-3 w-3 mr-1.5" />
+              Backup Now
+            </>
+          )}
         </Button>
       </div>
 
-      {backupError && <p className="text-xs text-[#f87171]">{backupError}</p>}
+      {backupError && <p className="text-xs text-danger">{backupError}</p>}
 
       {/* Snapshot list */}
       {snapshots === null ? (
         <div className="space-y-2">
-          <Card><CardContent className="pt-4 pb-4"><Shimmer className="h-8 w-full" /></CardContent></Card>
-          <Card><CardContent className="pt-4 pb-4"><Shimmer className="h-8 w-full" /></CardContent></Card>
+          <Card>
+            <CardContent className="pt-4 pb-4">
+              <Shimmer className="h-8 w-full" />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4 pb-4">
+              <Shimmer className="h-8 w-full" />
+            </CardContent>
+          </Card>
         </div>
       ) : snapshots.length === 0 ? (
-        <Card className="border-[#27272a]">
+        <Card className="border-border">
           <CardContent className="pt-5 pb-5">
-            <p className="text-sm text-[#52525b]">
-              No snapshots yet. Click <span className="text-[#a1a1aa]">Backup Now</span> to create the first one.
+            <p className="text-sm text-fg-subtle">
+              No snapshots yet. Click{" "}
+              <span className="text-fg-muted">Backup Now</span> to create the
+              first one.
             </p>
           </CardContent>
         </Card>
       ) : (
-        snapshots.map(snap => (
+        snapshots.map((snap) => (
           <SnapshotCard
             key={snap.id}
             snapshot={snap}
@@ -740,7 +923,10 @@ function SnapshotExplorer({
             isRestoring={activeRestore !== null && activeRestore !== snap.id}
             disabled={disabled}
             onRestoreStart={() => setActiveRestore(snap.id)}
-            onRestoreEnd={() => { setActiveRestore(null); void load(); }}
+            onRestoreEnd={() => {
+              setActiveRestore(null);
+              void load();
+            }}
             onRestoreStarted={onRestoreStarted}
           />
         ))
@@ -777,36 +963,45 @@ function RecoveryKeyOverlay({
       await navigator.clipboard.writeText(recoveryKey);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard unavailable — user can still select-and-copy */ }
+    } catch {
+      /* clipboard unavailable — user can still select-and-copy */
+    }
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#09090b]/95 backdrop-blur-sm flex items-center justify-center p-6">
-      <div className="max-w-lg w-full border border-[#3f3f46] rounded-lg bg-[#0f0f11] p-6 space-y-4">
+    <div className="fixed inset-0 z-50 bg-bg/95 backdrop-blur-sm flex items-center justify-center p-6">
+      <div className="max-w-lg w-full border border-border-strong rounded-lg bg-surface p-6 space-y-4">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0 bg-[#2d2a1a]">
-            <KeyRound className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.75} />
+          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0 bg-warning-soft">
+            <KeyRound className="h-4 w-4 text-warning" strokeWidth={1.75} />
           </div>
           <div>
-            <p className="text-sm font-semibold text-[#fafafa]">Your backup recovery key</p>
-            <p className="text-xs text-[#a1a1aa] mt-1">
-              This is the only way to decrypt your backups if this machine is lost or destroyed.
-              YoLab does not store a copy anywhere else. Save it now in a password manager or
-              print it — without it, your backups on Backblaze B2 are permanently unreadable.
+            <p className="text-sm font-semibold text-fg">
+              Your backup recovery key
+            </p>
+            <p className="text-xs text-fg-muted mt-1">
+              This is the only way to decrypt your backups if this machine is
+              lost or destroyed. YoLab does not store a copy anywhere else. Save
+              it now in a password manager or print it — without it, your
+              backups on Backblaze B2 are permanently unreadable.
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <code className="flex-1 text-sm font-mono text-[#fafafa] bg-[#18181b] border border-[#3f3f46] rounded px-3 py-2 break-all select-all">
+          <code className="flex-1 text-sm font-mono text-fg bg-surface-2 border border-border-strong rounded px-3 py-2 break-all select-all">
             {recoveryKey}
           </code>
           <Button
             onClick={handleCopy}
             variant="outline"
-            className="flex-shrink-0 h-9 px-3 text-xs border-[#3f3f46] text-[#a1a1aa] hover:text-[#fafafa]"
+            className="flex-shrink-0 h-9 px-3 text-xs border-border-strong text-fg-muted hover:text-fg"
           >
-            {copied ? <CheckCircle className="h-3.5 w-3.5 text-[#4ade80]" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? (
+              <CheckCircle className="h-3.5 w-3.5 text-success" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
           </Button>
         </div>
 
@@ -815,10 +1010,10 @@ function RecoveryKeyOverlay({
             <input
               type="checkbox"
               checked={acknowledged}
-              onChange={() => setAcknowledged(a => !a)}
-              className="mt-0.5 h-4 w-4 rounded border-[#3f3f46] bg-[#18181b] accent-[#a78bfa]"
+              onChange={() => setAcknowledged((a) => !a)}
+              className="mt-0.5 h-4 w-4 rounded border-border-strong bg-surface-2 accent-primary"
             />
-            <span className="text-xs text-[#a1a1aa]">
+            <span className="text-xs text-fg-muted">
               I've saved this recovery key somewhere safe and durable.
             </span>
           </label>
@@ -828,7 +1023,7 @@ function RecoveryKeyOverlay({
           <Button
             onClick={onClose}
             disabled={mandatory && !acknowledged}
-            className="h-8 px-4 text-xs bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium disabled:opacity-40"
+            className="h-8 px-4 text-xs bg-primary hover:bg-primary text-bg font-medium disabled:opacity-40"
           >
             {mandatory ? "I've saved it — continue" : "Close"}
           </Button>
@@ -840,44 +1035,61 @@ function RecoveryKeyOverlay({
 
 // ── Enable card ───────────────────────────────────────────────────────────────
 
-function EnableCard({ onEnable, disabled }: { onEnable: () => Promise<void>; disabled: boolean }) {
+function EnableCard({
+  onEnable,
+  disabled,
+}: {
+  onEnable: () => Promise<void>;
+  disabled: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handle() {
     setBusy(true);
     setError(null);
-    try { await onEnable(); }
-    catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
-    finally { setBusy(false); }
+    try {
+      await onEnable();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <Card>
       <CardContent className="pt-5 pb-5">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0 bg-[#2d2a1a]">
-            <Database className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.75} />
+          <div className="mt-0.5 rounded-md p-1.5 flex-shrink-0 bg-warning-soft">
+            <Database className="h-4 w-4 text-warning" strokeWidth={1.75} />
           </div>
           <div className="flex-1">
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <div>
-                <p className="text-sm font-medium text-[#fafafa]">Backups not configured</p>
-                <p className="text-xs text-[#71717a] mt-0.5">
+                <p className="text-sm font-medium text-fg">
+                  Backups not configured
+                </p>
+                <p className="text-xs text-fg-muted mt-0.5">
                   Enable to start daily encrypted backups to Backblaze B2
                 </p>
               </div>
               <Button
                 onClick={handle}
                 disabled={busy || disabled}
-                className="bg-[#a78bfa] hover:bg-[#9061f9] text-[#09090b] font-medium text-sm h-8 px-3 disabled:opacity-40"
+                className="bg-primary hover:bg-primary text-bg font-medium text-sm h-8 px-3 disabled:opacity-40"
               >
-                {busy
-                  ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enabling…</>
-                  : "Enable Backups"}
+                {busy ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    Enabling…
+                  </>
+                ) : (
+                  "Enable Backups"
+                )}
               </Button>
             </div>
-            {error && <p className="mt-2 text-xs text-[#f87171]">{error}</p>}
+            {error && <p className="mt-2 text-xs text-danger">{error}</p>}
           </div>
         </div>
       </CardContent>
@@ -888,13 +1100,19 @@ function EnableCard({ onEnable, disabled }: { onEnable: () => Promise<void>; dis
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function BackupsPage() {
-  const [s3Status, setS3Status]         = useState<{ provisioned: boolean } | null>(null);
+  const [s3Status, setS3Status] = useState<{ provisioned: boolean } | null>(
+    null,
+  );
   const [runningNamespaces, setRunning] = useState<Set<string>>(new Set());
-  const [loading, setLoading]           = useState(true);
-  const [opState, setOpState]           = useState<OperationState>({
-    backing_up: false, restoring: false, backup_run: null, restore_run: null, last_backup: null,
+  const [loading, setLoading] = useState(true);
+  const [opState, setOpState] = useState<OperationState>({
+    backing_up: false,
+    restoring: false,
+    backup_run: null,
+    restore_run: null,
+    last_backup: null,
   });
-  const [recoveryKey, setRecoveryKey]   = useState<string | null>(null);
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
   // Separate from opState.restoring: that flips false the instant the RestoreRun reaches
   // a terminal phase, which would unmount the takeover before its Succeeded/Partial/Failed
@@ -904,36 +1122,50 @@ export function BackupsPage() {
 
   async function showRecoveryKey(mandatory: boolean) {
     try {
-      const data = await fetch("/api/backups/recovery-key").then(r => r.json()) as RecoveryKeyResponse;
+      const data = (await fetch("/api/backups/recovery-key").then((r) =>
+        r.json(),
+      )) as RecoveryKeyResponse;
       if (data.configured && data.recovery_key) {
         setRecoveryKey(data.recovery_key);
         setRecoveryMandatory(mandatory);
       }
-    } catch { /* network blip — user can retry via "View recovery key" */ }
+    } catch {
+      /* network blip — user can retry via "View recovery key" */
+    }
   }
 
   const load = useCallback(async () => {
     const [s3Res, statusRes] = await Promise.all([
-      fetch("/api/backups/s3").then(r => r.json()).catch(() => ({ provisioned: false })),
-      fetch("/api/backups/status").then(r => r.json()).catch(() => null),
+      fetch("/api/backups/s3")
+        .then((r) => r.json())
+        .catch(() => ({ provisioned: false })),
+      fetch("/api/backups/status")
+        .then((r) => r.json())
+        .catch(() => null),
     ]);
     setS3Status(s3Res as { provisioned: boolean });
 
-    const status = statusRes as { pvcs?: { namespace: string; pvc_phase?: string }[] } | null;
+    const status = statusRes as {
+      pvcs?: { namespace: string; pvc_phase?: string }[];
+    } | null;
     if (status?.pvcs) {
-      setRunning(new Set(status.pvcs.map(p => p.namespace)));
+      setRunning(new Set(status.pvcs.map((p) => p.namespace)));
     }
     setLoading(false);
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // Single source of truth for "is a backup or restore currently running" — read from the
   // backend on a timer, never tracked locally, so a page refresh or a second tab can't
   // desync from what's actually happening.
   const pollOpState = useCallback(async () => {
     try {
-      const s = await fetch("/api/backups/state").then(r => r.json()) as OperationState;
+      const s = (await fetch("/api/backups/state").then((r) =>
+        r.json(),
+      )) as OperationState;
       setOpState(s);
       return s;
     } catch {
@@ -943,9 +1175,14 @@ export function BackupsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const id = window.setInterval(() => { if (!cancelled) void pollOpState(); }, 5000);
+    const id = window.setInterval(() => {
+      if (!cancelled) void pollOpState();
+    }, 5000);
     void pollOpState();
-    return () => { cancelled = true; clearInterval(id); };
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [pollOpState]);
 
   // Latch onto the takeover as soon as a restore is observed running — whether it just
@@ -958,7 +1195,8 @@ export function BackupsPage() {
 
   async function handleEnable() {
     const res = await fetch("/api/backups/s3/enable", { method: "POST" });
-    if (!res.ok) throw new Error(await res.text() || `Server error ${res.status}`);
+    if (!res.ok)
+      throw new Error((await res.text()) || `Server error ${res.status}`);
     await load();
     // First and most important viewing — the key was just generated, and this
     // is the only moment the user is guaranteed to still be in the setup flow.
@@ -991,15 +1229,16 @@ export function BackupsPage() {
 
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-[#fafafa]">Backups</h1>
-          <p className="text-sm text-[#71717a] mt-0.5">
-            Each backup is a full snapshot of the cluster — K8s state, service configs, and all PVC data — encrypted and stored in Backblaze B2.
+          <h1 className="text-xl font-semibold text-fg">Backups</h1>
+          <p className="text-sm text-fg-muted mt-0.5">
+            Each backup is a full snapshot of the cluster — K8s state, service
+            configs, and all PVC data — encrypted and stored in Backblaze B2.
           </p>
         </div>
         {s3Status?.provisioned && (
           <button
             onClick={() => void showRecoveryKey(false)}
-            className="flex-shrink-0 flex items-center gap-1.5 text-xs text-[#71717a] hover:text-[#fafafa]"
+            className="flex-shrink-0 flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg"
           >
             <KeyRound className="h-3.5 w-3.5" />
             View recovery key
@@ -1008,45 +1247,64 @@ export function BackupsPage() {
       </div>
 
       {opState.backing_up && (
-        <div className="rounded-lg border border-[#78350f] bg-[#1a1000] px-4 py-3 flex items-center gap-2">
-          <RefreshCw className="h-4 w-4 text-[#fbbf24] animate-spin flex-shrink-0" />
-          <p className="text-sm text-[#fbbf24] font-medium">
+        <div className="rounded-lg border border-warning-soft bg-warning-soft px-4 py-3 flex items-center gap-2">
+          <RefreshCw className="h-4 w-4 text-warning animate-spin flex-shrink-0" />
+          <p className="text-sm text-warning font-medium">
             Backup in progress
-            {opState.backup_run ? ` (${opState.backup_run.phase})` : ""}
-            {" "}— other backup actions are disabled until it finishes.
+            {opState.backup_run ? ` (${opState.backup_run.phase})` : ""} — other
+            backup actions are disabled until it finishes.
           </p>
         </div>
       )}
 
-      {!opBusy && opState.last_backup && opState.last_backup.phase !== "Succeeded" && (
-        <div className="rounded-lg border border-[#7f1d1d] bg-[#1a0000] px-4 py-3 flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 text-[#f87171] flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-[#f87171]">
-            {opState.last_backup.phase === "Failed" ? (
-              <p className="font-medium">
-                The last backup failed{opState.last_backup.error ? `: ${opState.last_backup.error}` : "."} Your previous
-                backups are still safe — try running a new backup.
-              </p>
-            ) : (
-              <>
+      {!opBusy &&
+        opState.last_backup &&
+        opState.last_backup.phase !== "Succeeded" && (
+          <div className="rounded-lg border border-danger-soft bg-danger-soft px-4 py-3 flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 text-danger flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-danger">
+              {opState.last_backup.phase === "Failed" ? (
                 <p className="font-medium">
-                  The last backup completed, but some volumes could not be backed up in time and kept their previous
-                  snapshot:
+                  The last backup failed
+                  {opState.last_backup.error
+                    ? `: ${opState.last_backup.error}`
+                    : "."}{" "}
+                  Your previous backups are still safe — try running a new
+                  backup.
                 </p>
-                <ul className="mt-1 list-disc list-inside text-[#fca5a5]">
-                  {(opState.last_backup.stalePvcs ?? []).map((p) => <li key={p}>{p}</li>)}
-                </ul>
-                <p className="mt-1 text-[#fca5a5]">Run another backup once the cluster is idle to capture their latest data.</p>
-              </>
-            )}
+              ) : (
+                <>
+                  <p className="font-medium">
+                    The last backup completed, but some volumes could not be
+                    backed up in time and kept their previous snapshot:
+                  </p>
+                  <ul className="mt-1 list-disc list-inside text-danger">
+                    {(opState.last_backup.stalePvcs ?? []).map((p) => (
+                      <li key={p}>{p}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-1 text-danger">
+                    Run another backup once the cluster is idle to capture their
+                    latest data.
+                  </p>
+                </>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {loading ? (
         <div className="space-y-3">
-          <Card><CardContent className="pt-5 pb-5"><Shimmer className="h-14 w-full" /></CardContent></Card>
-          <Card><CardContent className="pt-5 pb-5"><Shimmer className="h-14 w-full" /></CardContent></Card>
+          <Card>
+            <CardContent className="pt-5 pb-5">
+              <Shimmer className="h-14 w-full" />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-5 pb-5">
+              <Shimmer className="h-14 w-full" />
+            </CardContent>
+          </Card>
         </div>
       ) : !s3Status?.provisioned ? (
         <EnableCard onEnable={handleEnable} disabled={opBusy} />

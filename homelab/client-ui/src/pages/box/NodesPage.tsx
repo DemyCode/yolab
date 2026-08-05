@@ -51,17 +51,16 @@ export function NodesPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-xl font-semibold text-[#fafafa]">Machines</h1>
-        <p className="text-sm text-[#71717a] mt-0.5">
-          Machines in your cluster
-        </p>
+        <h1 className="text-xl font-semibold text-fg">Machines</h1>
+        <p className="text-sm text-fg-muted mt-0.5">Machines in your cluster</p>
       </div>
 
       {stale && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/5 px-4 py-3">
-          <AlertTriangle className="h-4 w-4 text-[#fbbf24] mt-0.5 flex-shrink-0" />
-          <p className="text-sm text-[#fbbf24]">
-            Cluster API unreachable — the control plane is restarting. Showing last known state; everything will recover automatically.
+        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-warning mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-warning">
+            Cluster API unreachable — the control plane is restarting. Showing
+            last known state; everything will recover automatically.
           </p>
         </div>
       )}
@@ -79,53 +78,57 @@ export function NodesPage() {
         </CardHeader>
         <CardContent>
           {nodes === null ? (
-            <p className="text-sm text-[#71717a]">Loading…</p>
+            <p className="text-sm text-fg-muted">Loading…</p>
           ) : nodes.length === 0 ? (
-            <p className="text-sm text-[#71717a]">No machines found.</p>
+            <p className="text-sm text-fg-muted">No machines found.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-[#27272a]">
-                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-[#71717a]">
+                  <tr className="border-b border-border">
+                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
                       Name
                     </th>
-                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-[#71717a]">
+                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
                       Status
                     </th>
-                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-[#71717a]">
+                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
                       Joined
                     </th>
-                    <th className="py-2.5 text-left text-xs font-medium text-[#71717a]">
+                    <th className="py-2.5 text-left text-xs font-medium text-fg-muted">
                       Link
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#27272a]/50">
+                <tbody className="divide-y divide-border/50">
                   {nodes.map((n) => {
                     const url = urlFor(n.name);
                     return (
                       <tr
                         key={n.name}
-                        className="group hover:bg-[#27272a]/20 transition-colors"
+                        className="group hover:bg-border/20 transition-colors"
                       >
-                        <td className="py-3 pr-4 font-medium text-[#fafafa] whitespace-nowrap">
+                        <td className="py-3 pr-4 font-medium text-fg whitespace-nowrap">
                           {n.name}
                         </td>
                         <td className="py-3 pr-4">
                           {stale ? (
                             <Badge variant="warning">Offline</Badge>
                           ) : (
-                            <Badge variant={n.ready ? "success" : "destructive"}>
+                            <Badge variant={n.ready ? "success" : "danger"}>
                               {n.ready ? "Ready" : "Not Ready"}
                             </Badge>
                           )}
                         </td>
-                        <td className="py-3 pr-4 text-xs text-[#71717a] whitespace-nowrap">
+                        <td className="py-3 pr-4 text-xs text-fg-muted whitespace-nowrap">
                           {n.joined_at
                             ? new Date(n.joined_at).toLocaleDateString(
                                 undefined,
-                                { month: "short", day: "numeric", year: "numeric" },
+                                {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                },
                               )
                             : "—"}
                         </td>
@@ -135,13 +138,15 @@ export function NodesPage() {
                               href={url}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-1.5 text-sm text-[#a78bfa] hover:text-[#c4b5fd] transition-colors"
+                              className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary transition-colors"
                             >
                               {url.replace(/^https?:\/\//, "")}
                               <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
                             </a>
                           ) : (
-                            <span className="text-xs text-[#3f3f46]">—</span>
+                            <span className="text-xs text-border-strong">
+                              —
+                            </span>
                           )}
                         </td>
                       </tr>
