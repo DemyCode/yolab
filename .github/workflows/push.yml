@@ -28,52 +28,31 @@ jobs:
 
   # ── Tests ───────────────────────────────────────────────────────────────────
   #
-  # Nothing here needs credentials, a cluster, or a network, so this is the one
-  # job that can gate the rest. `charts` depends on it: a red tree must not
-  # publish.
+  # Deliberately thin. Every check is a derivation in checks.nix, and this job
+  # runs the same `nix run .#ci` a developer runs — same rust toolchain, same
+  # helm, same shell, all pinned by flake.lock. There is nothing to keep in sync
+  # between this file and a laptop, because there is nothing here to get out of
+  # sync: adding a check means editing checks.nix, not this workflow.
+  #
+  # `charts` depends on this job: a red tree must not publish.
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # rust-toolchain.toml pins the channel; rustup on the runner honours it.
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
         with:
-          workspaces: |
-            homelab/local-api
-            installer/nixos/backend-rs
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
 
-      - name: local-api tests
-        run: cargo test --manifest-path homelab/local-api/Cargo.toml -- --nocapture
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
 
-      # First-boot provisioning: partitioning, tunnel registration, and the
-      # config.toml every later rebuild reads. Never runs anywhere but a stranger's
-      # bare metal, so this is the only place it gets exercised at all.
-      - name: installer tests
-        run: cargo test --manifest-path installer/nixos/backend-rs/Cargo.toml
-
-      # Runs on every app install and every app restart. Its job is deciding
-      # whether a cached tunnel is still good — including telling "the platform
-      # says this is gone" apart from "the platform did not answer", which is what
-      # keeps every app in the cluster online through a platform outage.
-      - name: wg-register tests
-        run: sh apps/wg-register/setup_test.sh
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.16.3
-
-      - name: Install PyYAML
-        run: pip install --quiet pyyaml
-
-      # Renders every chart against the yolab-common in this tree and asserts the
-      # result describes a workload that can run. `helm lint` accepts charts that
-      # cannot — three shipped that way before this existed.
-      - name: Chart structure checks
-        run: python3 apps/catalog/check_charts.py
+      # Not `nix flake check`: that also evaluates nixosConfigurations, which
+      # needs the untracked homelab/ignored/config.toml. build-iso covers those.
+      - name: Run all checks
+        run: nix run .#ci --print-build-logs
 
   build-images:
     runs-on: ubuntu-latest

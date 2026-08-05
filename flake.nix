@@ -23,6 +23,7 @@
     ...
   } @ inputs: let
     pkgs = nixpkgs.legacyPackages.x86_64-linux;
+    inherit (nixpkgs) lib;
 
     mkDarwinSystem = system:
       nix-darwin.lib.darwinSystem {
@@ -64,13 +65,47 @@
       "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
     };
 
+    # Every check lives in checks.nix as a derivation, so the same command runs
+    # them on a laptop and on a runner. `nix flake check` builds all of them.
+    checks.x86_64-linux = import ./checks.nix {inherit pkgs inputs;};
+
     packages.x86_64-linux = let
       builds = import ./homelab/builds.nix {inherit pkgs inputs;};
+      checks = self.checks.x86_64-linux;
     in {
       iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
       homelab-ui = builds.clientUi;
       homelab-api = builds.localApiEnv;
+
+      # `nix run .#ci` — the whole suite. Every check is a build input of this
+      # script, so nix has already built (i.e. run) all of them before the first
+      # line executes: a failing check fails `nix run` itself, with that check's
+      # own log. What this prints is therefore a summary of what passed, not a
+      # test runner. `nix flake check` is equivalent and is what CI calls.
+      ci = pkgs.writeShellApplication {
+        name = "yolab-ci";
+        text = ''
+          ${lib.concatMapStringsSep "\n" (name: ''
+            echo "✓ ${name}  (${checks.${name}})"
+          '') (builtins.attrNames checks)}
+          echo "all ${toString (builtins.length (builtins.attrNames checks))} checks passed"
+        '';
+      };
     };
+
+    # `nix run .#<check>` for a single one, and `nix run .` for everything.
+    apps.x86_64-linux =
+      {
+        default = {
+          type = "app";
+          program = lib.getExe self.packages.x86_64-linux.ci;
+        };
+      }
+      // lib.mapAttrs (_: drv: {
+        type = "app";
+        program = toString (pkgs.writeShellScript "check" "echo ${drv}");
+      })
+      self.checks.x86_64-linux;
 
     devShells.x86_64-linux.default = let
       pkgsWithOverlay = pkgs.extend inputs.rust-overlay.overlays.default;
@@ -98,7 +133,18 @@
           nodejs
           # Runner
           pre-commit
+          # Everything the checks need, so each can also be run by hand while
+          # iterating: `cargo test`, `sh apps/wg-register/setup_test.sh`,
+          # `python3 apps/catalog/check_charts.py`. `nix run .#ci` runs the lot
+          # the way CI does.
+          busybox
+          jq
+          (python3.withPackages (ps: [ps.pyyaml]))
         ];
+
+        shellHook = ''
+          echo "yolab devshell — 'nix run .#ci' runs every check exactly as CI does"
+        '';
       };
   };
 }
