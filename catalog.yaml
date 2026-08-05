@@ -15,6 +15,8 @@ charts:
     version: "0.1.0"
   - name: audiobookshelf
     version: "0.1.0"
+  - name: bookstack
+    version: "0.1.0"
   - name: calibre-web
     version: "0.1.0"
   - name: changedetection
@@ -25,11 +27,17 @@ charts:
     version: "0.1.0"
   - name: dawarich
     version: "0.1.0"
+  - name: docmost
+    version: "0.1.0"
   - name: excalidraw
     version: "0.1.0"
   - name: filebrowser
     version: "0.1.0"
+  - name: firefly-iii
+    version: "0.1.0"
   - name: freshrss
+    version: "0.1.0"
+  - name: ghost
     version: "0.1.0"
   - name: gitea
     version: "0.1.0"
@@ -45,9 +53,13 @@ charts:
     version: "0.1.0"
   - name: jellyseerr
     version: "0.1.0"
+  - name: karakeep
+    version: "0.1.0"
   - name: kavita
     version: "0.1.0"
   - name: librespeed
+    version: "0.1.0"
+  - name: linkwarden
     version: "0.1.0"
   - name: mealie
     version: "0.1.0"
@@ -63,17 +75,25 @@ charts:
     version: "0.1.0"
   - name: navidrome
     version: "0.1.0"
+  - name: nextcloud
+    version: "0.1.0"
   - name: ntfy
     version: "0.1.0"
   - name: open-webui
     version: "0.1.0"
+  - name: paperless-ngx
+    version: "0.1.0"
   - name: photoprism
+    version: "0.1.0"
+  - name: planka
     version: "0.1.0"
   - name: qbittorrent
     version: "0.1.0"
   - name: reactive-resume
     version: "0.1.0"
   - name: searxng
+    version: "0.1.0"
+  - name: shlink
     version: "0.1.0"
   - name: stirling-pdf
     version: "0.1.0"
@@ -90,4 +110,8 @@ charts:
   - name: valheim
     version: "0.1.0"
   - name: vaultwarden
+    version: "0.1.0"
+  - name: vikunja
+    version: "0.1.0"
+  - name: wallabag
     version: "0.1.0"
