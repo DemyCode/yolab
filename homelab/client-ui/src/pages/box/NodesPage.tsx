@@ -26,7 +26,10 @@ export function NodesPage() {
         // it's actually stale, rather than warning before we've even asked.
         setNodes(JSON.parse(cached) as NodeInfo[]);
       }
-    } catch {}
+    } catch {
+      // A corrupt or quota-blocked cache is not worth surfacing; the fetch
+      // below is the real source and runs either way.
+    }
 
     void fetchList<NodeInfo>("/api/nodes").then((res) => {
       if (res.ok) {

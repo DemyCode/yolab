@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { Home, Plus, Settings2, Moon, Sun, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,49 @@ const NAV = [
   { to: "/box", icon: Settings2, label: "Settings" },
 ];
 
+/**
+ * True while the person is scrolling down, so the mobile tab bar can get out
+ * of the way.
+ *
+ * A phone screen is mostly taken up by the thing you are reading, and a fixed
+ * bar costs ~15% of it permanently. Hiding on the way down and returning on
+ * the way up is the behaviour people already know from every mobile browser,
+ * so it needs no explanation.
+ *
+ * The threshold stops the bar flickering on small scroll jitter, and the top
+ * guard keeps it visible near the top of a page — including during iOS
+ * rubber-banding, where `scrollY` goes negative and every delta looks like a
+ * direction change.
+ */
+function useHideOnScroll(threshold = 10) {
+  const [hidden, setHidden] = useState(false);
+  const lastY = useRef(0);
+
+  useEffect(() => {
+    lastY.current = window.scrollY;
+    let queued = false;
+
+    const onScroll = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY;
+        const dy = y - lastY.current;
+        if (Math.abs(dy) > threshold) {
+          setHidden(dy > 0 && y > 72);
+          lastY.current = y;
+        }
+        queued = false;
+      });
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [threshold]);
+
+  return hidden;
+}
+
 function ThemeButton({ compact }: { compact?: boolean }) {
   const { resolved, setTheme } = useTheme();
   const next = resolved === "dark" ? "light" : "dark";
@@ -44,6 +88,8 @@ function ThemeButton({ compact }: { compact?: boolean }) {
 }
 
 export function AppShell({ onLogout }: { onLogout: () => void }) {
+  const navHidden = useHideOnScroll();
+
   async function signOut() {
     try {
       await api.post("/api/logout");
@@ -102,7 +148,12 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
       </main>
 
       {/* Mobile tab bar */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav
+        className={cn(
+          "fixed inset-x-0 bottom-0 z-40 flex border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur transition-transform duration-200 md:hidden",
+          navHidden && "translate-y-full",
+        )}
+      >
         {NAV.map(({ to, icon: Icon, label, end }) => (
           <NavLink
             key={to}
