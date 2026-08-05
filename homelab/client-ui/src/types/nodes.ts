@@ -10,4 +10,3 @@ export interface NodeLink {
   name: string;
   url: string;
 }
-

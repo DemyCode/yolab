@@ -85,25 +85,25 @@ export function TerminalPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold text-[#fafafa]">Terminal</h1>
-        <p className="text-sm text-[#71717a] mt-0.5">
+        <h1 className="text-xl font-semibold text-fg">Terminal</h1>
+        <p className="text-sm text-fg-muted mt-0.5">
           Execute commands on your homelab
         </p>
       </div>
 
       <div
         onClick={() => inputRef.current?.focus()}
-        className="rounded-xl border border-[#27272a] bg-[#09090b] p-4 min-h-[500px] cursor-text font-mono text-sm"
+        className="rounded-xl border border-border bg-bg p-4 min-h-[500px] cursor-text font-mono text-sm"
       >
         {lines.map((l, i) => (
           <div
             key={i}
             className={cn(
               "whitespace-pre-wrap break-all leading-6",
-              l.type === "input" && "text-[#86efac]",
-              l.type === "error" && "text-[#f87171]",
-              l.type === "exit" && "text-[#fbbf24]",
-              l.type === "output" && "text-[#e4e4e7]",
+              l.type === "input" && "text-success",
+              l.type === "error" && "text-danger",
+              l.type === "exit" && "text-warning",
+              l.type === "output" && "text-fg",
             )}
           >
             {l.text}
@@ -111,7 +111,7 @@ export function TerminalPage() {
         ))}
 
         <div className="flex items-center mt-1">
-          <span className="text-[#86efac] mr-2 select-none">$</span>
+          <span className="text-success mr-2 select-none">$</span>
           <input
             ref={inputRef}
             autoFocus
@@ -119,11 +119,11 @@ export function TerminalPage() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
             disabled={running}
-            className="flex-1 bg-transparent border-none outline-none text-[#e4e4e7] font-mono text-sm caret-[#86efac] placeholder-[#3f3f46]"
+            className="flex-1 bg-transparent border-none outline-none text-fg font-mono text-sm caret-success placeholder-border-strong"
             placeholder={running ? "" : "type a command…"}
           />
           {running && (
-            <span className="text-[#52525b] text-xs ml-2">running…</span>
+            <span className="text-fg-subtle text-xs ml-2">running…</span>
           )}
         </div>
         <div ref={bottomRef} />

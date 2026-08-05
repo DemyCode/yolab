@@ -1,57 +1,151 @@
-import { useEffect, useState } from "react";
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
-import { Layout } from "@/components/Layout";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AppShell } from "@/components/AppShell";
+import { Spinner } from "@/components/ui/feedback";
 import { LoginPage } from "@/pages/LoginPage";
-import { OverviewPage } from "@/pages/OverviewPage";
-import { NodesPage } from "@/pages/NodesPage";
-import { BackupsPage } from "@/pages/BackupsPage";
-import {
-  AppsPage,
-  AppInstallPage,
-  InstalledDetailPage,
-} from "@/pages/AppsPage";
-import { TerminalPage } from "@/pages/TerminalPage";
-import { StoragePage } from "@/pages/StoragePage";
+import { HomePage } from "@/pages/HomePage";
+import { DiscoverPage } from "@/pages/DiscoverPage";
+import { InstallPage } from "@/pages/InstallPage";
+import { BoxPage } from "@/pages/box/BoxPage";
+import { BoxSubPage } from "@/pages/box/BoxSubPage";
+import { api, setUnauthorizedHandler } from "@/lib/api";
 
-function AppRoutes({ onLogout }: { onLogout: () => void }) {
+// The operator pages are large, rarely opened, and not on the path to anything
+// someone does daily — so they are not in the bundle that has to load before
+// the home screen paints.
+const StoragePage = lazy(() =>
+  import("@/pages/box/StoragePage").then((m) => ({ default: m.StoragePage })),
+);
+const BackupsPage = lazy(() =>
+  import("@/pages/box/BackupsPage").then((m) => ({ default: m.BackupsPage })),
+);
+const NodesPage = lazy(() =>
+  import("@/pages/box/NodesPage").then((m) => ({ default: m.NodesPage })),
+);
+const SystemPage = lazy(() =>
+  import("@/pages/box/SystemPage").then((m) => ({ default: m.SystemPage })),
+);
+const TerminalPage = lazy(() =>
+  import("@/pages/box/TerminalPage").then((m) => ({ default: m.TerminalPage })),
+);
+
+function Loading() {
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to="/overview" replace />} />
-      <Route element={<Layout onLogout={onLogout} />}>
-        <Route path="/overview" element={<OverviewPage />} />
-        <Route path="/nodes" element={<NodesPage />} />
-        <Route path="/backups" element={<BackupsPage />} />
-        <Route path="/apps" element={<AppsPage />} />
-        <Route path="/apps/:appId" element={<AppInstallPage />} />
-        <Route
-          path="/installed/:instanceName"
-          element={<InstalledDetailPage />}
-        />
-        <Route path="/terminal" element={<TerminalPage />} />
-        <Route path="/storage" element={<StoragePage />} />
-      </Route>
-    </Routes>
+    <div className="flex justify-center py-24">
+      <Spinner />
+    </div>
   );
 }
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
 
+  const handleLogout = useCallback(() => setLoggedIn(false), []);
+
   useEffect(() => {
-    fetch("/api/status")
-      .then((r) => setLoggedIn(r.status !== 401))
-      .catch(() => setLoggedIn(true));
+    // Any 401 from anywhere returns to the sign-in screen, rather than each
+    // page inventing its own handling and some of them inventing none.
+    setUnauthorizedHandler(handleLogout);
+    return () => setUnauthorizedHandler(null);
+  }, [handleLogout]);
+
+  useEffect(() => {
+    api
+      .get("/api/status")
+      .then(() => setLoggedIn(true))
+      // A network failure is not proof of being signed out — on a box that is
+      // still booting, treating it as one would bounce the owner to a login
+      // screen their password will not yet work against.
+      .catch((e: unknown) => {
+        const unauthorized =
+          typeof e === "object" && e !== null && "status" in e
+            ? (e as { status: number }).status === 401
+            : false;
+        setLoggedIn(!unauthorized);
+      });
   }, []);
 
   if (loggedIn === null) return null;
-
-  if (!loggedIn) {
-    return <LoginPage onLogin={() => setLoggedIn(true)} />;
-  }
+  if (!loggedIn) return <LoginPage onLogin={() => setLoggedIn(true)} />;
 
   return (
-    <HashRouter>
-      <AppRoutes onLogout={() => setLoggedIn(false)} />
-    </HashRouter>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<AppShell onLogout={handleLogout} />}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/add" element={<DiscoverPage />} />
+          <Route path="/add/:appId" element={<InstallPage />} />
+          <Route path="/box" element={<BoxPage />} />
+          <Route
+            path="/box/storage"
+            element={
+              <BoxSubPage
+                title="Storage"
+                subtitle="The disks your apps keep their data on."
+              >
+                <Suspense fallback={<Loading />}>
+                  <StoragePage />
+                </Suspense>
+              </BoxSubPage>
+            }
+          />
+          <Route
+            path="/box/backups"
+            element={
+              <BoxSubPage
+                title="Backups"
+                subtitle="Copies of your data, kept somewhere else."
+              >
+                <Suspense fallback={<Loading />}>
+                  <BackupsPage />
+                </Suspense>
+              </BoxSubPage>
+            }
+          />
+          <Route
+            path="/box/machines"
+            element={
+              <BoxSubPage
+                title="Machines"
+                subtitle="The computers making up your box."
+              >
+                <Suspense fallback={<Loading />}>
+                  <NodesPage />
+                </Suspense>
+              </BoxSubPage>
+            }
+          />
+          <Route
+            path="/box/system"
+            element={
+              <BoxSubPage
+                title="Updates and system"
+                subtitle="What version your box is running."
+              >
+                <Suspense fallback={<Loading />}>
+                  <SystemPage />
+                </Suspense>
+              </BoxSubPage>
+            }
+          />
+          <Route
+            path="/box/terminal"
+            element={
+              <BoxSubPage
+                title="Terminal"
+                subtitle="Run commands directly on the machine."
+              >
+                <Suspense fallback={<Loading />}>
+                  <TerminalPage />
+                </Suspense>
+              </BoxSubPage>
+            }
+          />
+          {/* Old bookmarks and the previous hash routes land somewhere sensible
+              rather than on a blank page. */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }
