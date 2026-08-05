@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   RefreshCw,
   HardDrive,
-  AlertTriangle,
   ChevronDown,
   Copy,
   Check,
@@ -15,7 +14,12 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
+import { Sheet } from "@/components/ui/sheet";
+import { Banner, Skeleton } from "@/components/ui/feedback";
+import { api } from "@/lib/api";
+import { useResource } from "@/lib/useResource";
+import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
   OsdInfo,
@@ -25,6 +29,11 @@ import type {
   DiskInfo,
   StoragePolicyData,
 } from "@/types/storage";
+
+// ── Formatting ────────────────────────────────────────────────────────────────
+// `formatBytes` (decimal GB/TB, from lib/format) is used for everything a
+// person reads. The binary GiB/TiB below survives only inside Advanced, where
+// the numbers are meant to line up with what `ceph` itself prints.
 
 const GiB = 1073741824;
 const TiB = GiB * 1024;
@@ -36,30 +45,23 @@ function fmtBytes(b: number): string {
   return `${(b / 1024).toFixed(0)} KiB`;
 }
 
-function fmtSize(b: number): string {
-  if (b >= 1e12) return `${(b / 1e12).toFixed(1)} TB`;
-  if (b >= 1e9) return `${(b / 1e9).toFixed(0)} GB`;
-  if (b >= 1e6) return `${(b / 1e6).toFixed(0)} MB`;
-  return `${b} B`;
-}
-
 function fillColor(pct: number): string {
-  if (pct >= 85) return "#f87171";
-  if (pct >= 70) return "#fbbf24";
-  return "#4ade80";
+  if (pct >= 85) return "var(--danger)";
+  if (pct >= 70) return "var(--warning)";
+  return "var(--success)";
 }
 
 function FillBar({ pct }: { pct: number }) {
   const color = fillColor(pct);
   return (
-    <div className="flex items-center gap-2 min-w-[120px]">
-      <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
+    <div className="flex min-w-[120px] items-center gap-2">
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
         <div
           className="h-full rounded-full transition-all"
           style={{ width: `${Math.min(pct, 100)}%`, background: color }}
         />
       </div>
-      <span className="text-xs tabular-nums w-10 text-right" style={{ color }}>
+      <span className="w-10 text-right text-xs tabular-nums" style={{ color }}>
         {pct.toFixed(1)}%
       </span>
     </div>
@@ -72,7 +74,7 @@ function VarBadge({ v }: { v: number }) {
   return (
     <span
       className={cn(
-        "text-xs tabular-nums font-mono",
+        "font-mono text-xs tabular-nums",
         ok ? "text-fg-muted" : warn ? "text-warning" : "text-danger",
       )}
     >
@@ -86,6 +88,829 @@ function OsdPill({ on, labels }: { on: boolean; labels: [string, string] }) {
     <Badge variant={on ? "success" : "muted"}>
       {on ? labels[0] : labels[1]}
     </Badge>
+  );
+}
+
+// ── Disks ─────────────────────────────────────────────────────────────────────
+
+type DiskState =
+  | "active"
+  | "pending"
+  | "missing"
+  | "draining"
+  | "excluded"
+  | "historical"
+  | "foreign";
+
+function diskState(disk: DiskInfo): DiskState {
+  if (disk.foreign_ceph) return "foreign";
+  const on = disk.desired === "ON" || disk.desired === "USING";
+  if (on && disk.connected && disk.is_our_osd) return "active";
+  if (on && disk.connected) return "pending";
+  if (on && !disk.connected) return "missing";
+  if (!on && disk.connected && disk.is_our_osd) return "draining";
+  if (!on && disk.connected) return "excluded";
+  return "historical";
+}
+
+const STATE_META: Record<
+  DiskState,
+  { label: string; color: string; dot: string; pulse?: boolean }
+> = {
+  active: { label: "In use", color: "text-fg-muted", dot: "bg-success" },
+  pending: {
+    label: "Setting up…",
+    color: "text-warning",
+    dot: "bg-warning",
+    pulse: true,
+  },
+  missing: {
+    label: "Missing — not connected",
+    color: "text-danger",
+    dot: "bg-danger",
+    pulse: true,
+  },
+  draining: {
+    label: "Being removed — moving data off",
+    color: "text-warning",
+    dot: "bg-warning",
+    pulse: true,
+  },
+  excluded: {
+    label: "Connected, not in use",
+    color: "text-fg-muted",
+    dot: "bg-fg-subtle",
+  },
+  historical: {
+    label: "Not connected",
+    color: "text-fg-subtle",
+    dot: "bg-border-strong",
+  },
+  foreign: {
+    label: "Has data from another system",
+    color: "text-warning",
+    dot: "bg-warning",
+  },
+};
+
+function DiskRow({
+  node,
+  disk,
+  osd,
+  onChanged,
+}: {
+  node: string;
+  disk: DiskInfo;
+  osd?: OsdInfo;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [eraseConfirm, setEraseConfirm] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const state = diskState(disk);
+  const sm = STATE_META[state];
+  const isOn = disk.desired === "ON" || disk.desired === "USING";
+
+  async function toggle() {
+    const next = isOn ? "OFF" : "ON";
+    // Turning off a disk that currently holds data starts a drain, so it gets
+    // a confirmation the other direction does not need.
+    if (next === "OFF" && disk.is_our_osd && !confirm) {
+      setConfirm(true);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setConfirm(false);
+    try {
+      const d = await api.put<{ ok?: boolean; error?: string }>(
+        `/api/disks/${node}/${disk.id}`,
+        { desired: next },
+      );
+      if (!d.ok) setErr(d.error ?? "Unknown error");
+      else onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function erase() {
+    setBusy(true);
+    setErr(null);
+    setEraseConfirm(false);
+    try {
+      const d = await api.post<{ ok?: boolean; error?: string }>(
+        `/api/disks/${node}/${disk.id}/erase`,
+      );
+      if (!d.ok) setErr(d.error ?? "Erase failed");
+      else onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const label = disk.model || disk.device || disk.id;
+  const isMissing = state === "missing";
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-4 border-b border-border px-5 py-4 last:border-0",
+        isMissing && "bg-danger-soft",
+      )}
+    >
+      <div className="shrink-0">
+        {state === "missing" ? (
+          <WifiOff className="h-5 w-5 text-danger" strokeWidth={1.5} />
+        ) : disk.is_loop ? (
+          <Cpu className="h-5 w-5 text-fg-muted" strokeWidth={1.5} />
+        ) : (
+          <HardDrive className="h-5 w-5 text-fg-muted" strokeWidth={1.5} />
+        )}
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-fg">
+          {label}
+          {disk.connected && disk.size_bytes > 0 && (
+            <span className="ml-2 font-normal text-fg-muted">
+              {formatBytes(disk.size_bytes)}
+            </span>
+          )}
+        </p>
+        <div className="mt-1 flex items-center gap-1.5">
+          <span
+            className={cn(
+              "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+              sm.dot,
+              sm.pulse && "animate-pulse",
+            )}
+          />
+          <p className={cn("text-sm", sm.color)}>
+            {sm.label}
+            {disk.is_loop && (
+              <span className="text-fg-subtle"> · built into this machine</span>
+            )}
+          </p>
+        </div>
+        {err && <p className="mt-1 text-sm text-danger">{err}</p>}
+      </div>
+
+      {osd && state === "active" && (
+        <div className="hidden shrink-0 flex-col items-end gap-1 sm:flex">
+          <FillBar pct={osd.utilization} />
+        </div>
+      )}
+
+      {state === "foreign" &&
+        (eraseConfirm ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busy}
+              onClick={() => void erase()}
+            >
+              {busy ? "…" : "Erase it"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setEraseConfirm(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            disabled={busy}
+            onClick={() => setEraseConfirm(true)}
+          >
+            Erase and use
+          </Button>
+        ))}
+
+      {confirm && (
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="hidden text-sm text-fg-muted sm:inline">
+            Data moves off first.
+          </span>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={busy}
+            onClick={() => void toggle()}
+          >
+            Remove
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+
+      {state !== "foreign" && !confirm && (
+        <button
+          onClick={() => void toggle()}
+          disabled={busy}
+          role="switch"
+          aria-checked={isOn}
+          aria-label={isOn ? `Stop using ${label}` : `Use ${label}`}
+          className={cn(
+            "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors",
+            isOn ? "bg-primary" : "bg-surface-3",
+            busy && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <span
+            className={cn(
+              "inline-block h-6 w-6 rounded-full bg-white shadow transition-transform",
+              isOn ? "translate-x-[1.375rem]" : "translate-x-0.5",
+            )}
+          />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DiskList({
+  disks,
+  osds,
+  loading,
+  onChanged,
+}: {
+  disks: Record<string, DiskInfo[]> | undefined;
+  osds: OsdInfo[];
+  loading: boolean;
+  onChanged: () => void;
+}) {
+  const [showPast, setShowPast] = useState(false);
+  const nodes = disks ? Object.keys(disks).sort() : [];
+
+  function osdFor(disk: DiskInfo) {
+    return disk.osd_id === null
+      ? undefined
+      : osds.find((o) => o.id === disk.osd_id);
+  }
+
+  // Disks that were plugged in once and never came back accumulate forever and
+  // are the single biggest source of clutter here — a machine that has seen
+  // four USB drives shows four rows nobody will ever act on. They are kept
+  // (removing one silently would be worse) but folded away.
+  const present: [string, DiskInfo][] = [];
+  const past: [string, DiskInfo][] = [];
+  for (const node of nodes) {
+    for (const disk of disks?.[node] ?? []) {
+      (diskState(disk) === "historical" ? past : present).push([node, disk]);
+    }
+  }
+
+  if (loading && !disks) {
+    return (
+      <Card className="divide-y divide-border p-0">
+        {[0, 1].map((i) => (
+          <div key={i} className="flex items-center gap-4 px-5 py-4">
+            <Skeleton className="h-5 w-5 rounded-lg" />
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-24" />
+            </div>
+          </div>
+        ))}
+      </Card>
+    );
+  }
+
+  if (present.length === 0 && past.length === 0) {
+    return (
+      <Card className="p-5">
+        <p className="text-sm text-fg-muted">
+          No disks found yet. Plug one in and it will appear here.
+        </p>
+      </Card>
+    );
+  }
+
+  const multiNode = nodes.length > 1;
+
+  return (
+    <>
+      <Card className="divide-y divide-border p-0">
+        {present.map(([node, disk]) => (
+          <div key={`${node}/${disk.id}`}>
+            {multiNode && (
+              <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
+                {node}
+              </p>
+            )}
+            <DiskRow
+              node={node}
+              disk={disk}
+              osd={osdFor(disk)}
+              onChanged={onChanged}
+            />
+          </div>
+        ))}
+        {present.length === 0 && (
+          <p className="px-5 py-4 text-sm text-fg-muted">
+            None of the disks this machine has seen are connected right now.
+          </p>
+        )}
+      </Card>
+
+      {past.length > 0 && (
+        <div className="mt-3">
+          <button
+            onClick={() => setShowPast((s) => !s)}
+            className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
+            aria-expanded={showPast}
+          >
+            {past.length} disk{past.length === 1 ? "" : "s"} seen before but not
+            connected
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 transition-transform",
+                showPast && "rotate-180",
+              )}
+            />
+          </button>
+          {showPast && (
+            <Card className="mt-2 divide-y divide-border p-0 opacity-70">
+              {past.map(([node, disk]) => (
+                <DiskRow
+                  key={`${node}/${disk.id}`}
+                  node={node}
+                  disk={disk}
+                  osd={osdFor(disk)}
+                  onChanged={onChanged}
+                />
+              ))}
+            </Card>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Capacity + safety ─────────────────────────────────────────────────────────
+
+/**
+ * One sentence on what a failure would cost.
+ *
+ * This replaces a card that led with "3 copies across 3 disks" and a mode/scope
+ * caption. Copies are the mechanism; what someone actually wants to know is
+ * whether losing a disk loses their photos.
+ */
+function safetyLine(
+  data: StoragePolicyData | undefined,
+  detail: StorageDetail | undefined,
+): { tone: "ok" | "warn" | "bad"; text: string } | null {
+  if (!data) return null;
+  const { target } = data;
+  const offline = detail?.osds.filter((o) => o.status !== "up").length ?? 0;
+  const survives = target.size - 1;
+  const unit = target.failure_domain === "host" ? "machine" : "disk";
+
+  const suffix =
+    offline > 0
+      ? ` ${offline} ${offline === 1 ? "disk is" : "disks are"} offline right now.`
+      : "";
+
+  if (target.size <= 1) {
+    return {
+      tone: "bad",
+      text: `Your files are stored once. If a ${unit} fails, what was on it is gone — backups are your only copy.${suffix}`,
+    };
+  }
+  return {
+    tone: offline > 0 ? "warn" : "ok",
+    text: `Any ${survives === 1 ? "one" : survives} ${unit}${survives === 1 ? "" : "s"} can fail without losing anything.${suffix}`,
+  };
+}
+
+function CapacityCard({
+  detail,
+  policy,
+  loading,
+}: {
+  detail: StorageDetail | undefined;
+  policy: StoragePolicyData | undefined;
+  loading: boolean;
+}) {
+  // What a person has, not what the disks have. Raw totals count every replica,
+  // so a 2 TB pool with two copies reports 4 TB raw — a number that is true,
+  // useless, and alarming in both directions. `stored_bytes` is what was put
+  // in; `max_avail_bytes` is what will still fit.
+  const pools = (detail?.pools ?? []).filter((p) => !p.name.startsWith("."));
+  const used = pools.reduce((s, p) => s + p.stored_bytes, 0);
+  const free = pools[0]?.max_avail_bytes ?? 0;
+  const total = used + free;
+  const pct = total > 0 ? (used / total) * 100 : 0;
+
+  const safety = safetyLine(policy, detail);
+
+  if (loading && !detail) {
+    return (
+      <Card className="space-y-4 p-6">
+        <Skeleton className="h-9 w-64" />
+        <Skeleton className="h-2 w-full" />
+        <Skeleton className="h-4 w-80" />
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-6">
+      {total > 0 ? (
+        <>
+          <p className="font-display text-3xl text-fg">
+            {formatBytes(free)} <span className="text-fg-muted">free</span>
+          </p>
+          <p className="mt-1 text-sm text-fg-muted">
+            {formatBytes(used)} of {formatBytes(total)} used
+          </p>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${Math.max(Math.min(pct, 100), used > 0 ? 1.5 : 0)}%`,
+                background: fillColor(pct),
+              }}
+            />
+          </div>
+        </>
+      ) : (
+        <p className="text-sm text-fg-muted">
+          Storage is still being set up. This fills in once the first disk is
+          ready.
+        </p>
+      )}
+
+      {safety && (
+        <p
+          className={cn(
+            "mt-5 border-t border-border pt-4 text-sm",
+            safety.tone === "bad"
+              ? "text-danger"
+              : safety.tone === "warn"
+                ? "text-warning"
+                : "text-fg-muted",
+          )}
+        >
+          {safety.text}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+// ── Redundancy ────────────────────────────────────────────────────────────────
+
+type Domain = "osd" | "host";
+
+function estimateUsable(
+  osds: OsdInfo[],
+  size: number,
+  domain: "osd" | "host",
+): number {
+  const SAFETY = 0.95;
+  const totalRaw = osds.reduce((s, o) => s + o.size_bytes, 0);
+  if (domain === "osd") {
+    if (osds.length <= size)
+      return Math.min(...osds.map((o) => o.size_bytes)) * SAFETY;
+    return (totalRaw / size) * SAFETY;
+  } else {
+    const hostMap = new Map<string, number>();
+    for (const o of osds)
+      hostMap.set(o.host, (hostMap.get(o.host) ?? 0) + o.size_bytes);
+    const caps = [...hostMap.values()];
+    if (caps.length < size) return 0;
+    if (caps.length === size) return Math.min(...caps) * SAFETY;
+    return (totalRaw / size) * SAFETY;
+  }
+}
+
+/**
+ * The redundancy controls, moved into a sheet.
+ *
+ * On the page they were the largest block by some distance — a mode toggle, a
+ * four-metric grid, two more toggle rows, a feasibility warning and a capacity
+ * estimate — and they are touched approximately once in the life of a box.
+ * Behind a "Change" button they cost one line until someone wants them.
+ */
+function RedundancySheet({
+  open,
+  onClose,
+  policyData,
+  osds,
+  pools,
+  onPolicyChanged,
+}: {
+  open: boolean;
+  onClose: () => void;
+  policyData: StoragePolicyData;
+  osds: OsdInfo[];
+  pools: PoolInfo[];
+  onPolicyChanged: () => void;
+}) {
+  const saved = policyData.policy;
+  const [mode, setMode] = useState<"auto" | "manual">(saved.mode);
+  const [size, setSize] = useState<number>(saved.size);
+  const [domain, setDomain] = useState<Domain>(saved.failure_domain as Domain);
+  const [applying, setApplying] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  // Re-seed whenever the sheet is opened, so a cancelled edit does not linger.
+  useEffect(() => {
+    if (!open) return;
+    setMode(saved.mode);
+    setSize(saved.size);
+    setDomain(saved.failure_domain as Domain);
+    setConfirm(false);
+    setResult(null);
+  }, [open, saved.mode, saved.size, saved.failure_domain]);
+
+  const nDisks = osds.length;
+  const nNodes = new Set(osds.map((o) => o.host)).size;
+  const maxSize = domain === "osd" ? nDisks : nNodes;
+
+  const changed =
+    mode !== saved.mode ||
+    (mode === "manual" &&
+      (size !== saved.size || domain !== saved.failure_domain));
+
+  const cephFs = pools.filter((p) => !p.name.startsWith("."));
+  const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
+  const rawFree = osds.reduce((s, o) => s + o.avail_bytes, 0);
+  const rawNeeded = (size - saved.size) * totalStored;
+  let feasibility: "ok" | "tight" | "impossible" | null = null;
+  if (mode === "manual" && rawNeeded > 0) {
+    if (rawFree < rawNeeded) feasibility = "impossible";
+    else if (rawFree < rawNeeded * 1.3) feasibility = "tight";
+    else feasibility = "ok";
+  }
+
+  const authoritative = cephFs[0]?.max_avail_bytes ?? 0;
+  const showEstimate = (mode === "manual" && changed) || authoritative === 0;
+  const capacity = showEstimate
+    ? estimateUsable(osds, size, domain)
+    : authoritative;
+
+  async function apply() {
+    setApplying(true);
+    setResult(null);
+    try {
+      const body =
+        mode === "auto"
+          ? { mode: "auto" }
+          : {
+              mode: "manual",
+              size,
+              min_size: Math.max(1, size - 1),
+              failure_domain: domain,
+            };
+      const d = await api.put<{ ok?: boolean; error?: string }>(
+        "/api/storage/policy",
+        body,
+      );
+      if (d.ok) {
+        onPolicyChanged();
+        onClose();
+      } else {
+        setResult(d.error ?? "Unknown error");
+      }
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  const Choice = ({
+    active,
+    onClick,
+    title,
+    body,
+    disabled,
+  }: {
+    active: boolean;
+    onClick: () => void;
+    title: string;
+    body?: string;
+    disabled?: boolean;
+  }) => (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex-1 rounded-xl border px-4 py-3 text-left transition-colors",
+        disabled
+          ? "cursor-not-allowed border-border text-fg-subtle opacity-50"
+          : active
+            ? "border-primary bg-primary-soft text-primary"
+            : "border-border text-fg hover:border-border-strong",
+      )}
+    >
+      <span className="block text-sm font-medium">{title}</span>
+      {body && <span className="mt-0.5 block text-xs opacity-80">{body}</span>}
+    </button>
+  );
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      wide
+      title="How safe should your files be?"
+      subtitle="More copies survive more failures, and leave less room."
+      footer={
+        confirm ? (
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => setConfirm(false)}
+              disabled={applying}
+            >
+              Back
+            </Button>
+            <Button onClick={() => void apply()} loading={applying}>
+              Yes, change it
+            </Button>
+          </div>
+        ) : (
+          <Button
+            full
+            disabled={!changed || feasibility === "impossible"}
+            onClick={() => setConfirm(true)}
+          >
+            {changed ? "Save changes" : "No changes"}
+          </Button>
+        )
+      }
+    >
+      {confirm ? (
+        <div className="space-y-3">
+          <p className="text-sm text-fg">
+            {mode === "auto"
+              ? "Switch back to letting YoLab decide? It will raise safety as you add machines and disks, and never quietly lower it."
+              : `Keep ${size} ${size === 1 ? "copy" : "copies"} of everything, spread across ${domain === "osd" ? "different disks" : "different machines"}?`}
+          </p>
+          <p className="text-sm text-fg-muted">
+            Your files stay available while this happens. Moving them around in
+            the background can take a while on a large library.
+          </p>
+          {result && <p className="text-sm text-danger">{result}</p>}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="flex gap-2">
+            <Choice
+              active={mode === "auto"}
+              onClick={() => setMode("auto")}
+              title="Decide for me"
+              body="Gets safer as you add machines"
+            />
+            <Choice
+              active={mode === "manual"}
+              onClick={() => setMode("manual")}
+              title="I'll choose"
+              body="Set it exactly"
+            />
+          </div>
+
+          {mode === "manual" && (
+            <>
+              <div>
+                <p className="mb-2 text-sm font-medium text-fg">
+                  Spread copies across
+                </p>
+                <div className="flex gap-2">
+                  <Choice
+                    active={domain === "osd"}
+                    onClick={() => {
+                      setDomain("osd");
+                      if (size > nDisks) setSize(Math.max(1, nDisks));
+                    }}
+                    title="Different disks"
+                    body={`${nDisks} available`}
+                  />
+                  <Choice
+                    active={domain === "host"}
+                    onClick={() => {
+                      setDomain("host");
+                      if (size > nNodes) setSize(Math.max(1, nNodes));
+                    }}
+                    title="Different machines"
+                    body={`${nNodes} available`}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-sm font-medium text-fg">
+                  How many copies
+                </p>
+                <div className="flex gap-2">
+                  {[1, 2, 3].map((s) => (
+                    <Choice
+                      key={s}
+                      active={size === s}
+                      disabled={s > maxSize}
+                      onClick={() => setSize(s)}
+                      title={`${s}`}
+                      body={
+                        s === 1
+                          ? "No protection"
+                          : `Survives ${s - 1} ${domain === "osd" ? "disk" : "machine"}${s - 1 === 1 ? "" : "s"}`
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {feasibility === "impossible" && (
+                <Banner tone="error" title="Not enough room for that">
+                  Making {size - saved.size} more{" "}
+                  {size - saved.size === 1 ? "copy" : "copies"} needs{" "}
+                  {formatBytes(rawNeeded)} and only {formatBytes(rawFree)} is
+                  free. Add a disk first.
+                </Banner>
+              )}
+              {feasibility === "tight" && (
+                <Banner tone="warning" title="This will be a tight fit">
+                  It needs {formatBytes(rawNeeded)} and {formatBytes(rawFree)}{" "}
+                  is free. It should work, but you will be close to full while
+                  the copies are made.
+                </Banner>
+              )}
+
+              <div className="rounded-xl bg-surface-2 p-4">
+                <p className="text-sm text-fg-muted">
+                  Room for your files with this setting
+                </p>
+                <p className="mt-0.5 font-display text-2xl text-fg">
+                  {showEstimate ? "about " : ""}
+                  {formatBytes(capacity)}
+                </p>
+              </div>
+            </>
+          )}
+
+          {mode === "auto" && (
+            <p className="rounded-xl bg-surface-2 p-4 text-sm text-fg-muted">
+              Right now that means {policyData.target.size}{" "}
+              {policyData.target.size === 1 ? "copy" : "copies"} across
+              different{" "}
+              {policyData.target.failure_domain === "host"
+                ? "machines"
+                : "disks"}
+              , based on the {policyData.topology.nodes} machine
+              {policyData.topology.nodes === 1 ? "" : "s"} and{" "}
+              {policyData.topology.osds} disk
+              {policyData.topology.osds === 1 ? "" : "s"} you have.
+            </p>
+          )}
+
+          {result && <p className="text-sm text-danger">{result}</p>}
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+// ── Advanced ──────────────────────────────────────────────────────────────────
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        void navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }}
+      className="text-fg-subtle transition-colors hover:text-fg"
+      aria-label="Copy"
+    >
+      {copied ? (
+        <Check className="h-4 w-4 text-success" />
+      ) : (
+        <Copy className="h-4 w-4" />
+      )}
+    </button>
   );
 }
 
@@ -105,15 +930,14 @@ function OsdActions({
     setBusy(true);
     setErr(null);
     try {
-      const r = await fetch(path, { method: "POST" });
-      const d = (await r.json()) as { ok?: boolean; error?: string };
+      const d = await api.post<{ ok?: boolean; error?: string }>(path);
       if (!d.ok) setErr(d.error ?? "Unknown error");
       else {
         setConfirm(false);
         onRefresh();
       }
     } catch (e) {
-      setErr(String(e));
+      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -161,875 +985,6 @@ function OsdActions({
   );
 }
 
-type DiskState =
-  | "active"
-  | "pending"
-  | "missing"
-  | "draining"
-  | "excluded"
-  | "historical"
-  | "foreign";
-
-function diskState(disk: DiskInfo): DiskState {
-  if (disk.foreign_ceph) return "foreign";
-  const on = disk.desired === "ON" || disk.desired === "USING";
-  if (on && disk.connected && disk.is_our_osd) return "active";
-  if (on && disk.connected) return "pending";
-  if (on && !disk.connected) return "missing";
-  if (!on && disk.connected && disk.is_our_osd) return "draining";
-  if (!on && disk.connected) return "excluded";
-  return "historical";
-}
-
-const STATE_META: Record<
-  DiskState,
-  { label: string; color: string; dot: string; pulse?: boolean }
-> = {
-  active: {
-    label: "Active in cluster",
-    color: "text-success",
-    dot: "bg-success",
-  },
-  pending: {
-    label: "Setting up…",
-    color: "text-warning",
-    dot: "bg-warning",
-    pulse: true,
-  },
-  missing: {
-    label: "Missing — not connected",
-    color: "text-danger",
-    dot: "bg-danger",
-    pulse: true,
-  },
-  draining: {
-    label: "Draining — being removed",
-    color: "text-warning",
-    dot: "bg-warning",
-    pulse: true,
-  },
-  excluded: {
-    label: "Connected, not in cluster",
-    color: "text-fg-muted",
-    dot: "bg-fg-subtle",
-  },
-  historical: {
-    label: "Not connected",
-    color: "text-fg-subtle",
-    dot: "bg-border-strong",
-  },
-  foreign: {
-    label: "Foreign data — erase to use",
-    color: "text-warning",
-    dot: "bg-warning",
-  },
-};
-
-function DiskRow({
-  node,
-  disk,
-  osd,
-  onChanged,
-}: {
-  node: string;
-  disk: DiskInfo;
-  osd?: OsdInfo;
-  onChanged: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  const [eraseConfirm, setEraseConfirm] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const state = diskState(disk);
-  const sm = STATE_META[state];
-  const isOn = disk.desired === "ON" || disk.desired === "USING";
-
-  async function toggle() {
-    const next = isOn ? "OFF" : "ON";
-    if (next === "OFF" && disk.is_our_osd && !confirm) {
-      setConfirm(true);
-      return;
-    }
-    setBusy(true);
-    setErr(null);
-    setConfirm(false);
-    try {
-      const r = await fetch(`/api/disks/${node}/${disk.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ desired: next }),
-      });
-      const d = (await r.json()) as { ok?: boolean; error?: string };
-      if (!d.ok) setErr(d.error ?? "Unknown error");
-      else onChanged();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function erase() {
-    setBusy(true);
-    setErr(null);
-    setEraseConfirm(false);
-    try {
-      const r = await fetch(`/api/disks/${node}/${disk.id}/erase`, {
-        method: "POST",
-      });
-      const d = (await r.json()) as { ok?: boolean; error?: string };
-      if (!d.ok) setErr(d.error ?? "Erase failed");
-      else onChanged();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const label = disk.model || disk.device || disk.id;
-  const isMissing = state === "missing";
-  const isHistorical = state === "historical";
-
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-4 py-3 px-4 border-b border-border/50 last:border-0 transition-colors",
-        isMissing && "bg-danger/5 border-danger/20",
-        isHistorical && "opacity-50",
-      )}
-    >
-      {/* Icon */}
-      <div className="flex-shrink-0">
-        {state === "missing" ? (
-          <WifiOff className="h-4 w-4 text-danger" strokeWidth={1.5} />
-        ) : disk.is_loop ? (
-          <Cpu className="h-4 w-4 text-primary" strokeWidth={1.5} />
-        ) : (
-          <HardDrive
-            className={cn(
-              "h-4 w-4",
-              isHistorical ? "text-border-strong" : "text-fg-muted",
-            )}
-            strokeWidth={1.5}
-          />
-        )}
-      </div>
-
-      {/* Identity + state */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <p
-            className={cn(
-              "text-sm truncate",
-              isHistorical ? "text-fg-subtle" : "text-fg",
-            )}
-          >
-            {label}
-          </p>
-          {disk.is_our_osd && disk.osd_id !== null && disk.connected && (
-            <span className="text-xs font-mono text-primary shrink-0">
-              osd.{disk.osd_id}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span
-            className={cn(
-              "inline-block h-1.5 w-1.5 rounded-full shrink-0",
-              sm.dot,
-              sm.pulse && "animate-pulse",
-            )}
-          />
-          <p className={cn("text-xs", sm.color)}>
-            {sm.label}
-            {disk.connected && disk.size_bytes > 0 && (
-              <span className="text-fg-subtle ml-1.5">
-                · {fmtSize(disk.size_bytes)}
-              </span>
-            )}
-            {disk.is_loop && (
-              <span className="text-fg-subtle ml-1.5">· System disk</span>
-            )}
-          </p>
-        </div>
-      </div>
-
-      {/* OSD fill stats — only for active disks */}
-      {osd && state === "active" && (
-        <div className="hidden sm:flex flex-col items-end gap-0.5 shrink-0 min-w-[140px]">
-          <FillBar pct={osd.utilization} />
-          <p className="text-xs text-fg-subtle tabular-nums">
-            {fmtBytes(osd.used_bytes)} / {fmtBytes(osd.avail_bytes)}
-          </p>
-        </div>
-      )}
-
-      {/* Foreign disk: erase flow */}
-      {state === "foreign" && (
-        <div className="shrink-0">
-          {eraseConfirm ? (
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-danger">Erase all data?</span>
-              <button
-                onClick={() => void erase()}
-                disabled={busy}
-                className="px-2 py-0.5 rounded text-xs border border-danger/40 text-danger hover:bg-danger/10 transition-colors disabled:opacity-50"
-              >
-                {busy ? "…" : "Yes"}
-              </button>
-              <button
-                onClick={() => setEraseConfirm(false)}
-                className="px-2 py-0.5 rounded text-xs border border-border text-fg-muted hover:bg-border transition-colors"
-              >
-                No
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setEraseConfirm(true)}
-              disabled={busy}
-              className="px-3 py-1 rounded text-xs border border-border text-fg-muted hover:border-border-strong hover:text-fg transition-colors disabled:opacity-50"
-            >
-              Erase and use
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Confirm removing active OSD */}
-      {confirm && (
-        <div className="flex items-center gap-1.5 text-xs shrink-0">
-          <span className="text-warning hidden sm:inline">
-            Data will migrate first.
-          </span>
-          <button
-            onClick={() => void toggle()}
-            disabled={busy}
-            className="px-2 py-0.5 rounded border border-danger/40 text-danger hover:bg-danger/10 transition-colors"
-          >
-            Confirm
-          </button>
-          <button
-            onClick={() => setConfirm(false)}
-            className="px-2 py-0.5 rounded border border-border text-fg-muted hover:bg-border transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {/* ON/OFF toggle — not shown for foreign disks or during confirm */}
-      {state !== "foreign" && !confirm && (
-        <button
-          onClick={() => void toggle()}
-          disabled={busy}
-          title={isOn ? "Turn OFF" : "Turn ON"}
-          className={cn(
-            "flex-shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-            isOn ? "bg-primary" : "bg-border-strong",
-            busy && "opacity-50 cursor-not-allowed",
-          )}
-        >
-          <span
-            className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full shadow transition-transform",
-              isOn ? "translate-x-5 bg-white" : "translate-x-0.5 bg-white/70",
-            )}
-          />
-        </button>
-      )}
-
-      {err && <p className="text-xs text-danger ml-1 shrink-0">{err}</p>}
-    </div>
-  );
-}
-
-function ManageDisksPanel({ osds }: { osds: OsdInfo[] }) {
-  const [disks, setDisks] = useState<Record<string, DiskInfo[]> | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  function load() {
-    setLoading(true);
-    fetch("/api/disks")
-      .then((r) => r.json())
-      .then((d) => setDisks(d))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  const nodes = disks ? Object.keys(disks).sort() : [];
-
-  function getOsd(disk: DiskInfo): OsdInfo | undefined {
-    if (disk.osd_id === null) return undefined;
-    return osds.find((o) => o.id === disk.osd_id);
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>Your disks</CardTitle>
-          <button
-            onClick={load}
-            disabled={loading}
-            className="text-fg-subtle hover:text-fg-muted transition-colors"
-          >
-            <RefreshCw
-              className={cn("h-3.5 w-3.5", loading && "animate-spin")}
-            />
-          </button>
-        </div>
-        <p className="text-xs text-fg-subtle mt-0.5">
-          All disks ever connected to this machine appear here. Turn a disk ON
-          to add it to the storage pool. New disks default to OFF — nothing
-          happens until you enable them.
-        </p>
-      </CardHeader>
-      <CardContent className="p-0">
-        {loading && !disks && (
-          <p className="text-sm text-fg-muted px-4 py-3">Scanning disks…</p>
-        )}
-        {disks && nodes.length === 0 && (
-          <p className="text-sm text-fg-muted px-4 py-3">
-            No disks detected yet.
-          </p>
-        )}
-        {nodes.map((node) => (
-          <div key={node}>
-            <p className="text-xs font-medium text-fg-muted uppercase tracking-wider px-4 pt-3 pb-1 flex items-center gap-1.5">
-              <HardDrive className="h-3 w-3" />
-              {node}
-            </p>
-            {(disks![node] ?? []).map((disk) => (
-              <DiskRow
-                key={disk.id}
-                node={node}
-                disk={disk}
-                osd={getOsd(disk)}
-                onChanged={load}
-              />
-            ))}
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Durability posture card ────────────────────────────────────────────────────
-
-function DurabilityCard({
-  data,
-  detail,
-}: {
-  data: StoragePolicyData;
-  detail: StorageDetail | null;
-}) {
-  const { target, topology, policy } = data;
-
-  const osdsDown = detail?.osds.filter((o) => o.status !== "up").length ?? 0;
-
-  let health: "good" | "warning" | "degraded";
-  if (osdsDown > 0 && target.size <= 1) health = "degraded";
-  else if (osdsDown > 0) health = "warning";
-  else health = "good";
-
-  let headline: string;
-  let subtext: string;
-  if (target.size === 1) {
-    headline = "No disk redundancy";
-    subtext =
-      topology.osds >= 2
-        ? "Your data has one copy — a disk failure would cause data loss. Switch to Manual mode below to enable redundancy."
-        : "Your data has one copy. Connect more disks to enable redundancy. Backups are your safety net.";
-  } else if (target.failure_domain === "osd") {
-    const survive = target.size - 1;
-    headline = `${target.size} copies across ${target.size} disk${target.size > 1 ? "s" : ""}`;
-    subtext =
-      survive === 1
-        ? `One disk can fail without data loss. You have ${topology.osds} disk${topology.osds !== 1 ? "s" : ""} on ${topology.nodes} machine${topology.nodes !== 1 ? "s" : ""}.`
-        : `${survive} disks can fail simultaneously without data loss.`;
-  } else {
-    const survive = target.size - 1;
-    headline = `${target.size} copies across ${target.size} machine${target.size > 1 ? "s" : ""}`;
-    subtext =
-      survive === 1
-        ? `One machine can go offline without any data loss. You have ${topology.nodes} machines with ${topology.osds} total disks.`
-        : `${survive} machines can go offline simultaneously without data loss.`;
-  }
-
-  if (osdsDown > 0) {
-    subtext += ` (${osdsDown} disk${osdsDown > 1 ? "s" : ""} currently offline)`;
-  }
-
-  const dotColor = { good: "#4ade80", warning: "#fbbf24", degraded: "#f87171" }[
-    health
-  ];
-  const borderCls = {
-    good: "border-success/20",
-    warning: "border-warning/30",
-    degraded: "border-danger/30",
-  }[health];
-  const bgCls = { good: "", warning: "", degraded: "bg-danger/5" }[health];
-
-  const modeLabel = policy.mode === "auto" ? "Auto" : "Manual";
-  const scopeLabel =
-    target.failure_domain === "host" ? "machine redundancy" : "disk redundancy";
-
-  return (
-    <div className={cn("rounded-lg border px-5 py-4", borderCls, bgCls)}>
-      <div className="flex items-start gap-3">
-        <span
-          className="mt-2 inline-block h-2 w-2 rounded-full flex-shrink-0"
-          style={{ background: dotColor }}
-        />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <p className="text-base font-semibold text-fg">{headline}</p>
-            <span className="text-xs text-fg-subtle">
-              {modeLabel} · {scopeLabel}
-            </span>
-          </div>
-          <p className="text-sm text-fg-muted mt-1">{subtext}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Storage mode panel (auto/manual + redundancy controls) ────────────────────
-
-type Domain = "osd" | "host";
-
-function estimateUsable(
-  osds: OsdInfo[],
-  size: number,
-  domain: "osd" | "host",
-): number {
-  const SAFETY = 0.95;
-  const totalRaw = osds.reduce((s, o) => s + o.size_bytes, 0);
-  if (domain === "osd") {
-    if (osds.length <= size)
-      return Math.min(...osds.map((o) => o.size_bytes)) * SAFETY;
-    return (totalRaw / size) * SAFETY;
-  } else {
-    const hostMap = new Map<string, number>();
-    for (const o of osds)
-      hostMap.set(o.host, (hostMap.get(o.host) ?? 0) + o.size_bytes);
-    const caps = [...hostMap.values()];
-    if (caps.length < size) return 0;
-    if (caps.length === size) return Math.min(...caps) * SAFETY;
-    return (totalRaw / size) * SAFETY;
-  }
-}
-
-function StorageModePanel({
-  policyData,
-  osds,
-  pools,
-  onPolicyChanged,
-}: {
-  policyData: StoragePolicyData | null;
-  osds: OsdInfo[];
-  pools: PoolInfo[];
-  onPolicyChanged: () => void;
-}) {
-  const [localMode, setLocalMode] = useState<"auto" | "manual" | null>(null);
-  const [localSize, setLocalSize] = useState<number | null>(null);
-  const [localDomain, setLocalDomain] = useState<Domain | null>(null);
-  const [applying, setApplying] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState(false);
-
-  // Sync local state from fetched data when it arrives
-  useEffect(() => {
-    if (!policyData) return;
-    setLocalMode(policyData.policy.mode);
-    setLocalSize(policyData.policy.size);
-    setLocalDomain(policyData.policy.failure_domain as Domain);
-  }, [policyData]);
-
-  if (
-    !policyData ||
-    localMode === null ||
-    localSize === null ||
-    localDomain === null
-  ) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Storage mode</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-fg-muted">Loading…</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const { target, topology } = policyData;
-  const nDisks = osds.length;
-  const nNodes = new Set(osds.map((o) => o.host)).size;
-  const maxSize = localDomain === "osd" ? nDisks : nNodes;
-
-  // Whether anything has changed from saved policy
-  const savedPolicy = policyData.policy;
-  const changed =
-    localMode !== savedPolicy.mode ||
-    (localMode === "manual" &&
-      (localSize !== savedPolicy.size ||
-        localDomain !== savedPolicy.failure_domain));
-
-  // Feasibility for manual mode
-  const cephFs = pools.filter((p) => !p.name.startsWith("."));
-  const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
-  const currentSize = savedPolicy.size;
-  const rawFree = osds.reduce((s, o) => s + o.avail_bytes, 0);
-  const rawNeeded = (localSize - currentSize) * totalStored;
-  type Feasibility = "ok" | "tight" | "impossible" | null;
-  let feasibility: Feasibility = null;
-  if (localMode === "manual" && rawNeeded > 0) {
-    if (rawFree < rawNeeded) feasibility = "impossible";
-    else if (rawFree < rawNeeded * 1.3) feasibility = "tight";
-    else feasibility = "ok";
-  }
-
-  // Capacity estimate
-  const authoritative = cephFs[0]?.max_avail_bytes ?? 0;
-  const showEstimate =
-    (localMode === "manual" && changed) || authoritative === 0;
-  const displayCapacity = showEstimate
-    ? estimateUsable(osds, localSize, localDomain)
-    : authoritative;
-
-  const survivesDisks = (localMode === "manual" ? localSize : target.size) - 1;
-  const survivesMachines = localDomain === "host" ? survivesDisks : 0;
-
-  function changeDomain(d: Domain) {
-    setLocalDomain(d);
-    const newMax = d === "osd" ? nDisks : nNodes;
-    if (localSize! > newMax) setLocalSize(Math.max(1, newMax));
-    setConfirm(false);
-    setResult(null);
-  }
-
-  async function applyChanges() {
-    setApplying(true);
-    setResult(null);
-    try {
-      const body =
-        localMode === "auto"
-          ? { mode: "auto" }
-          : {
-              mode: "manual",
-              size: localSize,
-              min_size: Math.max(1, localSize! - 1),
-              failure_domain: localDomain,
-            };
-      const r = await fetch("/api/storage/policy", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const d = (await r.json()) as { ok?: boolean; error?: string };
-      if (d.ok) {
-        setResult("Saved — changes apply within 60 seconds.");
-        setConfirm(false);
-        onPolicyChanged();
-      } else {
-        setResult(d.error ?? "Unknown error");
-      }
-    } catch (e) {
-      setResult(String(e));
-    } finally {
-      setApplying(false);
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Storage mode</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        {/* Auto / Manual toggle */}
-        <div className="space-y-2">
-          <p className="text-xs font-medium text-fg-muted uppercase tracking-wider">
-            Mode
-          </p>
-          <div className="flex gap-2">
-            {(["auto", "manual"] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => {
-                  setLocalMode(m);
-                  setConfirm(false);
-                  setResult(null);
-                }}
-                className={cn(
-                  "flex-1 rounded-md border px-4 py-2.5 text-sm text-left transition-colors",
-                  localMode === m
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border text-fg-muted hover:border-border-strong hover:text-fg-muted",
-                )}
-              >
-                <div className="font-medium">
-                  {m === "auto" ? "Automatic" : "Manual"}
-                </div>
-                <div className="text-xs mt-0.5 opacity-70">
-                  {m === "auto"
-                    ? "Adjusts redundancy as you add machines and disks"
-                    : "You control the exact redundancy settings"}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Auto: show what's currently computed */}
-        {localMode === "auto" && (
-          <div className="rounded-md bg-surface-2 border border-border px-4 py-3 space-y-2">
-            <p className="text-xs font-medium text-fg-muted uppercase tracking-wider">
-              Currently managing
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                { label: "Copies", value: `${target.size}×` },
-                { label: "Min copies", value: `${target.min_size}×` },
-                {
-                  label: "Redundancy scope",
-                  value: target.failure_domain === "host" ? "Machine" : "Disk",
-                },
-                { label: "Monitors", value: `${target.mon}` },
-              ].map(({ label, value }) => (
-                <div key={label}>
-                  <p className="text-xs text-fg-subtle">{label}</p>
-                  <p className="text-sm font-medium text-fg mt-0.5">{value}</p>
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-fg-subtle pt-1">
-              Based on {topology.nodes} machine{topology.nodes !== 1 ? "s" : ""}{" "}
-              and {topology.osds} disk{topology.osds !== 1 ? "s" : ""}. The
-              system raises redundancy automatically as you add hardware; it
-              never silently reduces it.
-            </p>
-          </div>
-        )}
-
-        {/* Manual: controls */}
-        {localMode === "manual" && (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <p className="text-xs font-medium text-fg-muted uppercase tracking-wider">
-                  Redundancy scope
-                </p>
-                <div className="flex gap-2">
-                  {(["osd", "host"] as Domain[]).map((d) => (
-                    <button
-                      key={d}
-                      onClick={() => changeDomain(d)}
-                      className={cn(
-                        "flex-1 rounded-md border px-3 py-2 text-sm transition-colors",
-                        localDomain === d
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border text-fg-muted hover:border-border-strong hover:text-fg-muted",
-                      )}
-                    >
-                      {d === "osd" ? "Disk-level" : "Machine-level"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <p className="text-xs font-medium text-fg-muted uppercase tracking-wider">
-                  Copies
-                  <span className="ml-1.5 normal-case font-normal text-fg-subtle">
-                    (max {maxSize} —{" "}
-                    {localDomain === "osd"
-                      ? `${nDisks} disk${nDisks !== 1 ? "s" : ""}`
-                      : `${nNodes} machine${nNodes !== 1 ? "s" : ""}`}
-                    )
-                  </span>
-                </p>
-                <div className="flex gap-2">
-                  {[1, 2, 3].map((s) => {
-                    const disabled = s > maxSize;
-                    return (
-                      <button
-                        key={s}
-                        disabled={disabled}
-                        onClick={() => {
-                          setLocalSize(s);
-                          setConfirm(false);
-                          setResult(null);
-                        }}
-                        className={cn(
-                          "flex-1 rounded-md border px-3 py-2 text-sm transition-colors",
-                          disabled
-                            ? "border-border/50 text-border-strong cursor-not-allowed opacity-40"
-                            : localSize === s
-                              ? "border-primary bg-primary/10 text-primary"
-                              : "border-border text-fg-muted hover:border-border-strong hover:text-fg-muted",
-                        )}
-                      >
-                        {s}×
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Feasibility warnings */}
-            {feasibility === "impossible" && (
-              <div className="flex items-start gap-2.5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3">
-                <AlertTriangle className="h-4 w-4 text-danger mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-danger">
-                  Not enough free space to create {localSize - currentSize}{" "}
-                  extra {localSize - currentSize === 1 ? "copy" : "copies"} —
-                  needs <strong>{fmtBytes(rawNeeded)}</strong>, only{" "}
-                  <strong>{fmtBytes(rawFree)}</strong> available.
-                </p>
-              </div>
-            )}
-            {feasibility === "tight" && (
-              <div className="flex items-start gap-2.5 rounded-md border border-warning/30 bg-warning/5 px-4 py-3">
-                <AlertTriangle className="h-4 w-4 text-warning mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-warning">
-                  Tight fit — only <strong>{fmtBytes(rawFree)}</strong> free,
-                  needs <strong>{fmtBytes(rawNeeded)}</strong>. The cluster may
-                  hit nearfull warnings during rebalancing.
-                </p>
-              </div>
-            )}
-
-            {/* Capacity + resilience summary */}
-            <div className="rounded-md bg-surface-2 border border-border px-5 py-4 space-y-3">
-              <div>
-                <p className="text-xs text-fg-muted mb-0.5">
-                  {showEstimate ? "Estimated capacity" : "Usable capacity"}
-                </p>
-                <p className="text-2xl font-semibold text-fg tabular-nums">
-                  {showEstimate
-                    ? `~${fmtBytes(displayCapacity)}`
-                    : fmtBytes(displayCapacity)}
-                </p>
-              </div>
-              <div className="h-px bg-border" />
-              <div className="space-y-1.5">
-                <p
-                  className={cn(
-                    "text-sm",
-                    survivesDisks === 0 ? "text-danger" : "text-fg-muted",
-                  )}
-                >
-                  Survives{" "}
-                  <span
-                    className={cn(
-                      "font-semibold",
-                      survivesDisks === 0 ? "text-danger" : "text-fg",
-                    )}
-                  >
-                    {survivesDisks} disk{survivesDisks !== 1 ? "s" : ""}
-                  </span>{" "}
-                  going down
-                </p>
-                {localDomain === "host" && (
-                  <p
-                    className={cn(
-                      "text-sm",
-                      survivesMachines === 0 ? "text-danger" : "text-fg-muted",
-                    )}
-                  >
-                    Survives{" "}
-                    <span
-                      className={cn(
-                        "font-semibold",
-                        survivesMachines === 0 ? "text-danger" : "text-fg",
-                      )}
-                    >
-                      {survivesMachines} machine
-                      {survivesMachines !== 1 ? "s" : ""}
-                    </span>{" "}
-                    going down
-                  </p>
-                )}
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Apply */}
-        {changed && !confirm && !result && (
-          <Button
-            onClick={() => setConfirm(true)}
-            disabled={feasibility === "impossible"}
-            variant="outline"
-            className="gap-2"
-          >
-            Apply changes
-          </Button>
-        )}
-
-        {confirm && (
-          <div className="rounded-md border border-warning/30 bg-warning/5 px-4 py-3 space-y-3">
-            <p className="text-sm text-warning font-medium">
-              {localMode === "auto"
-                ? "Switch to Automatic mode? The system will manage redundancy from now on."
-                : `Apply ${localSize}× replication (${localDomain === "osd" ? "disk-level" : "machine-level"})?`}
-            </p>
-            <p className="text-xs text-fg-muted">
-              Changes apply within 60 seconds. Ceph will rebalance data in the
-              background.
-            </p>
-            <div className="flex gap-2">
-              <Button
-                onClick={() => void applyChanges()}
-                disabled={applying}
-                size="sm"
-                className="gap-2"
-              >
-                {applying && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
-                {applying ? "Saving…" : "Confirm"}
-              </Button>
-              <Button
-                onClick={() => setConfirm(false)}
-                disabled={applying}
-                size="sm"
-                variant="outline"
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {result && (
-          <p
-            className={cn(
-              "text-sm",
-              result.startsWith("Saved") ? "text-success" : "text-danger",
-            )}
-          >
-            {result}
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Advanced panel (OSD table + Ceph dashboard) ────────────────────────────────
-
 function OsdTable({
   osds,
   onRefresh,
@@ -1040,141 +995,112 @@ function OsdTable({
   const hosts = [...new Set(osds.map((o) => o.host))].sort();
 
   return (
-    <div className="space-y-2">
-      <p className="text-xs font-medium text-fg-muted uppercase tracking-wider px-1">
-        Disk details
-      </p>
-      <div className="overflow-x-auto rounded-md border border-border">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              {[
-                "OSD",
-                "Host",
-                "Class",
-                "Size",
-                "Fill",
-                "Used / Free",
-                "PGs",
-                "Balance",
-                "In/Out",
-                "Up/Down",
-                "Losable",
-                "Removable",
-                "",
-              ].map((h, i) => (
-                <th
-                  key={i}
-                  className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted whitespace-nowrap first:pl-5 last:pr-5"
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border/40">
-            {hosts.flatMap((host) => {
-              const hostOsds = osds.filter((o) => o.host === host);
-              return hostOsds.map((osd, idx) => (
-                <tr
-                  key={osd.id}
-                  className="hover:bg-border/20 transition-colors"
-                >
-                  <td className="pl-5 pr-4 py-3 font-mono text-xs text-primary">
-                    {osd.name}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-fg-muted">
-                    {idx === 0 && (
-                      <span className="inline-flex items-center gap-1">
-                        <HardDrive className="h-3 w-3" />
-                        {host}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant="muted" className="text-xs uppercase">
-                      {osd.class || "—"}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-fg-muted whitespace-nowrap tabular-nums">
-                    {osd.size_bytes > 0 ? fmtBytes(osd.size_bytes) : "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    {osd.size_bytes > 0 ? (
-                      <FillBar pct={osd.utilization} />
-                    ) : (
-                      <span className="text-xs text-border-strong">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-fg-muted whitespace-nowrap tabular-nums">
-                    {osd.size_bytes > 0
-                      ? osd.crush_weight > 0
-                        ? `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.avail_bytes)}`
-                        : `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.size_bytes)}`
-                      : "—"}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-fg-muted tabular-nums">
-                    {osd.pgs}
-                  </td>
-                  <td className="px-4 py-3">
-                    <VarBadge v={osd.var} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <OsdPill on={osd.crush_weight > 0} labels={["In", "Out"]} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <OsdPill on={osd.status === "up"} labels={["Up", "Down"]} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <OsdPill on={osd.ok_to_stop} labels={["Yes", "No"]} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <OsdPill on={osd.safe_to_destroy} labels={["Yes", "No"]} />
-                  </td>
-                  <td className="pr-5 px-4 py-3">
-                    <OsdActions osd={osd} onRefresh={onRefresh} />
-                  </td>
-                </tr>
-              ));
-            })}
-          </tbody>
-        </table>
-      </div>
+    <div className="overflow-x-auto rounded-xl border border-border">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border">
+            {[
+              "OSD",
+              "Host",
+              "Class",
+              "Size",
+              "Fill",
+              "Used / Free",
+              "PGs",
+              "Balance",
+              "In/Out",
+              "Up/Down",
+              "Losable",
+              "Removable",
+              "",
+            ].map((h, i) => (
+              <th
+                key={i}
+                className="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-5 last:pr-5"
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {hosts.flatMap((host) => {
+            const hostOsds = osds.filter((o) => o.host === host);
+            return hostOsds.map((osd, idx) => (
+              <tr key={osd.id}>
+                <td className="py-3 pl-5 pr-4 font-mono text-xs text-primary">
+                  {osd.name}
+                </td>
+                <td className="px-4 py-3 text-xs text-fg-muted">
+                  {idx === 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <HardDrive className="h-3 w-3" />
+                      {host}
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <Badge variant="muted" className="text-xs uppercase">
+                    {osd.class || "—"}
+                  </Badge>
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-fg-muted">
+                  {osd.size_bytes > 0 ? fmtBytes(osd.size_bytes) : "—"}
+                </td>
+                <td className="px-4 py-3">
+                  {osd.size_bytes > 0 ? (
+                    <FillBar pct={osd.utilization} />
+                  ) : (
+                    <span className="text-xs text-fg-subtle">—</span>
+                  )}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-fg-muted">
+                  {osd.size_bytes > 0
+                    ? osd.crush_weight > 0
+                      ? `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.avail_bytes)}`
+                      : `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.size_bytes)}`
+                    : "—"}
+                </td>
+                <td className="px-4 py-3 text-xs tabular-nums text-fg-muted">
+                  {osd.pgs}
+                </td>
+                <td className="px-4 py-3">
+                  <VarBadge v={osd.var} />
+                </td>
+                <td className="px-4 py-3">
+                  <OsdPill on={osd.crush_weight > 0} labels={["In", "Out"]} />
+                </td>
+                <td className="px-4 py-3">
+                  <OsdPill on={osd.status === "up"} labels={["Up", "Down"]} />
+                </td>
+                <td className="px-4 py-3">
+                  <OsdPill on={osd.ok_to_stop} labels={["Yes", "No"]} />
+                </td>
+                <td className="px-4 py-3">
+                  <OsdPill on={osd.safe_to_destroy} labels={["Yes", "No"]} />
+                </td>
+                <td className="px-4 py-3 pr-5">
+                  <OsdActions osd={osd} onRefresh={onRefresh} />
+                </td>
+              </tr>
+            ));
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  function copy() {
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }
-  return (
-    <button
-      onClick={copy}
-      className="text-fg-subtle hover:text-fg-muted transition-colors"
-    >
-      {copied ? (
-        <Check className="h-3.5 w-3.5 text-success" />
-      ) : (
-        <Copy className="h-3.5 w-3.5" />
-      )}
-    </button>
-  );
-}
-
 function AdvancedPanel({
-  osds,
+  detail,
   onRefresh,
+  refreshing,
 }: {
-  osds: OsdInfo[];
+  detail: StorageDetail | undefined;
   onRefresh: () => void;
+  refreshing: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [creds, setCreds] = useState<{
     username: string;
     password: string;
@@ -1183,78 +1109,108 @@ function AdvancedPanel({
 
   function toggle() {
     if (!open && !creds) {
-      setLoading(true);
-      fetch("/api/ceph/dashboard")
-        .then((r) => r.json())
-        .then((d) => setCreds(d))
-        .catch(() => {})
-        .finally(() => setLoading(false));
+      void api
+        .get<{ username: string; password: string }>("/api/ceph/dashboard")
+        .then(setCreds)
+        .catch(() => {});
     }
     setOpen((o) => !o);
   }
 
+  const osds = detail?.osds ?? [];
+
   return (
-    <div className="rounded-md border border-border overflow-hidden">
+    <div className="mt-8">
       <button
         onClick={toggle}
-        className="w-full flex items-center justify-between px-4 py-3 text-sm text-fg-muted hover:text-fg-muted hover:bg-surface-2 transition-colors"
+        className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
+        aria-expanded={open}
       >
-        <span className="font-medium">Advanced</span>
+        Technical details
         <ChevronDown
           className={cn("h-4 w-4 transition-transform", open && "rotate-180")}
         />
       </button>
 
       {open && (
-        <div className="border-t border-border px-4 py-4 bg-surface space-y-6">
-          {/* OSD table */}
+        <div className="mt-4 space-y-6">
+          <div className="flex items-center justify-between">
+            {/* The one refresh control on the page. Everything above refreshes
+                itself; this exists for the moment after plugging a disk in,
+                when twenty seconds feels long. */}
+            <p className="text-sm text-fg-muted">
+              Raw totals count every copy, so they are larger than the space
+              above.
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onRefresh}
+              disabled={refreshing}
+            >
+              <RefreshCw
+                className={cn("h-4 w-4", refreshing && "animate-spin")}
+              />
+              Refresh
+            </Button>
+          </div>
+
+          {detail && (
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: "Raw total", value: fmtBytes(detail.total_bytes) },
+                { label: "Raw used", value: fmtBytes(detail.used_bytes) },
+                { label: "Raw free", value: fmtBytes(detail.avail_bytes) },
+              ].map(({ label, value }) => (
+                <Card key={label} className="p-4">
+                  <p className="text-xs text-fg-muted">{label}</p>
+                  <p className="mt-0.5 text-lg font-medium tabular-nums text-fg">
+                    {value}
+                  </p>
+                </Card>
+              ))}
+            </div>
+          )}
+
           {osds.length > 0 && <OsdTable osds={osds} onRefresh={onRefresh} />}
 
-          {/* Ceph dashboard */}
-          {loading && (
-            <p className="text-xs text-fg-subtle">Loading credentials…</p>
-          )}
           {creds && (
-            <div className="space-y-3">
-              <p className="text-xs font-medium text-fg-muted uppercase tracking-wider">
-                Ceph dashboard
-              </p>
+            <div className="space-y-3 rounded-xl border border-border p-4">
+              <p className="text-sm font-medium text-fg">Ceph dashboard</p>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-fg-muted w-24">Username</span>
-                <div className="flex items-center gap-2 font-mono text-sm text-fg">
+                <span className="text-sm text-fg-muted">Username</span>
+                <span className="flex items-center gap-2 font-mono text-sm text-fg">
                   {creds.username}
                   <CopyButton text={creds.username} />
-                </div>
+                </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-fg-muted w-24">Password</span>
-                <div className="flex items-center gap-2 font-mono text-sm text-fg">
+                <span className="text-sm text-fg-muted">Password</span>
+                <span className="flex items-center gap-2 font-mono text-sm text-fg">
                   {showPass ? creds.password : "••••••••••••"}
                   <button
                     onClick={() => setShowPass((s) => !s)}
-                    className="text-fg-subtle hover:text-fg-muted transition-colors"
+                    className="text-fg-subtle hover:text-fg"
+                    aria-label={showPass ? "Hide password" : "Show password"}
                   >
                     {showPass ? (
-                      <EyeOff className="h-3.5 w-3.5" />
+                      <EyeOff className="h-4 w-4" />
                     ) : (
-                      <Eye className="h-3.5 w-3.5" />
+                      <Eye className="h-4 w-4" />
                     )}
                   </button>
                   <CopyButton text={creds.password} />
-                </div>
+                </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-fg-muted w-24">Dashboard</span>
-                <a
-                  href="/ceph-dashboard/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-primary hover:text-primary transition-colors"
-                >
-                  Open Ceph dashboard
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </a>
-              </div>
+              <a
+                href="/ceph-dashboard/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm text-primary"
+              >
+                Open Ceph dashboard
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
             </div>
           )}
         </div>
@@ -1266,107 +1222,123 @@ function AdvancedPanel({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function StoragePage() {
-  const [detail, setDetail] = useState<StorageDetail | null>(null);
-  const [policyData, setPolicyData] = useState<StoragePolicyData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
 
-  function loadDetail() {
-    setLoading(true);
-    fetch("/api/ceph/detail")
-      .then((r) => r.json())
-      .then((d: StorageDetailResponse) => {
-        if (d.ok && d.data) {
-          setDetail(d.data);
-          setError(null);
-        } else setError(d.error ?? "Unknown error");
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+  // All three fetches live here, so there is one refresh for the whole page.
+  // Previously the disk list fetched independently and carried its own reload
+  // icon next to the page's own Refresh button, which is why two of them were
+  // on screen doing almost the same thing.
+  const detailRes = useResource<StorageDetailResponse>(
+    "storage-detail",
+    () => api.get("/api/ceph/detail"),
+    { pollMs: 20_000 },
+  );
+  const policyRes = useResource<StoragePolicyData>("storage-policy", () =>
+    api.get("/api/storage/policy"),
+  );
+  const disksRes = useResource<Record<string, DiskInfo[]>>(
+    "storage-disks",
+    () => api.get("/api/disks"),
+    { pollMs: 20_000 },
+  );
+
+  const detail = detailRes.data?.ok ? detailRes.data.data : undefined;
+  const cephError =
+    detailRes.data && !detailRes.data.ok
+      ? (detailRes.data.error ?? "Storage is not responding.")
+      : null;
+
+  function refreshAll() {
+    void detailRes.refresh();
+    void policyRes.refresh();
+    void disksRes.refresh();
   }
 
-  function loadPolicy() {
-    fetch("/api/storage/policy")
-      .then((r) => r.json())
-      .then((d) => setPolicyData(d as StoragePolicyData))
-      .catch(() => {});
-  }
-
-  function loadAll() {
-    loadDetail();
-    loadPolicy();
-  }
-
-  useEffect(() => {
-    loadAll();
-  }, []);
+  const policy = policyRes.data;
+  const summary = useMemo(() => {
+    if (!policy) return null;
+    const { target, policy: p } = policy;
+    const unit = target.failure_domain === "host" ? "machines" : "disks";
+    return p.mode === "auto"
+      ? `Decided for you — ${target.size} ${target.size === 1 ? "copy" : "copies"} across different ${unit}`
+      : `${target.size} ${target.size === 1 ? "copy" : "copies"} across different ${unit}`;
+  }, [policy]);
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm text-fg-muted mt-0.5">
-            Disk pool, capacity, and redundancy settings
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={loadAll}
-          disabled={loading}
-          className="gap-2 mt-0.5"
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-          Refresh
-        </Button>
-      </div>
-
-      {/* Durability posture — always at top if policy data available */}
-      {policyData && <DurabilityCard data={policyData} detail={detail} />}
-
-      {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-4">
-          <AlertTriangle className="h-4 w-4 text-danger mt-0.5 flex-shrink-0" />
-          <p className="text-sm text-danger">{error}</p>
-        </div>
+    <div className="space-y-6">
+      {cephError && (
+        <Banner tone="error" title="Storage is not responding">
+          {cephError}
+        </Banner>
       )}
 
-      {loading && !detail && (
-        <p className="text-sm text-fg-muted">Loading storage data…</p>
+      <CapacityCard
+        detail={detail}
+        policy={policy}
+        loading={detailRes.loading}
+      />
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold text-fg-muted">Disks</h2>
+        <DiskList
+          disks={disksRes.data}
+          osds={detail?.osds ?? []}
+          loading={disksRes.loading}
+          onChanged={refreshAll}
+        />
+        <p className="mt-3 text-sm text-fg-subtle">
+          A new disk does nothing until you switch it on. Switching one off
+          moves its data elsewhere first.
+        </p>
+      </section>
+
+      {policy && (
+        <section>
+          <h2 className="mb-3 text-sm font-semibold text-fg-muted">
+            Protection
+          </h2>
+          <Card className="flex items-center gap-4 p-5">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-fg">{summary}</p>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setEditing(true)}
+            >
+              Change
+            </Button>
+          </Card>
+        </section>
       )}
 
-      {detail && (
-        <>
-          {/* Cluster capacity */}
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              { label: "Raw total", value: fmtBytes(detail.total_bytes) },
-              { label: "Raw used", value: fmtBytes(detail.used_bytes) },
-              { label: "Raw free", value: fmtBytes(detail.avail_bytes) },
-            ].map(({ label, value }) => (
-              <Card key={label}>
-                <CardContent className="pt-4 pb-3">
-                  <p className="text-xs text-fg-muted">{label}</p>
-                  <p className="text-lg font-semibold text-fg mt-0.5 tabular-nums">
-                    {value}
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          <ManageDisksPanel osds={detail.osds} />
-
-          <StorageModePanel
-            policyData={policyData}
-            osds={detail.osds}
-            pools={detail.pools}
-            onPolicyChanged={loadPolicy}
-          />
-        </>
+      {policy && (
+        <RedundancySheet
+          open={editing}
+          onClose={() => setEditing(false)}
+          policyData={policy}
+          osds={detail?.osds ?? []}
+          pools={detail?.pools ?? []}
+          onPolicyChanged={refreshAll}
+        />
       )}
 
-      <AdvancedPanel osds={detail?.osds ?? []} onRefresh={loadDetail} />
+      <AdvancedPanel
+        detail={detail}
+        onRefresh={refreshAll}
+        refreshing={detailRes.loading}
+      />
+
+      {/* Kept out of the way, but not hidden: this is the one thing on the page
+          that can destroy data, and someone who erased a disk by accident
+          needs to have been told what would happen. */}
+      {detail && detail.osds.some((o) => o.status !== "up") && (
+        <Banner tone="warning" title="A disk is offline" className="mt-2">
+          Your files are still there. If the disk does not come back, switch it
+          off above and YoLab will rebuild the missing copies on the ones that
+          remain.
+        </Banner>
+      )}
     </div>
   );
 }
