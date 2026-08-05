@@ -1,15 +1,14 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Sparkles } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppTile, AppTileSkeleton } from "@/components/AppTile";
-import { AppDetailSheet } from "@/components/AppDetailSheet";
 import { Banner, EmptyState } from "@/components/ui/feedback";
 import { buttonClass } from "@/components/ui/button-variants";
 import { api } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
-import { appDisplayName, appUrl, catalogEntry } from "@/lib/apps";
-import type { AppInfo, CatalogApp, DomainResponse } from "@/types/apps";
+import { appDisplayName, catalogEntry } from "@/lib/apps";
+import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
 
 /**
@@ -60,16 +59,11 @@ function topConcern(health: ClusterHealth | undefined): Concern | null {
 }
 
 export function HomePage() {
-  const [selected, setSelected] = useState<AppInfo | null>(null);
-
   const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"), {
     pollMs: 10_000,
   });
   const catalog = useResource<CatalogApp[]>("catalog", () =>
     api.get("/api/apps/catalog"),
-  );
-  const domain = useResource<DomainResponse>("domain", () =>
-    api.get("/api/tunnel/domain"),
   );
   const health = useResource<ClusterHealth>(
     "health",
@@ -80,12 +74,6 @@ export function HomePage() {
   const concern = topConcern(health.data);
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
   const installed = apps.data ?? [];
-
-  // Keep the sheet's data fresh across polls without it closing under the user.
-  const selectedLive = selected
-    ? (installed.find((a) => a.instance_name === selected.instance_name) ??
-      selected)
-    : null;
 
   return (
     <Page wide>
@@ -156,8 +144,6 @@ export function HomePage() {
                 app={app}
                 name={appDisplayName(app, catalogApps)}
                 icon={entry?.icon ?? "📦"}
-                url={appUrl(app, domain.data?.domain ?? "")}
-                onDetails={() => setSelected(app)}
               />
             );
           })}
@@ -173,14 +159,6 @@ export function HomePage() {
           </Link>
         </div>
       )}
-
-      <AppDetailSheet
-        app={selectedLive}
-        catalog={catalogApps}
-        tunnelDomain={domain.data?.domain ?? ""}
-        onClose={() => setSelected(null)}
-        onChanged={() => void apps.refresh()}
-      />
     </Page>
   );
 }
