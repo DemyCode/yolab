@@ -1,0 +1,93 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "5Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: vikunja
+        image: vikunja/vikunja:latest@sha256:22df4c1bc8843c28d383bc5f52b59e7b601bf5f6560b36b29c0a500833c77fa3
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            . /yolab/env
+            export VIKUNJA_SERVICE_PUBLICURL="$YOLAB_URL"
+            exec /app/vikunja/vikunja
+        env:
+          - name: VIKUNJA_DATABASE_TYPE
+            value: "sqlite"
+          - name: VIKUNJA_DATABASE_PATH
+            value: "/db/vikunja.db"
+          - name: VIKUNJA_FILES_BASEPATH
+            value: "/files"
+          - name: VIKUNJA_SERVICE_JWTSECRET
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: app_secret
+        readinessProbe:
+          tcpSocket:
+            port: 3456
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 3456
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /db
+            subPath: {{ .Release.Name }}/vikunja/db
+          - name: data
+            mountPath: /files
+            subPath: {{ .Release.Name }}/vikunja/files
+          - name: yolab
+            mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

@@ -1,0 +1,197 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "50Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+{{- /* Listens on 80, which Caddy already binds in the gateway pod — containers
+       in a pod share one network namespace, so this cannot live beside it. Running
+       here instead means it has no access to the gateway's /yolab/env emptyDir, so
+       yolabEnvInit reconstructs the same file from the shared PVC. */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextcloud
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nextcloud
+  template:
+    metadata:
+      labels:
+        app: nextcloud
+    spec:
+      initContainers:
+      {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
+      containers:
+      - name: nextcloud
+        image: nextcloud:31-apache@sha256:07ec73cc816e58d6f45a162cd53ef886462c29271a23fc68d0124cec276e3767
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            . /yolab/env
+            export NEXTCLOUD_TRUSTED_DOMAINS="$YOLAB_FQDN"
+            export OVERWRITEHOST="$YOLAB_FQDN"
+            export OVERWRITECLIURL="$YOLAB_URL"
+            exec /entrypoint.sh apache2-foreground
+        env:
+          - name: POSTGRES_HOST
+            value: "postgres.{{ .Release.Namespace }}.svc.cluster.local"
+          - name: POSTGRES_DB
+            value: "nextcloud"
+          - name: POSTGRES_USER
+            value: "nextcloud"
+          - name: POSTGRES_PASSWORD
+            value: "nextcloud"
+          - name: OVERWRITEPROTOCOL
+            value: "https"
+          - name: NEXTCLOUD_ADMIN_USER
+            value: {{ .Values.config.admin_user | quote }}
+          - name: NEXTCLOUD_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: admin_password
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /var/www/html
+            subPath: {{ .Release.Name }}/nextcloud
+          - name: yolab
+            mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.yolabEnvVolumes" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: nextcloud
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              value: "nextcloud"
+            - name: POSTGRES_PASSWORD
+              value: "nextcloud"
+            - name: POSTGRES_DB
+              value: "nextcloud"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "nextcloud"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "nextcloud"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: {{ .Release.Name }}/postgres
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

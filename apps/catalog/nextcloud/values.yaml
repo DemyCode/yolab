@@ -1,0 +1,22 @@
+# Everything under `config` is user-facing: it is exactly what the install form
+# edits, and its schema (values.schema.json -> properties.config) is what local-api
+# serves to the UI. Everything under `yolab` is injected by local-api at install
+# time and is not the user's business.
+
+config:
+  subdomain: nextcloud
+  admin_user: "admin"
+  # No default on purpose — values.schema.json marks it required, so installing
+  # without one fails at render time instead of shipping a weak shared value.
+  admin_password: ""
+  storage_size: 50Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  # The tunnel subdomain actually requested — local-api resolves this from whichever
+  # config field is marked `format: tunnel` in the schema.
+  serviceName: ""
+  gateway:
+    # Caddy proxies to the app, which runs in its own pod.
+    upstream: nextcloud:80

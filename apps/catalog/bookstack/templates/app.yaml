@@ -1,0 +1,199 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "20Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_key: {{ required "config.app_key is required" .Values.config.app_key | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+{{- /* Listens on 80, which Caddy already binds in the gateway pod — containers
+       in a pod share one network namespace, so this cannot live beside it. Running
+       here instead means it has no access to the gateway's /yolab/env emptyDir, so
+       yolabEnvInit reconstructs the same file from the shared PVC. */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bookstack
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bookstack
+  template:
+    metadata:
+      labels:
+        app: bookstack
+    spec:
+      initContainers:
+      {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
+      containers:
+      - name: bookstack
+        image: ghcr.io/linuxserver/bookstack:latest@sha256:7f0af07baa41fd6265f5ec57887564d85be03a326f79cb32f926fe735e5313ff
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            . /yolab/env
+            export APP_URL="$YOLAB_URL"
+            exec /init
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: "Etc/UTC"
+          - name: DB_HOST
+            value: "mariadb.{{ .Release.Namespace }}.svc.cluster.local"
+          - name: DB_PORT
+            value: "3306"
+          - name: DB_DATABASE
+            value: "bookstack"
+          - name: DB_USERNAME
+            value: "bookstack"
+          - name: DB_PASSWORD
+            value: "bookstack"
+          - name: APP_KEY
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: app_key
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/bookstack
+          - name: yolab
+            mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.yolabEnvVolumes" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bookstack
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: bookstack
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MARIADB_USER
+              value: "bookstack"
+            - name: MARIADB_PASSWORD
+              value: "bookstack"
+            - name: MARIADB_DATABASE
+              value: "bookstack"
+            - name: MARIADB_ROOT_PASSWORD
+              value: "bookstack-root"
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+              subPath: {{ .Release.Name }}/mariadb
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mariadb
+  ports:
+    - port: 3306
+      targetPort: 3306

@@ -19,6 +19,9 @@ describe a workload that can actually run":
   - images are digest-pinned and never re-pull on restart
   - no Secret key renders empty
   - ACCOUNT_TOKEN reaches only wg-register/cleanup, and only by reference
+  - a container reading YOLAB_FQDN/YOLAB_URL mounts /yolab AND has an init
+    container that writes it
+  - every `sh -c` container command is valid shell
 
 Renders against the yolab-common in this working tree, not the published one, so
 a library change is checked against the charts before it is released.
@@ -27,6 +30,7 @@ Usage:
     check_charts.py [chart-dir ...]     # default: every chart in this directory
 """
 import glob
+import json
 import os
 import re
 import shutil
@@ -47,6 +51,10 @@ LINT_VALUES = {
     "config.admin_password": "PlaceholderPw2026",
     "config.admin_email": "admin@example.com",
     "config.app_secret": "PlaceholderPw2026",
+    # Exactly 32 characters: Firefly III's schema pins minLength and maxLength there,
+    # and helm validates values.schema.json during template.
+    "config.app_key": "PlaceholderAppKey2026Placeholder",
+    "config.api_key": "PlaceholderApiKey2026",
     "config.server_name": "example",
     "config.server_pass": "PlaceholderPw2026",
     "config.subdomain": "example",
@@ -151,6 +159,40 @@ def check(app, docs, fail):
 
     for dname, d in deploys.items():
         spec = d["spec"]["template"]["spec"]
+
+        # An app that needs its own public URL learns it by sourcing /yolab/env,
+        # which something has to write first: wg-register in the gateway pod, or
+        # yolab-env in a pod of its own. Reference the variable without both the
+        # mount and a writer and the app starts with it empty — which for these
+        # apps means a permanent install record built around a blank hostname,
+        # not a crash. Nothing else in the rendered YAML would show it.
+        inits = {c["name"]: c for c in spec.get("initContainers") or []}
+        writes_yolab_env = any(n in inits for n in ("wg-register", "yolab-env"))
+        for c in spec.get("containers") or []:
+            uses = "YOLAB_FQDN" in json.dumps(c) or "YOLAB_URL" in json.dumps(c)
+            if not uses:
+                continue
+            if not any(m["mountPath"] == "/yolab" for m in c.get("volumeMounts") or []):
+                fail(app, f"pod {dname}: container {c['name']} reads YOLAB_* but does "
+                          f"not mount /yolab")
+            if not writes_yolab_env:
+                fail(app, f"pod {dname}: container {c['name']} reads YOLAB_* but no init "
+                          f"container writes /yolab/env (needs wg-register or yolab-env)")
+
+        # Several containers start with a `sh -c` script that sources /yolab/env,
+        # exports the app's own-URL variables, then execs the image's entrypoint.
+        # Those scripts carry nested quoting (Linkwarden's reproduces a CMD that
+        # itself contains an `sh -c "…"`), and a quoting mistake renders as
+        # perfectly valid YAML and crashloops the container. Parse them.
+        for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
+            cmd = c.get("command") or []
+            if len(cmd) >= 3 and cmd[0] in ("/bin/sh", "sh", "/bin/bash") and cmd[1] == "-c":
+                syntax = subprocess.run(
+                    ["sh", "-n"], input=cmd[2], capture_output=True, text=True
+                )
+                if syntax.returncode != 0:
+                    fail(app, f"pod {dname}: container {c['name']} command is not valid "
+                              f"shell: {syntax.stderr.strip()}")
 
         # Containers in a pod share one network namespace, so two claiming the
         # same port means whichever starts second fails to bind — silently.
