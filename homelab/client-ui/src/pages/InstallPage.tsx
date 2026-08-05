@@ -17,7 +17,7 @@ import { api, streamEvents } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import { generateSecret } from "@/lib/format";
 import { nextInstanceName } from "@/lib/apps";
-import { AppIcon } from "@/components/AppIcon";
+import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp, DomainResponse } from "@/types/apps";
@@ -344,13 +344,12 @@ export function InstallPage() {
     return (
       <Page>
         <div className="flex flex-col items-center py-14 text-center">
-          <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-tile bg-surface-2">
-            <AppIcon
-              icon={app.icon}
-              name={app.name}
-              className="h-10 w-10 text-4xl"
-            />
-          </div>
+          <AppIconTile
+            appId={app.id}
+            icon={app.icon}
+            name={app.name}
+            className="mb-6"
+          />
           <h1 className="font-display text-2xl text-fg">
             Setting up {app.name}
           </h1>
@@ -393,13 +392,7 @@ export function InstallPage() {
       </Link>
 
       <div className="mb-7 flex items-center gap-4">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-tile bg-surface-2">
-          <AppIcon
-            icon={app.icon}
-            name={app.name}
-            className="h-8 w-8 text-3xl"
-          />
-        </div>
+        <AppIconTile appId={app.id} icon={app.icon} name={app.name} />
         <div className="min-w-0">
           <h1 className="font-display text-3xl text-fg">{app.name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>

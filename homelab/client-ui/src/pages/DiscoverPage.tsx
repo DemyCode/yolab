@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Check, Search } from "lucide-react";
 import { Page } from "@/components/AppShell";
-import { AppIcon } from "@/components/AppIcon";
+import { AppIconTile } from "@/components/AppIcon";
 import { Input } from "@/components/ui/input";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
@@ -26,9 +26,7 @@ function AppCard({ app, count }: { app: CatalogApp; count: number }) {
       to={`/add/${app.id}`}
       className="group flex items-start gap-3.5 rounded-card border border-border bg-surface p-4 transition hover:border-border-strong hover:shadow-[var(--shadow-card)] active:scale-[0.99]"
     >
-      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-surface-2">
-        <AppIcon icon={app.icon} name={app.name} className="h-7 w-7 text-2xl" />
-      </div>
+      <AppIconTile appId={app.id} icon={app.icon} name={app.name} size="sm" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium text-fg">{app.name}</span>
