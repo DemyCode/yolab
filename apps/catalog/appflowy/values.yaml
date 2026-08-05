@@ -23,6 +23,11 @@ yolab:
     caddyfile: |-
       {$YOLAB_FQDN} {
         handle /gotrue/* {
+          # gotrue serves its API at the root (/token, /signup, …), so the prefix
+          # has to come off before forwarding — upstream's nginx does the same with
+          # a trailing-slash proxy_pass. Without this every auth call 404s. gotrue
+          # still advertises itself *with* the prefix, via API_EXTERNAL_URL.
+          uri strip_prefix /gotrue
           reverse_proxy gotrue:9999
         }
         handle /minio-api/* {

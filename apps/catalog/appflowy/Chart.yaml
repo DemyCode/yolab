@@ -4,7 +4,7 @@ description: "Open-source alternative to Notion. Docs, wikis, and projects in on
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.
-version: 0.1.0
+version: 0.2.0
 
 dependencies:
   - name: yolab-common
