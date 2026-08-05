@@ -15,6 +15,15 @@ spec:
     requests:
       storage: 20Gi
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,6 +103,41 @@ spec:
       labels:
         app: cloud
     spec:
+      initContainers:
+      {{- /* AppFlowy Cloud's migration 20231130150001 reads the `auth` schema, and
+             that schema is created by gotrue's own migrations against this same
+             database. Nothing orders the two, so cloud reaches its migration first,
+             fails with `schema "auth" does not exist`, and CrashLoopBackOffs —
+             taking the worker down with it, since the tables it polls are created
+             by the migrations that never ran. Upstream's compose file expresses
+             this as `depends_on: gotrue`; Kubernetes has no such thing, so the
+             dependency has to be waited for explicitly. */}}
+      - name: prepare-database
+        image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Cloud migration 20241126175909 declares a `vector` column, so the
+          # extension has to exist before migrations run. Postgres only executes
+          # docker-entrypoint-initdb.d on a brand new data directory, which is no
+          # help on an existing volume — doing it here is idempotent and works
+          # either way.
+          until psql "$DATABASE_URL" -c "create extension if not exists vector" 2>/dev/null; do
+            echo "waiting for postgres..."
+            sleep 3
+          done
+          until psql "$DATABASE_URL" -tAc \
+            "select 1 from information_schema.schemata where schema_name = 'auth'" \
+            2>/dev/null | grep -q 1; do
+            echo "waiting for gotrue to create the auth schema..."
+            sleep 3
+          done
+          echo "vector extension and auth schema present — migrations can run"
+        env:
+        - name: DATABASE_URL
+          value: postgres://appflowy:appflowy@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/appflowy
       containers:
       - name: cloud
         image: appflowyinc/appflowy_cloud:latest@sha256:92821ef7b9057c5a0c4878df21ed550be38a389b2cd16ad9ac1a349f352274dd
@@ -234,6 +278,12 @@ spec:
       labels:
         app: gotrue
     spec:
+      initContainers:
+      {{- /* gotrue needs API_EXTERNAL_URL, and the value is this release's public
+             hostname, which only exists once wg-register has claimed it. gotrue runs
+             in its own pod, so it cannot see the gateway's /yolab/env emptyDir —
+             yolabEnvInit rebuilds the same file from the shared PVC. */}}
+      {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:
       - name: gotrue
         image: appflowyinc/gotrue:latest@sha256:87149e0003af9462824548d47f9ecc3e2b5e3c85501f4c8eb37b5efb55abc6a7
@@ -254,16 +304,26 @@ spec:
         command:
         - /bin/sh
         - -c
-        - 'until [ -f /state/secrets.env ]; do sleep 2; done
-
+        - |
+          until [ -f /state/secrets.env ]; do sleep 2; done
           . /state/secrets.env
-
+          . /yolab/env
           export GOTRUE_JWT_SECRET="$APPFLOWY_JWT_SECRET"
-
+          # gotrue refuses to start without this ("required key API_EXTERNAL_URL
+          # missing value"), which is what kept this chart from ever working. The
+          # /gotrue prefix matches the Caddy route, and gotrue builds its own
+          # advertised endpoints from it, so it has to include the prefix even
+          # though Caddy strips it before forwarding.
+          export API_EXTERNAL_URL="$YOLAB_URL/gotrue"
           exec /start.sh
-
-          '
         env:
+        {{- /* gotrue defaults to :8081, but the Service, the readiness probe, the
+               Caddy route and cloud's APPFLOWY_GOTRUE_BASE_URL all address it on
+               9999 (as upstream's compose does). Left unset the container comes up
+               healthy from its own point of view and every one of those four is
+               talking to a closed port. */}}
+        - name: GOTRUE_API_PORT
+          value: '9999'
         - name: GOTRUE_SITE_URL
           value: appflowy-flutter://
         - name: URI_ALLOW_LIST
@@ -272,16 +332,31 @@ spec:
           value: '7200'
         - name: GOTRUE_DB_DRIVER
           value: postgres
+        {{- /* search_path=auth is load-bearing. `auth migrate` schema-qualifies its
+               DDL, so the tables get created either way — but every runtime query,
+               including the `admin createuser` that /start.sh runs on boot, uses
+               unqualified names. Without it gotrue creates 23 tables and then dies
+               with `relation "identities" does not exist`, which reads like the
+               migrations failed when they in fact succeeded. Upstream gets this for
+               free from a dedicated role whose search_path is preset; we share one
+               role with appflowy_cloud, which needs `public`, so it is set per
+               connection here instead of on the role. */}}
         - name: DATABASE_URL
-          value: postgres://appflowy:appflowy@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/appflowy
+          value: postgres://appflowy:appflowy@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/appflowy?search_path=auth
         - name: GOTRUE_SMTP_ADMIN_EMAIL
           value: {{ .Values.config.admin_email }}
         - name: GOTRUE_MAILER_AUTOCONFIRM
           value: 'true'
         - name: GOTRUE_ADMIN_EMAIL
           value: {{ .Values.config.admin_email }}
+        {{- /* By reference, not by value. This is the owner's password: inline it
+               and it is readable from `kubectl get deploy -o yaml` and captured
+               verbatim in every cluster-state backup. */}}
         - name: GOTRUE_ADMIN_PASSWORD
-          value: {{ .Values.config.admin_password }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-secrets
+              key: admin_password
         - name: GOTRUE_EXTERNAL_EMAIL_ENABLED
           value: 'true'
         - name: GOTRUE_RATE_LIMIT_EMAIL_SENT
@@ -292,10 +367,10 @@ spec:
         - name: data
           mountPath: /state
           subPath: {{ .Release.Name }}/yolab-state
+        - name: yolab
+          mountPath: /yolab
       volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-data
+      {{- include "yolab-common.yolabEnvVolumes" . | nindent 6 }}
 ---
 apiVersion: v1
 kind: Service
@@ -398,7 +473,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
