@@ -16,9 +16,11 @@ import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import { generateSecret } from "@/lib/format";
+import { nextInstanceName } from "@/lib/apps";
+import { AppIcon } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
-import type { CatalogApp, DomainResponse } from "@/types/apps";
+import type { AppInfo, CatalogApp, DomainResponse } from "@/types/apps";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 // Every chart in the catalog describes its install form with the same tiny
@@ -100,6 +102,7 @@ export function InstallPage() {
   const domain = useResource<DomainResponse>("domain", () =>
     api.get("/api/tunnel/domain"),
   );
+  const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"));
 
   const app = catalog.data?.find((a) => a.id === appId);
   const schema = useMemo(() => configSchema(app?.schema), [app?.schema]);
@@ -116,32 +119,66 @@ export function InstallPage() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  // The install form's starting point: every default filled in, and every
-  // secret already generated, so the form arrives with nothing left to do.
-  //
-  // Derived rather than copied into state on mount. Seeding state from an
-  // effect means the first render shows an empty form and the second shows the
-  // real one, which on a slow catalog fetch is a visible flash of blank fields.
-  const defaults = useMemo(() => {
+  // A free name for this install. `nextcloud` the first time, `nextcloud-2`
+  // the next — the name is both the Kubernetes namespace and the default web
+  // address, so it has to be unused and a valid DNS label.
+  const installedOfThisApp = (apps.data ?? []).filter(
+    (a) => a.app_id === appId,
+  );
+  const suggestedName = nextInstanceName(appId ?? "", apps.data ?? []);
+  const [nameEdit, setNameEdit] = useState<string | null>(null);
+  const instanceName = nameEdit ?? suggestedName;
+  const isCopy = instanceName !== appId;
+
+  const addressKey = useMemo(
+    () =>
+      Object.entries(schema.properties ?? {}).find(
+        ([, p]) => p.format === "tunnel",
+      )?.[0],
+    [schema.properties],
+  );
+
+  // Generated once per chart and deliberately *not* recomputed when anything
+  // else on the form changes — otherwise typing in the name field would mint a
+  // new password on every keystroke, including after the user copied one.
+  const secretDefaults = useMemo(() => {
+    const out: Record<string, unknown> = {};
+    for (const [name, prop] of Object.entries(schema.properties ?? {})) {
+      if (classify(name, prop, required) === "secret") {
+        out[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
+      }
+    }
+    return out;
+  }, [schema.properties, required]);
+
+  // Everything else's starting point, derived rather than copied into state on
+  // mount: seeding from an effect renders an empty form first and the real one
+  // second, which on a slow catalog fetch is a visible flash of blank fields.
+  const baseDefaults = useMemo(() => {
     const seeded: Record<string, unknown> = {};
     for (const [name, prop] of Object.entries(schema.properties ?? {})) {
-      if (prop.default !== undefined) {
-        seeded[name] = prop.default;
-      } else if (classify(name, prop, required) === "secret") {
-        seeded[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
-      } else if (prop.type === "boolean") {
-        seeded[name] = false;
-      } else {
-        seeded[name] = "";
-      }
+      if (classify(name, prop, required) === "secret") continue;
+      if (prop.default !== undefined) seeded[name] = prop.default;
+      else if (prop.type === "boolean") seeded[name] = false;
+      else seeded[name] = "";
     }
     return seeded;
   }, [schema.properties, required]);
 
-  // Only what the user actually changed, so the generated defaults above stay
-  // stable and are not regenerated on every keystroke.
+  // Only what the user actually changed, layered on top.
   const [edits, setEdits] = useState<Record<string, unknown>>({});
-  const values = useMemo(() => ({ ...defaults, ...edits }), [defaults, edits]);
+  const values = useMemo(
+    () => ({
+      ...baseDefaults,
+      ...secretDefaults,
+      // The address tracks the name, so a second copy does not silently try to
+      // claim the first one's subdomain — until the user sets one explicitly,
+      // at which point `edits` wins.
+      ...(addressKey ? { [addressKey]: instanceName } : {}),
+      ...edits,
+    }),
+    [baseDefaults, secretDefaults, addressKey, instanceName, edits],
+  );
   const setValue = (name: string, v: unknown) =>
     setEdits((e) => ({ ...e, [name]: v }));
 
@@ -169,9 +206,13 @@ export function InstallPage() {
       ? `https://${subdomain}.${domain.data.domain}`
       : null;
 
-  const blocking = requiredFields.some(
-    ([n]) => !String(values[n] ?? "").trim(),
+  const nameTaken = (apps.data ?? []).some(
+    (a) => a.instance_name === instanceName,
   );
+  const blocking =
+    !instanceName ||
+    nameTaken ||
+    requiredFields.some(([n]) => !String(values[n] ?? "").trim());
 
   async function install() {
     if (!app) return;
@@ -195,7 +236,7 @@ export function InstallPage() {
       `/api/apps/${app.id}`,
       {
         method: "POST",
-        body: JSON.stringify({ instance_name: app.id, config: payload }),
+        body: JSON.stringify({ instance_name: instanceName, config: payload }),
       },
       (line) => {
         setLog((l) => [...l, line]);
@@ -303,8 +344,12 @@ export function InstallPage() {
     return (
       <Page>
         <div className="flex flex-col items-center py-14 text-center">
-          <div className="mb-6 text-5xl" aria-hidden>
-            {app.icon || "📦"}
+          <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-tile bg-surface-2">
+            <AppIcon
+              icon={app.icon}
+              name={app.name}
+              className="h-10 w-10 text-4xl"
+            />
           </div>
           <h1 className="text-xl font-semibold text-fg">
             Setting up {app.name}
@@ -348,8 +393,12 @@ export function InstallPage() {
       </Link>
 
       <div className="mb-7 flex items-center gap-4">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-tile bg-surface-2 text-3xl">
-          {app.icon || "📦"}
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-tile bg-surface-2">
+          <AppIcon
+            icon={app.icon}
+            name={app.name}
+            className="h-8 w-8 text-3xl"
+          />
         </div>
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-fg">
@@ -358,6 +407,22 @@ export function InstallPage() {
           <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>
         </div>
       </div>
+
+      {isCopy && (
+        <Banner
+          tone="info"
+          title={
+            installedOfThisApp.length === 1
+              ? `You already have ${app.name}`
+              : `You already have ${installedOfThisApp.length} copies of ${app.name}`
+          }
+          className="mb-5"
+        >
+          This adds another, completely separate one — its own storage, its own
+          login, its own web address. Nothing about the existing{" "}
+          {installedOfThisApp.length === 1 ? "one" : "ones"} changes.
+        </Banner>
+      )}
 
       {error && (
         <Banner
@@ -422,93 +487,116 @@ export function InstallPage() {
         )}
       </Card>
 
-      {(optionalFields.length > 0 || addressField) && (
-        <div className="mt-4">
-          <button
-            onClick={() => setShowAdvanced((a) => !a)}
-            className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
-            aria-expanded={showAdvanced}
-          >
-            Settings
-            <ChevronDown
-              className={cn(
-                "h-4 w-4 transition-transform",
-                showAdvanced && "rotate-180",
-              )}
-            />
-          </button>
+      {/* Always available: even a chart with no options of its own has a name,
+          and for a second copy that is the thing you want to change. */}
+      <div className="mt-4">
+        <button
+          onClick={() => setShowAdvanced((a) => !a)}
+          className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
+          aria-expanded={showAdvanced}
+        >
+          Settings
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 transition-transform",
+              showAdvanced && "rotate-180",
+            )}
+          />
+        </button>
 
-          {showAdvanced && (
-            <Card className="mt-3 space-y-5 p-5">
-              {addressField && (
-                <Field
-                  label="Web address"
-                  help={`Your app will live at ${subdomain || "…"}.${domain.data?.domain ?? ""}`}
-                >
-                  <Input
-                    value={subdomain}
-                    onChange={(e) =>
-                      // A subdomain is a DNS label, so anything the keyboard
-                      // can produce that DNS cannot is dropped as it is typed
-                      // rather than rejected after they press Install.
-                      setValue(
-                        addressField[0],
-                        e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                      )
-                    }
+        {showAdvanced && (
+          <Card className="mt-3 space-y-5 p-5">
+            <Field
+              label="Name"
+              help={
+                nameTaken
+                  ? undefined
+                  : "What this copy is called on your box. The web address follows it unless you set one below."
+              }
+              error={
+                nameTaken ? "You already have something with that name." : null
+              }
+            >
+              <Input
+                value={instanceName}
+                onChange={(e) =>
+                  // Doubles as a Kubernetes namespace, so it is restricted to
+                  // what a DNS label allows.
+                  setNameEdit(
+                    e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                  )
+                }
+              />
+            </Field>
+
+            {addressField && (
+              <Field
+                label="Web address"
+                help={`Your app will live at ${subdomain || "…"}.${domain.data?.domain ?? ""}`}
+              >
+                <Input
+                  value={subdomain}
+                  onChange={(e) =>
+                    // A subdomain is a DNS label, so anything the keyboard
+                    // can produce that DNS cannot is dropped as it is typed
+                    // rather than rejected after they press Install.
+                    setValue(
+                      addressField[0],
+                      e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                    )
+                  }
+                />
+              </Field>
+            )}
+
+            {optionalFields.map(([name, prop]) => {
+              if (prop.type === "boolean") {
+                return (
+                  <Toggle
+                    key={name}
+                    label={prop.title ?? name}
+                    help={prop.description}
+                    checked={Boolean(values[name])}
+                    onChange={(v) => setValue(name, v)}
                   />
-                </Field>
-              )}
-
-              {optionalFields.map(([name, prop]) => {
-                if (prop.type === "boolean") {
-                  return (
-                    <Toggle
-                      key={name}
-                      label={prop.title ?? name}
-                      help={prop.description}
-                      checked={Boolean(values[name])}
-                      onChange={(v) => setValue(name, v)}
-                    />
-                  );
-                }
-                if (prop.enum) {
-                  return (
-                    <Field
-                      key={name}
-                      label={prop.title ?? name}
-                      help={prop.description}
-                    >
-                      <Select
-                        value={String(values[name] ?? "")}
-                        onChange={(e) => setValue(name, e.target.value)}
-                      >
-                        {prop.enum.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                  );
-                }
+                );
+              }
+              if (prop.enum) {
                 return (
                   <Field
                     key={name}
                     label={prop.title ?? name}
                     help={prop.description}
                   >
-                    <Input
+                    <Select
                       value={String(values[name] ?? "")}
                       onChange={(e) => setValue(name, e.target.value)}
-                    />
+                    >
+                      {prop.enum.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </Select>
                   </Field>
                 );
-              })}
-            </Card>
-          )}
-        </div>
-      )}
+              }
+              return (
+                <Field
+                  key={name}
+                  label={prop.title ?? name}
+                  help={prop.description}
+                >
+                  <Input
+                    value={String(values[name] ?? "")}
+                    onChange={(e) => setValue(name, e.target.value)}
+                  />
+                </Field>
+              );
+            })}
+          </Card>
+        )}
+      </div>
 
       <div className="mt-7">
         <Button

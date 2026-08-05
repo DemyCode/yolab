@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Check, Search } from "lucide-react";
 import { Page } from "@/components/AppShell";
+import { AppIcon } from "@/components/AppIcon";
 import { Input } from "@/components/ui/input";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
@@ -10,42 +11,43 @@ import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
-function AppCard({ app, installed }: { app: CatalogApp; installed: boolean }) {
-  const inner = (
-    <>
-      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-2xl">
-        {app.icon || "📦"}
+/**
+ * Already having an app is not a reason to be refused another.
+ *
+ * The first version greyed out anything installed, which quietly forbade a
+ * perfectly ordinary thing: a family photo library and a private one, a work
+ * password vault and a personal one, a test blog beside the real one. The
+ * backend never had that limitation — every install gets its own namespace —
+ * so the card stays clickable and just says how many you already have.
+ */
+function AppCard({ app, count }: { app: CatalogApp; count: number }) {
+  return (
+    <Link
+      to={`/add/${app.id}`}
+      className="group flex items-start gap-3.5 rounded-card border border-border bg-surface p-4 transition hover:border-border-strong hover:shadow-[var(--shadow-card)] active:scale-[0.99]"
+    >
+      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-surface-2">
+        <AppIcon icon={app.icon} name={app.name} className="h-7 w-7 text-2xl" />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium text-fg">{app.name}</span>
-          {installed && (
+          {count > 0 && (
             <span className="flex shrink-0 items-center gap-1 text-xs text-success">
               <Check className="h-3.5 w-3.5" />
-              Installed
+              {count === 1 ? "Installed" : `${count} installed`}
             </span>
           )}
         </div>
         <p className="mt-0.5 line-clamp-2 text-sm text-fg-muted">
           {taglineFor(app)}
         </p>
+        {count > 0 && (
+          <p className="mt-1 text-xs text-fg-subtle opacity-0 transition-opacity group-hover:opacity-100">
+            Add another copy
+          </p>
+        )}
       </div>
-    </>
-  );
-
-  if (installed) {
-    return (
-      <div className="flex items-start gap-3.5 rounded-card border border-border bg-surface p-4 opacity-70">
-        {inner}
-      </div>
-    );
-  }
-  return (
-    <Link
-      to={`/add/${app.id}`}
-      className="flex items-start gap-3.5 rounded-card border border-border bg-surface p-4 transition hover:border-border-strong hover:shadow-[var(--shadow-card)] active:scale-[0.99]"
-    >
-      {inner}
     </Link>
   );
 }
@@ -68,10 +70,14 @@ export function DiscoverPage() {
   );
   const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"));
 
-  const installedIds = useMemo(
-    () => new Set((apps.data ?? []).map((a) => a.app_id)),
-    [apps.data],
-  );
+  /** chart id → how many copies are installed. */
+  const installedCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of apps.data ?? []) {
+      counts.set(a.app_id, (counts.get(a.app_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [apps.data]);
 
   const matches = useMemo(() => {
     const all = catalog.data ?? [];
@@ -167,7 +173,7 @@ export function DiscoverPage() {
                   <AppCard
                     key={`${app.repo}/${app.id}`}
                     app={app}
-                    installed={installedIds.has(app.id)}
+                    count={installedCounts.get(app.id) ?? 0}
                   />
                 ))}
               </div>

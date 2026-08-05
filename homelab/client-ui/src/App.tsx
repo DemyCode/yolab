@@ -6,6 +6,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { HomePage } from "@/pages/HomePage";
 import { DiscoverPage } from "@/pages/DiscoverPage";
 import { InstallPage } from "@/pages/InstallPage";
+import { AppDetailPage } from "@/pages/AppDetailPage";
 import { BoxPage } from "@/pages/box/BoxPage";
 import { BoxSubPage } from "@/pages/box/BoxSubPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
@@ -73,6 +74,7 @@ export default function App() {
       <Routes>
         <Route element={<AppShell onLogout={handleLogout} />}>
           <Route path="/" element={<HomePage />} />
+          <Route path="/app/:instanceName" element={<AppDetailPage />} />
           <Route path="/add" element={<DiscoverPage />} />
           <Route path="/add/:appId" element={<InstallPage />} />
           <Route path="/box" element={<BoxPage />} />
