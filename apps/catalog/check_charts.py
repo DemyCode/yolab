@@ -76,22 +76,25 @@ def chart_field(chart_yaml, field):
     return None
 
 
-def render(chart_dir, library_tgz):
-    """helm template the chart against the local library. Returns the YAML text."""
-    charts_dir = os.path.join(chart_dir, "charts")
-    os.makedirs(charts_dir, exist_ok=True)
-    vendored = os.path.join(charts_dir, os.path.basename(library_tgz))
-    shutil.copy(library_tgz, vendored)
-    try:
-        cmd = ["helm", "template", "release", chart_dir]
-        for k, v in LINT_VALUES.items():
-            cmd += ["--set", f"{k}={v}"]
-        out = subprocess.run(cmd, capture_output=True, text=True)
-        if out.returncode != 0:
-            return None, out.stderr.strip()
-        return out.stdout, None
-    finally:
-        os.remove(vendored)
+def render(chart_dir, library_tgz, workdir):
+    """helm template the chart against the local library. Returns the YAML text.
+
+    Renders from a copy: the chart has to gain a `charts/` directory holding the
+    library, and the source tree is read-only when this runs from the nix store.
+    """
+    staged = os.path.join(workdir, os.path.basename(chart_dir.rstrip("/")))
+    shutil.copytree(chart_dir, staged, dirs_exist_ok=True)
+    os.makedirs(os.path.join(staged, "charts"), exist_ok=True)
+    shutil.copy(library_tgz, os.path.join(staged, "charts"))
+
+    cmd = ["helm", "template", "release", staged]
+    for k, v in LINT_VALUES.items():
+        cmd += ["--set", f"{k}={v}"]
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    shutil.rmtree(staged, ignore_errors=True)
+    if out.returncode != 0:
+        return None, out.stderr.strip()
+    return out.stdout, None
 
 
 def check(app, docs, fail):
@@ -261,7 +264,7 @@ def main(argv):
                 fail(app, f"depends on yolab-common {declared.group(1).strip()}, "
                           f"but this tree has {lib_version}")
 
-            rendered, err = render(chart_dir, library_tgz)
+            rendered, err = render(chart_dir, library_tgz, tmp)
             if rendered is None:
                 fail(app, f"helm template failed: {err.splitlines()[-1] if err else 'unknown'}")
                 continue

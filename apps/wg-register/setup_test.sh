@@ -21,7 +21,10 @@ FAIL=0
 
 # Sets up a sandbox: stub binaries, empty state, canned platform responses.
 new_sandbox() {
+    # Exported here rather than on run_setup's env prefix: the curl stub reads it,
+    # and a prefix assignment is not visible to the other assignments beside it.
     SANDBOX=$(mktemp -d)
+    export SANDBOX
     mkdir -p "$SANDBOX/bin" "$SANDBOX/state" "$SANDBOX/resp"
 
     # curl stub. Dispatches on the request to a canned response file:
@@ -82,11 +85,10 @@ write_state() { cat > "$SANDBOX/state/wg-state.json"; }
 # Runs setup.sh in the sandbox. Stdout+stderr land in $OUT, exit code in $RC.
 run_setup() {
     OUT="$SANDBOX/output.txt"
-    PATH="$SANDBOX/bin:$PATH" \
     WG_DIR="$SANDBOX/wireguard" \
     YOLAB_DIR="$SANDBOX/yolab" \
     STATE_FILE="$SANDBOX/state/wg-state.json" \
-    SANDBOX="$SANDBOX" \
+    PATH="$SANDBOX/bin:$PATH" \
     PLATFORM_API_URL="https://api.example.test" \
     ACCOUNT_TOKEN="test-token" \
     SERVICE_NAME="${SERVICE_NAME_OVERRIDE-myapp}" \
@@ -170,8 +172,8 @@ case_start "the state file holding the private key is owner-only"
 respond create 200 "$TUNNEL_BODY"
 respond records 200 "$RECORD_BODY"
 run_setup
-assert_eq "$(ls -l "$SANDBOX/state/wg-state.json" | cut -c2-10)" "rw-------" "state permissions"
-assert_eq "$(ls -l "$SANDBOX/wireguard/wg0.conf" | cut -c2-10)" "rw-------" "wg0.conf permissions"
+assert_eq "$(stat -c %a "$SANDBOX/state/wg-state.json")" "600" "state permissions"
+assert_eq "$(stat -c %a "$SANDBOX/wireguard/wg0.conf")" "600" "wg0.conf permissions"
 case_end
 
 case_start "an app with no DNS name gets no FQDN and no URL"
@@ -321,7 +323,7 @@ case_end
 
 case_start "a missing account token fails immediately"
 OUT="$SANDBOX/output.txt"
-PATH="$SANDBOX/bin:$PATH" WG_DIR="$SANDBOX/wireguard" YOLAB_DIR="$SANDBOX/yolab" \
+WG_DIR="$SANDBOX/wireguard" YOLAB_DIR="$SANDBOX/yolab" PATH="$SANDBOX/bin:$PATH" \
 STATE_FILE="$SANDBOX/state/wg-state.json" PLATFORM_API_URL="https://api.example.test" \
     sh "$SETUP" > "$OUT" 2>&1
 RC=$?
