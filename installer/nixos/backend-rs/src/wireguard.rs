@@ -67,7 +67,6 @@ fn mask_to_112(addr: &str) -> anyhow::Result<String> {
 }
 
 pub async fn next_node_name(account_token: &str) -> anyhow::Result<String> {
-    let re = regex::Regex::new(r"^node(\d+)$").unwrap();
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("{PLATFORM_API}/tunnels"))
@@ -77,7 +76,16 @@ pub async fn next_node_name(account_token: &str) -> anyhow::Result<String> {
         .context("GET /tunnels")?
         .json::<serde_json::Value>()
         .await?;
+    Ok(next_node_name_from(&resp))
+}
 
+/// Picks the next free `nodeN` name from the platform's tunnel listing.
+///
+/// Split from the HTTP call so the naming rule can be tested. The name becomes
+/// the machine's hostname and its DNS record, so a collision means two machines
+/// fighting over one name.
+fn next_node_name_from(resp: &serde_json::Value) -> String {
+    let re = regex::Regex::new(r"^node(\d+)$").unwrap();
     let mut max_n: u32 = 0;
     if let Some(tunnels) = resp.as_array() {
         for t in tunnels {
@@ -94,7 +102,7 @@ pub async fn next_node_name(account_token: &str) -> anyhow::Result<String> {
             }
         }
     }
-    Ok(format!("node{}", max_n + 1))
+    format!("node{}", max_n + 1)
 }
 
 pub async fn register_and_bring_up_tunnel(
@@ -241,4 +249,109 @@ pub async fn register_and_bring_up_tunnel(
         node_wg_server_endpoint,
         node_wg_server_public_key,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── mask_to_112 ───────────────────────────────────────────────────────────
+
+    /// The tunnel hands out a single /128 address; the node needs the /112 it
+    /// sits in. Zeroing the last two octets is what turns one into the other.
+    #[test]
+    fn masking_to_112_zeroes_the_final_two_octets() {
+        assert_eq!(
+            mask_to_112("2001:db8:1234:5678:9abc:def0:1234:5678").unwrap(),
+            "2001:db8:1234:5678:9abc:def0:1234:0/112"
+        );
+    }
+
+    #[test]
+    fn masking_an_address_already_on_the_boundary_is_idempotent() {
+        let once = mask_to_112("fd00:42:1::0").unwrap();
+        assert_eq!(once, "fd00:42:1::/112");
+        // Feed the network part back in — it must not shift again.
+        assert_eq!(mask_to_112("fd00:42:1::").unwrap(), once);
+    }
+
+    #[test]
+    fn masking_preserves_every_octet_above_the_prefix() {
+        assert_eq!(mask_to_112("fd00::ffff").unwrap(), "fd00::/112");
+        assert_eq!(mask_to_112("fd00::1:ffff").unwrap(), "fd00::1:0/112");
+    }
+
+    /// A silently-wrong prefix would misroute the whole cluster mesh, so bad
+    /// input has to fail loudly rather than default to something plausible.
+    #[test]
+    fn masking_rejects_anything_that_is_not_an_ipv6_address() {
+        assert!(mask_to_112("").is_err());
+        assert!(mask_to_112("192.168.1.1").is_err());
+        assert!(mask_to_112("not-an-address").is_err());
+        assert!(mask_to_112("fd00::1/64").is_err()); // already has a prefix
+        assert!(mask_to_112("fd00::gggg").is_err());
+    }
+
+    #[test]
+    fn masking_errors_name_the_offending_address() {
+        let err = mask_to_112("nonsense").unwrap_err().to_string();
+        assert!(err.contains("nonsense"), "got: {err}");
+    }
+
+    // ── next_node_name_from ───────────────────────────────────────────────────
+
+    fn tunnels(names: &[&[&str]]) -> serde_json::Value {
+        json!(names
+            .iter()
+            .map(|records| json!({
+                "dns_records": records.iter().map(|n| json!({"name": n})).collect::<Vec<_>>()
+            }))
+            .collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_first_machine_on_an_account_becomes_node1() {
+        assert_eq!(next_node_name_from(&json!([])), "node1");
+    }
+
+    #[test]
+    fn the_next_name_follows_the_highest_existing_node() {
+        assert_eq!(next_node_name_from(&tunnels(&[&["node1"], &["node2"]])), "node3");
+    }
+
+    /// The hostname must be free, not merely next in sequence: after node2 is
+    /// removed, reusing "node2" would collide with its leftover DNS record and
+    /// with any cluster state still referring to it.
+    #[test]
+    fn a_gap_in_the_sequence_is_not_reused() {
+        assert_eq!(next_node_name_from(&tunnels(&[&["node1"], &["node3"]])), "node4");
+    }
+
+    #[test]
+    fn names_that_are_not_nodes_are_ignored() {
+        let resp = tunnels(&[&["gitea", "node1", "www", "node-2", "node2x", "NODE9"]]);
+        assert_eq!(next_node_name_from(&resp), "node2");
+    }
+
+    #[test]
+    fn several_records_on_one_tunnel_are_all_considered() {
+        assert_eq!(next_node_name_from(&tunnels(&[&["node1", "node7", "node3"]])), "node8");
+    }
+
+    #[test]
+    fn double_digit_node_names_are_compared_numerically() {
+        // Lexical comparison would rank "node9" above "node10" and hand out a
+        // name that is already taken.
+        assert_eq!(next_node_name_from(&tunnels(&[&["node9"], &["node10"]])), "node11");
+    }
+
+    #[test]
+    fn a_malformed_or_error_response_still_yields_a_usable_name() {
+        assert_eq!(next_node_name_from(&json!({"detail": "Unauthorized"})), "node1");
+        assert_eq!(next_node_name_from(&json!(null)), "node1");
+        assert_eq!(next_node_name_from(&json!([{"dns_records": "nope"}])), "node1");
+        assert_eq!(next_node_name_from(&json!([{}])), "node1");
+        assert_eq!(next_node_name_from(&json!([{"dns_records": [{}]}])), "node1");
+    }
 }

@@ -683,4 +683,248 @@ mod tests {
         assert_eq!(h.len(), 32);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
+
+    #[test]
+    fn random_hex_does_not_repeat_itself() {
+        // These become restic passwords and secret suffixes; a constant would be
+        // catastrophic and is exactly what a broken RNG wiring looks like.
+        assert_ne!(random_hex(16), random_hex(16));
+    }
+
+    // ── restic_repo ───────────────────────────────────────────────────────────
+
+    fn cfg() -> BackupConfig {
+        BackupConfig {
+            access_key_id: "key".into(),
+            secret_access_key: "secret".into(),
+            bucket: "yolab-backups".into(),
+            endpoint: "https://s3.eu-central-003.backblazeb2.com".into(),
+            restic_password: "pw".into(),
+        }
+    }
+
+    #[test]
+    fn restic_repo_builds_an_s3_url() {
+        assert_eq!(
+            cfg().restic_repo("volsync/yolab-ok/ok-data"),
+            "s3:https://s3.eu-central-003.backblazeb2.com/yolab-backups/volsync/yolab-ok/ok-data"
+        );
+    }
+
+    /// A trailing slash on the endpoint would produce `//bucket`, which restic
+    /// treats as a *different* repository — the backup would silently start
+    /// writing somewhere the restore never looks.
+    #[test]
+    fn restic_repo_never_doubles_the_separator() {
+        let mut c = cfg();
+        c.endpoint = "https://s3.example.com/".into();
+        assert_eq!(c.restic_repo("p"), "s3:https://s3.example.com/yolab-backups/p");
+        c.endpoint = "https://s3.example.com///".into();
+        assert_eq!(c.restic_repo("p"), "s3:https://s3.example.com/yolab-backups/p");
+    }
+
+    // ── hours_since ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn hours_since_measures_elapsed_time() {
+        let t = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
+        assert_eq!(hours_since(&t), Some(30));
+    }
+
+    #[test]
+    fn hours_since_truncates_toward_zero() {
+        let t = (chrono::Utc::now() - chrono::Duration::minutes(119)).to_rfc3339();
+        assert_eq!(hours_since(&t), Some(1));
+    }
+
+    /// A future timestamp means the clock moved backwards (NTP correction, or a
+    /// laptop resuming from suspend). Callers compare with `>= 24`, so a negative
+    /// value correctly reads as "recent" rather than triggering a backup.
+    #[test]
+    fn hours_since_goes_negative_for_a_future_timestamp() {
+        let t = (chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
+        assert!(hours_since(&t).is_some_and(|h| h < 0));
+    }
+
+    #[test]
+    fn hours_since_returns_none_for_unparseable_input() {
+        assert_eq!(hours_since(""), None);
+        assert_eq!(hours_since("never"), None);
+        assert_eq!(hours_since("2026-01-01"), None); // date only, not RFC3339
+    }
+
+    #[test]
+    fn hours_since_accepts_the_z_suffix_kubernetes_emits() {
+        assert!(hours_since("2020-01-01T00:00:00Z").is_some());
+    }
+
+    // ── parse_capacity_bytes ──────────────────────────────────────────────────
+
+    #[test]
+    fn capacity_parses_binary_suffixes() {
+        assert_eq!(parse_capacity_bytes("1Ki"), 1024);
+        assert_eq!(parse_capacity_bytes("1Mi"), 1024 * 1024);
+        assert_eq!(parse_capacity_bytes("5Gi"), 5 * 1024 * 1024 * 1024);
+        assert_eq!(parse_capacity_bytes("2Ti"), 2 * 1024u64.pow(4));
+    }
+
+    #[test]
+    fn capacity_parses_a_bare_byte_count() {
+        assert_eq!(parse_capacity_bytes("1024"), 1024);
+    }
+
+    #[test]
+    fn capacity_tolerates_surrounding_whitespace() {
+        assert_eq!(parse_capacity_bytes("  5Gi "), 5 * 1024 * 1024 * 1024);
+        assert_eq!(parse_capacity_bytes("5 Gi"), 5 * 1024 * 1024 * 1024);
+    }
+
+    /// This feeds "will the restore fit?" arithmetic. Zero understates free
+    /// space, which makes the check refuse rather than proceed — the safe way to
+    /// be wrong.
+    #[test]
+    fn an_unparseable_capacity_reads_as_zero() {
+        assert_eq!(parse_capacity_bytes(""), 0);
+        assert_eq!(parse_capacity_bytes("lots"), 0);
+        assert_eq!(parse_capacity_bytes("Gi"), 0);
+        assert_eq!(parse_capacity_bytes("-5Gi"), 0);
+        assert_eq!(parse_capacity_bytes("1.5Gi"), 0); // fractional: K8s never emits this
+    }
+
+    /// Decimal SI suffixes are not handled; they must not be silently read as the
+    /// bare-number branch, which would understate by a factor of a billion.
+    #[test]
+    fn decimal_suffixes_are_not_mistaken_for_byte_counts() {
+        assert_eq!(parse_capacity_bytes("5G"), 0);
+        assert_eq!(parse_capacity_bytes("5M"), 0);
+    }
+
+    // ── sanitize_k8s_items_for_backup ─────────────────────────────────────────
+
+    #[test]
+    fn sanitize_strips_cluster_assigned_metadata() {
+        let items = vec![serde_json::json!({
+            "kind": "Deployment",
+            "metadata": {
+                "name": "app",
+                "namespace": "yolab-app",
+                "resourceVersion": "12345",
+                "uid": "abc-def",
+                "creationTimestamp": "2026-01-01T00:00:00Z",
+                "generation": 4,
+                "managedFields": [{"manager": "kubectl"}],
+                "selfLink": "/apis/apps/v1/…",
+                "ownerReferences": [{"kind": "ReplicaSet"}],
+                "finalizers": ["foregroundDeletion"],
+            },
+            "spec": {"replicas": 1},
+            "status": {"readyReplicas": 1},
+        })];
+        let out = sanitize_k8s_items_for_backup(&items);
+        let meta = out[0]["metadata"].as_object().unwrap();
+
+        for dropped in [
+            "resourceVersion", "uid", "creationTimestamp", "generation",
+            "managedFields", "selfLink", "ownerReferences", "finalizers",
+        ] {
+            assert!(!meta.contains_key(dropped), "{dropped} must not survive");
+        }
+        // Identity and desired state must survive — that is the whole payload.
+        assert_eq!(meta["name"], serde_json::json!("app"));
+        assert_eq!(meta["namespace"], serde_json::json!("yolab-app"));
+        assert_eq!(out[0]["spec"]["replicas"], serde_json::json!(1));
+        assert!(out[0].get("status").is_none(), "status is always rebuilt on apply");
+    }
+
+    #[test]
+    fn sanitize_drops_controller_written_annotations_but_keeps_ours() {
+        let items = vec![serde_json::json!({
+            "kind": "Deployment",
+            "metadata": {"name": "app", "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": "{…}",
+                "deployment.kubernetes.io/revision": "7",
+                "yolab.io/app-id": "gitea",
+            }},
+        })];
+        let anns = &sanitize_k8s_items_for_backup(&items)[0]["metadata"]["annotations"];
+        assert!(anns.get("kubectl.kubernetes.io/last-applied-configuration").is_none());
+        assert!(anns.get("deployment.kubernetes.io/revision").is_none());
+        assert_eq!(anns["yolab.io/app-id"], serde_json::json!("gitea"));
+    }
+
+    #[test]
+    fn sanitize_removes_the_annotations_key_when_nothing_is_left() {
+        let items = vec![serde_json::json!({
+            "kind": "Deployment",
+            "metadata": {"name": "app", "annotations": {
+                "deployment.kubernetes.io/revision": "7",
+            }},
+        })];
+        let meta = sanitize_k8s_items_for_backup(&items)[0]["metadata"].clone();
+        assert!(meta.get("annotations").is_none(), "an empty map is noise on re-apply");
+    }
+
+    /// A pinned clusterIP blocks re-apply whenever the address is already taken or
+    /// outside the new cluster's service CIDR — which is exactly the situation
+    /// during a restore onto fresh hardware.
+    #[test]
+    fn sanitize_unpins_service_cluster_ips() {
+        let items = vec![serde_json::json!({
+            "kind": "Service",
+            "metadata": {"name": "gitea"},
+            "spec": {"clusterIP": "10.43.0.17", "clusterIPs": ["10.43.0.17"],
+                     "ports": [{"port": 3000}]},
+        })];
+        let spec = &sanitize_k8s_items_for_backup(&items)[0]["spec"];
+        assert!(spec.get("clusterIP").is_none());
+        assert!(spec.get("clusterIPs").is_none());
+        assert_eq!(spec["ports"][0]["port"], serde_json::json!(3000));
+    }
+
+    #[test]
+    fn sanitize_only_touches_cluster_ips_on_services() {
+        // A ConfigMap that happens to hold a `clusterIP` key keeps it.
+        let items = vec![serde_json::json!({
+            "kind": "ConfigMap",
+            "metadata": {"name": "cm"},
+            "spec": {"clusterIP": "10.43.0.17"},
+        })];
+        let out = sanitize_k8s_items_for_backup(&items);
+        assert_eq!(out[0]["spec"]["clusterIP"], serde_json::json!("10.43.0.17"));
+    }
+
+    /// Service-account tokens are minted per cluster; restoring them would carry a
+    /// credential that is meaningless at best and confusing at worst.
+    #[test]
+    fn sanitize_discards_service_account_token_secrets() {
+        let items = vec![
+            serde_json::json!({
+                "kind": "Secret", "type": "kubernetes.io/service-account-token",
+                "metadata": {"name": "default-token-x"},
+            }),
+            serde_json::json!({
+                "kind": "Secret", "type": "Opaque",
+                "metadata": {"name": "app-credentials"},
+            }),
+        ];
+        let out = sanitize_k8s_items_for_backup(&items);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["metadata"]["name"], serde_json::json!("app-credentials"));
+    }
+
+    #[test]
+    fn sanitize_leaves_the_input_untouched() {
+        let items = vec![serde_json::json!({
+            "kind": "Deployment",
+            "metadata": {"name": "app", "uid": "abc"},
+        })];
+        let _ = sanitize_k8s_items_for_backup(&items);
+        assert_eq!(items[0]["metadata"]["uid"], serde_json::json!("abc"));
+    }
+
+    #[test]
+    fn sanitize_survives_objects_with_no_metadata() {
+        let items = vec![serde_json::json!({}), serde_json::json!({"kind": "Service"})];
+        assert_eq!(sanitize_k8s_items_for_backup(&items).len(), 2);
+    }
 }

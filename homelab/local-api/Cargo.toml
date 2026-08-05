@@ -34,3 +34,8 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tempfile = "3"
 time = "0.3"
+
+[dev-dependencies]
+# `ServiceExt::oneshot`, so middleware and handlers can be driven through a real
+# Router in tests instead of being called directly (Next is opaque).
+tower = { version = "0.4", features = ["util"] }

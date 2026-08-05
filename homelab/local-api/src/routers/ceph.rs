@@ -748,3 +748,353 @@ pub async fn dashboard_creds() -> Json<serde_json::Value> {
         "password": password.trim(),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── translate_health_check ────────────────────────────────────────────────
+    //
+    // These strings are the entire storage vocabulary a non-technical user ever
+    // sees, so what matters is that a code maps to plain language, that severity
+    // survives, and that nothing leaks Ceph jargon unfiltered.
+
+    fn warn() -> serde_json::Value {
+        json!({"severity": "HEALTH_WARN", "summary": {"message": "some detail"}})
+    }
+
+    fn err() -> serde_json::Value {
+        json!({"severity": "HEALTH_ERR", "summary": {"message": "some detail"}})
+    }
+
+    #[test]
+    fn health_check_translates_a_known_code_to_plain_language() {
+        let issue = translate_health_check("POOL_NO_REDUNDANCY", &warn()).unwrap();
+        assert_eq!(issue.title, "No disk redundancy");
+        assert!(issue.description.contains("no backup copy"));
+        assert_eq!(issue.level, HealthLevel::Warn);
+    }
+
+    #[test]
+    fn health_check_carries_cephs_severity_through() {
+        assert_eq!(
+            translate_health_check("OSD_DOWN", &err()).unwrap().level,
+            HealthLevel::Error
+        );
+        assert_eq!(
+            translate_health_check("OSD_DOWN", &warn()).unwrap().level,
+            HealthLevel::Warn
+        );
+    }
+
+    #[test]
+    fn health_check_defaults_to_warn_when_severity_is_missing() {
+        let issue = translate_health_check("OSD_DOWN", &json!({})).unwrap();
+        assert_eq!(issue.level, HealthLevel::Warn);
+    }
+
+    /// Ceph reports unavailable placement groups as HEALTH_WARN, but apps reading
+    /// or writing affected files hang outright. Presenting that as a yellow
+    /// warning would tell the user "minor issue" while their apps are frozen.
+    #[test]
+    fn unavailable_data_is_always_an_error_even_when_ceph_calls_it_a_warning() {
+        for code in ["PG_DOWN", "PG_AVAILABILITY"] {
+            let issue = translate_health_check(code, &warn()).unwrap();
+            assert_eq!(issue.level, HealthLevel::Error, "{code}");
+            assert_eq!(issue.title, "Some data temporarily unavailable");
+        }
+    }
+
+    /// Transient post-startup states. Surfacing them would mean a freshly booted
+    /// cluster always looks broken, training users to ignore the health panel.
+    #[test]
+    fn routine_transient_states_are_suppressed_entirely() {
+        for code in [
+            "PG_PEERING",
+            "PG_NOT_SCRUBBED",
+            "PG_NOT_DEEP_SCRUBBED",
+            "PG_NOT_SCRUBBED_SINCE",
+        ] {
+            assert!(
+                translate_health_check(code, &warn()).is_none(),
+                "{code} should not be shown to the user"
+            );
+            // Not even when Ceph escalates them.
+            assert!(translate_health_check(code, &err()).is_none(), "{code} (err)");
+        }
+    }
+
+    #[test]
+    fn an_unknown_code_falls_back_to_cephs_own_summary() {
+        let detail = json!({
+            "severity": "HEALTH_WARN",
+            "summary": {"message": "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover"},
+        });
+        let issue = translate_health_check("BLUEFS_SPILLOVER", &detail).unwrap();
+        // Title takes the part before the first colon; the body keeps the whole line.
+        assert_eq!(issue.title, "Storage issue: BLUEFS_SPILLOVER");
+        assert_eq!(issue.description, "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover");
+    }
+
+    #[test]
+    fn an_unknown_code_with_no_summary_still_names_itself() {
+        let issue = translate_health_check("SOMETHING_NEW", &json!({})).unwrap();
+        assert_eq!(issue.title, "Storage issue: SOMETHING_NEW");
+        assert_eq!(issue.description, "SOMETHING_NEW");
+    }
+
+    /// A blank title renders as an empty row in the UI — worse than raw jargon,
+    /// because it looks like a rendering bug rather than a storage problem.
+    #[test]
+    fn every_translated_code_produces_non_empty_text() {
+        let codes = [
+            "POOL_NO_REDUNDANCY", "MDS_ALL_DOWN", "MDS_DAMAGE", "MDS_SLOW_METADATA_IO",
+            "MDS_SLOW_REQUEST", "OSD_DOWN", "OSD_NEARFULL", "OSD_FULL", "NOSPC",
+            "MON_DOWN", "MON_DISK_LOW", "MON_DISK_CRIT", "MON_DISK_BIG", "MON_CLOCK_SKEW",
+            "PG_DEGRADED", "PG_DOWN", "PG_AVAILABILITY", "SLOW_OPS", "OBJECT_UNFOUND",
+            "RECENT_CRASH", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED",
+        ];
+        for code in codes {
+            let issue = translate_health_check(code, &warn())
+                .unwrap_or_else(|| panic!("{code} should be surfaced, not suppressed"));
+            assert!(!issue.title.trim().is_empty(), "{code} has a blank title");
+            assert!(!issue.description.trim().is_empty(), "{code} has a blank description");
+            assert!(
+                !issue.title.contains(code),
+                "{code} fell through to the untranslated branch"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_disk_reads_the_same_whichever_code_ceph_uses() {
+        let a = translate_health_check("OSD_FULL", &err()).unwrap();
+        let b = translate_health_check("NOSPC", &err()).unwrap();
+        assert_eq!(a.title, b.title);
+        assert_eq!(a.description, b.description);
+    }
+
+    // ── failure_domain_from_rule ──────────────────────────────────────────────
+
+    #[test]
+    fn failure_domain_comes_from_the_choose_step() {
+        let rule = json!({"steps": [
+            {"op": "take", "item_name": "default"},
+            {"op": "chooseleaf_firstn", "num": 0, "type": "host"},
+            {"op": "emit"},
+        ]});
+        assert_eq!(failure_domain_from_rule(&rule), "host");
+    }
+
+    #[test]
+    fn failure_domain_reads_osd_for_a_single_node_rule() {
+        let rule = json!({"steps": [
+            {"op": "take", "item_name": "default"},
+            {"op": "choose_firstn", "num": 0, "type": "osd"},
+        ]});
+        assert_eq!(failure_domain_from_rule(&rule), "osd");
+    }
+
+    #[test]
+    fn failure_domain_uses_the_first_choose_step_it_finds() {
+        let rule = json!({"steps": [
+            {"op": "chooseleaf_firstn", "type": "rack"},
+            {"op": "chooseleaf_firstn", "type": "host"},
+        ]});
+        assert_eq!(failure_domain_from_rule(&rule), "rack");
+    }
+
+    /// `host` is the safe default: it never claims more independence between
+    /// copies than actually exists.
+    #[test]
+    fn failure_domain_defaults_to_host_when_it_cannot_be_determined() {
+        assert_eq!(failure_domain_from_rule(&json!({})), "host");
+        assert_eq!(failure_domain_from_rule(&json!({"steps": []})), "host");
+        assert_eq!(
+            failure_domain_from_rule(&json!({"steps": [{"op": "emit"}]})),
+            "host"
+        );
+        // A choose step with no type at all.
+        assert_eq!(
+            failure_domain_from_rule(&json!({"steps": [{"op": "chooseleaf_firstn"}]})),
+            "host"
+        );
+    }
+
+    // ── parse_storage_detail ──────────────────────────────────────────────────
+
+    fn sample_raw() -> serde_json::Value {
+        json!({
+            "safe_to_destroy": {"safe_to_destroy": [1]},
+            "ok_to_stop": {"ok_to_stop": [0, 1]},
+            "osd_df": {
+                "nodes": [
+                    {"type": "host", "name": "node2", "children": [1]},
+                    {"type": "host", "name": "node1", "children": [0]},
+                    {
+                        "type": "osd", "id": 0, "name": "osd.0", "device_class": "ssd",
+                        "kb": 2_000_000, "kb_used": 500_000, "kb_avail": 1_500_000,
+                        "utilization": 25.0, "var": 1.1, "pgs": 32, "status": "up",
+                        "crush_weight": 1.9, "reweight": 1.0
+                    },
+                    {
+                        "type": "osd", "id": 1, "name": "osd.1", "class": "hdd",
+                        "kb": 1_000_000, "kb_used": 100_000, "kb_avail": 900_000,
+                        "utilization": 10.0, "var": 0.4, "pgs": 16, "status": "down",
+                        "crush_weight": 0.0, "reweight": 0.0
+                    },
+                ],
+                "stray": []
+            },
+            "crush_rules": [
+                {"rule_id": 0, "rule_name": "replicated_rule",
+                 "steps": [{"op": "chooseleaf_firstn", "type": "host"}]},
+                {"rule_id": 1, "rule_name": "single_node",
+                 "steps": [{"op": "chooseleaf_firstn", "type": "osd"}]},
+            ],
+            "ceph_df": {
+                "stats": {
+                    "total_bytes": 3_000_000_000u64,
+                    "total_avail_bytes": 2_400_000_000u64,
+                    "total_used_raw_bytes": 600_000_000u64
+                },
+                "pools": [
+                    {"id": 3, "stats": {"stored": 111, "bytes_used": 333, "max_avail": 999}},
+                ]
+            },
+            "pool_detail": [
+                {"pool": 3, "pool_name": "yolab-blockpool", "size": 2, "min_size": 1, "crush_rule": 0},
+                {"pool": 4, "pool_name": "orphan-pool", "size": 1, "min_size": 1, "crush_rule": 7},
+            ]
+        })
+    }
+
+    #[test]
+    fn storage_detail_converts_cephs_kilobytes_to_bytes() {
+        let d = parse_storage_detail(&sample_raw());
+        let osd0 = d.osds.iter().find(|o| o.id == 0).unwrap();
+        assert_eq!(osd0.size_bytes, 2_000_000 * 1024);
+        assert_eq!(osd0.used_bytes, 500_000 * 1024);
+        assert_eq!(osd0.avail_bytes, 1_500_000 * 1024);
+    }
+
+    #[test]
+    fn storage_detail_attributes_each_osd_to_its_host() {
+        let d = parse_storage_detail(&sample_raw());
+        assert_eq!(d.osds.iter().find(|o| o.id == 0).unwrap().host, "node1");
+        assert_eq!(d.osds.iter().find(|o| o.id == 1).unwrap().host, "node2");
+    }
+
+    #[test]
+    fn storage_detail_accepts_either_class_spelling() {
+        // `osd df tree` says `device_class`; some Ceph versions emit `class`.
+        let d = parse_storage_detail(&sample_raw());
+        assert_eq!(d.osds.iter().find(|o| o.id == 0).unwrap().class, "ssd");
+        assert_eq!(d.osds.iter().find(|o| o.id == 1).unwrap().class, "hdd");
+    }
+
+    /// These two flags are what the UI turns into "safe to unplug". Getting the
+    /// set membership backwards would tell someone to pull a disk that still
+    /// holds the only copy of their data.
+    #[test]
+    fn storage_detail_marks_only_the_osds_ceph_cleared() {
+        let d = parse_storage_detail(&sample_raw());
+        let osd0 = d.osds.iter().find(|o| o.id == 0).unwrap();
+        let osd1 = d.osds.iter().find(|o| o.id == 1).unwrap();
+        assert!(!osd0.safe_to_destroy);
+        assert!(osd1.safe_to_destroy);
+        assert!(osd0.ok_to_stop);
+        assert!(osd1.ok_to_stop);
+    }
+
+    /// Absent lists must read as "nothing is cleared", never "everything is".
+    #[test]
+    fn storage_detail_clears_nothing_when_ceph_returned_no_verdict() {
+        let mut raw = sample_raw();
+        raw["safe_to_destroy"] = json!({});
+        raw["ok_to_stop"] = json!({});
+        let d = parse_storage_detail(&raw);
+        assert!(d.osds.iter().all(|o| !o.safe_to_destroy && !o.ok_to_stop));
+    }
+
+    #[test]
+    fn storage_detail_sorts_osds_by_host_then_id() {
+        let d = parse_storage_detail(&sample_raw());
+        let order: Vec<(&str, i64)> = d.osds.iter().map(|o| (o.host.as_str(), o.id)).collect();
+        assert_eq!(order, vec![("node1", 0), ("node2", 1)]);
+    }
+
+    #[test]
+    fn storage_detail_resolves_pool_rules_to_names_and_failure_domains() {
+        let d = parse_storage_detail(&sample_raw());
+        let pool = d.pools.iter().find(|p| p.name == "yolab-blockpool").unwrap();
+        assert_eq!(pool.crush_rule_name, "replicated_rule");
+        assert_eq!(pool.failure_domain, "host");
+        assert_eq!(pool.size, 2);
+        assert_eq!(pool.min_size, 1);
+    }
+
+    #[test]
+    fn storage_detail_joins_pool_usage_by_id() {
+        let d = parse_storage_detail(&sample_raw());
+        let pool = d.pools.iter().find(|p| p.id == 3).unwrap();
+        assert_eq!(pool.stored_bytes, 111);
+        assert_eq!(pool.used_bytes, 333);
+        assert_eq!(pool.max_avail_bytes, 999);
+
+        // Pool 4 has no ceph df entry — usage reads as zero, not as pool 3's numbers.
+        let orphan = d.pools.iter().find(|p| p.id == 4).unwrap();
+        assert_eq!(orphan.stored_bytes, 0);
+        assert_eq!(orphan.max_avail_bytes, 0);
+    }
+
+    #[test]
+    fn storage_detail_names_an_unresolvable_crush_rule_by_id() {
+        let d = parse_storage_detail(&sample_raw());
+        let orphan = d.pools.iter().find(|p| p.id == 4).unwrap();
+        assert_eq!(orphan.crush_rule_name, "rule-7");
+        assert_eq!(orphan.failure_domain, "host");
+    }
+
+    #[test]
+    fn storage_detail_reads_cluster_totals() {
+        let d = parse_storage_detail(&sample_raw());
+        assert_eq!(d.total_bytes, 3_000_000_000);
+        assert_eq!(d.avail_bytes, 2_400_000_000);
+        assert_eq!(d.used_bytes, 600_000_000);
+    }
+
+    /// The Ceph exec can return `{}`, an error object, or a partial document when
+    /// the cluster is mid-outage — precisely when the storage page is being looked
+    /// at. Every one of those has to render as empty, not panic.
+    #[test]
+    fn storage_detail_survives_empty_and_malformed_input() {
+        for raw in [
+            json!({}),
+            json!({"osd_df": null, "ceph_df": null, "pool_detail": null}),
+            json!({"osd_df": {"nodes": "not-an-array"}}),
+            json!({"pool_detail": [{}]}),
+            json!({"osd_df": {"nodes": [{"type": "osd"}]}}),
+        ] {
+            let d = parse_storage_detail(&raw);
+            assert_eq!(d.total_bytes, 0);
+            assert!(d.osds.len() <= 1);
+        }
+    }
+
+    /// An OSD Ceph lists but no host claims still has to appear — a disk missing
+    /// from the UI is a disk nobody knows to replace.
+    #[test]
+    fn storage_detail_keeps_an_osd_with_no_parent_host() {
+        let raw = json!({
+            "osd_df": {"nodes": [{"type": "osd", "id": 5, "name": "osd.5"}]}
+        });
+        let d = parse_storage_detail(&raw);
+        assert_eq!(d.osds.len(), 1);
+        assert_eq!(d.osds[0].host, "unknown");
+        assert_eq!(d.osds[0].status, "unknown");
+        // reweight defaults to 1.0 (in), not 0.0 (draining).
+        assert_eq!(d.osds[0].reweight, 1.0);
+    }
+}

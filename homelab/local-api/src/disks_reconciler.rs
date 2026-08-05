@@ -607,7 +607,15 @@ fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
 // ── Stable disk identity ──────────────────────────────────────────────────────
 
 fn disk_id(device: &str) -> String {
-    if let Ok(serial) = std::fs::read_to_string(format!("/sys/block/{device}/device/serial")) {
+    let serial = std::fs::read_to_string(format!("/sys/block/{device}/device/serial")).ok();
+    disk_id_from(device, serial.as_deref())
+}
+
+/// Split from `disk_id` so the sanitizing rules can be tested without a real
+/// /sys/block entry. A disk's id ends up as a ConfigMap *key*, so anything the
+/// vendor put in the serial has to come out as `[a-z0-9-]`.
+fn disk_id_from(device: &str, serial: Option<&str>) -> String {
+    if let Some(serial) = serial {
         let s = serial.trim();
         if !s.is_empty() {
             let safe: String = s
@@ -792,4 +800,341 @@ fn node_name() -> Result<String> {
     std::fs::read_to_string("/etc/hostname")
         .map(|s| s.trim().to_string())
         .context("read /etc/hostname")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    const OURS: &str = "11111111-2222-3333-4444-555555555555";
+    const THEIRS: &str = "99999999-8888-7777-6666-555555555555";
+
+    /// Build a 4096-byte BlueStore superblock carrying `fsid`, exactly as
+    /// `bluestore_fsid` expects to find it: magic at offset 0, then the
+    /// length-prefixed `ceph_fsid` key/value pair somewhere in the block.
+    fn bluestore_label(fsid: &str) -> Vec<u8> {
+        let mut buf = vec![0u8; 4096];
+        buf[..BLUESTORE_MAGIC.len()].copy_from_slice(BLUESTORE_MAGIC);
+        let at = 512;
+        buf[at..at + CEPH_FSID_KEY.len()].copy_from_slice(CEPH_FSID_KEY);
+        let vs = at + CEPH_FSID_KEY.len();
+        buf[vs..vs + 4].copy_from_slice(&36u32.to_le_bytes());
+        buf[vs + 4..vs + 4 + fsid.len()].copy_from_slice(fsid.as_bytes());
+        buf
+    }
+
+    /// Writes `bytes` into `dir` and returns the absolute path.
+    /// `read_bluestore_header` takes any path starting with `/` verbatim, so a
+    /// regular file stands in for a block device.
+    fn fake_device(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> String {
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    // ── is_uuid ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_uuid_accepts_a_canonical_uuid() {
+        assert!(is_uuid(OURS));
+        assert!(is_uuid("deadbeef-DEAD-beef-DEAD-beefdeadbeef")); // hex is case-insensitive
+    }
+
+    /// The single most important assertion in this file.
+    ///
+    /// `classify`'s caller passes `cluster_fsid().await.unwrap_or_default()`, so
+    /// `our_fsid` is `""` whenever Ceph is unreachable. If `bluestore_fsid` could
+    /// ever return `Some("")`, that empty string would compare *equal* to
+    /// `our_fsid` and every foreign disk on the machine would be handed to Rook
+    /// and wiped. The only thing standing between that and a user's data is this
+    /// function returning false for the empty string.
+    #[test]
+    fn is_uuid_rejects_the_empty_string() {
+        assert!(!is_uuid(""));
+    }
+
+    #[test]
+    fn is_uuid_rejects_malformed_shapes() {
+        assert!(!is_uuid("1111-2222-3333-4444")); // 4 groups, not 5
+        assert!(!is_uuid("11111111-2222-3333-4444-555555555555-6")); // 6 groups
+        assert!(!is_uuid("1111111-2222-3333-4444-555555555555")); // group 1 too short
+        assert!(!is_uuid("gggggggg-2222-3333-4444-555555555555")); // not hex
+        assert!(!is_uuid("11111111 2222 3333 4444 555555555555")); // spaces, not dashes
+        assert!(!is_uuid("----")); // five empty groups
+    }
+
+    // ── bluestore_fsid ────────────────────────────────────────────────────────
+
+    #[test]
+    fn bluestore_fsid_reads_a_well_formed_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
+        assert_eq!(bluestore_fsid(&dev).as_deref(), Some(OURS));
+    }
+
+    #[test]
+    fn bluestore_fsid_returns_none_without_the_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        // A blank disk: right size, no BlueStore magic.
+        let dev = fake_device(&dir, "sdb", &vec![0u8; 4096]);
+        assert_eq!(bluestore_fsid(&dev), None);
+    }
+
+    #[test]
+    fn bluestore_fsid_returns_none_for_a_device_shorter_than_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sdc", b"bluestore block device\n");
+        assert_eq!(bluestore_fsid(&dev), None);
+    }
+
+    #[test]
+    fn bluestore_fsid_returns_none_when_the_device_does_not_exist() {
+        assert_eq!(bluestore_fsid("/nonexistent/definitely-not-a-device"), None);
+    }
+
+    #[test]
+    fn bluestore_fsid_returns_none_when_the_length_prefix_is_not_36() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = bluestore_label(OURS);
+        let vs = 512 + CEPH_FSID_KEY.len();
+        buf[vs..vs + 4].copy_from_slice(&16u32.to_le_bytes());
+        let dev = fake_device(&dir, "sdd", &buf);
+        assert_eq!(bluestore_fsid(&dev), None);
+    }
+
+    /// A label whose value is present but garbage must read as "no label", never
+    /// as an empty-string fsid — see `is_uuid_rejects_the_empty_string`.
+    #[test]
+    fn bluestore_fsid_never_returns_a_non_uuid_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = bluestore_label(OURS);
+        let vs = 512 + CEPH_FSID_KEY.len();
+        buf[vs + 4..vs + 40].fill(b' '); // 36 bytes of whitespace: right length, not a uuid
+        let dev = fake_device(&dir, "sde", &buf);
+        assert_eq!(bluestore_fsid(&dev), None);
+    }
+
+    // ── classify ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn classify_includes_disks_with_no_ceph_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let blank = fake_device(&dir, "sda", &vec![0u8; 4096]);
+        assert_eq!(classify(std::slice::from_ref(&blank), OURS), vec![blank]);
+    }
+
+    #[test]
+    fn classify_includes_our_own_osds_so_rook_can_reintegrate_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = fake_device(&dir, "sda", &bluestore_label(OURS));
+        assert_eq!(classify(std::slice::from_ref(&ours), OURS), vec![ours]);
+    }
+
+    #[test]
+    fn classify_excludes_disks_labelled_by_another_ceph_cluster() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = fake_device(&dir, "sda", &bluestore_label(THEIRS));
+        assert!(
+            classify(&[theirs], OURS).is_empty(),
+            "a disk holding another cluster's data must never be offered to Rook"
+        );
+    }
+
+    /// `cluster_fsid()` returns None — and the caller `unwrap_or_default()`s it to
+    /// `""` — whenever the CephCluster CR has no status yet: first boot, a restart,
+    /// or any API blip. In that window we cannot tell our own disks from a
+    /// stranger's, so every labelled disk must be held back. Only genuinely blank
+    /// disks stay eligible.
+    #[test]
+    fn classify_excludes_every_labelled_disk_when_our_fsid_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = fake_device(&dir, "sda", &bluestore_label(OURS));
+        let theirs = fake_device(&dir, "sdb", &bluestore_label(THEIRS));
+        let blank = fake_device(&dir, "sdc", &vec![0u8; 4096]);
+
+        let effective = classify(&[ours, theirs, blank.clone()], "");
+        assert_eq!(effective, vec![blank]);
+    }
+
+    #[test]
+    fn classify_is_sorted_and_independent_of_input_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fake_device(&dir, "aaa", &vec![0u8; 4096]);
+        let b = fake_device(&dir, "bbb", &vec![0u8; 4096]);
+        let forward = classify(&[a.clone(), b.clone()], OURS);
+        let reverse = classify(&[b, a], OURS);
+        assert_eq!(forward, reverse);
+        assert!(forward[0] < forward[1]);
+    }
+
+    #[test]
+    fn classify_handles_an_empty_device_list() {
+        assert!(classify(&[], OURS).is_empty());
+    }
+
+    // ── disk_meta ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn disk_meta_flags_our_own_osd() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
+        let m = disk_meta(&dev, OURS);
+        assert_eq!(m["is_our_osd"], json!(true));
+        assert_eq!(m["foreign_ceph"], json!(false));
+    }
+
+    #[test]
+    fn disk_meta_flags_a_foreign_cluster_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sda", &bluestore_label(THEIRS));
+        let m = disk_meta(&dev, OURS);
+        assert_eq!(m["is_our_osd"], json!(false));
+        assert_eq!(
+            m["foreign_ceph"],
+            json!(true),
+            "the UI needs this flag to ask before erasing"
+        );
+    }
+
+    /// With an unknown cluster fsid, our own disk is indistinguishable from a
+    /// stranger's, so it is reported as foreign — the conservative reading, and
+    /// the one that makes the UI ask rather than assume.
+    #[test]
+    fn disk_meta_treats_a_labelled_disk_as_foreign_when_our_fsid_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
+        let m = disk_meta(&dev, "");
+        assert_eq!(m["is_our_osd"], json!(false));
+        assert_eq!(m["foreign_ceph"], json!(true));
+    }
+
+    #[test]
+    fn disk_meta_reports_a_blank_disk_as_neither_ours_nor_foreign() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sda", &vec![0u8; 4096]);
+        let m = disk_meta(&dev, OURS);
+        assert_eq!(m["is_our_osd"], json!(false));
+        assert_eq!(m["foreign_ceph"], json!(false));
+    }
+
+    // ── disk_id ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn disk_id_prefers_the_serial_number() {
+        assert_eq!(disk_id_from("sda", Some("S3Z1NB0K")), "serial-s3z1nb0k");
+    }
+
+    #[test]
+    fn disk_id_replaces_characters_a_configmap_key_cannot_hold() {
+        // ConfigMap keys are [-._a-zA-Z0-9]; vendors ship spaces, slashes and colons.
+        assert_eq!(
+            disk_id_from("sda", Some("WD/Blue 500:GB")),
+            "serial-wd-blue-500-gb"
+        );
+    }
+
+    #[test]
+    fn disk_id_trims_surrounding_whitespace_and_dashes() {
+        assert_eq!(disk_id_from("sda", Some("  ABC123  ")), "serial-abc123");
+        assert_eq!(disk_id_from("sda", Some("__ABC__")), "serial-abc");
+    }
+
+    #[test]
+    fn disk_id_falls_back_to_the_device_name_without_a_usable_serial() {
+        assert_eq!(disk_id_from("sda", None), "dev-sda");
+        assert_eq!(disk_id_from("sda", Some("")), "dev-sda");
+        assert_eq!(disk_id_from("sda", Some("   \n")), "dev-sda");
+    }
+
+    // ── weight_tib_from ───────────────────────────────────────────────────────
+
+    #[test]
+    fn weight_prefers_cephs_own_kb_over_lsblk_bytes() {
+        // 1 TiB expressed in KB; the byte figure is deliberately different so a
+        // regression that reads the wrong argument shows up as a wrong weight.
+        let kb = 1u64 << 30;
+        assert_eq!(weight_tib_from(kb, 999), 1.0);
+    }
+
+    #[test]
+    fn weight_falls_back_to_size_bytes_when_ceph_reports_nothing() {
+        assert_eq!(weight_tib_from(0, 1u64 << 40), 1.0);
+        assert_eq!(weight_tib_from(0, 1u64 << 39), 0.5);
+    }
+
+    #[test]
+    fn weight_is_zero_when_no_size_is_known() {
+        // A zero weight keeps a disk of unknown size from attracting data.
+        assert_eq!(weight_tib_from(0, 0), 0.0);
+    }
+
+    // ── nodes_equal ───────────────────────────────────────────────────────────
+
+    fn node(name: &str, devices: &[&str]) -> Value {
+        json!({
+            "name": name,
+            "devices": devices.iter().map(|d| json!({"name": d})).collect::<Vec<_>>(),
+        })
+    }
+
+    #[test]
+    fn nodes_equal_ignores_node_and_device_ordering() {
+        let a = [node("n1", &["sda", "sdb"]), node("n2", &["sdc"])];
+        let b = [node("n2", &["sdc"]), node("n1", &["sdb", "sda"])];
+        assert!(nodes_equal(&a, &b));
+    }
+
+    #[test]
+    fn nodes_equal_ignores_fields_we_do_not_manage() {
+        // Rook writes extra keys into storage.nodes; reacting to them would mean
+        // patching the CR on every reconcile, forever.
+        let a = [node("n1", &["sda"])];
+        let b = [json!({
+            "name": "n1",
+            "devices": [{"name": "sda", "config": {"osdsPerDevice": "1"}}],
+            "resources": {},
+        })];
+        assert!(nodes_equal(&a, &b));
+    }
+
+    #[test]
+    fn nodes_equal_detects_an_added_or_removed_disk() {
+        let a = [node("n1", &["sda"])];
+        let b = [node("n1", &["sda", "sdb"])];
+        assert!(!nodes_equal(&a, &b));
+        assert!(!nodes_equal(&b, &a));
+    }
+
+    #[test]
+    fn nodes_equal_detects_a_disk_moving_between_nodes() {
+        let a = [node("n1", &["sda"]), node("n2", &[])];
+        let b = [node("n1", &[]), node("n2", &["sda"])];
+        assert!(!nodes_equal(&a, &b));
+    }
+
+    #[test]
+    fn nodes_equal_detects_an_added_node() {
+        let a = [node("n1", &["sda"])];
+        let b = [node("n1", &["sda"]), node("n2", &["sdb"])];
+        assert!(!nodes_equal(&a, &b));
+    }
+
+    #[test]
+    fn nodes_equal_treats_a_node_with_no_devices_as_present() {
+        // Distinct from the node being absent: an empty device list is how a node
+        // whose disks were all switched OFF is represented.
+        let a: [Value; 0] = [];
+        let b = [node("n1", &[])];
+        assert!(!nodes_equal(&a, &b));
+    }
+
+    #[test]
+    fn nodes_equal_skips_entries_with_no_name() {
+        // Malformed entries are dropped by norm() rather than panicking.
+        let a = [node("n1", &["sda"])];
+        let b = [node("n1", &["sda"]), json!({"devices": [{"name": "sdz"}]})];
+        assert!(nodes_equal(&a, &b));
+    }
 }

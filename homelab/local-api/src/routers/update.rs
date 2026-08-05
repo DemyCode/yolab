@@ -78,7 +78,15 @@ fn list_remotes(cfg: &Config) -> Vec<RemoteEntry> {
         .args(["-C", &cfg.repo_path, "remote", "-v"])
         .output()
     else { return vec![] };
-    let text = String::from_utf8_lossy(&out.stdout);
+    parse_remotes(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parses `git remote -v` output. Split from `list_remotes` so the line handling
+/// is testable without a git binary or a real repository.
+///
+/// `git remote -v` prints two lines per remote (fetch and push); only the fetch
+/// line is taken, so each remote appears once.
+fn parse_remotes(text: &str) -> Vec<RemoteEntry> {
     let mut seen = std::collections::HashSet::new();
     text.lines().filter_map(|line| {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -403,4 +411,133 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
 
     // Stream self update exactly like the single-node handler.
     update(State(state)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Config whose channel file lives in a throwaway directory.
+    fn cfg_in(dir: &tempfile::TempDir) -> Config {
+        let mut cfg = Config::for_test(&dir.path().join("config.toml"));
+        cfg.built_dir = dir.path().join("built");
+        cfg.channel_file = cfg.built_dir.join("channel.json");
+        cfg
+    }
+
+    // ── read_channel / write_channel ──────────────────────────────────────────
+
+    /// The channel decides which git ref this node builds itself from. Defaulting
+    /// to origin/main is what keeps an unreadable or corrupted file from pointing
+    /// a machine at nothing — or worse, at a partially-parsed ref.
+    #[test]
+    fn an_absent_channel_file_reads_as_origin_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let ch = read_channel(&cfg_in(&dir));
+        assert_eq!(ch.remote, "origin");
+        assert_eq!(ch.ref_, "main");
+    }
+
+    #[test]
+    fn a_written_channel_reads_back_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_in(&dir);
+        let written = Channel { remote: "upstream".into(), ref_: "v2.1.0".into() };
+        write_channel(&cfg, &written).unwrap();
+
+        let read = read_channel(&cfg);
+        assert_eq!(read.remote, "upstream");
+        assert_eq!(read.ref_, "v2.1.0");
+    }
+
+    #[test]
+    fn writing_a_channel_creates_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_in(&dir);
+        assert!(!cfg.built_dir.exists());
+        write_channel(&cfg, &Channel::default()).unwrap();
+        assert!(cfg.channel_file.exists());
+    }
+
+    /// A half-written or hand-edited file must fall back wholesale rather than
+    /// mix a parsed remote with a defaulted ref — that combination points at a
+    /// ref that may not exist on that remote.
+    #[test]
+    fn a_malformed_channel_file_falls_back_completely() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_in(&dir);
+        std::fs::create_dir_all(&cfg.built_dir).unwrap();
+
+        for body in [
+            "",
+            "not json at all",
+            r#"{"remote": "upstream"}"#,          // ref missing
+            r#"{"ref": "v2"}"#,                   // remote missing
+            r#"{"remote": 5, "ref": "v2"}"#,      // wrong type
+            r#"{"remote": null, "ref": null}"#,
+            "[]",
+        ] {
+            std::fs::write(&cfg.channel_file, body).unwrap();
+            let ch = read_channel(&cfg);
+            assert_eq!((ch.remote.as_str(), ch.ref_.as_str()), ("origin", "main"), "body: {body}");
+        }
+    }
+
+    #[test]
+    fn a_channel_file_with_extra_keys_still_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_in(&dir);
+        std::fs::create_dir_all(&cfg.built_dir).unwrap();
+        std::fs::write(&cfg.channel_file, r#"{"remote":"origin","ref":"dev","note":"hi"}"#).unwrap();
+        assert_eq!(read_channel(&cfg).ref_, "dev");
+    }
+
+    // ── parse_remotes ─────────────────────────────────────────────────────────
+
+    const GIT_REMOTE_V: &str = "\
+origin\thttps://github.com/DemyCode/yolab.git (fetch)
+origin\thttps://github.com/DemyCode/yolab.git (push)
+fork\tgit@github.com:someone/yolab.git (fetch)
+fork\tgit@github.com:someone/yolab.git (push)
+";
+
+    /// git prints a fetch and a push line per remote; listing both would show
+    /// every remote twice in the update UI.
+    #[test]
+    fn each_remote_is_listed_once() {
+        let remotes = parse_remotes(GIT_REMOTE_V);
+        let names: Vec<&str> = remotes.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["origin", "fork"]);
+    }
+
+    #[test]
+    fn remote_urls_are_read_from_the_fetch_line() {
+        let remotes = parse_remotes(GIT_REMOTE_V);
+        assert_eq!(remotes[0].url, "https://github.com/DemyCode/yolab.git");
+        assert_eq!(remotes[1].url, "git@github.com:someone/yolab.git");
+    }
+
+    /// A push-only remote cannot be updated from, so it does not belong in the
+    /// list of things you can switch your channel to.
+    #[test]
+    fn a_push_only_remote_is_not_listed() {
+        let text = "backup\tgit@example.com:mirror.git (push)\n";
+        assert!(parse_remotes(text).is_empty());
+    }
+
+    #[test]
+    fn parsing_survives_empty_and_ragged_output() {
+        assert!(parse_remotes("").is_empty());
+        assert!(parse_remotes("\n\n  \n").is_empty());
+        assert!(parse_remotes("origin\n").is_empty()); // name with no url
+        assert!(parse_remotes("fatal: not a git repository").is_empty());
+    }
+
+    #[test]
+    fn remotes_keep_gits_own_ordering() {
+        // The first entry is what the UI preselects, so ordering is load-bearing.
+        let text = "zebra\turl-z (fetch)\nalpha\turl-a (fetch)\n";
+        let names: Vec<String> = parse_remotes(text).into_iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["zebra", "alpha"]);
+    }
 }
