@@ -93,6 +93,45 @@ fn parse_deadline(v: &Value) -> Option<DateTime<Utc>> {
         .map(|t| t.with_timezone(&Utc))
 }
 
+/// True when `run` is non-terminal and has blown its phase deadline, i.e. the
+/// process that was driving it is gone and nothing will finish it.
+///
+/// A run with no parseable deadline is NOT timed out: an unset deadline means
+/// "we don't know", and failing a healthy in-flight backup on a missing field
+/// would abandon work that is still progressing.
+fn is_timed_out(run: &Value, now: DateTime<Utc>) -> bool {
+    let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING);
+    !is_terminal(phase) && parse_deadline(run).is_some_and(|dl| now > dl)
+}
+
+/// Names of the terminal runs to delete, given the list newest-created first.
+/// Non-terminal runs are never candidates however old they look.
+fn names_to_prune(runs: &[Value], keep: usize) -> Vec<String> {
+    let mut seen_terminal = 0usize;
+    let mut out = Vec::new();
+    for run in runs {
+        if !is_terminal(run["status"]["phase"].as_str().unwrap_or("")) {
+            continue;
+        }
+        seen_terminal += 1;
+        if seen_terminal > keep {
+            if let Some(name) = run["metadata"]["name"].as_str() {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether a scheduled backup should start, from the age of the last one that
+/// reached a usable end state. `None` means no such run exists — back up now.
+fn backup_is_due(last_ok_age_hours: Option<i64>) -> bool {
+    match last_ok_age_hours {
+        Some(h) => h >= CATCHUP_AFTER_HOURS,
+        None => true,
+    }
+}
+
 /// True if any BackupRun is currently non-terminal — the single-flight gate for both
 /// the reconciler's own scheduling decision and the manual run-now endpoint.
 pub async fn is_active() -> bool {
@@ -649,22 +688,18 @@ pub async fn reconcile_tick(holder: &str) {
     // kubectl/restic call must not block every future backup forever.
     let mut timed_out: HashSet<String> = HashSet::new();
     for run in BACKUP_RUN.list().await {
-        let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING).to_string();
-        if is_terminal(&phase) {
+        if !is_timed_out(&run, Utc::now()) {
             continue;
         }
-        if let Some(dl) = parse_deadline(&run) {
-            if Utc::now() > dl {
-                let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
-                tracing::warn!("backup-run {name}: timed out in phase {phase}");
-                let _ = BACKUP_RUN.patch_status(&name, json!({
-                    "phase": PHASE_FAILED,
-                    "finishedAt": Utc::now().to_rfc3339(),
-                    "error": format!("timed out in phase {phase}"),
-                })).await;
-                timed_out.insert(name);
-            }
-        }
+        let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING).to_string();
+        let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
+        tracing::warn!("backup-run {name}: timed out in phase {phase}");
+        let _ = BACKUP_RUN.patch_status(&name, json!({
+            "phase": PHASE_FAILED,
+            "finishedAt": Utc::now().to_rfc3339(),
+            "error": format!("timed out in phase {phase}"),
+        })).await;
+        timed_out.insert(name);
     }
 
     prune_old_runs().await;
@@ -699,11 +734,7 @@ pub async fn reconcile_tick(holder: &str) {
         .and_then(|r| r["status"]["finishedAt"].as_str())
         .and_then(hours_since);
 
-    let due = match last_ok_age_hours {
-        Some(h) => h >= CATCHUP_AFTER_HOURS,
-        None => true, // never backed up successfully — do it now
-    };
-    if due {
+    if backup_is_due(last_ok_age_hours) {
         match start("schedule").await {
             Ok(name) => tracing::info!("backup-run {name}: created (schedule)"),
             Err(e) => tracing::warn!("backup-run: failed to create scheduled run: {e}"),
@@ -714,17 +745,9 @@ pub async fn reconcile_tick(holder: &str) {
 /// Deletes terminal BackupRuns beyond the most recent `KEEP_TERMINAL_RUNS` — otherwise
 /// every backup ever run (daily, forever) leaves a small object behind permanently.
 async fn prune_old_runs() {
-    let mut seen_terminal = 0usize;
-    for run in BACKUP_RUN.list().await { // newest-created first
-        if !is_terminal(run["status"]["phase"].as_str().unwrap_or("")) {
-            continue;
-        }
-        seen_terminal += 1;
-        if seen_terminal > KEEP_TERMINAL_RUNS {
-            if let Some(name) = run["metadata"]["name"].as_str() {
-                BACKUP_RUN.delete(name).await;
-            }
-        }
+    let runs = BACKUP_RUN.list().await; // newest-created first
+    for name in names_to_prune(&runs, KEEP_TERMINAL_RUNS) {
+        BACKUP_RUN.delete(&name).await;
     }
 }
 
@@ -737,5 +760,316 @@ pub async fn run(holder: String) {
         reconcile_tick(&holder).await;
         crate::routers::restore_run::reconcile_tick(&holder).await;
         tokio::time::sleep(Duration::from_secs(RECONCILE_TICK_SECS)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_named(name: &str, phase: &str) -> Value {
+        json!({"metadata": {"name": name}, "status": {"phase": phase}})
+    }
+
+    fn run_with_deadline(phase: &str, deadline: DateTime<Utc>) -> Value {
+        json!({
+            "metadata": {"name": "backup-1"},
+            "status": {"phase": phase, "phaseDeadline": deadline.to_rfc3339()},
+        })
+    }
+
+    // ── is_terminal ───────────────────────────────────────────────────────────
+
+    /// `is_terminal` is the single-flight gate: `is_active()` is its negation, so
+    /// a phase wrongly classed as terminal lets a second backup start on top of a
+    /// running one, and one wrongly classed as in-flight blocks backups forever.
+    #[test]
+    fn terminal_phases_are_exactly_the_three_end_states() {
+        assert!(is_terminal(PHASE_SUCCEEDED));
+        assert!(is_terminal(PHASE_PARTIAL));
+        assert!(is_terminal(PHASE_FAILED));
+
+        assert!(!is_terminal(PHASE_PENDING));
+        assert!(!is_terminal(PHASE_SYNCING));
+        assert!(!is_terminal(PHASE_SNAPSHOTTING));
+        assert!(!is_terminal(PHASE_PRUNING));
+    }
+
+    /// An unrecognised phase — a future version's, or a corrupted status — must
+    /// read as in-flight. Treating it as finished would let a concurrent backup
+    /// start against the same restic repo.
+    #[test]
+    fn an_unknown_phase_is_not_terminal() {
+        assert!(!is_terminal(""));
+        assert!(!is_terminal("Succeeded "));
+        assert!(!is_terminal("succeeded"));
+        assert!(!is_terminal("Uploading"));
+    }
+
+    // ── deadline_after / parse_deadline ───────────────────────────────────────
+
+    #[test]
+    fn a_written_deadline_reads_back_as_the_same_instant() {
+        let run = json!({"status": {"phaseDeadline": deadline_after(600)}});
+        let parsed = parse_deadline(&run).expect("deadline_after must emit RFC3339");
+        let delta = (parsed - Utc::now()).num_seconds();
+        assert!((595..=600).contains(&delta), "got {delta}s");
+    }
+
+    #[test]
+    fn parse_deadline_returns_none_for_anything_unusable() {
+        assert!(parse_deadline(&json!({})).is_none());
+        assert!(parse_deadline(&json!({"status": {}})).is_none());
+        assert!(parse_deadline(&json!({"status": {"phaseDeadline": null}})).is_none());
+        assert!(parse_deadline(&json!({"status": {"phaseDeadline": "tomorrow"}})).is_none());
+        // A unix timestamp is not RFC3339 — must not silently parse as epoch.
+        assert!(parse_deadline(&json!({"status": {"phaseDeadline": 1735689600}})).is_none());
+    }
+
+    #[test]
+    fn parse_deadline_normalizes_other_offsets_to_utc() {
+        let run = json!({"status": {"phaseDeadline": "2026-01-01T12:00:00+02:00"}});
+        let parsed = parse_deadline(&run).unwrap();
+        assert_eq!(parsed.to_rfc3339(), "2026-01-01T10:00:00+00:00");
+    }
+
+    // ── is_timed_out ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_run_past_its_deadline_is_timed_out() {
+        let now = Utc::now();
+        let run = run_with_deadline(PHASE_SYNCING, now - chrono::Duration::seconds(1));
+        assert!(is_timed_out(&run, now));
+    }
+
+    #[test]
+    fn a_run_inside_its_deadline_is_left_alone() {
+        let now = Utc::now();
+        let run = run_with_deadline(PHASE_SYNCING, now + chrono::Duration::hours(1));
+        assert!(!is_timed_out(&run, now));
+    }
+
+    /// A finished run keeps its last deadline, which is always in the past. If
+    /// terminality were not checked first, every completed backup would be
+    /// rewritten to Failed on the next tick.
+    #[test]
+    fn a_terminal_run_is_never_timed_out_however_old_its_deadline() {
+        let now = Utc::now();
+        for phase in [PHASE_SUCCEEDED, PHASE_PARTIAL, PHASE_FAILED] {
+            let run = run_with_deadline(phase, now - chrono::Duration::days(400));
+            assert!(!is_timed_out(&run, now), "{phase}");
+        }
+    }
+
+    /// "No deadline recorded" means unknown, not expired — a run that is genuinely
+    /// progressing must not be failed because a field is missing.
+    #[test]
+    fn a_run_with_no_deadline_is_not_timed_out() {
+        let now = Utc::now();
+        assert!(!is_timed_out(&json!({"status": {"phase": PHASE_SYNCING}}), now));
+        assert!(!is_timed_out(&json!({}), now));
+        assert!(!is_timed_out(
+            &json!({"status": {"phase": PHASE_SYNCING, "phaseDeadline": "garbage"}}),
+            now
+        ));
+    }
+
+    /// A run with no phase at all defaults to Pending — in-flight, and therefore
+    /// still subject to its deadline rather than ignored forever.
+    #[test]
+    fn a_run_with_no_phase_is_treated_as_pending() {
+        let now = Utc::now();
+        let run = json!({
+            "status": {"phaseDeadline": (now - chrono::Duration::seconds(1)).to_rfc3339()}
+        });
+        assert!(is_timed_out(&run, now));
+    }
+
+    #[test]
+    fn timeout_is_exclusive_at_the_deadline_itself() {
+        let now = Utc::now();
+        assert!(!is_timed_out(&run_with_deadline(PHASE_PENDING, now), now));
+    }
+
+    // ── names_to_prune ────────────────────────────────────────────────────────
+
+    #[test]
+    fn nothing_is_pruned_below_the_retention_count() {
+        let runs: Vec<Value> = (0..5)
+            .map(|i| run_named(&format!("backup-{i}"), PHASE_SUCCEEDED))
+            .collect();
+        assert!(names_to_prune(&runs, 30).is_empty());
+    }
+
+    #[test]
+    fn the_oldest_terminal_runs_are_pruned_first() {
+        // Newest-created first, as Crd::list returns them.
+        let runs: Vec<Value> = (0..5)
+            .map(|i| run_named(&format!("backup-{i}"), PHASE_SUCCEEDED))
+            .collect();
+        assert_eq!(
+            names_to_prune(&runs, 2),
+            vec!["backup-2", "backup-3", "backup-4"]
+        );
+    }
+
+    /// Deleting a BackupRun that is still driving a restic operation would strand
+    /// the run with no way to observe or finish it.
+    #[test]
+    fn an_in_flight_run_is_never_pruned() {
+        let runs = vec![
+            run_named("active", PHASE_SYNCING),
+            run_named("old-1", PHASE_SUCCEEDED),
+            run_named("old-2", PHASE_FAILED),
+        ];
+        assert_eq!(names_to_prune(&runs, 1), vec!["old-2"]);
+    }
+
+    /// In-flight runs must not consume retention slots either, or a stuck run
+    /// would slowly evict the entire backup history.
+    #[test]
+    fn in_flight_runs_do_not_count_against_the_retention_budget() {
+        let runs = vec![
+            run_named("active-1", PHASE_PENDING),
+            run_named("active-2", PHASE_PRUNING),
+            run_named("done-1", PHASE_SUCCEEDED),
+            run_named("done-2", PHASE_SUCCEEDED),
+        ];
+        assert!(names_to_prune(&runs, 2).is_empty());
+    }
+
+    #[test]
+    fn pruning_skips_entries_with_no_name() {
+        let runs = vec![
+            run_named("keep", PHASE_SUCCEEDED),
+            json!({"status": {"phase": PHASE_SUCCEEDED}}),
+        ];
+        assert!(names_to_prune(&runs, 1).is_empty());
+    }
+
+    #[test]
+    fn pruning_an_empty_list_is_a_no_op() {
+        assert!(names_to_prune(&[], 30).is_empty());
+    }
+
+    // ── backup_is_due ─────────────────────────────────────────────────────────
+
+    /// A machine that has never produced a usable backup must not wait a day for
+    /// its first one.
+    #[test]
+    fn a_machine_that_has_never_backed_up_is_due_immediately() {
+        assert!(backup_is_due(None));
+    }
+
+    #[test]
+    fn a_backup_is_due_once_a_day_has_passed() {
+        assert!(!backup_is_due(Some(0)));
+        assert!(!backup_is_due(Some(CATCHUP_AFTER_HOURS - 1)));
+        assert!(backup_is_due(Some(CATCHUP_AFTER_HOURS)));
+        assert!(backup_is_due(Some(CATCHUP_AFTER_HOURS + 1)));
+    }
+
+    /// `hours_since` goes negative if a node's clock is behind the timestamp it
+    /// wrote (NTP correction, or a laptop resuming from suspend). That must read
+    /// as "recent", not trigger a backup storm.
+    #[test]
+    fn a_negative_age_from_clock_skew_does_not_trigger_a_backup() {
+        assert!(!backup_is_due(Some(-5)));
+    }
+
+    // ── collect_images ────────────────────────────────────────────────────────
+
+    fn workload(init: &[&str], main: &[&str]) -> Value {
+        json!({"spec": {"template": {"spec": {
+            "initContainers": init.iter().map(|i| json!({"image": i})).collect::<Vec<_>>(),
+            "containers": main.iter().map(|i| json!({"image": i})).collect::<Vec<_>>(),
+        }}}})
+    }
+
+    /// Init containers run migrations and seed databases, so they are part of
+    /// "which version wrote this data" — a restore that only knows the main image
+    /// can reproduce the app but not the schema that shaped its data.
+    #[test]
+    fn collect_images_includes_init_containers() {
+        let images = collect_images(&[workload(&["migrate:1.0"], &["app:2.0"])]);
+        assert_eq!(images, vec!["app:2.0", "migrate:1.0"]);
+    }
+
+    #[test]
+    fn collect_images_deduplicates_across_workloads() {
+        let images = collect_images(&[
+            workload(&[], &["app:2.0", "sidecar:1.0"]),
+            workload(&["app:2.0"], &["app:2.0"]),
+        ]);
+        assert_eq!(images, vec!["app:2.0", "sidecar:1.0"]);
+    }
+
+    #[test]
+    fn collect_images_is_sorted_so_the_record_is_stable() {
+        // An unstable order would make every backup's metadata differ from the last.
+        let a = collect_images(&[workload(&[], &["z:1", "a:1", "m:1"])]);
+        let b = collect_images(&[workload(&[], &["m:1", "z:1", "a:1"])]);
+        assert_eq!(a, b);
+        assert_eq!(a, vec!["a:1", "m:1", "z:1"]);
+    }
+
+    #[test]
+    fn collect_images_handles_workloads_with_no_containers() {
+        assert!(collect_images(&[]).is_empty());
+        assert!(collect_images(&[json!({})]).is_empty());
+        assert!(collect_images(&[json!({"spec": {"template": {"spec": {}}}})]).is_empty());
+        // A container entry with no image at all.
+        assert!(collect_images(&[json!({"spec": {"template": {"spec": {
+            "containers": [{"name": "app"}]
+        }}}})])
+        .is_empty());
+    }
+
+    #[test]
+    fn collect_images_keeps_digest_pins_verbatim() {
+        // The digest is the whole point of the record — it must not be normalized away.
+        let pinned = "ghcr.io/org/app:1.2@sha256:abc123";
+        assert_eq!(collect_images(&[workload(&[], &[pinned])]), vec![pinned]);
+    }
+
+    // ── flatten_status ────────────────────────────────────────────────────────
+
+    #[test]
+    fn flatten_status_lifts_the_name_alongside_the_status_fields() {
+        let item = json!({
+            "metadata": {"name": "backup-20260101000000"},
+            "spec": {"triggeredBy": "schedule"},
+            "status": {"phase": PHASE_SUCCEEDED, "finishedAt": "2026-01-01T00:10:00Z"},
+        });
+        let flat = flatten_status(&item);
+        assert_eq!(flat["name"], json!("backup-20260101000000"));
+        assert_eq!(flat["phase"], json!(PHASE_SUCCEEDED));
+        assert_eq!(flat["finishedAt"], json!("2026-01-01T00:10:00Z"));
+        // The envelope the frontend does not want is gone.
+        assert!(flat.get("metadata").is_none());
+        assert!(flat.get("spec").is_none());
+    }
+
+    /// A run created but not yet reconciled has no status at all. The UI still
+    /// needs to see that it exists, so this must yield a named object, not null.
+    #[test]
+    fn flatten_status_yields_a_named_object_when_status_is_missing() {
+        let flat = flatten_status(&json!({"metadata": {"name": "backup-new"}}));
+        assert_eq!(flat, json!({"name": "backup-new"}));
+    }
+
+    #[test]
+    fn flatten_status_replaces_a_non_object_status() {
+        for status in [json!(null), json!("Succeeded"), json!([1, 2])] {
+            let flat = flatten_status(&json!({"metadata": {"name": "x"}, "status": status}));
+            assert_eq!(flat, json!({"name": "x"}));
+        }
+    }
+
+    #[test]
+    fn flatten_status_survives_a_missing_name() {
+        let flat = flatten_status(&json!({"status": {"phase": PHASE_FAILED}}));
+        assert_eq!(flat["phase"], json!(PHASE_FAILED));
+        assert!(flat.get("name").is_none());
     }
 }

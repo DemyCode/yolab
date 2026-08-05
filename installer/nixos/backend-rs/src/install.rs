@@ -98,6 +98,76 @@ fn gen_k3s_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Assembles the `config.toml` this machine will be built from.
+///
+/// Split out of `do_install` because it is the installer's most consequential
+/// artifact — every NixOS rebuild reads it, local-api reads the password hash
+/// out of it to authenticate the owner, and the cluster reads the account token
+/// out of it to authenticate node-to-node calls. A missing or misplaced field
+/// here is not a failed install, it is a machine that boots into the wrong
+/// configuration.
+fn build_config(
+    req: &InstallParams,
+    tunnel: &crate::wireguard::TunnelResult,
+    service_name: &str,
+    password_hash: &str,
+) -> ConfigToml {
+    ConfigToml {
+        homelab: HomelabSection {
+            hostname: service_name.to_string(),
+            timezone: req.timezone.clone(),
+            locale: "en_US.UTF-8".into(),
+            ssh_port: 22,
+            root_ssh_key: req.root_ssh_key.clone(),
+            git_remote: GIT_REMOTE.into(),
+            allowed_ssh_keys: vec![],
+            homelab_password_hash: password_hash.to_string(),
+            boot_mode: req.boot_mode.clone(),
+        },
+        disk: DiskSection {
+            device: req.disk.clone(),
+            esp_size: "500M".into(),
+        },
+        tunnel: Some(TunnelSection {
+            enabled: tunnel.enabled,
+            platform_api_url: tunnel.platform_api_url.clone(),
+            account_token: tunnel.account_token.clone(),
+            tunnel_id: tunnel.tunnel_id.clone(),
+            wg_private_key: tunnel.wg_private_key.clone(),
+            wg_public_key: tunnel.wg_public_key.clone(),
+            sub_ipv6: tunnel.sub_ipv6.clone(),
+            dns_url: tunnel.dns_url.clone(),
+            wg_server_endpoint: tunnel.wg_server_endpoint.clone(),
+            wg_server_public_key: tunnel.wg_server_public_key.clone(),
+        }),
+        swarm: SwarmSection { enabled: false },
+        node: NodeSection {
+            node_id: tunnel.node_id.clone(),
+            wg_private_key: tunnel.node_wg_private_key.clone(),
+            wg_public_key: tunnel.node_wg_public_key.clone(),
+            sub_ipv6_private: tunnel.sub_ipv6_private.clone(),
+            sub_ipv6_private_subnet: tunnel.sub_ipv6_private_subnet.clone(),
+            wg_server_endpoint: tunnel.node_wg_server_endpoint.clone(),
+            wg_server_public_key: tunnel.node_wg_server_public_key.clone(),
+            k3s: K3sSection {
+                // A joining node is given the existing cluster's token; the first
+                // node generates one.
+                token: req.k3s_token.clone().unwrap_or_else(gen_k3s_token),
+                server_addr: req.server_addr.clone().unwrap_or_default(),
+            },
+        },
+    }
+}
+
+fn render_config_toml(
+    req: &InstallParams,
+    tunnel: &crate::wireguard::TunnelResult,
+    service_name: &str,
+    password_hash: &str,
+) -> anyhow::Result<String> {
+    Ok(toml::to_string(&build_config(req, tunnel, service_name, password_hash))?)
+}
+
 async fn hash_password(password: &str) -> anyhow::Result<String> {
     let mut child = tokio::process::Command::new("openssl")
         .args(["passwd", "-6", "-stdin"])
@@ -242,53 +312,8 @@ async fn do_install(
     let ignored_dir = format!("{CODE_DIR}/homelab/ignored");
     tokio::fs::create_dir_all(&ignored_dir).await?;
 
-    let tunnel_section = TunnelSection {
-        enabled: tunnel.enabled,
-        platform_api_url: tunnel.platform_api_url.clone(),
-        account_token: tunnel.account_token.clone(),
-        tunnel_id: tunnel.tunnel_id.clone(),
-        wg_private_key: tunnel.wg_private_key.clone(),
-        wg_public_key: tunnel.wg_public_key.clone(),
-        sub_ipv6: tunnel.sub_ipv6.clone(),
-        dns_url: tunnel.dns_url.clone(),
-        wg_server_endpoint: tunnel.wg_server_endpoint.clone(),
-        wg_server_public_key: tunnel.wg_server_public_key.clone(),
-    };
-
-    let config = ConfigToml {
-        homelab: HomelabSection {
-            hostname: service_name.clone(),
-            timezone: req.timezone.clone(),
-            locale: "en_US.UTF-8".into(),
-            ssh_port: 22,
-            root_ssh_key: req.root_ssh_key.clone(),
-            git_remote: GIT_REMOTE.into(),
-            allowed_ssh_keys: vec![],
-            homelab_password_hash: password_hash,
-            boot_mode: req.boot_mode.clone(),
-        },
-        disk: DiskSection {
-            device: req.disk.clone(),
-            esp_size: "500M".into(),
-        },
-        tunnel: Some(tunnel_section),
-        swarm: SwarmSection { enabled: false },
-        node: NodeSection {
-            node_id: tunnel.node_id.clone(),
-            wg_private_key: tunnel.node_wg_private_key.clone(),
-            wg_public_key: tunnel.node_wg_public_key.clone(),
-            sub_ipv6_private: tunnel.sub_ipv6_private.clone(),
-            sub_ipv6_private_subnet: tunnel.sub_ipv6_private_subnet.clone(),
-            wg_server_endpoint: tunnel.node_wg_server_endpoint.clone(),
-            wg_server_public_key: tunnel.node_wg_server_public_key.clone(),
-            k3s: K3sSection {
-                token: req.k3s_token.clone().unwrap_or_else(gen_k3s_token),
-                server_addr: req.server_addr.clone().unwrap_or_default(),
-            },
-        },
-    };
-
-    let toml_str = toml::to_string(&config).context("serialize config")?;
+    let toml_str = render_config_toml(req, &tunnel, &service_name, &password_hash)
+        .context("serialize config")?;
     tokio::fs::write(format!("{ignored_dir}/config.toml"), toml_str).await?;
     log!("✓ Config written");
 
@@ -343,4 +368,212 @@ async fn do_install(
     log!("✓ Complete — remove the USB and reboot");
 
     Ok(tunnel.dns_url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wireguard::TunnelResult;
+
+    fn tunnel() -> TunnelResult {
+        TunnelResult {
+            enabled: true,
+            platform_api_url: "https://api.demycode.ovh".into(),
+            account_token: "acct-tok-123".into(),
+            tunnel_id: "42".into(),
+            wg_private_key: "tunnel-priv".into(),
+            wg_public_key: "tunnel-pub".into(),
+            sub_ipv6: "2001:db8::1".into(),
+            dns_url: "https://node1.demycode.ovh".into(),
+            wg_server_endpoint: "1.2.3.4:51820".into(),
+            wg_server_public_key: "server-pub".into(),
+            node_id: "7".into(),
+            node_wg_private_key: "node-priv".into(),
+            node_wg_public_key: "node-pub".into(),
+            sub_ipv6_private: "fd00:42::5".into(),
+            sub_ipv6_private_subnet: "fd00:42::/112".into(),
+            node_wg_server_endpoint: "1.2.3.4:51821".into(),
+            node_wg_server_public_key: "node-server-pub".into(),
+        }
+    }
+
+    fn params() -> InstallParams {
+        InstallParams {
+            disk: "/dev/nvme0n1".into(),
+            timezone: "Europe/Paris".into(),
+            password: "secret".into(),
+            root_ssh_key: "ssh-ed25519 AAAA... user@host".into(),
+            account_token: "acct-tok-123".into(),
+            server_addr: None,
+            k3s_token: None,
+            boot_mode: "uefi".into(),
+        }
+    }
+
+    /// Parses the rendered TOML back, which is what NixOS and local-api actually do.
+    fn rendered(req: &InstallParams) -> toml::Table {
+        let text = render_config_toml(req, &tunnel(), "node1", "$6$salt$hash").unwrap();
+        toml::from_str(&text).expect("installer must emit parseable TOML")
+    }
+
+    // ── gen_k3s_token ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_generated_k3s_token_is_256_bits_of_hex() {
+        let t = gen_k3s_token();
+        assert_eq!(t.len(), 64);
+        assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// This token is the cluster's join credential. A constant or predictable
+    /// value would let anyone who can reach the API join the cluster.
+    #[test]
+    fn generated_k3s_tokens_differ() {
+        assert_ne!(gen_k3s_token(), gen_k3s_token());
+    }
+
+    // ── Config rendering ──────────────────────────────────────────────────────
+
+    #[test]
+    fn the_rendered_config_has_every_section_the_nixos_modules_read() {
+        let cfg = rendered(&params());
+        for section in ["homelab", "disk", "tunnel", "swarm", "node"] {
+            assert!(cfg.contains_key(section), "missing [{section}]");
+        }
+        assert!(cfg["node"].as_table().unwrap().contains_key("k3s"));
+    }
+
+    #[test]
+    fn the_hostname_is_the_name_assigned_by_the_platform() {
+        // Not the disk, not a constant: it must match the DNS record just created.
+        assert_eq!(rendered(&params())["homelab"]["hostname"].as_str(), Some("node1"));
+    }
+
+    #[test]
+    fn the_users_choices_reach_the_config_verbatim() {
+        let cfg = rendered(&params());
+        assert_eq!(cfg["homelab"]["timezone"].as_str(), Some("Europe/Paris"));
+        assert_eq!(cfg["homelab"]["boot_mode"].as_str(), Some("uefi"));
+        assert_eq!(cfg["homelab"]["root_ssh_key"].as_str(), Some("ssh-ed25519 AAAA... user@host"));
+        assert_eq!(cfg["disk"]["device"].as_str(), Some("/dev/nvme0n1"));
+    }
+
+    /// local-api reads this hash to authenticate the owner. The plaintext must
+    /// never appear anywhere in the file.
+    #[test]
+    fn only_the_password_hash_is_written_never_the_password() {
+        let text = render_config_toml(&params(), &tunnel(), "node1", "$6$salt$hash").unwrap();
+        assert!(text.contains("$6$salt$hash"));
+        assert!(
+            !text.contains("secret"),
+            "the plaintext password must not be written to config.toml"
+        );
+    }
+
+    /// `Config::cluster_token()` in local-api reads exactly this path to
+    /// authenticate node-to-node calls; if it moves, inter-node auth silently
+    /// fails closed.
+    #[test]
+    fn the_account_token_lands_where_local_api_looks_for_it() {
+        let cfg = rendered(&params());
+        assert_eq!(cfg["tunnel"]["account_token"].as_str(), Some("acct-tok-123"));
+    }
+
+    #[test]
+    fn both_wireguard_keypairs_are_recorded_without_being_swapped() {
+        let cfg = rendered(&params());
+        // wg0 — the public tunnel.
+        assert_eq!(cfg["tunnel"]["wg_private_key"].as_str(), Some("tunnel-priv"));
+        assert_eq!(cfg["tunnel"]["wg_public_key"].as_str(), Some("tunnel-pub"));
+        assert_eq!(cfg["tunnel"]["sub_ipv6"].as_str(), Some("2001:db8::1"));
+        // wg1 — the private node mesh. Distinct keys, distinct endpoint.
+        assert_eq!(cfg["node"]["wg_private_key"].as_str(), Some("node-priv"));
+        assert_eq!(cfg["node"]["wg_public_key"].as_str(), Some("node-pub"));
+        assert_eq!(cfg["node"]["sub_ipv6_private"].as_str(), Some("fd00:42::5"));
+        assert_eq!(cfg["node"]["wg_server_endpoint"].as_str(), Some("1.2.3.4:51821"));
+    }
+
+    // ── First node vs joining node ────────────────────────────────────────────
+
+    /// The first machine has no cluster to join: it invents a token and leaves
+    /// server_addr empty, which is what tells the NixOS module to run k3s with
+    /// --cluster-init.
+    #[test]
+    fn the_first_node_generates_its_own_k3s_token_and_no_server_address() {
+        let cfg = rendered(&params());
+        let k3s = &cfg["node"]["k3s"];
+        assert_eq!(k3s["server_addr"].as_str(), Some(""));
+        assert_eq!(k3s["token"].as_str().unwrap().len(), 64);
+    }
+
+    /// A joining node must reuse the existing cluster's token exactly — generating
+    /// a fresh one is an unrecoverable join failure.
+    #[test]
+    fn a_joining_node_keeps_the_token_it_was_given() {
+        let mut req = params();
+        req.k3s_token = Some("existing-cluster-token".into());
+        req.server_addr = Some("https://[fd00:42::1]:6443".into());
+
+        let cfg = rendered(&req);
+        let k3s = &cfg["node"]["k3s"];
+        assert_eq!(k3s["token"].as_str(), Some("existing-cluster-token"));
+        assert_eq!(k3s["server_addr"].as_str(), Some("https://[fd00:42::1]:6443"));
+    }
+
+    #[test]
+    fn two_installs_of_the_first_node_never_share_a_k3s_token() {
+        let a = rendered(&params());
+        let b = rendered(&params());
+        assert_ne!(
+            a["node"]["k3s"]["token"].as_str(),
+            b["node"]["k3s"]["token"].as_str()
+        );
+    }
+
+    // ── Defaults and edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn defaults_that_the_ui_never_asks_about_are_still_set() {
+        let cfg = rendered(&params());
+        assert_eq!(cfg["homelab"]["locale"].as_str(), Some("en_US.UTF-8"));
+        assert_eq!(cfg["homelab"]["ssh_port"].as_integer(), Some(22));
+        assert_eq!(cfg["disk"]["esp_size"].as_str(), Some("500M"));
+        assert_eq!(cfg["swarm"]["enabled"].as_bool(), Some(false));
+        assert_eq!(cfg["tunnel"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn a_bios_install_records_bios_not_the_uefi_default() {
+        let mut req = params();
+        req.boot_mode = "bios".into();
+        assert_eq!(rendered(&req)["homelab"]["boot_mode"].as_str(), Some("bios"));
+    }
+
+    /// Skipping the SSH key is allowed; it must render as an empty string rather
+    /// than dropping the key and leaving the NixOS module reading a missing field.
+    #[test]
+    fn an_empty_ssh_key_is_still_written_as_a_field() {
+        let mut req = params();
+        req.root_ssh_key = String::new();
+        let cfg = rendered(&req);
+        assert_eq!(cfg["homelab"]["root_ssh_key"].as_str(), Some(""));
+        assert!(cfg["homelab"]["allowed_ssh_keys"].as_array().unwrap().is_empty());
+    }
+
+    /// TOML has no escape for a raw newline in a basic string. If a pasted SSH key
+    /// or timezone carried one through unescaped, the file would fail to parse and
+    /// the machine would not build — so the round-trip has to hold.
+    #[test]
+    fn values_containing_awkward_characters_survive_the_round_trip() {
+        let mut req = params();
+        req.root_ssh_key = "ssh-ed25519 AAAA\nsecond line \"quoted\" \\ backslash".into();
+        req.timezone = "America/Argentina/Buenos_Aires".into();
+
+        let cfg = rendered(&req);
+        assert_eq!(
+            cfg["homelab"]["root_ssh_key"].as_str(),
+            Some("ssh-ed25519 AAAA\nsecond line \"quoted\" \\ backslash")
+        );
+        assert_eq!(cfg["homelab"]["timezone"].as_str(), Some("America/Argentina/Buenos_Aires"));
+    }
 }

@@ -71,4 +71,72 @@ impl Config {
             .unwrap_or("")
             .to_string()
     }
+
+    /// A Config pointing at a throwaway `config.toml`, for tests that need to
+    /// exercise password/token reads without touching the real one.
+    #[cfg(test)]
+    pub fn for_test(config_path: &std::path::Path) -> Self {
+        Self {
+            repo_path: "/nonexistent-repo".into(),
+            config_path: config_path.to_string_lossy().into_owned(),
+            platform: "test".into(),
+            flake_target: "yolab".into(),
+            node_ipv6: "::1".into(),
+            port: 3001,
+            rebuild_log: PathBuf::from("/nonexistent/rebuild.log"),
+            rebuild_pid: PathBuf::from("/nonexistent/rebuild.pid"),
+            built_dir: PathBuf::from("/nonexistent/built"),
+            channel_file: PathBuf::from("/nonexistent/channel.json"),
+            terminal_enabled: true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(body: &str) -> (tempfile::TempDir, Config) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, body).unwrap();
+        let cfg = Config::for_test(&path);
+        (dir, cfg)
+    }
+
+    #[test]
+    fn cluster_token_reads_the_account_token() {
+        let (_d, cfg) = config_with("[tunnel]\naccount_token = \"tok-abc123\"\n");
+        assert_eq!(cfg.cluster_token(), "tok-abc123");
+    }
+
+    /// Every "is this caller allowed?" check funnels into comparing against this
+    /// string, so the failure modes all have to produce something that can never
+    /// match — never a partial or defaulted value.
+    #[test]
+    fn cluster_token_is_empty_when_it_cannot_be_read() {
+        let missing = Config::for_test(std::path::Path::new("/nonexistent/config.toml"));
+        assert_eq!(missing.cluster_token(), "");
+
+        let (_d, no_section) = config_with("[homelab]\nhostname = \"yolab\"\n");
+        assert_eq!(no_section.cluster_token(), "");
+
+        let (_d, no_key) = config_with("[tunnel]\nenabled = true\n");
+        assert_eq!(no_key.cluster_token(), "");
+
+        let (_d, wrong_type) = config_with("[tunnel]\naccount_token = 42\n");
+        assert_eq!(wrong_type.cluster_token(), "");
+
+        let (_d, not_toml) = config_with("this is not valid toml {{{");
+        assert_eq!(not_toml.cluster_token(), "");
+    }
+
+    #[test]
+    fn catalog_dir_hangs_off_the_repo_path() {
+        let cfg = Config::for_test(std::path::Path::new("/tmp/config.toml"));
+        assert_eq!(
+            cfg.catalog_dir(),
+            PathBuf::from("/nonexistent-repo/apps/catalog")
+        );
+    }
 }

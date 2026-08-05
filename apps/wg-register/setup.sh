@@ -5,9 +5,11 @@ PLATFORM_API_URL="${PLATFORM_API_URL:?PLATFORM_API_URL is required}"
 ACCOUNT_TOKEN="${ACCOUNT_TOKEN:?ACCOUNT_TOKEN is required}"
 SERVICE_NAME="${SERVICE_NAME:-}"
 
-WG_DIR="/wireguard"
-YOLAB_DIR="/yolab"
-STATE_FILE="/state/wg-state.json"
+# Overridable only so setup_test.sh can drive the script against a temp tree.
+# Nothing sets these in the container, so the defaults are what actually ship.
+WG_DIR="${WG_DIR:-/wireguard}"
+YOLAB_DIR="${YOLAB_DIR:-/yolab}"
+STATE_FILE="${STATE_FILE:-/state/wg-state.json}"
 
 mkdir -p "$WG_DIR" "$YOLAB_DIR" "$(dirname "$STATE_FILE")"
 

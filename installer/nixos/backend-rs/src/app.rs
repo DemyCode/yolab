@@ -737,6 +737,17 @@ async fn detect_disks() -> anyhow::Result<Vec<DiskInfo>> {
         .output()
         .await?;
     let data: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(disks_from_lsblk(&data))
+}
+
+/// Turns `lsblk -J -b` output into the disk list the picker shows, marking one
+/// as recommended.
+///
+/// Split from `detect_disks` so the selection rule is testable: this is the
+/// screen where someone chooses which disk to erase, and the recommendation is
+/// what most people will accept without reading. It must never land on the USB
+/// stick the installer itself booted from, nor on a mounted disk.
+fn disks_from_lsblk(data: &serde_json::Value) -> Vec<DiskInfo> {
     let empty = vec![];
     let devices = data["blockdevices"].as_array().unwrap_or(&empty);
 
@@ -763,7 +774,7 @@ async fn detect_disks() -> anyhow::Result<Vec<DiskInfo>> {
         .map(|(i, _)| i);
     if let Some(i) = rec { disks[i].recommended = true; }
 
-    Ok(disks)
+    disks
 }
 
 fn disk_has_mount(d: &serde_json::Value) -> bool {
@@ -796,4 +807,239 @@ async fn do_gen_ssh_key() -> anyhow::Result<(String, String)> {
     let private_key = tokio::fs::read_to_string(path_str).await?;
     let public_key = tokio::fs::read_to_string(format!("{path_str}.pub")).await?;
     Ok((private_key.trim().to_string(), public_key.trim().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── Step ──────────────────────────────────────────────────────────────────
+
+    /// The index drives the sidebar's progress highlight. Duplicates or gaps show
+    /// up as two steps lit at once, or none.
+    #[test]
+    fn step_indices_are_sequential_and_unique() {
+        let steps = [Step::Mode, Step::Account, Step::Disk, Step::Configure, Step::Install];
+        let indices: Vec<usize> = steps.iter().map(Step::index).collect();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4]);
+    }
+
+    // ── fmt_bytes ─────────────────────────────────────────────────────────────
+
+    /// Disks are sold in decimal gigabytes, so a 500 GB disk must read "500 GB"
+    /// and not the 465 GiB a binary divisor would print — the user is matching
+    /// this against the label on the drive.
+    #[test]
+    fn sizes_are_formatted_in_the_units_printed_on_the_box() {
+        assert_eq!(fmt_bytes(500_000_000_000), "500 GB");
+        assert_eq!(fmt_bytes(256_000_000_000), "256 GB");
+        assert_eq!(fmt_bytes(1_000_000_000_000), "1.0 TB");
+        assert_eq!(fmt_bytes(2_000_000_000_000), "2.0 TB");
+    }
+
+    #[test]
+    fn terabyte_sizes_keep_one_decimal() {
+        assert_eq!(fmt_bytes(1_500_000_000_000), "1.5 TB");
+    }
+
+    #[test]
+    fn small_and_zero_sizes_do_not_panic() {
+        assert_eq!(fmt_bytes(0), "0 GB");
+        assert_eq!(fmt_bytes(1), "0 GB");
+    }
+
+    // ── parse_gb ──────────────────────────────────────────────────────────────
+
+    /// `parse_gb` reads back what `fmt_bytes` wrote, so the two have to agree —
+    /// this is what orders the disks when choosing which to recommend.
+    #[test]
+    fn parse_gb_round_trips_what_fmt_bytes_produces() {
+        assert_eq!(parse_gb(&fmt_bytes(500_000_000_000)), 500);
+        assert_eq!(parse_gb(&fmt_bytes(2_000_000_000_000)), 2000);
+        assert_eq!(parse_gb(&fmt_bytes(1_500_000_000_000)), 1500);
+    }
+
+    #[test]
+    fn parse_gb_orders_terabyte_disks_above_gigabyte_disks() {
+        assert!(parse_gb("1.0 TB") > parse_gb("999 GB"));
+    }
+
+    #[test]
+    fn parse_gb_reads_unparseable_sizes_as_zero() {
+        assert_eq!(parse_gb(""), 0);
+        assert_eq!(parse_gb("unknown"), 0);
+        assert_eq!(parse_gb("GB"), 0);
+    }
+
+    // ── disk_has_mount ────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_disk_mounted_at_its_top_level_counts_as_mounted() {
+        assert!(disk_has_mount(&json!({"mountpoint": "/"})));
+    }
+
+    /// The live USB's root is on a *partition*, not the disk node, so only
+    /// recursing into children detects it — and that disk is the one thing the
+    /// installer must never offer to erase.
+    #[test]
+    fn a_disk_is_mounted_when_any_partition_below_it_is() {
+        let disk = json!({
+            "name": "sda", "mountpoint": null,
+            "children": [
+                {"name": "sda1", "mountpoint": null},
+                {"name": "sda2", "mountpoint": "/iso"},
+            ],
+        });
+        assert!(disk_has_mount(&disk));
+    }
+
+    #[test]
+    fn nesting_deeper_than_one_level_is_still_detected() {
+        // e.g. disk → partition → LUKS/LVM mapping that holds the mount.
+        let disk = json!({
+            "children": [{"children": [{"mountpoint": "/nix/store"}]}],
+        });
+        assert!(disk_has_mount(&disk));
+    }
+
+    #[test]
+    fn an_unmounted_disk_is_not_reported_as_mounted() {
+        assert!(!disk_has_mount(&json!({"mountpoint": null})));
+        assert!(!disk_has_mount(&json!({"mountpoint": ""})));
+        assert!(!disk_has_mount(&json!({})));
+        assert!(!disk_has_mount(&json!({
+            "children": [{"mountpoint": null}, {"mountpoint": ""}]
+        })));
+    }
+
+    // ── disks_from_lsblk ──────────────────────────────────────────────────────
+
+    fn lsblk(devices: serde_json::Value) -> serde_json::Value {
+        json!({"blockdevices": devices})
+    }
+
+    fn disk(name: &str, size: u64, tran: &str, mountpoint: Option<&str>) -> serde_json::Value {
+        json!({
+            "name": name, "size": size, "tran": tran, "type": "disk",
+            "mountpoint": mountpoint,
+        })
+    }
+
+    #[test]
+    fn disks_are_listed_with_full_device_paths() {
+        let disks = disks_from_lsblk(&lsblk(json!([disk("nvme0n1", 512_000_000_000, "nvme", None)])));
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].name, "/dev/nvme0n1");
+        assert_eq!(disks[0].size, "512 GB");
+        assert_eq!(disks[0].tran, "nvme");
+    }
+
+    #[test]
+    fn partitions_and_loop_devices_are_not_offered_as_install_targets() {
+        let data = lsblk(json!([
+            disk("sda", 500_000_000_000, "sata", None),
+            {"name": "sda1", "size": 1_000_000, "type": "part"},
+            {"name": "loop0", "size": 1_000_000, "type": "loop"},
+            {"name": "sr0", "size": 1_000_000, "type": "rom"},
+        ]));
+        let disks = disks_from_lsblk(&data);
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].name, "/dev/sda");
+    }
+
+    #[test]
+    fn the_largest_internal_disk_is_recommended() {
+        let data = lsblk(json!([
+            disk("sda", 250_000_000_000, "sata", None),
+            disk("nvme0n1", 1_000_000_000_000, "nvme", None),
+            disk("sdb", 500_000_000_000, "sata", None),
+        ]));
+        let disks = disks_from_lsblk(&data);
+        let rec: Vec<&str> = disks.iter().filter(|d| d.recommended).map(|d| d.name.as_str()).collect();
+        assert_eq!(rec, vec!["/dev/nvme0n1"]);
+    }
+
+    /// The installer is running *from* the USB stick. Recommending it would mean
+    /// the default action destroys the installer mid-install.
+    #[test]
+    fn the_usb_stick_is_never_recommended_even_when_it_is_the_largest() {
+        let data = lsblk(json!([
+            disk("sdb", 2_000_000_000_000, "usb", None),
+            disk("sda", 250_000_000_000, "sata", None),
+        ]));
+        let disks = disks_from_lsblk(&data);
+        let rec: Vec<&str> = disks.iter().filter(|d| d.recommended).map(|d| d.name.as_str()).collect();
+        assert_eq!(rec, vec!["/dev/sda"]);
+        // It is still listed, just not preselected — an advanced user may want it.
+        assert_eq!(disks.len(), 2);
+        assert!(disks.iter().any(|d| d.name == "/dev/sdb" && d.is_usb));
+    }
+
+    #[test]
+    fn a_mounted_disk_is_never_recommended() {
+        let data = lsblk(json!([
+            json!({
+                "name": "sdb", "size": 2_000_000_000_000u64, "tran": "sata", "type": "disk",
+                "children": [{"name": "sdb1", "mountpoint": "/iso"}],
+            }),
+            disk("sda", 250_000_000_000, "sata", None),
+        ]));
+        let disks = disks_from_lsblk(&data);
+        let rec: Vec<&str> = disks.iter().filter(|d| d.recommended).map(|d| d.name.as_str()).collect();
+        assert_eq!(rec, vec!["/dev/sda"]);
+    }
+
+    /// With nothing safe to pick, nothing is preselected — better an explicit
+    /// choice than a default that erases the wrong device.
+    #[test]
+    fn nothing_is_recommended_when_every_disk_is_usb_or_mounted() {
+        let data = lsblk(json!([
+            disk("sdb", 2_000_000_000_000, "usb", None),
+            disk("sdc", 1_000_000_000_000, "usb", Some("/iso")),
+        ]));
+        let disks = disks_from_lsblk(&data);
+        assert_eq!(disks.len(), 2);
+        assert!(!disks.iter().any(|d| d.recommended));
+    }
+
+    #[test]
+    fn exactly_one_disk_is_ever_recommended() {
+        let data = lsblk(json!([
+            disk("sda", 500_000_000_000, "sata", None),
+            disk("sdb", 500_000_000_000, "sata", None),
+            disk("sdc", 500_000_000_000, "sata", None),
+        ]));
+        let disks = disks_from_lsblk(&data);
+        assert_eq!(disks.iter().filter(|d| d.recommended).count(), 1);
+    }
+
+    #[test]
+    fn a_machine_with_no_disks_yields_an_empty_list() {
+        assert!(disks_from_lsblk(&lsblk(json!([]))).is_empty());
+        assert!(disks_from_lsblk(&json!({})).is_empty());
+        assert!(disks_from_lsblk(&json!({"blockdevices": "unexpected"})).is_empty());
+    }
+
+    #[test]
+    fn a_disk_with_no_name_is_skipped_rather_than_listed_as_dev() {
+        let data = lsblk(json!([
+            {"size": 500_000_000_000u64, "type": "disk"},
+            disk("sda", 250_000_000_000, "sata", None),
+        ]));
+        let disks = disks_from_lsblk(&data);
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].name, "/dev/sda");
+    }
+
+    #[test]
+    fn a_disk_with_no_reported_size_still_appears() {
+        // Some virtio/NVMe setups omit `size`; hiding the disk entirely would
+        // leave a user with no installable target at all.
+        let data = lsblk(json!([{"name": "vda", "type": "disk"}]));
+        let disks = disks_from_lsblk(&data);
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].size, "0 GB");
+        assert_eq!(disks[0].tran, "");
+    }
 }
