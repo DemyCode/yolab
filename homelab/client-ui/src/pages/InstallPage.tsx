@@ -351,7 +351,7 @@ export function InstallPage() {
               className="h-10 w-10 text-4xl"
             />
           </div>
-          <h1 className="text-xl font-semibold text-fg">
+          <h1 className="font-display text-2xl text-fg">
             Setting up {app.name}
           </h1>
           <p className="mt-2 text-sm text-fg-muted">{phase}…</p>
@@ -401,9 +401,7 @@ export function InstallPage() {
           />
         </div>
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-fg">
-            {app.name}
-          </h1>
+          <h1 className="font-display text-3xl text-fg">{app.name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>
         </div>
       </div>
@@ -441,7 +439,7 @@ export function InstallPage() {
           className="mb-5"
         >
           You added this source yourself. Apps from outside the official catalog
-          can do anything on your box, so only install ones you trust.
+          can do anything on your machines, so only install ones you trust.
         </Banner>
       )}
 
@@ -511,7 +509,7 @@ export function InstallPage() {
               help={
                 nameTaken
                   ? undefined
-                  : "What this copy is called on your box. The web address follows it unless you set one below."
+                  : "What this copy is called on your home server. The web address follows it unless you set one below."
               }
               error={
                 nameTaken ? "You already have something with that name." : null

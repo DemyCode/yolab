@@ -5,70 +5,110 @@
    phone in bed; letting the person choose beats guessing from the OS. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── Type ─────────────────────────────────────────────────────────────────
+   Self-hosted and subset to Latin, because a box at home may have no working
+   internet — which is precisely when someone opens this dashboard to find out
+   why. A CDN font would leave them reading a fallback at the worst moment,
+   and would also tell a third party each time a household looked at its own
+   server. 15 KB and 61 KB respectively.
+
+   Fraunces is doing the identity work. It is a soft, slightly wonky old-style
+   serif, and it is the reason a page of this app does not look like every
+   other admin console: a grid of neutral cards under a geometric sans is what
+   a dashboard looks like, and this is not meant to be one. */
+@font-face {
+  font-family: "Fraunces";
+  src: url("/fonts/fraunces-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "InterVar";
+  src: url("/fonts/inter.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ── Tokens ───────────────────────────────────────────────────────────────
-   Every colour in the app comes from here. The previous UI hardcoded hex
-   literals in ~40 files, which is why it was dark-only: there was no single
-   place a second theme could exist.
+   Every colour in the app comes from here.
 
-   Light is the default. Dark-by-default reads as "developer tool", and this is
-   meant to feel like something that belongs in a home. */
+   The palette is deliberately warm: paper rather than white, ink rather than
+   black, and a deep pine green rather than the violet every other self-hosted
+   dashboard reaches for. The product's whole claim is that this is a thing in
+   your home, not a rack in a datacentre, and cold neutral greys quietly say
+   the opposite on every screen.
+
+   Green as the primary does collide with green-as-success. That is survivable
+   here and nowhere else: this UI shows almost no success indicators by design
+   (see `topConcern` — silence is the success case), so the two rarely meet. */
 :root {
-  --bg: #f6f6f7;
-  --surface: #ffffff;
-  --surface-2: #f0f0f2;
-  --surface-3: #e6e6ea;
-  --border: #e3e3e7;
-  --border-strong: #d1d1d8;
-  --fg: #18181b;
-  --fg-muted: #6b6b76;
-  --fg-subtle: #9a9aa4;
+  --bg: #f6f3ed;
+  --surface: #fffdf9;
+  --surface-2: #efeae1;
+  --surface-3: #e3dcd0;
+  --border: #e5ded2;
+  --border-strong: #d0c7b7;
+  --fg: #1e1b16;
+  --fg-muted: #6b6459;
+  --fg-subtle: #9a9184;
 
-  --primary: #6d4ee6;
-  --primary-fg: #ffffff;
-  --primary-soft: #f0ecfe;
+  --primary: #1f6f52;
+  --primary-fg: #fffdf9;
+  --primary-soft: #e2efe8;
 
-  --success: #15803d;
-  --success-soft: #e6f5ec;
-  --warning: #b45309;
-  --warning-soft: #fdf1e0;
-  --danger: #c62828;
-  --danger-soft: #fdeceb;
+  --success: #2c7a51;
+  --success-soft: #e2efe8;
+  --warning: #a2620f;
+  --warning-soft: #f7ecd9;
+  --danger: #ad3a2b;
+  --danger-soft: #f8e7e3;
 
-  --shadow-card: 0 1px 2px rgb(24 24 27 / 0.05);
-  --shadow-pop: 0 12px 32px -8px rgb(24 24 27 / 0.18);
+  /* Brown-tinted rather than neutral black, so shadows sit in the same warm
+     world as everything else. */
+  --shadow-card: 0 1px 2px rgb(60 45 25 / 0.06);
+  --shadow-lift: 0 4px 14px -4px rgb(60 45 25 / 0.12);
+  --shadow-pop: 0 16px 40px -12px rgb(40 30 15 / 0.22);
+
+  --grain-opacity: 0.035;
 }
 
 .dark {
-  --bg: #0c0c0f;
-  --surface: #17171b;
-  --surface-2: #202026;
-  --surface-3: #2b2b33;
-  --border: #292930;
-  --border-strong: #3a3a44;
-  --fg: #f4f4f5;
-  --fg-muted: #a0a0ab;
-  --fg-subtle: #6f6f7a;
+  --bg: #14120f;
+  --surface: #1c1917;
+  --surface-2: #262220;
+  --surface-3: #332d29;
+  --border: #2e2926;
+  --border-strong: #453e38;
+  --fg: #f4f0e8;
+  --fg-muted: #a49b8e;
+  --fg-subtle: #6e665c;
 
-  --primary: #a78bfa;
-  --primary-fg: #17171b;
-  --primary-soft: #241f3a;
+  --primary: #6dd3a4;
+  --primary-fg: #10251c;
+  --primary-soft: #172f25;
 
-  --success: #4ade80;
-  --success-soft: #12291c;
-  --warning: #fbbf24;
-  --warning-soft: #2c220e;
-  --danger: #f87171;
-  --danger-soft: #2e1616;
+  --success: #6dd3a4;
+  --success-soft: #172f25;
+  --warning: #eeb44f;
+  --warning-soft: #2d2312;
+  --danger: #ef8b78;
+  --danger-soft: #2f1b16;
 
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5);
+  --shadow-lift: 0 4px 14px -4px rgb(0 0 0 / 0.5);
+  --shadow-pop: 0 16px 40px -12px rgb(0 0 0 / 0.65);
+
+  --grain-opacity: 0.05;
 }
 
 /* `inline` so the generated utilities dereference the custom property at use
    time — that is what makes `.dark` overrides apply without regenerating any
    classes. */
 @theme inline {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: "InterVar", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
   --font-mono: ui-monospace, "SF Mono", "Fira Code", monospace;
 
   --color-bg: var(--bg);
@@ -93,7 +133,7 @@
   --color-danger-soft: var(--danger-soft);
 
   --radius-card: 1rem;
-  --radius-tile: 1.25rem;
+  --radius-tile: 1.125rem;
 }
 
 *,
@@ -117,7 +157,28 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Invisible until used, and never a light scrollbar on a dark page. */
+/* Paper grain.
+   A 120px tile so the browser rasterises it once and repeats it, rather than
+   re-running the filter over a full-screen element on every paint. Barely
+   visible on its own; what it removes is the flat, printed-from-a-spec look
+   of a UI built entirely from solid fills. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Headings carry the identity; body text stays out of the way. */
+.font-display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -153,7 +214,7 @@ body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgb(127 127 140 / 0.12),
+    rgb(140 130 115 / 0.14),
     transparent
   );
   animation: shimmer 1.6s infinite;
@@ -175,9 +236,18 @@ body {
     opacity: 0;
   }
 }
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
 
 .animate-fade-in {
   animation: fade-in 0.15s ease-out;
+}
+.animate-rise-in {
+  animation: rise-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .animate-sheet-in {
   animation: sheet-in-mobile 0.24s cubic-bezier(0.32, 0.72, 0, 1);

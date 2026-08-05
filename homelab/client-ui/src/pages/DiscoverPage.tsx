@@ -108,7 +108,11 @@ export function DiscoverPage() {
   }, [matches, activeGroup]);
 
   return (
-    <Page wide title="Add an app" subtitle="Everything here runs on your box.">
+    <Page
+      wide
+      title="Add an app"
+      subtitle="Everything here runs at home, on your own machines."
+    >
       <div className="relative mb-4">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
         <Input

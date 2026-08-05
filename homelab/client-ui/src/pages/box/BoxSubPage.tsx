@@ -27,10 +27,10 @@ export function BoxSubPage({
         className="mb-5 inline-flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
       >
         <ArrowLeft className="h-4 w-4" />
-        Your box
+        Settings
       </Link>
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-fg md:text-3xl">
+        <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
           {title}
         </h1>
         {subtitle && <p className="mt-1 text-sm text-fg-muted">{subtitle}</p>}

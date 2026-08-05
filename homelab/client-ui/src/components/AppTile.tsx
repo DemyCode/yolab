@@ -40,7 +40,7 @@ export function AppTile({
       )}
     >
       <div className="relative mb-3">
-        <div className="flex h-16 w-16 items-center justify-center rounded-tile bg-surface-2 transition-transform group-hover:scale-105">
+        <div className="flex h-16 w-16 items-center justify-center rounded-tile border border-border bg-surface shadow-[var(--shadow-card)] transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-lift)]">
           <AppIcon icon={icon} name={name} className="h-9 w-9 text-3xl" />
         </div>
         <StatusDot

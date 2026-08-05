@@ -109,7 +109,7 @@ export default function App() {
             element={
               <BoxSubPage
                 title="Machines"
-                subtitle="The computers making up your box."
+                subtitle="Every machine that makes up your home server."
               >
                 <Suspense fallback={<Loading />}>
                   <NodesPage />
@@ -122,7 +122,7 @@ export default function App() {
             element={
               <BoxSubPage
                 title="Updates and system"
-                subtitle="What version your box is running."
+                subtitle="What version your machines are running."
               >
                 <Suspense fallback={<Loading />}>
                   <SystemPage />

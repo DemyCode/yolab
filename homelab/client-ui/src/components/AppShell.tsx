@@ -3,6 +3,7 @@ import { Home, Plus, Settings2, Moon, Sun, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api";
+import { Wordmark } from "@/components/Logo";
 
 /**
  * Three destinations.
@@ -14,13 +15,13 @@ import { api } from "@/lib/api";
  * an app store hidden inside.
  *
  * Now: the things you own, somewhere to get more, and everything else. Storage,
- * machines, backups and the terminal still exist, one level down inside "Your
- * box", where they read as settings rather than as the point of the product.
+ * machines, backups and the terminal still exist, one level down under Settings,
+ * where they read as settings rather than as the point of the product.
  */
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
   { to: "/add", icon: Plus, label: "Add" },
-  { to: "/box", icon: Settings2, label: "Your box" },
+  { to: "/box", icon: Settings2, label: "Settings" },
 ];
 
 function ThemeButton({ compact }: { compact?: boolean }) {
@@ -57,13 +58,8 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
     <div className="flex min-h-full bg-bg">
       {/* Desktop rail */}
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-surface px-3 py-5 md:flex">
-        <div className="flex items-center gap-2.5 px-3 pb-5">
-          <span className="text-xl" aria-hidden>
-            🏡
-          </span>
-          <span className="text-base font-semibold tracking-tight text-fg">
-            YoLab
-          </span>
+        <div className="px-3 pb-5">
+          <Wordmark />
         </div>
 
         <nav className="flex-1 space-y-1">
@@ -153,12 +149,12 @@ export function Page({
         <header className="mb-6 flex items-start gap-4">
           <div className="min-w-0 flex-1">
             {title && (
-              <h1 className="text-2xl font-semibold tracking-tight text-fg md:text-3xl">
+              <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
                 {title}
               </h1>
             )}
             {subtitle && (
-              <p className="mt-1 text-sm text-fg-muted">{subtitle}</p>
+              <p className="mt-1.5 text-sm text-fg-muted">{subtitle}</p>
             )}
           </div>
           {action}

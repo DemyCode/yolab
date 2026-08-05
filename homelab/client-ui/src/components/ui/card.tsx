@@ -50,7 +50,7 @@ export function CardContent({
 
 /**
  * A labelled row inside a settings card — label left, value right, optional
- * chevron. Most of "Your box" is made of these, which is the point: the
+ * chevron. Most of Settings is made of these, which is the point: the
  * operator pages become a list of plain sentences rather than a dashboard.
  */
 export function Row({

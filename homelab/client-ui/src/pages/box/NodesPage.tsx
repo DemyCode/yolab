@@ -50,11 +50,6 @@ export function NodesPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-xl font-semibold text-fg">Machines</h1>
-        <p className="text-sm text-fg-muted mt-0.5">Machines in your cluster</p>
-      </div>
-
       {stale && (
         <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-warning mt-0.5 flex-shrink-0" />

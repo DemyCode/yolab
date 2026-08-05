@@ -240,13 +240,6 @@ export function SystemPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-xl font-semibold text-fg">Overview</h1>
-        <p className="text-sm text-fg-muted mt-0.5">
-          System status and build information
-        </p>
-      </div>
-
       {/* Status cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Card>
