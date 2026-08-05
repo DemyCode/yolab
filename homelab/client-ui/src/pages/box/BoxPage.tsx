@@ -134,8 +134,8 @@ export function BoxPage() {
 
   return (
     <Page
-      title="Your box"
-      subtitle="Settings for the machine everything runs on."
+      title="Settings"
+      subtitle="Storage, backups and the machines everything runs on."
     >
       <Card className="mb-4 overflow-hidden p-0">
         <NavRow

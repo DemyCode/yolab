@@ -78,11 +78,11 @@ export function HomePage() {
   return (
     <Page wide>
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-fg md:text-3xl">
+        <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
           Your apps
         </h1>
         <p className="mt-1 text-sm text-fg-muted">
-          Everything running on your box. Tap one to open it.
+          Everything running at home. Tap one to open it.
         </p>
       </header>
 
@@ -126,7 +126,7 @@ export function HomePage() {
         <EmptyState
           icon={<Sparkles className="h-6 w-6" />}
           title="Nothing installed yet"
-          body="Your box is ready. Pick something you'd like to stop paying a subscription for."
+          body="Your home server is ready. Pick something you'd like to stop paying a subscription for."
           action={
             <Link to="/add" className={buttonClass()}>
               <Plus className="h-4 w-4" />

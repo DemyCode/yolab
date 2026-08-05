@@ -1305,7 +1305,6 @@ export function StoragePage() {
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-fg">Storage</h1>
           <p className="text-sm text-fg-muted mt-0.5">
             Disk pool, capacity, and redundancy settings
           </p>

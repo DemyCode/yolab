@@ -317,9 +317,7 @@ export function AppDetailPage() {
           />
         </div>
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-fg">
-            {name}
-          </h1>
+          <h1 className="font-display text-3xl text-fg">{name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">
             {entry
               ? taglineFor({ id: entry.id, description: entry.description })

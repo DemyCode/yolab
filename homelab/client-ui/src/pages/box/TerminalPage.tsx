@@ -84,13 +84,6 @@ export function TerminalPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold text-fg">Terminal</h1>
-        <p className="text-sm text-fg-muted mt-0.5">
-          Execute commands on your homelab
-        </p>
-      </div>
-
       <div
         onClick={() => inputRef.current?.focus()}
         className="rounded-xl border border-border bg-bg p-4 min-h-[500px] cursor-text font-mono text-sm"

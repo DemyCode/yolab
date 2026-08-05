@@ -280,7 +280,7 @@ function RestoreTakeover({ onDone }: { onDone: () => void }) {
   return (
     <div className="min-h-[70vh] flex flex-col max-w-3xl mx-auto w-full">
       <div className="mb-8">
-        <h1 className="text-xl font-semibold text-fg">Restoring from backup</h1>
+        <h2 className="font-display text-2xl text-fg">Restoring from backup</h2>
         <p className="text-sm text-fg-muted mt-0.5">
           {status.snapshotId
             ? `Snapshot ${status.snapshotId.slice(0, 8)}`
@@ -1229,7 +1229,6 @@ export function BackupsPage() {
 
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-fg">Backups</h1>
           <p className="text-sm text-fg-muted mt-0.5">
             Each backup is a full snapshot of the cluster — K8s state, service
             configs, and all PVC data — encrypted and stored in Backblaze B2.
