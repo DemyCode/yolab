@@ -237,6 +237,18 @@ in
         "--advertise-address=${s.nodeCfg.sub_ipv6_private}"
         "--tls-san=${s.nodeCfg.sub_ipv6_private}"
         "--resolv-conf=/etc/k3s-resolv.conf"
+
+        # Root carries the OS, k3s state, AND every pulled container image —
+        # nothing was ever configured here, so kubelet used its own defaults
+        # and those weren't tight enough: this node reached 95% used (5%
+        # free) with DiskPressure never tripping, which let mon/mgr crash-loop
+        # on a full disk instead of kubelet proactively making room. These are
+        # deliberately tighter than upstream's usual 85%/80% image-gc split —
+        # a 40GB root has far less slack than a typical multi-hundred-GB node,
+        # so garbage collection needs to start earlier relative to its size.
+        "--kubelet-arg=image-gc-high-threshold-percent=70"
+        "--kubelet-arg=image-gc-low-threshold-percent=50"
+        "--kubelet-arg=eviction-hard=nodefs.available<15%,imagefs.available<15%"
       ];
     };
 
@@ -564,6 +576,12 @@ in
     nix.settings.max-jobs = 1;
     nix.settings.cores = 2;
     nix.gc.automatic = true;
+    # Automatic was already on, but with no options it only clears truly
+    # unreachable garbage — every generation from every past rebuild stays a
+    # GC root forever and /nix grows without bound. Bounding it to 2 weeks is
+    # part of the same "root disk must not silently fill up" fix as the
+    # kubelet image-gc thresholds above.
+    nix.gc.options = "--delete-older-than 14d";
 
     # Swap is allocated on demand rather than reserved up front. The fixed 8 GB swapfile
     # this replaces sat on the root LV permanently, used or not, and root is whatever is
