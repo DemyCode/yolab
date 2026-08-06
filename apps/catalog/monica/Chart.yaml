@@ -1,0 +1,31 @@
+apiVersion: v2
+name: monica
+description: "Personal CRM for remembering the people in your life"
+type: application
+version: 0.1.0
+appVersion: "latest"
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Monica"
+  yolab.io/icon: "🎂"
+  yolab.io/category: "personal"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }
+  yolab.io/outputs: |
+    [
+      {
+        "key": "url",
+        "label": "Web URL",
+        "type": "url",
+        "pattern": "YOLAB_OUTPUT url (\\S+)"
+      }
+    ]

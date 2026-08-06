@@ -4,34 +4,27 @@
   "required": ["config"],
   "properties": {
     "config": {
-      "title": "Minecraft",
+      "title": "OpenClaw",
       "type": "object",
-      "required": [],
+      "required": ["subdomain", "gateway_token"],
       "properties": {
-        "difficulty": {
+        "subdomain": {
           "type": "string",
-          "title": "Difficulty",
-          "enum": ["peaceful", "easy", "normal", "hard"],
-          "default": "normal"
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "openclaw"
         },
-        "gamemode": {
+        "gateway_token": {
           "type": "string",
-          "title": "Game mode",
-          "enum": ["survival", "creative", "adventure", "spectator"],
-          "default": "survival"
+          "title": "Gateway access token",
+          "minLength": 32,
+          "description": "Protects the OpenClaw web UI. Everything else — your AI provider key, and linking WhatsApp/Telegram/Discord — is set up from inside OpenClaw itself after install."
         },
-        "seed": {
+        "storage_size": {
           "type": "string",
-          "title": "World seed",
-          "description": "Leave blank for a random world."
-        },
-        "ops": {
-          "type": "string",
-          "title": "Operators (comma-separated usernames)"
-        },
-        "whitelist": {
-          "type": "string",
-          "title": "Whitelist (comma-separated usernames)"
+          "title": "Storage size",
+          "default": "5Gi",
+          "description": "How much CephFS storage to allocate (e.g. 5Gi, 20Gi)"
         }
       }
     },

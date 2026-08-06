@@ -55,6 +55,8 @@ LINT_VALUES = {
     # and helm validates values.schema.json during template.
     "config.app_key": "PlaceholderAppKey2026Placeholder",
     "config.api_key": "PlaceholderApiKey2026",
+    "config.auth_secret_key": "PlaceholderAuthSecretKey2026Placeholder",
+    "config.gateway_token": "PlaceholderGatewayToken2026Placeholder",
     "config.server_name": "example",
     "config.server_pass": "PlaceholderPw2026",
     "config.subdomain": "example",

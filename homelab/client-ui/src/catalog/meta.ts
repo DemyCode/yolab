@@ -141,6 +141,18 @@ export const APP_META: Record<string, AppMeta> = {
   "2fauth": { tagline: "Your two-factor codes, like Authy", group: "personal" },
   actual: { tagline: "Budget your money, like YNAB", group: "personal" },
   "firefly-iii": { tagline: "Track where your money goes", group: "personal" },
+  monica: {
+    tagline: "Remember birthdays, gifts and the people in your life",
+    group: "personal",
+  },
+  wallos: {
+    tagline: "See every subscription you're paying for, in one place",
+    group: "personal",
+  },
+  openclaw: {
+    tagline: "A personal AI assistant you can message like a friend",
+    group: "personal",
+  },
 
   // Home & Family
   mealie: {
@@ -160,6 +172,22 @@ export const APP_META: Record<string, AppMeta> = {
     group: "home",
   },
   ntfy: { tagline: "Send yourself notifications from anything", group: "home" },
+  "home-assistant": {
+    tagline: "Control your lights, thermostat and smart devices",
+    group: "home",
+  },
+  frigate: {
+    tagline: "Security cameras that recognise people, not just motion",
+    group: "home",
+  },
+  grocy: {
+    tagline: "Track groceries, chores and what's about to expire",
+    group: "home",
+  },
+  romm: {
+    tagline: "Your retro game collection, organised and playable",
+    group: "home",
+  },
 
   // Website & Chat
   ghost: { tagline: "Publish a blog or newsletter, like Medium", group: "web" },

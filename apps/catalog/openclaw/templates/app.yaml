@@ -1,0 +1,86 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "5Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  gateway_token: {{ required "config.gateway_token is required" .Values.config.gateway_token | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: fix-perms
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c", "chown -R 1000:1000 /home/node"]
+        volumeMounts:
+          - name: data
+            mountPath: /home/node
+            subPath: {{ printf "%s/openclaw" .Release.Name | quote }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: openclaw
+        image: ghcr.io/openclaw/openclaw:latest@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf
+        imagePullPolicy: IfNotPresent
+        env:
+          # This chart never grants any Kubernetes permission beyond the pod's
+          # own namespace, same as every other app here — OpenClaw's own
+          # sandbox flag is on top of that, not instead of it.
+          - name: OPENCLAW_SANDBOX
+            value: "1"
+          - name: OPENCLAW_GATEWAY_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: gateway_token
+        readinessProbe:
+          tcpSocket:
+            port: 18789
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 18789
+          initialDelaySeconds: 45
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /home/node
+            subPath: {{ printf "%s/openclaw" .Release.Name | quote }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

@@ -1,0 +1,157 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "50Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  auth_secret_key: {{ required "config.auth_secret_key is required" .Values.config.auth_secret_key | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: romm
+        image: rommapp/romm:latest@sha256:ce9d86ab531e09fede45d00f426e3bf2d1f5dd14846f94d6360d77a92a413028
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: DB_HOST
+            value: "mariadb.{{ .Release.Namespace }}.svc.cluster.local"
+          - name: DB_PORT
+            value: "3306"
+          - name: DB_NAME
+            value: "romm"
+          - name: DB_USER
+            value: "romm"
+          - name: DB_PASSWD
+            value: "romm"
+          - name: ROMM_AUTH_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: auth_secret_key
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /romm/library
+            subPath: {{ printf "%s/romm/library" .Release.Name }}
+          - name: data
+            mountPath: /romm/resources
+            subPath: {{ printf "%s/romm/resources" .Release.Name }}
+          - name: data
+            mountPath: /romm/assets
+            subPath: {{ printf "%s/romm/assets" .Release.Name }}
+          - name: data
+            mountPath: /romm/config
+            subPath: {{ printf "%s/romm/config" .Release.Name }}
+          - name: data
+            mountPath: /redis-data
+            subPath: {{ printf "%s/romm/redis" .Release.Name }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MARIADB_USER
+              value: "romm"
+            - name: MARIADB_PASSWORD
+              value: "romm"
+            - name: MARIADB_DATABASE
+              value: "romm"
+            - name: MARIADB_ROOT_PASSWORD
+              value: "romm-root"
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+              subPath: {{ printf "%s/mariadb" .Release.Name }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mariadb
+  ports:
+    - port: 3306
+      targetPort: 3306

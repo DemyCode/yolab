@@ -1,0 +1,13 @@
+# `config` is user-facing: exactly what the install form edits, and the subtree
+# local-api serves to the UI as its JSON Schema. `yolab` is injected at install
+# time by local-api and is not the user's business.
+config:
+  subdomain: romm
+  storage_size: 50Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    upstream: localhost:8080

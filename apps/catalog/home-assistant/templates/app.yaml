@@ -1,0 +1,88 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- /* Home Assistant refuses any request whose Host header it does not
+             recognise as coming from a trusted proxy — without this every
+             request through the tunnel gets "400: Bad Request". Caddy reaches
+             it over loopback in this same pod, so trusting 127.0.0.1 is
+             enough. Written only if absent, so a restart never overwrites a
+             person's own edits to configuration.yaml. */}}
+      - name: seed-config
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -e
+            mkdir -p /config
+            if [ ! -f /config/configuration.yaml ]; then
+              cat > /config/configuration.yaml <<'EOF'
+            default_config:
+            http:
+              use_x_forwarded_for: true
+              trusted_proxies:
+                - 127.0.0.1
+                - ::1
+            EOF
+              echo "wrote initial configuration.yaml"
+            fi
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ printf "%s/home-assistant" .Release.Name | quote }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: home-assistant
+        image: ghcr.io/home-assistant/home-assistant:stable@sha256:a21689ef0510df9760ee11bab4d6b2fef3ed5c1a29ed9c3224271597a23729eb
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          tcpSocket:
+            port: 8123
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8123
+          initialDelaySeconds: 90
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ printf "%s/home-assistant" .Release.Name | quote }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

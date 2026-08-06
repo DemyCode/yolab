@@ -1,0 +1,31 @@
+apiVersion: v2
+name: romm
+description: "Retro game ROM library manager"
+type: application
+version: 0.1.0
+appVersion: "latest"
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "RomM"
+  yolab.io/icon: "🕹️"
+  yolab.io/category: "games"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }
+  yolab.io/outputs: |
+    [
+      {
+        "key": "url",
+        "label": "Web URL",
+        "type": "url",
+        "pattern": "YOLAB_OUTPUT url (\\S+)"
+      }
+    ]

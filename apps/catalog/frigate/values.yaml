@@ -1,0 +1,16 @@
+# `config` is user-facing: exactly what the install form edits, and the subtree
+# local-api serves to the UI as its JSON Schema. `yolab` is injected at install
+# time by local-api and is not the user's business.
+config:
+  subdomain: frigate
+  storage_size: 100Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    # 8971 is Frigate's authenticated UI/API port. 5000 has no authentication at
+    # all — fine on a trusted LAN, not fine behind a tunnel that is reachable
+    # from the internet, so it is never used here.
+    upstream: localhost:8971

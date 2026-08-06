@@ -1,0 +1,99 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "100Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- /* No cameras are known at install time — there is nothing to ask for
+             yet, since every household's cameras and RTSP credentials differ.
+             Frigate's own web UI has a full config editor built in, so this
+             seeds the minimum config that lets it start at all (TLS off,
+             because Caddy already terminates TLS for the tunnel; MQTT off,
+             since none is provided) and the person adds cameras from there —
+             the same "reachable, then a first setup step" shape as Home
+             Assistant's onboarding. Written only if absent, so a restart never
+             overwrites a person's own camera config. */}}
+      - name: seed-config
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -e
+            mkdir -p /config
+            if [ ! -f /config/config.yml ]; then
+              cat > /config/config.yml <<'EOF'
+            mqtt:
+              enabled: false
+            tls:
+              enabled: false
+            cameras: {}
+            EOF
+              echo "wrote initial config.yml"
+            fi
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ printf "%s/frigate/config" .Release.Name | quote }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: frigate
+        image: ghcr.io/blakeblackshear/frigate:stable@sha256:d4351369984d4a9e2a49ac59736f6490856a7ea11f7790040746d21496967010
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          tcpSocket:
+            port: 8971
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8971
+          initialDelaySeconds: 90
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ printf "%s/frigate/config" .Release.Name | quote }}
+          - name: data
+            mountPath: /media/frigate
+            subPath: {{ printf "%s/frigate/media" .Release.Name | quote }}
+          - name: shm
+            mountPath: /dev/shm
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 512Mi
