@@ -10,9 +10,13 @@
   espSize = diskConfig.esp_size or (throw "[disk] esp_size is required in config.toml");
   bootMode = homelabConfig.homelab.boot_mode or "uefi";
   # Size of the OS root LV; the rest of the disk becomes the Ceph OSD LV.
-  # 40 GiB comfortably holds NixOS + a few generations + k3s + container images
-  # for a multi-app node. Configurable per-disk; adjustable later via lvextend.
-  systemSize = diskConfig.system_size or "40G";
+  # Root holds NixOS + k3s + every pulled container image — with 61+ catalog
+  # apps to choose from, 40 GiB proved not to be enough headroom (a real
+  # install reached 95% used and took mon/mgr down with it). The kubelet
+  # image-gc thresholds in common.nix are the actual fix for staying under
+  # any size long-term; this bump is just a bigger cushion underneath that.
+  # Configurable per-disk; adjustable later via lvextend.
+  systemSize = diskConfig.system_size or "60G";
 in {
   disko.devices = {
     disk.disk1 = {
