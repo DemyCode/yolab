@@ -358,36 +358,66 @@ async fn reconcile_local_osds(
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
         } else {
             // Already out. Rook's removeOSDsIfOutAndSafeToRemove is *supposed* to
-            // delete this OSD's deployment once it notices out+safe-to-destroy —
-            // that's what lets purge_drained_osds ever see a stopped daemon — but
-            // it can stall indefinitely with no fallback (observed live: an OSD
-            // sitting out+safe-to-destroy for 45h+ while its pod kept
-            // crash-looping back to "up", deployment never touched). Confirm
-            // independently via safe-to-destroy — never infer from reweight
-            // alone, see the pg-ls-by-osd data-loss incident — and delete the
-            // deployment ourselves so the pipeline can't get stuck waiting on an
-            // external controller that may never follow through. This is the
-            // same "delete deploy first, so the daemon goes down" order
-            // purge_drained_osds already relies on; we're just the ones doing it
-            // now instead of assuming Rook will.
+            // delete this OSD's deployment once it notices out+safe-to-destroy,
+            // but it can stall indefinitely with no fallback (observed live: an
+            // OSD sitting out+safe-to-destroy for 45h+ while its pod kept
+            // crash-looping back to "up", deployment never touched).
+            //
+            // The first fix here just deleted the deployment and waited for a
+            // later reconcile tick to notice it gone and purge — but Rook's OSD
+            // orchestration re-discovers valid BlueStore data still sitting on
+            // the physical disk and recreates the deployment within ~15-35s,
+            // almost always before our own next 30s tick. Observed live: this
+            // produced a delete/recreate fight every cycle, forever, with the
+            // OSD never actually leaving. (No data-safety issue from this —
+            // reweight=0/out is a ceph-mon osdmap flag independent of the
+            // daemon process, so it survives every recreation — but it never
+            // converges, and it churns a fresh OSD-prepare job each time.)
+            //
+            // So this now does delete → purge → wipe as one atomic sequence
+            // within a single reconcile pass, rather than across ticks: delete
+            // the deployment, poll briefly for its pod to actually be gone
+            // (avoids the EBUSY race purge_drained_osds guards against
+            // elsewhere), purge from Ceph, then wipe the on-disk BlueStore
+            // label so Rook's discovery has nothing left to find and stops
+            // recreating it. Re-confirms safe-to-destroy immediately before
+            // both the purge and the wipe — never inferred from reweight
+            // alone, see the pg-ls-by-osd data-loss incident.
             let deploy = format!("rook-ceph-osd-{osd_id}");
             if kubectl::run(&["get", "deploy", &deploy, "-n", NS]).await.is_ok() {
-                let safe = kubectl::ceph_exec(&["osd", "safe-to-destroy", &osd, "-f", "json"])
-                    .await
-                    .ok()
-                    .and_then(|r| serde_json::from_str::<Value>(&r).ok())
-                    .and_then(|v| {
-                        v["safe_to_destroy"]
-                            .as_array()
-                            .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-                    })
-                    .unwrap_or(false);
-
-                if safe {
+                if osd_safe_to_destroy(&osd, osd_id).await {
                     tracing::info!(
-                        "{osd} ({disk_id}): out + safe-to-destroy, deployment still present after grace period — deleting it so the daemon stops"
+                        "{osd} ({disk_id}): out + safe-to-destroy, deployment still present — removing it for good"
                     );
                     let _ = kubectl::run(&["delete", "deploy", &deploy, "-n", NS]).await;
+
+                    let mut pod_gone = false;
+                    for _ in 0..15 {
+                        sleep(Duration::from_secs(1)).await;
+                        let has_pod = kubectl::get_json(&[
+                            "get", "pod", "-n", NS, "-l", &format!("ceph-osd-id={osd_id}"), "-o", "json",
+                        ])
+                        .await
+                        .ok()
+                        .and_then(|v| v["items"].as_array().map(|a| !a.is_empty()))
+                        .unwrap_or(true);
+                        if !has_pod { pod_gone = true; break; }
+                    }
+
+                    if pod_gone && osd_safe_to_destroy(&osd, osd_id).await {
+                        match kubectl::ceph_exec(&["osd", "purge", &osd, "--yes-i-really-mean-it"]).await {
+                            Ok(_) => {
+                                tracing::info!("{osd} ({disk_id}): purged");
+                                if let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) {
+                                    tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device} so it isn't rediscovered");
+                                    wipe_device(device).await;
+                                }
+                            }
+                            Err(e) => tracing::warn!("{osd} ({disk_id}): purge failed: {e}"),
+                        }
+                    } else if !pod_gone {
+                        tracing::warn!("{osd} ({disk_id}): deployment deleted but its pod is still around after 15s — leaving purge for next tick");
+                    }
                 } else {
                     tracing::debug!("{osd} ({disk_id}): out, deployment present, not yet safe-to-destroy — waiting");
                 }
@@ -396,6 +426,40 @@ async fn reconcile_local_osds(
     }
 
     purge_drained_osds(node, &crush_nodes, disk_to_osd).await;
+}
+
+/// Ceph's own confirmation that destroying this OSD loses no data — the only
+/// signal this file trusts for that question. Never infer it from reweight or
+/// PG counts (see the pg-ls-by-osd data-loss incident in project memory).
+async fn osd_safe_to_destroy(osd: &str, osd_id: i64) -> bool {
+    kubectl::ceph_exec(&["osd", "safe-to-destroy", osd, "-f", "json"])
+        .await
+        .ok()
+        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        .and_then(|v| {
+            v["safe_to_destroy"]
+                .as_array()
+                .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
+        })
+        .unwrap_or(false)
+}
+
+/// Zero enough of a device's start to destroy its BlueStore superblock and any
+/// LVM headers, so Rook's OSD discovery no longer finds a valid OSD there and
+/// stops re-provisioning it. Only ever called after our own successful `ceph
+/// osd purge` of that exact OSD in this same call — never on a disk we merely
+/// suspect is drained.
+async fn wipe_device(device: &str) {
+    let dev_path = if device.starts_with('/') { device.to_string() } else { format!("/dev/{device}") };
+    let out = tokio::process::Command::new("dd")
+        .args(["if=/dev/zero", &format!("of={dev_path}"), "bs=1M", "count=100", "oflag=direct"])
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => tracing::info!("wipe_device: {dev_path} zeroed"),
+        Ok(o) => tracing::warn!("wipe_device: dd on {dev_path} failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => tracing::warn!("wipe_device: could not run dd on {dev_path}: {e}"),
+    }
 }
 
 /// Purge OSDs on this node that have been fully drained and whose Rook
@@ -439,20 +503,7 @@ async fn purge_drained_osds(
         }
 
         // Confirm no PG data remains before destroying the OSD record.
-        let safe = kubectl::ceph_exec(&[
-            "osd", "safe-to-destroy", &format!("osd.{osd_id}"), "-f", "json",
-        ])
-        .await
-        .ok()
-        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
-        .and_then(|v| {
-            v["safe_to_destroy"]
-                .as_array()
-                .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-        })
-        .unwrap_or(false);
-
-        if !safe {
+        if !osd_safe_to_destroy(&format!("osd.{osd_id}"), osd_id).await {
             tracing::info!("osd.{osd_id}: deployment gone but not yet safe-to-destroy — waiting");
             continue;
         }
