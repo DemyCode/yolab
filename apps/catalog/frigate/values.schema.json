@@ -4,34 +4,21 @@
   "required": ["config"],
   "properties": {
     "config": {
-      "title": "Minecraft",
+      "title": "Frigate",
       "type": "object",
-      "required": [],
+      "required": ["subdomain"],
       "properties": {
-        "difficulty": {
+        "subdomain": {
           "type": "string",
-          "title": "Difficulty",
-          "enum": ["peaceful", "easy", "normal", "hard"],
-          "default": "normal"
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "frigate"
         },
-        "gamemode": {
+        "storage_size": {
           "type": "string",
-          "title": "Game mode",
-          "enum": ["survival", "creative", "adventure", "spectator"],
-          "default": "survival"
-        },
-        "seed": {
-          "type": "string",
-          "title": "World seed",
-          "description": "Leave blank for a random world."
-        },
-        "ops": {
-          "type": "string",
-          "title": "Operators (comma-separated usernames)"
-        },
-        "whitelist": {
-          "type": "string",
-          "title": "Whitelist (comma-separated usernames)"
+          "title": "Storage size",
+          "default": "100Gi",
+          "description": "Camera recordings add up fast — how much CephFS storage to allocate (e.g. 100Gi, 500Gi, 2Ti)"
         }
       }
     },

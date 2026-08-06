@@ -1,0 +1,31 @@
+apiVersion: v2
+name: home-assistant
+description: "Home automation and smart-home dashboard"
+type: application
+version: 0.1.0
+appVersion: "stable"
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Home Assistant"
+  yolab.io/icon: "🏠"
+  yolab.io/category: "home"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }
+  yolab.io/outputs: |
+    [
+      {
+        "key": "url",
+        "label": "Web URL",
+        "type": "url",
+        "pattern": "YOLAB_OUTPUT url (\\S+)"
+      }
+    ]

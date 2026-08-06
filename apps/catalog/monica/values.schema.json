@@ -4,34 +4,28 @@
   "required": ["config"],
   "properties": {
     "config": {
-      "title": "Minecraft",
+      "title": "Monica",
       "type": "object",
-      "required": [],
+      "required": ["subdomain", "app_key"],
       "properties": {
-        "difficulty": {
+        "subdomain": {
           "type": "string",
-          "title": "Difficulty",
-          "enum": ["peaceful", "easy", "normal", "hard"],
-          "default": "normal"
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "monica"
         },
-        "gamemode": {
+        "app_key": {
           "type": "string",
-          "title": "Game mode",
-          "enum": ["survival", "creative", "adventure", "spectator"],
-          "default": "survival"
+          "title": "Encryption key",
+          "minLength": 32,
+          "maxLength": 32,
+          "description": "Exactly 32 random characters. Monica refuses to start otherwise."
         },
-        "seed": {
+        "storage_size": {
           "type": "string",
-          "title": "World seed",
-          "description": "Leave blank for a random world."
-        },
-        "ops": {
-          "type": "string",
-          "title": "Operators (comma-separated usernames)"
-        },
-        "whitelist": {
-          "type": "string",
-          "title": "Whitelist (comma-separated usernames)"
+          "title": "Storage size",
+          "default": "5Gi",
+          "description": "How much CephFS storage to allocate (e.g. 5Gi, 20Gi)"
         }
       }
     },

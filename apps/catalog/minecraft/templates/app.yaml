@@ -57,6 +57,12 @@ spec:
               value: "TRUE"
             - name: DIFFICULTY
               value: {{ .Values.config.difficulty | default "normal" | quote }}
+            - name: MODE
+              value: {{ .Values.config.gamemode | default "survival" | quote }}
+            {{- with .Values.config.seed }}
+            - name: SEED
+              value: {{ . | quote }}
+            {{- end }}
             - name: ENABLE_WHITELIST
               value: {{ if .Values.config.whitelist }}"true"{{ else }}"false"{{ end }}
             {{- with .Values.config.ops }}

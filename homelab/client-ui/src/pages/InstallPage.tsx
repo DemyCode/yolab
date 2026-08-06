@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Check, ChevronDown, ExternalLink } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
@@ -111,7 +111,6 @@ export function InstallPage() {
     [schema.required],
   );
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [phase, setPhase] = useState("Getting ready");
   const [log, setLog] = useState<string[]>([]);
@@ -476,70 +475,13 @@ export function InstallPage() {
             ))}
           </div>
         )}
-      </Card>
 
-      {/* Always available: even a chart with no options of its own has a name,
-          and for a second copy that is the thing you want to change. */}
-      <div className="mt-4">
-        <button
-          onClick={() => setShowAdvanced((a) => !a)}
-          className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
-          aria-expanded={showAdvanced}
-        >
-          Settings
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 transition-transform",
-              showAdvanced && "rotate-180",
-            )}
-          />
-        </button>
-
-        {showAdvanced && (
-          <Card className="mt-3 space-y-5 p-5">
-            <Field
-              label="Name"
-              help={
-                nameTaken
-                  ? undefined
-                  : "What this copy is called on your home server. The web address follows it unless you set one below."
-              }
-              error={
-                nameTaken ? "You already have something with that name." : null
-              }
-            >
-              <Input
-                value={instanceName}
-                onChange={(e) =>
-                  // Doubles as a Kubernetes namespace, so it is restricted to
-                  // what a DNS label allows.
-                  setNameEdit(
-                    e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                  )
-                }
-              />
-            </Field>
-
-            {addressField && (
-              <Field
-                label="Web address"
-                help={`Your app will live at ${subdomain || "…"}.${domain.data?.domain ?? ""}`}
-              >
-                <Input
-                  value={subdomain}
-                  onChange={(e) =>
-                    // A subdomain is a DNS label, so anything the keyboard
-                    // can produce that DNS cannot is dropped as it is typed
-                    // rather than rejected after they press Install.
-                    setValue(
-                      addressField[0],
-                      e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                    )
-                  }
-                />
-              </Field>
-            )}
-
+        {/* Every option the chart exposes, always on the page. An app like
+            Minecraft is nothing but these choices — creative or survival, a
+            seed, who's whitelisted — so folding them behind a second click
+            hid the entire reason someone opened this form. */}
+        {optionalFields.length > 0 && (
+          <div className="space-y-5 p-5">
             {optionalFields.map(([name, prop]) => {
               if (prop.type === "boolean") {
                 return (
@@ -585,9 +527,54 @@ export function InstallPage() {
                 </Field>
               );
             })}
-          </Card>
+          </div>
         )}
-      </div>
+
+        <div className="space-y-5 p-5">
+          <Field
+            label="Name"
+            help={
+              nameTaken
+                ? undefined
+                : "What this copy is called on your home server. The web address follows it unless you set one below."
+            }
+            error={
+              nameTaken ? "You already have something with that name." : null
+            }
+          >
+            <Input
+              value={instanceName}
+              onChange={(e) =>
+                // Doubles as a Kubernetes namespace, so it is restricted to
+                // what a DNS label allows.
+                setNameEdit(
+                  e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                )
+              }
+            />
+          </Field>
+
+          {addressField && (
+            <Field
+              label="Web address"
+              help={`Your app will live at ${subdomain || "…"}.${domain.data?.domain ?? ""}`}
+            >
+              <Input
+                value={subdomain}
+                onChange={(e) =>
+                  // A subdomain is a DNS label, so anything the keyboard can
+                  // produce that DNS cannot is dropped as it is typed rather
+                  // than rejected after they press Install.
+                  setValue(
+                    addressField[0],
+                    e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                  )
+                }
+              />
+            </Field>
+          )}
+        </div>
+      </Card>
 
       <div className="mt-7">
         <Button

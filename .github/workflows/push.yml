@@ -204,6 +204,8 @@ jobs:
               --set config.app_secret=PlaceholderPw2026 \
               --set config.app_key=PlaceholderAppKey2026Placeholder \
               --set config.api_key=PlaceholderApiKey2026 \
+              --set config.auth_secret_key=PlaceholderAuthSecretKey2026Placeholder \
+              --set config.gateway_token=PlaceholderGatewayToken2026Placeholder \
               --set config.server_name=example \
               --set config.server_pass=PlaceholderPw2026 \
               --set config.subdomain=example || { failed="$failed $name(lint)"; continue; }

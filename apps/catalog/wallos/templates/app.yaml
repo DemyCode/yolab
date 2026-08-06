@@ -1,0 +1,101 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "2Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+{{- /* Listens on 80, which Caddy already binds in the gateway pod — containers
+       in a pod share one network namespace, so this cannot live beside it. */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallos
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: wallos
+  template:
+    metadata:
+      labels:
+        app: wallos
+    spec:
+      containers:
+      - name: wallos
+        image: ghcr.io/ellite/wallos:latest@sha256:316f26e13265958e7946ef98ff600516fddc51d698ee98bd1ae1577e5e00789f
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: TZ
+            value: Etc/UTC
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 45
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /var/www/html/db
+            subPath: {{ printf "%s/wallos/db" .Release.Name }}
+          - name: data
+            mountPath: /var/www/html/images/uploads/logos
+            subPath: {{ printf "%s/wallos/logos" .Release.Name }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wallos
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: wallos
+  ports:
+    - port: 80
+      targetPort: 80

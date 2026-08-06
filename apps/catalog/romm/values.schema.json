@@ -4,34 +4,27 @@
   "required": ["config"],
   "properties": {
     "config": {
-      "title": "Minecraft",
+      "title": "RomM",
       "type": "object",
-      "required": [],
+      "required": ["subdomain", "auth_secret_key"],
       "properties": {
-        "difficulty": {
+        "subdomain": {
           "type": "string",
-          "title": "Difficulty",
-          "enum": ["peaceful", "easy", "normal", "hard"],
-          "default": "normal"
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "romm"
         },
-        "gamemode": {
+        "auth_secret_key": {
           "type": "string",
-          "title": "Game mode",
-          "enum": ["survival", "creative", "adventure", "spectator"],
-          "default": "survival"
+          "title": "Auth secret key",
+          "minLength": 32,
+          "description": "Used to sign session cookies."
         },
-        "seed": {
+        "storage_size": {
           "type": "string",
-          "title": "World seed",
-          "description": "Leave blank for a random world."
-        },
-        "ops": {
-          "type": "string",
-          "title": "Operators (comma-separated usernames)"
-        },
-        "whitelist": {
-          "type": "string",
-          "title": "Whitelist (comma-separated usernames)"
+          "title": "Storage size",
+          "default": "50Gi",
+          "description": "How much CephFS storage to allocate for your ROM library (e.g. 50Gi, 200Gi, 1Ti)"
         }
       }
     },

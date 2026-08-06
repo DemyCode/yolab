@@ -1,0 +1,31 @@
+apiVersion: v2
+name: frigate
+description: "AI-powered security camera NVR with real-time object detection"
+type: application
+version: 0.1.0
+appVersion: "stable"
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Frigate"
+  yolab.io/icon: "📹"
+  yolab.io/category: "home"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }
+  yolab.io/outputs: |
+    [
+      {
+        "key": "url",
+        "label": "Web URL",
+        "type": "url",
+        "pattern": "YOLAB_OUTPUT url (\\S+)"
+      }
+    ]
