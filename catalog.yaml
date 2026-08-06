@@ -37,11 +37,17 @@ charts:
     version: "0.1.0"
   - name: freshrss
     version: "0.1.0"
+  - name: frigate
+    version: "0.1.0"
   - name: ghost
     version: "0.1.0"
   - name: gitea
     version: "0.1.0"
   - name: grafana
+    version: "0.1.0"
+  - name: grocy
+    version: "0.1.0"
+  - name: home-assistant
     version: "0.1.0"
   - name: homepage
     version: "0.1.0"
@@ -71,6 +77,8 @@ charts:
     version: "0.1.0"
   - name: miniflux
     version: "0.1.0"
+  - name: monica
+    version: "0.1.0"
   - name: n8n
     version: "0.1.0"
   - name: navidrome
@@ -81,6 +89,8 @@ charts:
     version: "0.1.0"
   - name: open-webui
     version: "0.1.0"
+  - name: openclaw
+    version: "0.1.0"
   - name: paperless-ngx
     version: "0.1.0"
   - name: photoprism
@@ -90,6 +100,8 @@ charts:
   - name: qbittorrent
     version: "0.1.0"
   - name: reactive-resume
+    version: "0.1.0"
+  - name: romm
     version: "0.1.0"
   - name: searxng
     version: "0.1.0"
@@ -114,4 +126,6 @@ charts:
   - name: vikunja
     version: "0.1.0"
   - name: wallabag
+    version: "0.1.0"
+  - name: wallos
     version: "0.1.0"
