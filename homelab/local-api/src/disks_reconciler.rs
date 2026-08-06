@@ -356,6 +356,42 @@ async fn reconcile_local_osds(
         } else if reweight > 0.5 {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = kubectl::ceph_exec(&["osd", "out", &osd]).await;
+        } else {
+            // Already out. Rook's removeOSDsIfOutAndSafeToRemove is *supposed* to
+            // delete this OSD's deployment once it notices out+safe-to-destroy —
+            // that's what lets purge_drained_osds ever see a stopped daemon — but
+            // it can stall indefinitely with no fallback (observed live: an OSD
+            // sitting out+safe-to-destroy for 45h+ while its pod kept
+            // crash-looping back to "up", deployment never touched). Confirm
+            // independently via safe-to-destroy — never infer from reweight
+            // alone, see the pg-ls-by-osd data-loss incident — and delete the
+            // deployment ourselves so the pipeline can't get stuck waiting on an
+            // external controller that may never follow through. This is the
+            // same "delete deploy first, so the daemon goes down" order
+            // purge_drained_osds already relies on; we're just the ones doing it
+            // now instead of assuming Rook will.
+            let deploy = format!("rook-ceph-osd-{osd_id}");
+            if kubectl::run(&["get", "deploy", &deploy, "-n", NS]).await.is_ok() {
+                let safe = kubectl::ceph_exec(&["osd", "safe-to-destroy", &osd, "-f", "json"])
+                    .await
+                    .ok()
+                    .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+                    .and_then(|v| {
+                        v["safe_to_destroy"]
+                            .as_array()
+                            .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
+                    })
+                    .unwrap_or(false);
+
+                if safe {
+                    tracing::info!(
+                        "{osd} ({disk_id}): out + safe-to-destroy, deployment still present after grace period — deleting it so the daemon stops"
+                    );
+                    let _ = kubectl::run(&["delete", "deploy", &deploy, "-n", NS]).await;
+                } else {
+                    tracing::debug!("{osd} ({disk_id}): out, deployment present, not yet safe-to-destroy — waiting");
+                }
+            }
         }
     }
 
