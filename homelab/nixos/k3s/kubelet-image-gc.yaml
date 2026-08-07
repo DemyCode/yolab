@@ -1,0 +1,21 @@
+# Kubelet config drop-in (merged with k3s's own 00-k3s-defaults.conf in the
+# same directory — GA as of Kubernetes 1.35, see
+# https://kubernetes.io/docs/reference/node/kubelet-config-directory-merging).
+#
+# NOT `--kubelet-arg=image-gc-high-threshold-percent=...` — that was tried
+# first and it doesn't work: these were removed as kubelet CLI flags in this
+# Kubernetes version, kubelet-only-exists-as-config-file now. Passing them as
+# a CLI flag makes kubelet refuse to start at all ("unknown flag"), which k3s
+# treats as fatal to its whole embedded control plane (etcd included) and
+# restarts everything — a real, live incident this caused, not theoretical.
+#
+# Root carries the OS, k3s state, AND every pulled container image — a 40-60GB
+# root has far less slack than a typical multi-hundred-GB node, so image
+# garbage collection needs to start earlier relative to its size than
+# upstream's usual 85%/80% split. (k3s's own default evictionHard, in the
+# sibling 00-k3s-defaults.conf file, is already tighter than anything this
+# file needs to add for that side of it.)
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+imageGCHighThresholdPercent: 70
+imageGCLowThresholdPercent: 50
