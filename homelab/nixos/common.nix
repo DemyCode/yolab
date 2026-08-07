@@ -237,18 +237,6 @@ in
         "--advertise-address=${s.nodeCfg.sub_ipv6_private}"
         "--tls-san=${s.nodeCfg.sub_ipv6_private}"
         "--resolv-conf=/etc/k3s-resolv.conf"
-
-        # Root carries the OS, k3s state, AND every pulled container image —
-        # nothing was ever configured here, so kubelet used its own defaults
-        # and those weren't tight enough: this node reached 95% used (5%
-        # free) with DiskPressure never tripping, which let mon/mgr crash-loop
-        # on a full disk instead of kubelet proactively making room. These are
-        # deliberately tighter than upstream's usual 85%/80% image-gc split —
-        # a 40GB root has far less slack than a typical multi-hundred-GB node,
-        # so garbage collection needs to start earlier relative to its size.
-        "--kubelet-arg=image-gc-high-threshold-percent=70"
-        "--kubelet-arg=image-gc-low-threshold-percent=50"
-        "--kubelet-arg=eviction-hard=nodefs.available<15%,imagefs.available<15%"
       ];
     };
 
@@ -538,6 +526,12 @@ in
     # any YAML placed there.  Symlinks into the Nix store so updates
     # propagate on nixos-rebuild without manual kubectl apply.
     systemd.tmpfiles.rules = [
+      # Kubelet's drop-in config directory. k3s writes its own
+      # 00-k3s-defaults.conf here fresh on every start; this coexists with it
+      # (higher sort order = applied on top) rather than fighting it — the
+      # directory must exist before k3s's first write, hence the `d` rule.
+      "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0700 root root -"
+      "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-yolab-image-gc.conf     - - - - ${./k3s/kubelet-image-gc.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml               - - - - ${./rook/cluster.yaml}"
       # Applies norebalance OSD flag after the cluster is ready. restartPolicy:OnFailure
