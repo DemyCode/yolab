@@ -11,32 +11,20 @@ import {
 import type { NodeInfo, NodeLink } from "@/types/nodes";
 import { fetchList } from "@/lib/api";
 
-const CACHE_KEY = "yolab:nodes";
-
 export function NodesPage() {
   const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
   const [stale, setStale] = useState(false);
 
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem(CACHE_KEY);
-      if (cached) {
-        // Shown immediately so the page isn't blank; the fetch below decides whether
-        // it's actually stale, rather than warning before we've even asked.
-        setNodes(JSON.parse(cached) as NodeInfo[]);
-      }
-    } catch {
-      // A corrupt or quota-blocked cache is not worth surfacing; the fetch
-      // below is the real source and runs either way.
-    }
-
     void fetchList<NodeInfo>("/api/nodes").then((res) => {
       if (res.ok) {
-        localStorage.setItem(CACHE_KEY, JSON.stringify(res.data));
         setNodes(res.data);
         setStale(false);
       } else {
+        // No cache to fall back on any more — an empty list plus the banner
+        // below is more honest than either a stale number or an infinite
+        // "Loading…" once the request has actually failed.
         setStale(true);
         setNodes((prev) => prev ?? []);
       }
@@ -57,8 +45,8 @@ export function NodesPage() {
         <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-warning mt-0.5 flex-shrink-0" />
           <p className="text-sm text-warning">
-            Cluster API unreachable — the control plane is restarting. Showing
-            last known state; everything will recover automatically.
+            Cluster API unreachable — the control plane is restarting. This
+            will update automatically once it responds again.
           </p>
         </div>
       )}
@@ -66,11 +54,9 @@ export function NodesPage() {
       <Card>
         <CardHeader>
           <CardTitle>Cluster machines</CardTitle>
-          {nodes && (
+          {nodes && !stale && (
             <CardDescription>
-              {stale
-                ? `${nodes.length} machine${nodes.length !== 1 ? "s" : ""} known — status unknown`
-                : `${nodes.filter((n) => n.ready).length} of ${nodes.length} ready`}
+              {`${nodes.filter((n) => n.ready).length} of ${nodes.length} ready`}
             </CardDescription>
           )}
         </CardHeader>
