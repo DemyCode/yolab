@@ -56,13 +56,25 @@ fn system_osd_size_bytes() -> u64 {
         .unwrap_or(0)
 }
 
-fn system_osd_meta() -> Value {
+/// `is_our_osd` used to be hardcoded `true` here on the assumption the system
+/// LV is always ours — true right up until the disk-removal flow gained the
+/// ability to actually drain, purge, and wipe *any* OSD including this one.
+/// Once that happens, the hardcoded `true` never updates: the UI computes
+/// "being removed" from `!desired_on && connected && is_our_osd`, so a wiped
+/// system disk stayed stuck on that label forever with no way to reach the
+/// "safe to switch on again" state. Now reads the real on-disk label, exactly
+/// like `disk_meta` does for pluggable disks.
+fn system_osd_meta(our_fsid: &str) -> Value {
+    let fsid = bluestore_fsid(SYSTEM_OSD_DEV);
+    let is_our_osd = !our_fsid.is_empty() && fsid.as_deref() == Some(our_fsid);
+    let foreign_ceph = fsid.is_some() && !is_our_osd;
     json!({
         "device": SYSTEM_OSD_DEV,
         "model": "System disk",
         "size_bytes": system_osd_size_bytes(),
         "is_loop": true, // the UI renders is_loop as the built-in "System disk"
-        "is_our_osd": true,
+        "is_our_osd": is_our_osd,
+        "foreign_ceph": foreign_ceph,
         "osd_id": null, // populated by fetch_disk_to_osd in publish_local
     })
 }
@@ -259,7 +271,7 @@ async fn publish_local(node: &str) -> Result<()> {
         .map(|d| (disk_id(d), disk_meta(d, &our_fsid)))
         .collect();
     if system_osd_present() {
-        meta.insert(SYSTEM_OSD_ID.to_string(), system_osd_meta());
+        meta.insert(SYSTEM_OSD_ID.to_string(), system_osd_meta(&our_fsid));
     }
 
     // Use Ceph's own metadata as the authoritative disk→OSD mapping — no
