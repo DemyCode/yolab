@@ -165,27 +165,35 @@ pub async fn get_nodes() -> Result<Vec<Value>> {
 
 const CEPH_NS: &str = "rook-ceph";
 
+/// Find a running pod that bundles the `ceph` CLI, to exec commands into.
+///
+/// Every daemon pod here shares the same Ceph image, so any of them can run
+/// `ceph -s`/`ceph osd tree`/etc. — this used to only ever look at OSD pods,
+/// which meant losing every OSD (exactly the scenario a disk actually going
+/// missing produces) made the entire Storage page unable to answer *any*
+/// Ceph question, including basic capacity, even though mon and mgr were
+/// completely healthy the whole time. OSD is still tried first since those
+/// pods are the most numerous/most likely to have one Ready.
 pub async fn ceph_exec_pod() -> Result<String> {
-    // Get all Running-phase OSD pods as JSON and pick the first one where the
-    // Ready condition is True. This skips pods in CrashLoopBackOff, which have
-    // phase=Running at the pod level but no ready containers to exec into.
-    let out = run(&[
-        "get", "pod", "-n", CEPH_NS,
-        "-l", "app=rook-ceph-osd",
-        "--field-selector=status.phase=Running",
-        "-o", "json",
-    ]).await?;
-    let pods: Value = serde_json::from_str(&out).context("parse pods JSON")?;
-    for pod in pods["items"].as_array().unwrap_or(&vec![]) {
-        let name = pod["metadata"]["name"].as_str().unwrap_or("");
-        let ready = pod["status"]["conditions"].as_array()
-            .and_then(|cs| cs.iter().find(|c| c["type"] == "Ready"))
-            .and_then(|c| c["status"].as_str()) == Some("True");
-        if !name.is_empty() && ready {
-            return Ok(name.to_string());
+    for selector in ["app=rook-ceph-osd", "app=rook-ceph-mon", "app=rook-ceph-mgr", "app=rook-ceph-mds"] {
+        let Ok(out) = run(&[
+            "get", "pod", "-n", CEPH_NS,
+            "-l", selector,
+            "--field-selector=status.phase=Running",
+            "-o", "json",
+        ]).await else { continue };
+        let Ok(pods) = serde_json::from_str::<Value>(&out) else { continue };
+        for pod in pods["items"].as_array().unwrap_or(&vec![]) {
+            let name = pod["metadata"]["name"].as_str().unwrap_or("");
+            let ready = pod["status"]["conditions"].as_array()
+                .and_then(|cs| cs.iter().find(|c| c["type"] == "Ready"))
+                .and_then(|c| c["status"].as_str()) == Some("True");
+            if !name.is_empty() && ready {
+                return Ok(name.to_string());
+            }
         }
     }
-    bail!("No ready rook-ceph-osd pod found")
+    bail!("Every storage service on this machine is currently down, so storage status can't be checked right now")
 }
 
 pub async fn ceph_exec(args: &[&str]) -> Result<String> {
