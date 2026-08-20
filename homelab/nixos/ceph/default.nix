@@ -243,6 +243,25 @@ in {
       wants = ["network-online.target"];
       requires = ["ceph-mon-${host}.service"];
       # No wantedBy here: enablement is per-instance and owned by local-api.
+      #
+      # Do NOT let switch-to-configuration restart these. The default
+      # (restartIfChanged = true) means any change to the unit — above all a
+      # Ceph version bump, which rewrites ExecStart — cycles EVERY OSD on the
+      # node simultaneously, in the middle of an unattended auto-update.
+      #
+      # That is both the riskiest possible moment and the wrong order: Ceph is
+      # meant to be upgraded mon → mgr → osd, one daemon at a time, checking
+      # health in between. On a replicated cluster, restarting a node's OSDs
+      # while another node is still backfilling can drop PGs below min_size and
+      # block I/O for every app on every node.
+      #
+      # So a new Ceph build takes effect for OSDs on the next reboot (or a
+      # deliberate `systemctl restart yolab-ceph-osd@N`), not as a side effect
+      # of a rebuild. Ceph explicitly supports running mixed daemon versions
+      # within a release line, which is exactly what makes that safe. mon/mgr/mds
+      # keep the default and restart normally — they are the ones Ceph wants
+      # upgraded first anyway.
+      restartIfChanged = false;
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils];
       serviceConfig = {
         Type = "simple";
