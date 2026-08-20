@@ -480,6 +480,67 @@ pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainR
 /// Sources are visited in resolution order (synced repos first, the bundled directory
 /// last), and the first chart seen for a given id wins — so a published fix supersedes the
 /// copy shipped in the system closure without anyone rebuilding the OS.
+/// One chart's storefront entry. Shared by the full listing and the single-chart
+/// refresh so the two can never drift into describing the same chart differently.
+fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
+    CatalogApp {
+        id: meta.chart.name.clone(),
+        repo,
+        name: meta.display_name(),
+        description: meta.chart.description.clone(),
+        icon: meta.ann(ANN_ICON).to_string(),
+        category: meta.ann(ANN_CATEGORY).to_string(),
+        chart_version: meta.chart.version.clone(),
+        schema: meta.schema.clone(),
+        uischema: meta.ann_json(ANN_UISCHEMA),
+    }
+}
+
+/// Re-pull one chart, then return its freshly-read catalog entry.
+///
+/// Called by the install page before it renders the form. The background sync is
+/// hourly, so a chart published minutes ago still shows its previous schema —
+/// and a field you just added is simply absent, which looks like a broken change
+/// rather than a stale copy.
+///
+/// Failure is deliberately not an error: if the registry is unreachable, the
+/// cached chart is still perfectly installable and the form should render from
+/// it rather than refusing to open. The response says whether the refresh
+/// actually happened so the UI can tell "current" from "possibly stale".
+pub async fn refresh_catalog_app(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let mut refreshed = false;
+    let mut note = String::new();
+
+    for repo in crate::charts::list_repos().await {
+        match crate::charts::sync_chart(&repo, &id).await {
+            Ok(()) => {
+                refreshed = true;
+                break;
+            }
+            // Not in this repo, or this repo is unreachable — try the next one.
+            Err(e) => note = e.to_string(),
+        }
+    }
+
+    let catalog_dir = state.config.catalog_dir();
+    let entry = crate::charts::chart_sources(&catalog_dir)
+        .await
+        .into_iter()
+        .find_map(|(repo, dir)| {
+            let m = read_chart(&dir.join(&id))?;
+            Some(catalog_entry_from(repo, m))
+        });
+
+    Json(serde_json::json!({
+        "refreshed": refreshed,
+        "note": note,
+        "app": entry,
+    }))
+}
+
 pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
     let catalog_dir = state.config.catalog_dir();
     let mut apps: Vec<CatalogApp> = vec![];
@@ -495,17 +556,7 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
             if !seen.insert(meta.chart.name.clone()) {
                 continue;
             }
-            apps.push(CatalogApp {
-                id: meta.chart.name.clone(),
-                repo: repo.clone(),
-                name: meta.display_name(),
-                description: meta.chart.description.clone(),
-                icon: meta.ann(ANN_ICON).to_string(),
-                category: meta.ann(ANN_CATEGORY).to_string(),
-                chart_version: meta.chart.version.clone(),
-                schema: meta.schema.clone(),
-                uischema: meta.ann_json(ANN_UISCHEMA),
-            });
+            apps.push(catalog_entry_from(repo.clone(), meta));
         }
     }
     // read_dir order is filesystem-dependent; sort so the storefront is stable.

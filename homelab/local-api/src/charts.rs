@@ -196,6 +196,72 @@ fn valid_chart_name(name: &str) -> bool {
 /// Pulling eagerly rather than on demand keeps install latency predictable, and means an
 /// install does not fail because the registry is briefly unreachable at exactly the wrong
 /// moment. The catalog is small — tens of charts at a few KB each — so this is cheap.
+/// Refresh a SINGLE chart from its repo.
+///
+/// The background sync runs hourly, which means a chart published minutes ago is
+/// invisible until the next tick — and the failure mode is silent: the install
+/// form renders the previous schema, so a field you just added simply is not
+/// there. That reads as "my change did not work" rather than "the node has an
+/// hour-old copy", and it has cost real debugging time.
+///
+/// So the install path refreshes just the chart being installed. One pull, on a
+/// flow that is already slow, in exchange for the form always matching what is
+/// actually published.
+pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
+    if !valid_chart_name(name) {
+        anyhow::bail!("unusable chart name {name:?}");
+    }
+
+    let body = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .get(&repo.url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let manifest: CatalogManifest = serde_norway::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("{}: catalog manifest is not valid: {e}", repo.name))?;
+
+    if !valid_registry(&manifest.registry) {
+        anyhow::bail!("{}: registry must be an oci:// reference", repo.name);
+    }
+    let entry = manifest
+        .charts
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| anyhow::anyhow!("{name} is not in {}", repo.name))?;
+
+    let dir = cache_dir_for(&repo.name);
+    tokio::fs::create_dir_all(&dir).await?;
+    let reference = format!("{}/{}", manifest.registry.trim_end_matches('/'), entry.name);
+
+    // Same clean-slate untar as the full sync: a chart that lost files between
+    // versions must not keep stale templates from the previous pull.
+    let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
+    let out = Command::new("helm")
+        .args([
+            "pull",
+            &reference,
+            "--version",
+            &entry.version,
+            "--untar",
+            "--untardir",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "pull {reference}:{}: {}",
+            entry.version,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
     let body = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
