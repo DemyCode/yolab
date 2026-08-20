@@ -78,7 +78,7 @@ in {
       wantedBy = ["multi-user.target"];
       after = ["ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
       serviceConfig.Type = "oneshot";
-      path = with pkgs; [ceph ceph-client coreutils gnugrep];
+      path = with pkgs; [ceph ceph-client coreutils gnugrep jq];
       script = ''
         set -uo pipefail
         for _ in $(seq 1 90); do ceph -s >/dev/null 2>&1 && break; sleep 1; done
@@ -91,7 +91,10 @@ in {
           exit 0
         fi
 
-        if ceph fs ls --format json 2>/dev/null | grep -q '"name":"${cfg.name}"'; then
+        # jq, not grep: matching '"name":"x"' in raw JSON silently stops working
+        # the day ceph emits a space after the colon, and the failure mode is
+        # re-running `fs new` on an existing filesystem.
+        if ceph fs ls -f json 2>/dev/null | jq -e --arg n ${cfg.name} 'any(.[]; .name == $n)' >/dev/null; then
           echo "${cfg.name} already exists"
           exit 0
         fi

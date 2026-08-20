@@ -1,3 +1,5 @@
 [toolchain]
-components = ["rustfmt", "clippy", "rust-analyzer"]
+# llvm-tools ships the profdata/cov binaries cargo-llvm-cov shells out to.
+# Without it `nix run .#coverage` fails with a confusing "no profiler runtime".
+components = ["rustfmt", "clippy", "rust-analyzer", "llvm-tools"]
 channel = "stable"

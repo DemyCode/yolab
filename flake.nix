@@ -32,6 +32,10 @@
     pkgs = nixpkgs.legacyPackages.x86_64-linux;
     inherit (nixpkgs) lib;
 
+    # Everything checks.nix defines, including the `coverage-*` reports that are
+    # filtered back out of `checks` below.
+    allChecks = import ./checks.nix {inherit pkgs inputs;};
+
     mkDarwinSystem = system:
       nix-darwin.lib.darwinSystem {
         inherit system;
@@ -74,12 +78,39 @@
 
     # Every check lives in checks.nix as a derivation, so the same command runs
     # them on a laptop and on a runner. `nix flake check` builds all of them.
-    checks.x86_64-linux = import ./checks.nix {inherit pkgs inputs;};
+    #
+    # The `coverage-*` entries are filtered out: they are reports, not checks.
+    # Leaving them in would make `nix flake check` build a full instrumented
+    # rebuild of every crate, and would turn a coverage percentage into a thing
+    # CI can fail on — which pushes people to write tests that move the number
+    # instead of tests that catch bugs. They are exposed under packages instead.
+    checks.x86_64-linux =
+      lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks;
 
     packages.x86_64-linux = let
       builds = import ./homelab/builds.nix {inherit pkgs inputs;};
       checks = self.checks.x86_64-linux;
     in {
+      coverage-local-api = allChecks.coverage-local-api;
+      coverage-installer = allChecks.coverage-installer;
+
+      # `nix run .#coverage` — build both HTML reports and say where they are.
+      # Kept out of `ci` deliberately; see the note on checks.x86_64-linux.
+      coverage = pkgs.writeShellApplication {
+        name = "yolab-coverage";
+        text = ''
+          # cargo-llvm-cov writes its report tree under html/.
+          echo "Browsable reports:"
+          echo "  local-api  ${allChecks.coverage-local-api}/html/index.html"
+          echo "  installer  ${allChecks.coverage-installer}/html/index.html"
+          echo
+          for r in ${allChecks.coverage-local-api} ${allChecks.coverage-installer}; do
+            [ -f "$r/coverage-summary.txt" ] && cat "$r/coverage-summary.txt"
+            echo
+          done
+        '';
+      };
+
       iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
       homelab-ui = builds.clientUi;
       homelab-api = builds.localApiEnv;

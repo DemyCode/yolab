@@ -369,12 +369,8 @@ async fn reconcile_local_osds(
         if !want_on || disk_to_osd.contains_key(disk_id) {
             continue;
         }
-        // Never hand Ceph a disk carrying another cluster's data. classify()
-        // already excludes these, but this loop reads `meta`, not `classify`,
-        // so the check has to be repeated here or a foreign disk switched ON in
-        // the ConfigMap would be wiped by ceph-volume.
-        if m["foreign_ceph"].as_bool().unwrap_or(false) {
-            tracing::warn!("{disk_id}: desired ON but holds another cluster's data — refusing to create an OSD");
+        if let Some(reason) = refuse_osd_creation(m) {
+            tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
             continue;
         }
         let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) else {
@@ -432,6 +428,14 @@ async fn reconcile_local_osds(
         let osd = format!("osd.{osd_id}");
 
         if want_on {
+            // Converge the daemon's own state, not just Ceph's view of it.
+            // Enabling used to happen only in the creation branch, so an OSD
+            // whose unit was stopped — a failed enable, a manual systemctl, a
+            // crash past the restart limit — stayed down forever with the
+            // reconciler reporting nothing wrong. This is a reconciler; it has
+            // to assert the desired state every tick, not once at birth.
+            ensure_osd_unit_running(osd_id).await;
+
             // A freshly created OSD starts at weight 0 (osd_crush_initial_weight)
             // so it attracts no data until the user activates it.
             if crush_weight == 0.0 {
@@ -493,6 +497,80 @@ async fn reconcile_local_osds(
     purge_drained_osds(node, &crush_nodes, disk_to_osd).await;
 }
 
+/// Whether a disk switched ON must NOT be handed to `ceph-volume lvm create`,
+/// and why. `None` means it is safe to create.
+///
+/// This is the last thing standing between a transient error and destroyed user
+/// data, so it is deliberately a pure function over the disk's own metadata and
+/// is tested exhaustively below.
+///
+/// The danger is not the obvious one. `ceph-volume lvm create` wipes whatever is
+/// on the device, and the creation loop fires for any ON disk missing from
+/// `disk_to_osd` — a map built from `ceph-volume lvm list`, which returns an
+/// EMPTY map when that command fails. So a single transient failure makes every
+/// healthy OSD look like a blank disk awaiting provisioning. Checking
+/// `foreign_ceph` alone does not save us: our *own* OSDs are not foreign.
+///
+/// Therefore: only ever create on a disk carrying no BlueStore label at all.
+/// A disk that has one already holds an OSD — ours or a stranger's — and the
+/// right response to it missing from the map is to complain, never to wipe.
+/// Both flags come from reading the on-disk superblock, so they stay correct
+/// even when no mon is reachable.
+fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
+    if m["foreign_ceph"].as_bool().unwrap_or(false) {
+        return Some("it holds data from another Ceph cluster");
+    }
+    if m["is_our_osd"].as_bool().unwrap_or(false) {
+        return Some(
+            "it already carries this cluster's BlueStore label, so an OSD exists on it \
+             (if Ceph does not list that OSD, ceph-volume metadata is the problem — \
+             creating here would destroy live data)",
+        );
+    }
+    if m["device"].as_str().filter(|d| !d.is_empty()).is_none() {
+        return Some("it has no device path");
+    }
+    None
+}
+
+/// Parse `ceph-volume lvm list --format json` into (device path, osd id) pairs.
+///
+/// Split out and made pure so the shape of ceph-volume's output is pinned by
+/// tests rather than discovered in production. ceph-volume prints `-->` progress
+/// lines to stdout when it cannot write its own log file, so anything before the
+/// first `{` is stripped rather than failing the parse — that failure would
+/// otherwise surface as an empty OSD map, which is the dangerous state described
+/// on `refuse_osd_creation`.
+pub(crate) fn parse_lvm_list(raw: &str) -> Result<Vec<(String, i64)>> {
+    let json_start = raw
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("no JSON object in ceph-volume output"))?;
+    let v: Value = serde_json::from_str(&raw[json_start..]).context("parse ceph-volume lvm list")?;
+
+    let mut out = Vec::new();
+    let Some(map) = v.as_object() else {
+        return Ok(out);
+    };
+    for (osd_id, entries) in map {
+        let Ok(id) = osd_id.parse::<i64>() else {
+            continue;
+        };
+        let Some(list) = entries.as_array() else {
+            continue;
+        };
+        for e in list {
+            if let Some(devs) = e["devices"].as_array() {
+                for d in devs {
+                    if let Some(path) = d.as_str().filter(|p| !p.is_empty()) {
+                        out.push((path.to_string(), id));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Enable and start this OSD's systemd instance.
 ///
 /// `yolab-ceph-osd@.service` is a template unit declared in
@@ -500,6 +578,24 @@ async fn reconcile_local_osds(
 /// Ceph assigns it at creation time and it can never be known when the NixOS
 /// config is built. Enabling (rather than starting transiently) is what makes
 /// the OSD come back by itself after a reboot.
+/// Start this OSD's unit if it is not already running. Cheap enough to call on
+/// every tick: `is-active` is a bus query, and the enable/start only runs when
+/// something is actually wrong.
+async fn ensure_osd_unit_running(osd_id: i64) {
+    let unit = format!("yolab-ceph-osd@{osd_id}.service");
+    let active = tokio::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", &unit])
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if active {
+        return;
+    }
+    tracing::warn!("osd.{osd_id}: {unit} is not running — starting it");
+    enable_osd_unit(osd_id).await;
+}
+
 async fn enable_osd_unit(osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
     tracing::info!("osd.{osd_id}: enabling {unit}");
@@ -1149,6 +1245,136 @@ mod tests {
     fn weight_is_zero_when_no_size_is_known() {
         // A zero weight keeps a disk of unknown size from attracting data.
         assert_eq!(weight_tib_from(0, 0), 0.0);
+    }
+
+    // ── refuse_osd_creation ───────────────────────────────────────────────────
+    //
+    // The single most dangerous function in this file. `ceph-volume lvm create`
+    // wipes the device it is given, and the creation loop calls it for any ON
+    // disk missing from a map that is EMPTY whenever `ceph-volume lvm list`
+    // fails. These tests exist so that failure mode can never become data loss.
+
+    fn disk(is_our_osd: bool, foreign_ceph: bool) -> Value {
+        json!({
+            "device": "sdb",
+            "size_bytes": 1_000_000_000u64,
+            "is_our_osd": is_our_osd,
+            "foreign_ceph": foreign_ceph,
+        })
+    }
+
+    #[test]
+    fn a_blank_disk_may_be_turned_into_an_osd() {
+        assert_eq!(refuse_osd_creation(&disk(false, false)), None);
+    }
+
+    /// The whole point. A healthy OSD of ours that Ceph momentarily fails to
+    /// report must never be re-created over — that is destroying live data in
+    /// response to a transient command failure.
+    #[test]
+    fn our_own_osd_is_never_recreated_over() {
+        assert!(
+            refuse_osd_creation(&disk(true, false)).is_some(),
+            "a disk carrying our own BlueStore label must never be handed to ceph-volume create"
+        );
+    }
+
+    #[test]
+    fn another_clusters_disk_is_refused() {
+        assert!(refuse_osd_creation(&disk(false, true)).is_some());
+    }
+
+    /// Both flags set is contradictory, but if it ever happens the answer is
+    /// still "do not wipe".
+    #[test]
+    fn a_contradictory_disk_is_refused() {
+        assert!(refuse_osd_creation(&disk(true, true)).is_some());
+    }
+
+    /// Missing flags are the shape `meta` takes when the superblock could not be
+    /// read at all. `unwrap_or(false)` makes both default to "blank", so this
+    /// pins the one case that stays permissive — and proves the device check is
+    /// what catches a genuinely empty entry.
+    #[test]
+    fn an_entry_with_no_flags_but_a_device_is_allowed() {
+        assert_eq!(refuse_osd_creation(&json!({"device": "sdb"})), None);
+    }
+
+    #[test]
+    fn an_entry_without_a_device_is_refused() {
+        assert!(refuse_osd_creation(&json!({"is_our_osd": false})).is_some());
+        assert!(refuse_osd_creation(&json!({"device": ""})).is_some());
+    }
+
+    // ── parse_lvm_list ────────────────────────────────────────────────────────
+
+    /// The real shape of `ceph-volume lvm list --format json`: an object keyed
+    /// by OSD id, each holding a list of LV records naming their backing
+    /// devices.
+    #[test]
+    fn lvm_list_maps_devices_to_osd_ids() {
+        let raw = r#"{
+          "0": [{"devices": ["/dev/sdb"], "tags": {"ceph.osd_fsid": "abc"}}],
+          "1": [{"devices": ["/dev/pool/ceph"], "tags": {"ceph.osd_fsid": "def"}}]
+        }"#;
+        let mut got = parse_lvm_list(raw).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("/dev/pool/ceph".to_string(), 1),
+                ("/dev/sdb".to_string(), 0),
+            ]
+        );
+    }
+
+    /// ceph-volume prints `-->` progress lines to stdout when it cannot write
+    /// its own logfile. A parse failure here returns an empty OSD map, which is
+    /// precisely the state `refuse_osd_creation` exists to survive — so the
+    /// preamble is stripped instead.
+    #[test]
+    fn lvm_list_tolerates_a_progress_preamble() {
+        let raw = "--> Falling back to /tmp/ for logging\n{\"0\": [{\"devices\": [\"/dev/sdb\"]}]}";
+        assert_eq!(parse_lvm_list(raw).unwrap(), vec![("/dev/sdb".to_string(), 0)]);
+    }
+
+    #[test]
+    fn lvm_list_handles_an_osd_spanning_several_devices() {
+        let raw = r#"{"3": [{"devices": ["/dev/sdc", "/dev/sdd"]}]}"#;
+        assert_eq!(
+            parse_lvm_list(raw).unwrap(),
+            vec![("/dev/sdc".to_string(), 3), ("/dev/sdd".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn lvm_list_reports_no_osds_for_an_empty_object() {
+        assert!(parse_lvm_list("{}").unwrap().is_empty());
+    }
+
+    /// Must be an error, never `Ok(vec![])`. An empty result reads as "this host
+    /// has no OSDs", which is the input that makes the reconciler start wiping.
+    #[test]
+    fn lvm_list_errors_on_output_with_no_json() {
+        assert!(parse_lvm_list("").is_err());
+        assert!(parse_lvm_list("--> something went wrong").is_err());
+    }
+
+    #[test]
+    fn lvm_list_errors_on_malformed_json() {
+        assert!(parse_lvm_list("{\"0\": [").is_err());
+    }
+
+    #[test]
+    fn lvm_list_skips_entries_that_are_not_osd_ids() {
+        let raw = r#"{"notanid": [{"devices": ["/dev/sdz"]}], "2": [{"devices": ["/dev/sde"]}]}"#;
+        assert_eq!(parse_lvm_list(raw).unwrap(), vec![("/dev/sde".to_string(), 2)]);
+    }
+
+    #[test]
+    fn lvm_list_skips_records_with_no_devices() {
+        let raw = r#"{"0": [{"tags": {}}], "1": [{"devices": [""]}]}"#;
+        assert!(parse_lvm_list(raw).unwrap().is_empty());
     }
 
 }
