@@ -3,7 +3,7 @@ import type { WidgetProps } from "@rjsf/utils";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Input, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 
 /**
  * The widgets the catalog already asks for.
