@@ -45,6 +45,45 @@
       // {
         cargoArtifacts = craneLib.buildDepsOnly args;
       });
+  # Line/region coverage for a crate, as a browsable HTML report.
+  #
+  # Deliberately NOT one of the checks below: it is a tool for looking at where
+  # the tests are thin, not a gate. Wiring it into CI would either fail builds on
+  # an arbitrary percentage or, worse, invite writing tests that move the number
+  # rather than tests that catch bugs.
+  #
+  #   nix run .#coverage           # build both reports and print where they are
+  #   nix build .#coverage-local-api
+  cargoCoverage = {
+    name,
+    path,
+    nativeBuildInputs ? [],
+    buildInputs ? [],
+  }: let
+    args = {
+      pname = "${name}-coverage";
+      version = "0.1.0";
+      src = craneLib.cleanCargoSource (craneLib.path path);
+      strictDeps = true;
+      inherit nativeBuildInputs buildInputs;
+    };
+  in
+    craneLib.cargoLlvmCov (args
+      // {
+        cargoArtifacts = craneLib.buildDepsOnly args;
+        cargoLlvmCovCommand = "test";
+        # --summary-only cannot be combined with --html, so the browsable report
+        # is produced here and the text summary below reuses the same profile
+        # data rather than re-running the suite.
+        cargoLlvmCovExtraArgs = "--html --output-dir $out";
+        # --release must match the flag the test run used, or `report` looks for
+        # profile data in the debug target dir and silently finds none.
+        postInstall = ''
+          echo "── coverage summary: ${name} ──"
+          cargo llvm-cov report --release --summary-only \
+            | tee "$out/coverage-summary.txt"
+        '';
+      });
 in {
   # ── Rust ────────────────────────────────────────────────────────────────────
 
@@ -103,6 +142,25 @@ in {
       python3 ./catalog/check_charts.py
       touch $out
     '';
+
+  # ── Coverage ────────────────────────────────────────────────────────────────
+  #
+  # Named with a `coverage-` prefix, which flake.nix uses to keep them OUT of
+  # `checks` (so `nix flake check` and `nix run .#ci` stay fast and stay about
+  # correctness) while still exposing them as buildable packages.
+
+  coverage-local-api = cargoCoverage {
+    name = "local-api";
+    path = ./homelab/local-api;
+    nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
+    buildInputs = [pkgs.openssl];
+  };
+
+  coverage-installer = cargoCoverage {
+    name = "yolab-installer";
+    path = ./installer/nixos/backend-rs;
+    nativeBuildInputs = [pkgs.pkg-config];
+  };
 
   # ── Static analysis ─────────────────────────────────────────────────────────
 

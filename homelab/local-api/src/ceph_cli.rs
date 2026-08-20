@@ -103,10 +103,18 @@ pub async fn reachable() -> bool {
 /// like ours. See the `is_uuid_rejects_the_empty_string` test in
 /// disks_reconciler.rs for why that distinction is load-bearing.
 pub async fn cluster_fsid() -> Option<String> {
-    let v = ceph_json(&["fsid"]).await.ok()?;
-    v["fsid"]
-        .as_str()
-        .map(str::to_string)
+    // `ceph fsid -f json` returns {"fsid": "..."} on some releases and a bare
+    // UUID on others. Accept either rather than depending on which one ships,
+    // because returning None here makes every labelled disk look foreign.
+    if let Ok(v) = ceph_json(&["fsid"]).await {
+        if let Some(f) = v["fsid"].as_str().filter(|s| !s.is_empty()) {
+            return Some(f.to_string());
+        }
+    }
+    ceph(&["fsid"])
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
@@ -131,30 +139,11 @@ pub async fn osd_safe_to_destroy(osd_id: i64) -> bool {
 /// list`. This is the authoritative local view: it reads the LVM tags
 /// ceph-volume itself wrote, so it needs no mon and works even when the cluster
 /// is down — unlike `ceph osd metadata`, which does.
+///
+/// Errors propagate. Callers must NOT treat a failure as "no OSDs": the disk
+/// reconciler creates an OSD for any ON disk missing from this map, and
+/// `ceph-volume lvm create` wipes the device. See `refuse_osd_creation`.
 pub async fn local_osds() -> Result<Vec<(String, i64)>> {
     let raw = ceph_volume(&["lvm", "list", "--format", "json"]).await?;
-    let v: Value = serde_json::from_str(&raw).context("parse ceph-volume lvm list")?;
-
-    let mut out = Vec::new();
-    if let Some(map) = v.as_object() {
-        for (osd_id, entries) in map {
-            let Ok(id) = osd_id.parse::<i64>() else {
-                continue;
-            };
-            let Some(list) = entries.as_array() else {
-                continue;
-            };
-            for e in list {
-                // `devices` is the underlying physical device(s) behind the LV.
-                if let Some(devs) = e["devices"].as_array() {
-                    for d in devs {
-                        if let Some(path) = d.as_str() {
-                            out.push((path.to_string(), id));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
+    crate::disks_reconciler::parse_lvm_list(&raw)
 }
