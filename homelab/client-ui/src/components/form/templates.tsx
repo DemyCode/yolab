@@ -1,7 +1,9 @@
 import type {
+  ArrayFieldTemplateProps,
   FieldTemplateProps,
   ObjectFieldTemplateProps,
 } from "@rjsf/utils";
+import { Plus, X } from "lucide-react";
 
 /**
  * Templates that keep an RJSF form looking like the rest of the product.
@@ -19,8 +21,11 @@ import type {
  * label and help — wrapping it would print both twice.
  */
 export function FieldTemplate(props: FieldTemplateProps) {
-  const { id, label, help, description, errors, children, schema, hidden } =
-    props;
+  // `description` is RJSF's own rendered DescriptionField. It is deliberately
+  // NOT used: schema.description is rendered directly below, and taking both
+  // printed every help line twice — "How much CephFS storage to allocate"
+  // appearing under itself.
+  const { id, label, help, errors, children, schema, hidden } = props;
 
   if (hidden) return null;
   if (schema.type === "boolean") return <div className="py-1">{children}</div>;
@@ -38,7 +43,65 @@ export function FieldTemplate(props: FieldTemplateProps) {
       {children}
       {errors}
       {help}
-      {description}
+    </div>
+  );
+}
+
+/**
+ * A repeating field, as an actual list.
+ *
+ * RJSF handles arrays natively — add, remove, reorder — and this only supplies
+ * the presentation. It matters for anything genuinely plural: a set of logins
+ * is a list of people, not a textarea someone has to format correctly, and a
+ * typo in "user:password" should not be a silent failure at container start.
+ */
+export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
+  const { items, canAdd, onAddClick, schema, title } = props;
+
+  return (
+    <div className="space-y-3">
+      {(title || schema.title) && (
+        <div className="text-sm font-medium text-fg">
+          {title || (schema.title as string)}
+        </div>
+      )}
+      {schema.description && (
+        <p className="text-sm text-fg-muted">{schema.description}</p>
+      )}
+
+      {items.length === 0 && (
+        <p className="text-sm text-fg-subtle">Nothing added yet.</p>
+      )}
+
+      {items.map((el) => (
+        <div
+          key={el.key}
+          className="flex items-start gap-2 rounded-lg border border-border p-3"
+        >
+          <div className="min-w-0 flex-1">{el.children}</div>
+          {el.hasRemove && (
+            <button
+              type="button"
+              aria-label="Remove"
+              onClick={el.onDropIndexClick(el.index)}
+              className="mt-1 rounded-md p-2 text-fg-muted hover:bg-surface-2 hover:text-danger"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      ))}
+
+      {canAdd && (
+        <button
+          type="button"
+          onClick={onAddClick}
+          className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-sm text-fg-muted hover:border-primary hover:text-fg"
+        >
+          <Plus className="h-4 w-4" />
+          Add
+        </button>
+      )}
     </div>
   );
 }
@@ -64,4 +127,8 @@ export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
   );
 }
 
-export const templates = { FieldTemplate, ObjectFieldTemplate };
+export const templates = {
+  FieldTemplate,
+  ObjectFieldTemplate,
+  ArrayFieldTemplate,
+};

@@ -9,9 +9,9 @@ config:
   # Excalidraw ships no authentication at all, so without this the only thing
   # between it and the internet is an unguessable subdomain.
   auth_enabled: false
-  # One "user:password" per line. Hashed by an init container before Authelia
+  # A list of {username, password}. Hashed by an init container before Authelia
   # ever reads them; only the hashes reach the users file.
-  auth_users: ""
+  auth_users: []
 
 yolab:
   platformApiUrl: ""

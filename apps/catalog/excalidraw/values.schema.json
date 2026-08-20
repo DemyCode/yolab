@@ -31,10 +31,29 @@
           "description": "Excalidraw has no login of its own. Turn this on to put a username and password in front of it."
         },
         "auth_users": {
-          "type": "string",
+          "type": "array",
           "title": "Logins",
-          "default": "",
-          "description": "One per line, as user:password \u2014 for example  alice:s3cret. Only used when 'Add login' is on."
+          "description": "Who can open this app. Each person gets their own username and password.",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "username",
+              "password"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "minLength": 1
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "minLength": 8
+              }
+            }
+          }
         }
       },
       "allOf": [
