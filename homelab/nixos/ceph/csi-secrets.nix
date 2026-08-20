@@ -85,10 +85,19 @@ in {
         RBD_NODE=$(ensure_key client.csi-rbd-node \
           mon 'profile rbd' osd 'profile rbd')
 
+        # Rook creates these same Secrets with type `kubernetes.io/rook`, and a
+        # Secret's type is IMMUTABLE. Creating them as the default `Opaque` meant
+        # Rook could never update them, and its CephCluster reconcile failed on
+        # every pass for an hour:
+        #   Secret "rook-csi-cephfs-node" is invalid:
+        #     type: Invalid value: "kubernetes.io/rook": field is immutable
+        # So match Rook's type. Same lesson as the cephx caps above: where Rook
+        # also manages an object, conform to its shape rather than compete.
         apply_secret() {
           # `create --dry-run | apply` so this is an upsert: the unit re-runs on
           # every boot and must converge, not fail on "already exists".
           kubectl create secret generic "$1" -n ${ns} \
+            --type=kubernetes.io/rook \
             --from-literal="$2=$3" --from-literal="$4=$5" \
             --dry-run=client -o yaml | kubectl apply -f - >/dev/null
         }
@@ -105,6 +114,7 @@ in {
         # The operator reads fsid + admin credentials from here.
         ADMIN_KEY=$(ceph auth get-key client.admin)
         kubectl create secret generic rook-ceph-mon -n ${ns} \
+          --type=kubernetes.io/rook \
           --from-literal=cluster-name=${ns} \
           --from-literal=fsid="$FSID" \
           --from-literal=admin-secret=admin-secret \
