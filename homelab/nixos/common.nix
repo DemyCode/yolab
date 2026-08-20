@@ -270,6 +270,13 @@ in
         # svclb DaemonSet to bind hostPorts 80/443 on every node, which
         # conflicts with Caddy and causes it to receive SIGTERM.
         "--disable=traefik"
+        # k3s also ships local-path-provisioner and marks its StorageClass as
+        # the cluster default. Nothing here uses it — every app goes to
+        # yolab-cephfs — and Kubernetes REJECTS PVC creation while two default
+        # classes exist, which is what shipping both produced: k3s re-applied
+        # local-path (and its default annotation) on every restart, racing
+        # whatever tried to strip it.
+        "--disable=local-storage"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
         "--cluster-cidr=fd00:42::/56,10.42.0.0/16"
@@ -419,31 +426,18 @@ in
       };
     };
 
-    # ── Storage class default management ─────────────────────────────────────
-    # K3s creates a `local-path` StorageClass on every boot and marks it as
-    # the cluster default.  We deploy `yolab-cephfs` as the real default (set
-    # explicitly after K3s is ready) so that all PVC requests go to CephFS.
-    # Without this, both classes would be marked default — K8s 1.26+ rejects
-    # PVC creation when more than one default class exists.
-    systemd.services.yolab-storageclass-default = {
-      description = "Ensure yolab-cephfs is the only default StorageClass";
-      after = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
-      environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # Retry until the API server is ready (K3s may still be initialising).
-        ExecStart = pkgs.writeShellScript "storageclass-default" ''
-          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
-          until kubectl get storageclass local-path 2>/dev/null; do sleep 5; done
-          kubectl annotate storageclass local-path \
-            storageclass.kubernetes.io/is-default-class=false --overwrite
-          kubectl annotate storageclass yolab-cephfs \
-            storageclass.kubernetes.io/is-default-class=true --overwrite 2>/dev/null || true
-        '';
-      };
-    };
+    # No storage-class default management here any more.
+    #
+    # There used to be a yolab-storageclass-default unit that stripped the
+    # default annotation off k3s's local-path class. It is gone because
+    # --disable=local-storage above means that class is never created, and
+    # yolab-cephfs (which declares the annotation itself, in
+    # rook/cluster-external.yaml) is the only default.
+    #
+    # Removing it was NOT optional once local-storage was disabled: its
+    # ExecStart began `until kubectl get storageclass local-path; do sleep 5;
+    # done` — an unbounded wait inside a oneshot unit, which would have hung at
+    # every boot waiting for a class that can no longer exist.
 
     # ── CephFS CSI stale-lock recovery ───────────────────────────────────────
     # After a node reboot the CephFS CSI plugin (csi-cephfsplugin DaemonSet)
