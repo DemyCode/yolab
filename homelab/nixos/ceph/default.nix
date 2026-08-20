@@ -227,10 +227,16 @@ in {
     # the id can never be known when the config is built.
     #
     # The template is declarative; only the instance is dynamic. local-api runs
-    # `systemctl enable --now yolab-ceph-osd@<id>` when a disk is switched ON
-    # and `disable --now` when it is switched OFF, driven by the shared
-    # yolab-disk-config ConfigMap. Because instances are enabled (not transient),
-    # they come back on their own after a reboot.
+    # `systemctl start yolab-ceph-osd@<id>` when a disk is switched ON and
+    # `stop` when it is switched OFF, driven by the shared yolab-disk-config
+    # ConfigMap.
+    #
+    # It is `start`, never `enable`: enabling writes a symlink into
+    # /etc/systemd/system, which on NixOS is a read-only Nix store path.
+    # `systemctl enable` therefore fails outright ("Read-only file system"),
+    # observed live with both OSDs created but neither ever started. Boot
+    # persistence comes from yolab-ceph-osd-activate below instead, which is the
+    # declarative equivalent and the only shape NixOS actually supports.
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
       after = ["network-online.target" "ceph-mon-${host}.service"];
@@ -266,6 +272,37 @@ in {
         + " %i";
         ExecStart = "${pkgs.ceph}/bin/ceph-osd -f -i %i --setuser ceph --setgroup ceph";
       };
+    };
+
+    # ── Boot persistence for OSDs ────────────────────────────────────────────
+    # Replaces `systemctl enable`, which cannot work here: enabling writes into
+    # /etc/systemd/system, a read-only Nix store path. So instead of each OSD
+    # instance remembering that it should run, this asks ceph-volume at boot
+    # which OSDs are prepared on this host and starts one template instance per
+    # OSD. ceph-volume reads LVM tags, so it needs no mon and is correct even
+    # when the cluster is unreachable.
+    systemd.services.yolab-ceph-osd-activate = {
+      description = "Start a yolab-ceph-osd@ instance for every OSD prepared on this host";
+      wantedBy = ["multi-user.target"];
+      after = ["ceph-mon-${host}.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq systemd];
+      script = ''
+        set -uo pipefail
+        IDS=$(ceph-volume lvm list --format json 2>/dev/null | jq -r 'keys[]' 2>/dev/null || true)
+        if [ -z "$IDS" ]; then
+          echo "no OSDs prepared on this host"
+          exit 0
+        fi
+        for id in $IDS; do
+          echo "starting yolab-ceph-osd@$id"
+          systemctl start "yolab-ceph-osd@$id.service" || \
+            echo "osd.$id: failed to start" >&2
+        done
+      '';
     };
 
     environment.systemPackages = with pkgs; [

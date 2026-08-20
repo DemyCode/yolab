@@ -250,11 +250,7 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> HashMa
     let mut device_to_disk_id: HashMap<String, String> = HashMap::new();
     for (disk_id, m) in meta {
         let Some(dev) = m["device"].as_str() else { continue };
-        let full = if dev.starts_with('/') { dev.to_string() } else { format!("/dev/{dev}") };
-        if let Ok(canonical) = std::fs::canonicalize(&full) {
-            device_to_disk_id.insert(canonical.to_string_lossy().to_string(), disk_id.clone());
-        }
-        device_to_disk_id.insert(full, disk_id.clone());
+        device_to_disk_id.insert(canonical_device(dev), disk_id.clone());
     }
 
     let local = match ceph_cli::local_osds().await {
@@ -267,21 +263,36 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> HashMa
 
     let mut result = HashMap::new();
     for (dev_path, osd_id) in local {
-        // Match on both the reported path and its canonical form: ceph-volume
-        // may report /dev/pool/ceph where our inventory holds
-        // /dev/mapper/pool-ceph, and both resolve to the same /dev/dm-N.
-        let canonical = std::fs::canonicalize(&dev_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| dev_path.clone());
-
-        if let Some(disk_id) = device_to_disk_id
-            .get(&dev_path)
-            .or_else(|| device_to_disk_id.get(&canonical))
-        {
+        // Canonicalise BOTH sides. Matching only our own paths against
+        // ceph-volume's raw string silently fails for LVM: we hold
+        // /dev/mapper/pool-ceph while ceph-volume reports /dev/pool/ceph, and
+        // the two never compare equal even though both are symlinks to the same
+        // /dev/dm-N. Observed live — the system disk's OSD went unrecognised, so
+        // the reconciler treated it as an unprovisioned disk on every tick.
+        let key = canonical_device(&dev_path);
+        if let Some(disk_id) = device_to_disk_id.get(&key) {
             result.insert(disk_id.clone(), osd_id);
         }
     }
     result
+}
+
+/// Resolve a device path to its canonical form, falling back to the input when
+/// it cannot be resolved (the device is gone, or we are in a unit test).
+///
+/// Split out and used on every path that compares device identities, because
+/// /dev holds several names for the same LVM volume — /dev/mapper/pool-ceph,
+/// /dev/pool/ceph and /dev/dm-1 are all the same disk — and comparing the
+/// wrong pair makes an existing OSD look like a blank disk.
+fn canonical_device(dev: &str) -> String {
+    let full = if dev.starts_with('/') {
+        dev.to_string()
+    } else {
+        format!("/dev/{dev}")
+    };
+    std::fs::canonicalize(&full)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(full)
 }
 
 /// Per-node: publish this node's disk inventory + its effective device list to
@@ -388,14 +399,16 @@ async fn reconcile_local_osds(
                 // Re-read the mapping so we learn the id Ceph just assigned;
                 // it cannot be known before creation.
                 if let Ok(local) = ceph_cli::local_osds().await {
-                    let canonical = std::fs::canonicalize(&dev_path)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|_| dev_path.clone());
-                    if let Some((_, osd_id)) = local
-                        .iter()
-                        .find(|(d, _)| *d == dev_path || *d == canonical)
+                    let want = canonical_device(&dev_path);
+                    if let Some((_, osd_id)) =
+                        local.iter().find(|(d, _)| canonical_device(d) == want)
                     {
-                        enable_osd_unit(*osd_id).await;
+                        start_osd_unit(*osd_id).await;
+                    } else {
+                        tracing::warn!(
+                            "{disk_id}: created an OSD but could not match it back to {dev_path} — \
+                             it will be started by the next reconcile tick"
+                        );
                     }
                 }
             }
@@ -571,16 +584,14 @@ pub(crate) fn parse_lvm_list(raw: &str) -> Result<Vec<(String, i64)>> {
     Ok(out)
 }
 
-/// Enable and start this OSD's systemd instance.
-///
-/// `yolab-ceph-osd@.service` is a template unit declared in
-/// homelab/nixos/ceph/default.nix; only the instance id is dynamic, because
-/// Ceph assigns it at creation time and it can never be known when the NixOS
-/// config is built. Enabling (rather than starting transiently) is what makes
-/// the OSD come back by itself after a reboot.
 /// Start this OSD's unit if it is not already running. Cheap enough to call on
-/// every tick: `is-active` is a bus query, and the enable/start only runs when
+/// every tick: `is-active` is a bus query, and the start only runs when
 /// something is actually wrong.
+///
+/// This is what converges an OSD whose daemon died — a failed start, a manual
+/// systemctl stop, a crash past the restart limit. Without it an OSD could sit
+/// created-but-down indefinitely with the reconciler reporting nothing wrong,
+/// which is exactly what a read-only /etc/systemd/system produced.
 async fn ensure_osd_unit_running(osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
     let active = tokio::process::Command::new("systemctl")
@@ -593,34 +604,46 @@ async fn ensure_osd_unit_running(osd_id: i64) {
         return;
     }
     tracing::warn!("osd.{osd_id}: {unit} is not running — starting it");
-    enable_osd_unit(osd_id).await;
+    start_osd_unit(osd_id).await;
 }
 
-async fn enable_osd_unit(osd_id: i64) {
+/// Start this OSD's systemd instance.
+///
+/// `start`, never `enable`. Enabling writes a symlink into
+/// /etc/systemd/system, which on NixOS is a read-only Nix store path, so
+/// `systemctl enable` fails with "Read-only file system" — observed live with
+/// both OSDs created and neither running. Persistence across reboots comes from
+/// the declarative yolab-ceph-osd-activate unit, which enumerates prepared OSDs
+/// from ceph-volume and starts an instance for each.
+async fn start_osd_unit(osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
-    tracing::info!("osd.{osd_id}: enabling {unit}");
+    tracing::info!("osd.{osd_id}: starting {unit}");
     match tokio::process::Command::new("systemctl")
-        .args(["enable", "--now", &unit])
+        .args(["start", &unit])
         .output()
         .await
     {
         Ok(o) if o.status.success() => tracing::info!("osd.{osd_id}: {unit} started"),
         Ok(o) => tracing::warn!(
-            "osd.{osd_id}: enabling {unit} failed: {}",
+            "osd.{osd_id}: starting {unit} failed: {}",
             String::from_utf8_lossy(&o.stderr).trim()
         ),
         Err(e) => tracing::warn!("osd.{osd_id}: could not run systemctl: {e}"),
     }
 }
 
-/// Stop and disable this OSD's systemd instance, and wait for the process to
-/// actually be gone. Purging an OSD whose daemon still holds the device fails
-/// with EBUSY, so this must complete before any purge.
+/// Stop this OSD's systemd instance and wait for the process to actually be
+/// gone. Purging an OSD whose daemon still holds the device fails with EBUSY,
+/// so this must complete before any purge.
 async fn disable_osd_unit(osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
-    tracing::info!("osd.{osd_id}: stopping and disabling {unit}");
+    tracing::info!("osd.{osd_id}: stopping {unit}");
+    // `stop`, not `disable --now`, for the same reason start is not enable:
+    // disabling touches the read-only /etc/systemd/system. Nothing needs
+    // un-enabling anyway — yolab-ceph-osd-activate derives what to start from
+    // ceph-volume, and a purged OSD disappears from there on its own.
     let _ = tokio::process::Command::new("systemctl")
-        .args(["disable", "--now", &unit])
+        .args(["stop", &unit])
         .output()
         .await;
 
@@ -1304,6 +1327,47 @@ mod tests {
     fn an_entry_without_a_device_is_refused() {
         assert!(refuse_osd_creation(&json!({"is_our_osd": false})).is_some());
         assert!(refuse_osd_creation(&json!({"device": ""})).is_some());
+    }
+
+    // ── canonical_device ──────────────────────────────────────────────────────
+    //
+    // /dev holds several names for one LVM volume: /dev/mapper/pool-ceph,
+    // /dev/pool/ceph and /dev/dm-1 are the same disk. Our inventory records one
+    // spelling and ceph-volume reports another, so comparing the raw strings
+    // made an existing OSD look like a blank disk — the reconciler then tried to
+    // provision over it on every tick, and only refuse_osd_creation stopped that
+    // becoming a wipe. Observed live on the system disk.
+
+    #[test]
+    fn canonical_device_leaves_an_unresolvable_path_alone() {
+        // Must be lossless rather than empty: an empty key would collide with
+        // every other unresolvable device and mismatch OSDs onto wrong disks.
+        assert_eq!(
+            canonical_device("/dev/definitely-not-here"),
+            "/dev/definitely-not-here"
+        );
+    }
+
+    #[test]
+    fn canonical_device_expands_a_bare_kernel_name() {
+        // lsblk gives "sdb"; ceph-volume gives "/dev/sdb". They must agree.
+        assert_eq!(canonical_device("sdb"), canonical_device("/dev/sdb"));
+    }
+
+    /// The two spellings that actually collided in production.
+    #[test]
+    fn the_two_lvm_spellings_agree_via_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dm-1");
+        std::fs::write(&real, b"x").unwrap();
+        let alias = dir.path().join("pool-ceph");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+        assert_eq!(
+            canonical_device(alias.to_str().unwrap()),
+            canonical_device(real.to_str().unwrap()),
+            "a symlink and its target must resolve to the same key"
+        );
     }
 
     // ── parse_lvm_list ────────────────────────────────────────────────────────
