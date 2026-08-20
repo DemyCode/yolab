@@ -181,6 +181,23 @@ data:
   Caddyfile: |
     {{- if (((.Values.yolab).gateway).caddyfile) }}
     {{- .Values.yolab.gateway.caddyfile | nindent 4 }}
+    {{- else if eq (include "yolab-common.auth.enabled" .) "true" }}
+    {$YOLAB_FQDN} {
+      # The portal, on this app's own domain. Must be matched BEFORE the
+      # forward_auth below, or the login page would itself require a login.
+      handle /authelia/* {
+        reverse_proxy localhost:9091
+      }
+      handle {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          # Passed to the app so it can know who is signed in. Harmless for an
+          # app that ignores them, and the only way one can personalise.
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
+      }
+    }
     {{- else }}
     {$YOLAB_FQDN} {
       reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}

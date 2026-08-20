@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "yolab-common.autheliaSecret" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -34,10 +36,14 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- /* After wg-register: it needs the FQDN that init writes to /yolab/env. */}}
+      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
