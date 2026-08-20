@@ -122,6 +122,16 @@ in {
       mon = {
         enable = true;
         daemons = [host];
+        extraConfig = {
+          # Ceph warns permanently (HEALTH_WARN) while this is on, because a
+          # pre-Pacific client could reclaim a global_id insecurely. Every
+          # client here is current — the daemons are one pinned build, and the
+          # only kernel client is krbd on this same host — so there is nothing
+          # old to break, and leaving it on means the cluster never reports
+          # HEALTH_OK. A permanent warning is worse than no warning: it trains
+          # you to ignore the health line, which is where a real fault appears.
+          auth_allow_insecure_global_id_reclaim = "false";
+        };
       };
       mgr = {
         enable = true;
