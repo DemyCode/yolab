@@ -35,5 +35,17 @@ annotations:
         "label": "Web URL",
         "type": "url",
         "pattern": "YOLAB_OUTPUT url (\\S+)"
+      },
+      {
+        "key": "username",
+        "label": "Username",
+        "type": "text",
+        "pattern": "The WebUI administrator username is: (\\S+)"
+      },
+      {
+        "key": "password",
+        "label": "Temporary password",
+        "type": "text",
+        "pattern": "A temporary password is provided for this session: (\\S+)"
       }
     ]
