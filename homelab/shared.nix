@@ -30,6 +30,7 @@ in {
   homelabPasswordHash = cfg.homelab_password_hash or "";
 
   inherit
+    homelabConfig
     tunnelCfg
     nodeCfg
     tunnelEnabled

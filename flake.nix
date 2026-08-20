@@ -3,6 +3,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Ceph only. The pinned nixpkgs above carries ceph 20.2.2, whose
+    # python-common fails its own pytest ("No package metadata was found for
+    # ceph-common") — Hydra fails it too, so it is not in the binary cache and
+    # every node would compile Ceph from source. 20.2.3 in nixpkgs-unstable is
+    # fixed and cached. Scoped to a single package via an overlay rather than
+    # bumping the main pin, so the blast radius is Ceph and nothing else.
+    nixpkgs-ceph.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     disko.url = "github:nix-community/disko";
     disko.inputs.nixpkgs.follows = "nixpkgs";
     nixos-wsl.url = "github:nix-community/NixOS-WSL";

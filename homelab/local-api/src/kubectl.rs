@@ -196,7 +196,23 @@ pub async fn ceph_exec_pod() -> Result<String> {
     bail!("Every storage service on this machine is currently down, so storage status can't be checked right now")
 }
 
+/// Run a `ceph` command.
+///
+/// Kept under this name and signature so its ~10 call sites did not all have to
+/// change, but the implementation is now a plain local subprocess: Ceph runs as
+/// host daemons rather than Rook pods (see homelab/nixos/ceph/), so there is no
+/// pod to exec into.
+///
+/// The old implementation is preserved below as `ceph_exec_via_pod` only
+/// because `ceph_exec_pod` still has callers in routers/ceph.rs that shell into
+/// a pod for reasons other than running `ceph`. It is dead for this path and
+/// should go when those are migrated.
 pub async fn ceph_exec(args: &[&str]) -> Result<String> {
+    crate::ceph_cli::ceph(args).await
+}
+
+#[allow(dead_code)]
+async fn ceph_exec_via_pod(args: &[&str]) -> Result<String> {
     let keyring_b64 = run(&[
         "get", "secret", "-n", CEPH_NS, "rook-ceph-admin-keyring",
         "-o", "jsonpath={.data.keyring}",

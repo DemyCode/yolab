@@ -15,8 +15,18 @@ let
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
+
+  # Ceph runs as host daemons rather than Rook pods so containerd's image store
+  # can live on an RBD — see homelab/nixos/ceph/default.nix for why that is not
+  # possible while the mons are pods.
+  cephCfg = s.homelabConfig.ceph or { };
 in
 {
+  imports = [
+    ./ceph
+    ./ceph/images-store.nix
+  ];
+
   # ── Module options ────────────────────────────────────────────────────────
   # Consumed by platform overlays (wsl.nix, darwin/configuration.nix …).
   # Defaults cover the standard bare-metal / QEMU case.
@@ -43,6 +53,27 @@ in
     # unmodified glances 4.5.5 now builds — and because overriding the derivation meant
     # every node compiled glances from source, test suite and all, instead of taking the
     # prebuilt one from cache.nixos.org. An overlay that outlives its bug is not free.
+
+    # Ceph, and only Ceph, comes from a newer nixpkgs. The main pin's 20.2.2
+    # fails its own python-common test suite, so Hydra never built it and it is
+    # absent from the binary cache — leaving every node to compile Ceph from
+    # source. 20.2.3 is fixed and cached. Scoped to two attributes so nothing
+    # else in the closure moves.
+    nixpkgs.overlays = [
+      (_final: prev: {
+        inherit (inputs.nixpkgs-ceph.legacyPackages.${prev.stdenv.hostPlatform.system}) ceph ceph-client;
+      })
+    ];
+
+    # Ceph runs as host daemons, outside k3s — the only arrangement in which
+    # containerd's image store can live on an RBD. See homelab/nixos/ceph/.
+    yolab.ceph = {
+      enable = true;
+      fsid = cephCfg.fsid or (throw "[ceph] fsid is required in config.toml");
+      monAddr = s.nodeCfg.sub_ipv6_private;
+      isBootstrapNode = isFirstNode;
+      imagesStore.enable = true;
+    };
 
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
@@ -507,16 +538,18 @@ in
         kubernetes-helm # apps are Helm charts; local-api shells out to `helm`
       ];
 
-    # ── Rook / Ceph ───────────────────────────────────────────────────────────
+    # ── Ceph ──────────────────────────────────────────────────────────────────
 
-    # Ceph OSD containers run as uid/gid 167 (ceph:ceph) inside the pod.
-    # Declare the group on the host so udev can reference it by name.
-    users.groups.ceph = { gid = 167; };
+    # The ceph group is no longer declared here. It used to be pinned to gid 167
+    # to match the uid/gid *inside* Rook's OSD containers, so udev could grant
+    # those pods access by name. Ceph now runs as host daemons, so
+    # services.ceph owns the user and group (gid 288) and declaring it here as
+    # well is a conflicting definition that fails evaluation outright.
 
     # Any whole-disk block device (not a partition, loop, or dm volume) that
     # appears or changes gets group ownership set to "ceph" with mode 0660.
     # This fires on every connect/reconnect, so hot-plugged USB drives and
-    # newly provisioned disks are automatically accessible to Rook OSD pods
+    # newly provisioned disks are readable by the host's ceph-osd daemons
     # without declaring them individually.
     services.udev.extraRules = ''
       SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL!="loop*", KERNEL!="dm-*", GROUP="ceph", MODE="0660"
@@ -532,11 +565,12 @@ in
       # directory must exist before k3s's first write, hence the `d` rule.
       "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0700 root root -"
       "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-yolab-image-gc.conf     - - - - ${./k3s/kubelet-image-gc.yaml}"
+      # Rook's operator still runs — it owns ceph-csi, which is what backs PVCs —
+      # but it no longer runs the Ceph cluster itself. The CephCluster/
+      # CephFilesystem manifests are deliberately NOT applied here: Ceph is a
+      # host daemon now (homelab/nixos/ceph/), because a mon that is a pod makes
+      # an RBD-backed containerd store impossible. See that module's header.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster.yaml               - - - - ${./rook/cluster.yaml}"
-      # Applies norebalance OSD flag after the cluster is ready. restartPolicy:OnFailure
-      # retries until Ceph is up; ttlSecondsAfterFinished cleans it up after success.
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-cluster-init.yaml          - - - - ${./rook/cluster-init-job.yaml}"
       # external-snapshotter: CRDs + RBAC must be applied before the controller.
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
