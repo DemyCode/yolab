@@ -317,12 +317,7 @@ async fn publish_local(node: &str) -> Result<()> {
     } else {
         HashMap::new()
     };
-    // Enrich meta with resolved osd_ids so the UI can display them.
-    for (d_id, &osd_id) in &disk_to_osd {
-        if let Some(m) = meta.get_mut(d_id) {
-            m["osd_id"] = json!(osd_id);
-        }
-    }
+    mark_known_osds(&mut meta, &disk_to_osd);
 
     let desired = read_desired().await;
 
@@ -508,6 +503,30 @@ async fn reconcile_local_osds(
     }
 
     purge_drained_osds(node, &crush_nodes, disk_to_osd).await;
+}
+
+/// Stamp every disk Ceph knows about with its OSD id, and mark it as ours.
+///
+/// `disk_meta` decides `is_our_osd` by reading a BlueStore label from offset 0,
+/// which only finds one when BlueStore was written straight to the device. Hand
+/// ceph-volume a RAW disk and it wraps it in LVM first, so the label lives on the
+/// LV inside and /dev/sdX itself reads as LVM2_member — no label. The disk was
+/// therefore reported `is_our_osd: false` while carrying `osd_id: 1`, and the UI
+/// reads that combination as "Setting up…": a healthy, fully-backfilled OSD sat
+/// pulsing forever. The system disk escaped it only because it was already an LV,
+/// so its label really is at offset 0.
+///
+/// An id from `ceph-volume lvm list` is authoritative — it comes from the LVM tags
+/// ceph-volume itself wrote — so it overrides the label sniff, including
+/// `foreign_ceph`: a disk cannot be OSD N of this cluster and another cluster's.
+fn mark_known_osds(meta: &mut HashMap<String, Value>, disk_to_osd: &HashMap<String, i64>) {
+    for (disk_id, &osd_id) in disk_to_osd {
+        if let Some(m) = meta.get_mut(disk_id) {
+            m["osd_id"] = json!(osd_id);
+            m["is_our_osd"] = json!(true);
+            m["foreign_ceph"] = json!(false);
+        }
+    }
 }
 
 /// Whether a disk switched ON must NOT be handed to `ceph-volume lvm create`,
@@ -1365,6 +1384,67 @@ mod tests {
     fn an_entry_without_a_device_is_refused() {
         assert!(refuse_osd_creation(&json!({"is_our_osd": false})).is_some());
         assert!(refuse_osd_creation(&json!({"device": ""})).is_some());
+    }
+
+    // ── mark_known_osds ───────────────────────────────────────────────────────
+
+    /// The live bug: ceph-volume wraps a raw disk in LVM, so /dev/sdb has no
+    /// BlueStore label at offset 0 and disk_meta reports is_our_osd:false — even
+    /// though Ceph knows it as osd.1. The UI renders ON + connected + !is_our_osd
+    /// as "Setting up…", so a fully-backfilled OSD pulsed forever.
+    #[test]
+    fn a_disk_ceph_knows_about_is_marked_as_ours() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "dev-sdb".to_string(),
+            json!({"device": "sdb", "is_our_osd": false, "foreign_ceph": false, "osd_id": null}),
+        );
+        let map = HashMap::from([("dev-sdb".to_string(), 1i64)]);
+
+        mark_known_osds(&mut meta, &map);
+
+        assert_eq!(meta["dev-sdb"]["osd_id"], json!(1));
+        assert_eq!(
+            meta["dev-sdb"]["is_our_osd"],
+            json!(true),
+            "an OSD id from ceph-volume is authoritative over a missing on-disk label"
+        );
+    }
+
+    /// A disk Ceph claims cannot also belong to a stranger. Leaving foreign_ceph
+    /// set would make the UI offer to erase an OSD holding live data.
+    #[test]
+    fn a_known_osd_is_never_left_marked_foreign() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "dev-sdb".to_string(),
+            json!({"device": "sdb", "is_our_osd": false, "foreign_ceph": true}),
+        );
+        mark_known_osds(&mut meta, &HashMap::from([("dev-sdb".to_string(), 4i64)]));
+        assert_eq!(meta["dev-sdb"]["foreign_ceph"], json!(false));
+        assert_eq!(meta["dev-sdb"]["is_our_osd"], json!(true));
+    }
+
+    /// Disks Ceph does not know about keep whatever the label sniff decided —
+    /// that is what still catches a genuine foreign disk.
+    #[test]
+    fn disks_ceph_does_not_know_are_left_alone() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "dev-sdc".to_string(),
+            json!({"device": "sdc", "is_our_osd": false, "foreign_ceph": true}),
+        );
+        mark_known_osds(&mut meta, &HashMap::new());
+        assert_eq!(meta["dev-sdc"]["foreign_ceph"], json!(true));
+        assert_eq!(meta["dev-sdc"]["is_our_osd"], json!(false));
+    }
+
+    /// An id for a disk no longer in the inventory must not resurrect an entry.
+    #[test]
+    fn an_id_for_an_absent_disk_adds_nothing() {
+        let mut meta: HashMap<String, Value> = HashMap::new();
+        mark_known_osds(&mut meta, &HashMap::from([("dev-gone".to_string(), 9i64)]));
+        assert!(meta.is_empty());
     }
 
     // ── is_user_disk ──────────────────────────────────────────────────────────
