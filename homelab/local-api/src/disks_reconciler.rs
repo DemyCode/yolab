@@ -572,6 +572,23 @@ pub(crate) fn parse_lvm_list(raw: &str) -> Result<Vec<(String, i64)>> {
             continue;
         };
         for e in list {
+            // BOTH identities, because ceph-volume reports different ones
+            // depending on how the OSD was made:
+            //
+            //   osd on a raw disk : devices = ["/dev/sdb"]        <- matches us
+            //   osd on an LVM LV  : devices = ["/dev/sda2"]       <- the *PV*
+            //                       lv_path = "/dev/pool/ceph"    <- matches us
+            //
+            // The system OSD lives on an LV, so its `devices` entry names the
+            // physical partition underneath the volume group — an identity our
+            // inventory never holds. Parsing only `devices` left that OSD
+            // permanently unmatched: the reconciler saw it as an unprovisioned
+            // disk, never set its CRUSH weight, and every PG piled onto the
+            // other OSD. Observed live as osd.0 sitting at weight 0 with 0 PGs
+            // while the pool reported 81 undersized PGs that could never heal.
+            if let Some(lv) = e["lv_path"].as_str().filter(|p| !p.is_empty()) {
+                out.push((lv.to_string(), id));
+            }
             if let Some(devs) = e["devices"].as_array() {
                 for d in devs {
                     if let Some(path) = d.as_str().filter(|p| !p.is_empty()) {
@@ -1400,6 +1417,28 @@ mod tests {
     fn lvm_list_tolerates_a_progress_preamble() {
         let raw = "--> Falling back to /tmp/ for logging\n{\"0\": [{\"devices\": [\"/dev/sdb\"]}]}";
         assert_eq!(parse_lvm_list(raw).unwrap(), vec![("/dev/sdb".to_string(), 0)]);
+    }
+
+    /// The exact record ceph-volume produces for an OSD on an LVM logical
+    /// volume. `devices` names the PV underneath the VG, which no inventory of
+    /// ours ever holds — only `lv_path` identifies the volume we asked for.
+    #[test]
+    fn lvm_list_reports_the_lv_path_for_an_lvm_backed_osd() {
+        let raw = r#"{"0": [{"devices": ["/dev/sda2"], "lv_path": "/dev/pool/ceph"}]}"#;
+        let got = parse_lvm_list(raw).unwrap();
+        assert!(
+            got.contains(&("/dev/pool/ceph".to_string(), 0)),
+            "lv_path must be reported or the system OSD can never be matched: {got:?}"
+        );
+        // The PV is kept too — harmless, and some callers may hold that name.
+        assert!(got.contains(&("/dev/sda2".to_string(), 0)));
+    }
+
+    #[test]
+    fn lvm_list_still_reports_a_raw_disk_osd() {
+        let raw = r#"{"1": [{"devices": ["/dev/sdb"], "lv_path": "/dev/ceph-abc/osd-block-def"}]}"#;
+        let got = parse_lvm_list(raw).unwrap();
+        assert!(got.contains(&("/dev/sdb".to_string(), 1)), "{got:?}");
     }
 
     #[test]

@@ -100,13 +100,15 @@ in {
         fi
 
         while :; do
-          # HEALTH_WARN is acceptable: a single-node cluster sits in it
-          # permanently (POOL_NO_REDUNDANCY). What must be clear is *recovery* —
-          # degraded or misplaced PGs mean data is still moving, and restarting
-          # an OSD now is what turns a rolling update into an outage.
+          # Wait only for data that is actually MOVING. `undersized` and
+          # `degraded` are placement conditions, not movement: a pool with
+          # size=2 and one usable OSD is undersized forever, and gating on that
+          # blocks every update permanently — seen live, with 81 undersized PGs
+          # that could never heal and a gate that would have burned its whole
+          # timeout before refusing.
           DEGRADED=$(ceph pg stat -f json 2>/dev/null \
             | jq -r '(.pg_summary.num_pg_by_state // [])
-                     | map(select(.name | test("degraded|backfill|recovering|peering|undersized")))
+                     | map(select(.name | test("backfill|recovering|peering")))
                      | map(.num) | add // 0')
           DEGRADED=''${DEGRADED:-0}
 

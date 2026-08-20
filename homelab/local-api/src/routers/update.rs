@@ -237,23 +237,34 @@ pub async fn update(
         // for recovery to finish first. HEALTH_WARN is fine (a single-node
         // cluster lives there permanently) — what must be clear is PG movement.
         yield Ok(Event::default().data("$ yolab-ceph-wait-healthy"));
-        match std::process::Command::new("yolab-ceph-wait-healthy").arg("900").output() {
+        // tokio::process, not std::process. The blocking API parks a runtime
+        // worker for the whole wait — up to 15 minutes — and this runs inside an
+        // SSE handler. Observed live: a stuck gate left local-api listening on
+        // :3001 but answering nothing, so the whole UI went blank behind a 502.
+        match tokio::process::Command::new("yolab-ceph-wait-healthy")
+            .arg("300")
+            .output()
+            .await
+        {
             Ok(o) if o.status.success() => {
                 yield Ok(Event::default().data(format!(
                     "[INFO] {}", String::from_utf8_lossy(&o.stdout).trim()
                 )));
             }
             Ok(o) => {
-                // Refuse rather than proceed: a half-migrated Ceph upgrade on an
-                // unhealthy cluster is far harder to recover than a deferred one.
+                // Warn and continue rather than refuse. A cluster can sit
+                // degraded indefinitely for reasons an update would FIX (a bad
+                // config, a stuck daemon), so treating "not healthy" as "never
+                // update" makes the platform unrepairable from the UI — the
+                // opposite of safe.
                 yield Ok(Event::default().data(format!(
-                    "[ERROR] Ceph is still recovering, update postponed: {}",
+                    "[WARN] Ceph is not fully healthy: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
                 )));
-                return;
+                yield Ok(Event::default().data(
+                    "[WARN] continuing anyway — OSDs are not restarted by a rebuild"
+                ));
             }
-            // Missing binary (e.g. a node that predates this) must not wedge
-            // updates entirely — that would make the fix unshippable.
             Err(e) => {
                 yield Ok(Event::default().data(format!(
                     "[WARN] could not run the Ceph health gate ({e}) — continuing"
