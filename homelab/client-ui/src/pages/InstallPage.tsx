@@ -51,9 +51,25 @@ interface ConfigSchema {
   required?: string[];
 }
 
+/**
+ * The API already hands us the config subtree, not the whole values schema:
+ * `read_chart` (routers/apps.rs) stores `values.schema.json`'s
+ * `properties.config` as the app's `schema`. Unwrapping `properties.config`
+ * again here found nothing and fell through to `{}`, so the form rendered ZERO
+ * fields and posted `config: {}` — every app installed with none of its options
+ * set, and no subdomain, which left the gateway crash-looping on a blank FQDN.
+ *
+ * Tolerant of both shapes so a chart or an older node that still sends the full
+ * values schema keeps working.
+ */
 function configSchema(schema: object | undefined): ConfigSchema {
-  const s = schema as { properties?: { config?: ConfigSchema } } | undefined;
-  return s?.properties?.config ?? {};
+  if (!schema) return {};
+  const s = schema as ConfigSchema & { properties?: { config?: ConfigSchema } };
+  const nested = s.properties?.config;
+  if (nested && typeof nested === "object" && "properties" in nested) {
+    return nested;
+  }
+  return s.properties ? s : {};
 }
 
 /** Secret-ish names, used to decide what we can generate on the user's behalf. */
