@@ -39,6 +39,21 @@ spec:
       - name: metube
         image: ghcr.io/alexta69/metube:latest@sha256:9c23af6491bea0761400d7f80f25cfe001847c55b66d20e32ceb17f9527afd29
         imagePullPolicy: IfNotPresent
+        env:
+          # MeTube defaults to HOST=0.0.0.0, the IPv4 wildcard, which does not
+          # accept IPv6 connections. This cluster is IPv6-primary
+          # (cluster-cidr fd00:42::/56), so pod IPs are IPv6 and both probes
+          # dial one — they got "connection refused", the liveness probe kept
+          # killing a perfectly healthy process, and the app crash-looped
+          # forever while its own log said it had started fine.
+          #
+          # "::" is the IPv6 wildcard and, with the default
+          # net.ipv6.bindv6only=0, still accepts IPv4-mapped connections, so
+          # this is dual-stack rather than a swap of one family for the other.
+          # Verified on a live pod: "INFO:main:Listening on :::8081",
+          # metube ready=true, restarts back to 0.
+          - name: HOST
+            value: "::"
         readinessProbe:
           tcpSocket:
             port: 8081
