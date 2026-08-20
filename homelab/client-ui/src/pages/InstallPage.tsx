@@ -5,18 +5,15 @@ import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
-import {
-  Field,
-  GeneratedSecret,
-  Input,
-  Select,
-  Toggle,
-} from "@/components/ui/input";
+// GeneratedSecret / Select / Toggle are gone from here: RJSF renders those
+// through the widgets in components/form, chosen by the chart's own uiSchema.
+import { Field, Input } from "@/components/ui/input";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import { generateSecret } from "@/lib/format";
 import Form from "@rjsf/core";
+import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { widgets } from "@/components/form/widgets";
 import { templates } from "@/components/form/templates";
@@ -169,14 +166,6 @@ export function InstallPage() {
   const instanceName = nameEdit ?? suggestedName;
   const isCopy = instanceName !== appId;
 
-  const addressKey = useMemo(
-    () =>
-      Object.entries(schema.properties ?? {}).find(
-        ([, p]) => p.format === "tunnel",
-      )?.[0],
-    [schema.properties],
-  );
-
   // ── What RJSF renders ─────────────────────────────────────────────────────
   //
   // The schema comes straight from the chart. The uiSchema is the chart's own
@@ -196,8 +185,12 @@ export function InstallPage() {
     [schema.properties],
   );
 
+  // Cast at the boundary: ConfigSchema is a deliberately narrow local view of
+  // the handful of JSON Schema this catalog uses, while RJSF wants the full
+  // JSONSchema7. The value really is a JSON Schema — it came from the chart —
+  // so this is a widening, not a lie.
   const rjsfSchema = useMemo(
-    () => ({ type: "object" as const, ...schema }),
+    () => ({ type: "object", ...schema }) as RJSFSchema,
     [schema],
   );
 
@@ -564,25 +557,6 @@ export function InstallPage() {
             />
           </Field>
 
-          {addressField && (
-            <Field
-              label="Web address"
-              help={`Your app will live at ${subdomain || "…"}.${domain.data?.domain ?? ""}`}
-            >
-              <Input
-                value={subdomain}
-                onChange={(e) =>
-                  // A subdomain is a DNS label, so anything the keyboard can
-                  // produce that DNS cannot is dropped as it is typed rather
-                  // than rejected after they press Install.
-                  setValue(
-                    addressField[0],
-                    e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                  )
-                }
-              />
-            </Field>
-          )}
         </div>
       </Card>
 
