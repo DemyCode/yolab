@@ -113,15 +113,30 @@ in {
           --from-literal=ceph-secret="$ADMIN_KEY" \
           --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-        # Mon endpoints, in the two shapes Rook and ceph-csi each expect.
         CSI_CFG=$(jq -nc --arg mon "$MON_ADDR" \
           '[{clusterID:"${ns}",monitors:[$mon],cephFS:{subvolumeGroup:""},rbd:{}}]')
+
+        # Mon endpoints for Rook's own bookkeeping.
         kubectl create configmap rook-ceph-mon-endpoints -n ${ns} \
           --from-literal=data="${host}=$MON_ADDR" \
           --from-literal=maxMonId=0 \
           --from-literal=mapping='{}' \
           --from-literal=csi-cluster-config-json="$CSI_CFG" \
           --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+        # The one the CSI drivers ACTUALLY read. Both plugin pods mount
+        # `rook-ceph-csi-config` as ceph-csi-config; rook-ceph-mon-endpoints is
+        # not mounted by them at all. Writing only the latter left this at "[]",
+        # and every PVC failed with
+        #   missing configuration for cluster ID "rook-ceph"
+        # Patched rather than replaced: Rook owns this ConfigMap and puts other
+        # keys in it, and it does not fight us over this one.
+        kubectl patch configmap rook-ceph-csi-config -n ${ns} --type merge \
+          -p "$(jq -nc --arg c "$CSI_CFG" '{data:{"csi-cluster-config-json":$c}}')" \
+          >/dev/null 2>&1 \
+          || kubectl create configmap rook-ceph-csi-config -n ${ns} \
+               --from-literal=csi-cluster-config-json="$CSI_CFG" \
+               --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
         echo "published Ceph credentials for fsid $FSID, mon $MON_ADDR"
       '';

@@ -94,8 +94,26 @@ in {
         # jq, not grep: matching '"name":"x"' in raw JSON silently stops working
         # the day ceph emits a space after the colon, and the failure mode is
         # re-running `fs new` on an existing filesystem.
+        # ceph-csi puts every volume in a subvolume group, defaulting to "csi"
+        # when the StorageClass names none, and does NOT create it — Rook used to,
+        # as part of managing the filesystem. Without it every PVC fails with
+        #   rados: ret=-2 ... "subvolume group 'csi' does not exist"
+        #
+        # Ensured BEFORE the early return below, and separately from filesystem
+        # creation: on any cluster that already has the filesystem — every
+        # existing install — that return would otherwise skip this forever.
+        ensure_subvolumegroup() {
+          if ceph fs subvolumegroup ls ${cfg.name} -f json 2>/dev/null \
+             | jq -e 'any(.[]; .name == "csi")' >/dev/null; then
+            return 0
+          fi
+          echo "creating subvolume group csi in ${cfg.name}"
+          ceph fs subvolumegroup create ${cfg.name} csi
+        }
+
         if ceph fs ls -f json 2>/dev/null | jq -e --arg n ${cfg.name} 'any(.[]; .name == $n)' >/dev/null; then
           echo "${cfg.name} already exists"
+          ensure_subvolumegroup
           exit 0
         fi
 
@@ -112,6 +130,12 @@ in {
 
         ceph fs new ${cfg.name} ${cfg.name}-metadata ${cfg.name}-data0 --force
         echo "created CephFS ${cfg.name}"
+
+        # ceph-csi puts every volume in a subvolume group and defaults to "csi"
+        # when the StorageClass names none. It does NOT create that group — Rook
+        # used to, as part of managing the filesystem. Without it every PVC fails
+        # with: rados: ret=-2 ... "subvolume group 'csi' does not exist".
+        ensure_subvolumegroup
       '';
     };
 
