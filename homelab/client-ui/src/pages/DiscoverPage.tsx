@@ -108,7 +108,7 @@ export function DiscoverPage() {
   return (
     <Page
       wide
-      title="Add an app"
+      title="Add a service"
       subtitle="Everything here runs at home, on your own machines."
     >
       <div className="relative mb-4">

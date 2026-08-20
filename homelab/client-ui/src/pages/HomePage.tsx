@@ -79,7 +79,7 @@ export function HomePage() {
     <Page wide>
       <header className="mb-6">
         <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
-          Your apps
+          Your services
         </h1>
         <p className="mt-1 text-sm text-fg-muted">
           Everything running at home. Tap one to open it.
