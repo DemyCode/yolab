@@ -803,6 +803,24 @@ async fn auto_register_all_disks(
 /// handled by the kernel rather than manual prefix matching on device names.
 /// Disks WITH partition children are OS/boot disks — excluded here so they
 /// never appear in the Ceph disk list.
+/// Whether a block device is a real disk a user could switch on, rather than
+/// something the system created for its own use.
+///
+/// lsblk reports several virtual devices as `type: "disk"` with no partitions,
+/// so the type check alone lets them through. The one that matters is **rbd**:
+/// /dev/rbd0 is our own container image store, mapped from the images pool. It
+/// showed up on the Storage page as an activatable 303 GB disk, and switching it
+/// on would have run `ceph-volume lvm create` over the image store — destroying
+/// it. `refuse_osd_creation` would NOT have caught that: rbd0 carries an xfs
+/// filesystem, not a BlueStore label, so it reads as a blank disk.
+///
+/// zram/zd (ZFS zvols), md (software RAID) and dm (LVM/crypt mappings) are
+/// excluded for the same reason — none is a physical disk a user plugged in.
+fn is_user_disk(name: &str) -> bool {
+    const VIRTUAL_PREFIXES: [&str; 6] = ["rbd", "loop", "zram", "zd", "md", "dm-"];
+    !VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
 fn get_devices() -> Vec<String> {
     let out = std::process::Command::new("lsblk")
         .args(["-J", "-o", "NAME,TYPE"])
@@ -818,6 +836,9 @@ fn get_devices() -> Vec<String> {
             }
             let name = dev["name"].as_str().unwrap_or("").to_string();
             if name.is_empty() {
+                continue;
+            }
+            if !is_user_disk(&name) {
                 continue;
             }
             let has_parts = dev["children"].as_array()
@@ -1344,6 +1365,41 @@ mod tests {
     fn an_entry_without_a_device_is_refused() {
         assert!(refuse_osd_creation(&json!({"is_our_osd": false})).is_some());
         assert!(refuse_osd_creation(&json!({"device": ""})).is_some());
+    }
+
+    // ── is_user_disk ──────────────────────────────────────────────────────────
+
+    /// The one that bites. /dev/rbd0 is the container image store this very
+    /// module helps set up; lsblk calls it a partitionless "disk", so it was
+    /// offered on the Storage page as something to activate. Switching it on
+    /// runs ceph-volume over it. refuse_osd_creation does not save us here —
+    /// rbd0 holds an xfs filesystem, not a BlueStore label, so it looks blank.
+    #[test]
+    fn an_rbd_mapping_is_never_offered_as_a_user_disk() {
+        assert!(!is_user_disk("rbd0"));
+        assert!(!is_user_disk("rbd12"));
+    }
+
+    #[test]
+    fn other_virtual_devices_are_excluded_too() {
+        for n in ["loop0", "zram0", "zd16", "md0", "dm-1"] {
+            assert!(!is_user_disk(n), "{n} should not be offered as a user disk");
+        }
+    }
+
+    #[test]
+    fn real_disks_are_still_offered() {
+        for n in ["sda", "sdb", "nvme0n1", "vda", "hda"] {
+            assert!(is_user_disk(n), "{n} is a real disk and must stay selectable");
+        }
+    }
+
+    /// Guard against an over-broad prefix: "sd*" must not be caught by "zd",
+    /// and a real disk whose name merely contains a prefix is still a disk.
+    #[test]
+    fn the_prefixes_do_not_over_match() {
+        assert!(is_user_disk("sdz"));
+        assert!(is_user_disk("nvme1n1"));
     }
 
     // ── canonical_device ──────────────────────────────────────────────────────
