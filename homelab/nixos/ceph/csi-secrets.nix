@@ -93,9 +93,24 @@ in {
         #     type: Invalid value: "kubernetes.io/rook": field is immutable
         # So match Rook's type. Same lesson as the cephx caps above: where Rook
         # also manages an object, conform to its shape rather than compete.
+        # A Secret's type cannot be changed in place, so an existing one of the
+        # wrong type has to be replaced rather than patched. Without this the
+        # unit fails permanently on any cluster that already has Opaque secrets
+        # from an earlier version — which is exactly what happened: the rebuild
+        # itself reported the unit as failed.
+        replace_if_wrong_type() {
+          local have
+          have=$(kubectl get secret "$1" -n ${ns} -o jsonpath='{.type}' 2>/dev/null || true)
+          if [ -n "$have" ] && [ "$have" != "kubernetes.io/rook" ]; then
+            echo "secret $1 has type $have, recreating as kubernetes.io/rook"
+            kubectl delete secret "$1" -n ${ns} >/dev/null 2>&1 || true
+          fi
+        }
+
         apply_secret() {
           # `create --dry-run | apply` so this is an upsert: the unit re-runs on
           # every boot and must converge, not fail on "already exists".
+          replace_if_wrong_type "$1"
           kubectl create secret generic "$1" -n ${ns} \
             --type=kubernetes.io/rook \
             --from-literal="$2=$3" --from-literal="$4=$5" \
@@ -113,6 +128,7 @@ in {
 
         # The operator reads fsid + admin credentials from here.
         ADMIN_KEY=$(ceph auth get-key client.admin)
+        replace_if_wrong_type rook-ceph-mon
         kubectl create secret generic rook-ceph-mon -n ${ns} \
           --type=kubernetes.io/rook \
           --from-literal=cluster-name=${ns} \
