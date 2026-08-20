@@ -26,6 +26,9 @@ pub struct JoinInfo {
     pub server_addr: String,
     pub account_token: String,
     pub platform_api_url: String,
+    /// The cluster's Ceph fsid, so a joining node builds against the same
+    /// storage cluster rather than bootstrapping a second, isolated one.
+    pub ceph_fsid: String,
 }
 
 /// Returns an error (not an empty list) when the cluster can't be reached.
@@ -144,10 +147,22 @@ pub async fn join_info(State(state): State<AppState>) -> Result<Json<JoinInfo>> 
         .and_then(|v| v.as_str()).unwrap_or("").to_string();
     let platform_api_url = tunnel.get("platform_api_url")
         .and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Every node in a Ceph cluster shares one fsid. A joining node cannot
+    // generate its own: it is baked into each OSD's BlueStore superblock, and a
+    // node built with the wrong value cannot authenticate to the mons at all.
+    // So it travels with the k3s token, which has exactly the same property.
+    let ceph_fsid = table
+        .get("ceph")
+        .and_then(|c| c.as_table())
+        .and_then(|c| c.get("fsid"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     Ok(Json(JoinInfo {
         k3s_token,
         server_addr: format!("https://[{sub_ipv6_private}]:6443"),
         account_token,
         platform_api_url,
+        ceph_fsid,
     }))
 }

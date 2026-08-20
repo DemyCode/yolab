@@ -31,3 +31,10 @@ node_id = "ci"
 role = "server"
 token = "ci-token"
 server_addr = ""
+
+# Ceph runs as host daemons now, so the NixOS config requires a cluster fsid
+# and throws without one. A fixed value is correct here precisely because this
+# stub never builds a real cluster — on a real install the installer generates
+# one per cluster and it must never change afterwards.
+[ceph]
+fsid = "00000000-0000-4000-8000-000000000000"

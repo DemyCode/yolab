@@ -539,25 +539,26 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
 
 /// WaitingForStorage: a single non-blocking check of whether CephFS is mountable right
 /// now. Stays in this phase until it observes Ready, or until the deadline passes.
+///
+/// This used to read `.status.phase` off Rook's CephFilesystem CR. That CR no
+/// longer exists — CephFS is created on the host by yolab-cephfs-init — so
+/// readiness is asked of Ceph directly: the filesystem must exist and have an
+/// MDS that is actually `active`. A filesystem with no active MDS is present in
+/// `fs ls` but cannot be mounted, so checking existence alone would let a
+/// restore start against storage that then fails to bind.
 async fn step_waiting_storage(name: &str, run: &Value) {
-    let out = Command::new("kubectl")
-        .args([
-            "get",
-            "cephfilesystem",
-            "yolab-fs",
-            "-n",
-            "rook-ceph",
-            "-o",
-            "jsonpath={.status.phase}",
-        ])
-        .output()
-        .await;
-    let phase = match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => String::new(),
+    let ready = match crate::ceph_cli::ceph_json(&["fs", "status", "yolab-fs"]).await {
+        Ok(v) => v["mdsmap"]
+            .as_array()
+            .map(|m| {
+                m.iter()
+                    .any(|d| d["state"].as_str().unwrap_or("") == "active")
+            })
+            .unwrap_or(false),
+        Err(_) => false,
     };
-    if phase != "Ready" {
-        tracing::info!("restore-run {name}: CephFilesystem phase={phase:?} — waiting for Ready");
+    if !ready {
+        tracing::info!("restore-run {name}: yolab-fs has no active MDS yet — waiting");
         return;
     }
     let _ = run; // deadline handled by the sweep

@@ -59,15 +59,23 @@ fn system_uptime_secs() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+/// True while a disk is actively being turned into an OSD.
+///
+/// Rook signalled this with `rook-ceph-osd-prepare` Pods. There are none now:
+/// the reconciler runs `ceph-volume` in-process. A newly created OSD is briefly
+/// `in` but not yet `up`, so a gap between the two counts is the equivalent
+/// signal — it keeps the UI showing "provisioning" instead of "degraded" while
+/// a disk is being added.
 async fn osd_provisioning_active() -> bool {
-    kubectl::run(&[
-        "get", "pods", "-n", "rook-ceph",
-        "-l", "app=rook-ceph-osd-prepare",
-        "-o", "jsonpath={.items[*].status.phase}",
-    ])
-    .await
-    .map(|s| s.split_whitespace().any(|p| p == "Running" || p == "Pending"))
-    .unwrap_or(false)
+    crate::ceph_cli::ceph_json(&["osd", "stat"])
+        .await
+        .ok()
+        .map(|v| {
+            let up = v["num_up_osds"].as_u64().unwrap_or(0);
+            let in_ = v["num_in_osds"].as_u64().unwrap_or(0);
+            in_ > up
+        })
+        .unwrap_or(false)
 }
 
 pub async fn cluster_health() -> Json<ClusterHealth> {
@@ -76,10 +84,10 @@ pub async fn cluster_health() -> Json<ClusterHealth> {
 
 async fn compute_cluster_health() -> ClusterHealth {
     let provisioning = osd_provisioning_active().await;
-    let raw = match kubectl::run(&[
-        "get", "cephcluster", "-n", "rook-ceph", "rook-ceph",
-        "-o", "jsonpath={.status.ceph.health}{\"\\n\"}{.status.ceph.details}",
-    ]).await {
+    // Straight from the mon: Ceph runs as host daemons, so there is no Rook CR
+    // status to read. Formatted as "<HEALTH_X>\n<details-json>" to keep the
+    // existing parser below unchanged.
+    let raw = match ceph_health_and_details().await {
         Ok(s) => s,
         Err(_) => {
             let starting = system_uptime_secs() < 900;
@@ -323,34 +331,40 @@ pub async fn ceph_status() -> Json<CephStatus> {
     }
 }
 
+/// Cluster status plus OSD totals.
+///
+/// Both used to be assembled from Rook: `.status` off the CephCluster CR and a
+/// count of `app=rook-ceph-osd` Deployments. Neither exists now, and counting
+/// Deployments was always a proxy anyway — it reported how many OSD *pods* Rook
+/// had scheduled, not how many OSDs Ceph actually had up. This asks Ceph.
+///
+/// Name kept so callers are untouched; nothing about it is k8s any more.
 pub async fn cluster_status_from_k8s()
 -> anyhow::Result<(serde_json::Map<String, serde_json::Value>, u32, u32)> {
-    let status_str = kubectl::run(&[
-        "get", "cephcluster", "-n", "rook-ceph", "rook-ceph", "-o", "jsonpath={.status}",
-    ]).await?;
-    let status: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&status_str).unwrap_or_default();
+    let stat = crate::ceph_cli::ceph_json(&["osd", "stat"]).await?;
+    let osd_total = stat["num_osds"].as_u64().unwrap_or(0) as u32;
+    let osd_ready = stat["num_up_osds"].as_u64().unwrap_or(0) as u32;
 
-    let ready_str = kubectl::run(&[
-        "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
-        "-o", "jsonpath={.items[*].status.readyReplicas}",
-    ]).await.unwrap_or_default();
-
-    let osd_ready: u32 = ready_str.split_whitespace()
-        .filter_map(|s| s.parse::<u32>().ok())
-        .sum();
-
-    let items_str = kubectl::run(&[
-        "get", "deploy", "-n", "rook-ceph", "-l", "app=rook-ceph-osd",
-        "-o", "jsonpath={.items}",
-    ]).await.unwrap_or_default();
-
-    let osd_total = serde_json::from_str::<serde_json::Value>(&items_str)
-        .ok()
-        .and_then(|v| v.as_array().map(|a| a.len() as u32))
-        .unwrap_or(0);
+    // Shaped like the old CR status so the UI contract does not change.
+    let health = crate::ceph_cli::ceph_json(&["health"]).await.unwrap_or_default();
+    let mut status = serde_json::Map::new();
+    status.insert(
+        "ceph".into(),
+        serde_json::json!({
+            "health": health["status"].as_str().unwrap_or(""),
+            "details": health.get("checks").cloned().unwrap_or(serde_json::json!({})),
+        }),
+    );
 
     Ok((status, osd_total, osd_ready))
+}
+
+/// "<HEALTH_X>\n<details-json>", the shape compute_cluster_health parses.
+async fn ceph_health_and_details() -> anyhow::Result<String> {
+    let h = crate::ceph_cli::ceph_json(&["health", "detail"]).await?;
+    let status = h["status"].as_str().unwrap_or("");
+    let checks = h.get("checks").cloned().unwrap_or(serde_json::json!({}));
+    Ok(format!("{status}\n{checks}"))
 }
 
 // ── Storage detail ─────────────────────────────────────────────────────────────
@@ -410,68 +424,53 @@ pub struct SetReplicationReq {
     pub failure_domain: String,
 }
 
+/// Everything the Storage page needs, in one shot.
+///
+/// This used to be a ~40-line shell script piped into a Rook pod, hand-building
+/// JSON with `echo` and juggling per-call temp keyring paths so concurrent
+/// polls would not clobber each other. With Ceph on the host it is just a
+/// handful of subprocess calls, so all of that is gone: no pod discovery, no
+/// keyring copying, no /tmp collisions, and no shell quoting to get wrong.
 async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
-    let pod = kubectl::ceph_exec_pod().await?;
+    use crate::ceph_cli::ceph_json;
 
-    let mon_raw = kubectl::run(&[
-        "get", "cm", "-n", "rook-ceph", "rook-ceph-mon-endpoints",
-        "-o", "jsonpath={.data.data}",
-    ]).await.unwrap_or_default();
-    let mon_host = mon_raw.split('=').nth(1).unwrap_or("").trim().to_string();
-    anyhow::ensure!(!mon_host.is_empty(), "cannot find mon endpoint");
+    let osd_df = ceph_json(&["osd", "df", "tree"]).await.unwrap_or_default();
+    let pool_detail = ceph_json(&["osd", "pool", "ls", "detail"]).await.unwrap_or_default();
+    let ceph_df = ceph_json(&["df"]).await.unwrap_or_default();
+    let crush_rules = ceph_json(&["osd", "crush", "rule", "dump"]).await.unwrap_or_default();
 
-    let kb64 = kubectl::run(&[
-        "get", "secret", "-n", "rook-ceph", "rook-ceph-admin-keyring",
-        "-o", "jsonpath={.data.keyring}",
-    ]).await.unwrap_or_default();
-    let kb64 = kb64.trim().replace('\n', "");
-    anyhow::ensure!(!kb64.is_empty(), "cannot read admin keyring");
+    // Ask per OSD, never in bulk. `safe-to-destroy osd.a osd.b` answers "can all
+    // of these go at once?", which is nearly always false and would mark every
+    // disk unremovable.
+    let ids: Vec<i64> = ceph_json(&["osd", "ls"])
+        .await
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()))
+        .unwrap_or_default();
 
-    // Per-call unique paths: storage_detail is UI-polled, so concurrent calls
-    // would otherwise clobber each other's keyring/conf at fixed /tmp paths.
-    let uniq = format!("{:016x}", rand::random::<u64>());
-    let ck = format!("/tmp/.ck-{uniq}");
-    let cc = format!("/tmp/.cc-{uniq}");
-    let script = [
-        format!("echo '{}' | base64 -d > {ck} 2>/dev/null", kb64),
-        format!("printf '[global]\\nmon_host = {}\\n' > {cc}", mon_host),
-        format!("CEPH='ceph -c {cc} --keyring {ck} -n client.admin'"),
-        r#"echo '{"osd_df":'  "#.into(),
-        "$CEPH osd df tree -f json 2>/dev/null || echo '{}'".into(),
-        r#"echo ',"pool_detail":'"#.into(),
-        "$CEPH osd pool ls detail -f json 2>/dev/null || echo '[]'".into(),
-        r#"echo ',"ceph_df":'"#.into(),
-        "$CEPH df -f json 2>/dev/null || echo '{}'".into(),
-        r#"echo ',"crush_rules":'"#.into(),
-        "$CEPH osd crush rule dump -f json 2>/dev/null || echo '[]'".into(),
-        r#"echo ',"safe_to_destroy":'"#.into(),
-        // Query each OSD individually: "can we safely remove just this one?"
-        // Querying all at once asks "can we remove all simultaneously?" which is
-        // almost always false and gives wrong per-OSD results.
-        r#"SAFE_LIST="""#.into(),
-        r#"for OSD in $($CEPH osd ls 2>/dev/null); do"#.into(),
-        r#"  RESULT=$($CEPH osd safe-to-destroy osd.$OSD -f json 2>/dev/null)"#.into(),
-        r#"  if echo "$RESULT" | grep -q '"safe_to_destroy":\['"$OSD"'\]'; then"#.into(),
-        r#"    SAFE_LIST="${SAFE_LIST:+$SAFE_LIST,}$OSD""#.into(),
-        r#"  fi"#.into(),
-        r#"done"#.into(),
-        r#"echo "{\"safe_to_destroy\":[$SAFE_LIST]}""#.into(),
-        r#"echo ',"ok_to_stop":'"#.into(),
-        // ok-to-stop checks if losing this OSD blocks any I/O (min_size check).
-        // Exit 0 = losable (system still works), non-0 = I/O would be disrupted.
-        r#"OK_LIST="""#.into(),
-        r#"for OSD in $($CEPH osd ls 2>/dev/null); do"#.into(),
-        r#"  if $CEPH osd ok-to-stop osd.$OSD >/dev/null 2>&1; then"#.into(),
-        r#"    OK_LIST="${OK_LIST:+$OK_LIST,}$OSD""#.into(),
-        r#"  fi"#.into(),
-        r#"done"#.into(),
-        r#"echo "{\"ok_to_stop\":[$OK_LIST]}""#.into(),
-        "echo '}'".into(),
-        format!("rm -f {ck} {cc}"),
-    ].join("\n");
+    let mut safe_to_destroy = Vec::new();
+    let mut ok_to_stop = Vec::new();
+    for id in ids {
+        if crate::ceph_cli::osd_safe_to_destroy(id).await {
+            safe_to_destroy.push(id);
+        }
+        // ok-to-stop exits 0 when losing this OSD would not block I/O.
+        if crate::ceph_cli::ceph(&["osd", "ok-to-stop", &format!("osd.{id}")])
+            .await
+            .is_ok()
+        {
+            ok_to_stop.push(id);
+        }
+    }
 
-    let raw = kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await?;
-    serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("JSON parse: {e}\nRaw: {}", &raw[..raw.len().min(500)]))
+    Ok(serde_json::json!({
+        "osd_df": osd_df,
+        "pool_detail": pool_detail,
+        "ceph_df": ceph_df,
+        "crush_rules": crush_rules,
+        "safe_to_destroy": { "safe_to_destroy": safe_to_destroy },
+        "ok_to_stop": { "ok_to_stop": ok_to_stop },
+    }))
 }
 
 fn failure_domain_from_rule(rule: &serde_json::Value) -> String {
@@ -613,51 +612,73 @@ pub async fn set_replication(
     let size = req.size;
     let min_size = req.min_size;
 
-    let pod = match kubectl::ceph_exec_pod().await {
+    // Create the OSD-level CRUSH rule if it does not exist yet
+    // (replicated_rule already covers the host domain).
+    let have_rules = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"])
+        .await
+        .unwrap_or_default();
+    if !have_rules.lines().any(|l| l.trim() == rule_name) {
+        if let Err(e) = crate::ceph_cli::ceph(&[
+            "osd", "crush", "rule", "create-replicated", rule_name, "default", fd,
+        ])
+        .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("create crush rule: {e}")})),
+            );
+        }
+    }
+
+    let pools_raw = match crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        }
     };
 
-    let mon_raw = kubectl::run(&[
-        "get", "cm", "-n", "rook-ceph", "rook-ceph-mon-endpoints",
-        "-o", "jsonpath={.data.data}",
-    ]).await.unwrap_or_default();
-    let mon_host = mon_raw.split('=').nth(1).unwrap_or("").trim().to_string();
+    let size_s = size.to_string();
+    let min_size_s = min_size.to_string();
+    let mut output = String::new();
 
-    let kb64 = kubectl::run(&[
-        "get", "secret", "-n", "rook-ceph", "rook-ceph-admin-keyring",
-        "-o", "jsonpath={.data.keyring}",
-    ]).await.unwrap_or_default();
-    let kb64 = kb64.trim().replace('\n', "");
+    for pool in pools_raw.lines().map(str::trim).filter(|p| !p.is_empty()) {
+        // .nfs and .rgw.* carry stricter placement requirements and are left alone.
+        if pool.starts_with(".nfs") || pool.starts_with(".rgw") {
+            continue;
+        }
+        // The images pool is deliberately size=1 and must stay that way: every
+        // node holds its own copy of every container image, so replicating them
+        // costs 3x for data that is re-downloadable from a registry. Sweeping it
+        // up with the app-data pools would silently triple image storage.
+        if pool == "images" {
+            output.push_str("Skipped pool images (kept at size 1 by design)\n");
+            continue;
+        }
 
-    // size=1 requires --yes-i-really-mean-it; the flag is harmless for size>1
-    let really = if size == 1 { " --yes-i-really-mean-it" } else { "" };
+        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule_name]).await;
 
-    let uniq = format!("{:016x}", rand::random::<u64>());
-    let ck = format!("/tmp/.ck-{uniq}");
-    let cc = format!("/tmp/.cc-{uniq}");
-    let script = [
-        format!("echo '{}' | base64 -d > {ck} 2>/dev/null", kb64),
-        format!("printf '[global]\\nmon_host = {}\\n' > {cc}", mon_host),
-        format!("CEPH='ceph -c {cc} --keyring {ck} -n client.admin'"),
-        "set -e".into(),
-        // Create OSD-level rule if needed (replicated_rule already exists for host)
-        format!("if ! $CEPH osd crush rule ls 2>/dev/null | grep -qx {rule}; then $CEPH osd crush rule create-replicated {rule} default {fd}; fi", rule = rule_name, fd = fd),
-        // Apply to all pools including .mgr (manager state should follow replication too).
-        // Skip only .nfs and .rgw.* which have stricter placement requirements.
-        format!("for POOL in $($CEPH osd pool ls 2>/dev/null | grep -vE '^\\.(nfs|rgw)'); do"),
-        format!("  $CEPH osd pool set $POOL crush_rule {rule}", rule = rule_name),
-        format!("  $CEPH osd pool set $POOL size {size}{really}", size = size, really = really),
-        format!("  $CEPH osd pool set $POOL min_size {min_size}", min_size = min_size),
-        "  echo \"Updated pool $POOL\"".into(),
-        "done".into(),
-        format!("rm -f {ck} {cc}"),
-    ].join("\n");
+        // size=1 requires --yes-i-really-mean-it; harmless for size>1.
+        let r = if size == 1 {
+            crate::ceph_cli::ceph(&[
+                "osd", "pool", "set", pool, "size", &size_s, "--yes-i-really-mean-it",
+            ])
+            .await
+        } else {
+            crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &size_s]).await
+        };
+        if let Err(e) = r {
+            output.push_str(&format!("Pool {pool}: size failed: {e}\n"));
+            continue;
+        }
 
-    match kubectl::run(&["exec", &pod, "-n", "rook-ceph", "--", "bash", "-c", &script]).await {
-        Ok(out) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "output": out}))),
-        Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
+        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "min_size", &min_size_s]).await;
+        output.push_str(&format!("Updated pool {pool}\n"));
     }
+
+    (StatusCode::OK, Json(serde_json::json!({"ok": true, "output": output})))
 }
 
 // ── OSD lifecycle ──────────────────────────────────────────────────────────────

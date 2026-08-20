@@ -14,7 +14,6 @@ use serde_json::Value;
 use crate::{kubectl, AppState};
 
 const NS: &str = "rook-ceph";
-const CLUSTER: &str = "rook-ceph";
 const POLICY_CM: &str = "yolab-storage-policy";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -115,31 +114,29 @@ async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
 
 async fn observe() -> Topology {
     let nodes = kubectl::get_nodes().await.map(|n| n.len() as u32).unwrap_or(0);
-    // Count only deployments with at least one ready replica — dead/pending
-    // deployments that Rook hasn't cleaned up yet must not skew the OSD count.
-    let osds = kubectl::get_json(&[
-        "get", "deploy", "-n", NS, "-l", "app=rook-ceph-osd", "-o", "json",
-    ])
-    .await
-    .ok()
-    .and_then(|v| {
-        v["items"].as_array().map(|items| {
-            items
-                .iter()
-                .filter(|d| d["status"]["readyReplicas"].as_u64().unwrap_or(0) > 0)
-                .count() as u32
-        })
-    })
-    .unwrap_or(0);
+    // OSD count from Ceph itself. This used to count Rook OSD Deployments with a
+    // ready replica; there are no such Deployments now, and the count was always
+    // a proxy — it measured pods Rook had scheduled, not OSDs Ceph had up.
+    // `num_up_osds` is the quantity the replication targets actually depend on.
+    let osds = crate::ceph_cli::ceph_json(&["osd", "stat"])
+        .await
+        .ok()
+        .and_then(|v| v["num_up_osds"].as_u64())
+        .unwrap_or(0) as u32;
     Topology { nodes, osds }
 }
 
+/// Health straight from the mon rather than from a Rook CR status field.
+///
+/// Returns "" when Ceph is unreachable, which every caller must treat as "do
+/// not act" — the same discipline as an unknown fsid. Reading silence as
+/// HEALTH_OK would let a reduction proceed against a cluster that cannot answer.
 async fn cluster_health() -> String {
-    kubectl::run(&[
-        "get", "cephcluster", "-n", NS, CLUSTER, "-o", "jsonpath={.status.ceph.health}",
-    ])
-    .await
-    .unwrap_or_default()
+    crate::ceph_cli::ceph_json(&["health"])
+        .await
+        .ok()
+        .and_then(|v| v["status"].as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 // ── Controller loop ───────────────────────────────────────────────────────────
@@ -177,46 +174,44 @@ async fn tick() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Scale mon/mgr count toward the target.
+/// Reconcile the mon/mgr footprint toward the target.
 ///
-/// Raises immediately. Reductions are only applied when the cluster is healthy
-/// (HEALTH_OK or HEALTH_WARN) — a node that's temporarily offline should not
-/// collapse quorum, so we wait until the cluster is clearly stable before
-/// reducing. HEALTH_ERR blocks the entire topology tick, so a hard-error cluster
-/// never reaches this path; the guard here is for HEALTH_WARN → HEALTH_OK.
+/// Under Rook this patched `spec.mon.count` and the operator scheduled however
+/// many mon pods that implied. With Ceph on the host there is no such dial: a
+/// mon exists because a *machine* runs one (services.ceph.mon.daemons is that
+/// node's own hostname), so the count is emergent from cluster membership
+/// rather than something one node can set.
+///
+/// Growing quorum therefore means bootstrapping a mon on the joining node and
+/// calling `ceph mon add` — that belongs to the node-join flow, not here, and
+/// is not implemented yet. This function reports the gap instead of silently
+/// doing nothing, so a 3-node cluster still running one mon is visible in the
+/// logs rather than looking like healthy convergence.
 async fn apply_mon_mgr(target: &Target) {
-    let Ok(cr) = kubectl::get_json(&["get", "cephcluster", CLUSTER, "-n", NS, "-o", "json"]).await
-    else {
+    let Ok(dump) = crate::ceph_cli::ceph_json(&["mon", "dump"]).await else {
         return;
     };
-    let cur_mon = cr["spec"]["mon"]["count"].as_u64().unwrap_or(1) as u32;
-    let cur_mgr = cr["spec"]["mgr"]["count"].as_u64().unwrap_or(1) as u32;
+    let cur_mon = dump["mons"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
 
-    // Raising is always safe. Reducing requires a stable cluster.
-    let new_mon = if target.mon >= cur_mon {
-        target.mon
-    } else if cluster_health().await != "HEALTH_ERR" {
-        // Only reduce to the target — never below it. Min 1.
-        target.mon.max(1)
-    } else {
-        cur_mon // still unhealthy; don't reduce yet
-    };
-    let new_mgr = cur_mgr.max(target.mgr); // mgr is raise-only (no quorum risk)
-
-    if new_mon != cur_mon || new_mgr != cur_mgr {
-        let patch = serde_json::json!({"spec": {"mon": {"count": new_mon}, "mgr": {"count": new_mgr}}})
-            .to_string();
-        if kubectl::run(&["patch", "cephcluster", CLUSTER, "-n", NS, "--type", "merge", "-p", &patch])
-            .await
-            .is_ok()
-        {
-            tracing::info!("topology: mon {cur_mon}→{new_mon}, mgr {cur_mgr}→{new_mgr}");
-        }
+    if cur_mon < target.mon {
+        tracing::warn!(
+            "topology: {cur_mon} mon(s) for {} target — quorum will not grow until joining nodes \
+             bootstrap their own mon and run `ceph mon add`, which the node-join flow does not do yet",
+            target.mon
+        );
+    } else if cur_mon > target.mon && cluster_health().await == "HEALTH_OK" {
+        // Shrinking is safe to describe but not to automate: removing the wrong
+        // mon can cost quorum outright, and a node that is merely offline must
+        // never be interpreted as a node that left.
+        tracing::info!(
+            "topology: {cur_mon} mon(s) exceeds target {}; removal is operator-driven, not automatic",
+            target.mon
+        );
     }
 }
 
 async fn pool_size(pool: &str) -> u32 {
-    kubectl::ceph_exec(&["osd", "pool", "get", pool, "size", "-f", "json"])
+    crate::ceph_cli::ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
         .await
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -233,16 +228,16 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
 
     // Ensure the OSD-domain rule exists (the host rule ships by default).
     if target.failure_domain == "osd" {
-        let have = kubectl::ceph_exec(&["osd", "crush", "rule", "ls"]).await.unwrap_or_default();
+        let have = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"]).await.unwrap_or_default();
         if !have.lines().any(|l| l.trim() == rule) {
-            let _ = kubectl::ceph_exec(&[
+            let _ = crate::ceph_cli::ceph(&[
                 "osd", "crush", "rule", "create-replicated", rule, "default", "osd",
             ])
             .await;
         }
     }
 
-    let pools = kubectl::ceph_exec(&["osd", "pool", "ls"]).await.unwrap_or_default();
+    let pools = crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await.unwrap_or_default();
     for pool in pools
         .lines()
         .map(|l| l.trim())
@@ -262,20 +257,20 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
         };
         let min = target.min_size.min(want);
 
-        let _ = kubectl::ceph_exec(&["osd", "pool", "set", pool, "crush_rule", rule]).await;
+        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule]).await;
         if want != cur {
             let ws = want.to_string();
             let res = if want == 1 {
-                kubectl::ceph_exec(&["osd", "pool", "set", pool, "size", &ws, "--yes-i-really-mean-it"]).await
+                crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &ws, "--yes-i-really-mean-it"]).await
             } else {
-                kubectl::ceph_exec(&["osd", "pool", "set", pool, "size", &ws]).await
+                crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &ws]).await
             };
             if res.is_ok() {
                 tracing::info!("topology: pool {pool} size {cur}→{want} (fd={})", target.failure_domain);
             }
         }
         let ms = min.to_string();
-        let _ = kubectl::ceph_exec(&["osd", "pool", "set", pool, "min_size", &ms]).await;
+        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "min_size", &ms]).await;
     }
 }
 

@@ -58,6 +58,12 @@ pub async fn ceph_json(args: &[&str]) -> Result<Value> {
 }
 
 /// `rbd <args>`.
+///
+/// Unused from Rust today: the images-store systemd units in
+/// homelab/nixos/ceph/images-store.nix drive rbd directly, because they must run
+/// before k3s and therefore before local-api exists. Kept because surfacing
+/// image-store usage on the Storage page is the obvious next consumer.
+#[allow(dead_code)]
 pub async fn rbd(args: &[&str]) -> Result<String> {
     run_bin("rbd", args).await
 }

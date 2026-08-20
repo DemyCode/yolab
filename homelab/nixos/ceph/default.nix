@@ -243,9 +243,27 @@ in {
         Restart = "on-failure";
         RestartSec = "10s";
         # Primes /var/lib/ceph/osd/ceph-%i from the LVM tags ceph-volume wrote.
-        # --no-systemd stops ceph-volume generating its own competing units;
-        # this template is the single supervisor for every OSD on the host.
-        ExecStartPre = "${pkgs.ceph}/bin/ceph-volume lvm activate --no-systemd %i";
+        #
+        # `activate` takes TWO positionals — {ID} {FSID} — and has no --osd-id
+        # flag (checked against the shipped binary, not the docs). Passing the id
+        # alone fails, so the OSD's own fsid is read back out of ceph-volume's
+        # metadata first. That metadata lives in LVM tags, so this works with no
+        # mon reachable, which matters because this runs during boot.
+        ExecStartPre = pkgs.writeShellScript "yolab-ceph-osd-activate" ''
+          set -euo pipefail
+          export PATH=${lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq])}:$PATH
+          OSD_ID="$1"
+          FSID=$(ceph-volume lvm list "$OSD_ID" --format json 2>/dev/null \
+            | jq -r --arg id "$OSD_ID" '.[$id][0].tags["ceph.osd_fsid"] // empty')
+          if [ -z "$FSID" ]; then
+            echo "osd.$OSD_ID: no ceph-volume metadata found for it on this host" >&2
+            exit 1
+          fi
+          # --no-systemd stops ceph-volume generating its own competing units;
+          # this template is the single supervisor for every OSD on the host.
+          exec ceph-volume lvm activate --no-systemd "$OSD_ID" "$FSID"
+        ''
+        + " %i";
         ExecStart = "${pkgs.ceph}/bin/ceph-osd -f -i %i --setuser ceph --setgroup ceph";
       };
     };

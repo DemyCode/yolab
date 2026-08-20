@@ -25,6 +25,9 @@ in
   imports = [
     ./ceph
     ./ceph/images-store.nix
+    ./ceph/filesystem.nix
+    ./ceph/csi-secrets.nix
+    ./ceph/maintenance.nix
   ];
 
   # ── Module options ────────────────────────────────────────────────────────
@@ -73,6 +76,13 @@ in
       monAddr = s.nodeCfg.sub_ipv6_private;
       isBootstrapNode = isFirstNode;
       imagesStore.enable = true;
+      # CephFS behind every app PVC, and the credentials ceph-csi needs to
+      # reach it. Rook stays only to run CSI, in external mode.
+      filesystem.enable = true;
+      csiSecrets.enable = true;
+      # noout across reboots, and a health gate the update path calls before it
+      # restarts Ceph daemons.
+      maintenance.enable = true;
     };
 
     time.timeZone = s.timezone;
@@ -571,6 +581,9 @@ in
       # host daemon now (homelab/nixos/ceph/), because a mon that is a pod makes
       # an RBD-backed containerd store impossible. See that module's header.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
+      # External-mode CephCluster + the yolab-cephfs StorageClass. Replaces the
+      # old cluster.yaml, which declared mons/mgrs/OSDs that Rook no longer runs.
+      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-external.yaml              - - - - ${./rook/cluster-external.yaml}"
       # external-snapshotter: CRDs + RBAC must be applied before the controller.
       # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
