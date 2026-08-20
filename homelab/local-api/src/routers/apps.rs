@@ -210,14 +210,28 @@ fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
 
 /// The tunnel subdomain the user asked for: the value of whichever config field the
 /// chart's schema marks `format: tunnel`. wg-register needs it to claim the subdomain.
+///
+/// The field lives at `properties.config.properties.<field>`, NOT at
+/// `properties.<field>`. This used to look only at the top level, where the sole
+/// entries are the `config` and `yolab` objects themselves — so it never matched,
+/// returned "", and every install silently skipped DNS registration. wg-register
+/// then wrote an empty YOLAB_FQDN, which collapses the generated Caddyfile's
+/// `{$YOLAB_FQDN} {` into a bare `{` — Caddy reads that as a global options block
+/// and dies with the very unhelpful "unrecognized global option: reverse_proxy".
+///
+/// Both levels are searched so a flat schema keeps working.
 fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
-    schema["properties"]
-        .as_object()
-        .and_then(|props| {
-            props.iter().find_map(|(k, v)| {
-                (v["format"].as_str() == Some("tunnel")).then(|| k.clone())
-            })
+    fn tunnel_field(props: Option<&serde_json::Map<String, Value>>) -> Option<String> {
+        props?.iter().find_map(|(k, v)| {
+            (v["format"].as_str() == Some("tunnel")).then(|| k.clone())
         })
+    }
+
+    let nested = schema["properties"]["config"]["properties"].as_object();
+    let top = schema["properties"].as_object();
+
+    tunnel_field(nested)
+        .or_else(|| tunnel_field(top))
         .and_then(|f| config.get(&f).cloned())
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default()
@@ -990,6 +1004,90 @@ pub async fn pod_logs(
 
 #[cfg(test)]
 mod tests {
+
+    // ── resolve_service_name ──────────────────────────────────────────────────
+    //
+    // This decides whether an app gets a DNS record at all. When it returns "",
+    // wg-register skips registration, writes an empty YOLAB_FQDN, and the
+    // generated Caddyfile collapses to a bare `{` — Caddy then fails with
+    // "unrecognized global option: reverse_proxy", which names neither the
+    // subdomain nor the schema. Every app install was broken this way.
+
+    /// The real shape a chart's values.schema.json has: the tunnel field sits
+    /// under properties.config.properties, not at the top level.
+    fn real_schema() -> Value {
+        serde_json::json!({
+            "properties": {
+                "config": {
+                    "properties": {
+                        "subdomain": {"type": "string", "format": "tunnel"},
+                        "storage_size": {"type": "string"}
+                    }
+                },
+                "yolab": {"type": "object"}
+            }
+        })
+    }
+
+    fn cfg(pairs: &[(&str, &str)]) -> serde_json::Map<String, Value> {
+        pairs.iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect()
+    }
+
+    #[test]
+    fn the_tunnel_field_is_found_under_config_properties() {
+        assert_eq!(
+            resolve_service_name(&real_schema(), &cfg(&[("subdomain", "qbittorrent")])),
+            "qbittorrent"
+        );
+    }
+
+    /// The exact regression: top-level properties are `config` and `yolab`,
+    /// neither of which carries format:tunnel, so a top-level-only search
+    /// silently yields "".
+    #[test]
+    fn a_top_level_only_search_would_have_returned_nothing() {
+        let schema = real_schema();
+        let top_level_hit = schema["properties"].as_object().unwrap().iter().any(|(_, v)| {
+            v["format"].as_str() == Some("tunnel")
+        });
+        assert!(!top_level_hit, "the tunnel field is not at the top level — that was the bug");
+    }
+
+    /// A flat schema must keep working.
+    #[test]
+    fn a_flat_schema_is_still_supported() {
+        let schema = serde_json::json!({
+            "properties": {"subdomain": {"format": "tunnel"}}
+        });
+        assert_eq!(resolve_service_name(&schema, &cfg(&[("subdomain", "flat")])), "flat");
+    }
+
+    #[test]
+    fn a_schema_with_no_tunnel_field_yields_empty() {
+        let schema = serde_json::json!({
+            "properties": {"config": {"properties": {"storage_size": {"type": "string"}}}}
+        });
+        assert_eq!(resolve_service_name(&schema, &cfg(&[("storage_size", "1Gi")])), "");
+    }
+
+    /// Declared in the schema but absent from the user's answers: still empty,
+    /// but must not panic.
+    #[test]
+    fn a_missing_answer_yields_empty_without_panicking() {
+        assert_eq!(resolve_service_name(&real_schema(), &cfg(&[])), "");
+    }
+
+    #[test]
+    fn a_non_string_answer_yields_empty() {
+        let mut c = serde_json::Map::new();
+        c.insert("subdomain".into(), serde_json::json!(42));
+        assert_eq!(resolve_service_name(&real_schema(), &c), "");
+    }
+
+    #[test]
+    fn a_schema_with_no_properties_at_all_yields_empty() {
+        assert_eq!(resolve_service_name(&serde_json::json!({}), &cfg(&[])), "");
+    }
     use super::*;
     use serde_json::json;
 
