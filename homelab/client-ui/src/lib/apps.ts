@@ -52,6 +52,58 @@ export function appFacts(app: AppInfo) {
   );
 }
 
+export interface AppFactRow {
+  key: string;
+  label: string;
+  /** null while the value has not been scraped out of the app's logs yet. */
+  value: string | null;
+}
+
+/**
+ * Every fact this app is *expected* to publish, found or not.
+ *
+ * The chart declares its outputs up front (`outputs_spec`), but values only
+ * appear once they have been scraped from the app's logs — which can be a while
+ * after install, and never at all if the app failed to start. Rendering only
+ * what was found left the page saying "no details yet" with no clue whether it
+ * was waiting on a password, a server address, or nothing worth waiting for.
+ *
+ * So the spec drives the rows and the scraped values fill them in. Someone who
+ * installs qBittorrent sees "Temporary password" the moment the page loads and
+ * knows to wait for it, instead of wondering how they are supposed to log in.
+ *
+ * Anything scraped but not declared is appended rather than dropped: an older
+ * install may hold values from a chart version whose spec has since changed,
+ * and silently hiding a password someone still needs is worse than an extra row.
+ */
+export function appFactRows(app: AppInfo): AppFactRow[] {
+  const found = new Map(
+    (app.outputs ?? [])
+      .filter((o) => o.type !== "url" && o.type !== "hidden" && o.value)
+      .map((o) => [o.key, o]),
+  );
+
+  const rows: AppFactRow[] = [];
+  const seen = new Set<string>();
+
+  for (const spec of app.outputs_spec ?? []) {
+    if (spec.type === "url" || spec.type === "hidden") continue;
+    seen.add(spec.key);
+    const hit = found.get(spec.key);
+    rows.push({
+      key: spec.key,
+      label: hit?.label || spec.label || spec.key,
+      value: hit?.value ?? null,
+    });
+  }
+
+  for (const [key, o] of found) {
+    if (!seen.has(key)) rows.push({ key, label: o.label || key, value: o.value });
+  }
+
+  return rows;
+}
+
 /**
  * A free name for another copy of the same app.
  *

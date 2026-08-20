@@ -20,7 +20,7 @@ import { api, streamEvents } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import {
   appDisplayName,
-  appFacts,
+  appFactRows,
   appLinks,
   appState,
   catalogEntry,
@@ -268,7 +268,7 @@ export function AppDetailPage() {
   const entry = catalogEntry(app, catalog.data ?? []);
   const name = appDisplayName(app, catalog.data ?? []);
   const links = appLinks(app, domain.data?.domain ?? "");
-  const facts = appFacts(app);
+  const factRows = appFactRows(app);
   const expected = (app.outputs_spec ?? []).length;
 
   async function remove() {
@@ -382,15 +382,32 @@ export function AppDetailPage() {
       {/* Everything that is not a link: a server address to paste into a game,
           an IPv6, a generated credential. For minecraft and valheim this is
           the entire reason to open this page. */}
-      {facts.length > 0 && (
+      {factRows.length > 0 && (
         <Card className="mb-4 divide-y divide-border p-0">
-          {facts.map((f) => (
-            <CopyValue key={f.key} label={f.label} value={f.value} />
-          ))}
+          {factRows.map((f) =>
+            f.value !== null ? (
+              <CopyValue key={f.key} label={f.label} value={f.value} />
+            ) : (
+              // Declared by the chart but not scraped yet. Shown rather than
+              // hidden so the label itself tells you what is coming — "you will
+              // get a temporary password" is the answer to the only question
+              // someone has while the app is starting.
+              <div
+                key={f.key}
+                className="flex items-center justify-between gap-3 p-4"
+              >
+                <span className="text-sm text-fg-muted">{f.label}</span>
+                <span className="flex items-center gap-2 text-sm text-fg-subtle">
+                  <Spinner className="h-3 w-3" />
+                  Waiting for the app to report this…
+                </span>
+              </div>
+            ),
+          )}
         </Card>
       )}
 
-      {links.length === 0 && facts.length === 0 && expected > 0 && (
+      {links.length === 0 && factRows.length === 0 && expected > 0 && (
         <Card className="mb-4 p-5">
           <div className="flex items-center gap-3 text-sm text-fg-muted">
             {scanning ? (
