@@ -135,7 +135,11 @@ in {
         TOTAL_MB=$(ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
         WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
         MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
-        [ "$WANT_MB" -lt "$MIN_MB" ] && WANT_MB=$MIN_MB
+        # Explicit `if`, not `[ ... ] && ...`: under `set -e` that idiom exits the
+        # script with status 1 whenever the test is false and it happens to be the
+        # last statement. It is not last today, which makes it a trap for the next
+        # edit rather than a bug now.
+        if [ "$WANT_MB" -lt "$MIN_MB" ]; then WANT_MB=$MIN_MB; fi
 
         if ! rbd ls ${cfg.poolName} | grep -qx ${host}; then
           # krbd cannot map object-map/fast-diff/deep-flatten, so create with
@@ -183,13 +187,8 @@ in {
           exit 0
         fi
 
-        # Refuse to mount over a data-root that already has content on the root
-        # disk: shadowing it would strand those layers and make the node re-pull
-        # everything with no way to reclaim the hidden space.
-        if [ -d ${containerdRoot} ] && [ -n "$(ls -A ${containerdRoot} 2>/dev/null)" ] \
-           && ! mountpoint -q ${containerdRoot}; then
-          echo "WARNING: ${containerdRoot} holds data on the root disk." >&2
-          echo "Move or delete it to let the RBD-backed store take over." >&2
+        if mountpoint -q ${containerdRoot}; then
+          echo "${containerdRoot} is already mounted"
           exit 0
         fi
 
@@ -206,16 +205,64 @@ in {
         # image, not silently discard every pulled layer.
         if ! blkid "$DEV" >/dev/null 2>&1; then
           echo "no filesystem on $DEV, creating ${cfg.filesystem}"
-          ${
+          if ! ${
           if cfg.filesystem == "xfs"
           then "mkfs.xfs -f -m crc=1 \"$DEV\""
           else "mkfs.ext4 -q -m0 \"$DEV\""
-        }
+        }; then
+            echo "mkfs failed — leaving containerd on the root disk" >&2
+            exit 0
+          fi
         fi
 
         mkdir -p ${containerdRoot}
-        if ! mountpoint -q ${containerdRoot}; then
-          mount "$DEV" ${containerdRoot}
+
+        # One-time migration off the root disk.
+        #
+        # On every boot after the first, k3s has already populated this directory
+        # on root — the images pool does not exist until a disk is switched on,
+        # which cannot happen before k3s runs. Mounting straight over it would
+        # strand those layers: still consuming root, invisible, unreclaimable.
+        # An earlier version refused to mount in that case, which meant the RBD
+        # could never take over at all.
+        #
+        # Safe to do here because this unit runs Before=k3s, so containerd is not
+        # running and nothing holds these files open.
+        if [ -n "$(ls -A ${containerdRoot} 2>/dev/null)" ]; then
+          echo "migrating the existing image store off the root disk"
+          STAGE=$(mktemp -d)
+          if ! mount "$DEV" "$STAGE"; then
+            echo "could not mount $DEV for migration — staying on the root disk" >&2
+            rmdir "$STAGE" 2>/dev/null || true
+            exit 0
+          fi
+          # -a preserves hardlinks, xattrs and sparseness, all of which
+          # containerd's content store relies on.
+          if cp -a ${containerdRoot}/. "$STAGE"/; then
+            umount "$STAGE"
+            rmdir "$STAGE" 2>/dev/null || true
+            # Remove and recreate rather than `rm -rf <dir>/*`: the glob misses
+            # dotfiles, which would leave stale state behind for containerd to
+            # trip over. (Do not write $\{dir:?} here — bash's guard syntax is
+            # also Nix interpolation, and Nix wins, emitting a literal relative
+            # path that silently deletes nothing.)
+            rm -rf ${containerdRoot}
+            mkdir -p ${containerdRoot}
+            echo "migration complete, freed the copy on root"
+          else
+            # Most likely the image is smaller than the existing store. Roll
+            # back rather than mount a half-populated store, which containerd
+            # would read as a corrupt content store.
+            echo "copy failed (is the RBD large enough?) — staying on the root disk" >&2
+            umount "$STAGE" 2>/dev/null || true
+            rmdir "$STAGE" 2>/dev/null || true
+            exit 0
+          fi
+        fi
+
+        if ! mount "$DEV" ${containerdRoot}; then
+          echo "mount failed — leaving containerd on the root disk" >&2
+          exit 0
         fi
         echo "containerd data-root now on $(findmnt -no SOURCE ${containerdRoot})"
       '';
@@ -257,7 +304,11 @@ in {
         TOTAL_MB=$(ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
         WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
         MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
-        [ "$WANT_MB" -lt "$MIN_MB" ] && WANT_MB=$MIN_MB
+        # Explicit `if`, not `[ ... ] && ...`: under `set -e` that idiom exits the
+        # script with status 1 whenever the test is false and it happens to be the
+        # last statement. It is not last today, which makes it a trap for the next
+        # edit rather than a bug now.
+        if [ "$WANT_MB" -lt "$MIN_MB" ]; then WANT_MB=$MIN_MB; fi
 
         # Only ever grow. Shrinking a mounted filesystem under a running
         # containerd would corrupt it, and a pool that shrank (a disk was

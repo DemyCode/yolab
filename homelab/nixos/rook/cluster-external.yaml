@@ -1,0 +1,53 @@
+# Rook in external mode.
+#
+# Ceph itself now runs as host systemd daemons (see homelab/nixos/ceph/), so
+# Rook no longer runs mons, mgrs, OSDs or the MDS. What it still does — and the
+# only reason it is kept at all — is deploy and manage ceph-csi, which is what
+# actually backs every PVC. Hand-maintaining the CSI provisioner and node
+# plugins, their RBAC, and their secrets is a meaningful chunk of work that this
+# avoids.
+#
+# `external.enable: true` tells the operator to skip all cluster management and
+# consume the credentials in the rook-ceph-mon secret / rook-ceph-mon-endpoints
+# ConfigMap instead. Those are written by the yolab-ceph-csi-secrets unit from
+# the host cluster's own keyrings — see ceph/csi-secrets.nix.
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph-external
+  namespace: rook-ceph
+spec:
+  external:
+    enable: true
+  # Must match the host cluster's data dir so any tooling that looks here agrees.
+  dataDirHostPath: /var/lib/ceph
+  # Deliberately absent: cephVersion, mon, mgr, storage, dashboard. In external
+  # mode the operator ignores them, and declaring them invites the impression
+  # that Rook is managing daemons it is not.
+---
+# CephFS-backed storage, the default for app PVCs.
+#
+# Names here are load-bearing and match what the old Rook-managed
+# CephFilesystem produced: existing PersistentVolumes reference `yolab-cephfs`,
+# `yolab-fs` and `yolab-fs-data0` by name, so changing any of them orphans real
+# user data. The filesystem itself is created by yolab-cephfs-init on the host.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: yolab-cephfs
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rook-ceph.cephfs.csi.ceph.com
+parameters:
+  clusterID: rook-ceph
+  fsName: yolab-fs
+  pool: yolab-fs-data0
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate

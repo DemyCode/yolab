@@ -226,6 +226,41 @@ pub async fn update(
             return;
         }
 
+        // Ceph now runs as host daemons, so a rebuild that bumps the Ceph
+        // package restarts mon/mgr/osd on this machine as a side effect. Rook
+        // used to gate its own upgrades on cluster health; nothing does now
+        // unless we do it here.
+        //
+        // The dangerous case is a rolling update across nodes: restarting this
+        // node's OSDs while another node's are still backfilling can drop PGs
+        // below min_size, which blocks I/O for every app on every node. So wait
+        // for recovery to finish first. HEALTH_WARN is fine (a single-node
+        // cluster lives there permanently) — what must be clear is PG movement.
+        yield Ok(Event::default().data("$ yolab-ceph-wait-healthy"));
+        match std::process::Command::new("yolab-ceph-wait-healthy").arg("900").output() {
+            Ok(o) if o.status.success() => {
+                yield Ok(Event::default().data(format!(
+                    "[INFO] {}", String::from_utf8_lossy(&o.stdout).trim()
+                )));
+            }
+            Ok(o) => {
+                // Refuse rather than proceed: a half-migrated Ceph upgrade on an
+                // unhealthy cluster is far harder to recover than a deferred one.
+                yield Ok(Event::default().data(format!(
+                    "[ERROR] Ceph is still recovering, update postponed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )));
+                return;
+            }
+            // Missing binary (e.g. a node that predates this) must not wedge
+            // updates entirely — that would make the fix unshippable.
+            Err(e) => {
+                yield Ok(Event::default().data(format!(
+                    "[WARN] could not run the Ceph health gate ({e}) — continuing"
+                )));
+            }
+        }
+
         // nixos-rebuild
         let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
         yield Ok(Event::default().data(format!("$ nixos-rebuild switch --flake {flake} --print-build-logs")));

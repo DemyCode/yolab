@@ -55,7 +55,7 @@ pub enum AppEvent {
     AccountCreated(String),
     AccountVerified,
     DisksLoaded(Vec<DiskInfo>),
-    JoinConnected { server_addr: String, k3s_token: String },
+    JoinConnected { server_addr: String, k3s_token: String, ceph_fsid: String },
     SshKeyGenerated { private_key: String, public_key: String },
     Log(String),
     InstallComplete { url: String },
@@ -119,6 +119,7 @@ pub struct App {
     // Carry-over from join
     pub join_server_addr: Option<String>,
     pub join_k3s_token: Option<String>,
+    pub join_ceph_fsid: Option<String>,
 
     // Step 5 – Install
     pub log_lines: Vec<String>,
@@ -177,6 +178,7 @@ impl App {
             gen_privkey: None,
             join_server_addr: None,
             join_k3s_token: None,
+            join_ceph_fsid: None,
             log_lines: vec![],
             install_done: false,
             install_failed: false,
@@ -483,9 +485,14 @@ impl App {
                 self.disks = disks;
                 self.disk_cursor = rec;
             }
-            AppEvent::JoinConnected { server_addr, k3s_token } => {
+            AppEvent::JoinConnected { server_addr, k3s_token, ceph_fsid } => {
                 self.join_server_addr = Some(server_addr);
                 self.join_k3s_token = Some(k3s_token);
+                // An older node predating host-level Ceph returns "". Leaving it
+                // None makes this node generate its own fsid, which would build a
+                // second, isolated storage cluster that silently shares no data
+                // with the first — so refuse it rather than guess.
+                self.join_ceph_fsid = if ceph_fsid.is_empty() { None } else { Some(ceph_fsid) };
                 // Pre-fill the configure password from the join password — same homelab, same password.
                 if self.password.is_empty() {
                     self.password  = self.join_pass.clone();
@@ -569,12 +576,12 @@ impl App {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             match do_fetch_join_info(&url, &pass).await {
-                Ok((server_addr, k3s_token, account_token)) => {
+                Ok((server_addr, k3s_token, account_token, ceph_fsid)) => {
                     // Store account token via a combined event
                     if let Some(t) = account_token {
                         let _ = tx.send(AppEvent::AccountCreated(t));
                     }
-                    let _ = tx.send(AppEvent::JoinConnected { server_addr, k3s_token });
+                    let _ = tx.send(AppEvent::JoinConnected { server_addr, k3s_token, ceph_fsid });
                 }
                 Err(e) => { let _ = tx.send(AppEvent::Failed(e.to_string())); }
             }
@@ -653,6 +660,7 @@ impl App {
             account_token: self.account_token.clone().unwrap_or_default(),
             server_addr: self.join_server_addr.clone(),
             k3s_token: self.join_k3s_token.clone(),
+            ceph_fsid: self.join_ceph_fsid.clone(),
             boot_mode: self.boot_mode.clone(),
         };
 
@@ -697,7 +705,7 @@ async fn do_verify_token(token: &str) -> anyhow::Result<()> {
 async fn do_fetch_join_info(
     url: &str,
     password: &str,
-) -> anyhow::Result<(String, String, Option<String>)> {
+) -> anyhow::Result<(String, String, Option<String>, String)> {
     let client = reqwest::Client::new();
     let url = url.trim_end_matches('/');
 
@@ -727,8 +735,9 @@ async fn do_fetch_join_info(
     let server_addr = info["server_addr"].as_str().unwrap_or("").to_string();
     let k3s_token = info["k3s_token"].as_str().unwrap_or("").to_string();
     let account_token = info["account_token"].as_str().map(|s| s.to_string());
+    let ceph_fsid = info["ceph_fsid"].as_str().unwrap_or("").to_string();
 
-    Ok((server_addr, k3s_token, account_token))
+    Ok((server_addr, k3s_token, account_token, ceph_fsid))
 }
 
 async fn detect_disks() -> anyhow::Result<Vec<DiskInfo>> {
