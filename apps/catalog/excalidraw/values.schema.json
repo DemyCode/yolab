@@ -23,6 +23,18 @@
           "title": "Storage size",
           "default": "1Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
+        },
+        "auth_enabled": {
+          "type": "boolean",
+          "title": "Add login",
+          "default": false,
+          "description": "Excalidraw has no login of its own. Turn this on to put a username and password in front of it."
+        },
+        "auth_users": {
+          "type": "string",
+          "title": "Logins",
+          "default": "",
+          "description": "One per line, as user:password \u2014 for example  alice:s3cret. Only used when 'Add login' is on."
         }
       }
     },
