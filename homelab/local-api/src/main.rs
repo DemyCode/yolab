@@ -1,4 +1,5 @@
 mod auth;
+mod ceph_cli;
 mod charts;
 mod config;
 mod disks_reconciler;
