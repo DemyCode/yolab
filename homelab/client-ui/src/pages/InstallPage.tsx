@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Check, ExternalLink } from "lucide-react";
 import { Page } from "@/components/AppShell";
@@ -16,6 +16,10 @@ import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import { generateSecret } from "@/lib/format";
+import Form from "@rjsf/core";
+import validator from "@rjsf/validator-ajv8";
+import { widgets } from "@/components/form/widgets";
+import { templates } from "@/components/form/templates";
 import { nextInstanceName } from "@/lib/apps";
 import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
@@ -42,16 +46,6 @@ interface SchemaProp {
   description?: string;
   format?: string;
   enum?: string[];
-  /**
-   * Show this field only while another field is truthy.
-   *
-   * JSON Schema expresses this with if/then/else or dependentSchemas, which a
-   * generic renderer implements and this deliberate one does not. A single
-   * named dependency covers what the catalog actually needs — "logins only
-   * matter once you asked for a login" — without dragging in conditional
-   * subschema evaluation.
-   */
-  showIf?: string;
   minLength?: number;
   maxLength?: number;
 }
@@ -82,23 +76,11 @@ function configSchema(schema: object | undefined): ConfigSchema {
   return s.properties ? s : {};
 }
 
-/** Secret-ish names, used to decide what we can generate on the user's behalf. */
-const SECRET_NAME = /pass|secret|key|token/i;
-
-type FieldKind = "address" | "secret" | "required" | "optional";
-
-function classify(
-  name: string,
-  prop: SchemaProp,
-  required: Set<string>,
-): FieldKind {
-  if (prop.format === "tunnel") return "address";
-  const hasDefault = prop.default !== undefined && prop.default !== "";
-  if (required.has(name) && !hasDefault) {
-    return SECRET_NAME.test(name) ? "secret" : "required";
-  }
-  return "optional";
-}
+// Field classification by regex is gone. Which field is a password, which is
+// the web address, which wants autofocus — the chart says so in its uiSchema
+// (`ui:widget: PasswordWidget`, `TunnelWidget`, `ui:autofocus`), and RJSF reads
+// it. Guessing from names both ignored what the author declared and quietly
+// disagreed with it.
 
 /**
  * Turn the install stream into something a person can read.
@@ -195,77 +177,89 @@ export function InstallPage() {
     [schema.properties],
   );
 
-  // Generated once per chart and deliberately *not* recomputed when anything
-  // else on the form changes — otherwise typing in the name field would mint a
-  // new password on every keystroke, including after the user copied one.
-  const secretDefaults = useMemo(() => {
-    const out: Record<string, unknown> = {};
-    for (const [name, prop] of Object.entries(schema.properties ?? {})) {
-      if (classify(name, prop, required) === "secret") {
-        out[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
+  // ── What RJSF renders ─────────────────────────────────────────────────────
+  //
+  // The schema comes straight from the chart. The uiSchema is the chart's own
+  // `yolab.io/uischema` annotation, with two things layered on that only this
+  // page knows:
+  //
+  //   - the tunnel field's live-URL domain, which is a property of this node
+  //   - a password field's initial value, generated rather than left blank
+  //
+  // Both used to be inferred by matching field names. Now the chart declares
+  // `ui:widget` and this supplies what the widget needs.
+  const addressKey = useMemo(
+    () =>
+      Object.entries(schema.properties ?? {}).find(
+        ([, p]) => p.format === "tunnel",
+      )?.[0],
+    [schema.properties],
+  );
+
+  const rjsfSchema = useMemo(
+    () => ({ type: "object" as const, ...schema }),
+    [schema],
+  );
+
+  const rjsfUiSchema = useMemo(() => {
+    const chartUi = (app?.uischema ?? {}) as Record<string, unknown>;
+    const ui: Record<string, unknown> = { ...chartUi };
+    if (addressKey) {
+      const existing = (ui[addressKey] ?? {}) as Record<string, unknown>;
+      ui[addressKey] = {
+        ...existing,
+        "ui:options": {
+          ...((existing["ui:options"] as object) ?? {}),
+          domain: domain.data?.domain ?? "",
+        },
+      };
+    }
+    return ui;
+  }, [app?.uischema, addressKey, domain.data?.domain]);
+
+  // Seeded once per chart, then owned by the form. Regenerating on every
+  // keystroke would mint a new password after the user had copied one.
+  const [formData, setFormData] = useState<Record<string, unknown>>({});
+  const seeded = useRef<string | null>(null);
+  useEffect(() => {
+    if (!appId || !schema.properties || seeded.current === appId) return;
+    seeded.current = appId;
+    const seed: Record<string, unknown> = {};
+    for (const [name, prop] of Object.entries(schema.properties)) {
+      const widget = (
+        (app?.uischema as Record<string, Record<string, unknown>>)?.[name] ?? {}
+      )["ui:widget"];
+      if (widget === "PasswordWidget") {
+        seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
+      } else if (prop.default !== undefined) {
+        seed[name] = prop.default;
       }
     }
-    return out;
-  }, [schema.properties, required]);
+    setFormData(seed);
+  }, [appId, schema.properties, app?.uischema]);
 
-  // Everything else's starting point, derived rather than copied into state on
-  // mount: seeding from an effect renders an empty form first and the real one
-  // second, which on a slow catalog fetch is a visible flash of blank fields.
-  const baseDefaults = useMemo(() => {
-    const seeded: Record<string, unknown> = {};
-    for (const [name, prop] of Object.entries(schema.properties ?? {})) {
-      if (classify(name, prop, required) === "secret") continue;
-      if (prop.default !== undefined) seeded[name] = prop.default;
-      else if (prop.type === "boolean") seeded[name] = false;
-      else seeded[name] = "";
-    }
-    return seeded;
-  }, [schema.properties, required]);
+  // The address tracks the instance name until the user sets one explicitly,
+  // so a second copy does not silently try to claim the first one's subdomain.
+  const values = useMemo(() => {
+    if (!addressKey) return formData;
+    return formData[addressKey]
+      ? formData
+      : { ...formData, [addressKey]: instanceName };
+  }, [formData, addressKey, instanceName]);
 
-  // Only what the user actually changed, layered on top.
-  const [edits, setEdits] = useState<Record<string, unknown>>({});
-  const values = useMemo(
-    () => ({
-      ...baseDefaults,
-      ...secretDefaults,
-      // The address tracks the name, so a second copy does not silently try to
-      // claim the first one's subdomain — until the user sets one explicitly,
-      // at which point `edits` wins.
-      ...(addressKey ? { [addressKey]: instanceName } : {}),
-      ...edits,
-    }),
-    [baseDefaults, secretDefaults, addressKey, instanceName, edits],
-  );
-  const setValue = (name: string, v: unknown) =>
-    setEdits((e) => ({ ...e, [name]: v }));
-
-  const fields = Object.entries(schema.properties ?? {});
-  const addressField = fields.find(
-    ([n, p]) => classify(n, p, required) === "address",
-  );
-  const secretFields = fields.filter(
-    ([n, p]) => classify(n, p, required) === "secret",
-  );
-  const requiredFields = fields.filter(
-    ([n, p]) => classify(n, p, required) === "required",
-  );
-  // A field whose `showIf` names an unchecked field is not rendered — and,
-  // below, not submitted either. Asking for logins before someone has asked for
-  // a login is noise, and worse, a value they typed and then turned off would
-  // otherwise still be sent.
-  const visible = ([, p]: [string, SchemaProp]) =>
-    !p.showIf || Boolean(values[p.showIf]);
-
-  const optionalFields = fields.filter(
-    ([n, p]) =>
-      classify(n, p, required) === "optional" &&
-      p.format !== "tunnel" &&
-      visible([n, p]),
-  );
+  // Shown once on the success screen: a generated password is worth copying
+  // before install and worthless afterwards. Which fields those are comes from
+  // the chart's uiSchema, not from guessing at names.
+  const generatedSecrets = useMemo<[string, string][]>(() => {
+    const ui = (app?.uischema ?? {}) as Record<string, Record<string, unknown>>;
+    return Object.entries(schema.properties ?? {})
+      .filter(([n]) => ui[n]?.["ui:widget"] === "PasswordWidget")
+      .map(([n, p]) => [n, p.title ?? n]);
+  }, [app?.uischema, schema.properties]);
 
   const subdomain =
-    addressField && typeof values[addressField[0]] === "string"
-      ? (values[addressField[0]] as string)
+    addressKey && typeof values[addressKey] === "string"
+      ? (values[addressKey] as string)
       : "";
   const fullUrl =
     subdomain && domain.data?.domain
@@ -278,7 +272,8 @@ export function InstallPage() {
   const blocking =
     !instanceName ||
     nameTaken ||
-    requiredFields.some(([n]) => !String(values[n] ?? "").trim());
+    // Required per the schema itself, rather than a locally-derived list.
+    [...required].some((n) => !String(values[n] ?? "").trim());
 
   async function install() {
     if (!app) return;
@@ -291,14 +286,18 @@ export function InstallPage() {
     // sending `""`. An empty string is a real value to Helm and would override
     // whatever the chart's own values.yaml sets — so a field we only rendered
     // because it exists would silently blank out a working default.
+    // Drop empty values the schema has no default for, rather than sending "".
+    // An empty string is a real value to Helm and would override whatever the
+    // chart's own values.yaml sets — so a field we only rendered because it
+    // exists would silently blank out a working default.
+    //
+    // Fields hidden by a conditional (if/then) are simply absent from formData,
+    // so a password typed and then switched off never reaches the release —
+    // RJSF prunes them, which is what the bespoke `showIf` was doing by hand.
     const payload = Object.fromEntries(
       Object.entries(values).filter(([name, v]) => {
-        // Never send a field the user could not see. Turning "Add login" off
-        // after typing passwords must not smuggle them into the release.
-        const prop = schema.properties?.[name];
-        if (prop?.showIf && !values[prop.showIf]) return false;
         if (v !== "") return true;
-        return prop?.default !== undefined;
+        return schema.properties?.[name]?.default !== undefined;
       }),
     );
 
@@ -364,17 +363,15 @@ export function InstallPage() {
             It may take another minute to finish starting the first time.
           </p>
 
-          {secretFields.length > 0 && (
+          {generatedSecrets.length > 0 && (
             <Card className="mt-6 w-full max-w-md p-5 text-left">
               <p className="mb-3 text-sm font-medium text-fg">
                 Save these before you leave this page
               </p>
               <div className="space-y-3">
-                {secretFields.map(([name, prop]) => (
+                {generatedSecrets.map(([name, title]) => (
                   <div key={name}>
-                    <div className="text-xs text-fg-muted">
-                      {prop.title ?? name}
-                    </div>
+                    <div className="text-xs text-fg-muted">{title}</div>
                     <code className="block break-all font-mono text-sm text-fg">
                       {String(values[name] ?? "")}
                     </code>
@@ -516,90 +513,32 @@ export function InstallPage() {
           </div>
         )}
 
-        {secretFields.length > 0 && (
-          <div className="space-y-5 p-5">
-            {secretFields.map(([name, prop]) => (
-              <GeneratedSecret
-                key={name}
-                label={prop.title ?? "Password"}
-                minLength={prop.minLength}
-                value={String(values[name] ?? "")}
-                onChange={(v) => setValue(name, v)}
-              />
-            ))}
-          </div>
-        )}
-
-        {requiredFields.length > 0 && (
-          <div className="space-y-5 p-5">
-            {requiredFields.map(([name, prop]) => (
-              <Field
-                key={name}
-                label={prop.title ?? name}
-                help={prop.description}
-              >
-                <Input
-                  value={String(values[name] ?? "")}
-                  onChange={(e) => setValue(name, e.target.value)}
-                />
-              </Field>
-            ))}
-          </div>
-        )}
-
-        {/* Every option the chart exposes, always on the page. An app like
-            Minecraft is nothing but these choices — creative or survival, a
-            seed, who's whitelisted — so folding them behind a second click
-            hid the entire reason someone opened this form. */}
-        {optionalFields.length > 0 && (
-          <div className="space-y-5 p-5">
-            {optionalFields.map(([name, prop]) => {
-              if (prop.type === "boolean") {
-                return (
-                  <Toggle
-                    key={name}
-                    label={prop.title ?? name}
-                    help={prop.description}
-                    checked={Boolean(values[name])}
-                    onChange={(v) => setValue(name, v)}
-                  />
-                );
-              }
-              if (prop.enum) {
-                return (
-                  <Field
-                    key={name}
-                    label={prop.title ?? name}
-                    help={prop.description}
-                  >
-                    <Select
-                      value={String(values[name] ?? "")}
-                      onChange={(e) => setValue(name, e.target.value)}
-                    >
-                      {prop.enum.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                );
-              }
-              return (
-                <Field
-                  key={name}
-                  label={prop.title ?? name}
-                  help={prop.description}
-                >
-                  <Input
-                    value={String(values[name] ?? "")}
-                    onChange={(e) => setValue(name, e.target.value)}
-                  />
-                </Field>
-              );
-            })}
-          </div>
-        )}
+        {/* Every option the chart declares, rendered by RJSF from its own
+            schema and uiSchema. The catalog already ships uiSchema — 55
+            TunnelWidget, 20 PasswordWidget, 5 ui:autofocus — which the previous
+            hand-rolled renderer ignored, re-deriving the same intent by
+            matching field names against /pass|secret|key|token/. A chart author
+            writing `ui:widget: PasswordWidget` is no longer overruled by a
+            regex, and conditional fields come from the schema's own if/then
+            rather than a bespoke `showIf`. */}
+        <div className="p-5">
+          <Form
+            schema={rjsfSchema}
+            uiSchema={rjsfUiSchema}
+            formData={formData}
+            validator={validator}
+            widgets={widgets}
+            templates={templates}
+            liveValidate={false}
+            showErrorList={false}
+            onChange={(e) => setFormData(e.formData ?? {})}
+          >
+            {/* RJSF renders its own submit button unless given children. The
+                install action lives at the bottom of the page, not inside the
+                form. */}
+            <></>
+          </Form>
+        </div>
 
         <div className="space-y-5 p-5">
           <Field
