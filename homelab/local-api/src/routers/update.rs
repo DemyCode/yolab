@@ -241,11 +241,35 @@ pub async fn update(
         // worker for the whole wait — up to 15 minutes — and this runs inside an
         // SSE handler. Observed live: a stuck gate left local-api listening on
         // :3001 but answering nothing, so the whole UI went blank behind a 502.
-        match tokio::process::Command::new("yolab-ceph-wait-healthy")
-            .arg("300")
-            .output()
-            .await
-        {
+        // Hard outer timeout. The script has its own deadline, but that only
+        // helps while it is making progress — if `ceph` itself wedges, the
+        // script never returns and `.output().await` waits forever. Anything on
+        // the update path must be incapable of blocking indefinitely: a bug
+        // here cannot be fixed by shipping a fix, because shipping it requires
+        // this very code path to run. That deadlock happened for real.
+        let gate = tokio::time::timeout(
+            std::time::Duration::from_secs(330),
+            tokio::process::Command::new("yolab-ceph-wait-healthy")
+                .arg("300")
+                .output(),
+        )
+        .await;
+
+        let gate = match gate {
+            Ok(r) => r,
+            Err(_) => {
+                yield Ok(Event::default().data(
+                    "[WARN] the Ceph health gate did not return in time — continuing"
+                ));
+                Ok(std::process::Output {
+                    status: Default::default(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+        };
+
+        match gate {
             Ok(o) if o.status.success() => {
                 yield Ok(Event::default().data(format!(
                     "[INFO] {}", String::from_utf8_lossy(&o.stdout).trim()
