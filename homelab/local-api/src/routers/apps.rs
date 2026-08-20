@@ -221,20 +221,35 @@ fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
 ///
 /// Both levels are searched so a flat schema keeps working.
 fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
-    fn tunnel_field(props: Option<&serde_json::Map<String, Value>>) -> Option<String> {
+    fn tunnel_field(props: Option<&serde_json::Map<String, Value>>) -> Option<(String, Value)> {
         props?.iter().find_map(|(k, v)| {
-            (v["format"].as_str() == Some("tunnel")).then(|| k.clone())
+            (v["format"].as_str() == Some("tunnel")).then(|| (k.clone(), v.clone()))
         })
     }
 
     let nested = schema["properties"]["config"]["properties"].as_object();
     let top = schema["properties"].as_object();
 
-    tunnel_field(nested)
-        .or_else(|| tunnel_field(top))
-        .and_then(|f| config.get(&f).cloned())
-        .and_then(|v| v.as_str().map(String::from))
+    let Some((field, spec)) = tunnel_field(nested).or_else(|| tunnel_field(top)) else {
+        return String::new();
+    };
+
+    // The user's answer, falling back to the schema's declared default.
+    //
+    // The fallback is not belt-and-braces — it is the normal path. An install
+    // submitted with `config: {}` (seen live) leaves no subdomain at all, and an
+    // empty serviceName means wg-register registers no DNS record, YOLAB_FQDN
+    // comes out blank, and the app's Caddy dies on a Caddyfile whose site block
+    // collapsed to a bare `{`. A schema that declares `"default": "qbittorrent"`
+    // is stating what to use when the field is absent; ignoring that turned a
+    // missing optional answer into a broken install.
+    config
+        .get(&field)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| spec["default"].as_str().filter(|s| !s.is_empty()))
         .unwrap_or_default()
+        .to_string()
 }
 
 /// Values file handed to Helm. Everything the user chose goes under `config`; everything
@@ -1020,7 +1035,11 @@ mod tests {
             "properties": {
                 "config": {
                     "properties": {
-                        "subdomain": {"type": "string", "format": "tunnel"},
+                        "subdomain": {
+                            "type": "string",
+                            "format": "tunnel",
+                            "default": "qbittorrent"
+                        },
                         "storage_size": {"type": "string"}
                     }
                 },
@@ -1072,16 +1091,49 @@ mod tests {
 
     /// Declared in the schema but absent from the user's answers: still empty,
     /// but must not panic.
+    /// The path that actually broke installs: the UI submitted `config: {}`, so
+    /// there is no answer at all. The schema declares a default precisely for
+    /// this, and using it is what keeps the install working instead of silently
+    /// producing an app with no DNS name.
     #[test]
-    fn a_missing_answer_yields_empty_without_panicking() {
-        assert_eq!(resolve_service_name(&real_schema(), &cfg(&[])), "");
+    fn a_missing_answer_falls_back_to_the_schema_default() {
+        assert_eq!(resolve_service_name(&real_schema(), &cfg(&[])), "qbittorrent");
     }
 
+    /// An explicitly empty string is as absent as a missing key — it must not
+    /// win over the default, or it reintroduces the blank-FQDN failure.
     #[test]
-    fn a_non_string_answer_yields_empty() {
+    fn an_empty_answer_also_falls_back_to_the_default() {
+        assert_eq!(resolve_service_name(&real_schema(), &cfg(&[("subdomain", "")])), "qbittorrent");
+    }
+
+    /// A real answer still wins over the default.
+    #[test]
+    fn an_explicit_answer_beats_the_default() {
+        assert_eq!(
+            resolve_service_name(&real_schema(), &cfg(&[("subdomain", "torrents")])),
+            "torrents"
+        );
+    }
+
+    /// No answer AND no default: still empty, and still no panic.
+    #[test]
+    fn no_answer_and_no_default_yields_empty() {
+        let schema = serde_json::json!({
+            "properties": {"config": {"properties": {"subdomain": {"format": "tunnel"}}}}
+        });
+        assert_eq!(resolve_service_name(&schema, &cfg(&[])), "");
+    }
+
+    /// A non-string answer is unusable, so it falls back to the default rather
+    /// than yielding "". Returning empty here would mean no DNS record and a
+    /// gateway that crash-loops on a blank FQDN — a worse outcome than using
+    /// the subdomain the schema nominated.
+    #[test]
+    fn a_non_string_answer_falls_back_to_the_default() {
         let mut c = serde_json::Map::new();
         c.insert("subdomain".into(), serde_json::json!(42));
-        assert_eq!(resolve_service_name(&real_schema(), &c), "");
+        assert_eq!(resolve_service_name(&real_schema(), &c), "qbittorrent");
     }
 
     #[test]
