@@ -60,8 +60,13 @@ metadata:
   namespace: {{ .Release.Namespace }}
 type: Opaque
 stringData:
+  # One "user\tpassword" per line. A tab, not a colon: a password may contain
+  # a colon and splitting on the first one would silently truncate it, which
+  # shows up much later as "my password does not work".
   logins: |
-{{ (((.Values.config).auth_users)) | default "" | indent 4 }}
+{{- range (((.Values.config).auth_users)) | default list }}
+    {{ .username }}{{ "\t" }}{{ .password }}
+{{- end }}
 {{- end -}}
 {{- end -}}
 
@@ -139,13 +144,12 @@ everyone out or invalidate the database.
           jwt_secret: '${JWT}'
       EOF
 
-      # One "user:password" per line, blank lines and # comments ignored.
+      # Tab-separated, written by the chart from a structured list — so there
+      # is no user-typed format to get wrong, and a password containing a colon
+      # or a space survives intact.
       echo "users:" > /authelia-config/users_database.yml
       any=0
-      while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in ''|'#'*) continue ;; esac
-        u=${line%%:*}
-        p=${line#*:}
+      while IFS="$(printf '\t')" read -r u p || [ -n "${u:-}" ]; do
         [ -n "$u" ] && [ -n "$p" ] || continue
         # Authelia's own hasher: the file backend accepts only the exact
         # argon2id encoding it produces.
@@ -164,7 +168,7 @@ everyone out or invalidate the database.
         # Failing here is deliberate. Starting with an empty user file would
         # leave Authelia up and every login rejected, which reads as "my
         # password is wrong" rather than "no users were configured".
-        echo "auth was enabled but no usable 'user:password' lines were given" >&2
+        echo "auth was enabled but no logins were given" >&2
         exit 1
       fi
       echo "configured Authelia for ${YOLAB_FQDN}"

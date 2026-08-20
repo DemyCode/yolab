@@ -25,6 +25,13 @@ annotations:
     {
       "subdomain": {
         "ui:widget": "TunnelWidget"
+      },
+      "auth_users": {
+        "items": {
+          "password": {
+            "ui:widget": "PasswordWidget"
+          }
+        }
       }
     }
   # Values scraped out of pod logs after install (regex, capture group 1).
