@@ -33,6 +33,10 @@ in {
       serviceConfig.Type = "oneshot";
       environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       path = with pkgs; [ceph ceph-client k3s coreutils gnugrep jq];
+      # NOTE: NixOS wraps `script` with `set -e` already, so the `set -uo
+      # pipefail` below adds to it rather than replacing it — any unguarded
+      # command that fails aborts the unit. Every "not ready yet" path here is
+      # therefore an explicit `exit 0`, not a fallthrough.
       script = ''
         set -uo pipefail
 
@@ -53,13 +57,32 @@ in {
         # CSI needs restricted users, not client.admin. These caps are the ones
         # Rook's own import script grants; broader caps would hand every CSI pod
         # cluster-admin over Ceph.
-        CEPHFS_PROV=$(ceph auth get-or-create-key client.csi-cephfs-provisioner \
+        #
+        # Create only what is missing, then read the key back. `ceph auth
+        # get-or-create-key` does NOT return an existing key when the requested
+        # caps differ — it fails with
+        #   EINVAL: key for client.csi-cephfs-provisioner exists but cap mon does not match
+        # which is exactly what happens here, because Rook's operator creates
+        # these same users itself (it can: the rook-ceph-mon secret below hands
+        # it admin credentials). Re-asserting our caps would start a tug-of-war
+        # between this timer and Rook's reconcile loop, flipping the caps back
+        # and forth every few minutes. Whoever created the user owns its caps.
+        ensure_key() {
+          local entity="$1"
+          shift
+          if ! ceph auth get-key "$entity" >/dev/null 2>&1; then
+            ceph auth get-or-create "$entity" "$@" >/dev/null
+          fi
+          ceph auth get-key "$entity"
+        }
+
+        CEPHFS_PROV=$(ensure_key client.csi-cephfs-provisioner \
           mon 'allow r' mgr 'allow rw' osd 'allow rw tag cephfs metadata=*')
-        CEPHFS_NODE=$(ceph auth get-or-create-key client.csi-cephfs-node \
+        CEPHFS_NODE=$(ensure_key client.csi-cephfs-node \
           mon 'allow r' mgr 'allow rw' osd 'allow rw tag cephfs *=*' mds 'allow rw')
-        RBD_PROV=$(ceph auth get-or-create-key client.csi-rbd-provisioner \
+        RBD_PROV=$(ensure_key client.csi-rbd-provisioner \
           mon 'profile rbd' mgr 'allow rw' osd 'profile rbd')
-        RBD_NODE=$(ceph auth get-or-create-key client.csi-rbd-node \
+        RBD_NODE=$(ensure_key client.csi-rbd-node \
           mon 'profile rbd' osd 'profile rbd')
 
         apply_secret() {
