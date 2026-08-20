@@ -34,7 +34,8 @@
           "type": "string",
           "title": "Logins",
           "default": "",
-          "description": "One per line, as user:password \u2014 for example  alice:s3cret. Only used when 'Add login' is on."
+          "description": "One per line, as user:password \u2014 for example  alice:s3cret. Only used when 'Add login' is on.",
+          "showIf": "auth_enabled"
         }
       }
     },

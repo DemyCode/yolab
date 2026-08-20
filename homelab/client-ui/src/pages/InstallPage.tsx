@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Check, ExternalLink } from "lucide-react";
 import { Page } from "@/components/AppShell";
@@ -42,6 +42,16 @@ interface SchemaProp {
   description?: string;
   format?: string;
   enum?: string[];
+  /**
+   * Show this field only while another field is truthy.
+   *
+   * JSON Schema expresses this with if/then/else or dependentSchemas, which a
+   * generic renderer implements and this deliberate one does not. A single
+   * named dependency covers what the catalog actually needs — "logins only
+   * matter once you asked for a login" — without dragging in conditional
+   * subschema evaluation.
+   */
+  showIf?: string;
   minLength?: number;
   maxLength?: number;
 }
@@ -120,7 +130,39 @@ export function InstallPage() {
   );
   const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"));
 
-  const app = catalog.data?.find((a) => a.id === appId);
+  const cached = catalog.data?.find((a) => a.id === appId);
+
+  // Re-pull this one chart before rendering the form.
+  //
+  // The node syncs charts hourly, so a chart published minutes ago still serves
+  // its previous schema — and a field the author just added is simply absent.
+  // That looks like a broken change rather than a stale copy, and it is only
+  // ever noticed by the person who published it, staring at a form missing the
+  // option they wrote.
+  //
+  // Best-effort: if the registry is unreachable the cached chart is still
+  // perfectly installable, so `fresh` stays null and the cached entry renders.
+  const [fresh, setFresh] = useState<CatalogApp | null>(null);
+  useEffect(() => {
+    if (!appId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await api.post<{ app: CatalogApp | null }>(
+          `/api/apps/catalog/${appId}/refresh`,
+        );
+        if (!cancelled && r?.app) setFresh(r.app);
+      } catch {
+        // Offline, or the chart is only in the bundled catalog. Either way the
+        // cached copy is what we would have shown anyway.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appId]);
+
+  const app = fresh ?? cached;
   const schema = useMemo(() => configSchema(app?.schema), [app?.schema]);
   const required = useMemo(
     () => new Set(schema.required ?? []),
@@ -207,9 +249,18 @@ export function InstallPage() {
   const requiredFields = fields.filter(
     ([n, p]) => classify(n, p, required) === "required",
   );
+  // A field whose `showIf` names an unchecked field is not rendered — and,
+  // below, not submitted either. Asking for logins before someone has asked for
+  // a login is noise, and worse, a value they typed and then turned off would
+  // otherwise still be sent.
+  const visible = ([, p]: [string, SchemaProp]) =>
+    !p.showIf || Boolean(values[p.showIf]);
+
   const optionalFields = fields.filter(
     ([n, p]) =>
-      classify(n, p, required) === "optional" && p.format !== "tunnel",
+      classify(n, p, required) === "optional" &&
+      p.format !== "tunnel" &&
+      visible([n, p]),
   );
 
   const subdomain =
@@ -242,8 +293,12 @@ export function InstallPage() {
     // because it exists would silently blank out a working default.
     const payload = Object.fromEntries(
       Object.entries(values).filter(([name, v]) => {
+        // Never send a field the user could not see. Turning "Add login" off
+        // after typing passwords must not smuggle them into the release.
+        const prop = schema.properties?.[name];
+        if (prop?.showIf && !values[prop.showIf]) return false;
         if (v !== "") return true;
-        return schema.properties?.[name]?.default !== undefined;
+        return prop?.default !== undefined;
       }),
     );
 

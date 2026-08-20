@@ -119,6 +119,9 @@ async fn main() {
         .route("/api/account/token", get(apps::account_token))
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
+        // Refresh one chart before its install form renders, so a just-published
+        // schema is not hidden behind the hourly background sync.
+        .route("/api/apps/catalog/:id/refresh", post(apps::refresh_catalog_app))
         .route("/api/apps", get(apps::list_apps))
         // POST installs (uses app_id), DELETE uninstalls (uses instance_name) — same slot
         .route("/api/apps/:id", post(apps::install_app).delete(apps::uninstall_app))

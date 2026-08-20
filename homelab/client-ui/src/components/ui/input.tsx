@@ -193,7 +193,16 @@ export function Toggle({
   help?: string;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-4">
+    // A <div>, not a <label>. A <label> forwards its own click to the labelable
+    // control inside it — and <button> is labelable — so clicking the switch
+    // fired onChange twice: once from the button, once re-dispatched by the
+    // label. The value flipped and immediately flipped back, which reads as a
+    // toggle that does nothing. Clicking the text still toggles, via the
+    // wrapper's own handler.
+    <div
+      className="flex cursor-pointer items-center gap-4"
+      onClick={() => onChange(!checked)}
+    >
       <span className="min-w-0 flex-1">
         <span className="block text-sm font-medium text-fg">{label}</span>
         {help && <span className="block text-sm text-fg-muted">{help}</span>}
@@ -203,7 +212,12 @@ export function Toggle({
         role="switch"
         aria-checked={checked}
         aria-label={label}
-        onClick={() => onChange(!checked)}
+        // Stop the wrapper's handler from also firing — otherwise the button
+        // and the div both toggle and cancel each other out.
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange(!checked);
+        }}
         className={cn(
           "relative h-7 w-12 shrink-0 rounded-full transition-colors",
           checked ? "bg-primary" : "bg-surface-3",
@@ -216,6 +230,6 @@ export function Toggle({
           )}
         />
       </button>
-    </label>
+    </div>
   );
 }
