@@ -211,15 +211,15 @@ fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
 /// The tunnel subdomain the user asked for: the value of whichever config field the
 /// chart's schema marks `format: tunnel`. wg-register needs it to claim the subdomain.
 ///
-/// The field lives at `properties.config.properties.<field>`, NOT at
-/// `properties.<field>`. This used to look only at the top level, where the sole
-/// entries are the `config` and `yolab` objects themselves — so it never matched,
-/// returned "", and every install silently skipped DNS registration. wg-register
-/// then wrote an empty YOLAB_FQDN, which collapses the generated Caddyfile's
-/// `{$YOLAB_FQDN} {` into a bare `{` — Caddy reads that as a global options block
-/// and dies with the very unhelpful "unrecognized global option: reverse_proxy".
+/// `schema` here is ALREADY the config subtree — `read_chart` stores
+/// `values.schema.json`'s `properties.config` — so the tunnel field sits at
+/// `properties.<field>`. Both that and the fully-nested shape are accepted, so
+/// this keeps working if a caller ever passes the whole values schema.
 ///
-/// Both levels are searched so a flat schema keeps working.
+/// (An earlier version of this comment claimed the opposite. The empty
+/// serviceName that prompted it came from the UI posting `config: {}`, because
+/// InstallPage unwrapped `properties.config` a second time and rendered no
+/// fields at all — not from the lookup path being wrong.)
 fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
     fn tunnel_field(props: Option<&serde_json::Map<String, Value>>) -> Option<(String, Value)> {
         props?.iter().find_map(|(k, v)| {
