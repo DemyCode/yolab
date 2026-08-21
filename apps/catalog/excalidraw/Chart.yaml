@@ -23,10 +23,14 @@ annotations:
   # values.schema.json under `properties.config`.
   yolab.io/uischema: |
     {
+      "ui:order": ["subdomain", "auth_enabled", "auth_users", "*"],
       "subdomain": {
         "ui:widget": "TunnelWidget"
       },
       "auth_users": {
+        "ui:options": {
+          "attached": true
+        },
         "items": {
           "password": {
             "ui:widget": "PasswordWidget"
