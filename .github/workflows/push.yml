@@ -329,19 +329,15 @@ jobs:
           nix build path:.#homelab-ui --print-build-logs --print-out-paths --verbose
           nix build path:.#homelab-api --print-build-logs --print-out-paths --verbose
 
-      - name: Push to Nix cache
-        env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
-        run: |
-          ATTIC_TOKEN="$(printf '%s' "$ATTIC_TOKEN" | tr -d '[:space:]')"
-          if [ -z "$ATTIC_TOKEN" ]; then
-            echo "ATTIC_TOKEN not set, skipping cache push"
-            exit 0
-          fi
-          nix run nixpkgs#attic-client -- login local https://cache.demycode.ovh "$ATTIC_TOKEN"
-          nix run nixpkgs#attic-client -- cache create local:yolab --public 2>/dev/null || true
-          nix run nixpkgs#attic-client -- push local:yolab \
-            path:.#iso path:.#homelab-ui path:.#homelab-api
+      # No "Push to Nix cache" step. It pushed the ISO, UI and API to an Attic
+      # cache at cache.demycode.ovh that nothing ever read: no substituter in
+      # this repo or on a deployed node references it — nodes build against
+      # cache.nixos.org. So its only observable effect was failing and marking
+      # every push red, which trains people to ignore a red tree.
+      #
+      # If a private cache is wanted later, the consuming side has to land
+      # first — nix.settings.substituters plus the public key on the nodes —
+      # otherwise publishing to it is work that benefits nobody.
 
       - name: Get ISO info
         id: iso_info
