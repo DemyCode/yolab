@@ -200,7 +200,7 @@ export function Toggle({
     // toggle that does nothing. Clicking the text still toggles, via the
     // wrapper's own handler.
     <div
-      className="flex cursor-pointer items-center gap-4"
+      className="flex w-full cursor-pointer items-center gap-4"
       onClick={() => onChange(!checked)}
     >
       <span className="min-w-0 flex-1">
@@ -219,14 +219,22 @@ export function Toggle({
           onChange(!checked);
         }}
         className={cn(
-          "relative h-7 w-12 shrink-0 rounded-full transition-colors",
+          // overflow-hidden so the knob is physically incapable of escaping the
+          // track, whatever the transform resolves to.
+          "relative h-7 w-12 shrink-0 overflow-hidden rounded-full transition-colors",
           checked ? "bg-primary" : "bg-surface-3",
         )}
       >
         <span
           className={cn(
-            "absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform",
-            checked ? "translate-x-[1.375rem]" : "translate-x-0.5",
+            // `left-0.5` matters: an absolutely-positioned box with no `left`
+            // falls back to its STATIC position, and the translate then stacks
+            // on top of wherever that lands — which is how the knob ended up
+            // outside its track. Anchored explicitly, the geometry is just
+            // 2px + 20px = 22px, leaving the same 2px margin on the right that
+            // it has on the left.
+            "absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform",
+            checked ? "translate-x-5" : "translate-x-0",
           )}
         />
       </button>

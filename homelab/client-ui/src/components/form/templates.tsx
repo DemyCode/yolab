@@ -56,19 +56,13 @@ export function FieldTemplate(props: FieldTemplateProps) {
  * typo in "user:password" should not be a silent failure at container start.
  */
 export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
-  const { items, canAdd, onAddClick, schema, title } = props;
+  // No title and no description here. An array field is still wrapped by
+  // FieldTemplate, which already prints both — rendering them again showed
+  // "Logins / Who can open this app…" twice, one block under the other.
+  const { items, canAdd, onAddClick } = props;
 
   return (
     <div className="space-y-3">
-      {(title || schema.title) && (
-        <div className="text-sm font-medium text-fg">
-          {title || (schema.title as string)}
-        </div>
-      )}
-      {schema.description && (
-        <p className="text-sm text-fg-muted">{schema.description}</p>
-      )}
-
       {items.length === 0 && (
         <p className="text-sm text-fg-subtle">Nothing added yet.</p>
       )}
@@ -118,11 +112,30 @@ export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
  * entire reason someone opened the form.
  */
 export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
+  const ui = (props.uiSchema ?? {}) as Record<
+    string,
+    { "ui:options"?: { attached?: boolean } }
+  >;
+
   return (
     <div className="space-y-5">
-      {props.properties.map((p) => (
-        <div key={p.name}>{p.content}</div>
-      ))}
+      {props.properties.map((p) => {
+        // A field marked `attached` belongs to the one above it — Logins only
+        // exists because "Add login" is on. Rendered as a plain sibling it read
+        // as an unrelated question two rows down; the rule and the indent say
+        // "this is part of that" without needing a heading to explain it.
+        const attached = ui[p.name]?.["ui:options"]?.attached;
+        return attached ? (
+          <div
+            key={p.name}
+            className="-mt-2 ml-1 border-l-2 border-border pl-4"
+          >
+            {p.content}
+          </div>
+        ) : (
+          <div key={p.name}>{p.content}</div>
+        );
+      })}
     </div>
   );
 }

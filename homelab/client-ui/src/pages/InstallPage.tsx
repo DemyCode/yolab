@@ -497,15 +497,10 @@ export function InstallPage() {
       )}
 
       <Card className="divide-y divide-border">
-        {fullUrl && (
-          <div className="p-5">
-            <div className="text-sm font-medium text-fg">Web address</div>
-            <p className="mt-1 break-all font-mono text-sm text-primary">
-              {fullUrl}
-            </p>
-          </div>
-        )}
-
+        {/* The address used to be printed here as well as under the Subdomain
+            field, so the same URL appeared twice on one page. TunnelWidget shows
+            it inline now — next to the box you edit, which is where it answers
+            the question — so this hand-written copy is gone. */}
         {/* Every option the chart declares, rendered by RJSF from its own
             schema and uiSchema. The catalog already ships uiSchema — 55
             TunnelWidget, 20 PasswordWidget, 5 ui:autofocus — which the previous
