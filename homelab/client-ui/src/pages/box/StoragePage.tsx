@@ -45,6 +45,77 @@ function fmtBytes(b: number): string {
   return `${(b / 1024).toFixed(0)} KiB`;
 }
 
+
+/**
+ * What an offline OSD actually means — which is not one message.
+ *
+ * This used to say, unconditionally: "Your files are still there. If the disk
+ * does not come back, switch it off above and YoLab will rebuild the missing
+ * copies on the ones that remain."
+ *
+ * On a cluster storing one copy that is false in both halves. The files are NOT
+ * still there, and there are no other copies to rebuild from — so following the
+ * instruction destroys the data it claims to be protecting. This is the one
+ * banner on the page that tells someone to act on a disk, so it has to be right
+ * about redundancy before it tells them anything.
+ *
+ * It also stops counting OSDs that were never created. `ceph-volume lvm create`
+ * takes an id from the mon before it does any of the slow work, so a create that
+ * failed leaves an id in the OSD map with no CRUSH location and nothing on disk.
+ * That is a failed setup, not a disk that went offline, and calling it offline
+ * sends someone looking for a hardware fault that is not there.
+ */
+function OfflineDiskBanner({
+  detail,
+  policy,
+}: {
+  detail: StorageDetail | undefined;
+  policy: StoragePolicyData | undefined;
+}) {
+  if (!detail) return null;
+
+  // No host means it is not in the CRUSH map: never created, never held data.
+  const down = detail.osds.filter((o) => o.status !== "up" && o.host !== "");
+  const phantom = detail.osds.filter((o) => o.status !== "up" && o.host === "");
+
+  if (down.length === 0 && phantom.length === 0) return null;
+
+  if (down.length === 0) {
+    return (
+      <Banner tone="warning" title="A disk did not finish being set up" className="mt-2">
+        {phantom.length === 1 ? "One disk" : `${phantom.length} disks`} started
+        being added and never finished, so nothing is stored on{" "}
+        {phantom.length === 1 ? "it" : "them"} yet. Switch the disk off and on
+        again to retry. Nothing is at risk — {phantom.length === 1 ? "it" : "they"}{" "}
+        never held any of your files.
+      </Banner>
+    );
+  }
+
+  // The distinction that matters: is there a second copy anywhere?
+  const copies = policy?.target.size ?? 1;
+  const anyUp = detail.osds.some((o) => o.status === "up");
+
+  if (copies <= 1 || !anyUp) {
+    return (
+      <Banner tone="error" title="A disk is offline and there is no second copy" className="mt-2">
+        Whatever was on {down.length === 1 ? "that disk" : "those disks"} is not
+        readable right now, and it is not stored anywhere else — so do NOT
+        switch it off. There is nothing to rebuild from, and switching it off
+        discards it. Get the disk back if you can; otherwise your backups are
+        the only copy.
+      </Banner>
+    );
+  }
+
+  return (
+    <Banner tone="warning" title="A disk is offline" className="mt-2">
+      Your files are still there — they are stored {copies} times, so the other
+      copies are serving them. If the disk does not come back, switch it off
+      above and YoLab will rebuild the missing copies on the ones that remain.
+    </Banner>
+  );
+}
 function fillColor(pct: number): string {
   if (pct >= 85) return "var(--danger)";
   if (pct >= 70) return "var(--warning)";
@@ -1332,13 +1403,7 @@ export function StoragePage() {
       {/* Kept out of the way, but not hidden: this is the one thing on the page
           that can destroy data, and someone who erased a disk by accident
           needs to have been told what would happen. */}
-      {detail && detail.osds.some((o) => o.status !== "up") && (
-        <Banner tone="warning" title="A disk is offline" className="mt-2">
-          Your files are still there. If the disk does not come back, switch it
-          off above and YoLab will rebuild the missing copies on the ones that
-          remain.
-        </Banner>
-      )}
+      <OfflineDiskBanner detail={detail} policy={policyRes.data} />
     </div>
   );
 }
