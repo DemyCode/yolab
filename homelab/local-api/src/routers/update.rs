@@ -297,6 +297,7 @@ pub async fn update(
         }
 
         // nixos-rebuild
+        clear_stale_rebuild_unit();
         let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
         yield Ok(Event::default().data(format!("$ nixos-rebuild switch --flake {flake} --print-build-logs")));
         yield Ok(Event::default().data("[INFO] nixos-rebuild launched — service will restart shortly"));
@@ -401,6 +402,7 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
         }
 
         // nixos-rebuild (detached — survives local-api restart)
+        clear_stale_rebuild_unit();
         let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
         if let (Ok(log_file), Ok(log2)) = (
             std::fs::File::create(&cfg.rebuild_log),
@@ -435,6 +437,35 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 }
 
 // ── Update all nodes ──────────────────────────────────────────────────────────
+
+/// Clear the leftover of an interrupted `nixos-rebuild`.
+///
+/// nixos-rebuild runs switch-to-configuration inside a transient systemd unit
+/// with a FIXED name. If a previous run was interrupted — killed, or wedged
+/// behind a service that would not stop — that unit stays loaded, and every
+/// later run then dies instantly on:
+///
+///   Failed to start transient service unit: Unit
+///   nixos-rebuild-switch-to-configuration.service was already loaded or has a
+///   fragment file
+///
+/// So one interrupted update breaks EVERY FUTURE UPDATE, permanently, until
+/// someone clears it by hand over SSH. On a machine whose entire update story
+/// is a button in a web page, that is the update mechanism disabling itself —
+/// and it happened: a rebuild hung behind processes systemd could not kill, and
+/// the next attempt failed before it started.
+///
+/// `reset-failed` is the right tool because of what it will NOT do: it clears
+/// failed and inactive units and leaves a genuinely running one alone, so this
+/// cannot interrupt a rebuild that is legitimately still going.
+fn clear_stale_rebuild_unit() {
+    let _ = std::process::Command::new("systemctl")
+        .args(["reset-failed", "nixos-rebuild-switch-to-configuration.service"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
 
 pub async fn update_all(State(state): State<AppState>) -> Response {
     // K3s and Ceph keep running through a NixOS rebuild, so there's no quorum
