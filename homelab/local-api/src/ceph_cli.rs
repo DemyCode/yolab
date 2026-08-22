@@ -20,12 +20,17 @@ use serde_json::Value;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-/// One ceph-volume at a time on this node.
+/// One ceph-volume at a time *from this process*.
 ///
-/// Concurrent runs were never going to help — ceph-volume takes LVM's own locks
-/// — but the reason this is here is failure, not throughput. Every caller is on
-/// a reconcile loop, so when one call wedges the loop starts another on the next
-/// tick, and another, until the unit cannot be stopped at all.
+/// Not one per node, and the difference matters: yolab-ceph-osd-activate and
+/// every yolab-ceph-osd@N ExecStartPre also run ceph-volume, and this lock
+/// cannot see them. What actually serialises those is LVM's own locking, which
+/// makes them block rather than corrupt — and the `timeout` wrappers in those
+/// units are what stop the blocking becoming permanent.
+///
+/// The reason this exists at all is failure, not throughput. Every caller here
+/// is on a reconcile loop, so when one call wedges the loop starts another on
+/// the next tick, and another, until the unit cannot be stopped at all.
 ///
 /// `try_lock` rather than `lock`: queueing behind a wedged call would just move
 /// the pile-up from processes into tasks. Refusing lets the reconciler say what
