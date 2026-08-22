@@ -30,6 +30,36 @@
 #     static list. Creation is driven at runtime by local-api from the
 #     yolab-disk-config ConfigMap (unchanged UI contract: the disk ON/OFF
 #     toggle), and this module only re-activates already-prepared OSDs at boot.
+#
+# EVERY NODE IS A PEER
+# --------------------
+# There is no master. Every machine runs its own mon, mgr, MDS and OSDs, and
+# the only thing the first machine does differently is *create* the cluster —
+# a one-time event, not a role it keeps. After that it is interchangeable with
+# any other node, and losing it costs no more than losing any other.
+#
+# The cost is stated plainly because it cannot be designed away: mons agree by
+# majority, so N mons tolerate (N-1)/2 failures. Two machines means two mons
+# means both must be up. That is deliberately accepted here — two machines was
+# never going to survive one of them dying anyway (two copies across two hosts
+# leaves you at min_size), and three machines is where it starts to.
+#
+# IF THE CLUSTER LOSES QUORUM
+# ---------------------------
+# Symptom: every `ceph` command hangs, and `ceph -s --connect-timeout 5` times
+# out on every node. It means fewer than a majority of the mons in the monmap
+# are running. If a machine is merely off, turn it back on — that is the whole
+# fix. If it is gone for good, edit the monmap by hand on a surviving node:
+#
+#   systemctl stop ceph-mon-$(hostname)
+#   ceph-mon -i $(hostname) --extract-monmap /tmp/monmap
+#   monmaptool /tmp/monmap --rm <name-of-the-dead-mon>
+#   ceph-mon -i $(hostname) --inject-monmap /tmp/monmap
+#   systemctl start ceph-mon-$(hostname)
+#
+# Nothing automates that on purpose: a node that is offline is indistinguishable
+# from one that has left, so an automatic version would let a rebooting machine
+# be evicted by its peer.
 {
   config,
   lib,
@@ -39,6 +69,20 @@
 with lib; let
   cfg = config.yolab.ceph;
   host = config.networking.hostName;
+
+  # The one-time asymmetry. Creating a cluster and joining one are different
+  # operations; being a member is not.
+  isBootstrap = cfg.joinSeedAddr == "";
+
+  # Ceph's address form: one bracketed group per mon, v2 and v1 inside it.
+  addrvec = a: "[v2:[${a}]:3300,v1:[${a}]:6789]";
+
+  # mon_host is a *seed* list, not the membership list — a client contacts any
+  # entry and is handed the real monmap. So this only has to name one reachable
+  # mon, and listing self plus the machine we joined through is enough for every
+  # cluster size. Membership itself lives in the monmap, which stays correct as
+  # mons come and go without any node needing a rebuild.
+  monSeeds = [cfg.monAddr] ++ optional (!isBootstrap) cfg.joinSeedAddr;
 in {
   options.yolab.ceph = {
     enable = mkEnableOption "host-level Ceph (outside Kubernetes)";
@@ -56,17 +100,44 @@ in {
       '';
     };
 
+    clusterSubnet = mkOption {
+      type = types.str;
+      default = "fd00:cafe::/112";
+      description = ''
+        The WireGuard mesh that every node's cluster address lives in, used as
+        Ceph's public_network.
+
+        It must be the SUBNET, never this node's own /128. public_network is how
+        a daemon picks which local address to bind, and a /128 describes a
+        network containing exactly one machine — which is precisely why the
+        original config could not grow: every node's ceph.conf described a
+        different, one-member cluster.
+      '';
+    };
+
     monInitialMembers = mkOption {
       type = types.listOf types.str;
       default = [host];
+      description = ''
+        Only consulted while a mon forms quorum from an *empty* monmap. Every mon
+        here is created with `--mkfs --monmap`, so it always has a real one and
+        this is inert; it is set to the local host to silence the upstream
+        module's warning about leaving it null.
+      '';
     };
 
-    isBootstrapNode = mkOption {
-      type = types.bool;
-      default = true;
+    joinSeedAddr = mkOption {
+      type = types.str;
+      default = "";
       description = ''
-        True on the node that creates the cluster. Joining nodes fetch keyrings
-        and the monmap from an existing mon rather than generating their own.
+        Cluster address of a machine that is already in the cluster, or "" on the
+        machine that creates it.
+
+        This is the only asymmetry in the design, and it is a one-time event
+        rather than a role: it says "fetch this cluster's identity from over
+        there" the first time this node boots. Once the mon store exists every
+        node is an equal peer — its own mon, mgr, MDS and OSDs — and nothing
+        reads this again.
       '';
     };
   };
@@ -78,10 +149,9 @@ in {
         inherit (cfg) fsid;
         clusterName = "ceph";
         monInitialMembers = concatStringsSep "," cfg.monInitialMembers;
-        monHost = "[v2:[${cfg.monAddr}]:3300,v1:[${cfg.monAddr}]:6789]";
-        # /128 because the cluster network is a WireGuard mesh of individual
-        # addresses, not a broadcast subnet.
-        publicNetwork = "${cfg.monAddr}/128";
+        monHost = concatStringsSep "," (map addrvec monSeeds);
+        # The whole WireGuard mesh, not this node's own /128 — see clusterSubnet.
+        publicNetwork = cfg.clusterSubnet;
         authClusterRequired = "cephx";
         authServiceRequired = "cephx";
         authClientRequired = "cephx";
@@ -111,6 +181,14 @@ in {
         # dead disk does. Reboots must still set noout — this only bounds the
         # damage when something forgets.
         mon_osd_down_out_interval = "600";
+
+        # How long a client waits to reach a mon before giving up. The default
+        # is 300s, which turns "the other machine is rebooting" into a five
+        # minute hang inside every unit that shells out to `ceph` — including
+        # yolab-containerd-store, which k3s is ordered after. Once there is more
+        # than one mon an unreachable quorum is an ordinary transient state, so
+        # it has to fail fast and be retried rather than block a boot.
+        client_mount_timeout = "30";
 
         # Cap BlueStore's cache so an OSD is never OOM-killed mid-write; a
         # SIGKILL can leave the BlueStore label half-written and unrecoverable.
@@ -149,10 +227,22 @@ in {
       "d /var/lib/ceph/bootstrap-osd 0750 ceph ceph -"
     ];
 
-    # ── Cluster bootstrap ────────────────────────────────────────────────────
-    # Idempotent: a reboot is a no-op and a rebuild never re-bootstraps.
+    # ── Create or join the cluster ───────────────────────────────────────────
+    #
+    # Both paths end at the same place: a mon store in /var/lib/ceph/mon that
+    # this node owns. From there on the two machines are indistinguishable —
+    # each runs its own mon, mgr, MDS and OSDs, and none is a master.
+    #
+    # This unit is `before` + `requiredBy` ceph-mon-<host>, so the mon daemon
+    # cannot start until it succeeds. That is also why the join path *fails*
+    # rather than exiting 0 when the seed is unreachable: a failed unit keeps
+    # the mon from starting against a store that was never created, and the
+    # retry timer below re-runs it until the other machine answers.
     systemd.services.yolab-ceph-bootstrap = {
-      description = "Bootstrap the Ceph cluster (keyrings, monmap, mon mkfs)";
+      description =
+        if isBootstrap
+        then "Create the Ceph cluster (keyrings, monmap, mon mkfs)"
+        else "Join the Ceph cluster (fetch keyrings, monmap, mon mkfs)";
       wantedBy = ["multi-user.target"];
       before = ["ceph-mon-${host}.service"];
       requiredBy = ["ceph-mon-${host}.service"];
@@ -162,36 +252,108 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      path = with pkgs; [ceph ceph-client coreutils];
+      path = with pkgs; [ceph ceph-client coreutils curl jq gnugrep systemd];
+      # At boot this is redundant — systemd already orders ceph-mon after us.
+      # It matters on a *retry*: when the first attempt failed, the mon's start
+      # job was dropped with it, so nothing would bring the daemon up when a
+      # later attempt finally succeeds. --no-block because the mon must not be
+      # waited on from inside a unit it is ordered after.
+      postStart = ''
+        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mon-${host}.service || true
+      '';
       script = ''
         set -euo pipefail
         MON_DIR=/var/lib/ceph/mon/ceph-${host}
         if [ -f "$MON_DIR/keyring" ]; then
-          echo "already bootstrapped"
+          echo "already a member of this cluster"
           exit 0
         fi
 
-        ${optionalString (!cfg.isBootstrapNode) ''
-          echo "not the bootstrap node — joining is handled by local-api at runtime"
-          exit 0
-        ''}
+        ${
+          if isBootstrap
+          then ''
+            # ── Create ────────────────────────────────────────────────────────
+            ceph-authtool --create-keyring /tmp/ceph.mon.keyring \
+              --gen-key -n mon. --cap mon 'allow *'
+            ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring \
+              --gen-key -n client.admin \
+              --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *'
+            ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring \
+              --gen-key -n client.bootstrap-osd \
+              --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'
+            ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
+            ceph-authtool /tmp/ceph.mon.keyring --import-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
 
-        ceph-authtool --create-keyring /tmp/ceph.mon.keyring \
-          --gen-key -n mon. --cap mon 'allow *'
-        ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring \
-          --gen-key -n client.admin \
-          --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *'
-        ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring \
-          --gen-key -n client.bootstrap-osd \
-          --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'
-        ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
-        ceph-authtool /tmp/ceph.mon.keyring --import-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
+            monmaptool --create \
+              --addv ${host} '${addrvec cfg.monAddr}' \
+              --fsid ${cfg.fsid} /tmp/monmap
 
-        monmaptool --create \
-          --addv ${host} '[v2:[${cfg.monAddr}]:3300,v1:[${cfg.monAddr}]:6789]' \
-          --fsid ${cfg.fsid} /tmp/monmap
+            mkdir -p "$MON_DIR"
+          ''
+          else ''
+            # ── Join ──────────────────────────────────────────────────────────
+            # Same WireGuard mesh and same shared secret as the k3s join: the
+            # account_token in config.toml is what already authorizes a machine
+            # to become a control-plane peer, so it authorizes this too. It is a
+            # separate endpoint from /api/cluster/join-info only because that one
+            # must keep answering when Ceph is down — otherwise a storage fault
+            # on this machine would stop a new node joining Kubernetes at all.
+            SEED='${cfg.joinSeedAddr}'
+            CONFIG="${config.yolab.repoPath}/homelab/ignored/config.toml"
 
-        mkdir -p "$MON_DIR"
+            TOKEN=$(grep -oP 'account_token\s*=\s*"\K[^"]+' "$CONFIG" 2>/dev/null | head -n1 || true)
+            if [ -z "$TOKEN" ]; then
+              echo "no tunnel.account_token in $CONFIG — cannot authenticate to [$SEED]" >&2
+              exit 1
+            fi
+
+            if ! BUNDLE=$(curl -fsS --max-time 20 \
+                  -H "x-yolab-cluster: $TOKEN" \
+                  "http://[$SEED]:3001/api/cluster/ceph-join"); then
+              echo "[$SEED] did not hand over the cluster credentials; retrying on the timer" >&2
+              exit 1
+            fi
+
+            # The one check that must never be skipped. The installer copies the
+            # fsid across with the k3s token, and a mismatch means this machine
+            # is about to mkfs a mon for a DIFFERENT cluster — which does not
+            # fail loudly, it quietly produces a second isolated cluster that
+            # looks fine until someone wonders where their data went.
+            SEED_FSID=$(printf '%s' "$BUNDLE" | jq -r '.fsid // ""')
+            if [ "$SEED_FSID" != '${cfg.fsid}' ]; then
+              echo "refusing to join: [$SEED] runs cluster $SEED_FSID, this node is configured for ${cfg.fsid}" >&2
+              exit 1
+            fi
+
+            umask 077
+            printf '%s' "$BUNDLE" | jq -er '.admin_keyring' > /etc/ceph/ceph.client.admin.keyring
+            printf '%s' "$BUNDLE" | jq -er '.bootstrap_osd_keyring' > /var/lib/ceph/bootstrap-osd/ceph.keyring
+            printf '%s' "$BUNDLE" | jq -er '.mon_keyring' > /tmp/ceph.mon.keyring
+            chown ceph:ceph /etc/ceph/ceph.client.admin.keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
+
+            # Fetched live rather than shipped in the bundle: a copied monmap is
+            # a snapshot that is wrong the moment mon membership changes, and
+            # with client.admin in place this is one call.
+            rm -f /tmp/monmap
+            for _ in $(seq 1 30); do
+              ceph --connect-timeout 10 mon getmap -o /tmp/monmap >/dev/null 2>&1 && break
+              sleep 2
+            done
+            if [ ! -s /tmp/monmap ]; then
+              echo "could not fetch a monmap from the cluster; retrying on the timer" >&2
+              exit 1
+            fi
+
+            # Only reached when $MON_DIR/keyring is absent, i.e. the store is not
+            # one the mon can start from (ConditionPathExists in the upstream
+            # unit guarantees the daemon never opened it). Clearing a half-built
+            # store is what makes a retry after an interrupted join work at all:
+            # ceph-mon --mkfs refuses to write into a non-empty directory.
+            rm -rf "$MON_DIR"
+            mkdir -p "$MON_DIR"
+          ''
+        }
+
         ceph-mon --mkfs -i ${host} --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring
         cp /tmp/ceph.mon.keyring "$MON_DIR/keyring"
         chown -R ceph:ceph /var/lib/ceph
@@ -200,6 +362,101 @@ in {
       '';
     };
 
+    # Retry, for joining nodes only. The other machine can be rebooting, or its
+    # WireGuard may not be up yet — neither is a fault, and neither should mean
+    # a machine sits permanently outside the storage cluster until someone
+    # notices. The bootstrap node has nothing to retry: its work is local.
+    #
+    # OnUnitInactiveSec as well as OnUnitActiveSec because a *failed* attempt
+    # never reaches the active state, and OnUnitActiveSec alone would therefore
+    # never fire again. Once the unit succeeds, RemainAfterExit leaves it active
+    # and further starts are no-ops.
+    systemd.timers.yolab-ceph-bootstrap = mkIf (!isBootstrap) {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnBootSec = "1min";
+        OnUnitActiveSec = "2min";
+        OnUnitInactiveSec = "2min";
+      };
+    };
+
+    # ── Quorum membership ────────────────────────────────────────────────────
+    # Having a mon store and a running daemon is not the same as being in the
+    # monmap. A starting mon that is absent from the map asks the leader to add
+    # it (MMonJoin), which is normally all that is needed; this is the explicit
+    # fallback for when that has not happened, plus the place where the ordering
+    # rule below is enforced.
+    #
+    # THE ORDERING RULE: never touch the monmap while this node's own mon is
+    # down. Adding a mon raises the quorum requirement immediately — on a
+    # one-mon cluster the majority goes from 1 to 2 — so the new mon must
+    # already be running and able to sync within seconds. Adding it first and
+    # starting it afterwards would leave the cluster with no quorum and no way
+    # to run `ceph mon remove`, because that command needs the quorum it just
+    # lost.
+    systemd.services.yolab-ceph-mon-member = mkIf (!isBootstrap) {
+      description = "Ensure this node's mon is in the monmap";
+      after = ["ceph-mon-${host}.service"];
+      serviceConfig.Type = "oneshot";
+      path = with pkgs; [ceph ceph-client coreutils jq systemd];
+      script = ''
+        set -uo pipefail
+        MON_DIR=/var/lib/ceph/mon/ceph-${host}
+        if [ ! -f "$MON_DIR/keyring" ]; then
+          echo "this node has not joined yet — yolab-ceph-bootstrap runs first"
+          exit 0
+        fi
+
+        if ! systemctl is-active --quiet ceph-mon-${host}.service; then
+          systemctl start --no-block ceph-mon-${host}.service
+          echo "started the local mon; membership is checked on the next run"
+          exit 0
+        fi
+
+        in_monmap() {
+          ceph --connect-timeout 10 mon dump -f json 2>/dev/null \
+            | jq -e --arg n '${host}' 'any(.mons[]; .name == $n)' >/dev/null
+        }
+
+        # --connect-timeout on every call, tighter than the 30s
+        # client_mount_timeout in ceph.conf: this unit runs on a timer, so
+        # returning quickly and trying again beats waiting out a full timeout
+        # while a peer reboots.
+        for _ in $(seq 1 30); do
+          ceph --connect-timeout 10 -s >/dev/null 2>&1 && break
+          sleep 2
+        done
+        if ! ceph --connect-timeout 10 -s >/dev/null 2>&1; then
+          echo "cluster is not answering — not touching the monmap"
+          exit 0
+        fi
+
+        if in_monmap; then
+          echo "${host} is already in the monmap"
+          exit 0
+        fi
+
+        echo "adding ${host} to the monmap"
+        ceph --connect-timeout 10 mon add ${host} '${addrvec cfg.monAddr}' || true
+
+        for _ in $(seq 1 60); do
+          if in_monmap; then
+            echo "${host} joined the quorum"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "${host} is still not in the monmap — see this module's header for recovery" >&2
+      '';
+    };
+
+    systemd.timers.yolab-ceph-mon-member = mkIf (!isBootstrap) {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnBootSec = "3min";
+        OnUnitActiveSec = "5min";
+      };
+    };
     # ── mgr key ──────────────────────────────────────────────────────────────
     # The mgr refuses to start without its own cephx key, and only the mon can
     # mint one — so this has to happen between the two.
@@ -213,7 +470,13 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      path = with pkgs; [ceph ceph-client coreutils];
+      path = with pkgs; [ceph ceph-client coreutils systemd];
+      # Same reason as yolab-ceph-bootstrap's: at boot systemd already orders
+      # ceph-mgr after this, but if this attempt failed the mgr's start job died
+      # with it, and nothing would bring the daemon up when the retry succeeds.
+      postStart = ''
+        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mgr-${host}.service || true
+      '';
       script = ''
         set -euo pipefail
         MGR_DIR=/var/lib/ceph/mgr/ceph-${host}
@@ -223,11 +486,33 @@ in {
           ceph -s >/dev/null 2>&1 && break
           sleep 1
         done
+        # Fail rather than press on: only the mon can mint this key, so an
+        # unreachable cluster means "not yet", not "no key needed". On a joining
+        # node this is the ordinary state until yolab-ceph-bootstrap succeeds,
+        # which is why the unit has a retry timer.
+        if ! ceph -s >/dev/null 2>&1; then
+          echo "cluster not reachable — cannot mint the mgr key yet" >&2
+          exit 1
+        fi
         ceph auth get-or-create mgr.${host} \
           mon 'allow profile mgr' osd 'allow *' mds 'allow *' \
           -o "$MGR_DIR/keyring"
         chown -R ceph:ceph "$MGR_DIR"
       '';
+    };
+
+    # The mon may not exist yet — on a joining node it does not until the
+    # cluster hands over its credentials. Without this the mgr would stay down
+    # until the next reboot, because a failed oneshot is never retried on its
+    # own. OnUnitInactiveSec as well, because a failed unit never reaches the
+    # active state that OnUnitActiveSec measures from.
+    systemd.timers.yolab-ceph-mgr-key = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = "5min";
+        OnUnitInactiveSec = "2min";
+      };
     };
 
     # ── OSD daemons ──────────────────────────────────────────────────────────

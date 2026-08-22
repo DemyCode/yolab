@@ -48,7 +48,12 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      path = with pkgs; [ceph ceph-client coreutils];
+      path = with pkgs; [ceph ceph-client coreutils systemd];
+      # At boot systemd already orders ceph-mds after this; this matters on a
+      # retry, where the failed first attempt took the MDS's start job with it.
+      postStart = ''
+        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mds-${host}.service || true
+      '';
       script = ''
         set -euo pipefail
         MDS_DIR=/var/lib/ceph/mds/ceph-${host}
@@ -58,11 +63,30 @@ in {
           ceph -s >/dev/null 2>&1 && break
           sleep 1
         done
+        # Only the mon can mint this, so an unreachable cluster means "not yet".
+        # On a joining node that is the ordinary state until the cluster hands
+        # over its credentials — hence the retry timer below.
+        if ! ceph -s >/dev/null 2>&1; then
+          echo "cluster not reachable — cannot mint the MDS key yet" >&2
+          exit 1
+        fi
         ceph auth get-or-create mds.${host} \
           mon 'profile mds' mgr 'profile mds' osd 'allow rwx' mds 'allow *' \
           -o "$MDS_DIR/keyring"
         chown -R ceph:ceph "$MDS_DIR"
       '';
+    };
+
+    # Without this a joining node's MDS stays down until the next reboot: a
+    # failed oneshot is never retried on its own, and on a joining node the
+    # first attempt necessarily runs before the cluster credentials arrive.
+    systemd.timers.yolab-ceph-mds-key = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = "5min";
+        OnUnitInactiveSec = "2min";
+      };
     };
 
     systemd.tmpfiles.rules = [

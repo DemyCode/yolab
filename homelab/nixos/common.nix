@@ -20,6 +20,29 @@ let
   # can live on an RBD — see homelab/nixos/ceph/default.nix for why that is not
   # possible while the mons are pods.
   cephCfg = s.homelabConfig.ceph or { };
+
+  # The mesh address of a machine already in the cluster, taken from the k3s
+  # server URL the installer wrote — same tunnel, same peer, one fewer thing to
+  # keep in sync. Empty on the machine that creates the cluster.
+  #
+  # A `throw` rather than a fallback to "": silently treating an unparseable
+  # server_addr as "this is the first node" would make a joining machine
+  # bootstrap its own Ceph cluster instead of joining, which looks healthy on
+  # both nodes and is only discovered when the storage turns out to be split.
+  cephSeedAddr =
+    if isFirstNode then
+      ""
+    else
+      let
+        # `]` is deliberately unescaped outside the bracket expression: Nix uses POSIX
+        # ERE, where `\]` is not a valid escape and the whole pattern is rejected at
+        # eval time with "invalid regular expression".
+        m = builtins.match "https?://\\[([^]]+)]:[0-9]+" k3sCfg.server_addr;
+      in
+      if m == null then
+        throw "[ceph] cannot read a cluster address out of node.k3s.server_addr (${k3sCfg.server_addr}); expected https://[<ipv6>]:6443"
+      else
+        builtins.head m;
 in
 {
   imports = [
@@ -74,7 +97,10 @@ in
       enable = true;
       fsid = cephCfg.fsid or (throw "[ceph] fsid is required in config.toml");
       monAddr = s.nodeCfg.sub_ipv6_private;
-      isBootstrapNode = isFirstNode;
+      # The mesh, not this node's /128 — see yolab.ceph.clusterSubnet.
+      clusterSubnet = s.privateSubnet;
+      # "" on the first machine; every other machine joins through this one.
+      joinSeedAddr = cephSeedAddr;
       imagesStore.enable = true;
       # CephFS behind every app PVC, and the credentials ceph-csi needs to
       # reach it. Rook stays only to run CSI, in external mode.

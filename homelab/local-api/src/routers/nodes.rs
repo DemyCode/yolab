@@ -207,6 +207,11 @@ pub fn parse_join_info(text: &str) -> anyhow::Result<JoinInfo> {
 
     Ok(JoinInfo {
         k3s_token,
+        // This exact shape is parsed back out in homelab/nixos/common.nix
+        // (`cephSeedAddr`) to find the mon to join through — same tunnel, same
+        // peer, so there is nothing extra to keep in sync. Changing the format
+        // here breaks the Ceph join on the next machine that installs; it fails
+        // loudly at eval time rather than silently, but only on that machine.
         server_addr: format!("https://[{sub_ipv6_private}]:6443"),
         account_token,
         platform_api_url,
