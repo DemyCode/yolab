@@ -17,6 +17,22 @@
 # Note: nix builds from the git index, not the working directory, so a brand new
 # file is invisible to these until `git add -N` (or a real `git add`). Editing a
 # file that is already tracked needs nothing.
+#
+# THE NIXOS MODULES ARE NOT COVERED HERE, and that is a real gap. Evaluating
+# them needs a config.toml at a fixed path, so it cannot be a pure derivation
+# without a refactor of homelab/shared.nix. Until then, both halves of the
+# cluster have to be checked by hand — and BOTH matter, because creating a
+# cluster and joining one are different code paths in k3s and in Ceph:
+#
+#   # only on a machine with no real config.toml to lose:
+#   cp homelab/ci-config.toml      homelab/ignored/config.toml   # creates
+#   nix build --no-link path:.#nixosConfigurations.yolab.config.system.build.toplevel
+#   cp homelab/ci-join-config.toml homelab/ignored/config.toml   # joins
+#   nix build --no-link path:.#nixosConfigurations.yolab.config.system.build.toplevel
+#   rm homelab/ignored/config.toml
+#
+# NEVER run that on a node: it overwrites the machine's real config.toml, which
+# is untracked and holds secrets that exist nowhere else.
 {
   pkgs,
   inputs,

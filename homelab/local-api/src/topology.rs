@@ -57,8 +57,19 @@ pub struct Target {
 /// Pure decision function: given the policy and observed topology, what should
 /// Ceph's redundancy look like? Kept pure so it can be unit-tested.
 pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
-    // Real mon HA needs 3 (mons must be odd; 2 is worse than 1). Only 3+ nodes.
-    let (mon, mgr) = if topo.nodes >= 3 { (3, 2) } else { (1, 1) };
+    // Every machine runs its own mon, mgr and MDS. No node is a permanent
+    // master: the first machine only *creates* the cluster, and after that it is
+    // interchangeable with any other.
+    //
+    // So these two are not a target this controller drives toward — a mon exists
+    // because a machine runs one, and that is decided by the node-join flow in
+    // homelab/nixos/ceph/default.nix, not here. They are kept so the UI can show
+    // the expected footprint and so apply_mon_mgr can report drift from it.
+    //
+    // The cost of one-mon-per-node is explicit and accepted: Paxos needs a
+    // majority, so at two machines BOTH must be up. Three machines is where
+    // losing one becomes survivable.
+    let (mon, mgr) = (topo.nodes.max(1), topo.nodes.max(1));
 
     let (mut size, mut min_size, fd) = if policy.mode == "manual" {
         (policy.size, policy.min_size, policy.failure_domain.clone())
@@ -208,37 +219,47 @@ async fn tick() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Reconcile the mon/mgr footprint toward the target.
+/// Report drift between the mon footprint and one-mon-per-node.
+///
+/// Deliberately observational: it reads, logs, and changes nothing.
 ///
 /// Under Rook this patched `spec.mon.count` and the operator scheduled however
-/// many mon pods that implied. With Ceph on the host there is no such dial: a
-/// mon exists because a *machine* runs one (services.ceph.mon.daemons is that
-/// node's own hostname), so the count is emergent from cluster membership
-/// rather than something one node can set.
+/// many mon pods that implied. With Ceph on the host there is no such dial — a
+/// mon exists because a *machine* runs one — and the node-join flow in
+/// homelab/nixos/ceph/default.nix is what creates it, at the one moment where
+/// the joining machine is provably able to run it.
 ///
-/// Growing quorum therefore means bootstrapping a mon on the joining node and
-/// calling `ceph mon add` — that belongs to the node-join flow, not here, and
-/// is not implemented yet. This function reports the gap instead of silently
-/// doing nothing, so a 3-node cluster still running one mon is visible in the
-/// logs rather than looking like healthy convergence.
+/// Both directions are left alone on purpose:
+///
+///   * Too few mons means a machine has joined Kubernetes but its Ceph has not
+///     come up yet. That resolves itself on the joining node's bootstrap retry
+///     timer, and acting on it from here would mean this node reaching into
+///     another machine to start a daemon.
+///
+///   * Too many is the dangerous one. Removing a mon can cost quorum outright,
+///     and — critically — a node that is merely *offline* is indistinguishable
+///     from one that has left. Automating removal would mean a rebooting
+///     machine could be evicted from the quorum by a peer.
 async fn apply_mon_mgr(target: &Target) {
     let Ok(dump) = crate::ceph_cli::ceph_json(&["mon", "dump"]).await else {
         return;
     };
     let cur_mon = dump["mons"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
+    if cur_mon == target.mon {
+        return;
+    }
 
     if cur_mon < target.mon {
-        tracing::warn!(
-            "topology: {cur_mon} mon(s) for {} target — quorum will not grow until joining nodes \
-             bootstrap their own mon and run `ceph mon add`, which the node-join flow does not do yet",
+        tracing::info!(
+            "topology: {cur_mon} mon(s) across {} node(s) — a machine has joined Kubernetes but \
+             its Ceph has not yet; its yolab-ceph-bootstrap retry timer will pick it up",
             target.mon
         );
-    } else if cur_mon > target.mon && cluster_health().await == "HEALTH_OK" {
-        // Shrinking is safe to describe but not to automate: removing the wrong
-        // mon can cost quorum outright, and a node that is merely offline must
-        // never be interpreted as a node that left.
+    } else {
         tracing::info!(
-            "topology: {cur_mon} mon(s) exceeds target {}; removal is operator-driven, not automatic",
+            "topology: {cur_mon} mon(s) for {} node(s) — a machine has left. Removal is \
+             operator-driven (`ceph mon remove <name>`): an offline node must never be \
+             auto-evicted from the quorum.",
             target.mon
         );
     }
@@ -380,16 +401,22 @@ mod tests {
         assert_eq!((t.size, t.failure_domain.as_str()), (2, "osd"));
     }
 
+    /// Two machines: two copies across two hosts, and a mon on each.
+    ///
+    /// The mon count is the accepted cost of every node being a peer. Two mons
+    /// need a majority of two, so both machines must stay up — worse
+    /// availability than a single mon, but no machine is special and no single
+    /// machine dying takes the *data* with it.
     #[test]
-    fn two_nodes_host_domain_single_mon() {
+    fn two_nodes_host_domain_and_a_mon_on_each() {
         let t = compute_target(&auto(), &Topology { nodes: 2, osds: 2, osd_hosts: 2 });
-        assert_eq!((t.size, t.failure_domain.as_str(), t.mon), (2, "host", 1));
+        assert_eq!((t.size, t.failure_domain.as_str(), t.mon), (2, "host", 2));
     }
 
     #[test]
     fn three_nodes_full_ha() {
         let t = compute_target(&auto(), &Topology { nodes: 3, osds: 3, osd_hosts: 3 });
-        assert_eq!((t.size, t.min_size, t.failure_domain.as_str(), t.mon, t.mgr), (3, 2, "host", 3, 2));
+        assert_eq!((t.size, t.min_size, t.failure_domain.as_str(), t.mon, t.mgr), (3, 2, "host", 3, 3));
     }
 
     /// The bug a second machine walks straight into.

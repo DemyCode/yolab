@@ -21,7 +21,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use auth::{auth_middleware, AuthState};
 use config::Config;
-use routers::{apps, backups, ceph, disks, nodes, rebuild, status, terminal, update};
+use routers::{apps, backups, ceph, ceph_join, disks, nodes, rebuild, status, terminal, update};
 
 /// Single shared state threaded through all handlers.
 #[derive(Clone)]
@@ -112,6 +112,10 @@ async fn main() {
         .route("/api/nodes/links", get(nodes::node_links))
         .route("/api/nodes/traffic", get(nodes::traffic))
         .route("/api/cluster/join-info", get(nodes::join_info))
+        // Ceph credentials for a machine that is joining. Authorized by the shared
+        // account_token, like every other node-to-node call — the same secret that
+        // already authorizes joining k3s.
+        .route("/api/cluster/ceph-join", get(ceph_join::ceph_join_bundle))
         // Apps
         .route("/api/apps/repos", get(apps::list_repos).post(apps::add_repo))
         .route("/api/apps/repos/:name", delete(apps::remove_repo))

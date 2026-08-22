@@ -3,6 +3,7 @@ pub mod backup_common;
 pub mod backup_run;
 pub mod backups;
 pub mod ceph;
+pub mod ceph_join;
 pub mod disks;
 pub mod nodes;
 pub mod rebuild;

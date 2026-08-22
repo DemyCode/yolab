@@ -52,7 +52,27 @@ in {
         fi
 
         FSID=$(ceph fsid)
-        MON_ADDR="[${cephCfg.monAddr}]:6789"
+
+        # Every mon in the map, not this node's own address.
+        #
+        # Hardcoding one mon made CSI depend on one specific machine: when that
+        # machine reboots, every PVC mount on every *other* node fails, because
+        # the only monitor the driver knows about is gone. ceph-csi is given a
+        # list and tries them in turn, so this is the difference between "a node
+        # rebooted" and "storage went away".
+        #
+        # The v1 endpoint (6789) because that is what librados expects from a
+        # bare host:port; handing it the v2 port is a silent connection failure.
+        MON_DUMP=$(ceph mon dump -f json 2>/dev/null || true)
+        MON_JSON=$(printf '%s' "$MON_DUMP" \
+          | jq -c '[.mons[].public_addrs.addrvec[] | select(.type == "v1") | .addr]' 2>/dev/null || true)
+        if [ -z "$MON_JSON" ] || [ "$MON_JSON" = "[]" ]; then
+          echo "no mon address in ceph mon dump — not publishing a broken CSI config"
+          exit 0
+        fi
+        # Rook's own bookkeeping ConfigMap wants "name=addr,name=addr".
+        MON_ENDPOINTS=$(printf '%s' "$MON_DUMP" | jq -r \
+          '[.mons[] | .name as $n | (.public_addrs.addrvec[] | select(.type == "v1") | .addr) | "\($n)=\(.)"] | join(",")')
 
         # CSI needs restricted users, not client.admin. These caps are the ones
         # Rook's own import script grants; broader caps would hand every CSI pod
@@ -139,12 +159,12 @@ in {
           --from-literal=ceph-secret="$ADMIN_KEY" \
           --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-        CSI_CFG=$(jq -nc --arg mon "$MON_ADDR" \
-          '[{clusterID:"${ns}",monitors:[$mon],cephFS:{subvolumeGroup:""},rbd:{}}]')
+        CSI_CFG=$(jq -nc --argjson mons "$MON_JSON" \
+          '[{clusterID:"${ns}",monitors:$mons,cephFS:{subvolumeGroup:""},rbd:{}}]')
 
         # Mon endpoints for Rook's own bookkeeping.
         kubectl create configmap rook-ceph-mon-endpoints -n ${ns} \
-          --from-literal=data="${host}=$MON_ADDR" \
+          --from-literal=data="$MON_ENDPOINTS" \
           --from-literal=maxMonId=0 \
           --from-literal=mapping='{}' \
           --from-literal=csi-cluster-config-json="$CSI_CFG" \
@@ -164,7 +184,7 @@ in {
                --from-literal=csi-cluster-config-json="$CSI_CFG" \
                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-        echo "published Ceph credentials for fsid $FSID, mon $MON_ADDR"
+        echo "published Ceph credentials for fsid $FSID, mons $MON_ENDPOINTS"
       '';
     };
 
