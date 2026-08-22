@@ -321,13 +321,25 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      # --no-link throughout, and the ISO's store path captured as a step output.
+      #
+      # `nix build` without --out-link creates a symlink named `result`, so each
+      # build here overwrote the last: `result` ended up pointing at
+      # homelab-api, and the "Get ISO info" step below then looked for
+      # result/iso/*.iso inside it and found nothing. That was latent for as
+      # long as the cache-push step failed ahead of it and aborted the job
+      # first — removing that step is what surfaced it.
       - name: Build ISO
-        run: nix build path:.#iso --print-build-logs --print-out-paths --verbose
+        id: build_iso
+        run: |
+          ISO_OUT=$(nix build path:.#iso --no-link --print-build-logs --print-out-paths)
+          echo "store_path=$ISO_OUT" >> "$GITHUB_OUTPUT"
+          echo "ISO store path: $ISO_OUT"
 
       - name: Build homelab packages
         run: |
-          nix build path:.#homelab-ui --print-build-logs --print-out-paths --verbose
-          nix build path:.#homelab-api --print-build-logs --print-out-paths --verbose
+          nix build path:.#homelab-ui --no-link --print-build-logs --print-out-paths
+          nix build path:.#homelab-api --no-link --print-build-logs --print-out-paths
 
       # No "Push to Nix cache" step. It pushed the ISO, UI and API to an Attic
       # cache at cache.demycode.ovh that nothing ever read: no substituter in
@@ -342,7 +354,7 @@ jobs:
       - name: Get ISO info
         id: iso_info
         run: |
-          ISO_PATH=$(readlink -f result/iso/*.iso)
+          ISO_PATH=$(readlink -f "${{ steps.build_iso.outputs.store_path }}"/iso/*.iso)
           ISO_NAME=$(basename "$ISO_PATH")
           echo "iso_path=$ISO_PATH" >> $GITHUB_OUTPUT
           echo "iso_name=$ISO_NAME" >> $GITHUB_OUTPUT
