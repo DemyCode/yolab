@@ -251,6 +251,12 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # `Type=oneshot` disables the start timeout by default — it is the one
+        # service type systemd leaves unbounded. Every oneshot in this directory
+        # now sets it explicitly, because one of them hanging forever is not a
+        # theoretical risk: on node3 `rbd ls` blocked on an OSD read that could
+        # never complete, and k3s, ordered behind it, never started.
+        TimeoutStartSec = "300s";
       };
       path = with pkgs; [ceph ceph-client coreutils curl jq gnugrep systemd];
       # At boot this is redundant — systemd already orders ceph-mon after us.
@@ -397,7 +403,10 @@ in {
     systemd.services.yolab-ceph-mon-member = mkIf (!isBootstrap) {
       description = "Ensure this node's mon is in the monmap";
       after = ["ceph-mon-${host}.service"];
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        TimeoutStartSec = "300s";
+      };
       path = with pkgs; [ceph ceph-client coreutils jq systemd];
       script = ''
         set -uo pipefail
@@ -469,6 +478,7 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        TimeoutStartSec = "180s";
       };
       path = with pkgs; [ceph ceph-client coreutils systemd];
       # Same reason as yolab-ceph-bootstrap's: at boot systemd already orders
@@ -632,6 +642,10 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # Generous: it starts one OSD per prepared disk, and each start runs
+        # ceph-volume. Bounded all the same — an unbounded oneshot holds
+        # multi-user.target, and with it every service ordered after it.
+        TimeoutStartSec = "600s";
       };
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq systemd];
       script = ''

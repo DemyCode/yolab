@@ -131,12 +131,24 @@ in {
       # Deliberately NOT RemainAfterExit: on a fresh cluster this runs before any
       # OSD exists and exits cleanly with nothing to do. It has to be able to run
       # again once the user switches a disk on, so the timer below re-runs it.
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        # `Type=oneshot` DISABLES the start timeout by default — it is the one
+        # service type systemd does not bound. Every unit in this directory was
+        # therefore able to hang forever, and on node3 one did: `rbd ls` blocked
+        # on an OSD read that could never complete, and k3s (ordered behind it)
+        # never started at all. Nothing was broken on that machine; it was
+        # waiting on a disk in another one.
+        TimeoutStartSec = "300s";
+      };
       path = cephPath;
       script = ''
         set -uo pipefail
-        for _ in $(seq 1 90); do ceph -s >/dev/null 2>&1 && break; sleep 1; done
-        if ! ceph -s >/dev/null 2>&1; then
+        # `timeout` on every Ceph call in this file. client_mount_timeout bounds
+        # reaching a MON; it does nothing for a request to an OSD, which is what
+        # `rbd ls` and `ceph df` actually do. With no OSD up those block forever.
+        for _ in $(seq 1 90); do timeout 20 ceph -s >/dev/null 2>&1 && break; sleep 1; done
+        if ! timeout 20 ceph -s >/dev/null 2>&1; then
           echo "ceph not reachable — nothing to provision yet"
           exit 0
         fi
@@ -146,10 +158,10 @@ in {
         # reconciler creates one, so this is an ordinary state to be in — exit
         # cleanly and let a later run pick it up, rather than failing the boot.
         for _ in $(seq 1 90); do
-          ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up' && break
+          timeout 20 ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up' && break
           sleep 1
         done
-        if ! ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up'; then
+        if ! timeout 20 ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up'; then
           echo "no OSD is up yet — the images pool will be created once a disk is switched on"
           exit 0
         fi
@@ -163,7 +175,7 @@ in {
         fi
 
         # Size from capacity that actually exists (see header, point 2).
-        TOTAL_MB=$(ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
+        TOTAL_MB=$(timeout 30 ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
         WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
         MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
         # Explicit `if`, not `[ ... ] && ...`: under `set -e` that idiom exits the
@@ -201,6 +213,11 @@ in {
         RemainAfterExit = true;
         # Never let this unit's failure propagate into k3s.
         SuccessExitStatus = "0 1";
+        # The tightest timeout in this directory, because k3s is ordered after
+        # this unit and therefore waits exactly this long in the worst case.
+        # Booting without the image store costs one cycle on the root disk;
+        # not booting at all costs the machine.
+        TimeoutStartSec = "120s";
       };
       path = cephPath;
       script = ''
@@ -209,11 +226,11 @@ in {
         # Bail out cleanly whenever Ceph is not ready yet. containerd then comes
         # up on the root disk, exactly as it did before this feature existed,
         # and the next boot picks up the RBD once an OSD exists.
-        if ! ceph -s >/dev/null 2>&1; then
+        if ! timeout 20 ceph -s >/dev/null 2>&1; then
           echo "ceph not reachable — leaving containerd on the root disk for this boot"
           exit 0
         fi
-        if ! rbd ls ${cfg.poolName} 2>/dev/null | grep -qx ${host}; then
+        if ! timeout 30 rbd ls ${cfg.poolName} 2>/dev/null | grep -qx ${host}; then
           echo "no ${cfg.poolName}/${host} image yet — leaving containerd on the root disk for this boot"
           exit 0
         fi
@@ -224,7 +241,15 @@ in {
         fi
 
         # Idempotent: rbd map on an already-mapped image just reports it.
-        DEV=$(rbd map ${cfg.poolName}/${host} 2>/dev/null || rbd showmapped --format json \
+        # osd_request_timeout is THE setting behind the worst failure this
+        # storage stack has had. krbd defaults to 0 — wait forever — so when the
+        # pool cannot serve a read, anything touching the mapped device parks in
+        # uninterruptible sleep. SIGKILL does not end a D-state process: systemd
+        # gave up, left the debris in the cgroup, and a nixos-rebuild hung behind
+        # it for 17 minutes. With a timeout the same situation produces an I/O
+        # error, which is recoverable.
+        DEV=$(timeout 60 rbd map ${cfg.poolName}/${host} -o osd_request_timeout=30 2>/dev/null \
+          || timeout 30 rbd showmapped --format json \
           | jq -r '.[] | select(.pool=="${cfg.poolName}" and .name=="${host}") | .device')
         if [ -z "$DEV" ]; then
           echo "could not map ${cfg.poolName}/${host} — leaving containerd on the root disk" >&2
@@ -314,7 +339,10 @@ in {
       # fail noisily with "unable to find a keyring" on a cluster that is
       # perfectly healthy — observed on the first live switch.
       after = ["yolab-containerd-store.service"];
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        TimeoutStartSec = "300s";
+      };
       path = cephPath;
       script = ''
         set -uo pipefail
@@ -331,8 +359,8 @@ in {
           exit 0
         fi
         set -e
-        CUR_MB=$(rbd info ${cfg.poolName}/${host} --format json | jq -r '.size / 1048576 | floor')
-        TOTAL_MB=$(ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
+        CUR_MB=$(timeout 30 rbd info ${cfg.poolName}/${host} --format json | jq -r '.size / 1048576 | floor')
+        TOTAL_MB=$(timeout 30 ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
         WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
         MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
         # Explicit `if`, not `[ ... ] && ...`: under `set -e` that idiom exits the

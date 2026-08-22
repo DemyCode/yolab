@@ -30,7 +30,12 @@ in {
       description = "Publish host Ceph credentials into Kubernetes for ceph-csi";
       wantedBy = ["multi-user.target"];
       after = ["k3s.service" "ceph-mon-${host}.service"];
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        # `Type=oneshot` disables the start timeout by default; see the note on
+        # yolab-ceph-bootstrap in default.nix.
+        TimeoutStartSec = "180s";
+      };
       environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       path = with pkgs; [ceph ceph-client k3s coreutils gnugrep jq];
       # NOTE: NixOS wraps `script` with `set -e` already, so the `set -uo
@@ -42,7 +47,7 @@ in {
 
         # Both sides have to be up. Neither being ready is an ordinary state on
         # a fresh boot, so exit cleanly and let the timer retry.
-        if ! ceph -s >/dev/null 2>&1; then
+        if ! timeout 20 ceph -s >/dev/null 2>&1; then
           echo "ceph not reachable yet"
           exit 0
         fi
@@ -51,7 +56,7 @@ in {
           exit 0
         fi
 
-        FSID=$(ceph fsid)
+        FSID=$(timeout 20 ceph fsid)
 
         # Every mon in the map, not this node's own address.
         #
@@ -63,7 +68,7 @@ in {
         #
         # The v1 endpoint (6789) because that is what librados expects from a
         # bare host:port; handing it the v2 port is a silent connection failure.
-        MON_DUMP=$(ceph mon dump -f json 2>/dev/null || true)
+        MON_DUMP=$(timeout 20 ceph mon dump -f json 2>/dev/null || true)
         MON_JSON=$(printf '%s' "$MON_DUMP" \
           | jq -c '[.mons[].public_addrs.addrvec[] | select(.type == "v1") | .addr]' 2>/dev/null || true)
         if [ -z "$MON_JSON" ] || [ "$MON_JSON" = "[]" ]; then
