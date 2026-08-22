@@ -488,11 +488,10 @@ impl App {
             AppEvent::JoinConnected { server_addr, k3s_token, ceph_fsid } => {
                 self.join_server_addr = Some(server_addr);
                 self.join_k3s_token = Some(k3s_token);
-                // An older node predating host-level Ceph returns "". Leaving it
-                // None makes this node generate its own fsid, which would build a
-                // second, isolated storage cluster that silently shares no data
-                // with the first — so refuse it rather than guess.
-                self.join_ceph_fsid = if ceph_fsid.is_empty() { None } else { Some(ceph_fsid) };
+                // Non-empty by construction: parse_join_response refuses an empty
+                // one rather than letting install.rs generate a fresh fsid, which
+                // would build a second isolated storage cluster.
+                self.join_ceph_fsid = Some(ceph_fsid);
                 // Pre-fill the configure password from the join password — same homelab, same password.
                 if self.password.is_empty() {
                     self.password  = self.join_pass.clone();
@@ -732,10 +731,56 @@ async fn do_fetch_join_info(
         .json::<serde_json::Value>()
         .await?;
 
-    let server_addr = info["server_addr"].as_str().unwrap_or("").to_string();
-    let k3s_token = info["k3s_token"].as_str().unwrap_or("").to_string();
+    parse_join_response(&info)
+}
+
+/// Pull the four join fields out of the other node's reply, refusing anything
+/// incomplete.
+///
+/// Every field here used to be read with `.unwrap_or("")`, so an error body — or
+/// a node running a build old enough not to send these — was reported to the
+/// user as a SUCCESSFUL connection carrying empty strings. Neither empty value
+/// then failed anywhere:
+///
+///   * `server_addr: ""` is precisely how config.toml spells "this is the first
+///     machine". The installer would set up a standalone node, run k3s with
+///     --cluster-init, and create its own Ceph cluster — while the person doing
+///     it believed they were adding a machine to an existing one.
+///
+///   * `ceph_fsid: ""` becomes None, and install.rs turns None into a freshly
+///     generated fsid. Same outcome for storage alone: a second cluster that
+///     shares nothing with the first and looks perfectly healthy from both
+///     sides.
+///
+/// Split out from the request so those cases are actually testable.
+fn parse_join_response(
+    info: &serde_json::Value,
+) -> anyhow::Result<(String, String, Option<String>, String)> {
+    // The handler reports failures as {"error": "..."} with a 200, so the status
+    // code alone does not tell us this worked.
+    if let Some(e) = info.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("the existing node could not describe its cluster: {e}");
+    }
+
+    let field = |k: &str| -> anyhow::Result<String> {
+        info.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("the existing node sent no {k}"))
+    };
+
+    let server_addr = field("server_addr")?;
+    let k3s_token = field("k3s_token")?;
     let account_token = info["account_token"].as_str().map(|s| s.to_string());
-    let ceph_fsid = info["ceph_fsid"].as_str().unwrap_or("").to_string();
+    // Named separately because this one has an actionable cause: a node
+    // installed before Ceph moved onto the host has no [ceph] section to report.
+    let ceph_fsid = field("ceph_fsid").map_err(|_| {
+        anyhow::anyhow!(
+            "the existing node reported no Ceph cluster id — update it first, \
+             then run this installer again"
+        )
+    })?;
 
     Ok((server_addr, k3s_token, account_token, ceph_fsid))
 }
@@ -1050,5 +1095,86 @@ mod tests {
         assert_eq!(disks.len(), 1);
         assert_eq!(disks[0].size, "0 GB");
         assert_eq!(disks[0].tran, "");
+    }
+
+    // ── parse_join_response ───────────────────────────────────────────────────
+    //
+    // These cover the failure this function exists to prevent: a joining machine
+    // being told "connected!" on a reply that says nothing, then quietly
+    // installing itself as a brand new cluster.
+
+    fn join_reply() -> serde_json::Value {
+        serde_json::json!({
+            "server_addr": "https://[fd00:cafe::1]:6443",
+            "k3s_token": "K10abc::server:secret",
+            "account_token": "tok-1",
+            "ceph_fsid": "11111111-2222-4333-8444-555555555555",
+        })
+    }
+
+    #[test]
+    fn a_complete_reply_parses() {
+        let (addr, tok, acct, fsid) = super::parse_join_response(&join_reply()).unwrap();
+        assert_eq!(addr, "https://[fd00:cafe::1]:6443");
+        assert_eq!(tok, "K10abc::server:secret");
+        assert_eq!(acct.as_deref(), Some("tok-1"));
+        assert_eq!(fsid, "11111111-2222-4333-8444-555555555555");
+    }
+
+    /// The handler answers 200 with {"error": ...}, so the status code is not
+    /// evidence that anything worked.
+    #[test]
+    fn an_error_body_is_a_failure_not_a_connection() {
+        let v = serde_json::json!({"error": "missing node.k3s.token"});
+        let e = super::parse_join_response(&v).unwrap_err().to_string();
+        assert!(e.contains("missing node.k3s.token"), "{e}");
+    }
+
+    /// The worst one. "" is exactly how config.toml spells "first machine", so
+    /// accepting it installs a standalone node while the user is watching a
+    /// screen that says they are joining an existing cluster.
+    #[test]
+    fn an_empty_server_address_is_refused_rather_than_meaning_first_node() {
+        let mut v = join_reply();
+        v["server_addr"] = serde_json::json!("");
+        assert!(super::parse_join_response(&v).is_err());
+        v["server_addr"] = serde_json::Value::Null;
+        assert!(super::parse_join_response(&v).is_err());
+    }
+
+    #[test]
+    fn a_missing_k3s_token_is_refused() {
+        let mut v = join_reply();
+        v.as_object_mut().unwrap().remove("k3s_token");
+        assert!(super::parse_join_response(&v).is_err());
+    }
+
+    /// An empty fsid used to become None, which install.rs turned into a freshly
+    /// generated one — a second Ceph cluster sharing no data with the first, and
+    /// healthy-looking from both machines.
+    #[test]
+    fn an_empty_ceph_fsid_is_refused_and_says_what_to_do() {
+        let mut v = join_reply();
+        v["ceph_fsid"] = serde_json::json!("");
+        let e = super::parse_join_response(&v).unwrap_err().to_string();
+        assert!(e.contains("update it first"), "{e}");
+    }
+
+    /// A node predating host-level Ceph has no [ceph] section at all, so the key
+    /// is absent rather than empty. Same outcome required.
+    #[test]
+    fn an_absent_ceph_fsid_is_refused_too() {
+        let mut v = join_reply();
+        v.as_object_mut().unwrap().remove("ceph_fsid");
+        assert!(super::parse_join_response(&v).is_err());
+    }
+
+    /// account_token is the one genuinely optional field: a node can be paired
+    /// without one, and the installer asks for it separately.
+    #[test]
+    fn an_absent_account_token_is_allowed() {
+        let mut v = join_reply();
+        v.as_object_mut().unwrap().remove("account_token");
+        assert_eq!(super::parse_join_response(&v).unwrap().2, None);
     }
 }
