@@ -380,7 +380,11 @@ function DiskRow({
 
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-fg">
-          {label}
+          {label}{" "}
+          {/* A real space, not just the margin below: without it the name and
+              the size run together for a screen reader and in anything copied
+              off the page — "easystore 26471.0 TB" for a 1 TB disk whose model
+              string is "easystore 2647". */}
           {disk.connected && disk.size_bytes > 0 && (
             <span className="ml-2 font-normal text-fg-muted">
               {formatBytes(disk.size_bytes)}
@@ -662,9 +666,29 @@ function CapacityCard({
   // so a 2 TB pool with two copies reports 4 TB raw — a number that is true,
   // useless, and alarming in both directions. `stored_bytes` is what was put
   // in; `max_avail_bytes` is what will still fit.
-  const pools = (detail?.pools ?? []).filter((p) => !p.name.startsWith("."));
+  // `.`-prefixed pools are Ceph's own bookkeeping. `images` is this machine's
+  // container image cache: re-downloadable, not the user's files, and counting
+  // it made installing an app look like it had eaten their photo storage.
+  const pools = (detail?.pools ?? []).filter(
+    (p) => !p.name.startsWith(".") && p.name !== "images",
+  );
   const used = pools.reduce((s, p) => s + p.stored_bytes, 0);
-  const free = pools[0]?.max_avail_bytes ?? 0;
+
+  // The tightest headroom across the data pools — not `pools[0]`, which was
+  // whichever pool the API happened to list first. Pools can have different
+  // replication, so their max_avail differs by a factor of the copy count, and
+  // reading an arbitrary one reported a number belonging to a different pool.
+  const poolFree = pools.length
+    ? Math.min(...pools.map((p) => p.max_avail_bytes))
+    : 0;
+
+  // Never promise more than physically exists right now. Ceph derives MAX AVAIL
+  // from CRUSH weight, which still counts disks that are DOWN — so a cluster
+  // with one live 178 GiB disk and two dead ones advertised "1.3 TB free" on the
+  // same page that said "Raw total 178.5 GiB" one card below. avail_bytes comes
+  // from `ceph df` and counts only OSDs that are actually up.
+  const rawFree = detail?.avail_bytes ?? poolFree;
+  const free = Math.min(poolFree, rawFree);
   const total = used + free;
   const pct = total > 0 ? (used / total) * 100 : 0;
 

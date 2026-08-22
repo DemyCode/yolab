@@ -369,11 +369,40 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> Option
     // the reconciler one weak check away from re-creating over a live OSD. It
     // happened for real: `fetch_disk_to_osd: ceph-volume timed out after 600s`,
     // repeatedly, on a node whose disks were switched on.
+    // ceph-volume first: it reads LVM tags on this host, so it is right even
+    // when the cluster is unreachable. When it fails, fall back to the mon,
+    // which keeps each OSD's metadata even while that OSD is down. The two have
+    // unrelated failure modes, and needing both is not hypothetical — a wedged
+    // `lvs` took ceph-volume out on node1 and left an OSD marked `out` with no
+    // way back in, because marking it in needs this map.
     let local = match ceph_cli::local_osds().await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("fetch_disk_to_osd: {e} — treating the OSD map as UNKNOWN, not empty");
-            return None;
+            tracing::warn!("fetch_disk_to_osd: ceph-volume failed ({e}) — asking the mon instead");
+            match ceph_cli::ceph_json(&["osd", "metadata"]).await {
+                Ok(v) => {
+                    let from_mon = parse_osd_metadata(&v, _node);
+                    if from_mon.is_empty() {
+                        // Genuinely no OSDs on this host is indistinguishable
+                        // here from metadata we could not interpret, and one of
+                        // those two is safe to act on while the other is not.
+                        tracing::warn!(
+                            "fetch_disk_to_osd: the mon reported no OSDs for this host either — \
+                             treating the map as UNKNOWN, not empty"
+                        );
+                        return None;
+                    }
+                    tracing::info!("fetch_disk_to_osd: recovered {} OSD(s) from the mon", from_mon.len());
+                    from_mon
+                }
+                Err(e2) => {
+                    tracing::warn!(
+                        "fetch_disk_to_osd: the mon could not answer either ({e2}) — treating the \
+                         OSD map as UNKNOWN, not empty"
+                    );
+                    return None;
+                }
+            }
         }
     };
 
@@ -391,6 +420,52 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> Option
         }
     }
     Some(result)
+}
+
+
+/// Parse `ceph osd metadata -f json` into (device identity, osd id) pairs for
+/// one host.
+///
+/// The SECOND source for the disk→OSD map, and the reason there is a second one
+/// at all: the first (`ceph-volume lvm list`) reads LVM tags on this machine, so
+/// it works with no mon — but it dies with LVM. When `lvs` wedged on node1,
+/// ceph-volume stopped answering, the map became unknown, and the reconciler
+/// correctly refused to touch anything. Correct, and also stuck: an OSD that was
+/// already marked `out` could not be marked back `in`, because deciding that
+/// needs the very map that was unavailable.
+///
+/// This one comes from the mon instead, and the mon keeps an OSD's metadata even
+/// while that OSD is down — which is exactly the case that matters. Two sources
+/// with unrelated failure modes means a wedged LVM no longer freezes recovery.
+///
+/// Both identities are collected for the same reason `parse_lvm_list` collects
+/// both: `devices` names the physical disk under an LVM OSD, while
+/// `bluestore_bdev_dev_node` names the volume itself, and our inventory holds
+/// one or the other depending on the disk.
+pub(crate) fn parse_osd_metadata(raw: &Value, host: &str) -> Vec<(String, i64)> {
+    let mut out = Vec::new();
+    let Some(items) = raw.as_array() else {
+        return out;
+    };
+    for m in items {
+        if m["hostname"].as_str() != Some(host) {
+            continue;
+        }
+        let Some(id) = m["id"].as_i64() else { continue };
+        if let Some(node) = m["bluestore_bdev_dev_node"]
+            .as_str()
+            .filter(|s| !s.is_empty() && *s != "unknown")
+        {
+            out.push((node.to_string(), id));
+        }
+        // `devices` is a comma-separated list of bare kernel names.
+        if let Some(devs) = m["devices"].as_str() {
+            for d in devs.split(',').map(str::trim).filter(|d| !d.is_empty()) {
+                out.push((d.to_string(), id));
+            }
+        }
+    }
+    out
 }
 
 /// Resolve a device path to its canonical form, falling back to the input when
@@ -2294,5 +2369,67 @@ mod tests {
                 "shown as a sentence to a person, so it needs to read as one: {msg}"
             );
         }
+    }
+
+    // ── parse_osd_metadata ────────────────────────────────────────────────────
+    //
+    // The mon-side fallback for the disk→OSD map. It only matters when
+    // ceph-volume is unavailable, which is exactly when nobody is watching, so
+    // the shape of `ceph osd metadata` is pinned here rather than discovered.
+
+    fn meta_json() -> serde_json::Value {
+        json!([
+            {"id": 0, "hostname": "node1", "devices": "sda",
+             "bluestore_bdev_dev_node": "/dev/dm-1"},
+            {"id": 1, "hostname": "node1", "devices": "sdb",
+             "bluestore_bdev_dev_node": "/dev/dm-2"},
+            {"id": 2, "hostname": "node3", "devices": "sda",
+             "bluestore_bdev_dev_node": "/dev/dm-9"}
+        ])
+    }
+
+    #[test]
+    fn osd_metadata_returns_only_this_hosts_osds() {
+        let got = parse_osd_metadata(&meta_json(), "node1");
+        let ids: Vec<i64> = got.iter().map(|(_, id)| *id).collect();
+        assert!(ids.contains(&0) && ids.contains(&1));
+        assert!(!ids.contains(&2), "osd.2 belongs to another machine");
+    }
+
+    /// Both identities, for the same reason parse_lvm_list collects both: our
+    /// inventory holds the physical disk for a raw OSD and the volume path for
+    /// an LVM-backed one, and which of the two appears depends on the disk.
+    #[test]
+    fn osd_metadata_reports_the_device_and_the_volume() {
+        let got = parse_osd_metadata(&meta_json(), "node1");
+        assert!(got.contains(&("sda".to_string(), 0)));
+        assert!(got.contains(&("/dev/dm-1".to_string(), 0)));
+    }
+
+    #[test]
+    fn osd_metadata_splits_a_multi_device_osd() {
+        let v = json!([{"id": 4, "hostname": "n", "devices": "sdb,sdc"}]);
+        let got = parse_osd_metadata(&v, "n");
+        assert!(got.contains(&("sdb".to_string(), 4)));
+        assert!(got.contains(&("sdc".to_string(), 4)));
+    }
+
+    /// Ceph writes "unknown" rather than omitting the field when it has no
+    /// device node. Treating that as a path would map a real OSD onto a disk
+    /// called "unknown" — which matches nothing, silently losing the OSD.
+    #[test]
+    fn osd_metadata_ignores_placeholder_device_nodes() {
+        let v = json!([{"id": 5, "hostname": "n", "devices": "",
+                        "bluestore_bdev_dev_node": "unknown"}]);
+        assert!(parse_osd_metadata(&v, "n").is_empty());
+    }
+
+    /// An unrecognisable answer must yield nothing, so the caller keeps treating
+    /// the map as unknown instead of acting on a half-parsed one.
+    #[test]
+    fn osd_metadata_yields_nothing_from_a_shape_it_does_not_understand() {
+        assert!(parse_osd_metadata(&json!({}), "n").is_empty());
+        assert!(parse_osd_metadata(&json!([]), "n").is_empty());
+        assert!(parse_osd_metadata(&json!([{"hostname": "n"}]), "n").is_empty());
     }
 }
