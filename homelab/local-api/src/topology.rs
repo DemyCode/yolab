@@ -35,6 +35,14 @@ impl Default for StoragePolicy {
 pub struct Topology {
     pub nodes: u32,
     pub osds: u32,
+    /// Hosts that actually carry an OSD — NOT the same as `nodes`.
+    ///
+    /// A machine can be in the Kubernetes cluster while contributing no storage:
+    /// its disks are switched off, or its Ceph has not joined yet. With
+    /// failure_domain=host, replicas must land on distinct hosts, so this is the
+    /// real ceiling on `size`. Counting Kubernetes nodes instead asks Ceph for a
+    /// placement it cannot satisfy, and every PG stays undersized forever.
+    pub osd_hosts: u32,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -64,9 +72,19 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
         (1, 1, "osd".to_string()) // 1 disk: no local redundancy — backups are the floor
     };
 
-    // Feasibility clamps: never ask for more copies than there are OSDs, and keep
-    // min_size within [1, size]. Prevents permanently-degraded pools.
+    // Feasibility clamps. Never ask for more copies than can actually be placed,
+    // or every PG sits undersized forever and the cluster never returns to
+    // HEALTH_OK.
+    //
+    // Two separate ceilings, and using only the first is a real bug: a second
+    // machine joining Kubernetes moves `nodes` to 2 and this to size=2 with
+    // failure_domain=host, but if that machine carries no OSDs — disks switched
+    // off, or its Ceph not joined yet — there is still only ONE host to place on.
+    // The OSD count does not catch it, because both OSDs are on the same host.
     size = size.clamp(1, 3).min(topo.osds.max(1));
+    if fd == "host" {
+        size = size.min(topo.osd_hosts.max(1));
+    }
     min_size = min_size.clamp(1, size);
     Target { size, min_size, failure_domain: fd, mon, mgr }
 }
@@ -123,7 +141,23 @@ async fn observe() -> Topology {
         .ok()
         .and_then(|v| v["num_up_osds"].as_u64())
         .unwrap_or(0) as u32;
-    Topology { nodes, osds }
+
+    // Host buckets in the CRUSH tree that hold at least one OSD.
+    let osd_hosts = crate::ceph_cli::ceph_json(&["osd", "tree"])
+        .await
+        .ok()
+        .and_then(|v| v["nodes"].as_array().cloned())
+        .map(|ns| {
+            ns.iter()
+                .filter(|n| {
+                    n["type"].as_str() == Some("host")
+                        && n["children"].as_array().is_some_and(|c| !c.is_empty())
+                })
+                .count() as u32
+        })
+        .unwrap_or(0);
+
+    Topology { nodes, osds, osd_hosts }
 }
 
 /// Health straight from the mon rather than from a Rook CR status field.
@@ -334,7 +368,7 @@ mod tests {
 
     #[test]
     fn one_disk_no_redundancy() {
-        let t = compute_target(&auto(), &Topology { nodes: 1, osds: 1 });
+        let t = compute_target(&auto(), &Topology { nodes: 1, osds: 1, osd_hosts: 1 });
         assert_eq!((t.size, t.min_size, t.failure_domain.as_str(), t.mon), (1, 1, "osd", 1));
     }
 
@@ -342,26 +376,68 @@ mod tests {
     fn one_node_two_disks_uses_osd_domain() {
         // The classic trap: 2 disks on 1 host must use failure domain "osd",
         // else host-domain can't place a 2nd replica and sits degraded.
-        let t = compute_target(&auto(), &Topology { nodes: 1, osds: 2 });
+        let t = compute_target(&auto(), &Topology { nodes: 1, osds: 2, osd_hosts: 1 });
         assert_eq!((t.size, t.failure_domain.as_str()), (2, "osd"));
     }
 
     #[test]
     fn two_nodes_host_domain_single_mon() {
-        let t = compute_target(&auto(), &Topology { nodes: 2, osds: 2 });
+        let t = compute_target(&auto(), &Topology { nodes: 2, osds: 2, osd_hosts: 2 });
         assert_eq!((t.size, t.failure_domain.as_str(), t.mon), (2, "host", 1));
     }
 
     #[test]
     fn three_nodes_full_ha() {
-        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 3 });
+        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 3, osd_hosts: 3 });
         assert_eq!((t.size, t.min_size, t.failure_domain.as_str(), t.mon, t.mgr), (3, 2, "host", 3, 2));
+    }
+
+    /// The bug a second machine walks straight into.
+    ///
+    /// Node joins Kubernetes, so nodes=2 and the policy asks for size=2 across
+    /// hosts — but its disks are off (or its Ceph has not joined), so every OSD
+    /// is still on one host. Ceph cannot place a second replica anywhere, and
+    /// the pools sit undersized forever instead of returning to HEALTH_OK.
+    #[test]
+    fn a_node_with_no_osds_does_not_raise_replication() {
+        let t = Topology { nodes: 2, osds: 2, osd_hosts: 1 };
+        let target = compute_target(&auto(), &t);
+        assert_eq!(
+            target.size, 1,
+            "with one OSD-carrying host there is nowhere to put a second copy"
+        );
+    }
+
+    /// Once the second machine really does carry storage, size rises.
+    #[test]
+    fn a_node_that_brings_disks_does_raise_replication() {
+        let t = Topology { nodes: 2, osds: 2, osd_hosts: 2 };
+        assert_eq!(compute_target(&auto(), &t).size, 2);
+    }
+
+    /// Three machines, but only two with disks: two copies, not three.
+    #[test]
+    fn replication_follows_osd_hosts_not_machine_count() {
+        let t = Topology { nodes: 3, osds: 6, osd_hosts: 2 };
+        let target = compute_target(&auto(), &t);
+        assert_eq!(target.size, 2);
+        assert!(target.min_size <= target.size);
+    }
+
+    /// The osd-domain case must be untouched: one node with several disks still
+    /// replicates across disks, where the host ceiling does not apply.
+    #[test]
+    fn the_host_ceiling_does_not_apply_to_the_osd_domain() {
+        let t = Topology { nodes: 1, osds: 3, osd_hosts: 1 };
+        let target = compute_target(&auto(), &t);
+        assert_eq!(target.failure_domain, "osd");
+        assert_eq!(target.size, 2, "one host, but replicas go on separate disks");
     }
 
     #[test]
     fn size_never_exceeds_osd_count() {
         // 3 nodes but only 1 OSD so far — can't ask for 3 copies.
-        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 1 });
+        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 1, osd_hosts: 3 });
         assert_eq!(t.size, 1);
         assert!(t.min_size <= t.size);
     }
@@ -370,7 +446,7 @@ mod tests {
     fn manual_is_respected_but_clamped() {
         let p = StoragePolicy { mode: "manual".into(), size: 3, min_size: 3, failure_domain: "osd".into() };
         // Only 2 OSDs present → size clamped to 2, min_size clamped to ≤size.
-        let t = compute_target(&p, &Topology { nodes: 1, osds: 2 });
+        let t = compute_target(&p, &Topology { nodes: 1, osds: 2, osd_hosts: 1 });
         assert_eq!(t.size, 2);
         assert!(t.min_size <= 2);
         assert_eq!(t.failure_domain, "osd");
