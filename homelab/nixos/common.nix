@@ -75,10 +75,20 @@ in
   };
 
   config = {
-    # An overlay used to patch out two racy glances REST tests. It is gone because
-    # unmodified glances 4.5.5 now builds — and because overriding the derivation meant
-    # every node compiled glances from source, test suite and all, instead of taking the
-    # prebuilt one from cache.nixos.org. An overlay that outlives its bug is not free.
+    # No glances. It was a web system monitor on :61208, proxied at /glances.
+    #
+    # It is gone because it could not be installed reliably. glances 4.5.5 is not
+    # in cache.nixos.org (its narinfo is a 404), so every node compiled it from
+    # source — running its test suite, two of whose REST tests are racy. That is
+    # a coin flip per machine at install time, and it is what made the second
+    # machine fail to install while the first, which had already won that toss
+    # and kept the result in its store, kept working.
+    #
+    # An overlay used to patch those tests out. Removing it was right in itself —
+    # overriding the derivation is what forced the from-source build in the first
+    # place — but it was removed on the belief that a prebuilt 4.5.5 existed. It
+    # does not. Bringing glances back means depending on a cached build, not
+    # patching the tests again.
 
     # Ceph, and only Ceph, comes from a newer nixpkgs. The main pin's 20.2.2
     # fails its own python-common test suite, so Hydra never built it and it is
@@ -372,15 +382,6 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
-          @glances_exact path /glances
-          redir @glances_exact /glances/ 301
-          handle /glances/* {
-            forward_auth [::1]:3001 {
-              uri /api/auth/check
-            }
-            uri strip_prefix /glances
-            reverse_proxy 127.0.0.1:61208
-          }
           handle /ceph-dashboard/* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
@@ -408,18 +409,6 @@ in
           }
         }
       '';
-    };
-
-    systemd.services.glances = {
-      description = "Glances system monitor";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${pkgs.glances}/bin/glances -w --port 61208 --disable-plugin docker";
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
     };
 
     systemd.services.caddy = {
@@ -574,7 +563,6 @@ in
         vim
         wget
         htop
-        glances
         sshfs
         fuse3
         qrencode

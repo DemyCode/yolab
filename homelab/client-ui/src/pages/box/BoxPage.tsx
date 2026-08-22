@@ -4,7 +4,6 @@ import {
   Cloud,
   Database,
   ExternalLink,
-  Gauge,
   Server,
   TerminalSquare,
   Wrench,
@@ -211,12 +210,6 @@ export function BoxPage() {
           icon={TerminalSquare}
           label="Terminal"
           detail="Run commands on the machine"
-        />
-        <NavRow
-          href="/glances/"
-          icon={Gauge}
-          label="System monitor"
-          detail="Live CPU, memory and network"
         />
       </Card>
     </Page>
