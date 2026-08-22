@@ -177,7 +177,11 @@ type DiskState =
   /** ON, but it needs a decision first — it already has data on it. */
   | "blocked"
   /** The node cannot see its own disk setup, so nothing here is known. */
-  | "stale";
+  | "stale"
+  /** OFF, drained, and the last of it is being cleaned up. Do not unplug yet. */
+  | "removing"
+  /** OFF and finished — the destination of the OFF toggle. Safe to unplug. */
+  | "removable";
 
 /**
  * What to show for one disk.
@@ -208,9 +212,9 @@ function diskState(disk: DiskInfo): DiskState {
     case "draining":
       return "draining";
     case "removing":
-      return "draining";
+      return "removing";
     case "removable":
-      return "excluded";
+      return "removable";
     case "unknown":
       return "stale";
   }
@@ -254,6 +258,20 @@ const STATE_META: Record<
     label: "Needs a decision",
     color: "text-warning",
     dot: "bg-warning",
+  },
+  removing: {
+    label: "Finishing up — do not unplug yet",
+    color: "text-warning",
+    dot: "bg-warning",
+    pulse: true,
+  },
+  // The whole point of switching a disk off. It used to render as "Connected,
+  // not in use", which is true and useless: it does not answer the one question
+  // someone who switched a disk off is asking.
+  removable: {
+    label: "Safe to unplug",
+    color: "text-success",
+    dot: "bg-success",
   },
   stale: {
     label: "Checking…",

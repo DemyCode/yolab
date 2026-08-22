@@ -265,7 +265,29 @@ async fn apply_mon_mgr(target: &Target) {
     }
 }
 
+/// Pools that must stay at one copy no matter how many machines join.
+///
+/// `images` holds each node's container image store, and its size=1 is load
+/// bearing in two ways that homelab/nixos/ceph/images-store.nix spells out:
+///
+///   1. Every node needs its own unpacked copy of every image it runs, so
+///      replicating across nodes buys nothing. At three machines this loop would
+///      set size=3 and spend 9x the bytes on data any registry can re-send.
+///
+///   2. Worse, and the reason this is a filter and not a preference: each node
+///      sizes its image RBD as a share of the pool's RAW capacity. At size=3 a
+///      25% image consumes 75% of raw, three nodes consume 225%, and the pool
+///      reaches full-ratio — at which point Ceph blocks writes for EVERY app on
+///      EVERY node, not just image pulls.
+///
+/// images-store.nix predicted this exact failure in a comment. Nothing enforced
+/// it, so the prediction was the only thing standing in its way.
+fn is_unreplicated_pool(pool: &str) -> bool {
+    pool == "images"
+}
+
 async fn pool_size(pool: &str) -> u32 {
+
     crate::ceph_cli::ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
         .await
         .ok()
@@ -297,6 +319,7 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
         .lines()
         .map(|l| l.trim())
         .filter(|p| !p.is_empty() && !p.starts_with(".nfs") && !p.starts_with(".rgw"))
+        .filter(|p| !is_unreplicated_pool(p))
     {
         let cur = pool_size(pool).await;
         let want = if policy.mode == "manual" {
