@@ -663,10 +663,31 @@ in {
           echo "no OSDs prepared on this host"
           exit 0
         fi
+
+        # Which OSDs does the cluster still have? ceph-volume lists what is
+        # PREPARED on this disk, which outlives the OSD itself: teardown purges
+        # the OSD from Ceph and only then zaps the disk, so between those two
+        # steps an OSD that no longer exists is still listed here. Starting a
+        # daemon for it would put a live process on a volume that is about to be
+        # destroyed.
+        #
+        # When Ceph cannot be reached the list is empty and nothing is filtered —
+        # which is the boot case, and starting everything is exactly right there.
+        KNOWN=$(timeout 20 ceph --connect-timeout 10 osd ls 2>/dev/null || true)
+
         for id in $IDS; do
+          if [ -n "$KNOWN" ] && ! printf '%s\n' "$KNOWN" | grep -qx "$id"; then
+            echo "osd.$id: prepared on this disk but no longer part of the cluster — not starting it"
+            continue
+          fi
           echo "starting yolab-ceph-osd@$id"
-          systemctl start "yolab-ceph-osd@$id.service" || \
-            echo "osd.$id: failed to start" >&2
+          # --no-block: this unit's job is to REQUEST the starts, not to wait for
+          # them. Waiting made it as slow as the slowest OSD, and since it now
+          # also runs on every nixos-rebuild, a machine whose ceph-volume is
+          # wedged would hold the rebuild for minutes — on exactly the machine
+          # least able to afford it.
+          systemctl start --no-block "yolab-ceph-osd@$id.service" || \
+            echo "osd.$id: could not request a start" >&2
         done
       '';
     };
