@@ -558,10 +558,28 @@ in {
       # upgraded first anyway.
       restartIfChanged = false;
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils];
+      # Keep retrying, but slowly, and never give up.
+      #
+      # systemd's defaults are 5 starts per 10s and then permanent failure,
+      # which is the wrong shape for a disk: the reasons an OSD cannot start
+      # (the cluster is down, a peer is rebooting, the machine is still coming
+      # up) are transient and can outlast any burst budget. An OSD that stopped
+      # trying is indistinguishable from a dead disk, and nothing else brings it
+      # back — ensure_osd_unit_running only acts on OSDs the reconciler can see,
+      # which needs the very ceph-volume metadata this unit is waiting on.
+      #
+      # 30s between attempts rather than 10s because each failed attempt runs
+      # ceph-volume, and a hot loop around it is how one stalled device turned
+      # into twenty-one stuck processes.
+      startLimitIntervalSec = 0; # never rate-limit
       serviceConfig = {
         Type = "simple";
         Restart = "on-failure";
-        RestartSec = "10s";
+        RestartSec = "30s";
+        # Bound the whole start, ExecStartPre included. Without it a wedged
+        # ceph-volume holds the unit in `activating` for the 90s default, and
+        # every one of those attempts leaves its own debris behind.
+        TimeoutStartSec = "180s";
         # Primes /var/lib/ceph/osd/ceph-%i from the LVM tags ceph-volume wrote.
         #
         # `activate` takes TWO positionals — {ID} {FSID} — and has no --osd-id
@@ -573,7 +591,19 @@ in {
           set -euo pipefail
           export PATH=${lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq])}:$PATH
           OSD_ID="$1"
-          FSID=$(ceph-volume lvm list "$OSD_ID" --format json 2>/dev/null \
+          # `timeout`, because ceph-volume shells out to `lvs` and lvs reads
+          # every block device it is allowed to see. If any of them does not
+          # answer, lvs blocks in uninterruptible sleep, ExecStartPre never
+          # returns, and SIGKILL cannot clear it.
+          #
+          # Seen on node1: osd.0 restarted 21 times over 35 minutes, each attempt
+          # leaving another unkillable `lvs` in the unit's cgroup, and the OSD
+          # never came up. It was a closed loop — osd.0 was down, so Ceph could
+          # not serve the RBD, so lvs stalled scanning it, so osd.0 could not
+          # start. The RBD is now excluded from LVM's scan entirely (see
+          # images-store.nix), which is the actual fix; this bounds the damage if
+          # some other device ever stalls the same way.
+          FSID=$(timeout 60 ceph-volume lvm list "$OSD_ID" --format json 2>/dev/null \
             | jq -r --arg id "$OSD_ID" '.[$id][0].tags["ceph.osd_fsid"] // empty')
           if [ -z "$FSID" ]; then
             echo "osd.$OSD_ID: no ceph-volume metadata found for it on this host" >&2
@@ -581,7 +611,7 @@ in {
           fi
           # --no-systemd stops ceph-volume generating its own competing units;
           # this template is the single supervisor for every OSD on the host.
-          exec ceph-volume lvm activate --no-systemd "$OSD_ID" "$FSID"
+          exec timeout 120 ceph-volume lvm activate --no-systemd "$OSD_ID" "$FSID"
         ''
         + " %i";
         ExecStart = "${pkgs.ceph}/bin/ceph-osd -f -i %i --setuser ceph --setgroup ceph";
@@ -606,7 +636,7 @@ in {
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq systemd];
       script = ''
         set -uo pipefail
-        IDS=$(ceph-volume lvm list --format json 2>/dev/null | jq -r 'keys[]' 2>/dev/null || true)
+        IDS=$(timeout 60 ceph-volume lvm list --format json 2>/dev/null | jq -r 'keys[]' 2>/dev/null || true)
         if [ -z "$IDS" ]; then
           echo "no OSDs prepared on this host"
           exit 0
