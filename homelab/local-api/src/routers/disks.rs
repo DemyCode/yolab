@@ -23,6 +23,21 @@ pub struct DiskInfo {
     pub osd_id: Option<i64>,
     pub desired: String,
     pub connected: bool,
+    /// The disk has a partition table — something is already on it.
+    pub has_partitions: bool,
+    /// This machine has a filesystem from it mounted. Never usable for storage.
+    pub mounted: bool,
+    /// Where the reconciler has got to with this disk: see disks_reconciler::phase.
+    ///
+    /// Without this the UI had to guess from desired/connected/is_our_osd, and
+    /// that guess cannot distinguish "started five seconds ago" from "has failed
+    /// fourteen times" — both render as "Setting up…". Every failure lived only
+    /// in a log line.
+    pub phase: String,
+    /// Plain-language detail for `phase`, including the last error. Shown as-is.
+    pub message: String,
+    /// Failed attempts at the current transition. 0 once it succeeds.
+    pub attempts: u32,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +88,19 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
             device: meta.and_then(|v| v["device"].as_str()).unwrap_or("").to_string(),
             model: meta.and_then(|v| v["model"].as_str()).unwrap_or("").to_string(),
             size_bytes: meta.and_then(|v| v["size_bytes"].as_u64()).unwrap_or(0),
+            has_partitions: meta.and_then(|v| v["has_partitions"].as_bool()).unwrap_or(false),
+            mounted: meta.and_then(|v| v["mounted"].as_bool()).unwrap_or(false),
+            phase: meta
+                .and_then(|v| v["phase"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            message: meta
+                .and_then(|v| v["message"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            attempts: meta
+                .and_then(|v| v["attempts"].as_u64())
+                .unwrap_or(0) as u32,
             is_loop: meta.and_then(|v| v["is_loop"].as_bool()).unwrap_or(false),
             is_our_osd: meta.and_then(|v| v["is_our_osd"].as_bool()).unwrap_or(false),
             foreign_ceph: meta.and_then(|v| v["foreign_ceph"].as_bool()).unwrap_or(false),

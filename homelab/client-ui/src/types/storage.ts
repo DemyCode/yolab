@@ -54,7 +54,40 @@ export interface DiskInfo {
   /** "ON" = user wants in cluster, "OFF" = excluded. Legacy "USING" treated as ON. */
   desired: "ON" | "OFF" | "USING";
   connected: boolean;
+  /** Has a partition table — something is already stored on it. */
+  has_partitions: boolean;
+  /** This machine has a filesystem from it mounted; never usable for storage. */
+  mounted: boolean;
+  /**
+   * Where the reconciler has actually got to, rather than what the page can
+   * infer. "" from a node that has not reported yet.
+   *
+   * The page used to derive its own state from desired/connected/is_our_osd,
+   * and that guess cannot tell "started five seconds ago" from "has failed
+   * fourteen times" — both came out as "Setting up…", pulsing forever.
+   */
+  phase: DiskPhase | "";
+  /** Plain-language detail for `phase`, including the last error. Shown as-is. */
+  message: string;
+  /** Failed attempts at the current transition; 0 once it succeeds. */
+  attempts: number;
 }
+
+/**
+ * The reconciler's own vocabulary — see disks_reconciler::phase.
+ *
+ * Two destinations, one per toggle position: `active` for ON, `removable` for
+ * OFF. Everything else is a step on the way, or a stop that needs a person.
+ */
+export type DiskPhase =
+  | "active"
+  | "creating"
+  | "retrying"
+  | "blocked"
+  | "draining"
+  | "removing"
+  | "removable"
+  | "unknown";
 
 export interface StoragePolicy {
   mode: "auto" | "manual";

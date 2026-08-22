@@ -55,6 +55,104 @@ const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
 const SYSTEM_OSD_DEV: &str = "/dev/mapper/pool-ceph";
 const SYSTEM_OSD_ID: &str = "system";
 
+
+// ── Per-disk progress ─────────────────────────────────────────────────────────
+//
+// The toggle is a promise: ON drives a disk all the way into the pool, OFF
+// drives it all the way to safely unpluggable, and both keep trying. What was
+// missing was any way to SAY where a disk is on that journey.
+//
+// `DiskInfo` carried only desired/connected/is_our_osd/osd_id, so the UI derived
+// "Setting up…" from "switched on, present, no OSD yet" — a description that is
+// identical whether the create started five seconds ago or has failed fourteen
+// times. Every failure lived in a `tracing::warn!` nobody reads.
+//
+// This is deliberately in memory rather than persisted. It describes what the
+// reconciler is doing right now, and every value in it is re-derived from the
+// cluster within one tick of a restart. The one field that would hurt to lose is
+// `orphan_osd_id`, and losing it costs one leaked id rather than corrupting
+// anything — see `spawn_create`.
+
+/// Where a disk is between "plugged in" and the state its toggle asks for.
+///
+/// These strings cross the API to the UI. They are the vocabulary the Storage
+/// page speaks, so they name situations a person can act on, not internal steps.
+pub mod phase {
+    /// ON, OSD exists, daemon running, carrying data. The destination.
+    pub const ACTIVE: &str = "active";
+    /// ON, a create is running right now.
+    pub const CREATING: &str = "creating";
+    /// ON, the last attempt failed; another is coming. `message` says why.
+    pub const RETRYING: &str = "retrying";
+    /// ON, but something must be decided by a person before it can proceed —
+    /// foreign Ceph data, an existing filesystem. Retrying will not help.
+    pub const BLOCKED: &str = "blocked";
+    /// OFF, data still moving off it. Cannot be unplugged yet.
+    pub const DRAINING: &str = "draining";
+    /// OFF, drained; the OSD is being purged and the disk wiped.
+    pub const REMOVING: &str = "removing";
+    /// OFF and finished. Safe to physically unplug. The destination for OFF.
+    pub const REMOVABLE: &str = "removable";
+    /// Ceph could not be reached, so nothing here is known. Never treated as
+    /// "nothing exists" — see `reconcile_local_osds`.
+    pub const UNKNOWN: &str = "unknown";
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DiskProgress {
+    pub phase: String,
+    /// Shown verbatim to the user, so it says what happened and what follows.
+    pub message: String,
+    pub attempts: u32,
+    /// An OSD id this node allocated for a create that never finished.
+    ///
+    /// `ceph-volume lvm create` takes an id from the mon before it zaps, builds
+    /// the LVM stack or mkfs's BlueStore. A create that times out therefore
+    /// leaves an id in the osdmap with no CRUSH location and nothing on disk —
+    /// and the next attempt, seeing no OSD for the disk, allocated *another*.
+    /// One node reached osd.1 with a blank host that way, and nothing ever
+    /// cleaned it up.
+    ///
+    /// Holding the id here means the retry reuses it instead of leaking a new
+    /// one. Only ever an id this process watched appear.
+    pub orphan_osd_id: Option<i64>,
+}
+
+static PROGRESS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, DiskProgress>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Disks with a create running off-tick. Prevents a second one being started
+/// for the same disk while the first is still going.
+static CREATING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn set_phase(disk_id: &str, phase: &str, message: impl Into<String>) {
+    let Ok(mut p) = PROGRESS.lock() else { return };
+    let e = p.entry(disk_id.to_string()).or_default();
+    e.phase = phase.to_string();
+    e.message = message.into();
+}
+
+fn progress_of(disk_id: &str) -> DiskProgress {
+    PROGRESS
+        .lock()
+        .ok()
+        .and_then(|p| p.get(disk_id).cloned())
+        .unwrap_or_default()
+}
+
+/// Merge each disk's progress into the metadata published to the UI.
+fn mark_progress(meta: &mut HashMap<String, Value>) {
+    for (disk_id, m) in meta.iter_mut() {
+        let p = progress_of(disk_id);
+        if !p.phase.is_empty() {
+            m["phase"] = json!(p.phase);
+            m["message"] = json!(p.message);
+            m["attempts"] = json!(p.attempts);
+        }
+    }
+}
+
 fn system_osd_present() -> bool {
     Path::new(SYSTEM_OSD_DEV).exists()
 }
@@ -90,6 +188,13 @@ fn system_osd_meta(our_fsid: &str) -> Value {
         "is_loop": true, // the UI renders is_loop as the built-in "System disk"
         "is_our_osd": is_our_osd,
         "foreign_ceph": foreign_ceph,
+        // Both false, and not a lookup: this is a dedicated LVM volume disko
+        // carved out for Ceph at install. It has no partition table of its own
+        // and is never mounted — the OS lives on a sibling volume. Reporting it
+        // as partitioned or mounted would make refuse_osd_creation block the one
+        // disk that is supposed to be on by default.
+        "has_partitions": false,
+        "mounted": false,
         "osd_id": null, // populated by fetch_disk_to_osd in publish_local
     })
 }
@@ -242,7 +347,7 @@ pub async fn run() {
 /// when someone is looking at the Storage page. (The `node` argument is no
 /// longer needed to filter by hostname, since ceph-volume only ever reports
 /// this host's OSDs, but is kept so callers read the same.)
-async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> HashMap<String, i64> {
+async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> Option<HashMap<String, i64>> {
     // Build full device path → disk_id from our local inventory.
     // Index both the stored path and its canonical (symlink-resolved) path so
     // that /dev/mapper/pool-ceph (a symlink → /dev/dm-1) matches whichever
@@ -253,11 +358,22 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> HashMa
         device_to_disk_id.insert(canonical_device(dev), disk_id.clone());
     }
 
+    // None, never an empty map. The difference is the whole safety property
+    // here: an empty map means "this host has no OSDs", which makes every
+    // switched-on disk look like it needs creating — and `ceph-volume lvm
+    // create` wipes what it is pointed at.
+    //
+    // `refuse_osd_creation` is not a sufficient backstop, because it reads a
+    // BlueStore label from offset 0 and an OSD that ceph-volume wrapped in LVM
+    // has no label there (see `mark_known_osds`). So a timeout here used to put
+    // the reconciler one weak check away from re-creating over a live OSD. It
+    // happened for real: `fetch_disk_to_osd: ceph-volume timed out after 600s`,
+    // repeatedly, on a node whose disks were switched on.
     let local = match ceph_cli::local_osds().await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("fetch_disk_to_osd: {e}");
-            return HashMap::new();
+            tracing::warn!("fetch_disk_to_osd: {e} — treating the OSD map as UNKNOWN, not empty");
+            return None;
         }
     };
 
@@ -274,7 +390,7 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> HashMa
             result.insert(disk_id.clone(), osd_id);
         }
     }
-    result
+    Some(result)
 }
 
 /// Resolve a device path to its canonical form, falling back to the input when
@@ -299,12 +415,13 @@ fn canonical_device(dev: &str) -> String {
 /// the status ConfigMap, and run this node's own OSD lifecycle. No shared-CR
 /// writes happen here, so every node can run it concurrently without racing.
 async fn publish_local(node: &str) -> Result<()> {
-    let devices = get_devices();
+    let scanned = scan_devices();
+    let devices: Vec<String> = scanned.iter().map(|(n, _)| n.clone()).collect();
     let our_fsid = cluster_fsid().await.unwrap_or_default();
 
-    let mut meta: HashMap<String, Value> = devices
+    let mut meta: HashMap<String, Value> = scanned
         .iter()
-        .map(|d| (disk_id(d), disk_meta(d, &our_fsid)))
+        .map(|(d, flags)| (disk_id(d), disk_meta(d, &our_fsid, *flags)))
         .collect();
     if system_osd_present() {
         meta.insert(SYSTEM_OSD_ID.to_string(), system_osd_meta(&our_fsid));
@@ -312,12 +429,17 @@ async fn publish_local(node: &str) -> Result<()> {
 
     // Use Ceph's own metadata as the authoritative disk→OSD mapping — no
     // bluestore header parsing, no size heuristics, no deployment env scraping.
-    let disk_to_osd = if !our_fsid.is_empty() {
-        fetch_disk_to_osd(node, &meta).await
+    // None means "could not tell", which is NOT the same as "no OSDs" and must
+    // never be flattened into one. An empty fsid means the cluster is
+    // unreachable, which is equally unknown.
+    let disk_to_osd: Option<HashMap<String, i64>> = if our_fsid.is_empty() {
+        None
     } else {
-        HashMap::new()
+        fetch_disk_to_osd(node, &meta).await
     };
-    mark_known_osds(&mut meta, &disk_to_osd);
+    if let Some(map) = &disk_to_osd {
+        mark_known_osds(&mut meta, map);
+    }
 
     let desired = read_desired().await;
 
@@ -337,10 +459,14 @@ async fn publish_local(node: &str) -> Result<()> {
         }
     }
 
+    // Reconcile BEFORE publishing, so the phase the UI receives is the one this
+    // tick just produced rather than the previous tick's. A create now runs
+    // off-tick, so this no longer waits ten minutes on a stalled device.
+    reconcile_local_osds(node, &meta, &desired, disk_to_osd.as_ref()).await;
+    mark_progress(&mut meta);
+
     write_status(node, &meta, &effective).await;
     auto_register_all_disks(node, &meta, &desired).await;
-
-    reconcile_local_osds(node, &meta, &desired, &disk_to_osd).await;
     Ok(())
 }
 
@@ -354,18 +480,64 @@ async fn publish_local(node: &str) -> Result<()> {
 /// Unlike the Rook version, nothing else is trying to manage these OSDs, so the
 /// teardown no longer has to complete inside one tick to beat an operator to
 /// the punch. Each step is idempotent and simply resumes on the next pass.
+/// What to tell someone whose disk is draining.
+///
+/// The honest answer depends on whether the drain can finish at all. Ceph moves
+/// a disk's data onto the others before it will call it safe to remove, so with
+/// only one OSD left there is nowhere for that data to go — `osd out` never
+/// reaches safe-to-destroy and the disk drains forever. That is the correct
+/// behaviour (the alternative is discarding data), but sitting on "Being
+/// removed" with no explanation is not.
+///
+/// Pure, so the wording is pinned by tests rather than discovered by someone
+/// watching a progress bar that will never move.
+fn drain_message(up_osds: usize) -> String {
+    if up_osds <= 1 {
+        "Waiting to move this disk's files somewhere else — but there is no other \
+         disk running to move them to. Switch on another disk, or add one, and this \
+         will finish on its own."
+            .to_string()
+    } else {
+        "Moving this disk's files onto the others. Do not unplug it until this \
+         finishes."
+            .to_string()
+    }
+}
+
 async fn reconcile_local_osds(
+
     node: &str,
     meta: &HashMap<String, Value>,
     desired: &HashMap<String, String>,
-    disk_to_osd: &HashMap<String, i64>,
+    disk_to_osd: Option<&HashMap<String, i64>>,
 ) {
     // Everything below needs a live cluster. Bail rather than misread silence
     // as "no OSDs", which would look like every disk needs creating.
     if !ceph_cli::reachable().await {
         tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
+        for disk_id in meta.keys() {
+            set_phase(disk_id, phase::UNKNOWN, "Waiting for the storage cluster to answer.");
+        }
         return;
     }
+
+    // The single most important guard in this file. `None` means ceph-volume
+    // could not be read, so we do not know which disks already carry an OSD —
+    // and acting on that guess means `ceph-volume lvm create` over live data.
+    // Do nothing at all until the answer is known.
+    let Some(disk_to_osd) = disk_to_osd else {
+        tracing::warn!(
+            "reconcile_local_osds: the local OSD map is unknown this tick — making no changes"
+        );
+        for disk_id in meta.keys() {
+            set_phase(
+                disk_id,
+                phase::UNKNOWN,
+                "Cannot read this machine's disk setup right now. Nothing will be changed until it can.",
+            );
+        }
+        return;
+    };
 
     // Create OSDs for disks switched ON that do not have one yet. This is the
     // half Rook used to do in response to a CephCluster patch.
@@ -375,8 +547,15 @@ async fn reconcile_local_osds(
         if !want_on || disk_to_osd.contains_key(disk_id) {
             continue;
         }
+        // A create started on an earlier tick may still be running. Starting a
+        // second one for the same disk is how ceph-volume invocations used to
+        // stack up.
+        if CREATING.lock().map(|c| c.contains(disk_id)).unwrap_or(false) {
+            continue;
+        }
         if let Some(reason) = refuse_osd_creation(m) {
             tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
+            set_phase(disk_id, phase::BLOCKED, reason);
             continue;
         }
         let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) else {
@@ -388,33 +567,20 @@ async fn reconcile_local_osds(
             format!("/dev/{device}")
         };
 
-        tracing::info!("{disk_id} ({dev_path}): desired ON with no OSD — creating");
-        match ceph_cli::ceph_volume(&["lvm", "create", "--bluestore", "--data", &dev_path, "--no-systemd"]).await {
-            Ok(_) => {
-                // Re-read the mapping so we learn the id Ceph just assigned;
-                // it cannot be known before creation.
-                if let Ok(local) = ceph_cli::local_osds().await {
-                    let want = canonical_device(&dev_path);
-                    if let Some((_, osd_id)) =
-                        local.iter().find(|(d, _)| canonical_device(d) == want)
-                    {
-                        start_osd_unit(*osd_id).await;
-                    } else {
-                        tracing::warn!(
-                            "{disk_id}: created an OSD but could not match it back to {dev_path} — \
-                             it will be started by the next reconcile tick"
-                        );
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("{disk_id}: ceph-volume create failed: {e}"),
-        }
+        spawn_create(disk_id.clone(), dev_path);
     }
+
 
     let crush_nodes: Vec<Value> = match ceph_cli::ceph_json(&["osd", "df", "tree"]).await {
         Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
         Err(_) => return,
     };
+
+    let osd_state_up: std::collections::HashSet<i64> = crush_nodes
+        .iter()
+        .filter(|n| n["type"].as_str() == Some("osd") && n["status"].as_str() == Some("up"))
+        .filter_map(|n| n["id"].as_i64())
+        .collect();
 
     let mut osd_state: HashMap<i64, (f64, f64, u64)> = HashMap::new();
     for n in &crush_nodes {
@@ -428,10 +594,33 @@ async fn reconcile_local_osds(
         }
     }
 
+    // How many OSDs are up cluster-wide, and how many copies pools keep. Both
+    // are needed to answer the question a draining disk raises: can this drain
+    // ever finish? With one copy and nowhere else to put the data, `osd out`
+    // never reaches safe-to-destroy, and the disk sits "draining" forever with
+    // nothing saying why.
+    let up_osds = crush_nodes
+        .iter()
+        .filter(|n| n["type"].as_str() == Some("osd") && n["status"].as_str() == Some("up"))
+        .count();
+
     for (disk_id, m) in meta {
         let key = format!("{node}--{disk_id}");
         let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
-        let Some(&osd_id) = disk_to_osd.get(disk_id) else { continue };
+        let Some(&osd_id) = disk_to_osd.get(disk_id) else {
+            // No OSD on this disk. If it is switched OFF that is the finished
+            // state, not a missing one — say so, because "you can unplug this
+            // now" is the whole point of the OFF toggle and nothing used to
+            // report it.
+            if !want_on {
+                set_phase(
+                    disk_id,
+                    phase::REMOVABLE,
+                    "Not in use. Safe to unplug.",
+                );
+            }
+            continue;
+        };
         let (crush_weight, reweight, kb) = osd_state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
         let osd = format!("osd.{osd_id}");
 
@@ -457,9 +646,26 @@ async fn reconcile_local_osds(
                 tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
                 let _ = ceph_cli::ceph(&["osd", "in", &osd]).await;
             }
+
+            // Report the daemon, not just the intent. An OSD whose process is
+            // down is the difference between "your files are being served" and
+            // "your files are not readable", and the page had no way to tell
+            // them apart.
+            let up = osd_state_up.contains(&osd_id);
+            if up {
+                set_phase(disk_id, phase::ACTIVE, "In use, storing your files.");
+            } else {
+                set_phase(
+                    disk_id,
+                    phase::RETRYING,
+                    "This disk is switched on but is not currently serving data. \
+                     YoLab keeps trying to bring it back.",
+                );
+            }
         } else if reweight > 0.5 {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = ceph_cli::ceph(&["osd", "out", &osd]).await;
+            set_phase(disk_id, phase::DRAINING, drain_message(up_osds));
         } else {
             // Already out and drained. Under Rook this was the hard part: its
             // operator would rediscover the still-valid BlueStore data and
@@ -477,8 +683,10 @@ async fn reconcile_local_osds(
             // `pg ls-by-osd` once caused real data loss.
             if !ceph_cli::osd_safe_to_destroy(osd_id).await {
                 tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
+                set_phase(disk_id, phase::DRAINING, drain_message(up_osds));
                 continue;
             }
+            set_phase(disk_id, phase::REMOVING, "Finishing up — do not unplug yet.");
 
             // Stop the daemon before purging. Purging while it still runs is
             // the EBUSY race the old code had to guard against separately.
@@ -496,13 +704,186 @@ async fn reconcile_local_osds(
                         tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
                         wipe_device(device).await;
                     }
+                    set_phase(disk_id, phase::REMOVABLE, "Removed from the pool. Safe to unplug.");
                 }
-                Err(e) => tracing::warn!("{osd} ({disk_id}): purge failed: {e}"),
+                Err(e) => {
+                    tracing::warn!("{osd} ({disk_id}): purge failed: {e}");
+                    set_phase(
+                        disk_id,
+                        phase::REMOVING,
+                        format!("Could not finish removing this disk yet: {e}. Trying again shortly."),
+                    );
+                }
             }
         }
     }
 
     purge_drained_osds(node, &crush_nodes, disk_to_osd).await;
+}
+
+
+/// Run `ceph-volume lvm create` off the reconcile tick.
+///
+/// It used to be awaited inline, and ceph-volume's timeout is ten minutes. One
+/// unresponsive device therefore froze every disk on the node: no inventory, no
+/// status, no other disk reconciled, for the whole ten minutes. The log showed
+/// ticks 10 and 21 minutes apart against a 30s interval.
+///
+/// Off-tick, the loop keeps running at 30s and reports what this create is
+/// doing while it does it. `CREATING` is what stops a second one being started
+/// for the same disk on the next pass.
+fn spawn_create(disk_id: String, dev_path: String) {
+    {
+        let Ok(mut running) = CREATING.lock() else { return };
+        // insert() returns false when it was already there — a create for this
+        // disk is still going, so leave it alone.
+        if !running.insert(disk_id.clone()) {
+            return;
+        }
+    }
+
+    let attempt = {
+        let mut n = 1;
+        if let Ok(mut p) = PROGRESS.lock() {
+            let e = p.entry(disk_id.clone()).or_default();
+            e.attempts += 1;
+            n = e.attempts;
+        }
+        n
+    };
+    set_phase(
+        &disk_id,
+        phase::CREATING,
+        if attempt == 1 {
+            format!("Adding {dev_path} to the storage pool…")
+        } else {
+            format!("Adding {dev_path} to the storage pool… (attempt {attempt})")
+        },
+    );
+    tracing::info!("{disk_id} ({dev_path}): desired ON with no OSD — creating (attempt {attempt})");
+
+    tokio::spawn(async move {
+        create_osd(&disk_id, &dev_path).await;
+        if let Ok(mut c) = CREATING.lock() {
+            c.remove(&disk_id);
+        }
+    });
+}
+
+/// One creation attempt, including cleaning up after the previous one.
+async fn create_osd(disk_id: &str, dev_path: &str) {
+    // Clear the wreckage of an earlier attempt first, so ids stop accumulating.
+    reclaim_orphan(disk_id).await;
+
+    // ceph-volume takes an id from the mon before it zaps the device, builds the
+    // LVM stack or mkfs's BlueStore. Snapshotting ids around the call is what
+    // lets a failure name the id it left behind — there is no other way to know
+    // it, because ceph-volume prints nothing usable when it is killed.
+    let before = ceph_cli::osd_ids().await.unwrap_or_default();
+
+    let result = ceph_cli::ceph_volume(&[
+        "lvm", "create", "--bluestore", "--data", dev_path, "--no-systemd",
+    ])
+    .await;
+
+    match result {
+        Ok(_) => {
+            // Re-read the mapping so we learn the id Ceph just assigned; it
+            // cannot be known before creation.
+            match ceph_cli::local_osds().await {
+                Ok(local) => {
+                    let want = canonical_device(dev_path);
+                    if let Some((_, osd_id)) = local.iter().find(|(d, _)| canonical_device(d) == want) {
+                        start_osd_unit(*osd_id).await;
+                        set_phase(disk_id, phase::ACTIVE, "Added to the storage pool.");
+                        if let Ok(mut p) = PROGRESS.lock() {
+                            let e = p.entry(disk_id.to_string()).or_default();
+                            e.attempts = 0;
+                            e.orphan_osd_id = None;
+                        }
+                    } else {
+                        set_phase(
+                            disk_id,
+                            phase::CREATING,
+                            "Added to the storage pool; waiting for it to come online.",
+                        );
+                    }
+                }
+                Err(e) => set_phase(
+                    disk_id,
+                    phase::CREATING,
+                    format!("Added to the storage pool, but could not confirm it yet: {e}"),
+                ),
+            }
+        }
+        Err(e) => {
+            // Name the id this attempt allocated, so the next one can clear it
+            // instead of leaving another blank OSD in the cluster.
+            let after = ceph_cli::osd_ids().await.unwrap_or_default();
+            let leaked: Vec<i64> = after.iter().copied().filter(|id| !before.contains(id)).collect();
+            if let Some(&id) = leaked.first() {
+                tracing::warn!("{disk_id}: create failed after allocating osd.{id} — reclaiming it");
+                if let Ok(mut p) = PROGRESS.lock() {
+                    p.entry(disk_id.to_string()).or_default().orphan_osd_id = Some(id);
+                }
+                // Try now; if it does not work, the next attempt retries it.
+                reclaim_orphan(disk_id).await;
+            }
+            tracing::warn!("{disk_id}: ceph-volume create failed: {e}");
+            set_phase(
+                disk_id,
+                phase::RETRYING,
+                format!("Could not add this disk yet: {e}. Trying again shortly."),
+            );
+        }
+    }
+}
+
+/// Remove an OSD id left behind by a create that did not finish.
+///
+/// Narrow on purpose. It only ever touches an id this process watched appear
+/// during its own failed `ceph-volume lvm create`, and only when Ceph itself
+/// confirms destroying it loses nothing. A phantom has no CRUSH location and has
+/// therefore never held a PG, so that check passes trivially for a real one and
+/// refuses anything else.
+///
+/// It is deliberately NOT a sweep for id-with-no-host across the cluster: on a
+/// multi-node cluster a phantom carries nothing that says which machine made it,
+/// so a sweep on one node could purge an id another node is mid-way through
+/// creating.
+async fn reclaim_orphan(disk_id: &str) {
+    let Some(id) = PROGRESS
+        .lock()
+        .ok()
+        .and_then(|p| p.get(disk_id).and_then(|d| d.orphan_osd_id))
+    else {
+        return;
+    };
+
+    // Gone already (someone purged it, or the cluster was rebuilt).
+    if !ceph_cli::osd_ids().await.unwrap_or_default().contains(&id) {
+        if let Ok(mut p) = PROGRESS.lock() {
+            p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
+        }
+        return;
+    }
+
+    if !ceph_cli::osd_safe_to_destroy(id).await {
+        tracing::warn!(
+            "{disk_id}: osd.{id} was left by a failed setup but Ceph will not confirm it is empty — leaving it"
+        );
+        return;
+    }
+
+    match ceph_cli::osd_purge(id).await {
+        Ok(_) => {
+            tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
+            if let Ok(mut p) = PROGRESS.lock() {
+                p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
+            }
+        }
+        Err(e) => tracing::warn!("{disk_id}: could not remove leftover osd.{id}: {e}"),
+    }
 }
 
 /// Stamp every disk Ceph knows about with its OSD id, and mark it as ours.
@@ -561,6 +942,22 @@ fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
     }
     if m["device"].as_str().filter(|d| !d.is_empty()).is_none() {
         return Some("it has no device path");
+    }
+    // Both of these became load-bearing when partitioned disks started being
+    // listed. Before that, `get_devices` dropped any disk with a partition
+    // table, which hid every external drive that ships formatted — and hid the
+    // OS disk as a side effect. Listing them is right; wiping them silently is
+    // not.
+    //
+    // `mounted` first, and it is the important one: it is what now keeps the
+    // disk this machine is running from out of reach. It is also stronger
+    // evidence than "has a partition table" ever was, because it describes use
+    // rather than shape.
+    if m["mounted"].as_bool().unwrap_or(false) {
+        return Some("this machine is using it — it holds a mounted filesystem");
+    }
+    if m["has_partitions"].as_bool().unwrap_or(false) {
+        return Some("it already has data on it — erase it first if you want to use it for storage");
     }
     None
 }
@@ -840,9 +1237,57 @@ fn is_user_disk(name: &str) -> bool {
     !VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
-fn get_devices() -> Vec<String> {
+
+/// What lsblk knows about a disk that /sys does not: whether it is carved into
+/// partitions, and whether this machine is using any of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DiskFlags {
+    pub has_partitions: bool,
+    /// The disk, or anything on it, is mounted. This is what keeps the OS disk
+    /// out of reach now that partitioned disks are listed.
+    pub mounted: bool,
+}
+
+/// Walk one lsblk tree into `DiskFlags`.
+///
+/// Pure, and separated from the lsblk call, because the safety of listing
+/// partitioned disks rests entirely on this being right: `mounted` is what
+/// stands between "every disk gets a toggle" and someone switching on the disk
+/// their operating system is running from.
+///
+/// Mount state is inherited downward-to-upward — a disk counts as mounted when
+/// ANY descendant is, at any depth. The root filesystem is usually two levels
+/// down (disk -> partition -> LVM volume), so checking only direct children
+/// would miss exactly the case that matters most.
+pub(crate) fn parse_disk_flags(dev: &Value) -> DiskFlags {
+    fn mounted_anywhere(n: &Value) -> bool {
+        let own = match &n["mountpoints"] {
+            Value::Array(a) => a.iter().any(|m| m.as_str().is_some_and(|s| !s.is_empty())),
+            v => v.as_str().is_some_and(|s| !s.is_empty()),
+        };
+        // `mountpoint` (singular) on older util-linux.
+        let legacy = n["mountpoint"].as_str().is_some_and(|s| !s.is_empty());
+        own || legacy
+            || n["children"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(mounted_anywhere))
+    }
+
+    DiskFlags {
+        has_partitions: dev["children"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|ch| ch["type"].as_str() == Some("part"))),
+        mounted: mounted_anywhere(dev),
+    }
+}
+
+/// Every switchable disk on this machine, with the facts that decide whether it
+/// may be switched on.
+fn scan_devices() -> Vec<(String, DiskFlags)> {
+    // MOUNTPOINTS, not just NAME/TYPE: now that partitioned disks are listed,
+    // mount state is the thing keeping the OS disk out of reach.
     let out = std::process::Command::new("lsblk")
-        .args(["-J", "-o", "NAME,TYPE"])
+        .args(["-J", "-o", "NAME,TYPE,MOUNTPOINTS"])
         .output()
         .ok();
     let Some(out) = out else { return vec![] };
@@ -860,15 +1305,22 @@ fn get_devices() -> Vec<String> {
             if !is_user_disk(&name) {
                 continue;
             }
-            let has_parts = dev["children"].as_array()
-                .map(|c| c.iter().any(|ch| ch["type"].as_str() == Some("part")))
-                .unwrap_or(false);
-            if !has_parts {
-                devices.push(name);
-            }
+            // Partitioned disks are INCLUDED. They used to be dropped here as
+            // "OS/boot disks", which meant most external drives — nearly all
+            // ship with one exFAT or NTFS partition — simply never appeared in
+            // the list. Plug one in and nothing happens, with no explanation.
+            //
+            // The real OS disk is excluded elsewhere and by better evidence:
+            // it is mounted, and the system OSD is injected separately. What is
+            // left is a disk with data on it, which is a question for the person
+            // who plugged it in, not a reason to pretend it is not there.
+            // `refuse_osd_creation` is what stops it being wiped without a
+            // decision; see `has_partitions` in disk_meta.
+            let flags = parse_disk_flags(dev);
+            devices.push((name, flags));
         }
     }
-    devices.sort();
+    devices.sort_by(|a, b| a.0.cmp(&b.0));
     devices
 }
 
@@ -917,7 +1369,7 @@ fn is_uuid(s: &str) -> bool {
 // ── Classify devices ──────────────────────────────────────────────────────────
 
 fn classify(devices: &[String], our_fsid: &str) -> Vec<String> {
-    // devices from get_devices() are already partition-free physical disks.
+    // devices from scan_devices() are already filtered to real, pluggable disks.
     let mut effective = Vec::new();
     for device in devices {
         match bluestore_fsid(device).as_deref() {
@@ -964,7 +1416,7 @@ fn disk_id_from(device: &str, serial: Option<&str>) -> String {
     format!("dev-{device}")
 }
 
-fn disk_meta(device: &str, our_fsid: &str) -> Value {
+fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Value {
     let model = std::fs::read_to_string(format!("/sys/block/{device}/device/model"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
@@ -984,6 +1436,8 @@ fn disk_meta(device: &str, our_fsid: &str) -> Value {
         "size_bytes": size_bytes,
         "is_our_osd": is_our_osd,
         "foreign_ceph": foreign_ceph,
+        "has_partitions": flags.has_partitions,
+        "mounted": flags.mounted,
         "osd_id": null, // populated by fetch_disk_to_osd in publish_local
     })
 }
@@ -1237,7 +1691,7 @@ mod tests {
     fn disk_meta_flags_our_own_osd() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
-        let m = disk_meta(&dev, OURS);
+        let m = disk_meta(&dev, OURS, DiskFlags::default());
         assert_eq!(m["is_our_osd"], json!(true));
         assert_eq!(m["foreign_ceph"], json!(false));
     }
@@ -1246,7 +1700,7 @@ mod tests {
     fn disk_meta_flags_a_foreign_cluster_disk() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &bluestore_label(THEIRS));
-        let m = disk_meta(&dev, OURS);
+        let m = disk_meta(&dev, OURS, DiskFlags::default());
         assert_eq!(m["is_our_osd"], json!(false));
         assert_eq!(
             m["foreign_ceph"],
@@ -1262,7 +1716,7 @@ mod tests {
     fn disk_meta_treats_a_labelled_disk_as_foreign_when_our_fsid_is_unknown() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
-        let m = disk_meta(&dev, "");
+        let m = disk_meta(&dev, "", DiskFlags::default());
         assert_eq!(m["is_our_osd"], json!(false));
         assert_eq!(m["foreign_ceph"], json!(true));
     }
@@ -1271,7 +1725,7 @@ mod tests {
     fn disk_meta_reports_a_blank_disk_as_neither_ours_nor_foreign() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &vec![0u8; 4096]);
-        let m = disk_meta(&dev, OURS);
+        let m = disk_meta(&dev, OURS, DiskFlags::default());
         assert_eq!(m["is_our_osd"], json!(false));
         assert_eq!(m["foreign_ceph"], json!(false));
     }
@@ -1616,4 +2070,113 @@ mod tests {
         assert!(parse_lvm_list(raw).unwrap().is_empty());
     }
 
+
+    // ── parse_disk_flags ──────────────────────────────────────────────────────
+    //
+    // Partitioned disks are listed now, so `mounted` is the only thing keeping
+    // the OS disk from being offered as storage. These pin that.
+
+    #[test]
+    fn a_blank_disk_is_neither_partitioned_nor_mounted() {
+        let v = json!({"name": "sdb", "type": "disk"});
+        assert_eq!(
+            parse_disk_flags(&v),
+            DiskFlags { has_partitions: false, mounted: false }
+        );
+    }
+
+    #[test]
+    fn an_external_drive_with_one_exfat_partition_is_partitioned_but_free() {
+        // The case that used to vanish from the list entirely.
+        let v = json!({"name": "sdb", "type": "disk", "children": [
+            {"name": "sdb1", "type": "part", "mountpoints": [null]}
+        ]});
+        let f = parse_disk_flags(&v);
+        assert!(f.has_partitions);
+        assert!(!f.mounted, "an unmounted partition is not in use");
+    }
+
+    /// The one that must never regress: the OS disk. Root is two levels down —
+    /// disk -> partition -> LVM volume — so a direct-children check would miss
+    /// it and offer to wipe the running system.
+    #[test]
+    fn a_disk_whose_root_filesystem_is_nested_two_levels_down_reads_as_mounted() {
+        let v = json!({"name": "sda", "type": "disk", "mountpoints": [null], "children": [
+            {"name": "sda1", "type": "part", "mountpoints": [null], "children": [
+                {"name": "pool-root", "type": "lvm", "mountpoints": ["/"]}
+            ]}
+        ]});
+        assert!(parse_disk_flags(&v).mounted);
+    }
+
+    #[test]
+    fn a_directly_mounted_partition_counts() {
+        let v = json!({"name": "sda", "type": "disk", "children": [
+            {"name": "sda1", "type": "part", "mountpoints": ["/boot"]}
+        ]});
+        assert!(parse_disk_flags(&v).mounted);
+    }
+
+    /// Older util-linux emits a `mountpoint` string instead of a
+    /// `mountpoints` array. Missing that would silently unprotect the OS disk.
+    #[test]
+    fn the_older_singular_mountpoint_field_is_understood() {
+        let v = json!({"name": "sda", "type": "disk", "children": [
+            {"name": "sda1", "type": "part", "mountpoint": "/"}
+        ]});
+        assert!(parse_disk_flags(&v).mounted);
+    }
+
+    // ── refuse_osd_creation ───────────────────────────────────────────────────
+
+    #[test]
+    fn a_mounted_disk_is_refused() {
+        let m = json!({"device": "sda", "mounted": true});
+        assert!(refuse_osd_creation(&m).unwrap().contains("mounted"));
+    }
+
+    #[test]
+    fn a_partitioned_disk_is_refused_until_it_is_erased() {
+        let m = json!({"device": "sdb", "has_partitions": true});
+        assert!(refuse_osd_creation(&m).unwrap().contains("erase"));
+    }
+
+    #[test]
+    fn a_blank_unmounted_disk_is_accepted() {
+        let m = json!({"device": "sdb", "has_partitions": false, "mounted": false});
+        assert_eq!(refuse_osd_creation(&m), None);
+    }
+
+    /// Missing keys must not read as "false". A meta blob from an older node
+    /// that predates these fields should still be refused on the evidence it
+    /// does carry, not waved through.
+    #[test]
+    fn foreign_ceph_still_wins_over_the_new_checks() {
+        let m = json!({"device": "sdb", "foreign_ceph": true, "mounted": false});
+        assert!(refuse_osd_creation(&m).unwrap().contains("another Ceph cluster"));
+    }
+
+    // ── drain_message ─────────────────────────────────────────────────────────
+
+    /// With one OSD there is nowhere to move the data, so `osd out` never
+    /// reaches safe-to-destroy and the disk drains forever. That is correct —
+    /// the alternative is discarding data — but it has to say so.
+    #[test]
+    fn draining_the_only_disk_says_it_cannot_finish_and_why() {
+        let m = drain_message(1);
+        assert!(m.contains("no other disk"), "{m}");
+        assert!(m.contains("Switch on another disk"), "{m}");
+    }
+
+    #[test]
+    fn draining_with_somewhere_to_go_says_do_not_unplug_yet() {
+        let m = drain_message(3);
+        assert!(m.contains("Do not unplug"), "{m}");
+        assert!(!m.contains("no other disk"), "{m}");
+    }
+
+    #[test]
+    fn a_cluster_with_no_osds_up_still_explains_itself() {
+        assert!(drain_message(0).contains("no other disk"));
+    }
 }
