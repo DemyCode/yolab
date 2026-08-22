@@ -53,6 +53,47 @@ with lib; let
     gawk
     jq
   ];
+  # How big this node's image store may be. Shared verbatim by the create and
+  # the grow path, because they computed it separately and a disagreement
+  # between them means an image that is repeatedly resized in both directions.
+  #
+  # Sets HOSTS, TOTAL_MB and WANT_MB. Requires ceph, jq, awk and coreutils.
+  sizingSnippet = ''
+    # Every machine sizes its own image store out of the SAME pool, so a fixed
+    # per-node share is a promise the pool cannot keep: at four machines, 25%
+    # each is the entire pool and there is nothing left for app data. The
+    # comment on shareOfPool described exactly this failure and then hardcoded
+    # the constant that causes it.
+    HOSTS=$(timeout 30 ceph osd tree -f json 2>/dev/null \
+      | jq '[.nodes[] | select(.type == "host" and (.children | length) > 0)] | length' 2>/dev/null \
+      || echo "")
+    case "''${HOSTS:-}" in
+      ''' | *[!0-9]* | 0) HOSTS=1 ;;
+    esac
+
+    TOTAL_MB=$(timeout 30 ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
+    case "''${TOTAL_MB:-}" in
+      ''' | *[!0-9]* ) echo "could not read pool capacity — not sizing anything"; exit 0 ;;
+    esac
+
+    WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
+    MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
+    if [ "$WANT_MB" -lt "$MIN_MB" ]; then WANT_MB=$MIN_MB; fi
+
+    # The ceiling, applied LAST so it also beats the minimum. Exceeding it is
+    # the failure this whole file warns about: images fill the pool, Ceph hits
+    # full-ratio, and writes block for every app on every machine. A too-small
+    # image store only costs re-pulling images, so when the two limits conflict
+    # this one has to win.
+    CAP_MB=$(( TOTAL_MB / (HOSTS * 2) ))
+    if [ "$WANT_MB" -gt "$CAP_MB" ]; then
+      echo "capping the image store at ''${CAP_MB}MB: ''${HOSTS} machine(s) share this pool and images may claim at most half of it"
+      WANT_MB=$CAP_MB
+    fi
+    if [ "$WANT_MB" -lt "$MIN_MB" ]; then
+      echo "warning: ''${WANT_MB}MB is below the ''${MIN_MB}MB floor — this pool is small for ''${HOSTS} machine(s); add a disk"
+    fi
+  '';
 in {
   options.yolab.ceph.imagesStore = {
     enable = mkEnableOption "back containerd's image store with a Ceph RBD";
@@ -175,14 +216,7 @@ in {
         fi
 
         # Size from capacity that actually exists (see header, point 2).
-        TOTAL_MB=$(timeout 30 ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
-        WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
-        MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
-        # Explicit `if`, not `[ ... ] && ...`: under `set -e` that idiom exits the
-        # script with status 1 whenever the test is false and it happens to be the
-        # last statement. It is not last today, which makes it a trap for the next
-        # edit rather than a bug now.
-        if [ "$WANT_MB" -lt "$MIN_MB" ]; then WANT_MB=$MIN_MB; fi
+        ${sizingSnippet}
 
         if ! rbd ls ${cfg.poolName} | grep -qx ${host}; then
           # krbd cannot map object-map/fast-diff/deep-flatten, so create with
@@ -373,14 +407,7 @@ in {
         fi
         set -e
         CUR_MB=$(timeout 30 rbd info ${cfg.poolName}/${host} --format json | jq -r '.size / 1048576 | floor')
-        TOTAL_MB=$(timeout 30 ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
-        WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
-        MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
-        # Explicit `if`, not `[ ... ] && ...`: under `set -e` that idiom exits the
-        # script with status 1 whenever the test is false and it happens to be the
-        # last statement. It is not last today, which makes it a trap for the next
-        # edit rather than a bug now.
-        if [ "$WANT_MB" -lt "$MIN_MB" ]; then WANT_MB=$MIN_MB; fi
+        ${sizingSnippet}
 
         # Only ever grow. Shrinking a mounted filesystem under a running
         # containerd would corrupt it, and a pool that shrank (a disk was
