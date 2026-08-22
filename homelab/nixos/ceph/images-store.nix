@@ -88,6 +88,37 @@ in {
   };
 
   config = mkIf (cephCfg.enable && cfg.enable) {
+    # ── LVM must never scan an RBD ───────────────────────────────────────────
+    #
+    # Every LVM command reads every block device it can see, looking for PV
+    # labels — and that includes /dev/rbd0, this node's container image store.
+    #
+    # Ceph *blocks* I/O rather than failing it when it cannot serve a read, and
+    # krbd retries indefinitely, so scanning a stalled RBD parks `lvs` in
+    # uninterruptible sleep. A D-state process cannot be killed: SIGKILL is
+    # ignored, systemd gives up, and the leftovers stay in the unit's cgroup.
+    #
+    # Observed live on node1: eight leaked `lvs` processes, "Processes still
+    # around after final SIGKILL", yolab-local-api unstoppable, and the
+    # nixos-rebuild that was trying to stop it wedged for 17 minutes.
+    #
+    # It is a circular dependency, not merely a hang. ceph-volume runs lvs to
+    # create an OSD; that OSD is what would make the cluster able to serve I/O
+    # again; and the cluster being unable to serve I/O is what stalls the RBD
+    # that lvs is blocked reading. Nothing breaks that loop from inside.
+    #
+    # No OSD ever lives on an RBD — they are created on real disks — so LVM has
+    # no reason to read one at all. global_filter rather than filter because
+    # only the former applies to every command, including the udev-triggered
+    # scans, which is where this bites.
+    #
+    # Written in lvm.conf's flat `section/key` form to match how the upstream
+    # NixOS module contributes its own settings; a second `devices { }` block
+    # would be a duplicate section in the same file.
+    environment.etc."lvm/lvm.conf".text = lib.mkAfter ''
+      devices/global_filter = [ "r|^/dev/rbd[0-9]+|", "a|.*|" ]
+    '';
+
     # ── Provision the pool and this node's image ─────────────────────────────
     systemd.services.yolab-images-rbd = {
       description = "Ensure the Ceph images pool and this node's RBD image exist";

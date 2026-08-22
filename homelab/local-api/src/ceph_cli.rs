@@ -18,6 +18,19 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use tokio::process::Command;
+use tokio::sync::Mutex;
+
+/// One ceph-volume at a time on this node.
+///
+/// Concurrent runs were never going to help — ceph-volume takes LVM's own locks
+/// — but the reason this is here is failure, not throughput. Every caller is on
+/// a reconcile loop, so when one call wedges the loop starts another on the next
+/// tick, and another, until the unit cannot be stopped at all.
+///
+/// `try_lock` rather than `lock`: queueing behind a wedged call would just move
+/// the pile-up from processes into tasks. Refusing lets the reconciler say what
+/// is happening and finish the rest of its pass.
+static CEPH_VOLUME_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Ceph commands are fast, but a wedged mon can make them hang forever. Every
 /// call is bounded so a storage hiccup degrades the UI instead of blocking the
@@ -27,7 +40,11 @@ const TIMEOUT_SECS: u64 = 30;
 async fn run_bin(bin: &str, args: &[&str]) -> Result<String> {
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(TIMEOUT_SECS),
-        Command::new(bin).args(args).output(),
+        // kill_on_drop: without it a timeout only stops *waiting*. The child
+        // keeps running, and since every caller here is on a reconcile loop,
+        // the next tick starts another one. See the note on ceph_volume below
+        // for what that cost in practice.
+        Command::new(bin).args(args).kill_on_drop(true).output(),
     )
     .await
     .map_err(|_| anyhow::anyhow!("{bin} timed out after {TIMEOUT_SECS}s"))?
@@ -72,9 +89,24 @@ pub async fn rbd(args: &[&str]) -> Result<String> {
 /// unbounded in practice (it wipes labels, creates LVs, and mkfs's BlueStore),
 /// so it gets its own generous limit rather than the shared 30s.
 pub async fn ceph_volume(args: &[&str]) -> Result<String> {
+    let Ok(_serialised) = CEPH_VOLUME_LOCK.try_lock() else {
+        bail!("ceph-volume is already running on this node — skipping `{}`", args.join(" "));
+    };
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(600),
-        Command::new("ceph-volume").args(args).output(),
+        // Without kill_on_drop this timeout leaked a whole process tree every
+        // ten minutes. Observed on node1: ceph-volume shells out to `lvs`, lvs
+        // blocked scanning a stalled RBD, the timeout fired and abandoned it,
+        // and the reconciler started another on the next tick — eight `lvs`
+        // processes deep before anyone noticed, at which point yolab-local-api
+        // could not be stopped and a nixos-rebuild hung behind it.
+        //
+        // This alone does not fix that case: a process in uninterruptible sleep
+        // ignores SIGKILL too. The RBD is kept out of LVM's scan (see
+        // homelab/nixos/ceph/images-store.nix) so lvs never blocks in the first
+        // place. What this fixes is every *other* timeout, where the child is
+        // killable and previously was simply abandoned.
+        Command::new("ceph-volume").args(args).kill_on_drop(true).output(),
     )
     .await
     .map_err(|_| anyhow::anyhow!("ceph-volume timed out after 600s"))?
