@@ -179,3 +179,31 @@ pub async fn local_osds() -> Result<Vec<(String, i64)>> {
     let raw = ceph_volume(&["lvm", "list", "--format", "json"]).await?;
     crate::disks_reconciler::parse_lvm_list(&raw)
 }
+
+/// Every OSD id the cluster knows about, from `ceph osd ls`.
+///
+/// Used to catch the id that `ceph-volume lvm create` allocates. Creation takes
+/// an id from the mon *before* it does any of the slow work — zapping, LVM,
+/// mkfs — so a create that dies partway leaves an id in the osdmap with no CRUSH
+/// location and nothing on disk. Diffing this before and after names that id, so
+/// the next attempt can reuse it instead of allocating another.
+///
+/// Errors propagate. An empty list must never be inferred from a failure: the
+/// caller uses the difference between two snapshots, and a silent empty one
+/// would make every existing OSD look newly created.
+pub async fn osd_ids() -> Result<Vec<i64>> {
+    let v = ceph_json(&["osd", "ls"]).await?;
+    Ok(v.as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default())
+}
+
+/// Drop an OSD id from the osdmap without touching any disk.
+///
+/// Only ever called on an id this process allocated and failed to finish
+/// creating, and only when `ceph osd safe-to-destroy` agrees — an id with no
+/// CRUSH location has never held a PG, so that check passes trivially for a
+/// genuine phantom and fails loudly for anything else.
+pub async fn osd_purge(osd_id: i64) -> Result<String> {
+    ceph(&["osd", "purge", &format!("osd.{osd_id}"), "--yes-i-really-mean-it"]).await
+}

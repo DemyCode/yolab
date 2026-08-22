@@ -171,17 +171,55 @@ type DiskState =
   | "draining"
   | "excluded"
   | "historical"
-  | "foreign";
+  | "foreign"
+  /** ON, but the last attempt failed. Another is coming; `message` says why. */
+  | "failing"
+  /** ON, but it needs a decision first — it already has data on it. */
+  | "blocked"
+  /** The node cannot see its own disk setup, so nothing here is known. */
+  | "stale";
 
+/**
+ * What to show for one disk.
+ *
+ * `phase` comes from the reconciler and is preferred whenever it is present,
+ * because it is the only source that knows whether anything is actually
+ * happening. The inference below it is the fallback for a node that has not
+ * reported yet, and it is exactly the guess that produced the bug this replaced:
+ * "switched on, present, no OSD yet" renders identically whether the setup
+ * started five seconds ago or has failed fourteen times.
+ */
 function diskState(disk: DiskInfo): DiskState {
   if (disk.foreign_ceph) return "foreign";
+
   const on = disk.desired === "ON" || disk.desired === "USING";
-  if (on && disk.connected && disk.is_our_osd) return "active";
-  if (on && disk.connected) return "pending";
   if (on && !disk.connected) return "missing";
-  if (!on && disk.connected && disk.is_our_osd) return "draining";
-  if (!on && disk.connected) return "excluded";
-  return "historical";
+  if (!on && !disk.connected) return "historical";
+
+  switch (disk.phase) {
+    case "active":
+      return "active";
+    case "creating":
+      return "pending";
+    case "retrying":
+      return "failing";
+    case "blocked":
+      return "blocked";
+    case "draining":
+      return "draining";
+    case "removing":
+      return "draining";
+    case "removable":
+      return "excluded";
+    case "unknown":
+      return "stale";
+  }
+
+  // No phase reported yet — fall back to inference.
+  if (on && disk.is_our_osd) return "active";
+  if (on) return "pending";
+  if (disk.is_our_osd) return "draining";
+  return "excluded";
 }
 
 const STATE_META: Record<
@@ -205,6 +243,22 @@ const STATE_META: Record<
     label: "Being removed — moving data off",
     color: "text-warning",
     dot: "bg-warning",
+    pulse: true,
+  },
+  failing: {
+    label: "Could not be added",
+    color: "text-danger",
+    dot: "bg-danger",
+  },
+  blocked: {
+    label: "Needs a decision",
+    color: "text-warning",
+    dot: "bg-warning",
+  },
+  stale: {
+    label: "Checking…",
+    color: "text-fg-muted",
+    dot: "bg-fg-subtle",
     pulse: true,
   },
   excluded: {
@@ -330,6 +384,13 @@ function DiskRow({
             )}
           </p>
         </div>
+        {/* What the reconciler is actually doing, and why it stopped if it did.
+            Every one of these used to exist only as a tracing::warn! on the
+            machine, which is why a disk could pulse "Setting up…" for an hour
+            with the real answer sitting in the journal. */}
+        {disk.message && (
+          <p className="mt-1 text-sm text-fg-muted">{disk.message}</p>
+        )}
         {err && <p className="mt-1 text-sm text-danger">{err}</p>}
       </div>
 
@@ -339,7 +400,7 @@ function DiskRow({
         </div>
       )}
 
-      {state === "foreign" &&
+      {(state === "foreign" || (state === "blocked" && disk.has_partitions && !disk.mounted)) &&
         (eraseConfirm ? (
           <div className="flex shrink-0 items-center gap-2">
             <Button
