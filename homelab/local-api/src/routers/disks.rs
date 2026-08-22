@@ -190,11 +190,43 @@ pub async fn erase_disk(
         return Json(serde_json::json!({"ok": false, "error": "disk not found in inventory"}));
     }
 
-    // Safety gate: only erase disks explicitly flagged as foreign Ceph.
-    if meta["foreign_ceph"].as_bool() != Some(true) {
+    // Two things may be erased, and only these two:
+    //
+    //   * a disk carrying another Ceph cluster's data
+    //   * a disk with a partition table on it
+    //
+    // The second is new, and it is what makes the Storage page's "Erase and use"
+    // button work at all: partitioned disks are listed now (most external drives
+    // ship formatted), the reconciler refuses to build an OSD on one, and this is
+    // the only way out of that state. Without it the button was offered and
+    // always failed.
+    let foreign = meta["foreign_ceph"].as_bool() == Some(true);
+    let partitioned = meta["has_partitions"].as_bool() == Some(true);
+    if !foreign && !partitioned {
         return Json(serde_json::json!({
             "ok": false,
-            "error": "disk does not contain foreign Ceph data — refusing to erase"
+            "error": "this disk has nothing on it to erase"
+        }));
+    }
+
+    // Never erase a disk this machine is using, whatever else is true of it.
+    // The inventory already skips mounted disks, so reaching here means one was
+    // mounted between the scan and this call — rare, and exactly why the check
+    // is repeated at the point of destruction rather than trusted from upstream.
+    if meta["mounted"].as_bool() == Some(true) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "this machine is using that disk — refusing to erase it"
+        }));
+    }
+
+    // An OSD of ours is torn down by switching the disk OFF, which drains it
+    // first. Erasing is the path for disks that are NOT part of the cluster, and
+    // routing a live OSD through it would skip the drain entirely.
+    if meta["is_our_osd"].as_bool() == Some(true) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "this disk is part of your storage — switch it off instead, so its files move somewhere else first"
         }));
     }
 
