@@ -722,7 +722,25 @@ async fn reconcile_local_osds(
         }
     }
 
-    purge_drained_osds(node, &crush_nodes, disk_to_osd).await;
+    // Is any disk on this node switched ON but not physically here?
+    //
+    // An OSD whose disk has vanished is either a disk someone REMOVED (fine to
+    // clean up) or one someone UNPLUGGED while it was still in use (must not be
+    // touched). Nothing in the CRUSH map distinguishes them, and the disk is
+    // gone so it cannot be asked.
+    //
+    // But the config map still holds the user's intent for disks that are not
+    // present, so "switched ON, not in this tick's inventory" is exactly the
+    // unplugged case — and if even one exists we cannot tell which leftover OSD
+    // is its, so none of them get purged. Switching that disk OFF in the UI
+    // clears the block and lets the cleanup run.
+    let prefix = format!("{node}--");
+    let unplugged_but_wanted = desired.iter().any(|(k, v)| {
+        (v == "ON" || v == "USING")
+            && k.strip_prefix(&prefix).is_some_and(|d| !meta.contains_key(d))
+    });
+
+    purge_drained_osds(node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
 }
 
 
@@ -1193,6 +1211,7 @@ async fn purge_drained_osds(
     node: &str,
     crush_nodes: &[Value],
     disk_to_osd: &HashMap<String, i64>,
+    unplugged_but_wanted: bool,
 ) {
     // OSD IDs that belong to this node's host bucket in the CRUSH tree.
     let host_osd_ids: std::collections::HashSet<i64> = crush_nodes
@@ -1210,6 +1229,26 @@ async fn purge_drained_osds(
         let Some(osd_id) = n["id"].as_i64() else { continue };
         if !host_osd_ids.contains(&osd_id) { continue; }   // not this node's OSD
         if active_osd_ids.contains(&osd_id) { continue; }  // disk still here, main loop handles it
+
+        // Some disk on this node is switched ON and not here. Any of these
+        // leftovers could be its, so none of them are touched.
+        //
+        // Without this, unplugging a disk for ten minutes destroyed it: Ceph
+        // marks an OSD out after mon_osd_down_out_interval (600s), which
+        // satisfies every condition below, so the next tick purged it. Plug the
+        // disk back in and it still carries our BlueStore label while Ceph has
+        // no such OSD — precisely the state refuse_osd_creation blocks — so it
+        // could never be re-added without being erased first.
+        //
+        // A disk someone unplugged and a disk someone switched off are different
+        // things, and only the second one asked to be taken apart.
+        if unplugged_but_wanted {
+            tracing::info!(
+                "osd.{osd_id}: leaving it alone — a disk on this node is switched on but not \
+                 connected, and this may be it"
+            );
+            continue;
+        }
 
         let reweight = n["reweight"].as_f64().unwrap_or(1.0);
         let status   = n["status"].as_str().unwrap_or("up");

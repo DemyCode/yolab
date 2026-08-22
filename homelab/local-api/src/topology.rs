@@ -102,22 +102,39 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
 
 // ── Policy persistence (ConfigMap) ────────────────────────────────────────────
 
-pub async fn read_policy() -> StoragePolicy {
-    let map: std::collections::HashMap<String, String> = kubectl::get_json(&[
-        "get", "configmap", POLICY_CM, "-n", NS, "-o", "jsonpath={.data}",
-    ])
-    .await
-    .ok()
-    .and_then(|v| serde_json::from_value(v).ok())
-    .unwrap_or_default();
+/// None when the policy could not be read.
+///
+/// It used to fall back to `StoragePolicy::default()` — auto mode — so a
+/// kubectl blip silently discarded a user's pinned manual policy and re-derived
+/// one from hardware. On a cluster where they had deliberately pinned three
+/// copies with fewer machines than that implies, the fallback reduces it.
+///
+/// A missing ConfigMap is different from an unreadable one and still means
+/// "auto": that is the genuine first-run state, and the `kind` check is what
+/// tells the two apart.
+pub async fn read_policy() -> Option<StoragePolicy> {
+    let v = kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"])
+        .await
+        .ok()?;
+    if v["kind"].as_str() != Some("ConfigMap") {
+        return None;
+    }
+    let map: std::collections::HashMap<String, String> = v["data"]
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, x)| x.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let d = StoragePolicy::default();
-    StoragePolicy {
+    Some(StoragePolicy {
         mode: map.get("mode").cloned().unwrap_or(d.mode),
         size: map.get("size").and_then(|s| s.parse().ok()).unwrap_or(d.size),
         min_size: map.get("min_size").and_then(|s| s.parse().ok()).unwrap_or(d.min_size),
         failure_domain: map.get("failure_domain").cloned().unwrap_or(d.failure_domain),
-    }
+    })
 }
 
 async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
@@ -141,34 +158,46 @@ async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
 
 // ── Observation ───────────────────────────────────────────────────────────────
 
-async fn observe() -> Topology {
-    let nodes = kubectl::get_nodes().await.map(|n| n.len() as u32).unwrap_or(0);
+/// None when any input could not be read.
+///
+/// THIS FUNCTION DECIDES HOW MANY COPIES OF YOUR DATA EXIST, and every field
+/// used to fall back to 0 on error. That is the wrong direction in the worst
+/// possible way:
+///
+///   * `ceph osd tree` fails -> osd_hosts = 0 -> compute_target clamps
+///     `size.min(osd_hosts.max(1))` to 1 -> apply_pools sets every pool to
+///     size 1 -> Ceph DELETES the other copies. A transient timeout on one
+///     command would destroy the redundancy of the whole cluster.
+///
+///   * `kubectl get nodes` fails -> nodes = 0 -> a healthy three-machine
+///     cluster is treated as one machine, dropping to two copies and switching
+///     the CRUSH rule from host to osd, which reshuffles every object.
+///
+/// There is no safe default for "how big is this cluster". Not knowing has to
+/// mean not acting.
+async fn observe() -> Option<Topology> {
+    let nodes = kubectl::get_nodes().await.ok()?.len() as u32;
     // OSD count from Ceph itself. This used to count Rook OSD Deployments with a
     // ready replica; there are no such Deployments now, and the count was always
     // a proxy — it measured pods Rook had scheduled, not OSDs Ceph had up.
     // `num_up_osds` is the quantity the replication targets actually depend on.
     let osds = crate::ceph_cli::ceph_json(&["osd", "stat"])
         .await
-        .ok()
-        .and_then(|v| v["num_up_osds"].as_u64())
-        .unwrap_or(0) as u32;
+        .ok()?["num_up_osds"]
+        .as_u64()? as u32;
 
     // Host buckets in the CRUSH tree that hold at least one OSD.
-    let osd_hosts = crate::ceph_cli::ceph_json(&["osd", "tree"])
-        .await
-        .ok()
-        .and_then(|v| v["nodes"].as_array().cloned())
-        .map(|ns| {
-            ns.iter()
-                .filter(|n| {
-                    n["type"].as_str() == Some("host")
-                        && n["children"].as_array().is_some_and(|c| !c.is_empty())
-                })
-                .count() as u32
+    let tree = crate::ceph_cli::ceph_json(&["osd", "tree"]).await.ok()?;
+    let osd_hosts = tree["nodes"]
+        .as_array()?
+        .iter()
+        .filter(|n| {
+            n["type"].as_str() == Some("host")
+                && n["children"].as_array().is_some_and(|c| !c.is_empty())
         })
-        .unwrap_or(0);
+        .count() as u32;
 
-    Topology { nodes, osds, osd_hosts }
+    Some(Topology { nodes, osds, osd_hosts })
 }
 
 /// Health straight from the mon rather than from a Rook CR status field.
@@ -176,12 +205,12 @@ async fn observe() -> Topology {
 /// Returns "" when Ceph is unreachable, which every caller must treat as "do
 /// not act" — the same discipline as an unknown fsid. Reading silence as
 /// HEALTH_OK would let a reduction proceed against a cluster that cannot answer.
-async fn cluster_health() -> String {
+async fn cluster_health() -> Option<String> {
     crate::ceph_cli::ceph_json(&["health"])
         .await
-        .ok()
-        .and_then(|v| v["status"].as_str().map(str::to_string))
-        .unwrap_or_default()
+        .ok()?["status"]
+        .as_str()
+        .map(str::to_string)
 }
 
 // ── Controller loop ───────────────────────────────────────────────────────────
@@ -202,16 +231,28 @@ async fn tick() -> anyhow::Result<()> {
     if !crate::disks_reconciler::is_reconcile_leader().await {
         return Ok(());
     }
-    let topo = observe().await;
+    let Some(topo) = observe().await else {
+        tracing::debug!("topology: cluster shape unknown this tick — not touching replication");
+        return Ok(());
+    };
     if topo.osds == 0 {
         return Ok(()); // nothing provisioned yet
     }
-    // Don't rebalance while the cluster is in a hard-error state.
-    if cluster_health().await == "HEALTH_ERR" {
-        return Ok(());
+    // Don't rebalance while the cluster is in a hard-error state — or while we
+    // cannot tell what state it is in. The old check compared against
+    // "HEALTH_ERR" and read an unreachable cluster as "" — which passed, and let
+    // pool sizes be rewritten against a cluster nobody could read.
+    match cluster_health().await.as_deref() {
+        Some("HEALTH_ERR") | None => return Ok(()),
+        _ => {}
     }
 
-    let policy = read_policy().await;
+    let Some(policy) = read_policy().await else {
+        // Falling back to the defaults here would silently discard a pinned
+        // manual policy and re-derive one from hardware.
+        tracing::debug!("topology: storage policy unreadable this tick — not touching replication");
+        return Ok(());
+    };
     let target = compute_target(&policy, &topo);
 
     apply_mon_mgr(&target).await;
@@ -354,10 +395,20 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
 
 // ── HTTP: /api/storage/policy ─────────────────────────────────────────────────
 
+/// Nulls rather than invented numbers when the cluster cannot be read.
+///
+/// This used to fall back to defaults for both the policy and the topology and
+/// hand the result to `compute_target`, so a Storage page opened while Ceph was
+/// unreachable showed a confident, fabricated answer: a specific number of
+/// copies, a specific failure domain, a specific machine count. All of it made
+/// up. "We do not know right now" is a worse-looking page and a truthful one.
 pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
     let policy = read_policy().await;
     let topo = observe().await;
-    let target = compute_target(&policy, &topo);
+    let target = match (&policy, &topo) {
+        (Some(p), Some(t)) => Some(compute_target(p, t)),
+        _ => None,
+    };
     Json(serde_json::json!({ "policy": policy, "topology": topo, "target": target }))
 }
 
@@ -376,7 +427,18 @@ pub async fn set_policy(
     if req.mode != "auto" && req.mode != "manual" {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "mode must be auto or manual"})));
     }
-    let mut p = read_policy().await;
+    // Read-modify-write, so an unreadable current policy must abort. Falling
+    // back to defaults would quietly reset every field the caller did not send —
+    // someone changing only the mode would find their pinned size and failure
+    // domain replaced.
+    let Some(mut p) = read_policy().await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "cannot read the current storage settings right now — nothing was changed"
+            })),
+        );
+    };
     p.mode = req.mode;
     if let Some(s) = req.size {
         p.size = s;
@@ -500,5 +562,53 @@ mod tests {
         assert_eq!(t.size, 2);
         assert!(t.min_size <= 2);
         assert_eq!(t.failure_domain, "osd");
+    }
+
+    // ── The clamps that decide how many copies exist ──────────────────────────
+    //
+    // compute_target is only ever called with a Topology that was fully read —
+    // observe() returns None otherwise. These pin what would happen if that ever
+    // stopped being true, because the direction of the failure is what matters:
+    // a zero here does not mean "small cluster", it means "unknown", and acting
+    // on it deletes replicas.
+
+    #[test]
+    fn zero_osd_hosts_would_collapse_replication_to_one_copy() {
+        // The exact shape a failed `ceph osd tree` used to produce: OSDs seen,
+        // hosts not. apply_pools would then set every pool to size 1 and Ceph
+        // would delete the other copies.
+        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 6, osd_hosts: 0 });
+        assert_eq!(t.size, 1, "documents the collapse observe() now prevents");
+    }
+
+    #[test]
+    fn zero_nodes_would_downgrade_a_healthy_cluster() {
+        // A failed `kubectl get nodes` used to produce this on a healthy
+        // three-machine cluster: two copies instead of three, and the failure
+        // domain switched from host to osd, which reshuffles every object.
+        let t = compute_target(&auto(), &Topology { nodes: 0, osds: 6, osd_hosts: 3 });
+        assert_eq!((t.size, t.failure_domain.as_str()), (2, "osd"));
+    }
+
+    // ── Pools that must never be replicated ───────────────────────────────────
+
+    #[test]
+    fn the_images_pool_is_never_resized() {
+        assert!(is_unreplicated_pool("images"));
+    }
+
+    #[test]
+    fn app_data_pools_are_resized() {
+        for p in ["yolab-fs-data0", "yolab-fs-metadata", ".mgr"] {
+            assert!(!is_unreplicated_pool(p), "{p} must follow the replication target");
+        }
+    }
+
+    /// Guards against a pool called something like "images-backup" being caught
+    /// by a prefix match if this ever becomes one.
+    #[test]
+    fn only_the_exact_images_pool_is_exempt() {
+        assert!(!is_unreplicated_pool("images-old"));
+        assert!(!is_unreplicated_pool("my-images"));
     }
 }
