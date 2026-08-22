@@ -650,9 +650,46 @@ async fn reconcile_local_osds(
     }
 
 
+    // ── Bring back anything that is simply not running ───────────────────────
+    //
+    // FIRST, and deliberately before anything that needs cluster statistics.
+    //
+    // This used to live inside the loop below, which runs after `ceph osd df
+    // tree`. That command reports usage and needs the mgr, so it fails on a
+    // degraded cluster — and the failure was a bare `return`. The single most
+    // important recovery action in this system was therefore gated behind a
+    // STATISTICS query that breaks exactly when recovery is needed.
+    //
+    // It happened: a nixos-rebuild stopped osd.2 on node3 ("Deactivated
+    // successfully" — a clean stop, so Restart=on-failure does not apply), the
+    // cluster then had no OSDs up, `osd df tree` stopped answering, and the
+    // reconciler returned before reaching the line that would have started the
+    // daemon again. A self-healing system sat there not healing.
+    //
+    // Starting a stopped daemon needs no cluster state at all. It must not
+    // depend on the cluster being healthy enough to describe itself.
+    for (disk_id, _m) in meta {
+        let key = format!("{node}--{disk_id}");
+        let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
+        if !want_on {
+            continue;
+        }
+        if let Some(&osd_id) = disk_to_osd.get(disk_id) {
+            ensure_osd_unit_running(osd_id).await;
+        }
+    }
+
     let crush_nodes: Vec<Value> = match ceph_cli::ceph_json(&["osd", "df", "tree"]).await {
         Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
-        Err(_) => return,
+        Err(e) => {
+            // Not silent any more. This return skips weighting, in/out and the
+            // whole OFF path, so it has to be visible when it happens.
+            tracing::warn!(
+                "reconcile: `ceph osd df tree` did not answer ({e}) — daemons were started, but \
+                 nothing else can be decided this tick"
+            );
+            return;
+        }
     };
 
     let osd_state_up: std::collections::HashSet<i64> = crush_nodes
@@ -704,13 +741,9 @@ async fn reconcile_local_osds(
         let osd = format!("osd.{osd_id}");
 
         if want_on {
-            // Converge the daemon's own state, not just Ceph's view of it.
-            // Enabling used to happen only in the creation branch, so an OSD
-            // whose unit was stopped — a failed enable, a manual systemctl, a
-            // crash past the restart limit — stayed down forever with the
-            // reconciler reporting nothing wrong. This is a reconciler; it has
-            // to assert the desired state every tick, not once at birth.
-            ensure_osd_unit_running(osd_id).await;
+            // The daemon was already started above, before anything that could
+            // fail. Do not re-check it here: that is what put the recovery
+            // behind a statistics call in the first place.
 
             // A freshly created OSD starts at weight 0 (osd_crush_initial_weight)
             // so it attracts no data until the user activates it.

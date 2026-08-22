@@ -641,10 +641,18 @@ in {
       after = ["ceph-mon-${host}.service"];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
-        # Generous: it starts one OSD per prepared disk, and each start runs
-        # ceph-volume. Bounded all the same — an unbounded oneshot holds
-        # multi-user.target, and with it every service ordered after it.
+        # NOT RemainAfterExit, deliberately.
+        #
+        # With it, this unit stays `active (exited)` after boot and never runs
+        # again — so if anything stops an OSD later, nothing declarative brings
+        # it back until the next reboot. That is not hypothetical: a
+        # nixos-rebuild stopped osd.2 on node3 ("Deactivated successfully", a
+        # clean stop, so Restart=on-failure does not apply) and it stayed down.
+        #
+        # Without it the unit ends `inactive`, so switch-to-configuration starts
+        # it again on every rebuild, and the timer below re-asserts it
+        # periodically. Every step it takes is `systemctl start` on an already
+        # running unit, which is a no-op, so running it often is free.
         TimeoutStartSec = "600s";
       };
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq systemd];
@@ -661,6 +669,18 @@ in {
             echo "osd.$id: failed to start" >&2
         done
       '';
+    };
+
+    # Re-assert the OSDs periodically as well as at boot. local-api's reconciler
+    # does the same thing and is usually first, but it needs Kubernetes and the
+    # disk map to decide anything; this needs neither, so it keeps working in
+    # exactly the situations that stop the reconciler.
+    systemd.timers.yolab-ceph-osd-activate = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnBootSec = "3min";
+        OnUnitActiveSec = "5min";
+      };
     };
 
     environment.systemPackages = with pkgs; [
