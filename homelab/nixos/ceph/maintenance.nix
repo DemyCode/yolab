@@ -37,13 +37,19 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # `Type=oneshot` disables the start timeout by default. TimeoutStopSec
+        # matters even more here: ExecStop runs at shutdown and talks to the
+        # cluster, so an unbounded one hangs the reboot — the reboot being the
+        # thing that recovers a machine whose storage is stuck.
+        TimeoutStartSec = "120s";
+        TimeoutStopSec = "60s";
         # Nothing to do on start beyond clearing the flag the shutdown set.
         ExecStart = pkgs.writeShellScript "ceph-noout-clear" ''
           set -uo pipefail
           export PATH=${makeBinPath (with pkgs; [ceph ceph-client coreutils])}:$PATH
           # Wait for the mon, but never block boot on it.
-          for _ in $(seq 1 60); do ceph -s >/dev/null 2>&1 && break; sleep 1; done
-          if ! ceph -s >/dev/null 2>&1; then
+          for _ in $(seq 1 60); do timeout 15 ceph -s >/dev/null 2>&1 && break; sleep 1; done
+          if ! timeout 15 ceph -s >/dev/null 2>&1; then
             echo "ceph unreachable — leaving flags alone"
             exit 0
           fi
@@ -59,7 +65,7 @@ in {
         ExecStop = pkgs.writeShellScript "ceph-noout-set" ''
           set -uo pipefail
           export PATH=${makeBinPath (with pkgs; [ceph ceph-client coreutils gnugrep])}:$PATH
-          ceph -s >/dev/null 2>&1 || exit 0
+          timeout 15 ceph -s >/dev/null 2>&1 || exit 0
           # Don't touch it if it is already set — see above.
           if ceph osd dump 2>/dev/null | grep -q '^flags.*noout'; then
             echo "noout already set by someone else — leaving it"
@@ -92,7 +98,7 @@ in {
         TIMEOUT=''${1:-900}
         DEADLINE=$(( $(date +%s) + TIMEOUT ))
 
-        if ! ceph -s >/dev/null 2>&1; then
+        if ! timeout 15 ceph -s >/dev/null 2>&1; then
           # No cluster to protect. A single node that has not set up storage yet
           # must not be blocked from updating.
           echo "ceph unreachable — not gating"

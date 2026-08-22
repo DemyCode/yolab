@@ -47,6 +47,9 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # `Type=oneshot` disables the start timeout by default; see the note on
+        # yolab-ceph-bootstrap in default.nix for what that cost.
+        TimeoutStartSec = "180s";
       };
       path = with pkgs; [ceph ceph-client coreutils systemd];
       # At boot systemd already orders ceph-mds after this; this matters on a
@@ -66,7 +69,7 @@ in {
         # Only the mon can mint this, so an unreachable cluster means "not yet".
         # On a joining node that is the ordinary state until the cluster hands
         # over its credentials — hence the retry timer below.
-        if ! ceph -s >/dev/null 2>&1; then
+        if ! timeout 20 ceph -s >/dev/null 2>&1; then
           echo "cluster not reachable — cannot mint the MDS key yet" >&2
           exit 1
         fi
@@ -101,16 +104,19 @@ in {
       description = "Create the ${cfg.name} CephFS and its pools";
       wantedBy = ["multi-user.target"];
       after = ["ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        TimeoutStartSec = "300s";
+      };
       path = with pkgs; [ceph ceph-client coreutils gnugrep jq];
       script = ''
         set -uo pipefail
-        for _ in $(seq 1 90); do ceph -s >/dev/null 2>&1 && break; sleep 1; done
-        if ! ceph -s >/dev/null 2>&1; then
+        for _ in $(seq 1 90); do timeout 20 ceph -s >/dev/null 2>&1 && break; sleep 1; done
+        if ! timeout 20 ceph -s >/dev/null 2>&1; then
           echo "ceph not reachable — nothing to create yet"
           exit 0
         fi
-        if ! ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up'; then
+        if ! timeout 20 ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up'; then
           echo "no OSD is up yet — ${cfg.name} will be created once a disk is switched on"
           exit 0
         fi
