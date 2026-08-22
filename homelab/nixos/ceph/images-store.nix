@@ -213,11 +213,19 @@ in {
         RemainAfterExit = true;
         # Never let this unit's failure propagate into k3s.
         SuccessExitStatus = "0 1";
-        # The tightest timeout in this directory, because k3s is ordered after
-        # this unit and therefore waits exactly this long in the worst case.
-        # Booting without the image store costs one cycle on the root disk;
-        # not booting at all costs the machine.
-        TimeoutStartSec = "120s";
+        # Generous ON PURPOSE, and the two kinds of timeout here do different
+        # jobs. The `timeout N` wrappers inside the script are what make FAILURE
+        # fast: every check that could stall against an unreachable cluster gives
+        # up in 20-30s and exits 0, so k3s is never held for long by a broken
+        # Ceph. This one is only a last-resort backstop.
+        #
+        # It has to be generous because one legitimate path here is slow: the
+        # first time the RBD takes over, the whole existing image store is copied
+        # onto it. That is gigabytes, possibly across the network to another
+        # machine's disk, and killing it midway leaves a half-copied store and a
+        # stray mount. A tight backstop would turn a working migration into a
+        # recurring failure — the opposite of the problem it was meant to solve.
+        TimeoutStartSec = "900s";
       };
       path = cephPath;
       script = ''
@@ -287,6 +295,11 @@ in {
         if [ -n "$(ls -A ${containerdRoot} 2>/dev/null)" ]; then
           echo "migrating the existing image store off the root disk"
           STAGE=$(mktemp -d)
+          # The copy below is the one operation here that can run for minutes, so
+          # it is also the one that can be interrupted — by the backstop timeout,
+          # or by someone rebooting a machine that looks stuck. Without this the
+          # staging mount survives into the next boot and the RBD is busy.
+          trap 'umount "$STAGE" 2>/dev/null || true; rmdir "$STAGE" 2>/dev/null || true' EXIT INT TERM
           if ! mount "$DEV" "$STAGE"; then
             echo "could not mount $DEV for migration — staying on the root disk" >&2
             rmdir "$STAGE" 2>/dev/null || true
