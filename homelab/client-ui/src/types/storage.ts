@@ -89,10 +89,14 @@ export type DiskPhase =
   | "removable"
   | "unknown";
 
+/// What the owner asked for. No `mode`: the auto-scaling mode is gone, because
+/// it derived the copy count from disks that were currently UP, so unplugging
+/// one silently reduced replication and deleted the extra copies.
+///
+/// No `min_size` either — the server fixes it at one online copy
+/// (topology::MIN_SIZE) so the cluster keeps serving whatever is reachable.
 export interface StoragePolicy {
-  mode: "auto" | "manual";
   size: number;
-  min_size: number;
   failure_domain: "osd" | "host";
 }
 
@@ -110,7 +114,13 @@ export interface StorageTarget {
 }
 
 export interface StoragePolicyData {
-  policy: StoragePolicy;
-  topology: StorageTopology;
-  target: StorageTarget;
+  /// null until the owner has chosen, or when the setting cannot be read. The
+  /// page shows "not set yet" rather than inventing a number the cluster is
+  /// not actually using.
+  policy: StoragePolicy | null;
+  topology: StorageTopology | null;
+  target: StorageTarget | null;
+  /// Online copies required to serve data. Always 1; sent so the page can
+  /// explain the behaviour without hardcoding a number decided on the server.
+  min_size: number;
 }

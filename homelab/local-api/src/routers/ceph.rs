@@ -255,9 +255,25 @@ fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<Heal
             "Machine clocks out of sync".into(),
             "The clocks on your machines differ by too much. This can cause storage failures.".into(),
         ),
-        "PG_DEGRADED" => (
-            "Data redundancy reduced".into(),
-            "Some data chunks are stored on fewer disks than configured. Your cluster is recovering.".into(),
+        // Ceph raises both of these for the same situation from the owner's
+        // point of view: fewer copies exist than were asked for. It is now a
+        // NORMAL, indefinite state rather than a transient one — asking for
+        // more copies than there are disks is allowed, and means "make the rest
+        // when I add some". So this must not read as a fault or claim recovery
+        // is under way, and it must say the thing the owner needs to know
+        // first: everything still works.
+        //
+        // That last part is only true because min_size is 1 (see
+        // topology::MIN_SIZE). Under the old min_size = size - 1 this same
+        // state could mean every app had stopped, and saying "everything works"
+        // would have been a lie.
+        "PG_DEGRADED" | "PG_UNDERSIZED" => (
+            "Fewer copies than you asked for".into(),
+            "Some of your files have fewer copies than your storage settings ask for — \
+             there are not enough disks to hold them all right now. Everything still \
+             works and nothing has been lost. Add a disk and the missing copies are \
+             made automatically."
+                .into(),
         ),
         "PG_DOWN" | "PG_AVAILABILITY" => {
             // Always critical regardless of Ceph's own severity: apps actively hang
