@@ -51,6 +51,7 @@ in
     ./ceph/filesystem.nix
     ./ceph/csi-secrets.nix
     ./ceph/maintenance.nix
+    ./ceph/dashboard.nix
   ];
 
   # ── Module options ────────────────────────────────────────────────────────
@@ -382,11 +383,21 @@ in
           handle /api/* {
             reverse_proxy [::1]:3001
           }
-          handle /ceph-dashboard/* {
+          # To local-api, not to a fixed address. This used to point at
+          # [fd00:43::cefd]:7000 — the ClusterIP of Rook's dashboard Service —
+          # which stopped existing when Ceph moved out of Kubernetes, and the
+          # link has returned 502 ever since.
+          #
+          # It cannot point at the local mgr either: the dashboard is served by
+          # the ACTIVE mgr, every node runs one, and a standby answers with a
+          # redirect to an address on the WireGuard mesh that no browser can
+          # reach. local-api asks Ceph which mgr is active and forwards there,
+          # so a failover changes nothing here.
+          handle /ceph-dashboard* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
             }
-            reverse_proxy [fd00:43::cefd]:7000
+            reverse_proxy [::1]:3001
           }
           handle {
             root * ${s.clientUi}

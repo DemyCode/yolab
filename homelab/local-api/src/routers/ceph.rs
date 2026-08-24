@@ -1,4 +1,4 @@
-use axum::{extract::Path, http::StatusCode, Json};
+use axum::{extract::Path, http::StatusCode, response::{IntoResponse, Response}, Json};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -751,22 +751,26 @@ async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_j
     (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }
 
+/// Where homelab/nixos/ceph/dashboard.nix writes the generated password.
+const DASHBOARD_PASSWORD_FILE: &str = "/var/lib/ceph/dashboard-password";
+
+/// The credentials shown next to the dashboard link.
+///
+/// These used to come from the `rook-ceph-dashboard-password` Secret. Ceph left
+/// Kubernetes and the Secret left with it, so this returned an empty string that
+/// the page rendered as a row of dots — credentials that looked real and could
+/// not work. The password now comes from the same file the mgr was configured
+/// with, so the two cannot drift apart.
 pub async fn dashboard_creds() -> Json<serde_json::Value> {
-    let password = kubectl::run(&[
-        "get", "secret", "-n", "rook-ceph", "rook-ceph-dashboard-password",
-        "-o", "go-template={{.data.password | base64decode}}",
-    ]).await.unwrap_or_default();
-
-    let username = kubectl::run(&[
-        "get", "secret", "-n", "rook-ceph", "rook-ceph-dashboard-password",
-        "-o", "go-template={{.data.username | base64decode}}",
-    ]).await.unwrap_or_else(|_| "admin".into());
-
-    let username = if username.trim().is_empty() { "admin".into() } else { username.trim().to_string() };
+    let password = std::fs::read_to_string(DASHBOARD_PASSWORD_FILE)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
 
     Json(serde_json::json!({
-        "username": username,
-        "password": password.trim(),
+        "username": "admin",
+        "password": password,
+        // The page can say "not ready yet" instead of showing empty dots.
+        "ready": !password.is_empty(),
     }))
 }
 
@@ -1117,5 +1121,196 @@ mod tests {
         assert_eq!(d.osds[0].status, "unknown");
         // reweight defaults to 1.0 (in), not 0.0 (draining).
         assert_eq!(d.osds[0].reweight, 1.0);
+    }
+}
+
+// ── Dashboard proxy ───────────────────────────────────────────────────────────
+
+/// The active mgr's dashboard base URL, e.g. "http://[fd00:cafe::30]:7000".
+///
+/// `ceph mgr services` reports the URL of the mgr that is CURRENTLY ACTIVE, and
+/// that is the whole reason this proxy exists. Every node runs a mgr, only one
+/// of them serves the dashboard, and the others answer with a redirect naming
+/// an address on the WireGuard mesh — which a browser on the internet cannot
+/// reach. Proxying straight to the local mgr therefore worked or 502'd
+/// depending on where the active mgr happened to be.
+///
+/// The returned URL already carries the configured url_prefix, which is not
+/// wanted here: the caller appends the full incoming path, prefix included.
+async fn active_dashboard_origin() -> Option<String> {
+    let services = crate::ceph_cli::ceph_json(&["mgr", "services"]).await.ok()?;
+    dashboard_origin_from(&services)
+}
+
+/// Split from the call above so the URL handling can be tested without a
+/// cluster. It is small and entirely made of details that are wrong by default:
+/// IPv6 literals lose their brackets, the port is optional, and the url_prefix
+/// the mgr reports has to be dropped rather than kept.
+pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<String> {
+    let url = services["dashboard"].as_str().filter(|u| !u.is_empty())?;
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port().unwrap_or(7000);
+    // Url::host_str strips the brackets from an IPv6 literal, and every address
+    // in this cluster is IPv6 — putting it back unbracketed produces a URL
+    // where the last ":xxxx" of the address reads as the port.
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    Some(format!("{}://{}:{}", parsed.scheme(), host, port))
+}
+
+/// Reverse-proxy one request to the active mgr's dashboard.
+///
+/// Deliberately dumb: method, path, query, headers and body straight through,
+/// and the response straight back. The dashboard is a single-page app that
+/// fetches its own assets and API under the same prefix, so anything clever
+/// here — rewriting bodies, following redirects — breaks it.
+pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
+    let Some(origin) = active_dashboard_origin().await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The storage dashboard is not available right now. It runs on whichever \
+             machine currently manages the cluster, and none is answering.",
+        )
+            .into_response();
+    };
+
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
+    let url = format!("{origin}{path_and_query}");
+
+    // Redirects are PASSED THROUGH, not followed. The dashboard issues them for
+    // its own login flow, and following one here would return the redirect
+    // target's body under the original URL — the browser would never update its
+    // address and the app would wedge.
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("dashboard proxy: could not build client: {e}");
+            return (StatusCode::BAD_GATEWAY, "dashboard unavailable").into_response();
+        }
+    };
+
+    let (parts, body) = req.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, 32 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "request body too large").into_response(),
+    };
+
+    let mut upstream = client.request(parts.method.clone(), &url).body(body_bytes);
+    for (name, value) in parts.headers.iter() {
+        // Host must be reset to the upstream, and the hop-by-hop headers
+        // describe THIS connection rather than the proxied one.
+        let n = name.as_str().to_ascii_lowercase();
+        if matches!(
+            n.as_str(),
+            "host" | "connection" | "transfer-encoding" | "upgrade" | "keep-alive"
+        ) {
+            continue;
+        }
+        upstream = upstream.header(name, value);
+    }
+
+    let resp = match upstream.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("dashboard proxy: {url} failed: {e}");
+            return (
+                StatusCode::BAD_GATEWAY,
+                "Could not reach the storage dashboard.",
+            )
+                .into_response();
+        }
+    };
+
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("dashboard proxy: reading {url} failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "dashboard unavailable").into_response();
+        }
+    };
+
+    let mut out = Response::builder().status(status);
+    for (name, value) in headers.iter() {
+        let n = name.as_str().to_ascii_lowercase();
+        // content-length is recomputed from the body we actually send, and the
+        // hop-by-hop headers belong to the upstream connection.
+        if matches!(
+            n.as_str(),
+            "connection" | "transfer-encoding" | "content-length" | "keep-alive" | "upgrade"
+        ) {
+            continue;
+        }
+        out = out.header(name, value);
+    }
+    out.body(axum::body::Body::from(bytes))
+        .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "dashboard unavailable").into_response())
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The shape `ceph mgr services` actually returns: an IPv6 mesh address,
+    /// and the url_prefix already appended.
+    #[test]
+    fn an_ipv6_mgr_url_keeps_its_brackets() {
+        let v = json!({"dashboard": "http://[fd00:cafe::30]:7000/ceph-dashboard"});
+        assert_eq!(
+            dashboard_origin_from(&v).as_deref(),
+            Some("http://[fd00:cafe::30]:7000")
+        );
+    }
+
+    /// The prefix belongs to the incoming request, which already carries it.
+    /// Keeping it here would produce /ceph-dashboard/ceph-dashboard/...
+    #[test]
+    fn the_url_prefix_is_dropped_from_the_origin() {
+        let v = json!({"dashboard": "http://[fd00:cafe::30]:7000/ceph-dashboard"});
+        let origin = dashboard_origin_from(&v).unwrap();
+        assert!(!origin.contains("ceph-dashboard"), "{origin}");
+    }
+
+    #[test]
+    fn a_hostname_mgr_url_works_too() {
+        let v = json!({"dashboard": "http://node3:7000/"});
+        assert_eq!(dashboard_origin_from(&v).as_deref(), Some("http://node3:7000"));
+    }
+
+    /// https is what the mgr reports when ssl is left on. The scheme has to be
+    /// carried through rather than assumed, or the proxy talks plaintext to a
+    /// TLS port and the dashboard appears to hang.
+    #[test]
+    fn the_scheme_is_preserved() {
+        let v = json!({"dashboard": "https://[fd00:cafe::30]:8443/"});
+        assert_eq!(
+            dashboard_origin_from(&v).as_deref(),
+            Some("https://[fd00:cafe::30]:8443")
+        );
+    }
+
+    /// No active mgr, no dashboard module, or an answer we cannot read. Each
+    /// must yield None so the caller says "not available" rather than proxying
+    /// to a URL it invented.
+    #[test]
+    fn an_unusable_answer_yields_nothing() {
+        assert!(dashboard_origin_from(&json!({})).is_none());
+        assert!(dashboard_origin_from(&json!({"dashboard": ""})).is_none());
+        assert!(dashboard_origin_from(&json!({"dashboard": "not a url"})).is_none());
+        assert!(dashboard_origin_from(&json!({"prometheus": "http://x:9283/"})).is_none());
     }
 }

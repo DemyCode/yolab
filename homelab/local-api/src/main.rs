@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -104,6 +104,11 @@ async fn main() {
         .route("/api/ceph/detail", get(ceph::storage_detail))
         .route("/api/ceph/replication", post(ceph::set_replication))
         .route("/api/ceph/dashboard", get(ceph::dashboard_creds))
+        // The dashboard itself, proxied to whichever mgr is active. Caddy sends
+        // /ceph-dashboard/* here rather than to a fixed address, because the
+        // active mgr moves and a fixed address is right only by luck.
+        .route("/ceph-dashboard", any(ceph::dashboard_proxy))
+        .route("/ceph-dashboard/*rest", any(ceph::dashboard_proxy))
         .route("/api/cluster/health", get(ceph::cluster_health))
         .route("/api/ceph/osd/:id/mark-in", post(ceph::osd_mark_in))
         .route("/api/ceph/osd/:id/mark-out", post(ceph::osd_mark_out))
