@@ -529,14 +529,27 @@ pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
 
 #[derive(Deserialize)]
 pub struct SetPolicyReq {
-    /// Accepted and ignored, like min_size below: older clients still send
-    /// "auto"/"manual", and there is no longer a mode to be in.
-    #[allow(dead_code)]
-    pub mode: String,
     pub size: Option<u32>,
+    /// Accepted and ignored: older clients still send it, and the threshold is
+    /// decided here (`MIN_SIZE`), not by the caller. Optional, so a client that
+    /// has stopped sending it still parses — the point of tolerating a
+    /// field is that its absence has to be fine too.
+    #[allow(dead_code)]
     pub min_size: Option<u32>,
     pub failure_domain: Option<String>,
 }
+
+// `mode` is deliberately absent rather than accepted-and-ignored. It used to be
+// declared here as a bare `String` to tolerate older clients, which had exactly
+// the opposite effect: serde treats a non-Option field as REQUIRED, so the new
+// page — which correctly no longer sends a mode — got
+//
+//   missing field `mode` at line 1 column 33
+//
+// (column 33 being the end of `{"size":2,"failure_domain":"osd"}`) and every
+// attempt to change the copy count failed with a deserialization error instead
+// of changing anything. Serde ignores unknown fields by default, so REMOVING
+// the field is what actually accepts both the old shape and the new one.
 
 pub async fn set_policy(
     State(_s): State<AppState>,
@@ -710,5 +723,32 @@ mod tests {
     fn only_the_exact_images_pool_is_exempt() {
         assert!(!is_unreplicated_pool("images-old"));
         assert!(!is_unreplicated_pool("my-images"));
+    }
+
+    // ── The request body the page actually sends ────────────────────────────────
+
+    /// The exact body StoragePage sends. This failed with "missing field
+    /// `mode` at line 1 column 33" for as long as `mode` was a bare `String`:
+    /// nothing about the endpoint needed a mode, but serde still demanded one,
+    /// so every copy-count change was rejected before `set_policy` ran.
+    #[test]
+    fn the_current_page_body_parses() {
+        let req: SetPolicyReq =
+            serde_json::from_str(r#"{"size":2,"failure_domain":"osd"}"#).unwrap();
+        assert_eq!(req.size, Some(2));
+        assert_eq!(req.failure_domain.as_deref(), Some("osd"));
+    }
+
+    /// The reason the field was there in the first place. An older client still
+    /// sends `mode` and `min_size`; both are ignored, and neither may make the
+    /// body unparseable.
+    #[test]
+    fn an_older_client_body_still_parses() {
+        let req: SetPolicyReq = serde_json::from_str(
+            r#"{"mode":"manual","size":3,"min_size":2,"failure_domain":"host"}"#,
+        )
+        .unwrap();
+        assert_eq!(req.size, Some(3));
+        assert_eq!(req.failure_domain.as_deref(), Some("host"));
     }
 }
