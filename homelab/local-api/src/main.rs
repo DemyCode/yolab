@@ -107,7 +107,14 @@ async fn main() {
         // The dashboard itself, proxied to whichever mgr is active. Caddy sends
         // /ceph-dashboard/* here rather than to a fixed address, because the
         // active mgr moves and a fixed address is right only by luck.
+        // THREE spellings, and all three are needed. matchit's `/*rest` requires
+        // at least one character after the slash, so it does not match a bare
+        // "/ceph-dashboard/" — which is exactly what the Storage page links to
+        // and what a browser sends for a directory-style URL. Registering only
+        // the wildcard and the bare prefix produced a 404 from the router,
+        // before the proxy ran at all. See dashboard_route_tests.
         .route("/ceph-dashboard", any(ceph::dashboard_proxy))
+        .route("/ceph-dashboard/", any(ceph::dashboard_proxy))
         .route("/ceph-dashboard/*rest", any(ceph::dashboard_proxy))
         .route("/api/cluster/health", get(ceph::cluster_health))
         .route("/api/ceph/osd/:id/mark-in", post(ceph::osd_mark_in))

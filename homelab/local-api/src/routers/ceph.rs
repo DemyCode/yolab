@@ -1314,3 +1314,86 @@ mod dashboard_tests {
         assert!(dashboard_origin_from(&json!({"prometheus": "http://x:9283/"})).is_none());
     }
 }
+
+/// Which paths actually reach the dashboard proxy.
+///
+/// This exists because the migrated dashboard returned 404 — not from the
+/// proxy, which answers 503 when no mgr is active and 502 when one cannot be
+/// reached, but from the router, before any of that code ran.
+///
+/// The reason is matchit's wildcard: `/*rest` needs at least one character
+/// after the slash, so `/ceph-dashboard/*rest` does NOT match
+/// `/ceph-dashboard/` — and a trailing slash is exactly what a browser sends
+/// for a directory-style link. `/ceph-dashboard` (no slash) is a different
+/// route again. All three spellings have to be registered, and this pins that.
+#[cfg(test)]
+mod dashboard_route_tests {
+    use axum::{body::Body, http::{Request, StatusCode}, routing::any, Router};
+    use tower::ServiceExt;
+
+    async fn reached() -> &'static str {
+        "reached the proxy"
+    }
+
+    /// The same three patterns main.rs registers.
+    fn router() -> Router {
+        Router::new()
+            .route("/ceph-dashboard", any(reached))
+            .route("/ceph-dashboard/", any(reached))
+            .route("/ceph-dashboard/*rest", any(reached))
+    }
+
+    async fn status_for(path: &str) -> StatusCode {
+        router()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn the_bare_link_from_the_storage_page_reaches_the_proxy() {
+        // href="/ceph-dashboard/" — the exact URL that 404'd.
+        assert_eq!(status_for("/ceph-dashboard/").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_prefix_without_a_trailing_slash_reaches_the_proxy() {
+        assert_eq!(status_for("/ceph-dashboard").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_dashboards_own_assets_and_api_reach_the_proxy() {
+        for p in [
+            "/ceph-dashboard/index.html",
+            "/ceph-dashboard/api/health/minimal",
+            "/ceph-dashboard/static/js/main.1234.js",
+            "/ceph-dashboard/#/login",
+        ] {
+            assert_eq!(status_for(p).await, StatusCode::OK, "{p} must be proxied");
+        }
+    }
+
+    /// Proves the wildcard alone is not enough — the shape of the original bug.
+    /// If this ever starts passing, matchit changed and the explicit
+    /// trailing-slash route can go.
+    #[tokio::test]
+    async fn a_wildcard_alone_does_not_match_a_bare_trailing_slash() {
+        let only_wildcard = Router::new().route("/ceph-dashboard/*rest", any(reached));
+        let status = only_wildcard
+            .oneshot(
+                Request::builder()
+                    .uri("/ceph-dashboard/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "matchit's /*rest requires at least one character after the slash"
+        );
+    }
+}
