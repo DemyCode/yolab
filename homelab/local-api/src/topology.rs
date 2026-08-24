@@ -1,11 +1,25 @@
-//! Topology controller — drives Ceph redundancy from observed hardware.
+//! Topology controller — applies the redundancy the user asked for.
 //!
 //! Runs only on the disk-reconciler lease holder, so the cluster has a single
-//! writer. In **auto** mode (default) it computes copies / min_size / failure
-//! domain / mon / mgr from node & OSD counts; in **manual** mode it applies the
-//! user's pinned values. Increases in safety are applied automatically; it never
-//! auto-*reduces* redundancy (fewer copies, dropping mons) — those follow a
-//! hardware loss and are surfaced for the user instead of silently applied.
+//! writer.
+//!
+//! THE USER STATES INTENT, CEPH REPORTS REALITY, THE UI SHOWS THE GAP.
+//!
+//! There used to be an "auto" mode that derived the copy count from how many
+//! machines and disks it could currently see. It is gone, and the reason is
+//! worth keeping: `observe()` counted OSDs that were UP, so unplugging a disk
+//! made the cluster look smaller, and `apply_pools` then reduced `size` to
+//! match. One disconnected disk silently dropped three copies to two; a second
+//! took it to one, at which point Ceph DELETES the surviving replicas. Plugging
+//! the disks back in re-replicated everything from whatever was left.
+//!
+//! The mistake was treating "cannot place a third copy right now" as "should
+//! not keep a third copy". A missing disk is a temporary fact about
+//! availability; `size` is a durable statement about how many copies the owner
+//! wants. Nothing here adjusts it any more — the number is theirs, it is applied
+//! as given, and when reality falls short the Storage page says so in words.
+//!
+//! `min_size` is likewise no longer computed; see MIN_SIZE.
 
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
@@ -16,19 +30,52 @@ use crate::{kubectl, AppState};
 const NS: &str = "rook-ceph";
 const POLICY_CM: &str = "yolab-storage-policy";
 
+/// What the owner asked for. Two numbers, both theirs, neither derived.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct StoragePolicy {
-    /// "auto" (config follows hardware) or "manual" (pinned values below).
-    pub mode: String,
+    /// Copies of everything to keep. Applied as given — not clamped to what
+    /// currently fits. Asking for more copies than there are disks is a legal
+    /// thing to want: it means "and make the rest when I add disks", which is
+    /// exactly what Ceph does once they appear.
     pub size: u32,
-    pub min_size: u32,
-    pub failure_domain: String, // "osd" | "host"
+    /// "osd" — copies on different disks, survives a dead disk.
+    /// "host" — copies on different machines, survives a dead machine.
+    pub failure_domain: String,
 }
 
-impl Default for StoragePolicy {
-    fn default() -> Self {
-        Self { mode: "auto".into(), size: 2, min_size: 1, failure_domain: "host".into() }
-    }
+/// Copies that must be ONLINE before Ceph will serve a placement group. Always
+/// one, and never derived from anything.
+///
+/// `size` and `min_size` answer different questions. `size` is how many copies
+/// to KEEP — a durability goal. `min_size` is how many must be REACHABLE before
+/// Ceph will answer at all — an availability gate. Below it a placement group
+/// goes inactive and every read AND write to it blocks; clients hang rather
+/// than fail.
+///
+/// This used to be `size - 1`, so three machines meant min_size=2 and losing
+/// two disks stopped every app on every machine until one came back. For a box
+/// somebody keeps their photos on, "nothing works and I cannot see why" is a
+/// worse outcome than the risk below, and it is not a state its owner can
+/// diagnose or fix.
+///
+/// THE COST, STATED PLAINLY. At min_size=1 a write is acknowledged once a
+/// single copy has it, so if that disk dies before the copy is made, that write
+/// is gone. Recovery can also leave a placement group `incomplete` — Ceph knows
+/// a newer version existed on the dead disk and refuses to serve the older one
+/// — which needs hands-on intervention to clear.
+///
+/// That is the trade taken here: availability now, against a narrow window in
+/// which a second failure loses recent writes. `size` is what defends against
+/// that window, and `size` is the number the owner controls.
+pub const MIN_SIZE: u32 = 1;
+
+/// A policy the owner has never set is different from one that cannot be read,
+/// and both are different from a policy that says "one copy".
+pub enum PolicyState {
+    /// No choice has been recorded yet — a fresh cluster, or one upgrading from
+    /// the era of auto mode. See `seed_policy_from_cluster`.
+    NotChosen,
+    Chosen(StoragePolicy),
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -71,33 +118,23 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
     // losing one becomes survivable.
     let (mon, mgr) = (topo.nodes.max(1), topo.nodes.max(1));
 
-    let (mut size, mut min_size, fd) = if policy.mode == "manual" {
-        (policy.size, policy.min_size, policy.failure_domain.clone())
-    } else if topo.nodes >= 3 {
-        (3, 2, "host".to_string()) // survive a whole machine
-    } else if topo.nodes == 2 {
-        (2, 1, "host".to_string()) // survive one machine's disk
-    } else if topo.osds >= 2 {
-        (2, 1, "osd".to_string()) // 1 node, ≥2 disks: survive one disk (osd domain!)
-    } else {
-        (1, 1, "osd".to_string()) // 1 disk: no local redundancy — backups are the floor
-    };
-
-    // Feasibility clamps. Never ask for more copies than can actually be placed,
-    // or every PG sits undersized forever and the cluster never returns to
-    // HEALTH_OK.
+    // NO CLAMPING. The old code reduced `size` to whatever could be placed
+    // right now, and "right now" counted OSDs that were UP — so a disconnected
+    // disk shrank the target and `apply_pools` shrank the pool to match,
+    // deleting replicas to satisfy a number derived from a cable.
     //
-    // Two separate ceilings, and using only the first is a real bug: a second
-    // machine joining Kubernetes moves `nodes` to 2 and this to size=2 with
-    // failure_domain=host, but if that machine carries no OSDs — disks switched
-    // off, or its Ceph not joined yet — there is still only ONE host to place on.
-    // The OSD count does not catch it, because both OSDs are on the same host.
-    size = size.clamp(1, 3).min(topo.osds.max(1));
-    if fd == "host" {
-        size = size.min(topo.osd_hosts.max(1));
+    // Wanting more copies than currently fit is a coherent thing to want. It
+    // means "and make the rest when I add disks", and that is precisely what
+    // Ceph does the moment they appear. Until then the placement groups sit
+    // undersized, which is honest, harmless at min_size=1, and reported to the
+    // owner in words by the Storage page rather than silently corrected here.
+    Target {
+        size: policy.size,
+        min_size: MIN_SIZE,
+        failure_domain: policy.failure_domain.clone(),
+        mon,
+        mgr,
     }
-    min_size = min_size.clamp(1, size);
-    Target { size, min_size, failure_domain: fd, mon, mgr }
 }
 
 // ── Policy persistence (ConfigMap) ────────────────────────────────────────────
@@ -112,7 +149,7 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
 /// A missing ConfigMap is different from an unreadable one and still means
 /// "auto": that is the genuine first-run state, and the `kind` check is what
 /// tells the two apart.
-pub async fn read_policy() -> Option<StoragePolicy> {
+pub async fn read_policy() -> Option<PolicyState> {
     let v = kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"])
         .await
         .ok()?;
@@ -128,20 +165,83 @@ pub async fn read_policy() -> Option<StoragePolicy> {
         })
         .unwrap_or_default();
 
-    let d = StoragePolicy::default();
-    Some(StoragePolicy {
-        mode: map.get("mode").cloned().unwrap_or(d.mode),
-        size: map.get("size").and_then(|s| s.parse().ok()).unwrap_or(d.size),
-        min_size: map.get("min_size").and_then(|s| s.parse().ok()).unwrap_or(d.min_size),
-        failure_domain: map.get("failure_domain").cloned().unwrap_or(d.failure_domain),
-    })
+    // A cluster from the auto-mode era has `mode` and a `size` that was a
+    // DEFAULT, not a decision — auto never wrote back what it applied. Reading
+    // that stored 2 on a cluster running 3 copies and applying it would delete
+    // a replica on the first tick after upgrading, which is the exact failure
+    // this whole change exists to remove. So the presence of `mode` means the
+    // policy has not really been chosen, and the pools themselves are asked
+    // instead.
+    let migrating = map.contains_key("mode");
+    let (Some(size), false) = (
+        map.get("size").and_then(|s| s.parse::<u32>().ok()),
+        migrating,
+    ) else {
+        return Some(PolicyState::NotChosen);
+    };
+
+    Some(PolicyState::Chosen(StoragePolicy {
+        size,
+        failure_domain: map
+            .get("failure_domain")
+            .cloned()
+            .unwrap_or_else(|| "host".into()),
+    }))
+}
+
+/// Adopt whatever the cluster is already doing as the owner's choice.
+///
+/// Run once, when no policy has been recorded. Copies the largest size across
+/// the data pools and the failure domain of the rule they are using, so
+/// upgrading changes nothing about the data and only writes down what was
+/// already true. Taking a default here instead would shrink a pool the moment
+/// this controller first ran.
+async fn seed_policy_from_cluster() -> Option<StoragePolicy> {
+    let pools = crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await.ok()?;
+    let mut size = 0u32;
+    for pool in pools
+        .lines()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.starts_with('.') && !is_unreplicated_pool(p))
+    {
+        size = size.max(pool_size(pool).await);
+    }
+    // No data pools yet: a brand new cluster. One copy is the only honest
+    // starting point — it is what a single disk can hold.
+    let size = if size == 0 { 1 } else { size };
+
+    // "host" only when the cluster can actually place that way today; otherwise
+    // the first apply would leave everything undersized for a reason the owner
+    // never chose.
+    // Unknown topology falls back to "osd", the domain that can always be
+    // placed. Guessing "host" could leave every group undersized on a cluster
+    // whose shape we could not read.
+    let osd_hosts = observe().await.map(|t| t.osd_hosts).unwrap_or(0);
+    let failure_domain = if osd_hosts >= size { "host" } else { "osd" };
+
+    let p = StoragePolicy { size, failure_domain: failure_domain.into() };
+    match write_policy(&p).await {
+        Ok(()) => {
+            tracing::info!(
+                "storage policy adopted from the running cluster: {size} copies, {failure_domain} domain"
+            );
+            Some(p)
+        }
+        Err(e) => {
+            tracing::warn!("could not record the storage policy: {e}");
+            None
+        }
+    }
 }
 
 async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
+    // `mode` and `min_size` are removed, not just left unwritten: a merge patch
+    // keeps keys it does not mention, and a lingering `mode` would make
+    // read_policy treat every later read as an unmigrated cluster.
     let patch = serde_json::json!({"data": {
-        "mode": p.mode,
+        "mode": serde_json::Value::Null,
+        "min_size": serde_json::Value::Null,
         "size": p.size.to_string(),
-        "min_size": p.min_size.to_string(),
         "failure_domain": p.failure_domain,
     }})
     .to_string();
@@ -247,16 +347,24 @@ async fn tick() -> anyhow::Result<()> {
         _ => {}
     }
 
-    let Some(policy) = read_policy().await else {
-        // Falling back to the defaults here would silently discard a pinned
-        // manual policy and re-derive one from hardware.
-        tracing::debug!("topology: storage policy unreadable this tick — not touching replication");
-        return Ok(());
+    let policy = match read_policy().await {
+        None => {
+            tracing::debug!("topology: storage policy unreadable this tick — changing nothing");
+            return Ok(());
+        }
+        Some(PolicyState::NotChosen) => {
+            // First run, or the first run after auto mode was removed. Write
+            // down what the cluster is already doing and act on it next tick;
+            // nothing is applied from a policy that was never chosen.
+            let _ = seed_policy_from_cluster().await;
+            return Ok(());
+        }
+        Some(PolicyState::Chosen(p)) => p,
     };
     let target = compute_target(&policy, &topo);
 
     apply_mon_mgr(&target).await;
-    apply_pools(&policy, &target).await;
+    apply_pools(&target).await;
     Ok(())
 }
 
@@ -341,7 +449,7 @@ async fn pool_size(pool: &str) -> u32 {
 /// Apply the target crush rule + size + min_size to every data pool.
 /// Auto mode raises copies only (never silently drops a replica); manual mode
 /// applies the pinned size exactly (the UI confirms reductions).
-async fn apply_pools(policy: &StoragePolicy, target: &Target) {
+async fn apply_pools(target: &Target) {
     let rule = if target.failure_domain == "osd" { "replicated_osd" } else { "replicated_rule" };
 
     // Ensure the OSD-domain rule exists (the host rule ships by default).
@@ -363,18 +471,12 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
         .filter(|p| !is_unreplicated_pool(p))
     {
         let cur = pool_size(pool).await;
-        let want = if policy.mode == "manual" {
-            target.size
-        } else if cur > target.size {
-            // cur > target.size implies cur > available OSDs (target.size is already
-            // OSD-clamped). The pool is already degraded — reducing to the feasible
-            // maximum can only help. If OSDs are added later, the raise-only path below
-            // will grow size back up.
-            target.size
-        } else {
-            cur.max(target.size) // raise-only in auto mode
-        };
-        let min = target.min_size.min(want);
+        // The owner's number, applied as given — up or down. There is no
+        // raise-only rule any more because there is nothing left that could
+        // lower it behind their back: `size` comes from the policy and nowhere
+        // else, so the only way it drops is somebody asking for that.
+        let want = target.size;
+        let min = MIN_SIZE;
 
         let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule]).await;
         if want != cur {
@@ -403,13 +505,26 @@ async fn apply_pools(policy: &StoragePolicy, target: &Target) {
 /// copies, a specific failure domain, a specific machine count. All of it made
 /// up. "We do not know right now" is a worse-looking page and a truthful one.
 pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
-    let policy = read_policy().await;
+    let chosen = match read_policy().await {
+        Some(PolicyState::Chosen(p)) => Some(p),
+        // Not chosen yet, or unreadable. Null rather than an invented default:
+        // the page would otherwise show a copy count nobody selected, next to a
+        // cluster doing something else.
+        _ => None,
+    };
     let topo = observe().await;
-    let target = match (&policy, &topo) {
+    let target = match (&chosen, &topo) {
         (Some(p), Some(t)) => Some(compute_target(p, t)),
         _ => None,
     };
-    Json(serde_json::json!({ "policy": policy, "topology": topo, "target": target }))
+    Json(serde_json::json!({
+        "policy": chosen,
+        "topology": topo,
+        "target": target,
+        // So the page can render "each copy lives on a different disk/machine"
+        // without hardcoding a number that is decided here.
+        "min_size": MIN_SIZE,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -424,40 +539,34 @@ pub async fn set_policy(
     State(_s): State<AppState>,
     Json(req): Json<SetPolicyReq>,
 ) -> (StatusCode, Json<Value>) {
-    if req.mode != "auto" && req.mode != "manual" {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "mode must be auto or manual"})));
-    }
-    // Read-modify-write, so an unreadable current policy must abort. Falling
-    // back to defaults would quietly reset every field the caller did not send —
-    // someone changing only the mode would find their pinned size and failure
-    // domain replaced.
-    let Some(mut p) = read_policy().await else {
+    // Both fields are required now. There is no mode to change on its own and
+    // no derived value to preserve, so a partial update has nothing to merge
+    // into — which also removes the read-modify-write that made this fail when
+    // the current policy could not be read.
+    let (Some(size), Some(failure_domain)) = (req.size, req.failure_domain.clone()) else {
         return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": "cannot read the current storage settings right now — nothing was changed"
-            })),
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "size and failure_domain are both required"})),
         );
     };
-    p.mode = req.mode;
-    if let Some(s) = req.size {
-        p.size = s;
+
+    // No upper bound on purpose. Asking for more copies than there are disks
+    // means "and make the rest when I add some", which is what Ceph does when
+    // they appear. Zero is the one number that is not a wish but a mistake:
+    // Ceph rejects it, and it would read as "keep no copies".
+    if size < 1 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "keep at least one copy"})),
+        );
     }
-    if let Some(m) = req.min_size {
-        p.min_size = m;
+    if failure_domain != "osd" && failure_domain != "host" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "failure_domain must be osd or host"})),
+        );
     }
-    if let Some(f) = req.failure_domain {
-        p.failure_domain = f;
-    }
-    if p.size < 1 || p.size > 3 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "size must be 1–3"})));
-    }
-    if p.min_size < 1 || p.min_size > p.size {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "min_size must be ≥1 and ≤size"})));
-    }
-    if p.failure_domain != "osd" && p.failure_domain != "host" {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "failure_domain must be osd or host"})));
-    }
+    let p = StoragePolicy { size, failure_domain };
     match write_policy(&p).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "policy": p}))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
@@ -468,126 +577,114 @@ pub async fn set_policy(
 mod tests {
     use super::*;
 
-    fn auto() -> StoragePolicy {
-        StoragePolicy::default()
+    fn policy(size: u32, fd: &str) -> StoragePolicy {
+        StoragePolicy { size, failure_domain: fd.into() }
+    }
+
+    fn topo(nodes: u32, osds: u32, osd_hosts: u32) -> Topology {
+        Topology { nodes, osds, osd_hosts }
+    }
+
+    // ── The policy is applied as given ────────────────────────────────────────
+
+    #[test]
+    fn the_chosen_size_is_what_comes_out() {
+        for size in [1u32, 2, 3, 5, 9] {
+            let t = compute_target(&policy(size, "host"), &topo(3, 6, 3));
+            assert_eq!(t.size, size);
+        }
     }
 
     #[test]
-    fn one_disk_no_redundancy() {
-        let t = compute_target(&auto(), &Topology { nodes: 1, osds: 1, osd_hosts: 1 });
-        assert_eq!((t.size, t.min_size, t.failure_domain.as_str(), t.mon), (1, 1, "osd", 1));
+    fn the_chosen_failure_domain_is_what_comes_out() {
+        for fd in ["osd", "host"] {
+            let t = compute_target(&policy(2, fd), &topo(2, 4, 2));
+            assert_eq!(t.failure_domain, fd);
+        }
     }
 
+    /// Asking for more copies than there are disks is allowed, and means "make
+    /// the rest when I add some". The old code clamped it down to what fitted;
+    /// this asserts it no longer does.
     #[test]
-    fn one_node_two_disks_uses_osd_domain() {
-        // The classic trap: 2 disks on 1 host must use failure domain "osd",
-        // else host-domain can't place a 2nd replica and sits degraded.
-        let t = compute_target(&auto(), &Topology { nodes: 1, osds: 2, osd_hosts: 1 });
-        assert_eq!((t.size, t.failure_domain.as_str()), (2, "osd"));
+    fn more_copies_than_disks_is_kept_not_clamped() {
+        let t = compute_target(&policy(3, "osd"), &topo(1, 1, 1));
+        assert_eq!(t.size, 3, "the owner's number survives a small cluster");
     }
 
-    /// Two machines: two copies across two hosts, and a mon on each.
+    /// Same, for the host domain: three copies across one machine cannot be
+    /// placed today and will be placed the day a third machine joins.
+    #[test]
+    fn more_copies_than_machines_is_kept_not_clamped() {
+        let t = compute_target(&policy(3, "host"), &topo(1, 4, 1));
+        assert_eq!(t.size, 3);
+    }
+
+    // ── The regression that motivated all of this ─────────────────────────────
+
+    /// THE POINT OF THIS MODULE.
     ///
-    /// The mon count is the accepted cost of every node being a peer. Two mons
-    /// need a majority of two, so both machines must stay up — worse
-    /// availability than a single mon, but no machine is special and no single
-    /// machine dying takes the *data* with it.
-    #[test]
-    fn two_nodes_host_domain_and_a_mon_on_each() {
-        let t = compute_target(&auto(), &Topology { nodes: 2, osds: 2, osd_hosts: 2 });
-        assert_eq!((t.size, t.failure_domain.as_str(), t.mon), (2, "host", 2));
-    }
-
-    #[test]
-    fn three_nodes_full_ha() {
-        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 3, osd_hosts: 3 });
-        assert_eq!((t.size, t.min_size, t.failure_domain.as_str(), t.mon, t.mgr), (3, 2, "host", 3, 3));
-    }
-
-    /// The bug a second machine walks straight into.
+    /// Unplugging a disk used to shrink the target — `observe()` counted OSDs
+    /// that were UP — and `apply_pools` then shrank the pool to match, deleting
+    /// replicas. A second unplug took it to one copy, and reconnecting both
+    /// re-replicated everything from whatever survived.
     ///
-    /// Node joins Kubernetes, so nodes=2 and the policy asks for size=2 across
-    /// hosts — but its disks are off (or its Ceph has not joined), so every OSD
-    /// is still on one host. Ceph cannot place a second replica anywhere, and
-    /// the pools sit undersized forever instead of returning to HEALTH_OK.
+    /// The topology is now irrelevant to `size`, so no cable can change how
+    /// many copies the cluster keeps.
     #[test]
-    fn a_node_with_no_osds_does_not_raise_replication() {
-        let t = Topology { nodes: 2, osds: 2, osd_hosts: 1 };
-        let target = compute_target(&auto(), &t);
-        assert_eq!(
-            target.size, 1,
-            "with one OSD-carrying host there is nowhere to put a second copy"
-        );
+    fn losing_disks_cannot_change_how_many_copies_are_kept() {
+        let p = policy(3, "host");
+        let healthy = compute_target(&p, &topo(3, 3, 3));
+        let one_gone = compute_target(&p, &topo(3, 2, 2));
+        let two_gone = compute_target(&p, &topo(3, 1, 1));
+        let all_gone = compute_target(&p, &topo(0, 0, 0));
+
+        assert_eq!(healthy.size, 3);
+        assert_eq!(one_gone.size, 3, "a disconnected disk is not a smaller cluster");
+        assert_eq!(two_gone.size, 3);
+        assert_eq!(all_gone.size, 3, "even an unreadable cluster keeps the promise");
     }
 
-    /// Once the second machine really does carry storage, size rises.
-    #[test]
-    fn a_node_that_brings_disks_does_raise_replication() {
-        let t = Topology { nodes: 2, osds: 2, osd_hosts: 2 };
-        assert_eq!(compute_target(&auto(), &t).size, 2);
-    }
+    // ── min_size ──────────────────────────────────────────────────────────────
 
-    /// Three machines, but only two with disks: two copies, not three.
+    /// It used to be `size - 1`, so three machines produced min_size=2: lose two
+    /// disks and every app on every machine stopped until one came back — a
+    /// state its owner can neither diagnose nor fix. One reachable copy is now
+    /// always enough to keep serving.
     #[test]
-    fn replication_follows_osd_hosts_not_machine_count() {
-        let t = Topology { nodes: 3, osds: 6, osd_hosts: 2 };
-        let target = compute_target(&auto(), &t);
-        assert_eq!(target.size, 2);
-        assert!(target.min_size <= target.size);
-    }
-
-    /// The osd-domain case must be untouched: one node with several disks still
-    /// replicates across disks, where the host ceiling does not apply.
-    #[test]
-    fn the_host_ceiling_does_not_apply_to_the_osd_domain() {
-        let t = Topology { nodes: 1, osds: 3, osd_hosts: 1 };
-        let target = compute_target(&auto(), &t);
-        assert_eq!(target.failure_domain, "osd");
-        assert_eq!(target.size, 2, "one host, but replicas go on separate disks");
+    fn min_size_is_one_whatever_is_asked_for() {
+        for size in [1u32, 2, 3, 7] {
+            for fd in ["osd", "host"] {
+                let t = compute_target(&policy(size, fd), &topo(3, 6, 3));
+                assert_eq!(t.min_size, 1, "size={size} fd={fd}");
+            }
+        }
     }
 
     #[test]
-    fn size_never_exceeds_osd_count() {
-        // 3 nodes but only 1 OSD so far — can't ask for 3 copies.
-        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 1, osd_hosts: 3 });
-        assert_eq!(t.size, 1);
+    fn min_size_never_exceeds_size() {
+        let t = compute_target(&policy(1, "osd"), &topo(1, 1, 1));
         assert!(t.min_size <= t.size);
     }
 
-    #[test]
-    fn manual_is_respected_but_clamped() {
-        let p = StoragePolicy { mode: "manual".into(), size: 3, min_size: 3, failure_domain: "osd".into() };
-        // Only 2 OSDs present → size clamped to 2, min_size clamped to ≤size.
-        let t = compute_target(&p, &Topology { nodes: 1, osds: 2, osd_hosts: 1 });
-        assert_eq!(t.size, 2);
-        assert!(t.min_size <= 2);
-        assert_eq!(t.failure_domain, "osd");
-    }
-
-    // ── The clamps that decide how many copies exist ──────────────────────────
+    // ── mon / mgr ─────────────────────────────────────────────────────────────
     //
-    // compute_target is only ever called with a Topology that was fully read —
-    // observe() returns None otherwise. These pin what would happen if that ever
-    // stopped being true, because the direction of the failure is what matters:
-    // a zero here does not mean "small cluster", it means "unknown", and acting
-    // on it deletes replicas.
+    // Still derived from the node count, because a mon exists by virtue of a
+    // machine running one. These are reported so the UI can show drift, not
+    // driven toward.
 
     #[test]
-    fn zero_osd_hosts_would_collapse_replication_to_one_copy() {
-        // The exact shape a failed `ceph osd tree` used to produce: OSDs seen,
-        // hosts not. apply_pools would then set every pool to size 1 and Ceph
-        // would delete the other copies.
-        let t = compute_target(&auto(), &Topology { nodes: 3, osds: 6, osd_hosts: 0 });
-        assert_eq!(t.size, 1, "documents the collapse observe() now prevents");
+    fn one_mon_and_mgr_per_machine() {
+        assert_eq!(compute_target(&policy(2, "host"), &topo(3, 3, 3)).mon, 3);
+        assert_eq!(compute_target(&policy(2, "host"), &topo(3, 3, 3)).mgr, 3);
     }
 
+    /// An empty topology must not report zero mons — the machine reading this
+    /// is itself one.
     #[test]
-    fn zero_nodes_would_downgrade_a_healthy_cluster() {
-        // A failed `kubectl get nodes` used to produce this on a healthy
-        // three-machine cluster: two copies instead of three, and the failure
-        // domain switched from host to osd, which reshuffles every object.
-        let t = compute_target(&auto(), &Topology { nodes: 0, osds: 6, osd_hosts: 3 });
-        assert_eq!((t.size, t.failure_domain.as_str()), (2, "osd"));
+    fn an_unreadable_cluster_still_reports_at_least_one_mon() {
+        let t = compute_target(&policy(1, "osd"), &topo(0, 0, 0));
+        assert_eq!((t.mon, t.mgr), (1, 1));
     }
 
     // ── Pools that must never be replicated ───────────────────────────────────
@@ -600,7 +697,7 @@ mod tests {
     #[test]
     fn app_data_pools_are_resized() {
         for p in ["yolab-fs-data0", "yolab-fs-metadata", ".mgr"] {
-            assert!(!is_unreplicated_pool(p), "{p} must follow the replication target");
+            assert!(!is_unreplicated_pool(p), "{p} must follow the chosen size");
         }
     }
 

@@ -93,7 +93,10 @@ function OfflineDiskBanner({
   }
 
   // The distinction that matters: is there a second copy anywhere?
-  const copies = policy?.target.size ?? 1;
+  // `?? 1` on an unknown target is deliberate: it selects the more cautious
+  // message, which tells the owner NOT to switch a disk off. Assuming
+  // redundancy we cannot confirm would tell them the opposite.
+  const copies = policy?.target?.size ?? 1;
   const anyUp = detail.osds.some((o) => o.status === "up");
 
   if (copies <= 1 || !anyUp) {
@@ -632,6 +635,9 @@ function safetyLine(
 ): { tone: "ok" | "warn" | "bad"; text: string } | null {
   if (!data) return null;
   const { target } = data;
+  // No target means no choice has been recorded yet, or the cluster could not
+  // be read. Saying nothing beats stating a redundancy level that is a guess.
+  if (!target) return null;
   const offline = detail?.osds.filter((o) => o.status !== "up").length ?? 0;
   const survives = target.size - 1;
   const unit = target.failure_domain === "host" ? "machine" : "disk";
@@ -798,8 +804,12 @@ function RedundancySheet({
   pools: PoolInfo[];
   onPolicyChanged: () => void;
 }) {
-  const saved = policyData.policy;
-  const [mode, setMode] = useState<"auto" | "manual">(saved.mode);
+  // Null until the cluster has recorded a choice — a fresh install, or the
+  // first tick after auto mode was removed. The form still has to open and be
+  // usable, so it starts from the safest thing that is true of any cluster:
+  // one copy, on any disk. Nothing is applied until Save.
+  const saved = policyData.policy ?? { size: 1, failure_domain: "osd" as const };
+
   const [size, setSize] = useState<number>(saved.size);
   const [domain, setDomain] = useState<Domain>(saved.failure_domain as Domain);
   const [applying, setApplying] = useState(false);
@@ -809,35 +819,31 @@ function RedundancySheet({
   // Re-seed whenever the sheet is opened, so a cancelled edit does not linger.
   useEffect(() => {
     if (!open) return;
-    setMode(saved.mode);
     setSize(saved.size);
     setDomain(saved.failure_domain as Domain);
     setConfirm(false);
     setResult(null);
-  }, [open, saved.mode, saved.size, saved.failure_domain]);
+  }, [open, saved.size, saved.failure_domain]);
 
   const nDisks = osds.length;
   const nNodes = new Set(osds.map((o) => o.host)).size;
   const maxSize = domain === "osd" ? nDisks : nNodes;
 
-  const changed =
-    mode !== saved.mode ||
-    (mode === "manual" &&
-      (size !== saved.size || domain !== saved.failure_domain));
+  const changed = size !== saved.size || domain !== saved.failure_domain;
 
   const cephFs = pools.filter((p) => !p.name.startsWith("."));
   const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
   const rawFree = osds.reduce((s, o) => s + o.avail_bytes, 0);
   const rawNeeded = (size - saved.size) * totalStored;
   let feasibility: "ok" | "tight" | "impossible" | null = null;
-  if (mode === "manual" && rawNeeded > 0) {
+  if (rawNeeded > 0) {
     if (rawFree < rawNeeded) feasibility = "impossible";
     else if (rawFree < rawNeeded * 1.3) feasibility = "tight";
     else feasibility = "ok";
   }
 
   const authoritative = cephFs[0]?.max_avail_bytes ?? 0;
-  const showEstimate = (mode === "manual" && changed) || authoritative === 0;
+  const showEstimate = changed || authoritative === 0;
   const capacity = showEstimate
     ? estimateUsable(osds, size, domain)
     : authoritative;
@@ -846,15 +852,9 @@ function RedundancySheet({
     setApplying(true);
     setResult(null);
     try {
-      const body =
-        mode === "auto"
-          ? { mode: "auto" }
-          : {
-              mode: "manual",
-              size,
-              min_size: Math.max(1, size - 1),
-              failure_domain: domain,
-            };
+      // No mode and no min_size. The server keeps exactly one copy online as
+      // its threshold (topology::MIN_SIZE) and applies `size` as given.
+      const body = { size, failure_domain: domain };
       const d = await api.put<{ ok?: boolean; error?: string }>(
         "/api/storage/policy",
         body,
@@ -937,9 +937,7 @@ function RedundancySheet({
       {confirm ? (
         <div className="space-y-3">
           <p className="text-sm text-fg">
-            {mode === "auto"
-              ? "Switch back to letting YoLab decide? It will raise safety as you add machines and disks, and never quietly lower it."
-              : `Keep ${size} ${size === 1 ? "copy" : "copies"} of everything, spread across ${domain === "osd" ? "different disks" : "different machines"}?`}
+            {`Keep ${size} ${size === 1 ? "copy" : "copies"} of everything, spread across ${domain === "osd" ? "different disks" : "different machines"}?`}
           </p>
           <p className="text-sm text-fg-muted">
             Your files stay available while this happens. Moving them around in
@@ -949,23 +947,7 @@ function RedundancySheet({
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="flex gap-2">
-            <Choice
-              active={mode === "auto"}
-              onClick={() => setMode("auto")}
-              title="Decide for me"
-              body="Gets safer as you add machines"
-            />
-            <Choice
-              active={mode === "manual"}
-              onClick={() => setMode("manual")}
-              title="I'll choose"
-              body="Set it exactly"
-            />
-          </div>
-
-          {mode === "manual" && (
-            <>
+          <>
               <div>
                 <p className="mb-2 text-sm font-medium text-fg">
                   Spread copies across
@@ -1040,22 +1022,6 @@ function RedundancySheet({
                 </p>
               </div>
             </>
-          )}
-
-          {mode === "auto" && (
-            <p className="rounded-xl bg-surface-2 p-4 text-sm text-fg-muted">
-              Right now that means {policyData.target.size}{" "}
-              {policyData.target.size === 1 ? "copy" : "copies"} across
-              different{" "}
-              {policyData.target.failure_domain === "host"
-                ? "machines"
-                : "disks"}
-              , based on the {policyData.topology.nodes} machine
-              {policyData.topology.nodes === 1 ? "" : "s"} and{" "}
-              {policyData.topology.osds} disk
-              {policyData.topology.osds === 1 ? "" : "s"} you have.
-            </p>
-          )}
 
           {result && <p className="text-sm text-danger">{result}</p>}
         </div>
@@ -1431,11 +1397,10 @@ export function StoragePage() {
   const policy = policyRes.data;
   const summary = useMemo(() => {
     if (!policy) return null;
-    const { target, policy: p } = policy;
+    const { target } = policy;
+    if (!target) return null;
     const unit = target.failure_domain === "host" ? "machines" : "disks";
-    return p.mode === "auto"
-      ? `Decided for you — ${target.size} ${target.size === 1 ? "copy" : "copies"} across different ${unit}`
-      : `${target.size} ${target.size === 1 ? "copy" : "copies"} across different ${unit}`;
+    return `${target.size} ${target.size === 1 ? "copy" : "copies"} across different ${unit}`;
   }, [policy]);
 
   return (
