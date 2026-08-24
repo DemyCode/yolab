@@ -182,47 +182,87 @@ in {
           fi
         fi
 
-        # One password, generated once, kept on disk. Regenerating it on every
-        # run would silently invalidate a session the user is in the middle of.
-        if [ ! -s ${cfg.passwordFile} ]; then
-          echo "generating the dashboard password"
-          install -d -m 0755 "$(dirname ${cfg.passwordFile})"
-          # printf, NOT `... | cut > file`. cut terminates its output with a
-          # newline, so the file held "<password>\n" — Ceph was given the
-          # newline as part of the password while local-api trims it before
-          # showing it on the Storage page. The password on screen was then not
-          # the password Ceph had stored, and logging in failed with "Invalid
-          # credentials" while both halves looked correct.
-          #
-          # tr -dc keeps only alphanumerics: this value gets copied by hand, so
-          # no character in it should need escaping or be confusable.
-          PW=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-20)
-          printf '%s' "$PW" > ${cfg.passwordFile}
-          chmod 0600 ${cfg.passwordFile}
-        fi
-
-        # Repair a file written by the version that appended a newline. Without
-        # this the stored password keeps being re-set to the untrimmed value on
-        # every run and the mismatch never clears.
-        if [ -n "$(tail -c 1 ${cfg.passwordFile} | tr -d 'A-Za-z0-9')" ]; then
-          echo "trimming trailing whitespace from the stored dashboard password"
-          TRIMMED=$(tr -d '[:space:]' < ${cfg.passwordFile})
-          printf '%s' "$TRIMMED" > ${cfg.passwordFile}
-          chmod 0600 ${cfg.passwordFile}
-        fi
-
-        # ac-user-create fails when the user already exists, which is the normal
-        # case on every run after the first — so set the password instead and
-        # only create when that fails.
+        # ── One password, for the whole cluster ──────────────────────────────
         #
-        # Neither output is discarded any more. Both were sent to /dev/null,
-        # so a dashboard user that was never created looked exactly like one
-        # that was, and the only symptom reached the person trying to log in.
-        if SET_ERR=$(timeout 30 ceph dashboard ac-user-set-password admin \
-             -i ${cfg.passwordFile} --force-password 2>&1); then
-          echo "dashboard password re-applied for user admin"
-        else
-          echo "no existing admin user to update ($SET_ERR) — creating one"
+        # The dashboard user database is NOT per-node. It lives in the mon KV
+        # store (mgr/dashboard/accessdb_v2), so there is exactly one `admin`
+        # account for the entire cluster, and ac-user-set-password below
+        # rewrites it for everyone.
+        #
+        # This used to generate a DIFFERENT random password per node into a
+        # local file, and every node re-applied its own every 30 minutes. Three
+        # machines therefore fought over one account: the last timer to fire
+        # owned the cluster password, while each Storage page went on showing
+        # its own node's file. So node1's password gave "Invalid Credentials"
+        # and node3's worked — and half an hour later it could swap, with no
+        # user action in between and nothing on any page admitting it.
+        #
+        # The cluster now holds the password and the local file is a cache of
+        # it, because local-api reads the file (dashboard_creds) rather than
+        # asking Ceph.
+        #
+        # Plaintext in config-key is deliberate. The Storage page displays this
+        # value by design, so it has to stay recoverable — a hash would not do —
+        # and config-key already requires the admin keyring, the same trust
+        # boundary as the 0600 file it replaces as the source of truth.
+        PW_KEY=yolab/dashboard/admin-password
+
+        install -d -m 0755 "$(dirname ${cfg.passwordFile})"
+        PW=$(timeout 20 ceph config-key get "$PW_KEY" 2>/dev/null | tr -d '[:space:]')
+
+        if [ -z "$PW" ]; then
+          if [ -s ${cfg.passwordFile} ]; then
+            # Adopt this node's existing file rather than generating, so an
+            # upgrade from the per-node era promotes a password that already
+            # works instead of inventing a fourth one. The tr also repairs a
+            # file written by the version that appended a newline.
+            PW=$(tr -d '[:space:]' < ${cfg.passwordFile})
+            echo "promoting this node's password to the cluster-wide one"
+          else
+            # tr -dc keeps only alphanumerics: this gets copied by hand, so no
+            # character in it should need escaping or be confusable.
+            PW=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-20)
+            echo "generating the cluster-wide dashboard password"
+          fi
+          if ! timeout 20 ceph config-key set "$PW_KEY" "$PW"; then
+            echo "could not store the dashboard password in the cluster — will retry" >&2
+            exit 0
+          fi
+          # Re-read instead of trusting what we just wrote. Two nodes coming up
+          # together both find the key missing and both set it; the loser has to
+          # end up holding the winner's value, or the same fight simply resumes
+          # at a slower cadence.
+          PW=$(timeout 20 ceph config-key get "$PW_KEY" 2>/dev/null | tr -d '[:space:]')
+        fi
+
+        if [ -z "$PW" ]; then
+          echo "no dashboard password available yet — will retry" >&2
+          exit 0
+        fi
+
+        # printf, NOT `... | cut > file`. cut terminates its output with a
+        # newline, so the file held "<password>\n" — Ceph was given the newline
+        # as part of the password while local-api trims it before showing it on
+        # the Storage page. The password on screen was then not the password
+        # Ceph had stored, and logging in failed with "Invalid credentials"
+        # while both halves looked correct.
+        printf '%s' "$PW" > ${cfg.passwordFile}
+        chmod 0600 ${cfg.passwordFile}
+
+        # Create the account only when it is missing.
+        #
+        # This used to re-apply the password unconditionally on every run. That
+        # is what spread the per-node conflict every 30 minutes, and it is worth
+        # keeping out even now that all nodes agree on the value: re-applying
+        # invalidates any open session, so three nodes doing it on a timer logs
+        # the owner out while they are reading a page. The verify block below
+        # re-applies it too — but only when a login genuinely fails, which is
+        # the only moment that is worth someone's session.
+        #
+        # Neither output is discarded any more. Both were sent to /dev/null, so
+        # a dashboard user that was never created looked exactly like one that
+        # was, and the only symptom reached the person trying to log in.
+        if ! timeout 30 ceph dashboard ac-user-show admin >/dev/null 2>&1; then
           if CREATE_ERR=$(timeout 30 ceph dashboard ac-user-create admin \
                -i ${cfg.passwordFile} administrator --force-password 2>&1); then
             echo "dashboard user admin created"
