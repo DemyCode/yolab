@@ -766,19 +766,36 @@ function estimateUsable(
 ): number {
   const SAFETY = 0.95;
   const totalRaw = osds.reduce((s, o) => s + o.size_bytes, 0);
-  if (domain === "osd") {
-    if (osds.length <= size)
-      return Math.min(...osds.map((o) => o.size_bytes)) * SAFETY;
-    return (totalRaw / size) * SAFETY;
-  } else {
-    const hostMap = new Map<string, number>();
-    for (const o of osds)
-      hostMap.set(o.host, (hostMap.get(o.host) ?? 0) + o.size_bytes);
-    const caps = [...hostMap.values()];
-    if (caps.length < size) return 0;
-    if (caps.length === size) return Math.min(...caps) * SAFETY;
-    return (totalRaw / size) * SAFETY;
+  if (totalRaw === 0) return 0;
+
+  const buckets = placementBuckets(osds, domain);
+  if (buckets.length === 0) return 0;
+
+  // Ceph puts one copy in each place it has. Asking for more copies than there
+  // are places does not consume more room — the extra copies simply do not
+  // exist yet, and cost nothing until there is somewhere to put them.
+  //
+  // This used to `return 0` for that case, so choosing three copies on two
+  // machines reported "room for your files: 0 B" — alarming, and wrong: you
+  // get two copies and the capacity that implies.
+  const effective = Math.min(size, buckets.length);
+
+  // Every place holds exactly one copy, so the smallest one is the ceiling —
+  // the others cannot be filled past it without leaving a copy homeless.
+  if (effective === buckets.length) {
+    return Math.min(...buckets) * SAFETY;
   }
+  return (totalRaw / effective) * SAFETY;
+}
+
+/// Distinct places Ceph can put one copy each: disks, or machines.
+function placementBuckets(osds: OsdInfo[], domain: "osd" | "host"): number[] {
+  if (domain === "osd") return osds.map((o) => o.size_bytes);
+  const hostMap = new Map<string, number>();
+  for (const o of osds) {
+    hostMap.set(o.host, (hostMap.get(o.host) ?? 0) + o.size_bytes);
+  }
+  return [...hostMap.values()];
 }
 
 /**
@@ -827,14 +844,19 @@ function RedundancySheet({
 
   const nDisks = osds.length;
   const nNodes = new Set(osds.map((o) => o.host)).size;
-  const maxSize = domain === "osd" ? nDisks : nNodes;
 
   const changed = size !== saved.size || domain !== saved.failure_domain;
 
   const cephFs = pools.filter((p) => !p.name.startsWith("."));
   const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
   const rawFree = osds.reduce((s, o) => s + o.avail_bytes, 0);
-  const rawNeeded = (size - saved.size) * totalStored;
+  // Copies that can actually be placed, not copies asked for. A number beyond
+  // the number of disks or machines costs nothing until there is somewhere to
+  // put it, so charging for it would refuse a setting that is free to choose.
+  const places = domain === "osd" ? nDisks : nNodes;
+  const effNew = Math.min(size, places);
+  const effOld = Math.min(saved.size, places);
+  const rawNeeded = (effNew - effOld) * totalStored;
   let feasibility: "ok" | "tight" | "impossible" | null = null;
   if (rawNeeded > 0) {
     if (rawFree < rawNeeded) feasibility = "impossible";
@@ -955,19 +977,15 @@ function RedundancySheet({
                 <div className="flex gap-2">
                   <Choice
                     active={domain === "osd"}
-                    onClick={() => {
-                      setDomain("osd");
-                      if (size > nDisks) setSize(Math.max(1, nDisks));
-                    }}
+                    // No longer lowers the copy count to fit. Switching where
+                    // copies go should not quietly change how many you keep.
+                    onClick={() => setDomain("osd")}
                     title="Different disks"
                     body={`${nDisks} available`}
                   />
                   <Choice
                     active={domain === "host"}
-                    onClick={() => {
-                      setDomain("host");
-                      if (size > nNodes) setSize(Math.max(1, nNodes));
-                    }}
+                    onClick={() => setDomain("host")}
                     title="Different machines"
                     body={`${nNodes} available`}
                   />
@@ -978,21 +996,64 @@ function RedundancySheet({
                 <p className="mb-2 text-sm font-medium text-fg">
                   How many copies
                 </p>
-                <div className="flex gap-2">
-                  {[1, 2, 3].map((s) => (
-                    <Choice
-                      key={s}
-                      active={size === s}
-                      disabled={s > maxSize}
-                      onClick={() => setSize(s)}
-                      title={`${s}`}
-                      body={
-                        s === 1
-                          ? "No protection"
-                          : `Survives ${s - 1} ${domain === "osd" ? "disk" : "machine"}${s - 1 === 1 ? "" : "s"}`
-                      }
-                    />
-                  ))}
+                {/* A stepper, not a fixed row of choices. The number is a
+                    statement of intent — "keep this many, and make the rest
+                    when I add disks" — so it is not capped at what fits today.
+                    The old control disabled anything above the current disk
+                    count, which made a perfectly reasonable plan unselectable. */}
+                <div className="flex items-center gap-4">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={size <= 1}
+                    onClick={() => setSize((n) => Math.max(1, n - 1))}
+                    aria-label="One fewer copy"
+                  >
+                    −
+                  </Button>
+                  <span
+                    className="w-12 text-center font-display text-3xl tabular-nums text-fg"
+                    aria-live="polite"
+                  >
+                    {size}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSize((n) => n + 1)}
+                    aria-label="One more copy"
+                  >
+                    +
+                  </Button>
+                </div>
+
+                <div className="mt-3">
+                  {size === 1 ? (
+                    <Banner tone="error" title="No protection">
+                      One copy means if a {domain === "osd" ? "disk" : "machine"}{" "}
+                      fails, whatever was on it is gone. Your backups would be
+                      the only copy left.
+                    </Banner>
+                  ) : size > places ? (
+                    <Banner
+                      tone="warning"
+                      title={`Only ${places} of those ${size} copies fit right now`}
+                    >
+                      You have {places}{" "}
+                      {domain === "osd" ? "disk" : "machine"}
+                      {places === 1 ? "" : "s"}, and each copy needs its own.
+                      YoLab will keep {places} for now and make the rest
+                      automatically when you add{" "}
+                      {domain === "osd" ? "a disk" : "a machine"}. Nothing is at
+                      risk in the meantime.
+                    </Banner>
+                  ) : (
+                    <p className="text-sm text-fg-muted">
+                      Survives {size - 1}{" "}
+                      {domain === "osd" ? "disk" : "machine"}
+                      {size - 1 === 1 ? "" : "s"} failing.
+                    </p>
+                  )}
                 </div>
               </div>
 
