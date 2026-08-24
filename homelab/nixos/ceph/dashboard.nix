@@ -116,20 +116,56 @@ in {
         if [ ! -s ${cfg.passwordFile} ]; then
           echo "generating the dashboard password"
           install -d -m 0755 "$(dirname ${cfg.passwordFile})"
-          # No shell-special characters: this value gets copied by a person.
-          openssl rand -base64 24 | tr -d '\n/+=' | cut -c1-20 > ${cfg.passwordFile}
+          # printf, NOT `... | cut > file`. cut terminates its output with a
+          # newline, so the file held "<password>\n" — Ceph was given the
+          # newline as part of the password while local-api trims it before
+          # showing it on the Storage page. The password on screen was then not
+          # the password Ceph had stored, and logging in failed with "Invalid
+          # credentials" while both halves looked correct.
+          #
+          # tr -dc keeps only alphanumerics: this value gets copied by hand, so
+          # no character in it should need escaping or be confusable.
+          PW=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-20)
+          printf '%s' "$PW" > ${cfg.passwordFile}
+          chmod 0600 ${cfg.passwordFile}
+        fi
+
+        # Repair a file written by the version that appended a newline. Without
+        # this the stored password keeps being re-set to the untrimmed value on
+        # every run and the mismatch never clears.
+        if [ -n "$(tail -c 1 ${cfg.passwordFile} | tr -d 'A-Za-z0-9')" ]; then
+          echo "trimming trailing whitespace from the stored dashboard password"
+          TRIMMED=$(tr -d '[:space:]' < ${cfg.passwordFile})
+          printf '%s' "$TRIMMED" > ${cfg.passwordFile}
           chmod 0600 ${cfg.passwordFile}
         fi
 
         # ac-user-create fails when the user already exists, which is the normal
         # case on every run after the first — so set the password instead and
         # only create when that fails.
-        if ! timeout 30 ceph dashboard ac-user-set-password admin \
-             -i ${cfg.passwordFile} --force-password >/dev/null 2>&1; then
-          echo "creating the dashboard admin user"
-          timeout 30 ceph dashboard ac-user-create admin \
-            -i ${cfg.passwordFile} administrator --force-password >/dev/null 2>&1 \
-            || echo "could not create the dashboard user — will retry" >&2
+        #
+        # Neither output is discarded any more. Both were sent to /dev/null,
+        # so a dashboard user that was never created looked exactly like one
+        # that was, and the only symptom reached the person trying to log in.
+        if SET_ERR=$(timeout 30 ceph dashboard ac-user-set-password admin \
+             -i ${cfg.passwordFile} --force-password 2>&1); then
+          echo "dashboard password re-applied for user admin"
+        else
+          echo "no existing admin user to update ($SET_ERR) — creating one"
+          if CREATE_ERR=$(timeout 30 ceph dashboard ac-user-create admin \
+               -i ${cfg.passwordFile} administrator --force-password 2>&1); then
+            echo "dashboard user admin created"
+          else
+            echo "could not create the dashboard user: $CREATE_ERR" >&2
+            exit 0
+          fi
+        fi
+
+        # Say plainly whether the account the Storage page advertises exists.
+        if timeout 20 ceph dashboard ac-user-show admin >/dev/null 2>&1; then
+          echo "dashboard login is ready for user admin"
+        else
+          echo "dashboard user admin is still missing after configuring it" >&2
         fi
 
         echo "dashboard configured on ${cephCfg.monAddr}:${toString cfg.port}${cfg.urlPrefix}"
