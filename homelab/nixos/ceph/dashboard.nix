@@ -111,6 +111,77 @@ in {
         # mgr has to be reachable from the node the browser is talking to.
         timeout 20 ceph config set mgr mgr/dashboard/${host}/server_addr ${cephCfg.monAddr}
 
+        # ── Make the running mgr actually USE that config ────────────────────
+        #
+        # `ceph config set` stores a value; it does not restart anything. The
+        # dashboard reads ssl, server_port and url_prefix exactly once, when it
+        # mounts its CherryPy tree at module start — and the module has to be
+        # enabled BEFORE those keys are accepted, which is what the block above
+        # does. So the first run always sets them on an already-serving module,
+        # where they sit stored and unused until something restarts it.
+        #
+        # The symptom is not a dashboard that looks broken. It is a dashboard
+        # working perfectly, mounted at "/" instead of under the prefix, so
+        # every request the proxy forwards comes back as Ceph's own 404:
+        #
+        #   {"status": "404 Not Found",
+        #    "detail": "The path '/ceph-dashboard' was not found."}
+        #
+        # which is a CherryPy miss, not a proxy or auth failure. The `*)` branch
+        # of the login check below already named this exact fault — "404 that
+        # url_prefix and the proxy disagree" — and then left it for a human to
+        # notice. Nobody did.
+        #
+        # Compared against what the mgr REPORTS it is serving, never against
+        # what `ceph config get` returns: config holding the right value while
+        # the running module ignores it IS the fault being repaired here, so
+        # config cannot be the thing that decides whether it is fixed.
+        ACTIVE=$(timeout 20 ceph mgr stat -f json 2>/dev/null | jq -r '.active_name // empty')
+        SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty')
+
+        # Only the active mgr's own node restarts the module. `ceph mgr
+        # services` answers identically on every machine, so without this guard
+        # all of them would see the same mismatch and disable/enable the module
+        # at once — three restarts racing to fix one problem. mgr ids are the
+        # hostname (see default.nix), so this comparison is exact.
+        if [ -n "$SERVED" ] && [ "$ACTIVE" = "${host}" ]; then
+          SCHEME=''${SERVED%%://*}
+          REST=''${SERVED#*://}
+          HOSTPORT=''${REST%%/*}
+          # The last colon of "[fd00::1]:7000" begins the port. The address is
+          # bracketed, so this cannot bite off part of an IPv6 literal.
+          PORT=''${HOSTPORT##*:}
+          case "$REST" in
+            */*) SERVED_PREFIX="/''${REST#*/}" ;;
+            *) SERVED_PREFIX="" ;;
+          esac
+          SERVED_PREFIX=''${SERVED_PREFIX%/}
+
+          # scheme covers ssl, port covers server_port, prefix covers
+          # url_prefix — the three keys that only take effect on restart.
+          if [ "$SCHEME" != "http" ] \
+            || [ "$PORT" != "${toString cfg.port}" ] \
+            || [ "$SERVED_PREFIX" != "${cfg.urlPrefix}" ]; then
+            echo "the mgr serves $SERVED but should serve http://<addr>:${toString cfg.port}${cfg.urlPrefix} — restarting the dashboard module to apply it"
+            if timeout 60 ceph mgr module disable dashboard \
+              && timeout 60 ceph mgr module enable dashboard; then
+              # It does not come back instantly, and every check below this
+              # point talks to the dashboard.
+              for _ in $(seq 30); do
+                SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty')
+                case "$SERVED" in
+                  *${cfg.urlPrefix}) break ;;
+                  *${cfg.urlPrefix}/) break ;;
+                esac
+                sleep 2
+              done
+              echo "dashboard now served at ''${SERVED:-<not back yet>}"
+            else
+              echo "could not restart the dashboard module — the prefix stays unapplied" >&2
+            fi
+          fi
+        fi
+
         # One password, generated once, kept on disk. Regenerating it on every
         # run would silently invalidate a session the user is in the middle of.
         if [ ! -s ${cfg.passwordFile} ]; then
