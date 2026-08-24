@@ -32,7 +32,7 @@ with lib; let
   cfg = config.yolab.ceph.dashboard;
   cephCfg = config.yolab.ceph;
   host = config.networking.hostName;
-  cephPath = with pkgs; [ceph ceph-client coreutils openssl gnugrep gnused jq];
+  cephPath = with pkgs; [ceph ceph-client coreutils openssl gnugrep gnused jq curl];
 in {
   options.yolab.ceph.dashboard = {
     enable = mkEnableOption "the Ceph dashboard on this node's mgr" // {default = true;};
@@ -161,12 +161,60 @@ in {
           fi
         fi
 
-        # Say plainly whether the account the Storage page advertises exists.
-        if timeout 20 ceph dashboard ac-user-show admin >/dev/null 2>&1; then
-          echo "dashboard login is ready for user admin"
-        else
-          echo "dashboard user admin is still missing after configuring it" >&2
+        # ── Prove the credentials work ───────────────────────────────────────
+        #
+        # Everything above can succeed and the login can still fail. That has
+        # happened twice already: once because the password file ended in a
+        # newline that Ceph kept and the Storage page trimmed, and once for a
+        # reason no log recorded, because the errors were being discarded.
+        #
+        # `ac-user-show` only proves the account exists. The question that
+        # matters is whether the password the Storage page displays actually
+        # logs in, so ask the dashboard itself. When the answer is no, the
+        # password is re-applied — which fixes any drift between the file and
+        # what Ceph stored, whatever caused it.
+        #
+        # Only on failure, never routinely: re-applying invalidates any session
+        # already open, and doing that every half hour would log the owner out
+        # while they were reading a page.
+        DASH_URL=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty')
+        if [ -z "$DASH_URL" ]; then
+          echo "no active mgr is serving the dashboard yet — cannot verify the login"
+          exit 0
         fi
+
+        PW=$(cat ${cfg.passwordFile})
+        # The Ceph dashboard API refuses an unversioned request with 415, which
+        # would otherwise read exactly like a rejected password.
+        CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 -X POST \
+          "''${DASH_URL%/}/api/auth" \
+          -H 'Content-Type: application/json' \
+          -H 'Accept: application/vnd.ceph.api.v1.0+json' \
+          --data-binary "{\"username\":\"admin\",\"password\":\"$PW\"}" 2>/dev/null || echo 000)
+
+        case "$CODE" in
+          200|201)
+            echo "dashboard login verified for user admin"
+            ;;
+          400|401)
+            echo "the stored password does not log in (HTTP $CODE) — re-applying it" >&2
+            if RESET_ERR=$(timeout 30 ceph dashboard ac-user-set-password admin \
+                 -i ${cfg.passwordFile} --force-password 2>&1); then
+              echo "password re-applied; it will be verified again on the next run"
+            else
+              echo "could not re-apply the password: $RESET_ERR" >&2
+            fi
+            ;;
+          000)
+            echo "could not reach $DASH_URL to verify the login" >&2
+            ;;
+          *)
+            # 415 means the Accept header above is wrong for this Ceph version,
+            # 404 that url_prefix and the proxy disagree. Neither is a password
+            # problem and re-applying it would hide the real fault.
+            echo "unexpected response $CODE from $DASH_URL while verifying the login — not a password problem" >&2
+            ;;
+        esac
 
         echo "dashboard configured on ${cephCfg.monAddr}:${toString cfg.port}${cfg.urlPrefix}"
       '';
