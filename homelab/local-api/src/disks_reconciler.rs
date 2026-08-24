@@ -570,17 +570,89 @@ async fn publish_local(node: &str) -> Result<()> {
 ///
 /// Pure, so the wording is pinned by tests rather than discovered by someone
 /// watching a progress bar that will never move.
-fn drain_message(up_osds: usize) -> String {
-    if up_osds <= 1 {
-        "Waiting to move this disk's files somewhere else — but there is no other \
-         disk running to move them to. Switch on another disk, or add one, and this \
-         will finish on its own."
-            .to_string()
-    } else {
-        "Moving this disk's files onto the others. Do not unplug it until this \
-         finishes."
-            .to_string()
+/// Places Ceph could still put a copy if this OSD went away.
+///
+/// With `failure_domain=osd` that is every other OSD which is up and in; with
+/// `host` it is every other MACHINE holding one. Pure, because the arithmetic
+/// it feeds decides whether a drain can ever finish and the answer is not
+/// observable from a running cluster until it is too late.
+pub(crate) fn drain_targets_remaining(
+    crush_nodes: &[Value],
+    leaving: i64,
+    failure_domain: &str,
+) -> usize {
+    // Which OSDs could accept data: up, in, and not the one being emptied.
+    let usable: Vec<i64> = crush_nodes
+        .iter()
+        .filter(|n| n["type"].as_str() == Some("osd"))
+        .filter(|n| n["status"].as_str() == Some("up"))
+        .filter(|n| n["reweight"].as_f64().unwrap_or(0.0) > 0.5)
+        .filter_map(|n| n["id"].as_i64())
+        .filter(|id| *id != leaving)
+        .collect();
+
+    if failure_domain != "host" {
+        return usable.len();
     }
+
+    // Host domain: copies must land on distinct machines, so what counts is how
+    // many machines still hold a usable OSD — not how many OSDs there are.
+    crush_nodes
+        .iter()
+        .filter(|n| n["type"].as_str() == Some("host"))
+        .filter(|h| {
+            h["children"]
+                .as_array()
+                .is_some_and(|c| c.iter().filter_map(|x| x.as_i64()).any(|id| usable.contains(&id)))
+        })
+        .count()
+}
+
+/// What to tell someone whose disk is being emptied.
+///
+/// THE CASE THIS EXISTS FOR: a drain that can never finish.
+///
+/// Keeping `size` copies needs `size` distinct places to put them. Marking a
+/// disk out leaves fewer places, and when that drops below `size` CRUSH cannot
+/// build a valid set — so it keeps the outgoing OSD in the acting set, its PGs
+/// stay `remapped`, `safe-to-destroy` answers EBUSY forever, and the disk never
+/// leaves.
+///
+/// Seen exactly this way: three disks, three copies, one switched off. Ceph
+/// reported `49 active+clean+remapped`, 33% of objects misplaced, no backfill
+/// running, and `Error EBUSY: OSD(s) 1 have 49 pgs currently mapped to them` —
+/// while this function cheerfully said "do not unplug it until this finishes".
+/// It was never going to finish, and the only thing that ends it is a decision
+/// the owner has to make.
+///
+/// `size` is None when the policy could not be read; the message then promises
+/// nothing it cannot check.
+fn drain_message(targets: usize, size: Option<u32>) -> String {
+    let Some(size) = size else {
+        return "Moving this disk's files onto the others. Do not unplug it while this \
+                is happening."
+            .to_string();
+    };
+
+    if targets == 0 {
+        return "Waiting to move this disk's files somewhere else — but there is no other \
+                disk running to move them to. Switch on another disk, or add one, and this \
+                will finish on its own."
+            .to_string();
+    }
+
+    if targets < size as usize {
+        return format!(
+            "This disk cannot be emptied yet. You have asked for {size} copies of \
+             everything, and taking this disk out leaves only {targets} other \
+             place{plural} to keep them — so there is nowhere for its files to go. \
+             Lower the number of copies to {targets}, or add another disk, and this \
+             finishes on its own.",
+            plural = if targets == 1 { "" } else { "s" }
+        );
+    }
+
+    "Moving this disk's files onto the others. Do not unplug it until this finishes.".to_string()
 }
 
 async fn reconcile_local_osds(
@@ -692,6 +764,14 @@ async fn reconcile_local_osds(
         }
     };
 
+    // How many copies the owner asked for, and where they must go. Needed to
+    // tell a drain that is progressing from one that is deadlocked — see
+    // `drain_message`. Read once per tick, not per disk.
+    let (want_copies, failure_domain) = match crate::topology::read_policy().await {
+        Some(crate::topology::PolicyState::Chosen(p)) => (Some(p.size), p.failure_domain),
+        _ => (None, "osd".to_string()),
+    };
+
     let osd_state_up: std::collections::HashSet<i64> = crush_nodes
         .iter()
         .filter(|n| n["type"].as_str() == Some("osd") && n["status"].as_str() == Some("up"))
@@ -710,15 +790,6 @@ async fn reconcile_local_osds(
         }
     }
 
-    // How many OSDs are up cluster-wide, and how many copies pools keep. Both
-    // are needed to answer the question a draining disk raises: can this drain
-    // ever finish? With one copy and nowhere else to put the data, `osd out`
-    // never reaches safe-to-destroy, and the disk sits "draining" forever with
-    // nothing saying why.
-    let up_osds = crush_nodes
-        .iter()
-        .filter(|n| n["type"].as_str() == Some("osd") && n["status"].as_str() == Some("up"))
-        .count();
 
     for (disk_id, m) in meta {
         let key = format!("{node}--{disk_id}");
@@ -777,7 +848,8 @@ async fn reconcile_local_osds(
         } else if reweight > 0.5 {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = ceph_cli::ceph(&["osd", "out", &osd]).await;
-            set_phase(disk_id, phase::DRAINING, drain_message(up_osds));
+            let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
+            set_phase(disk_id, phase::DRAINING, drain_message(targets, want_copies));
         } else {
             // Already out and drained. Under Rook this was the hard part: its
             // operator would rediscover the still-valid BlueStore data and
@@ -795,7 +867,8 @@ async fn reconcile_local_osds(
             // `pg ls-by-osd` once caused real data loss.
             if !ceph_cli::osd_safe_to_destroy(osd_id).await {
                 tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
-                set_phase(disk_id, phase::DRAINING, drain_message(up_osds));
+                let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
+                set_phase(disk_id, phase::DRAINING, drain_message(targets, want_copies));
                 continue;
             }
             set_phase(disk_id, phase::REMOVING, "Finishing up — do not unplug yet.");
@@ -2333,29 +2406,6 @@ mod tests {
         assert!(msg.contains("another storage system"), "{msg}");
     }
 
-    // ── drain_message ─────────────────────────────────────────────────────────
-
-    /// With one OSD there is nowhere to move the data, so `osd out` never
-    /// reaches safe-to-destroy and the disk drains forever. That is correct —
-    /// the alternative is discarding data — but it has to say so.
-    #[test]
-    fn draining_the_only_disk_says_it_cannot_finish_and_why() {
-        let m = drain_message(1);
-        assert!(m.contains("no other disk"), "{m}");
-        assert!(m.contains("Switch on another disk"), "{m}");
-    }
-
-    #[test]
-    fn draining_with_somewhere_to_go_says_do_not_unplug_yet() {
-        let m = drain_message(3);
-        assert!(m.contains("Do not unplug"), "{m}");
-        assert!(!m.contains("no other disk"), "{m}");
-    }
-
-    #[test]
-    fn a_cluster_with_no_osds_up_still_explains_itself() {
-        assert!(drain_message(0).contains("no other disk"));
-    }
 
     // ── scan_devices filtering ────────────────────────────────────────────────
 
@@ -2464,5 +2514,86 @@ mod tests {
         assert!(parse_osd_metadata(&json!({}), "n").is_empty());
         assert!(parse_osd_metadata(&json!([]), "n").is_empty());
         assert!(parse_osd_metadata(&json!([{"hostname": "n"}]), "n").is_empty());
+    }
+
+    // ── drain_targets_remaining / drain_message ───────────────────────────────
+    //
+    // The case these exist for was seen live: three disks, three copies, one
+    // switched off. Ceph reported 49 active+clean+remapped, 33% of objects
+    // misplaced, no backfill running, and EBUSY on safe-to-destroy — while the
+    // page said "do not unplug it until this finishes". It could not finish.
+
+    fn osd(id: i64, up: bool, reweight: f64) -> Value {
+        json!({"id": id, "type": "osd",
+               "status": if up { "up" } else { "down" }, "reweight": reweight})
+    }
+    fn host(name: &str, children: Vec<i64>) -> Value {
+        json!({"type": "host", "name": name, "children": children})
+    }
+
+    #[test]
+    fn other_usable_osds_are_counted_for_the_osd_domain() {
+        let nodes = vec![osd(0, true, 1.0), osd(1, true, 0.0), osd(2, true, 1.0)];
+        // Leaving osd.1: osd.0 and osd.2 remain.
+        assert_eq!(drain_targets_remaining(&nodes, 1, "osd"), 2);
+    }
+
+    /// A down or already-out disk cannot receive anything, so it is not a place
+    /// to put a copy — counting it would promise a drain that cannot happen.
+    #[test]
+    fn down_and_out_osds_are_not_places_to_put_a_copy() {
+        let nodes = vec![osd(0, false, 1.0), osd(1, true, 1.0), osd(2, true, 0.0)];
+        assert_eq!(drain_targets_remaining(&nodes, 1, "osd"), 0);
+    }
+
+    /// With the host domain, two disks in one machine are ONE place — copies
+    /// must land on distinct machines.
+    #[test]
+    fn the_host_domain_counts_machines_not_disks() {
+        let nodes = vec![
+            host("node1", vec![0, 1]),
+            osd(0, true, 1.0),
+            osd(1, true, 1.0),
+            host("node2", vec![2]),
+            osd(2, true, 1.0),
+        ];
+        assert_eq!(drain_targets_remaining(&nodes, 0, "host"), 2, "node1 still has osd.1");
+        // Emptying the only disk on node2 removes that machine as a target.
+        assert_eq!(drain_targets_remaining(&nodes, 2, "host"), 1);
+    }
+
+    /// THE LIVE FAILURE. Three copies, three disks, one leaving: two places for
+    /// three copies. The message must say so and name both ways out.
+    #[test]
+    fn a_drain_with_nowhere_to_go_says_so_and_says_what_to_do() {
+        let m = drain_message(2, Some(3));
+        assert!(m.contains("cannot be emptied"), "{m}");
+        assert!(m.contains("Lower the number of copies to 2"), "{m}");
+        assert!(m.contains("add another disk"), "{m}");
+        assert!(
+            !m.contains("until this finishes"),
+            "must not promise completion it cannot deliver: {m}"
+        );
+    }
+
+    #[test]
+    fn a_drain_that_can_finish_says_do_not_unplug() {
+        let m = drain_message(3, Some(2));
+        assert!(m.contains("Do not unplug"), "{m}");
+        assert!(!m.contains("cannot be emptied"), "{m}");
+    }
+
+    #[test]
+    fn no_other_disk_at_all_is_its_own_message() {
+        let m = drain_message(0, Some(1));
+        assert!(m.contains("no other disk"), "{m}");
+    }
+
+    /// An unreadable policy must not produce a confident sentence either way.
+    #[test]
+    fn an_unknown_copy_count_promises_nothing_it_cannot_check() {
+        let m = drain_message(2, None);
+        assert!(!m.contains("cannot be emptied"), "{m}");
+        assert!(!m.contains("until this finishes"), "{m}");
     }
 }
