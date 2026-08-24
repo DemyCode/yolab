@@ -136,8 +136,19 @@ in {
         # what `ceph config get` returns: config holding the right value while
         # the running module ignores it IS the fault being repaired here, so
         # config cannot be the thing that decides whether it is fixed.
-        ACTIVE=$(timeout 20 ceph mgr stat -f json 2>/dev/null | jq -r '.active_name // empty')
-        SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty')
+
+        # `|| true` on every one of these, and it is not decoration. NixOS
+        # prepends `set -e` to a systemd `script`, ahead of this file's own
+        # `set -uo pipefail`, and pipefail makes a substitution inherit the
+        # failing side of the pipe. So a `ceph` that legitimately reports
+        # nothing kills the unit at that line — taking with it the `[ -z ... ]`
+        # branch written to handle exactly that case, which can never run.
+        #
+        # `ceph config-key get` on an absent key exits ENOENT(2), which is the
+        # NORMAL state on the first run after this change. Every node failed its
+        # rebuild with status=2/INVALIDARGUMENT and printed nothing.
+        ACTIVE=$(timeout 20 ceph mgr stat -f json 2>/dev/null | jq -r '.active_name // empty' || true)
+        SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty' || true)
 
         # Only the active mgr's own node restarts the module. `ceph mgr
         # services` answers identically on every machine, so without this guard
@@ -168,7 +179,7 @@ in {
               # It does not come back instantly, and every check below this
               # point talks to the dashboard.
               for _ in $(seq 30); do
-                SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty')
+                SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty' || true)
                 case "$SERVED" in
                   *${cfg.urlPrefix}) break ;;
                   *${cfg.urlPrefix}/) break ;;
@@ -208,7 +219,7 @@ in {
         PW_KEY=yolab/dashboard/admin-password
 
         install -d -m 0755 "$(dirname ${cfg.passwordFile})"
-        PW=$(timeout 20 ceph config-key get "$PW_KEY" 2>/dev/null | tr -d '[:space:]')
+        PW=$(timeout 20 ceph config-key get "$PW_KEY" 2>/dev/null | tr -d '[:space:]' || true)
 
         if [ -z "$PW" ]; then
           if [ -s ${cfg.passwordFile} ]; then
@@ -232,7 +243,7 @@ in {
           # together both find the key missing and both set it; the loser has to
           # end up holding the winner's value, or the same fight simply resumes
           # at a slower cadence.
-          PW=$(timeout 20 ceph config-key get "$PW_KEY" 2>/dev/null | tr -d '[:space:]')
+          PW=$(timeout 20 ceph config-key get "$PW_KEY" 2>/dev/null | tr -d '[:space:]' || true)
         fi
 
         if [ -z "$PW" ]; then
@@ -288,7 +299,7 @@ in {
         # Only on failure, never routinely: re-applying invalidates any session
         # already open, and doing that every half hour would log the owner out
         # while they were reading a page.
-        DASH_URL=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty')
+        DASH_URL=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty' || true)
         if [ -z "$DASH_URL" ]; then
           echo "no active mgr is serving the dashboard yet — cannot verify the login"
           exit 0
