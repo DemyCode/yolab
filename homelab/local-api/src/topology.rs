@@ -529,6 +529,9 @@ pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
 
 #[derive(Deserialize)]
 pub struct SetPolicyReq {
+    /// Accepted and ignored, like min_size below: older clients still send
+    /// "auto"/"manual", and there is no longer a mode to be in.
+    #[allow(dead_code)]
     pub mode: String,
     pub size: Option<u32>,
     pub min_size: Option<u32>,

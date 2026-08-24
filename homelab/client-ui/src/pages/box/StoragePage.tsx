@@ -1269,7 +1269,12 @@ function OsdTable({
                   <VarBadge v={osd.var} />
                 </td>
                 <td className="px-4 py-3">
-                  <OsdPill on={osd.crush_weight > 0} labels={["In", "Out"]} />
+                  {/* reweight, NOT crush_weight. `ceph osd out` sets reweight
+                      to 0 and leaves crush_weight alone — it is derived from
+                      the disk's size, so it stays at e.g. 0.909 forever. This
+                      read crush_weight and so showed "In" for a disk that had
+                      been switched off and marked out hours earlier. */}
+                  <OsdPill on={osd.reweight > 0.5} labels={["In", "Out"]} />
                 </td>
                 <td className="px-4 py-3">
                   <OsdPill on={osd.status === "up"} labels={["Up", "Down"]} />
