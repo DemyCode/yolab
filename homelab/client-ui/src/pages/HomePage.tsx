@@ -32,19 +32,31 @@ function topConcern(health: ClusterHealth | undefined): Concern | null {
 
   // Expected, temporary states. These are not problems and must not be dressed
   // up as ones — a box that just booted is not a box in trouble.
-  if (health.starting) {
-    return {
-      tone: "info" as const,
-      title: "Your storage is starting up",
-      body: "This usually takes a minute after the machine boots. Apps will come back on their own.",
-    };
-  }
-  if (health.provisioning) {
-    return {
-      tone: "info" as const,
-      title: "Preparing a new disk",
-      body: "You can keep using everything while this finishes.",
-    };
+  //
+  // They are checked AFTER severity, and that ordering is the whole point. Both are
+  // guesses about WHY something looks off, and both guess wrong in exactly the
+  // situation where being wrong costs the most. Observed live: a disk was pulled from
+  // a cluster keeping one copy, 63 of 81 placement groups went unreadable, and this
+  // page said "Preparing a new disk — you can keep using everything while this
+  // finishes", because `provisioning` was checked first and its backing signal
+  // (`in > up`) is also precisely what a dead disk looks like.
+  //
+  // A reassuring explanation may only ever apply when nothing is actually wrong.
+  if (health.level !== "error") {
+    if (health.starting) {
+      return {
+        tone: "info" as const,
+        title: "Your storage is starting up",
+        body: "This usually takes a minute after the machine boots. Apps will come back on their own.",
+      };
+    }
+    if (health.provisioning) {
+      return {
+        tone: "info" as const,
+        title: "Preparing a new disk",
+        body: "You can keep using everything while this finishes.",
+      };
+    }
   }
   if (health.level === "ok") return null;
 
