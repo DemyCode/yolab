@@ -15,6 +15,8 @@ charts:
     version: "0.2.0"
   - name: audiobookshelf
     version: "0.1.0"
+  - name: babybuddy
+    version: "0.1.0"
   - name: bookstack
     version: "0.1.0"
   - name: calibre-web
@@ -28,6 +30,8 @@ charts:
   - name: dawarich
     version: "0.1.0"
   - name: docmost
+    version: "0.1.0"
+  - name: emulatorjs
     version: "0.1.0"
   - name: excalidraw
     version: "0.1.0"
@@ -47,6 +51,8 @@ charts:
     version: "0.1.0"
   - name: grocy
     version: "0.1.0"
+  - name: healthchecks
+    version: "0.1.0"
   - name: home-assistant
     version: "0.1.0"
   - name: homepage
@@ -62,6 +68,8 @@ charts:
   - name: karakeep
     version: "0.1.0"
   - name: kavita
+    version: "0.1.0"
+  - name: kimai
     version: "0.1.0"
   - name: librespeed
     version: "0.1.0"
@@ -89,9 +97,13 @@ charts:
     version: "0.1.0"
   - name: ntfy
     version: "0.1.0"
+  - name: onlyoffice
+    version: "0.1.0"
   - name: open-webui
     version: "0.1.0"
   - name: openclaw
+    version: "0.1.0"
+  - name: pairdrop
     version: "0.1.0"
   - name: paperless-ngx
     version: "0.1.0"
@@ -99,7 +111,11 @@ charts:
     version: "0.1.0"
   - name: planka
     version: "0.1.0"
+  - name: prowlarr
+    version: "0.1.0"
   - name: qbittorrent
+    version: "0.1.0"
+  - name: radarr
     version: "0.1.0"
   - name: reactive-resume
     version: "0.1.0"
@@ -108,6 +124,10 @@ charts:
   - name: searxng
     version: "0.1.0"
   - name: shlink
+    version: "0.1.0"
+  - name: sonarr
+    version: "0.1.0"
+  - name: speedtest-tracker
     version: "0.1.0"
   - name: stirling-pdf
     version: "0.1.0"
@@ -118,6 +138,8 @@ charts:
   - name: syncthing
     version: "0.1.0"
   - name: umami
+    version: "0.1.0"
+  - name: unifi
     version: "0.1.0"
   - name: uptime-kuma
     version: "0.1.0"
@@ -130,4 +152,6 @@ charts:
   - name: wallabag
     version: "0.1.0"
   - name: wallos
+    version: "0.1.0"
+  - name: your-spotify
     version: "0.1.0"
