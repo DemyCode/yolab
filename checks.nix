@@ -37,6 +37,10 @@
   pkgs,
   inputs,
 }: let
+  # The same derivation the NixOS module serves from Caddy, reused as a check.
+  # Building it IS the test: its installPhase runs `npm run build`, which is
+  # `tsc -b && vite build`.
+  builds = import ./homelab/builds.nix {inherit pkgs inputs;};
   rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
     .rust-bin.fromRustupToolchainFile ./homelab/local-api/rust-toolchain.toml;
   craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
@@ -101,6 +105,23 @@
         '';
       });
 in {
+  # ── The client ──────────────────────────────────────────────────────────────
+  #
+  # `nix run .#ci` used to pass while the UI did not build. The derivation
+  # existed the whole time — homelab-ui, the very bytes Caddy serves — but it
+  # was only a package, and nothing built packages during a check run. A commit
+  # that broke the front end went green.
+  #
+  # `npx tsc --noEmit` is not a substitute and did not catch the case that
+  # prompted this: it runs against tsconfig.app.json alone, while `npm run
+  # build` runs `tsc -b`, which builds every project in the solution with the
+  # settings each declares — including the unused-locals rule that flagged an
+  # orphaned import.
+  #
+  # This is the shipped artifact rather than a re-implementation of its build,
+  # so the check and the deployed bundle cannot drift apart.
+  client-ui = builds.clientUi;
+
   # ── Rust ────────────────────────────────────────────────────────────────────
 
   local-api-tests = cargoTests {
