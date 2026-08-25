@@ -67,6 +67,8 @@ charts:
     version: "0.1.0"
   - name: linkwarden
     version: "0.1.0"
+  - name: mastodon
+    version: "0.1.0"
   - name: mealie
     version: "0.1.0"
   - name: memos
