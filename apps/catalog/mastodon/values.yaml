@@ -1,0 +1,28 @@
+# Everything under `config` is user-facing: it is exactly what the install form edits,
+# and its schema (values.schema.json -> properties.config) is what local-api serves to
+# the UI. Everything under `yolab` is injected by local-api at install time.
+
+config:
+  subdomain: mastodon
+  owner_username: admin
+  owner_email: admin@example.com
+  # SMTP is optional to install and required to let anyone ELSE sign up: Mastodon
+  # confirms new accounts by email. The owner account below is created already
+  # confirmed, so the server is usable without it — by one person.
+  smtp_server: ""
+  smtp_port: 587
+  smtp_login: ""
+  smtp_password: ""
+  smtp_from_address: ""
+  # Media from every account your users follow is cached locally, so this fills
+  # faster than people expect.
+  storage_size: 30Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    # Caddy binds :80 and :443 in the gateway pod and the Mastodon image binds :80
+    # too, so it cannot be a sidecar there — it runs in its own pod behind a Service.
+    upstream: mastodon:80

@@ -1,0 +1,459 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{- $img := "linuxserver/mastodon:version-v4.7.0@sha256:cef14ec8b56dad042d404d01de6d16546b0a4ad23517af3dda7b35a14d3c0678" }}
+{{- $db := "mastodon" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "30Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      # Mastodon's secrets are generated here, once, and never again.
+      #
+      # This runs in the GATEWAY pod on purpose. wg-register writes /yolab/env in the
+      # step above, and that is the only place the final public hostname is known —
+      # LOCAL_DOMAIN has to be pinned to it and then never move. Mastodon's own docs
+      # call it "the unique identifier of your server in the network. It cannot be
+      # safely changed later": every username, every follow and every signature on
+      # every post already sent refers to it. Writing it once, next to the keys, is
+      # what makes that promise hold across restarts and restores.
+      #
+      # The image is the Mastodon one rather than busybox because VAPID keys are not
+      # random bytes. They are a P-256 keypair, base64url-encoded, and a random string
+      # of the right length is silently accepted and then fails to deliver a single
+      # push notification. Ruby is guaranteed present here (it is a Rails app) whereas
+      # the openssl CLI is not — it is a build-only dependency in this image.
+      - name: gen-secrets
+        image: {{ $img }}
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            set -e
+            SECRETS=/state/secrets.env
+            if [ ! -f "$SECRETS" ]; then
+              . /yolab/env
+              TMP=$(mktemp "${SECRETS}.XXXXXX")
+              ruby -e '
+                require "openssl"; require "base64"; require "securerandom"
+                k = OpenSSL::PKey::EC.generate("prime256v1")
+                priv = k.private_key.to_s(2).rjust(32, "\x00")
+                pub  = k.public_key.to_bn.to_s(2)
+                b64  = ->(s) { Base64.urlsafe_encode64(s).delete("=") }
+                puts "SECRET_KEY_BASE=#{SecureRandom.hex(64)}"
+                puts "OTP_SECRET=#{SecureRandom.hex(64)}"
+                puts "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=#{SecureRandom.alphanumeric(32)}"
+                puts "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=#{SecureRandom.alphanumeric(32)}"
+                puts "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=#{SecureRandom.alphanumeric(32)}"
+                puts "VAPID_PRIVATE_KEY=#{b64.call(priv)}"
+                puts "VAPID_PUBLIC_KEY=#{b64.call(pub)}"
+              ' > "$TMP"
+              printf 'LOCAL_DOMAIN=%s\n' "$YOLAB_FQDN" >> "$TMP"
+              printf 'WEB_DOMAIN=%s\n' "$YOLAB_FQDN" >> "$TMP"
+              mv "$TMP" "$SECRETS"
+            fi
+        volumeMounts:
+          - name: data
+            mountPath: /state
+            subPath: {{ .Release.Name }}/yolab-state
+          - name: yolab
+            mountPath: /yolab
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mastodon
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mastodon
+  template:
+    metadata:
+      labels:
+        app: mastodon
+    spec:
+      containers:
+        - name: mastodon
+          image: {{ $img }}
+          imagePullPolicy: IfNotPresent
+          # `set -a` so the sourced values are EXPORTED: /init is s6, not a shell, and
+          # it passes the environment to the services it starts rather than re-reading
+          # this file. Sourced without it, LOCAL_DOMAIN would be set in this shell and
+          # invisible to Rails.
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              until [ -f /state/secrets.env ]; do sleep 2; done
+              set -a
+              . /state/secrets.env
+              set +a
+              exec /init
+          ports:
+            - containerPort: 80
+          env:
+            - name: DB_HOST
+              value: postgres.{{ .Release.Namespace }}.svc.cluster.local
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: {{ $db }}
+            - name: DB_USER
+              value: {{ $db }}
+            - name: DB_PASS
+              value: {{ $db }}
+            - name: REDIS_HOST
+              value: redis.{{ .Release.Namespace }}.svc.cluster.local
+            - name: REDIS_PORT
+              value: "6379"
+            # Full-text search needs a separate Elasticsearch; without it Mastodon
+            # still searches your own posts, hashtags and handles.
+            - name: ES_ENABLED
+              value: "false"
+            - name: S3_ENABLED
+              value: "false"
+            - name: SMTP_SERVER
+              value: {{ .Values.config.smtp_server | default "" | quote }}
+            - name: SMTP_PORT
+              value: {{ .Values.config.smtp_port | default 587 | quote }}
+            - name: SMTP_LOGIN
+              value: {{ .Values.config.smtp_login | default "" | quote }}
+            - name: SMTP_PASSWORD
+              value: {{ .Values.config.smtp_password | default "" | quote }}
+            - name: SMTP_FROM_ADDRESS
+              value: {{ .Values.config.smtp_from_address | default .Values.config.owner_email | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          # Generous on purpose: the first start runs `rails db:prepare`, which
+          # migrates an empty database from nothing. Restarting it halfway leaves a
+          # partially migrated schema, which is far worse than waiting.
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /config
+              subPath: {{ .Release.Name }}/mastodon
+            - name: data
+              mountPath: /state
+              subPath: {{ .Release.Name }}/yolab-state
+        # Creates the owner account once the schema exists, and prints its password
+        # exactly once so the install page can show it. Without this the server has no
+        # way in at all: Mastodon ships no default login, and the web signup form
+        # sends a confirmation email that a server with no SMTP cannot deliver.
+        - name: create-owner
+          image: {{ $img }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              until [ -f /state/secrets.env ]; do sleep 2; done
+              set -a
+              . /state/secrets.env
+              set +a
+              cd /app/www || exit 0
+              if [ -f /state/owner.txt ]; then cat /state/owner.txt; exec sleep infinity; fi
+              i=0
+              while [ "$i" -lt 90 ]; do
+                if OUT=$(s6-setuidgid abc /usr/bin/bundle exec bin/tootctl accounts create \
+                      "$OWNER_USERNAME" --email "$OWNER_EMAIL" --confirmed --role Owner 2>&1); then
+                  PW=$(printf '%s' "$OUT" | sed -n 's/.*password: *//p' | tail -1)
+                  printf 'YOLAB_OUTPUT owner_user %s\nYOLAB_OUTPUT owner_password %s\n' \
+                    "$OWNER_USERNAME" "$PW" > /state/owner.txt
+                  cat /state/owner.txt
+                  exec sleep infinity
+                fi
+                # Already there — a reinstall over existing data, or a previous run
+                # that created the account and died before writing the marker.
+                case "$OUT" in
+                  *taken*|*already*|*exists*)
+                    echo "owner account already exists — leaving it alone"
+                    exec sleep infinity
+                    ;;
+                esac
+                i=$((i + 1))
+                sleep 10
+              done
+              echo "could not create the owner account after 15 minutes: $OUT"
+              exec sleep infinity
+          env:
+            - name: OWNER_USERNAME
+              value: {{ .Values.config.owner_username | default "admin" | quote }}
+            - name: OWNER_EMAIL
+              value: {{ .Values.config.owner_email | default "" | quote }}
+            - name: DB_HOST
+              value: postgres.{{ .Release.Namespace }}.svc.cluster.local
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: {{ $db }}
+            - name: DB_USER
+              value: {{ $db }}
+            - name: DB_PASS
+              value: {{ $db }}
+            - name: REDIS_HOST
+              value: redis.{{ .Release.Namespace }}.svc.cluster.local
+            - name: REDIS_PORT
+              value: "6379"
+            - name: ES_ENABLED
+              value: "false"
+          volumeMounts:
+            - name: data
+              mountPath: /state
+              subPath: {{ .Release.Name }}/yolab-state
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mastodon
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mastodon
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sidekiq
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sidekiq
+  template:
+    metadata:
+      labels:
+        app: sidekiq
+    spec:
+      containers:
+        - name: sidekiq
+          image: {{ $img }}
+          imagePullPolicy: IfNotPresent
+          # SIDEKIQ_ONLY makes the image's own init skip `rails db:prepare`, so this
+          # pod never races the web pod to migrate the same database.
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              until [ -f /state/secrets.env ]; do sleep 2; done
+              set -a
+              . /state/secrets.env
+              set +a
+              exec /init
+          env:
+            - name: SIDEKIQ_ONLY
+              value: "true"
+            - name: DB_HOST
+              value: postgres.{{ .Release.Namespace }}.svc.cluster.local
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: {{ $db }}
+            - name: DB_USER
+              value: {{ $db }}
+            - name: DB_PASS
+              value: {{ $db }}
+            - name: REDIS_HOST
+              value: redis.{{ .Release.Namespace }}.svc.cluster.local
+            - name: REDIS_PORT
+              value: "6379"
+            - name: ES_ENABLED
+              value: "false"
+            - name: S3_ENABLED
+              value: "false"
+            - name: SMTP_SERVER
+              value: {{ .Values.config.smtp_server | default "" | quote }}
+            - name: SMTP_PORT
+              value: {{ .Values.config.smtp_port | default 587 | quote }}
+            - name: SMTP_LOGIN
+              value: {{ .Values.config.smtp_login | default "" | quote }}
+            - name: SMTP_PASSWORD
+              value: {{ .Values.config.smtp_password | default "" | quote }}
+            - name: SMTP_FROM_ADDRESS
+              value: {{ .Values.config.smtp_from_address | default .Values.config.owner_email | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /config
+              subPath: {{ .Release.Name }}/mastodon
+            - name: data
+              mountPath: /state
+              subPath: {{ .Release.Name }}/yolab-state
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ $db }}"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ $db }}"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          env:
+            - name: POSTGRES_USER
+              value: {{ $db }}
+            - name: POSTGRES_PASSWORD
+              value: {{ $db }}
+            - name: POSTGRES_DB
+              value: {{ $db }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: {{ .Release.Name }}/postgres
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          command: ["redis-server"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              subPath: {{ .Release.Name }}/redis
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
