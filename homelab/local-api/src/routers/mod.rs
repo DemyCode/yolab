@@ -5,6 +5,7 @@ pub mod backup_schedule;
 pub mod backups;
 pub mod ceph;
 pub mod ceph_join;
+pub mod custom_app;
 pub mod disks;
 pub mod nodes;
 pub mod packs;

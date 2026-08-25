@@ -50,11 +50,16 @@ const REPO_NS: &str = "kube-system";
 
 /// Where pulled charts are unpacked. Not in the Nix store: the whole point is that this
 /// changes without rebuilding the system.
-const CACHE_DIR: &str = "/var/lib/yolab/charts";
+pub const CACHE_DIR: &str = "/var/lib/yolab/charts";
 
 /// The curated catalog. Always present, cannot be removed, and is the only repo whose
 /// charts the UI presents as vouched-for.
 pub const OFFICIAL: &str = "official";
+
+/// Charts authored on this machine rather than pulled from anywhere. Reserved as a
+/// repo name too: a repo called "custom" would share the cache directory, and
+/// `remove_repo` would then delete charts that exist nowhere else.
+pub const CUSTOM: &str = "custom";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ChartRepo {
@@ -114,6 +119,7 @@ pub fn valid_repo_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && name != OFFICIAL
+        && name != CUSTOM
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -330,6 +336,12 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
 /// remains as the seed: a node that has never synced still has the full official catalog.
 pub async fn chart_sources(catalog_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut sources = Vec::new();
+    // Charts the owner wrote here, first. Not a repo — it is never in the ConfigMap,
+    // so `sync_repo` never sees it and cannot delete a chart nobody can re-download.
+    let custom = cache_dir_for(CUSTOM);
+    if custom.is_dir() {
+        sources.push((CUSTOM.to_string(), custom));
+    }
     for repo in list_repos().await {
         let dir = cache_dir_for(&repo.name);
         if dir.is_dir() {
