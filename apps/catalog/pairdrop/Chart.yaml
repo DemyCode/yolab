@@ -1,0 +1,23 @@
+apiVersion: v2
+name: pairdrop
+description: "Send files between your phone and computer, straight across the network"
+type: application
+# Chart version — bump on any packaging change. A backup records this, and a restore
+# pins to it, so "which version wrote this data" stops being a guess.
+version: 0.1.0
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "PairDrop"
+  yolab.io/icon: "📤"
+  yolab.io/category: "productivity"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }

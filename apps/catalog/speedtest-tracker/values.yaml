@@ -1,0 +1,12 @@
+config:
+  subdomain: speedtest
+  # Hourly. Cron, because the image takes cron — the Backups page has a friendlier
+  # picker for the same idea if this ever needs one.
+  schedule: "0 * * * *"
+  storage_size: 2Gi
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    upstream: speedtest-tracker:80

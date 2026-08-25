@@ -1,0 +1,24 @@
+config:
+  subdomain: unifi
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    # UniFi's admin UI is HTTPS-only, on a self-signed certificate it generates for
+    # itself — there is no plaintext port serving it. So this chart supplies its own
+    # Caddyfile instead of the default `reverse_proxy <upstream>`: Caddy has to be
+    # told to speak TLS upstream AND not to verify a certificate that is, by design,
+    # signed by nobody. Caddy still terminates real TLS at the edge; this only
+    # concerns the hop inside the pod, over loopback.
+    upstream: localhost:8443
+    caddyfile: |
+      {$YOLAB_FQDN} {
+        reverse_proxy localhost:8443 {
+          transport http {
+            tls
+            tls_insecure_skip_verify
+          }
+        }
+      }

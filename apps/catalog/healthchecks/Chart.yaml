@@ -1,0 +1,20 @@
+apiVersion: v2
+name: healthchecks
+description: "Watches the jobs that are supposed to run, and tells you when one silently stops"
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Healthchecks"
+  yolab.io/icon: "🫀"
+  yolab.io/category: "monitoring"
+  yolab.io/uischema: |
+    {
+      "subdomain": { "ui:widget": "TunnelWidget" },
+      "admin_password": { "ui:widget": "password" }
+    }

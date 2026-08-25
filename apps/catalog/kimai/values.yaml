@@ -1,0 +1,11 @@
+config:
+  subdomain: kimai
+  admin_email: admin@example.com
+  admin_password: ""
+  storage_size: 5Gi
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    upstream: kimai:80

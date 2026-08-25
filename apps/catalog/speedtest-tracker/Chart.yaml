@@ -1,0 +1,15 @@
+apiVersion: v2
+name: speedtest-tracker
+description: "Measures your internet speed on a schedule and keeps the history"
+type: application
+version: 0.1.0
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+annotations:
+  yolab.io/display-name: "Speedtest Tracker"
+  yolab.io/icon: "📶"
+  yolab.io/category: "monitoring"
+  yolab.io/uischema: |
+    { "subdomain": { "ui:widget": "TunnelWidget" } }

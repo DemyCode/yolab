@@ -1,0 +1,140 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "2Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speedtest-tracker
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: speedtest-tracker
+  template:
+    metadata:
+      labels:
+        app: speedtest-tracker
+    spec:
+      initContainers:
+      {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
+      # Laravel refuses to boot without APP_KEY, and rotating it makes every value it
+      # has already encrypted unreadable — so it is generated once and kept.
+      - name: gen-secrets
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            SECRETS=/state/secrets.env
+            if [ ! -f "$SECRETS" ]; then
+              TMP=$(mktemp "${SECRETS}.XXXXXX")
+              printf 'APP_KEY=base64:%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')" > "$TMP"
+              mv "$TMP" "$SECRETS"
+            fi
+        volumeMounts:
+          - name: data
+            mountPath: /state
+            subPath: {{ .Release.Name }}/yolab-state
+      containers:
+        - name: speedtest-tracker
+          image: linuxserver/speedtest-tracker:version-v1.15.0@sha256:59518a6f2b49254b310cc2e543320dd3fbaa80381b588cd1f2bf116073698c27
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              . /yolab/env
+              until [ -f /state/secrets.env ]; do sleep 2; done
+              set -a
+              . /state/secrets.env
+              APP_URL="$YOLAB_URL"
+              set +a
+              exec /init
+          ports:
+            - containerPort: 80
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: TZ
+              value: "Etc/UTC"
+            - name: DB_CONNECTION
+              value: sqlite
+            - name: SPEEDTEST_SCHEDULE
+              value: {{ .Values.config.schedule | default "0 * * * *" | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /config
+              subPath: {{ .Release.Name }}/config
+            - name: data
+              mountPath: /state
+              subPath: {{ .Release.Name }}/yolab-state
+            - name: yolab
+              mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.yolabEnvVolumes" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: speedtest-tracker
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: speedtest-tracker
+  ports:
+    - port: 80
+      targetPort: 80

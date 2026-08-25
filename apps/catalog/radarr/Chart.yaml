@@ -1,0 +1,23 @@
+apiVersion: v2
+name: radarr
+description: "Follows films you want and fetches them when they become available"
+type: application
+# Chart version — bump on any packaging change. A backup records this, and a restore
+# pins to it, so "which version wrote this data" stops being a guess.
+version: 0.1.0
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Radarr"
+  yolab.io/icon: "🎬"
+  yolab.io/category: "media"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }

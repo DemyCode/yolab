@@ -1,0 +1,97 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "2Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: healthchecks
+        image: linuxserver/healthchecks:version-v4.3@sha256:0c403bef5506c0e8a10b1c3b6af00e30bb179d5edb3175fa4614a47284db7796
+        imagePullPolicy: IfNotPresent
+        # SITE_ROOT is the address Healthchecks puts INSIDE the ping URLs it hands
+        # out, so it has to be the public one, not localhost — a ping URL pointing at
+        # 127.0.0.1 is a monitor that can never be pinged. wg-register writes the
+        # final hostname to /yolab/env in the init step above; `set -a` exports it
+        # because /init is s6, not a shell, and it passes the environment on to the
+        # services it starts rather than re-reading this file.
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            . /yolab/env
+            set -a
+            SITE_ROOT="https://$YOLAB_FQDN"
+            ALLOWED_HOSTS="$YOLAB_FQDN,localhost,127.0.0.1"
+            CSRF_TRUSTED_ORIGINS="https://$YOLAB_FQDN"
+            set +a
+            exec /init
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: "Etc/UTC"
+          - name: SITE_NAME
+            value: "Healthchecks"
+          - name: SUPERUSER_EMAIL
+            value: {{ .Values.config.admin_email | quote }}
+          - name: SUPERUSER_PASSWORD
+            value: {{ .Values.config.admin_password | quote }}
+          # SECRET_KEY is deliberately unset: the image generates one on first start
+          # and saves it to /config/local_settings.py, which is on the PVC. Supplying
+          # one here would put it in the pod spec and in every backup for no gain.
+          - name: REGENERATE_SETTINGS
+            value: "True"
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 12
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config
+          - name: yolab
+            mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

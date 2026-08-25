@@ -1,0 +1,18 @@
+apiVersion: v2
+name: kimai
+description: "Track time against projects and turn it into an invoice"
+type: application
+version: 0.1.0
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+annotations:
+  yolab.io/display-name: "Kimai"
+  yolab.io/icon: "⏱️"
+  yolab.io/category: "productivity"
+  yolab.io/uischema: |
+    {
+      "subdomain": { "ui:widget": "TunnelWidget" },
+      "admin_password": { "ui:widget": "password" }
+    }
