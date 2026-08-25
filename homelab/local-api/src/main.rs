@@ -136,6 +136,12 @@ async fn main() {
         .route("/api/apps/repos/sync", post(apps::sync_repos))
         .route("/api/apps/custom", get(custom_app::list_custom).post(custom_app::save_custom))
         .route("/api/apps/custom/:id", delete(custom_app::delete_custom))
+        // A packaged chart is larger than axum's 2 MB default body limit allows.
+        .route(
+            "/api/apps/custom/chart",
+            post(custom_app::upload_chart)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
         .route("/api/apps/packs", get(packs::list_packs).put(packs::save_pack))
         .route("/api/apps/packs/:name", delete(packs::delete_pack))
         .route("/api/account/token", get(apps::account_token))

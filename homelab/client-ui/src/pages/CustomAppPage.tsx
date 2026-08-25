@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, Check, FileCode2, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, FileCode2, Package, Trash2, Upload } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,42 @@ export default function CustomAppPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [uploadedId, setUploadedId] = useState<string | null>(null);
+
+  /**
+   * A packaged chart is sent as the request body rather than as multipart: the only
+   * field is the file, and the body already is the file.
+   */
+  async function uploadChart(file: File) {
+    setBusy(true);
+    setError(null);
+    setSaved(null);
+    setUploadedId(null);
+    try {
+      const res = await fetch("/api/apps/custom/chart", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      const d = (await res.json()) as {
+        error?: string;
+        app?: CustomApp;
+        has_form?: boolean;
+      };
+      if (!res.ok || !d.app) throw new Error(d.error ?? `Server error ${res.status}`);
+      setUploadedId(d.app.id);
+      setSaved(
+        d.has_form
+          ? `${d.app.display_name} is in your catalog, with its own settings.`
+          : `${d.app.display_name} is in your catalog.`,
+      );
+      await apps.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read that chart");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save() {
     setBusy(true);
@@ -111,9 +147,62 @@ export default function CustomAppPage() {
   return (
     <Page
       title="Add your own app"
-      subtitle="Paste Kubernetes YAML and it becomes an app like any other — its own address, its own backups."
+      subtitle="Upload a Helm chart, or paste Kubernetes YAML. Either way it becomes an app like any other — its own address, its own backups."
     >
       <div className="space-y-4">
+        {/* The packaged route comes first because it is the better one when it is
+            available: a real chart already declares its own settings, so the
+            install page shows them without anyone describing them twice here. */}
+        <section className="rounded-card border border-border bg-surface p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <Package className="h-4 w-4 shrink-0 text-fg-muted" />
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-fg">
+                Already have a Helm chart?
+              </h2>
+              <p className="mt-0.5 text-sm text-fg-muted">
+                Upload it as a <code>.tgz</code> or <code>.zip</code> and it
+                installs with its own settings page, like every other app.
+              </p>
+            </div>
+            <label className="shrink-0">
+              <input
+                type="file"
+                accept=".tgz,.gz,.zip,application/zip,application/gzip"
+                className="sr-only"
+                disabled={busy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  // Cleared so picking the same file twice fires again.
+                  e.target.value = "";
+                  if (f) void uploadChart(f);
+                }}
+              />
+              <span className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-fg transition hover:opacity-90">
+                <Upload className="h-3.5 w-3.5" />
+                {busy ? "Checking…" : "Choose file"}
+              </span>
+            </label>
+          </div>
+          {uploadedId && (
+            <Button
+              size="sm"
+              className="mt-3"
+              onClick={() => navigate(`/add/${uploadedId}`)}
+            >
+              Set it up
+            </Button>
+          )}
+        </section>
+
+        <div className="flex items-center gap-3 py-1">
+          <span className="h-px flex-1 bg-border" />
+          <span className="text-xs text-fg-subtle">
+            or paste plain Kubernetes YAML
+          </span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-fg">Name</span>

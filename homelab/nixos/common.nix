@@ -568,6 +568,7 @@ in
         wireguard-tools
         kubectl
         gptfdisk # sgdisk — wipes disks before Rook claims them
+        unzip # local-api unpacks a chart uploaded as a .zip; tar covers .tgz
         dysk
         dust
         ctop
