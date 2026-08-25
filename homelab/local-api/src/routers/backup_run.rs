@@ -213,13 +213,17 @@ fn names_to_prune(runs: &[Value], keep: usize) -> Vec<String> {
     out
 }
 
-/// Whether a scheduled backup should start, from the age of the last one that
-/// reached a usable end state. `None` means no such run exists — back up now.
-fn backup_is_due(last_ok_age_hours: Option<i64>) -> bool {
-    match last_ok_age_hours {
-        Some(h) => h >= CATCHUP_AFTER_HOURS,
-        None => true,
-    }
+/// Whether the configured schedule says a backup is overdue.
+///
+/// The schedule is asked "when should this last have run", never "is it time now" — see
+/// backup_schedule's module doc for why that distinction is the whole design on a
+/// machine that sleeps.
+async fn scheduled_backup_is_due(last_ok_finished: Option<&str>) -> bool {
+    let schedule = crate::routers::backup_schedule::load().await;
+    let last_ok = last_ok_finished
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&chrono::Local));
+    crate::routers::backup_schedule::is_due(&schedule, last_ok, chrono::Local::now())
 }
 
 /// True if any BackupRun is currently non-terminal — the single-flight gate for both
@@ -880,12 +884,11 @@ pub async fn reconcile_tick(holder: &str) {
     };
 
     let runs = BACKUP_RUN.list().await;
-    let last_ok_age_hours = runs.iter()
+    let last_ok_finished = runs.iter()
         .find(|r| matches!(r["status"]["phase"].as_str(), Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)))
-        .and_then(|r| r["status"]["finishedAt"].as_str())
-        .and_then(hours_since);
+        .and_then(|r| r["status"]["finishedAt"].as_str());
 
-    if backup_is_due(last_ok_age_hours) {
+    if scheduled_backup_is_due(last_ok_finished).await {
         match start("schedule").await {
             Ok(name) => tracing::info!("backup-run {name}: created (schedule)"),
             Err(e) => tracing::warn!("backup-run: failed to create scheduled run: {e}"),
@@ -1104,31 +1107,6 @@ mod tests {
     #[test]
     fn pruning_an_empty_list_is_a_no_op() {
         assert!(names_to_prune(&[], 30).is_empty());
-    }
-
-    // ── backup_is_due ─────────────────────────────────────────────────────────
-
-    /// A machine that has never produced a usable backup must not wait a day for
-    /// its first one.
-    #[test]
-    fn a_machine_that_has_never_backed_up_is_due_immediately() {
-        assert!(backup_is_due(None));
-    }
-
-    #[test]
-    fn a_backup_is_due_once_a_day_has_passed() {
-        assert!(!backup_is_due(Some(0)));
-        assert!(!backup_is_due(Some(CATCHUP_AFTER_HOURS - 1)));
-        assert!(backup_is_due(Some(CATCHUP_AFTER_HOURS)));
-        assert!(backup_is_due(Some(CATCHUP_AFTER_HOURS + 1)));
-    }
-
-    /// `hours_since` goes negative if a node's clock is behind the timestamp it
-    /// wrote (NTP correction, or a laptop resuming from suspend). That must read
-    /// as "recent", not trigger a backup storm.
-    #[test]
-    fn a_negative_age_from_clock_skew_does_not_trigger_a_backup() {
-        assert!(!backup_is_due(Some(-5)));
     }
 
     // ── collect_images ────────────────────────────────────────────────────────
