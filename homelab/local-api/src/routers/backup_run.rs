@@ -70,6 +70,21 @@ const CATCHUP_AFTER_HOURS: i64 = 24;
 /// small status objects accumulate in etcd.
 const KEEP_TERMINAL_RUNS: usize = 30;
 
+/// How long a volume sync may show NO forward progress before it is called stalled.
+///
+/// A watchdog, not a budget. The previous design gave the whole SyncingVolumes phase a
+/// fixed 30 minutes from the moment it started, which asks the wrong question: it fails
+/// a sync for being BIG. Live, one 14.7 GiB / 88k-file volume took ~21 minutes of that
+/// 30 while seven others finished in 20-33 seconds each, so the run cleared its deadline
+/// by about nine minutes — and would quietly start failing every night as that volume
+/// grew, with the first symptom being backups that simply stopped completing.
+///
+/// Restic reports its own progress every few seconds, so "slow" and "stuck" are directly
+/// distinguishable and there is no reason to conflate them. A sync that is still moving
+/// pushes this deadline forward and can run for hours; a sync that has genuinely frozen
+/// is caught in twenty minutes rather than never.
+const SYNC_STALL_SECS: i64 = 1200;
+
 const PHASE_PENDING: &str = "Pending";
 const PHASE_SYNCING: &str = "SyncingVolumes";
 const PHASE_SNAPSHOTTING: &str = "SnapshottingCluster";
@@ -99,9 +114,84 @@ fn parse_deadline(v: &Value) -> Option<DateTime<Utc>> {
 /// A run with no parseable deadline is NOT timed out: an unset deadline means
 /// "we don't know", and failing a healthy in-flight backup on a missing field
 /// would abandon work that is still progressing.
+///
+/// SyncingVolumes is exempt because `step_syncing` resolves its own stalls, and it
+/// resolves them BETTER: a stalled volume there is dropped from the run and the other
+/// volumes still produce a snapshot (Partial), whereas this sweep can only mark the
+/// whole run Failed. Both used to be reachable and this one always won, because the
+/// sweep runs before `step()` on every tick â so the "partial backup beats no backup"
+/// path that step_syncing documents was, in practice, dead code. Seven backed-up
+/// volumes were reported as a failed backup because an eighth was slow.
+///
+/// This does not weaken the crash guarantee the phase/deadline design exists for:
+/// step_syncing runs on every tick, from any process, is bounded, and holds no state
+/// outside the CRD \x{2014} so a crashed run in this phase is still resolved by whoever ticks
+/// next, just into a more useful outcome.
 fn is_timed_out(run: &Value, now: DateTime<Utc>) -> bool {
     let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING);
+    if phase == PHASE_SYNCING {
+        return false;
+    }
     !is_terminal(phase) && parse_deadline(run).is_some_and(|dl| now > dl)
+}
+
+
+/// The most recent restic progress line from the VolSync mover pod backing one
+/// ReplicationSource, e.g.
+///
+///   [17:50] 90.97%  44049 files 13.334 GiB, total 88164 files 14.657 GiB, 0 errors ETA 1:03
+///
+/// This is the ONLY real-time signal VolSync exposes mid-sync: `latestMoverStatus` stays
+/// `{}` until the mover exits and `lastSyncTime` only moves on success, so from the CRD
+/// alone a 20-minute copy and a frozen one look identical. That is what forced the old
+/// design to guess with a fixed budget.
+///
+/// Read only for volumes still syncing — normally one or two — so this is a couple of
+/// kubectl calls per tick, not one per PVC.
+async fn mover_progress(namespace: &str, rs_name: &str) -> Option<String> {
+    let prefix = format!("volsync-src-{rs_name}-");
+    let pods = Command::new("kubectl")
+        .args([
+            "-n", namespace, "get", "pods", "-o",
+            r#"jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}"#,
+        ])
+        .output()
+        .await
+        .ok()?;
+    let pod = String::from_utf8_lossy(&pods.stdout)
+        .lines()
+        .find(|l| l.starts_with(&prefix))?
+        .to_string();
+
+    let logs = Command::new("kubectl")
+        .args(["-n", namespace, "logs", &pod, "--tail=20"])
+        .output()
+        .await
+        .ok()?;
+    String::from_utf8_lossy(&logs.stdout)
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('[') && l.contains('%'))
+        .map(|l| l.trim().to_string())
+}
+
+/// Percent complete and remaining time from a restic progress line.
+///
+/// Best-effort on purpose: restic's progress format is output, not an API, so a line
+/// this does not recognise yields None and the page shows no number rather than a
+/// confident wrong one. The line is still usable as a stall fingerprint either way —
+/// the watchdog only cares THAT it changed, never what it says.
+fn parse_restic_progress(line: &str) -> (Option<f64>, Option<String>) {
+    let percent = line
+        .split_whitespace()
+        .find(|t| t.ends_with('%'))
+        .and_then(|t| t.trim_end_matches('%').parse::<f64>().ok())
+        .filter(|p| (0.0..=100.0).contains(p));
+    let eta = line
+        .rsplit_once("ETA ")
+        .map(|(_, e)| e.trim().to_string())
+        .filter(|e| !e.is_empty() && e.len() <= 12);
+    (percent, eta)
 }
 
 /// Names of the terminal runs to delete, given the list newest-created first.
@@ -206,7 +296,8 @@ async fn step(name: &str) {
 async fn step_pending(name: &str, cfg: &BackupConfig) {
     let pvcs = list_user_pvcs().await.unwrap_or_default();
     let since = Utc::now();
-    let sync_deadline = since + chrono::Duration::seconds(1800);
+    // Watchdog, not budget: this is pushed forward on every tick that shows progress.
+    let sync_deadline = since + chrono::Duration::seconds(SYNC_STALL_SECS);
     let pvc_status: Vec<Value> = pvcs.iter()
         .map(|p| json!({ "namespace": p.namespace, "name": p.name, "phase": "Syncing" }))
         .collect();
@@ -221,22 +312,27 @@ async fn step_pending(name: &str, cfg: &BackupConfig) {
         "phase": PHASE_SYNCING,
         "phaseDeadline": sync_deadline.to_rfc3339(),
         "syncSince": since.to_rfc3339(),
+        "syncProgressAt": since.to_rfc3339(),
         "pvcs": pvc_status,
     })).await;
 }
 
 /// SyncingVolumes: a single observation of every tracked PVC's ReplicationSource — no
-/// internal sleep loop. Updates status.pvcs with the latest observed phase on every
-/// tick (so the frontend's live per-volume progress keeps moving even across a crash-
-/// and-restart of this process); transitions to SnapshottingCluster once every PVC has
-/// synced, or once the phase deadline passes (proceeding with whatever synced — a
-/// partial backup beats no backup).
+/// internal sleep loop. Updates status.pvcs with the latest observed phase and, for a
+/// volume still copying, restic's own percent/ETA, so the page can show WHICH volume is
+/// holding the run up instead of one opaque phase name.
+///
+/// Advances to SnapshottingCluster once every PVC has synced, or once nothing has moved
+/// for SYNC_STALL_SECS (proceeding with whatever synced — a partial backup beats no
+/// backup). Note what is NOT a reason to give up any more: elapsed time. A volume that
+/// is still copying keeps the run alive indefinitely by pushing the deadline forward.
 async fn step_syncing(name: &str, run: &Value) {
     let since = run["status"]["syncSince"].as_str()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|t| t.with_timezone(&Utc))
         .unwrap_or_else(Utc::now);
-    let deadline = parse_deadline(run).unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(1800));
+    let deadline = parse_deadline(run)
+        .unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(SYNC_STALL_SECS));
     let pvcs: Vec<PvcInfo> = run["status"]["pvcs"].as_array().cloned().unwrap_or_default()
         .into_iter()
         .filter_map(|p| Some(PvcInfo {
@@ -249,7 +345,12 @@ async fn step_syncing(name: &str, run: &Value) {
     let mut pvc_status = Vec::with_capacity(pvcs.len());
     let mut stale = Vec::new();
     let mut all_done = true;
-    let past_deadline = Utc::now() > deadline;
+    let stalled = Utc::now() > deadline;
+    // What "still moving" means, as one string compared against the previous tick's.
+    // Deliberately coarse: any volume finishing, or any byte of restic progress on any
+    // volume, counts for the whole run. A ten-volume backup where nine are done and one
+    // is copying is progressing, and the watchdog should say so.
+    let mut fingerprint = String::new();
 
     for pvc in &pvcs {
         let cid = canonical_pvc_id(&pvc.name);
@@ -267,19 +368,38 @@ async fn step_syncing(name: &str, run: &Value) {
             .map(|t| t.with_timezone(&Utc) >= since)
             .unwrap_or(false);
 
-        let phase = if result == Some("Successful") && synced_after_trigger {
+        let done = result == Some("Successful") && synced_after_trigger;
+        let mut entry = json!({ "namespace": pvc.namespace, "name": pvc.name });
+
+        let phase = if done {
+            fingerprint.push_str(&format!("{}/{}=done;", pvc.namespace, pvc.name));
             "Synced"
-        } else if past_deadline {
-            stale.push(format!("{}/{}", pvc.namespace, pvc.name));
-            "TimedOut"
         } else {
-            all_done = false;
-            "Syncing"
+            // Only volumes actually still copying are worth a log read.
+            let progress = mover_progress(&pvc.namespace, &rs_name).await;
+            if let Some(line) = &progress {
+                fingerprint.push_str(&format!("{}/{}={line};", pvc.namespace, pvc.name));
+                let (percent, eta) = parse_restic_progress(line);
+                if let Some(p) = percent {
+                    entry["percent"] = json!(p);
+                }
+                if let Some(e) = eta {
+                    entry["eta"] = json!(e);
+                }
+            }
+            if stalled {
+                stale.push(format!("{}/{}", pvc.namespace, pvc.name));
+                "Stalled"
+            } else {
+                all_done = false;
+                "Syncing"
+            }
         };
-        pvc_status.push(json!({ "namespace": pvc.namespace, "name": pvc.name, "phase": phase }));
+        entry["phase"] = json!(phase);
+        pvc_status.push(entry);
     }
 
-    if all_done || past_deadline {
+    if all_done || stalled {
         const SNAPSHOTTING_BUDGET_SECS: i64 = 900;
         let _ = BACKUP_RUN.patch_status(name, json!({
             "phase": PHASE_SNAPSHOTTING,
@@ -287,9 +407,21 @@ async fn step_syncing(name: &str, run: &Value) {
             "pvcs": pvc_status,
             "stalePvcs": stale,
         })).await;
-    } else {
-        let _ = BACKUP_RUN.patch_status(name, json!({ "pvcs": pvc_status })).await;
+        return;
     }
+
+    // Still copying. Push the deadline out only when something actually changed since
+    // the last tick — that is the whole difference between a watchdog and a timer that
+    // can never fire.
+    let moved = run["status"]["syncFingerprint"].as_str() != Some(fingerprint.as_str());
+    let mut patch = json!({ "pvcs": pvc_status, "syncFingerprint": fingerprint });
+    if moved {
+        let now = Utc::now();
+        patch["syncProgressAt"] = json!(now.to_rfc3339());
+        patch["phaseDeadline"] =
+            json!((now + chrono::Duration::seconds(SYNC_STALL_SECS)).to_rfc3339());
+    }
+    let _ = BACKUP_RUN.patch_status(name, patch).await;
 }
 
 /// SnapshottingCluster: runs the etcd/k8s/restic export as one bounded call, budgeted
@@ -649,7 +781,26 @@ pub async fn current_status() -> Value {
     let last_finished = runs.iter().find(|r| {
         is_terminal(r["status"]["phase"].as_str().unwrap_or(""))
     }).map(flatten_status);
-    json!({ "active": active, "last": last_finished })
+    // Age of the last backup that actually produced a snapshot, Partial included — a
+    // run that captured seven of eight volumes IS a backup of those seven.
+    //
+    // This is the number that tells someone their backups are broken, whatever the
+    // cause, and it is the one number the page never had. Duration answers "is this run
+    // slow", which nobody needs to know; staleness answers "when could I last have
+    // restored", which is the entire point of the feature. It was already computed for
+    // the scheduler on every tick and then thrown away.
+    let last_ok_age_hours = runs.iter()
+        .find(|r| matches!(r["status"]["phase"].as_str(),
+                           Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)))
+        .and_then(|r| r["status"]["finishedAt"].as_str())
+        .and_then(hours_since);
+    json!({
+        "active": active,
+        "last": last_finished,
+        "last_ok_age_hours": last_ok_age_hours,
+        // So the page can state the rule instead of hardcoding a number beside it.
+        "stale_after_hours": CATCHUP_AFTER_HOURS,
+    })
 }
 
 /// When the cluster state (etcd) was last captured, from the most recent run that
@@ -835,17 +986,20 @@ mod tests {
 
     // ── is_timed_out ──────────────────────────────────────────────────────────
 
+    // These use SnapshottingCluster as the representative non-terminal phase.
+    // SyncingVolumes no longer belongs here: it owns its own stall handling, so the
+    // generic sweep deliberately skips it — see the exemption tests above.
     #[test]
     fn a_run_past_its_deadline_is_timed_out() {
         let now = Utc::now();
-        let run = run_with_deadline(PHASE_SYNCING, now - chrono::Duration::seconds(1));
+        let run = run_with_deadline(PHASE_SNAPSHOTTING, now - chrono::Duration::seconds(1));
         assert!(is_timed_out(&run, now));
     }
 
     #[test]
     fn a_run_inside_its_deadline_is_left_alone() {
         let now = Utc::now();
-        let run = run_with_deadline(PHASE_SYNCING, now + chrono::Duration::hours(1));
+        let run = run_with_deadline(PHASE_SNAPSHOTTING, now + chrono::Duration::hours(1));
         assert!(!is_timed_out(&run, now));
     }
 
@@ -1063,6 +1217,79 @@ mod tests {
         for status in [json!(null), json!("Succeeded"), json!([1, 2])] {
             let flat = flatten_status(&json!({"metadata": {"name": "x"}, "status": status}));
             assert_eq!(flat, json!({"name": "x"}));
+        }
+    }
+
+
+    // ── The stall watchdog ────────────────────────────────────────────────────
+    //
+    // The rule these pin down: a backup never fails for being slow, only for
+    // stopping. Duration is not an input anywhere below.
+
+    /// The line restic actually prints, taken from the live mover pod that
+    /// prompted this change.
+    const LIVE_LINE: &str =
+        "[17:50] 90.97%  44049 files 13.334 GiB, total 88164 files 14.657 GiB, 0 errors ETA 1:03";
+
+    #[test]
+    fn restic_progress_yields_percent_and_eta() {
+        let (percent, eta) = parse_restic_progress(LIVE_LINE);
+        assert_eq!(percent, Some(90.97));
+        assert_eq!(eta.as_deref(), Some("1:03"));
+    }
+
+    /// A line with no ETA yet is still usable: the percent is what the page shows.
+    #[test]
+    fn restic_progress_survives_a_missing_eta() {
+        let (percent, eta) = parse_restic_progress("[00:10] 0.00%  12 files 1.0 MiB, total 88164 files 14.657 GiB, 0 errors");
+        assert_eq!(percent, Some(0.0));
+        assert_eq!(eta, None);
+    }
+
+    /// restic's output is not an API. Anything unrecognised must yield nothing
+    /// rather than a confident wrong number — the line still works as a stall
+    /// fingerprint, which is all the watchdog needs from it.
+    #[test]
+    fn restic_progress_refuses_to_guess() {
+        for line in [
+            "",
+            "unlocking repository",
+            "[17:50] 900.00% nonsense",
+            "[17:50] not-a-number%",
+        ] {
+            let (percent, _) = parse_restic_progress(line);
+            assert!(percent.is_none(), "must not parse a percent from {line:?}");
+        }
+    }
+
+    /// The reason the sweep is exempt for this phase. Before, a sync past its
+    /// deadline was marked Failed by reconcile_tick before step_syncing could
+    /// ever run its own past-deadline branch, so seven backed-up volumes were
+    /// reported as a failed backup because an eighth was slow.
+    #[test]
+    fn a_syncing_run_is_never_failed_by_the_generic_sweep() {
+        let long_past = (Utc::now() - chrono::Duration::hours(9)).to_rfc3339();
+        let run = json!({"status": {"phase": PHASE_SYNCING, "phaseDeadline": long_past}});
+        assert!(!is_timed_out(&run, Utc::now()));
+    }
+
+    /// Every other phase keeps the guarantee the CRD design exists for: past the
+    /// deadline and non-terminal means the run is dead, resolvable by any tick.
+    #[test]
+    fn every_other_phase_still_times_out() {
+        let long_past = (Utc::now() - chrono::Duration::hours(9)).to_rfc3339();
+        for phase in [PHASE_PENDING, PHASE_SNAPSHOTTING, PHASE_PRUNING] {
+            let run = json!({"status": {"phase": phase, "phaseDeadline": long_past}});
+            assert!(is_timed_out(&run, Utc::now()), "{phase} must still time out");
+        }
+    }
+
+    #[test]
+    fn a_terminal_run_is_never_timed_out() {
+        let long_past = (Utc::now() - chrono::Duration::hours(9)).to_rfc3339();
+        for phase in [PHASE_SUCCEEDED, PHASE_PARTIAL, PHASE_FAILED] {
+            let run = json!({"status": {"phase": phase, "phaseDeadline": long_past}});
+            assert!(!is_timed_out(&run, Utc::now()));
         }
     }
 
