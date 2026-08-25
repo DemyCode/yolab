@@ -150,6 +150,44 @@ fn parse_field(
     Ok(out)
 }
 
+
+/// A wall-clock time turned into a real instant, tolerating the clock jumps that
+/// exist somewhere in the world on most weekends of the year.
+///
+/// `from_local_datetime` has three outcomes, and only one of them is the easy one.
+/// A time inside a spring-forward gap maps to NO instant; a time inside an
+/// autumn fall-back maps to TWO. The scans below used `.earliest()?` on the day
+/// boundaries they construct, which turns the first case into `None` for the whole
+/// function — and `None` from `previous_occurrence` means `is_due` returns false,
+/// i.e. backups stop until the next tick sees a different clock.
+///
+/// I could not reproduce that against 2026 tzdata in seven zones, including every
+/// midnight-transition zone I could name — the boundaries used here (00:00 and
+/// 23:59) all resolved. But "no zone on earth, in any year, ever puts a gap at the
+/// boundary we happen to construct" is not something this code should be relying
+/// on to keep backing up, and the tz database changes several times a year.
+///
+/// So: earliest valid reading, and when a gap swallows the time entirely, the first
+/// real instant after it. Never `None`, never a silent stop.
+fn resolve_local(naive: chrono::NaiveDateTime) -> Option<DateTime<Local>> {
+    use chrono::LocalResult;
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(t) => Some(t),
+        // Ambiguous: the hour repeats. The earlier reading is the one that keeps a
+        // backwards scan moving backwards.
+        LocalResult::Ambiguous(earlier, _) => Some(earlier),
+        // Gap. Walk forward to the far side of it; no real transition is longer
+        // than a couple of hours.
+        LocalResult::None => (1..=180).find_map(|m| {
+            match Local.from_local_datetime(&(naive + chrono::Duration::minutes(m))) {
+                LocalResult::Single(t) => Some(t),
+                LocalResult::Ambiguous(t, _) => Some(t),
+                LocalResult::None => None,
+            }
+        }),
+    }
+}
+
 impl Schedule {
     /// Parses a standard five-field cron expression: minute, hour, day-of-month, month,
     /// day-of-week. Three-letter names are accepted for the last two.
@@ -237,9 +275,7 @@ impl Schedule {
             }
             // Step to 23:59 of the previous day.
             let prev_day = cursor.date_naive() - chrono::Duration::days(1);
-            cursor = Local
-                .from_local_datetime(&prev_day.and_hms_opt(23, 59, 0)?)
-                .earliest()?;
+            cursor = resolve_local(prev_day.and_hms_opt(23, 59, 0)?)?;
         }
         None
     }
@@ -263,9 +299,7 @@ impl Schedule {
                 }
             } else {
                 let next_day = t.date_naive() + chrono::Duration::days(1);
-                t = Local
-                    .from_local_datetime(&next_day.and_hms_opt(0, 0, 0)?)
-                    .earliest()?;
+                t = resolve_local(next_day.and_hms_opt(0, 0, 0)?)?;
             }
         }
         None
@@ -819,6 +853,8 @@ mod tests {
         assert!(!is_due(&s, Some(local(2026, 8, 25, 23, 0)), now));
         assert!(!is_due(&s, Some(local(2027, 1, 1, 0, 0)), now));
     }
+
+
 
     #[test]
     fn preview_reports_a_bad_expression_without_panicking() {

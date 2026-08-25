@@ -275,7 +275,7 @@ async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
 ///
 /// There is no safe default for "how big is this cluster". Not knowing has to
 /// mean not acting.
-async fn observe() -> Option<Topology> {
+pub(crate) async fn observe() -> Option<Topology> {
     let nodes = kubectl::get_nodes().await.ok()?.len() as u32;
     // OSD count from Ceph itself. This used to count Rook OSD Deployments with a
     // ready replica; there are no such Deployments now, and the count was always

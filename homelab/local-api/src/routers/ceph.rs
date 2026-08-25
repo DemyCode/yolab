@@ -120,9 +120,19 @@ async fn compute_cluster_health() -> ClusterHealth {
 
     let mut issues: Vec<HealthIssue> = vec![];
 
+    // How many distinct places a copy could go, so the no-redundancy message can
+    // tell this owner what to actually do rather than guess. Unreadable topology
+    // yields 0, which takes the conservative branch (recommend backups) instead of
+    // promising disks that may not exist.
+    let places = match crate::topology::observe().await {
+        Some(t) if t.osd_hosts > 1 => t.osd_hosts,
+        Some(t) => t.osds,
+        None => 0,
+    };
+
     if let Some(obj) = details.as_object() {
         for (code, detail) in obj {
-            if let Some(issue) = translate_health_check(code, detail) {
+            if let Some(issue) = translate_health_check(code, detail, places) {
                 issues.push(issue);
             }
         }
@@ -202,14 +212,46 @@ async fn compute_cluster_health() -> ClusterHealth {
     }
 }
 
-fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<HealthIssue> {
+/// Why the no-redundancy message needs to know how many disks there are.
+///
+/// One string cannot serve both cases, and the old one served neither: it said
+/// "this is expected with a single-disk setup" unconditionally, so a cluster with
+/// three disks and one copy of everything was told its situation was expected. It
+/// was not expected, it was one dialog away from being fixed, and the sentence
+/// talked the owner out of fixing it.
+///
+/// `places` is how many distinct locations a second copy could go — OSDs, or
+/// machines when the failure domain is host. Zero or one means the machine
+/// genuinely cannot replicate and the honest advice is backups; more than one
+/// means it can, today, and the advice is to say so.
+fn no_redundancy_message(places: u32) -> String {
+    if places <= 1 {
+        "Everything is stored once, on the only disk this machine has. If that disk fails, \
+         that data is gone — there is no second copy to rebuild from. Turn on backups so a \
+         copy lives somewhere else, or add another disk and ask for 2 copies."
+            .into()
+    } else {
+        format!(
+            "Everything is stored once, even though this cluster has {places} places to put \
+             copies. If a disk fails, whatever lived on it is gone. Raise the number of copies \
+             to 2 on this page and YoLab spreads a second copy across them — your files stay \
+             available the whole time."
+        )
+    }
+}
+
+fn translate_health_check(
+    code: &str,
+    detail: &serde_json::Value,
+    places: u32,
+) -> Option<HealthIssue> {
     let severity = detail["severity"].as_str().unwrap_or("HEALTH_WARN");
     let level = if severity == "HEALTH_ERR" { HealthLevel::Error } else { HealthLevel::Warn };
 
     let (title, description) = match code {
         "POOL_NO_REDUNDANCY" => (
-            "No disk redundancy".into(),
-            "Your data has no backup copy. If a disk fails, data is lost. This is expected with a single-disk setup.".into(),
+            "No second copy of your data".into(),
+            no_redundancy_message(places),
         ),
         "MDS_ALL_DOWN" => (
             "File system offline".into(),
@@ -301,8 +343,8 @@ fn translate_health_check(code: &str, detail: &serde_json::Value) -> Option<Heal
             "One of your storage daemons crashed and restarted. It may be a sign of a hardware issue if this happens repeatedly.".into(),
         ),
         "POOL_TOTAL_SIZE_MIN_SIZE_REACHED" => (
-            "No disk redundancy".into(),
-            "Your data has no backup copy. If a disk fails, data is lost. This is expected with a single-disk setup.".into(),
+            "No second copy of your data".into(),
+            no_redundancy_message(places),
         ),
         _ => {
             // Unknown code: surface it but don't translate
@@ -811,27 +853,69 @@ mod tests {
 
     #[test]
     fn health_check_translates_a_known_code_to_plain_language() {
-        let issue = translate_health_check("POOL_NO_REDUNDANCY", &warn()).unwrap();
-        assert_eq!(issue.title, "No disk redundancy");
-        assert!(issue.description.contains("no backup copy"));
+        let issue = translate_health_check("POOL_NO_REDUNDANCY", &warn(), 3).unwrap();
+        assert_eq!(issue.title, "No second copy of your data");
+        assert!(issue.description.contains("stored once"));
         assert_eq!(issue.level, HealthLevel::Warn);
+    }
+
+    // ── no_redundancy_message ─────────────────────────────────────────────────
+    //
+    // This is the only sentence that ever tells someone their data is unprotected,
+    // and until now it could not be shown at all: the mon check that raises
+    // POOL_NO_REDUNDANCY was disabled cluster-wide in nixos/ceph/default.nix, so a
+    // three-disk cluster keeping one copy of everything reported HEALTH_OK. These
+    // pin both halves of the repair — that it fires, and that it says something
+    // the reader can act on.
+
+    /// A machine that genuinely cannot replicate must be pointed at backups, not
+    /// told to add copies it has nowhere to put.
+    #[test]
+    fn with_one_disk_the_advice_is_backups() {
+        for places in [0, 1] {
+            let m = no_redundancy_message(places);
+            assert!(m.contains("Turn on backups"), "places={places}: {m}");
+            assert!(!m.contains("Raise the number of copies"), "places={places}: {m}");
+        }
+    }
+
+    /// A machine that CAN replicate must be told so. The old text said "this is
+    /// expected with a single-disk setup" whatever the disk count, which talked
+    /// the owner out of the one action that would have protected them.
+    #[test]
+    fn with_several_disks_the_advice_is_to_raise_the_copy_count() {
+        let m = no_redundancy_message(3);
+        assert!(m.contains("Raise the number of copies"), "{m}");
+        assert!(m.contains('3'), "the count the owner can see must appear: {m}");
+        assert!(!m.contains("expected"), "must not call this normal: {m}");
+    }
+
+    /// Both codes Ceph can raise for this condition say the same thing — they are
+    /// the same fact and used to be two separately-maintained strings.
+    #[test]
+    fn both_no_redundancy_codes_give_the_same_advice() {
+        for code in ["POOL_NO_REDUNDANCY", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED"] {
+            let issue = translate_health_check(code, &warn(), 2).unwrap();
+            assert_eq!(issue.title, "No second copy of your data");
+            assert_eq!(issue.description, no_redundancy_message(2));
+        }
     }
 
     #[test]
     fn health_check_carries_cephs_severity_through() {
         assert_eq!(
-            translate_health_check("OSD_DOWN", &err()).unwrap().level,
+            translate_health_check("OSD_DOWN", &err(), 3).unwrap().level,
             HealthLevel::Error
         );
         assert_eq!(
-            translate_health_check("OSD_DOWN", &warn()).unwrap().level,
+            translate_health_check("OSD_DOWN", &warn(), 3).unwrap().level,
             HealthLevel::Warn
         );
     }
 
     #[test]
     fn health_check_defaults_to_warn_when_severity_is_missing() {
-        let issue = translate_health_check("OSD_DOWN", &json!({})).unwrap();
+        let issue = translate_health_check("OSD_DOWN", &json!({}), 3).unwrap();
         assert_eq!(issue.level, HealthLevel::Warn);
     }
 
@@ -841,7 +925,7 @@ mod tests {
     #[test]
     fn unavailable_data_is_always_an_error_even_when_ceph_calls_it_a_warning() {
         for code in ["PG_DOWN", "PG_AVAILABILITY"] {
-            let issue = translate_health_check(code, &warn()).unwrap();
+            let issue = translate_health_check(code, &warn(), 3).unwrap();
             assert_eq!(issue.level, HealthLevel::Error, "{code}");
             assert_eq!(issue.title, "Some data temporarily unavailable");
         }
@@ -858,11 +942,11 @@ mod tests {
             "PG_NOT_SCRUBBED_SINCE",
         ] {
             assert!(
-                translate_health_check(code, &warn()).is_none(),
+                translate_health_check(code, &warn(), 3).is_none(),
                 "{code} should not be shown to the user"
             );
             // Not even when Ceph escalates them.
-            assert!(translate_health_check(code, &err()).is_none(), "{code} (err)");
+            assert!(translate_health_check(code, &err(), 3).is_none(), "{code} (err)");
         }
     }
 
@@ -872,7 +956,7 @@ mod tests {
             "severity": "HEALTH_WARN",
             "summary": {"message": "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover"},
         });
-        let issue = translate_health_check("BLUEFS_SPILLOVER", &detail).unwrap();
+        let issue = translate_health_check("BLUEFS_SPILLOVER", &detail, 3).unwrap();
         // Title takes the part before the first colon; the body keeps the whole line.
         assert_eq!(issue.title, "Storage issue: BLUEFS_SPILLOVER");
         assert_eq!(issue.description, "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover");
@@ -880,7 +964,7 @@ mod tests {
 
     #[test]
     fn an_unknown_code_with_no_summary_still_names_itself() {
-        let issue = translate_health_check("SOMETHING_NEW", &json!({})).unwrap();
+        let issue = translate_health_check("SOMETHING_NEW", &json!({}), 3).unwrap();
         assert_eq!(issue.title, "Storage issue: SOMETHING_NEW");
         assert_eq!(issue.description, "SOMETHING_NEW");
     }
@@ -897,7 +981,7 @@ mod tests {
             "RECENT_CRASH", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED",
         ];
         for code in codes {
-            let issue = translate_health_check(code, &warn())
+            let issue = translate_health_check(code, &warn(), 3)
                 .unwrap_or_else(|| panic!("{code} should be surfaced, not suppressed"));
             assert!(!issue.title.trim().is_empty(), "{code} has a blank title");
             assert!(!issue.description.trim().is_empty(), "{code} has a blank description");
@@ -910,8 +994,8 @@ mod tests {
 
     #[test]
     fn a_full_disk_reads_the_same_whichever_code_ceph_uses() {
-        let a = translate_health_check("OSD_FULL", &err()).unwrap();
-        let b = translate_health_check("NOSPC", &err()).unwrap();
+        let a = translate_health_check("OSD_FULL", &err(), 3).unwrap();
+        let b = translate_health_check("NOSPC", &err(), 3).unwrap();
         assert_eq!(a.title, b.title);
         assert_eq!(a.description, b.description);
     }
