@@ -1,6 +1,7 @@
 apiVersion: v2
 name: home-assistant
 description: "Home automation and smart-home dashboard"
+home: https://www.home-assistant.io
 type: application
 version: 0.1.0
 appVersion: "stable"

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: radarr
 description: "Follows films you want and fetches them when they become available"
+home: https://radarr.video
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

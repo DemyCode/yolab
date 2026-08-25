@@ -1,6 +1,7 @@
 apiVersion: v2
 name: unifi
 description: "The controller for UniFi access points and switches"
+home: https://ui.com
 type: application
 version: 0.1.0
 dependencies:

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: kimai
 description: "Track time against projects and turn it into an invoice"
+home: https://www.kimai.org
 type: application
 version: 0.1.0
 dependencies:

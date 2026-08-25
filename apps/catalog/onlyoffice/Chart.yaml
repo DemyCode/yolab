@@ -1,6 +1,7 @@
 apiVersion: v2
 name: onlyoffice
 description: "Edit documents, spreadsheets and slides in the browser, next to Nextcloud"
+home: https://www.onlyoffice.com
 type: application
 version: 0.1.0
 dependencies:

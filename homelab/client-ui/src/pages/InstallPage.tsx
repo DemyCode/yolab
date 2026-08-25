@@ -456,6 +456,19 @@ export function InstallPage() {
         <div className="min-w-0">
           <h1 className="font-display text-3xl text-fg">{app.name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>
+          {/* The last moment before committing to an install is exactly when
+              someone wants to check what this actually is. */}
+          {app.home && (
+            <a
+              href={app.home}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="mt-1 inline-flex items-center gap-1 text-sm text-fg-subtle transition-colors hover:text-primary hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Visit the project's website
+            </a>
+          )}
         </div>
       </div>
 

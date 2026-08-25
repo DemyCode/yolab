@@ -1,6 +1,7 @@
 apiVersion: v2
 name: paperless-ngx
 description: "Scan, OCR and archive your documents into a searchable library"
+home: https://github.com/paperless-ngx/paperless-ngx
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: mealie
 description: "Recipe manager and meal planner with a shopping list"
+home: https://mealie.io
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: 2fauth
 description: "Web app for managing two-factor authentication codes"
+home: https://docs.2fauth.app
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: openclaw
 description: "Personal AI assistant that connects to WhatsApp, Telegram, Discord, and more"
+home: https://github.com/pjasicek/OpenClaw
 type: application
 version: 0.1.0
 appVersion: "latest"

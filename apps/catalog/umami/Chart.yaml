@@ -1,6 +1,7 @@
 apiVersion: v2
 name: umami
 description: "Privacy-focused, cookie-free website analytics"
+home: https://github.com/umami-software/umami
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

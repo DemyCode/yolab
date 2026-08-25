@@ -1,6 +1,7 @@
 apiVersion: v2
 name: vikunja
 description: "Tasks, projects and kanban boards"
+home: https://vikunja.io
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

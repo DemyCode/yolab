@@ -1,6 +1,7 @@
 apiVersion: v2
 name: jellyfin
 description: "Free and open source media server"
+home: https://jellyfin.org
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

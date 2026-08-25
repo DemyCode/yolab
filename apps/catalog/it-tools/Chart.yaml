@@ -1,6 +1,7 @@
 apiVersion: v2
 name: it-tools
 description: "Collection of handy developer and sysadmin utilities"
+home: https://it-tools.tech
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: vaultwarden
 description: "Lightweight Bitwarden-compatible password manager"
+home: https://github.com/dani-garcia/vaultwarden
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

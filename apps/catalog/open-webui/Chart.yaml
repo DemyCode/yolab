@@ -1,6 +1,7 @@
 apiVersion: v2
 name: open-webui
 description: "AI chat interface powered by Ollama — run LLMs locally"
+home: https://openwebui.com
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

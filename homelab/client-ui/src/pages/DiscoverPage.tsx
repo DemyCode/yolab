@@ -1,13 +1,13 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { Check, Search } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Search, SlidersHorizontal } from "lucide-react";
 import { Page } from "@/components/AppShell";
-import { AppIconTile } from "@/components/AppIcon";
 import { Input } from "@/components/ui/input";
+import { AppCard } from "@/components/AppCard";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
-import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
+import { GROUPS, groupFor, groupLabel } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
@@ -21,35 +21,6 @@ import type { AppInfo, CatalogApp } from "@/types/apps";
  * backend never had that limitation — every install gets its own namespace —
  * so the card stays clickable and just says how many you already have.
  */
-function AppCard({ app, count }: { app: CatalogApp; count: number }) {
-  return (
-    <Link
-      to={`/add/${app.id}`}
-      className="group flex items-start gap-3.5 rounded-card border border-border bg-surface p-4 transition hover:border-border-strong hover:shadow-[var(--shadow-card)] active:scale-[0.99]"
-    >
-      <AppIconTile appId={app.id} icon={app.icon} name={app.name} size="sm" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate font-medium text-fg">{app.name}</span>
-          {count > 0 && (
-            <span className="flex shrink-0 items-center gap-1 text-xs text-success">
-              <Check className="h-3.5 w-3.5" />
-              {count === 1 ? "Installed" : `${count} installed`}
-            </span>
-          )}
-        </div>
-        <p className="mt-0.5 line-clamp-2 text-sm text-fg-muted">
-          {taglineFor(app)}
-        </p>
-        {count > 0 && (
-          <p className="mt-1 text-xs text-fg-subtle opacity-0 transition-opacity group-hover:opacity-100">
-            Add another copy
-          </p>
-        )}
-      </div>
-    </Link>
-  );
-}
 
 /**
  * The catalog, as a shop rather than a chart index.
@@ -61,6 +32,7 @@ function AppCard({ app, count }: { app: CatalogApp; count: number }) {
  * written for us and not for them.
  */
 export function DiscoverPage() {
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
 
@@ -78,18 +50,8 @@ export function DiscoverPage() {
     return counts;
   }, [apps.data]);
 
-  const matches = useMemo(() => {
-    const all = catalog.data ?? [];
-    const q = query.trim().toLowerCase();
-    if (!q) return all;
-    // Search the tagline too, so "netflix" finds Jellyfin and "1password"
-    // finds Vaultwarden — people search for the thing they already know.
-    return all.filter((a) =>
-      `${a.name} ${a.id} ${taglineFor(a)} ${a.description}`
-        .toLowerCase()
-        .includes(q),
-    );
-  }, [catalog.data, query]);
+  // Browsing shows everything; narrowing is the search page's job.
+  const matches = catalog.data ?? [];
 
   const grouped = useMemo(() => {
     const byGroup = new Map<string, CatalogApp[]>();
@@ -112,16 +74,34 @@ export function DiscoverPage() {
       title="Add a service"
       subtitle="Everything here runs at home, on your own machines."
     >
-      <div className="relative mb-4">
-        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search — try 'photos' or 'netflix'"
-          className="pl-10"
-          type="search"
-          aria-label="Search apps"
-        />
+      {/* Typing here hands off to the search page rather than filtering in place.
+          Browsing and narrowing want different layouts — one wants grouping and
+          room, the other wants a flat ranked list — and this page trying to be
+          both is what turned it into 70 unknown names under a search box. */}
+      <div className="mb-4 flex gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && query.trim()) {
+                navigate(`/search?q=${encodeURIComponent(query.trim())}`);
+              }
+            }}
+            placeholder="Search — try 'photos' or 'netflix'"
+            className="pl-10"
+            type="search"
+            aria-label="Search apps"
+          />
+        </div>
+        <Link
+          to={query.trim() ? `/search?q=${encodeURIComponent(query.trim())}` : "/search"}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 text-sm text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          Filters
+        </Link>
       </div>
 
       <div className="-mx-5 mb-6 flex gap-2 overflow-x-auto px-5 pb-1 md:mx-0 md:px-0">

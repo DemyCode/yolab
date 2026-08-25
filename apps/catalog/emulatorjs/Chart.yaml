@@ -1,6 +1,7 @@
 apiVersion: v2
 name: emulatorjs
 description: "Play your retro game collection in the browser"
+home: https://emulatorjs.org
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.
