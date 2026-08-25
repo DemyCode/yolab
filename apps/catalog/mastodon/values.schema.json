@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["config"],
+  "properties": {
+    "config": {
+      "title": "Mastodon",
+      "type": "object",
+      "required": ["subdomain", "owner_username", "owner_email"],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "mastodon",
+          "description": "This becomes your server's permanent address and part of every username on it. Mastodon cannot change it later without breaking every follow — pick the one you want to keep."
+        },
+        "owner_username": {
+          "type": "string",
+          "title": "Your username",
+          "default": "admin",
+          "pattern": "^[a-zA-Z0-9_]{1,30}$",
+          "description": "Letters, numbers and underscores. This account is created for you and owns the server."
+        },
+        "owner_email": {
+          "type": "string",
+          "title": "Your email",
+          "format": "email",
+          "default": "",
+          "description": "Used to sign in and for admin notices. The account is created already confirmed, so no email needs to arrive for you to log in."
+        },
+        "smtp_server": {
+          "type": "string",
+          "title": "Email server (optional)",
+          "default": "",
+          "description": "Leave empty to run this as a one-person server. Anyone else signing up needs a confirmation email, which needs this filled in. e.g. smtp.fastmail.com"
+        },
+        "smtp_port": {
+          "type": "integer",
+          "title": "Email server port",
+          "default": 587,
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "smtp_login": {
+          "type": "string",
+          "title": "Email username",
+          "default": ""
+        },
+        "smtp_password": {
+          "type": "string",
+          "title": "Email password",
+          "default": ""
+        },
+        "smtp_from_address": {
+          "type": "string",
+          "title": "Send email from",
+          "default": "",
+          "description": "The address invitations and confirmations appear to come from. Defaults to your email above."
+        },
+        "storage_size": {
+          "type": "string",
+          "title": "Storage size",
+          "default": "30Gi",
+          "description": "Mastodon caches media from every account your users follow, so this fills faster than you would expect."
+        }
+      }
+    },
+    "yolab": {
+      "type": "object",
+      "description": "Injected by local-api at install time; not user-editable.",
+      "properties": {
+        "platformApiUrl": { "type": "string" },
+        "accountToken": { "type": "string" },
+        "serviceName": { "type": "string" },
+        "images": { "type": "object" },
+        "gateway": {
+          "type": "object",
+          "properties": {
+            "upstream": { "type": "string" },
+            "caddyfile": { "type": "string" },
+            "pvcName": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}
