@@ -49,6 +49,11 @@ pub struct ClusterHealth {
     pub starting: bool,
     /// A new disk is being prepared as an OSD — storage will grow once ready.
     pub provisioning: bool,
+    /// Data is unreadable AND cannot be rebuilt (the pools holding it keep one copy
+    /// and the disk is gone). The Backups page keys the one-click recovery off this
+    /// rather than matching on a message, so the wording can change without silently
+    /// turning the recovery path off.
+    pub storage_unrecoverable: bool,
 }
 
 fn system_uptime_secs() -> u64 {
@@ -129,6 +134,7 @@ async fn compute_cluster_health() -> ClusterHealth {
                 // Not known from here, and "preparing a disk" is the wrong guess when
                 // the control plane cannot be reached at all.
                 provisioning: false,
+                storage_unrecoverable: false,
             };
         }
     };
@@ -191,6 +197,7 @@ async fn compute_cluster_health() -> ClusterHealth {
     // Only now: a disk being added and a disk having died produce the same counters,
     // and unreachable data is what tells them apart.
     let provisioning = osd_provisioning_active(pg_unavailable).await;
+    let storage_unrecoverable = loss.as_ref().is_some_and(|l| l.unrecoverable && l.stuck > 0);
 
     match level {
         HealthLevel::Ok => ClusterHealth {
@@ -203,6 +210,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             osd_full,
             starting: false,
             provisioning,
+            storage_unrecoverable,
         },
         HealthLevel::Warn => ClusterHealth {
             level: if starting { HealthLevel::Warn } else { HealthLevel::Warn },
@@ -222,6 +230,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             osd_full,
             starting,
             provisioning,
+            storage_unrecoverable,
         },
         HealthLevel::Error => ClusterHealth {
             level: if starting { HealthLevel::Warn } else { HealthLevel::Error },
@@ -241,6 +250,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             osd_full,
             starting,
             provisioning,
+            storage_unrecoverable,
         },
     }
 }

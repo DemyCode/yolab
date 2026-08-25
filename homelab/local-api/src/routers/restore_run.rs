@@ -245,12 +245,18 @@ pub async fn start(
     snapshot_id: Option<String>,
     all: bool,
     namespaces: Vec<String>,
+    rebuild_storage: bool,
 ) -> anyhow::Result<String> {
     let name = format!("restore-{}", Utc::now().format("%Y%m%d%H%M%S"));
     RESTORE_RUN
         .create(
             &name,
-            json!({ "snapshotId": snapshot_id, "all": all, "namespaces": namespaces }),
+            json!({
+                "snapshotId": snapshot_id,
+                "all": all,
+                "namespaces": namespaces,
+                "rebuildStorage": rebuild_storage,
+            }),
             &[("app.kubernetes.io/managed-by", "yolab")],
         )
         .await?;
@@ -321,6 +327,7 @@ async fn step(name: &str) {
 
     match phase.as_str() {
         PHASE_VALIDATING => step_validating(name, &run, &cfg).await,
+        PHASE_REBUILDING => step_rebuilding_storage(name, &run).await,
         PHASE_WAITING_STORAGE => step_waiting_storage(name, &run).await,
         PHASE_RESTORING => step_restoring(name, &run, &cfg).await,
         PHASE_APPLYING => step_applying(name, &run).await,
@@ -332,6 +339,7 @@ async fn step(name: &str) {
 /// list, run the space pre-flight. Entirely read-only against the cluster, so safe to
 /// redo in full on a retry.
 async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
+    let rebuild_storage = run["spec"]["rebuildStorage"].as_bool().unwrap_or(false);
     let requested_snapshot = run["spec"]["snapshotId"].as_str().map(String::from);
     let want_all = run["spec"]["all"].as_bool().unwrap_or(false);
     let requested_namespaces: Vec<String> = run["spec"]["namespaces"]
@@ -523,7 +531,11 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
         .patch_status(
             name,
             json!({
-                "phase": PHASE_WAITING_STORAGE,
+                // Validating has proved the backup is readable and named what it
+                // contains. Only now is it safe to consider destroying anything: a
+                // rebuild that ran before knowing the snapshot is good would delete
+                // the damaged copy and then discover it has nothing to put back.
+                "phase": if rebuild_storage { PHASE_REBUILDING } else { PHASE_WAITING_STORAGE },
                 "phaseDeadline": deadline_after(700),
                 "snapshotId": snapshot_id,
                 "restoreAsOf": restore_as_of,
@@ -535,6 +547,207 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
             }),
         )
         .await;
+}
+
+
+// ── RebuildingStorage ─────────────────────────────────────────────────────────
+//
+// The phase that exists because "restore from backup" was four Ceph commands and a
+// paragraph of explanation.
+//
+// The restore path below assumes storage is working but empty. After the disaster
+// backups exist FOR, it is neither: a disk dies, its placement groups are gone for
+// good, and CephFS cannot be repaired — with its metadata pool holed, the directory
+// tree is gone and the surviving data is unreadable because nothing knows what file it
+// belongs to. Ceph has no repair for that and never will; the filesystem has to be
+// thrown away and made again.
+//
+// Doing that by hand means purging the dead OSD, failing and removing the filesystem,
+// deleting both pools (they cannot be reused — a new filesystem over an old metadata
+// pool gets an fsid mismatch), dropping every PVC that points at subvolumes which no
+// longer exist, and only then restoring. That is not a recovery story for someone who
+// just wants their photos back.
+//
+// So it is a phase. Same reconciler, same one bounded step per tick, same status the
+// page already renders — and the button says "restore", once.
+//
+// ── Why this is gated twice ──────────────────────────────────────────────────
+//
+// It deletes pools. Every guard below is load-bearing:
+//
+//   1. Only when the caller explicitly asked for it (`rebuildStorage`). Never
+//      inferred, never a fallback when something else fails.
+//   2. Only when the loss is UNRECOVERABLE — checked here, against the cluster, not
+//      taken on trust from whoever clicked. Storage that could still come back must
+//      never be deleted because a restore was started impatiently.
+//
+// If the second check says the data might return, the phase refuses and the run fails
+// with an explanation, rather than helpfully destroying a recoverable cluster.
+
+const PHASE_REBUILDING: &str = "RebuildingStorage";
+
+/// Pools this phase may delete, and the reason each one cannot simply be left.
+///
+/// `images` is included because it is size 1 by design, so a lost disk holes it too —
+/// but nothing in it is the owner's data, it is re-pulled from registries, and
+/// images-store.nix recreates it unprompted.
+const REBUILD_POOLS: &[&str] = &["yolab-fs-metadata", "yolab-fs-data0", "images"];
+
+
+/// Whether the cluster's own state justifies deleting its pools.
+///
+/// Separate from the flag on the request on purpose. The flag is the owner saying "you
+/// may"; this is the cluster saying "you must, because none of this is coming back".
+/// Both are required, and this one is checked at the moment of destruction rather than
+/// at the moment of clicking — minutes apart, and a disk can be reconnected in between.
+fn rebuild_is_justified(loss: &crate::routers::ceph::PgLoss) -> bool {
+    loss.unrecoverable && loss.stuck > 0
+}
+
+/// Whether an OSD in `ceph osd tree` is one the cluster has given up on.
+///
+/// Both halves matter. `down` alone is a disk that may be seconds from coming back —
+/// a reboot, a flapping cable — and mon_osd_down_out_interval has not finished
+/// deciding. Purging on `down` alone would destroy a cluster that was about to heal.
+/// `out` is Ceph's own conclusion, ten minutes in, that it is not coming back.
+fn osd_is_lost(node: &Value) -> bool {
+    node["type"].as_str() == Some("osd")
+        && node["status"].as_str() == Some("down")
+        && node["reweight"].as_f64().unwrap_or(1.0) == 0.0
+}
+
+async fn ceph_ok(args: &[&str]) -> Result<String, String> {
+    crate::ceph_cli::ceph(args).await.map_err(|e| e.to_string())
+}
+
+/// One bounded pass of the teardown, driven by `rebuildStep` in the status so a crash
+/// resumes where it stopped rather than starting the destruction again.
+async fn step_rebuilding_storage(name: &str, run: &Value) {
+    let at = run["status"]["rebuildStep"].as_str().unwrap_or("check").to_string();
+
+    match at.as_str() {
+        // ── Refuse unless the data is genuinely gone ─────────────────────────
+        "check" => {
+            let loss = crate::routers::ceph::assess_pg_loss().await;
+            match loss.filter(rebuild_is_justified) {
+                Some(l) => {
+                    tracing::warn!(
+                        "restore-run {name}: rebuilding storage — {} of {} placement groups are unrecoverable",
+                        l.stuck, l.total
+                    );
+                    let _ = RESTORE_RUN.patch_status(name, json!({
+                        "rebuildStep": "purge",
+                        "rebuildNote": format!(
+                            "{} of {} groups of data were lost with the disk and cannot be rebuilt. Recreating storage, then restoring from your backup.",
+                            l.stuck, l.total
+                        ),
+                    })).await;
+                }
+                _ => {
+                    // Either healthy, or unreadable. Both mean: do not delete anything.
+                    let _ = RESTORE_RUN.patch_status(name, json!({
+                        "phase": PHASE_FAILED,
+                        "finishedAt": Utc::now().to_rfc3339(),
+                        "error": "Storage was not rebuilt because nothing here is permanently lost. Recreating it would throw away data that is still there. If a disk is disconnected, reconnect it.",
+                    })).await;
+                }
+            }
+        }
+
+        // ── The dead disks leave the cluster ─────────────────────────────────
+        "purge" => {
+            let mut purged = Vec::new();
+            if let Ok(tree) = crate::ceph_cli::ceph_json(&["osd", "tree"]).await {
+                for node in tree["nodes"].as_array().cloned().unwrap_or_default() {
+                    if !osd_is_lost(&node) {
+                        continue;
+                    }
+                    let Some(id) = node["id"].as_i64() else { continue };
+                    let id_s = id.to_string();
+                    if ceph_ok(&["osd", "purge", &id_s, "--yes-i-really-mean-it"]).await.is_ok() {
+                        purged.push(id);
+                    }
+                }
+            }
+            tracing::info!("restore-run {name}: purged OSDs {purged:?}");
+            let _ = RESTORE_RUN
+                .patch_status(name, json!({ "rebuildStep": "teardown", "purgedOsds": purged }))
+                .await;
+        }
+
+        // ── The filesystem and its pools go ──────────────────────────────────
+        "teardown" => {
+            // `fs fail` first: a filesystem with a live MDS refuses to be removed, and
+            // the MDS would otherwise keep trying to read a metadata pool that is about
+            // to stop existing.
+            let _ = ceph_ok(&["fs", "fail", "yolab-fs"]).await;
+            let _ = ceph_ok(&["fs", "rm", "yolab-fs", "--yes-i-really-mean-it"]).await;
+
+            // Off by default, and it should be: it is the guard against exactly this
+            // command being run by accident. Lifted for the deletes and put back
+            // immediately, whether or not they worked.
+            let _ = ceph_ok(&["config", "set", "mon", "mon_allow_pool_delete", "true"]).await;
+            let mut failures = Vec::new();
+            for pool in REBUILD_POOLS {
+                if let Err(e) = ceph_ok(&["osd", "pool", "delete", pool, pool, "--yes-i-really-really-mean-it"]).await {
+                    // A pool that is already gone is not a failure.
+                    if !e.contains("does not exist") {
+                        failures.push(format!("{pool}: {e}"));
+                    }
+                }
+            }
+            let _ = ceph_ok(&["config", "set", "mon", "mon_allow_pool_delete", "false"]).await;
+
+            if !failures.is_empty() {
+                let _ = RESTORE_RUN.patch_status(name, json!({
+                    "phase": PHASE_FAILED,
+                    "finishedAt": Utc::now().to_rfc3339(),
+                    "error": format!("Could not clear the damaged storage: {}", failures.join("; ")),
+                })).await;
+                return;
+            }
+            let _ = RESTORE_RUN.patch_status(name, json!({ "rebuildStep": "claims" })).await;
+        }
+
+        // ── The volume claims go with them ───────────────────────────────────
+        "claims" => {
+            // Every PVC names a CephFS subvolume that no longer exists. Left in place
+            // they bind forever and the restore has nowhere to write. The apps' own
+            // objects are restored from the cluster snapshot afterwards, so removing
+            // them here loses nothing that is not already gone.
+            let _ = crate::kubectl::run(&[
+                "delete", "pvc", "--all", "--all-namespaces",
+                "--selector", "app.kubernetes.io/managed-by!=ignore",
+                "--wait=false",
+            ]).await;
+            // Released PVs do not go on their own once their claim is deleted.
+            let _ = crate::kubectl::run(&["delete", "pv", "--all", "--wait=false"]).await;
+            let _ = RESTORE_RUN.patch_status(name, json!({ "rebuildStep": "recreate" })).await;
+        }
+
+        // ── And it is built again ────────────────────────────────────────────
+        "recreate" => {
+            // The unit that creates the filesystem on a fresh install is idempotent and
+            // already knows every detail — pool names the StorageClass depends on, the
+            // replica floor, and the `csi` subvolume group without which every PVC
+            // fails with "subvolume group 'csi' does not exist". Reusing it means the
+            // rebuilt filesystem is identical to a newly installed one, rather than
+            // something this file believes is equivalent.
+            let _ = tokio::process::Command::new("systemctl")
+                .args(["restart", "yolab-cephfs-init.service"])
+                .output()
+                .await;
+            let _ = RESTORE_RUN
+                .patch_status(name, json!({
+                    "phase": PHASE_WAITING_STORAGE,
+                    "phaseDeadline": deadline_after(900),
+                    "rebuildStep": "done",
+                }))
+                .await;
+        }
+
+        _ => {}
+    }
 }
 
 /// WaitingForStorage: a single non-blocking check of whether CephFS is mountable right
@@ -1249,6 +1462,76 @@ mod tests {
         // 0 replicas until a human noticed.
         let state = [ns("yolab-gitea", &[("gitea", 1)], &[("gitea-data", VOL_RESTORING)])];
         assert_eq!(abort_phase(PHASE_RESTORING, &state), PHASE_APPLYING);
+    }
+
+
+    // ── RebuildingStorage ─────────────────────────────────────────────────────
+    //
+    // This phase deletes pools. These pin the two questions that decide whether it is
+    // allowed to, because getting either wrong turns a recoverable outage into a
+    // permanent one.
+
+    use crate::routers::ceph::PgLoss;
+
+    fn pgloss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
+        PgLoss { stuck, total, unrecoverable }
+    }
+
+    /// The case this exists for: a disk died in a cluster keeping one copy, and the
+    /// data is not coming back however long anyone waits.
+    #[test]
+    fn permanent_loss_justifies_rebuilding() {
+        assert!(rebuild_is_justified(&pgloss(63, 81, true)));
+    }
+
+    /// The case that must never be rebuilt. Replicated data that is briefly
+    /// unavailable IS coming back, and deleting the pools would turn a self-healing
+    /// outage into total loss — with the owner having asked for a restore, which reads
+    /// as the safe choice.
+    #[test]
+    fn recoverable_loss_never_justifies_rebuilding() {
+        assert!(!rebuild_is_justified(&pgloss(63, 81, false)));
+        assert!(!rebuild_is_justified(&pgloss(1, 81, false)));
+    }
+
+    /// Nothing stuck means nothing lost, whatever else the flag says.
+    #[test]
+    fn a_healthy_cluster_is_never_rebuilt() {
+        assert!(!rebuild_is_justified(&pgloss(0, 81, true)));
+        assert!(!rebuild_is_justified(&pgloss(0, 81, false)));
+    }
+
+    fn osd(id: i64, status: &str, reweight: f64) -> Value {
+        json!({"type": "osd", "id": id, "status": status, "reweight": reweight})
+    }
+
+    /// `out` is Ceph's own conclusion, ten minutes in, that a disk is not returning.
+    #[test]
+    fn only_a_disk_ceph_has_given_up_on_is_purged() {
+        assert!(osd_is_lost(&osd(1, "down", 0.0)));
+    }
+
+    /// The dangerous near-miss: a disk that is down but still `in` may be seconds from
+    /// coming back — a reboot, a loose cable — and mon_osd_down_out_interval has not
+    /// finished deciding. Purging it destroys a cluster that was about to heal.
+    #[test]
+    fn a_disk_that_is_merely_down_is_left_alone() {
+        assert!(!osd_is_lost(&osd(1, "down", 1.0)));
+    }
+
+    #[test]
+    fn a_healthy_disk_is_left_alone() {
+        assert!(!osd_is_lost(&osd(0, "up", 1.0)));
+        // Drained on purpose — up, but weighted out. Its data has already moved.
+        assert!(!osd_is_lost(&osd(0, "up", 0.0)));
+    }
+
+    /// Hosts and roots appear in the same array and have neither status nor reweight.
+    #[test]
+    fn non_osd_tree_nodes_are_never_purged() {
+        assert!(!osd_is_lost(&json!({"type": "host", "id": -3, "name": "node1"})));
+        assert!(!osd_is_lost(&json!({"type": "root", "id": -1, "name": "default"})));
+        assert!(!osd_is_lost(&json!({})));
     }
 
     #[test]

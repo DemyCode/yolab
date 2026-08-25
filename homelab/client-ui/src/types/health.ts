@@ -15,6 +15,9 @@ export interface ClusterHealth {
   issues: HealthIssue[];
   /** Storage is coming up after a boot — expected, not a problem. */
   starting: boolean;
+  /// Data is unreadable and cannot be rebuilt. Recovering needs storage recreated
+  /// first, which the restore does on its own when this is true.
+  storage_unrecoverable?: boolean;
   /** A newly added disk is being prepared — expected, not a problem. */
   provisioning: boolean;
 }

@@ -283,6 +283,13 @@ pub struct DrStartBody {
     pub all: bool,
     #[serde(default)]
     pub namespaces: Vec<String>,
+    /// Recreate the storage layer before restoring, because it is damaged beyond
+    /// repair. Defaults to false and is never inferred: it deletes pools, so it has to
+    /// be asked for. The phase itself re-checks against the cluster and refuses if the
+    /// data could still come back — this flag grants permission, it does not assert a
+    /// fact.
+    #[serde(default)]
+    pub rebuild_storage: bool,
 }
 
 /// POST /api/backups/dr/start — creates a RestoreRun; see restore_run.rs for the
@@ -295,7 +302,13 @@ pub async fn dr_start(
     if !body.all && body.namespaces.is_empty() {
         return Err(anyhow::anyhow!("specify all:true or a non-empty namespaces[]").into());
     }
-    let name = restore_run::start(body.snapshot_id, body.all, body.namespaces).await?;
+    let name = restore_run::start(
+        body.snapshot_id,
+        body.all,
+        body.namespaces,
+        body.rebuild_storage,
+    )
+    .await?;
     Ok(Json(serde_json::json!({ "ok": true, "started": true, "name": name })))
 }
 
