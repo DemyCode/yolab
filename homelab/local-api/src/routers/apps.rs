@@ -619,6 +619,34 @@ pub async fn sync_repos(State(_s): State<AppState>) -> Json<serde_json::Value> {
     Json(Value::Object(results))
 }
 
+
+/// True when a pod sitting in an app's namespace belongs to YoLab's backup
+/// machinery rather than to the app.
+///
+/// VolSync schedules its movers INTO the namespace of the volume they copy, so
+/// every app namespace temporarily grows a `volsync-src-…` pod during a backup and
+/// a `volsync-dst-…` pod during a restore. They are ours. Counting them as the
+/// app's own pods had two visible effects:
+///
+///   - the app card flipped to "Starting…" for the pull-and-init window of every
+///     backup, and again between the mover finishing (phase Succeeded, so its Ready
+///     condition is False) and Kubernetes garbage-collecting it;
+///   - the app's pod list showed `volsync-src-volsync-filebrowser-data-4k46c`
+///     alongside the app's own containers, which is an implementation detail with
+///     no meaning to whoever is looking at it.
+///
+/// Neither is wrong about the pod. Both are wrong about whose pod it is.
+///
+/// Matched on the name prefix, which is deterministic and already relied on
+/// elsewhere to find the mover for progress reporting, OR on VolSync's own label,
+/// so a rename upstream does not silently reopen this.
+pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
+    pod["metadata"]["name"]
+        .as_str()
+        .is_some_and(|n| n.starts_with("volsync-"))
+        || pod["metadata"]["labels"]["app.kubernetes.io/created-by"].as_str() == Some("volsync")
+}
+
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let catalog_dir = state.config.catalog_dir();
     let (ns_out, pods_out) = tokio::join!(
@@ -655,7 +683,16 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             "uninstalling".to_string()
         } else {
             let ns_full = format!("yolab-{name}");
-            let items = pods_by_ns.get(ns_full.as_str()).map(|v| v.as_slice()).unwrap_or(&[]);
+            // The app's own pods only — a backup running in this namespace must not
+            // make the app look like it is restarting.
+            let items: Vec<&Value> = pods_by_ns
+                .get(ns_full.as_str())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
+                .iter()
+                .filter(|p| !is_backup_mover_pod(p))
+                .copied()
+                .collect();
             if items.is_empty() {
                 "starting".to_string()
             } else {
@@ -1017,7 +1054,9 @@ pub async fn list_pods(
         .output().await?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
     Ok(Json(
-        v["items"].as_array().unwrap_or(&vec![]).iter().map(|p| PodInfo {
+        v["items"].as_array().unwrap_or(&vec![]).iter()
+            .filter(|p| !is_backup_mover_pod(p))
+            .map(|p| PodInfo {
             name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
             phase: p["status"]["phase"].as_str().unwrap_or("Unknown").to_string(),
             ready: p["status"]["conditions"].as_array()
@@ -1070,6 +1109,59 @@ pub async fn pod_logs(
 
 #[cfg(test)]
 mod tests {
+
+    // ── is_backup_mover_pod ───────────────────────────────────────────────────
+    //
+    // VolSync runs its movers inside the namespace of the volume they copy, so an
+    // app namespace grows one during every backup. Treating it as the app's own pod
+    // made the app card flash "Starting…" on a backup and listed the mover next to
+    // the app's containers.
+
+    fn pod(name: &str) -> Value {
+        json!({"metadata": {"name": name}})
+    }
+
+    #[test]
+    fn a_backup_mover_is_not_one_of_the_apps_pods() {
+        // The exact name observed live in yolab-filebrowser during a backup.
+        assert!(is_backup_mover_pod(&pod("volsync-src-volsync-filebrowser-data-4k46c")));
+        // And the restore-side mover, which appears while an app is scaled to zero.
+        assert!(is_backup_mover_pod(&pod("volsync-dst-volsync-vaultwarden-data-abc12")));
+    }
+
+    /// The label is a second, independent signal so an upstream rename of the pod
+    /// prefix does not silently put the movers back on the app card.
+    #[test]
+    fn the_volsync_label_is_enough_on_its_own() {
+        assert!(is_backup_mover_pod(&json!({
+            "metadata": {
+                "name": "some-future-mover-name",
+                "labels": {"app.kubernetes.io/created-by": "volsync"}
+            }
+        })));
+    }
+
+    /// The app's own pods must survive the filter, including ones whose names merely
+    /// mention sync or backup.
+    #[test]
+    fn ordinary_app_pods_are_kept() {
+        for name in [
+            "filebrowser-7d9c8b6f5-x2k9p",
+            "vaultwarden-0",
+            "syncthing-abc",
+            "my-backup-tool-123",
+            "",
+        ] {
+            assert!(!is_backup_mover_pod(&pod(name)), "{name} is the app's own pod");
+        }
+    }
+
+    /// A pod with no labels at all must not panic the label check.
+    #[test]
+    fn a_pod_without_labels_is_handled() {
+        assert!(!is_backup_mover_pod(&json!({"metadata": {"name": "app-1"}})));
+        assert!(!is_backup_mover_pod(&json!({})));
+    }
 
     // ── resolve_service_name ──────────────────────────────────────────────────
     //
