@@ -169,7 +169,25 @@ in {
         osd_pool_default_size = "1";
         osd_pool_default_min_size = "1";
         mon_allow_pool_size_one = "true";
-        mon_warn_on_pool_no_redundancy = "false";
+
+        # mon_warn_on_pool_no_redundancy is deliberately NOT disabled.
+        #
+        # It used to be set to "false" here, with the reasoning that a one-disk
+        # cluster cannot replicate and a permanent warning would be noise. The
+        # reasoning is right about a one-disk cluster and wrong about every
+        # other one: the setting is global, so it also silenced the case that
+        # matters — several disks, still one copy.
+        #
+        # That is not a cosmetic difference. routers/ceph.rs carries a
+        # translation for POOL_NO_REDUNDANCY, in plain language, saying the data
+        # has no second copy. With the check off it could never fire, so a
+        # cluster with three disks and one copy of everything reported
+        # HEALTH_OK, and the product had no way to tell its owner that a single
+        # disk failure would be unrecoverable. Observed exactly that, live.
+        #
+        # A warning on a genuinely single-disk machine is not noise either. It
+        # is true, and it is the one thing that machine's owner most needs to
+        # know before a disk dies.
 
         # New OSDs attract no data until explicitly activated from the UI.
         # Carried over from the Rook config so the disk ON/OFF flow behaves the
