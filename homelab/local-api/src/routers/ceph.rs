@@ -66,7 +66,24 @@ fn system_uptime_secs() -> u64 {
 /// `in` but not yet `up`, so a gap between the two counts is the equivalent
 /// signal — it keeps the UI showing "provisioning" instead of "degraded" while
 /// a disk is being added.
-async fn osd_provisioning_active() -> bool {
+/// Whether a disk is in the middle of being ADDED.
+///
+/// `in > up` alone does not mean that, and reading it that way is how a dead disk got
+/// announced as routine setup. An OSD that is `in` but not `up` is the definition of a
+/// disk that has stopped answering — a new disk coming up and an old disk dying look
+/// identical from this counter, and only one of them is good news.
+///
+/// Observed live: a disk was pulled from a size=1 cluster, 63 of 81 placement groups
+/// went stale, and the home page said "Preparing a new disk — you can keep using
+/// everything while this finishes", because provisioning is checked before severity.
+///
+/// So the counter is still the signal, but it only means provisioning when nothing is
+/// actually unreachable. If data cannot be read, whatever else is true, this is not
+/// setup.
+async fn osd_provisioning_active(data_unavailable: bool) -> bool {
+    if data_unavailable {
+        return false;
+    }
     crate::ceph_cli::ceph_json(&["osd", "stat"])
         .await
         .ok()
@@ -83,7 +100,8 @@ pub async fn cluster_health() -> Json<ClusterHealth> {
 }
 
 async fn compute_cluster_health() -> ClusterHealth {
-    let provisioning = osd_provisioning_active().await;
+    // Deliberately not computed yet: it depends on whether anything is unreachable,
+    // which is only known once the health details are parsed below.
     // Straight from the mon: Ceph runs as host daemons, so there is no Rook CR
     // status to read. Formatted as "<HEALTH_X>\n<details-json>" to keep the
     // existing parser below unchanged.
@@ -108,7 +126,9 @@ async fn compute_cluster_health() -> ClusterHealth {
                 mon_quorum_ok: false,
                 osd_full: false,
                 starting,
-                provisioning,
+                // Not known from here, and "preparing a disk" is the wrong guess when
+                // the control plane cannot be reached at all.
+                provisioning: false,
             };
         }
     };
@@ -130,9 +150,19 @@ async fn compute_cluster_health() -> ClusterHealth {
         None => 0,
     };
 
+    // Only when Ceph says something is unreadable — two extra queries, and this
+    // endpoint is polled.
+    let loss = if details.as_object().is_some_and(|o| {
+        o.contains_key("PG_AVAILABILITY") || o.contains_key("PG_DOWN")
+    }) {
+        assess_pg_loss().await
+    } else {
+        None
+    };
+
     if let Some(obj) = details.as_object() {
         for (code, detail) in obj {
-            if let Some(issue) = translate_health_check(code, detail, places) {
+            if let Some(issue) = translate_health_check(code, detail, places, loss.as_ref()) {
                 issues.push(issue);
             }
         }
@@ -158,6 +188,9 @@ async fn compute_cluster_health() -> ClusterHealth {
     });
     // "Starting" when reachable but PGs are still peering/recovering and system just booted.
     let starting = pg_unavailable && system_uptime_secs() < 900;
+    // Only now: a disk being added and a disk having died produce the same counters,
+    // and unreachable data is what tells them apart.
+    let provisioning = osd_provisioning_active(pg_unavailable).await;
 
     match level {
         HealthLevel::Ok => ClusterHealth {
@@ -212,6 +245,125 @@ async fn compute_cluster_health() -> ClusterHealth {
     }
 }
 
+
+/// Whether unreachable data can come back on its own, and how much of it there is.
+///
+/// This distinction is the whole point. Ceph reports both cases the same way — a
+/// PG_AVAILABILITY warning — because from its side they look identical: some
+/// placement groups cannot be read right now. But:
+///
+///   size >= 2, a disk down   the other copies are fine, Ceph is already rebuilding,
+///                            and the honest advice is to wait.
+///   size == 1, a disk down   there is no other copy. Nothing is rebuilding, nothing
+///                            will, and waiting accomplishes nothing at all.
+///
+/// The old message assumed the first case for both. Observed live during a deliberate
+/// disk pull at size=1: 63 of 81 placement groups went stale — 78% of the file data
+/// and 81% of the filesystem metadata — and the page said "Some data TEMPORARILY
+/// unavailable … apps will hang UNTIL RECOVERY". Red, and reassuring, during permanent
+/// loss. That is worse than saying nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PgLoss {
+    /// PGs that cannot be read right now.
+    pub stuck: u32,
+    pub total: u32,
+    /// True when at least one affected PG belongs to a pool keeping a single copy, so
+    /// no amount of waiting brings it back.
+    pub unrecoverable: bool,
+}
+
+/// PG states that mean "the OSD holding this is not answering", as opposed to
+/// `degraded`/`undersized`/`peering`, which mean "a copy is missing but another is
+/// serving and recovery is under way".
+fn is_stuck_state(state: &str) -> bool {
+    state
+        .split('+')
+        .any(|s| matches!(s, "stale" | "down" | "incomplete" | "unknown"))
+}
+
+/// Reads pool replica counts and PG placement to decide which case this is.
+///
+/// Only called when Ceph has actually raised PG_AVAILABILITY or PG_DOWN — it is two
+/// extra queries, and the endpoint they sit in is polled.
+///
+/// Per pool, not cluster-wide: `images` is deliberately size 1 forever (see
+/// topology::is_unreplicated_pool), so "any pool keeps one copy" is true on every
+/// healthy cluster and would mark every transient blip unrecoverable.
+pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
+    let dump = crate::ceph_cli::ceph_json(&["osd", "dump"]).await.ok()?;
+    let sizes: std::collections::HashMap<i64, u64> = dump["pools"]
+        .as_array()?
+        .iter()
+        .filter_map(|p| Some((p["pool"].as_i64()?, p["size"].as_u64()?)))
+        .collect();
+
+    let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"]).await.ok()?;
+    // `ceph pg dump pgs_brief -f json` returns the array directly on some versions and
+    // under `pg_stats` on others.
+    let items = pgs["pg_stats"]
+        .as_array()
+        .or_else(|| pgs.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        return None;
+    }
+
+    let mut stuck = 0u32;
+    let mut unrecoverable = false;
+    for pg in &items {
+        let state = pg["state"].as_str().unwrap_or("");
+        if !is_stuck_state(state) {
+            continue;
+        }
+        stuck += 1;
+        let pool_id = pg["pgid"]
+            .as_str()
+            .and_then(|id| id.split('.').next())
+            .and_then(|p| p.parse::<i64>().ok());
+        if let Some(size) = pool_id.and_then(|id| sizes.get(&id)) {
+            if *size <= 1 {
+                unrecoverable = true;
+            }
+        }
+    }
+
+    Some(PgLoss {
+        stuck,
+        total: items.len() as u32,
+        unrecoverable,
+    })
+}
+
+/// What to say about data that cannot be read.
+pub(crate) fn unavailable_message(loss: Option<&PgLoss>) -> (String, String) {
+    match loss {
+        Some(l) if l.unrecoverable => {
+            let share = if l.total > 0 {
+                format!("{} of {} groups of your files", l.stuck, l.total)
+            } else {
+                "Some of your files".to_string()
+            };
+            (
+                "Your files are unreachable and cannot be rebuilt".into(),
+                format!(
+                    "{share} were stored in one place only, on a disk that is no longer \
+                     responding — so there is no second copy to rebuild them from and \
+                     nothing is being repaired. If that disk still works, reconnecting it \
+                     brings everything back. If it does not, only a backup can. Apps that \
+                     use these files will not start or will hang."
+                ),
+            )
+        }
+        _ => (
+            "Some files are unreachable right now".into(),
+            "A disk is not responding. Other copies exist, so this repairs itself — apps \
+             touching the affected files may hang until it finishes."
+                .into(),
+        ),
+    }
+}
+
 /// Why the no-redundancy message needs to know how many disks there are.
 ///
 /// One string cannot serve both cases, and the old one served neither: it said
@@ -244,6 +396,7 @@ fn translate_health_check(
     code: &str,
     detail: &serde_json::Value,
     places: u32,
+    loss: Option<&PgLoss>,
 ) -> Option<HealthIssue> {
     let severity = detail["severity"].as_str().unwrap_or("HEALTH_WARN");
     let level = if severity == "HEALTH_ERR" { HealthLevel::Error } else { HealthLevel::Warn };
@@ -318,12 +471,15 @@ fn translate_health_check(
                 .into(),
         ),
         "PG_DOWN" | "PG_AVAILABILITY" => {
-            // Always critical regardless of Ceph's own severity: apps actively hang
-            // on reads/writes to unavailable PGs, even when Ceph reports HEALTH_WARN.
+            // Always critical regardless of Ceph's own severity. Every check Ceph
+            // raised during a live size=1 disk pull was HEALTH_WARN — including the
+            // one saying 78% of the data had gone — because from its side a down OSD
+            // is recoverable-in-principle until proven otherwise.
+            let (title, description) = unavailable_message(loss);
             return Some(HealthIssue {
                 level: HealthLevel::Error,
-                title: "Some data temporarily unavailable".into(),
-                description: "Certain data is unreachable right now. Apps reading or writing to affected files will hang until recovery.".into(),
+                title,
+                description,
             });
         }
         "SLOW_OPS" => (
@@ -853,10 +1009,88 @@ mod tests {
 
     #[test]
     fn health_check_translates_a_known_code_to_plain_language() {
-        let issue = translate_health_check("POOL_NO_REDUNDANCY", &warn(), 3).unwrap();
+        let issue = translate_health_check("POOL_NO_REDUNDANCY", &warn(), 3, None).unwrap();
         assert_eq!(issue.title, "No second copy of your data");
         assert!(issue.description.contains("stored once"));
         assert_eq!(issue.level, HealthLevel::Warn);
+    }
+
+
+    // ── Recoverable vs gone ───────────────────────────────────────────────────
+    //
+    // From a real disk pull at size=1: 63 of 81 PGs went `stale+active+clean`, every
+    // Ceph check said HEALTH_WARN, and the page said "temporarily unavailable … until
+    // recovery". Nothing was recovering. These pin the difference.
+
+    fn loss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
+        PgLoss { stuck, total, unrecoverable }
+    }
+
+    #[test]
+    fn a_stale_pg_at_one_copy_is_never_called_temporary() {
+        let (title, body) = unavailable_message(Some(&loss(63, 81, true)));
+        assert!(title.contains("cannot be rebuilt"), "{title}");
+        assert!(!title.to_lowercase().contains("temporar"), "{title}");
+        assert!(!body.to_lowercase().contains("until recovery"), "{body}");
+        // The two things a person can actually do.
+        assert!(body.contains("reconnecting it"), "{body}");
+        assert!(body.contains("backup"), "{body}");
+        // And what it means for them right now.
+        assert!(body.contains("63 of 81"), "{body}");
+        assert!(body.contains("will not start or will hang"), "{body}");
+    }
+
+    /// With copies elsewhere it really is temporary, and saying so is right — this is
+    /// the case the old wording was written for.
+    #[test]
+    fn a_replicated_cluster_is_still_told_to_wait() {
+        let (title, body) = unavailable_message(Some(&loss(5, 81, false)));
+        assert!(body.contains("repairs itself"), "{body}");
+        assert!(!body.contains("backup"), "{body}");
+        assert!(!title.contains("cannot be rebuilt"), "{title}");
+    }
+
+    /// When the assessment cannot be made, do not claim data is lost.
+    #[test]
+    fn an_unreadable_assessment_takes_the_cautious_branch() {
+        let (title, body) = unavailable_message(None);
+        assert!(!title.contains("cannot be rebuilt"), "{title}");
+        assert!(body.contains("repairs itself"), "{body}");
+    }
+
+    /// `stale` and `down` mean the holder is not answering. `degraded` and
+    /// `undersized` mean a copy is missing while another serves — Ceph is already
+    /// fixing those, and calling them lost would cry wolf on every reboot.
+    #[test]
+    fn only_states_meaning_nobody_is_answering_count_as_stuck() {
+        for gone in ["stale+active+clean", "down+peering", "incomplete", "unknown", "stale+peering"] {
+            assert!(is_stuck_state(gone), "{gone} means unreachable");
+        }
+        for fine in [
+            "active+clean",
+            "active+undersized+degraded",
+            "active+clean+remapped",
+            "peering",
+            "active+recovering+degraded",
+            "active+clean+scrubbing+deep",
+        ] {
+            assert!(!is_stuck_state(fine), "{fine} is not data loss");
+        }
+    }
+
+    /// The whole issue, as the page receives it: level is Error even though every Ceph
+    /// check was only a warning.
+    #[test]
+    fn the_page_is_told_this_is_an_error_not_a_warning() {
+        let issue = translate_health_check(
+            "PG_AVAILABILITY",
+            &warn(),
+            3,
+            Some(&loss(63, 81, true)),
+        )
+        .unwrap();
+        assert_eq!(issue.level, HealthLevel::Error);
+        assert!(issue.title.contains("cannot be rebuilt"), "{}", issue.title);
     }
 
     // ── no_redundancy_message ─────────────────────────────────────────────────
@@ -895,7 +1129,7 @@ mod tests {
     #[test]
     fn both_no_redundancy_codes_give_the_same_advice() {
         for code in ["POOL_NO_REDUNDANCY", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED"] {
-            let issue = translate_health_check(code, &warn(), 2).unwrap();
+            let issue = translate_health_check(code, &warn(), 2, None).unwrap();
             assert_eq!(issue.title, "No second copy of your data");
             assert_eq!(issue.description, no_redundancy_message(2));
         }
@@ -904,18 +1138,18 @@ mod tests {
     #[test]
     fn health_check_carries_cephs_severity_through() {
         assert_eq!(
-            translate_health_check("OSD_DOWN", &err(), 3).unwrap().level,
+            translate_health_check("OSD_DOWN", &err(), 3, None).unwrap().level,
             HealthLevel::Error
         );
         assert_eq!(
-            translate_health_check("OSD_DOWN", &warn(), 3).unwrap().level,
+            translate_health_check("OSD_DOWN", &warn(), 3, None).unwrap().level,
             HealthLevel::Warn
         );
     }
 
     #[test]
     fn health_check_defaults_to_warn_when_severity_is_missing() {
-        let issue = translate_health_check("OSD_DOWN", &json!({}), 3).unwrap();
+        let issue = translate_health_check("OSD_DOWN", &json!({}), 3, None).unwrap();
         assert_eq!(issue.level, HealthLevel::Warn);
     }
 
@@ -925,9 +1159,9 @@ mod tests {
     #[test]
     fn unavailable_data_is_always_an_error_even_when_ceph_calls_it_a_warning() {
         for code in ["PG_DOWN", "PG_AVAILABILITY"] {
-            let issue = translate_health_check(code, &warn(), 3).unwrap();
+            let issue = translate_health_check(code, &warn(), 3, None).unwrap();
             assert_eq!(issue.level, HealthLevel::Error, "{code}");
-            assert_eq!(issue.title, "Some data temporarily unavailable");
+            assert_eq!(issue.title, "Some files are unreachable right now");
         }
     }
 
@@ -942,11 +1176,11 @@ mod tests {
             "PG_NOT_SCRUBBED_SINCE",
         ] {
             assert!(
-                translate_health_check(code, &warn(), 3).is_none(),
+                translate_health_check(code, &warn(), 3, None).is_none(),
                 "{code} should not be shown to the user"
             );
             // Not even when Ceph escalates them.
-            assert!(translate_health_check(code, &err(), 3).is_none(), "{code} (err)");
+            assert!(translate_health_check(code, &err(), 3, None).is_none(), "{code} (err)");
         }
     }
 
@@ -956,7 +1190,7 @@ mod tests {
             "severity": "HEALTH_WARN",
             "summary": {"message": "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover"},
         });
-        let issue = translate_health_check("BLUEFS_SPILLOVER", &detail, 3).unwrap();
+        let issue = translate_health_check("BLUEFS_SPILLOVER", &detail, 3, None).unwrap();
         // Title takes the part before the first colon; the body keeps the whole line.
         assert_eq!(issue.title, "Storage issue: BLUEFS_SPILLOVER");
         assert_eq!(issue.description, "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover");
@@ -964,7 +1198,7 @@ mod tests {
 
     #[test]
     fn an_unknown_code_with_no_summary_still_names_itself() {
-        let issue = translate_health_check("SOMETHING_NEW", &json!({}), 3).unwrap();
+        let issue = translate_health_check("SOMETHING_NEW", &json!({}), 3, None).unwrap();
         assert_eq!(issue.title, "Storage issue: SOMETHING_NEW");
         assert_eq!(issue.description, "SOMETHING_NEW");
     }
@@ -981,7 +1215,7 @@ mod tests {
             "RECENT_CRASH", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED",
         ];
         for code in codes {
-            let issue = translate_health_check(code, &warn(), 3)
+            let issue = translate_health_check(code, &warn(), 3, None)
                 .unwrap_or_else(|| panic!("{code} should be surfaced, not suppressed"));
             assert!(!issue.title.trim().is_empty(), "{code} has a blank title");
             assert!(!issue.description.trim().is_empty(), "{code} has a blank description");
@@ -994,8 +1228,8 @@ mod tests {
 
     #[test]
     fn a_full_disk_reads_the_same_whichever_code_ceph_uses() {
-        let a = translate_health_check("OSD_FULL", &err(), 3).unwrap();
-        let b = translate_health_check("NOSPC", &err(), 3).unwrap();
+        let a = translate_health_check("OSD_FULL", &err(), 3, None).unwrap();
+        let b = translate_health_check("NOSPC", &err(), 3, None).unwrap();
         assert_eq!(a.title, b.title);
         assert_eq!(a.description, b.description);
     }
