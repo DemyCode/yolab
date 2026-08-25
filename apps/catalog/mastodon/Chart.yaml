@@ -1,6 +1,7 @@
 apiVersion: v2
 name: mastodon
 description: "Your own corner of the fediverse — a social server you run"
+home: https://joinmastodon.org
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

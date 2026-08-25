@@ -1,6 +1,7 @@
 apiVersion: v2
 name: wallos
 description: "Personal subscription tracker"
+home: https://wallosapp.com
 type: application
 version: 0.1.0
 appVersion: "latest"

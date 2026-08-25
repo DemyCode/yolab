@@ -1,6 +1,7 @@
 apiVersion: v2
 name: monica
 description: "Personal CRM for remembering the people in your life"
+home: https://www.monicahq.com
 type: application
 version: 0.1.0
 appVersion: "latest"

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: sonarr
 description: "Follows your TV shows and fetches new episodes as they appear"
+home: https://sonarr.tv
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

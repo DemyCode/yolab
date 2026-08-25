@@ -1,6 +1,7 @@
 apiVersion: v2
 name: calibre-web
 description: "Web interface for browsing and reading a Calibre ebook library"
+home: https://github.com/janeczku/calibre-web
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

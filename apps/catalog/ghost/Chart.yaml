@@ -1,6 +1,7 @@
 apiVersion: v2
 name: ghost
 description: "Publishing platform for blogs and newsletters"
+home: https://ghost.org
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

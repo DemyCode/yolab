@@ -1,6 +1,7 @@
 apiVersion: v2
 name: romm
 description: "Retro game ROM library manager"
+home: https://romm.app
 type: application
 version: 0.1.0
 appVersion: "latest"

@@ -29,6 +29,9 @@ export interface CatalogApp {
   chart_version: string;
   name: string;
   description: string;
+  /// The project's own website, from the chart's `home` field. Empty when the chart
+  /// does not declare one, in which case no link is shown.
+  home: string;
   icon: string;
   category: string;
   schema: object;

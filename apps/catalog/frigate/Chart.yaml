@@ -1,6 +1,7 @@
 apiVersion: v2
 name: frigate
 description: "AI-powered security camera NVR with real-time object detection"
+home: https://frigate.video
 type: application
 version: 0.1.0
 appVersion: "stable"

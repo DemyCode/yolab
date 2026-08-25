@@ -1,6 +1,7 @@
 apiVersion: v2
 name: qbittorrent
 description: "BitTorrent client with a web interface"
+home: https://www.qbittorrent.org
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

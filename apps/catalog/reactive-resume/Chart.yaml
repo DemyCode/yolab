@@ -1,6 +1,7 @@
 apiVersion: v2
 name: reactive-resume
 description: "Free and open source resume builder"
+home: https://rxresu.me
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: jellyseerr
 description: "Request manager for Jellyfin media libraries"
+home: https://github.com/fallenbagel/jellyseerr
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

@@ -1,6 +1,7 @@
 apiVersion: v2
 name: shlink
 description: "URL shortener with click statistics and a REST API"
+home: https://shlink.io
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

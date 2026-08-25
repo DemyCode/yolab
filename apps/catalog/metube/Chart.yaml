@@ -1,6 +1,7 @@
 apiVersion: v2
 name: metube
 description: "Web front-end for yt-dlp video downloads"
+home: https://github.com/alexta69/metube
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

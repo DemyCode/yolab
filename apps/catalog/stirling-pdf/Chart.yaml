@@ -1,6 +1,7 @@
 apiVersion: v2
 name: stirling-pdf
 description: "Local web toolkit for splitting, merging, and converting PDFs"
+home: https://www.stirlingpdf.com
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

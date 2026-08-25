@@ -1,6 +1,7 @@
 apiVersion: v2
 name: appflowy
 description: "Open-source alternative to Notion. Docs, wikis, and projects in one place."
+home: https://appflowy.io
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

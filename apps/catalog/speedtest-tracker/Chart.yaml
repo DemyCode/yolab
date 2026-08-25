@@ -1,6 +1,7 @@
 apiVersion: v2
 name: speedtest-tracker
 description: "Measures your internet speed on a schedule and keeps the history"
+home: https://speedtest-tracker.dev
 type: application
 version: 0.1.0
 dependencies:

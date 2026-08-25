@@ -1,6 +1,7 @@
 apiVersion: v2
 name: synapse
 description: "Self-hosted Matrix homeserver with Element Web client. Federated, encrypted messaging."
+home: https://element-hq.github.io/synapse
 type: application
 # Chart version — bump on any packaging change. A backup records this, and a restore
 # pins to it, so "which version wrote this data" stops being a guess.

@@ -69,6 +69,9 @@ pub struct CatalogApp {
     pub repo: String,
     pub name: String,
     pub description: String,
+    /// The project's own website, from Chart.yaml's `home`. Empty for a chart that
+    /// does not declare one (including uploaded ones), and the UI simply omits the link.
+    pub home: String,
     pub icon: String,
     pub category: String,
     pub chart_version: String,
@@ -150,6 +153,12 @@ struct ChartYaml {
     name: String,
     #[serde(default)]
     description: String,
+    /// Helm's own field for the project's website. Surfaced to the storefront because
+    /// a one-line description cannot explain what most of these apps are — the honest
+    /// answer to "what is Karakeep?" is the project's own page, and a name with no way
+    /// to look it up is a name someone will not install.
+    #[serde(default)]
+    home: String,
     #[serde(default)]
     version: String,
     #[serde(default, rename = "type")]
@@ -488,6 +497,7 @@ fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
         repo,
         name: meta.display_name(),
         description: meta.chart.description.clone(),
+        home: meta.chart.home.clone(),
         icon: meta.ann(ANN_ICON).to_string(),
         category: meta.ann(ANN_CATEGORY).to_string(),
         chart_version: meta.chart.version.clone(),

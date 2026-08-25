@@ -1,6 +1,7 @@
 apiVersion: v2
 name: your-spotify
 description: "Your own listening history and statistics, kept off Spotify's servers"
+home: https://github.com/Yooooomi/your_spotify
 type: application
 version: 0.1.0
 dependencies:

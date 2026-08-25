@@ -1,6 +1,7 @@
 apiVersion: v2
 name: uptime-kuma
 description: "Self-hosted uptime monitor with status pages and alerting"
+home: https://uptime.kuma.pet
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

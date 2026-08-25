@@ -1,6 +1,7 @@
 apiVersion: v2
 name: miniflux
 description: "Minimalist, opinionated feed reader"
+home: https://miniflux.app
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.

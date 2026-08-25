@@ -1,6 +1,7 @@
 apiVersion: v2
 name: babybuddy
 description: "Track feeds, sleep and nappies without handing a startup your baby's data"
+home: https://docs.baby-buddy.net
 type: application
 version: 0.1.0
 

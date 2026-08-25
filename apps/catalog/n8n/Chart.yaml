@@ -1,6 +1,7 @@
 apiVersion: v2
 name: n8n
 description: "Workflow automation you can host yourself"
+home: https://n8n.io
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.
