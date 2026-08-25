@@ -8,6 +8,7 @@ import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
+import { AppSources } from "@/components/AppSources";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
@@ -183,6 +184,10 @@ export function DiscoverPage() {
           ))}
         </div>
       )}
+
+      {/* Refreshing the catalog after a source changes, so a newly added one's
+          apps appear in the grid above without a reload. */}
+      <AppSources onChanged={() => void catalog.refresh()} />
     </Page>
   );
 }
