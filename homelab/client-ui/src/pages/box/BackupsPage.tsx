@@ -225,6 +225,209 @@ function isTerminalRestorePhase(phase: string): boolean {
 }
 
 
+
+// ── Schedule ──────────────────────────────────────────────────────────────────
+
+interface SchedulePreview {
+  valid: boolean;
+  expr: string;
+  description?: string;
+  timezone?: string;
+  next?: string | null;
+  next_local?: string | null;
+  error?: string;
+  configured?: boolean;
+  default?: string;
+}
+
+/// The everyday answers, so nobody has to know cron to change when backups run. The
+/// field stays visible and editable underneath — a preset is a shortcut, not a cage.
+const SCHEDULE_PRESETS: { label: string; expr: string }[] = [
+  { label: "Every 6 hours", expr: "0 */6 * * *" },
+  { label: "Every day", expr: "0 2 * * *" },
+  { label: "Every week", expr: "0 3 * * 0" },
+  { label: "Every month", expr: "0 4 1 * *" },
+];
+
+/// When backups run.
+///
+/// The plain-English line under the field is produced by the SERVER, from the same
+/// parser that decides when backups actually start. Describing cron in the browser
+/// would be quicker to type and able to drift from the scheduler — confidently telling
+/// someone "every day at 02:00" while the thing running their backups reads it
+/// differently is the one failure this screen must not have.
+function ScheduleCard() {
+  const [expr, setExpr] = useState("");
+  const [saved, setSaved] = useState<string | null>(null);
+  const [preview, setPreview] = useState<SchedulePreview | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/backups/schedule")
+      .then((r) => r.json())
+      .then((d: SchedulePreview) => {
+        if (cancelled) return;
+        setExpr(d.expr);
+        setSaved(d.expr);
+        setPreview(d);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Debounced so typing does not fire a request per keystroke, and late replies for
+  // an expression that is no longer in the box are dropped rather than rendered.
+  useEffect(() => {
+    if (!expr.trim()) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      fetch(`/api/backups/schedule/preview?expr=${encodeURIComponent(expr)}`)
+        .then((r) => r.json())
+        .then((d: SchedulePreview) => {
+          if (!cancelled) setPreview(d);
+        })
+        .catch(() => {});
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [expr]);
+
+  const dirty = saved !== null && expr.trim() !== saved;
+
+  async function save() {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/backups/schedule", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expr }),
+      });
+      const d: SchedulePreview = await res.json();
+      if (!res.ok) throw new Error(d.error ?? `Server error ${res.status}`);
+      // Render what the server stored, not what was typed — they differ whenever the
+      // expression was normalised.
+      setExpr(d.expr);
+      setSaved(d.expr);
+      setPreview(d);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Could not save the schedule");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-3">
+        <div>
+          <h3 className="text-sm font-medium text-fg">When backups run</h3>
+          <p className="text-xs text-fg-muted mt-0.5">
+            If the machine is asleep at the scheduled time, the backup runs as
+            soon as it wakes up — it is not skipped.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {SCHEDULE_PRESETS.map((p) => (
+            <button
+              key={p.expr}
+              type="button"
+              onClick={() => setExpr(p.expr)}
+              className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                expr.trim() === p.expr
+                  ? "border-primary bg-primary-soft text-primary font-medium"
+                  : "border-border text-fg-muted hover:text-fg hover:border-border-strong"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          <input
+            value={expr}
+            onChange={(e) => setExpr(e.target.value)}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            aria-label="Backup schedule, as a cron expression"
+            aria-invalid={preview ? !preview.valid : undefined}
+            className={`w-full rounded-md border bg-bg px-3 py-2 font-mono text-sm text-fg outline-none focus:ring-1 ${
+              preview && !preview.valid
+                ? "border-danger focus:ring-danger"
+                : "border-border focus:ring-primary focus:border-primary"
+            }`}
+            placeholder="0 2 * * *"
+          />
+
+          {/* The translation. Never absent while there is something in the box: a
+              cron field with no readable meaning beneath it is what made this
+              setting unusable in the first place. */}
+          <div className="mt-2 min-h-[2.5rem] text-xs">
+            {preview === null ? (
+              <span className="text-fg-muted">Checking…</span>
+            ) : preview.valid ? (
+              <div className="space-y-0.5">
+                <p className="text-fg">
+                  <span className="text-fg-muted">Runs </span>
+                  <span className="font-medium">{preview.description}</span>
+                  {preview.timezone && (
+                    <span className="text-fg-muted"> ({preview.timezone})</span>
+                  )}
+                </p>
+                {preview.next_local && (
+                  <p className="text-fg-muted">
+                    Next backup: {preview.next_local}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-danger">{preview.error}</p>
+            )}
+          </div>
+        </div>
+
+        {saveError && <p className="text-xs text-danger">{saveError}</p>}
+
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            onClick={save}
+            disabled={!dirty || saving || (preview ? !preview.valid : true)}
+          >
+            {saving ? "Saving…" : "Save schedule"}
+          </Button>
+          {dirty && !saving && (
+            <button
+              type="button"
+              onClick={() => saved !== null && setExpr(saved)}
+              className="text-xs text-fg-muted hover:text-fg"
+            >
+              Cancel
+            </button>
+          )}
+          {!dirty && preview?.configured === false && (
+            <span className="text-xs text-fg-muted">
+              Using the default schedule.
+            </span>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 /// What a backup is doing, in words, with the counts the phase name hides.
 ///
 /// The page used to print the raw Rust constant — "Backup in progress
@@ -1439,6 +1642,9 @@ export function BackupsPage() {
         <EnableCard onEnable={handleEnable} disabled={opBusy} />
       ) : (
         <div className="space-y-4">
+          {/* Above the snapshot list: when backups run is a setting, and the list
+              below it is the result of that setting. */}
+          <ScheduleCard />
           <SnapshotExplorer
             runningNamespaces={runningNamespaces}
             onBackupDone={load}
