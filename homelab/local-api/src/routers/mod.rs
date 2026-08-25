@@ -7,6 +7,7 @@ pub mod ceph;
 pub mod ceph_join;
 pub mod disks;
 pub mod nodes;
+pub mod packs;
 pub mod rebuild;
 pub mod restore_run;
 pub mod status;

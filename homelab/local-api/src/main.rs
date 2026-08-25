@@ -21,7 +21,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use auth::{auth_middleware, AuthState};
 use config::Config;
-use routers::{apps, backup_schedule, backups, ceph, ceph_join, disks, nodes, rebuild, status, terminal, update};
+use routers::{apps, backup_schedule, backups, ceph, ceph_join, disks, nodes, packs, rebuild, status, terminal, update};
 
 /// Single shared state threaded through all handlers.
 #[derive(Clone)]
@@ -134,6 +134,8 @@ async fn main() {
         .route("/api/apps/repos", get(apps::list_repos).post(apps::add_repo))
         .route("/api/apps/repos/:name", delete(apps::remove_repo))
         .route("/api/apps/repos/sync", post(apps::sync_repos))
+        .route("/api/apps/packs", get(packs::list_packs).put(packs::save_pack))
+        .route("/api/apps/packs/:name", delete(packs::delete_pack))
         .route("/api/account/token", get(apps::account_token))
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
