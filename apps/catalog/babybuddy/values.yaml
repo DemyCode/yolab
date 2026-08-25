@@ -1,0 +1,13 @@
+# Everything under `config` is user-facing: it is exactly what the install form
+# edits. Everything under `yolab` is injected by local-api at install time.
+
+config:
+  subdomain: babybuddy
+  storage_size: 2Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    upstream: localhost:8000

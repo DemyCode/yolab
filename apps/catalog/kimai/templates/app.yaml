@@ -1,0 +1,207 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "5Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kimai
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: kimai
+  template:
+    metadata:
+      labels:
+        app: kimai
+    spec:
+      initContainers:
+      {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
+      # Symfony signs cookies with APP_SECRET. Rotating it logs everyone out, so it is
+      # generated once and kept next to the data it protects.
+      - name: gen-secrets
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            SECRETS=/state/secrets.env
+            if [ ! -f "$SECRETS" ]; then
+              TMP=$(mktemp "${SECRETS}.XXXXXX")
+              printf 'APP_SECRET=%s\n' "$(tr -dc a-f0-9 </dev/urandom | head -c 48)" > "$TMP"
+              mv "$TMP" "$SECRETS"
+            fi
+        volumeMounts:
+          - name: data
+            mountPath: /state
+            subPath: {{ .Release.Name }}/yolab-state
+      containers:
+        - name: kimai
+          image: linuxserver/kimai:version-2.65.0@sha256:4bf90d6ab578e3ad53f7fc4a54c764aeeb24ba4d9d617c68b8e49cec52646235
+          imagePullPolicy: IfNotPresent
+          # TRUSTED_HOSTS is a Symfony allow-list: a request whose Host header is not
+          # on it is rejected outright, so the app is unreachable without the real
+          # hostname here.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              . /yolab/env
+              until [ -f /state/secrets.env ]; do sleep 2; done
+              set -a
+              . /state/secrets.env
+              TRUSTED_HOSTS="$YOLAB_FQDN,localhost"
+              set +a
+              exec /init
+          ports:
+            - containerPort: 80
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: TZ
+              value: "Etc/UTC"
+            - name: DATABASE_URL
+              value: "mysql://kimai:kimai@mariadb.{{ .Release.Namespace }}.svc.cluster.local:3306/kimai?charset=utf8mb4&serverVersion=10.11.0-MariaDB"
+            - name: ADMINMAIL
+              value: {{ .Values.config.admin_email | quote }}
+            - name: ADMINPASS
+              value: {{ .Values.config.admin_password | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 300
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /config
+              subPath: {{ .Release.Name }}/config
+            - name: data
+              mountPath: /state
+              subPath: {{ .Release.Name }}/yolab-state
+            - name: yolab
+              mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.yolabEnvVolumes" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kimai
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: kimai
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11.4@sha256:611a2fcc5fa7c6ceb8644c6f74b25ede004ff6c3a6b38c8f8c23d3bbf6c26430
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              value: kimai
+            - name: MARIADB_DATABASE
+              value: kimai
+            - name: MARIADB_USER
+              value: kimai
+            - name: MARIADB_PASSWORD
+              value: kimai
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+              subPath: {{ .Release.Name }}/mariadb
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mariadb
+  ports:
+    - port: 3306
+      targetPort: 3306

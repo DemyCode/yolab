@@ -1,0 +1,19 @@
+apiVersion: v2
+name: babybuddy
+description: "Track feeds, sleep and nappies without handing a startup your baby's data"
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Baby Buddy"
+  yolab.io/icon: "👶"
+  yolab.io/category: "productivity"
+  yolab.io/uischema: |
+    {
+      "subdomain": { "ui:widget": "TunnelWidget" }
+    }

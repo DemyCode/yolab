@@ -1,0 +1,82 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "2Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: babybuddy
+        image: linuxserver/babybuddy:version-v2.10.0@sha256:ee252beae8cb269a30991807e2d3b06fd825bcf80efebd502fd8b29823e6593f
+        imagePullPolicy: IfNotPresent
+        # Django rejects any POST whose Origin is not in CSRF_TRUSTED_ORIGINS, so
+        # without the real hostname here every login and every logged feed would fail
+        # with "CSRF verification failed" — the app looks up and is unusable. The
+        # hostname is only known after wg-register writes /yolab/env above.
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            . /yolab/env
+            set -a
+            CSRF_TRUSTED_ORIGINS="https://$YOLAB_FQDN"
+            set +a
+            exec /init
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: "Etc/UTC"
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 12
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config
+          - name: yolab
+            mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

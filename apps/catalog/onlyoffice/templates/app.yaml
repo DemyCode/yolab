@@ -1,0 +1,100 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      # Written once and kept. Regenerating it on restart would silently break an
+      # already-configured Nextcloud connector, which fails as "document server
+      # unreachable" rather than as a changed secret.
+      - name: gen-secrets
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            SECRETS=/state/secrets.env
+            if [ ! -f "$SECRETS" ]; then
+              TMP=$(mktemp "${SECRETS}.XXXXXX")
+              printf 'JWT_SECRET=%s\n' "$(tr -dc a-f0-9 </dev/urandom | head -c 48)" > "$TMP"
+              mv "$TMP" "$SECRETS"
+            fi
+            . "$SECRETS"
+            echo "YOLAB_OUTPUT jwt_secret $JWT_SECRET"
+        volumeMounts:
+          - name: data
+            mountPath: /state
+            subPath: {{ .Release.Name }}/yolab-state
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: onlyoffice
+        image: linuxserver/onlyoffice:version-v9.4.0@sha256:ae98080ae9c867e586bf512e0a8bbf13a8458f3eb1a2c894be5e5d5fc99ba4b1
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            until [ -f /state/secrets.env ]; do sleep 2; done
+            set -a
+            . /state/secrets.env
+            JWT_ENABLED=true
+            JWT_HEADER=Authorization
+            set +a
+            exec /init
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: "Etc/UTC"
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 30
+        livenessProbe:
+          tcpSocket:
+            port: 3000
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config
+          - name: data
+            mountPath: /state
+            subPath: {{ .Release.Name }}/yolab-state
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

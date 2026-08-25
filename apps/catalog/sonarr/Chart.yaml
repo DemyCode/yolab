@@ -1,0 +1,23 @@
+apiVersion: v2
+name: sonarr
+description: "Follows your TV shows and fetches new episodes as they appear"
+type: application
+# Chart version — bump on any packaging change. A backup records this, and a restore
+# pins to it, so "which version wrote this data" stops being a guess.
+version: 0.1.0
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Sonarr"
+  yolab.io/icon: "📺"
+  yolab.io/category: "media"
+  yolab.io/uischema: |
+    {
+      "subdomain": {
+        "ui:widget": "TunnelWidget"
+      }
+    }

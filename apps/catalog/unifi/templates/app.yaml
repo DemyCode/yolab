@@ -1,0 +1,159 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-mongo-init
+  namespace: {{ .Release.Namespace }}
+data:
+  # MongoDB runs everything in this directory once, the first time it initialises an
+  # empty data directory. UniFi will not create its own database user, so without this
+  # the controller starts, fails to authenticate, and loops — with a stack trace that
+  # names neither the database nor the missing user.
+  init-mongo.js: |
+    db.getSiblingDB("unifi").createUser({
+      user: "unifi", pwd: "unifi",
+      roles: [{ role: "dbOwner", db: "unifi" }]
+    });
+    db.getSiblingDB("unifi_stat").createUser({
+      user: "unifi", pwd: "unifi",
+      roles: [{ role: "dbOwner", db: "unifi_stat" }]
+    });
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: unifi
+        image: linuxserver/unifi-network-application:version-10.5.67@sha256:cb452744be875e091bad374999e90b08f34813d5bee03de814188de3d6eb5e99
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: "Etc/UTC"
+          - name: MONGO_HOST
+            value: mongo.{{ .Release.Namespace }}.svc.cluster.local
+          - name: MONGO_PORT
+            value: "27017"
+          - name: MONGO_USER
+            value: unifi
+          - name: MONGO_PASS
+            value: unifi
+          - name: MONGO_DBNAME
+            value: unifi
+          # The user above is created inside the `unifi` database, not `admin`, so
+          # that is where UniFi has to authenticate. Left at the default it fails
+          # with "Authentication failed" against a database that exists.
+          - name: MONGO_AUTHSOURCE
+            value: unifi
+        readinessProbe:
+          tcpSocket:
+            port: 8443
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          failureThreshold: 30
+        livenessProbe:
+          tcpSocket:
+            port: 8443
+          initialDelaySeconds: 600
+          periodSeconds: 30
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7.0@sha256:b6421fd6d1c5ded6377b397d8983e2f82e2100dc5123332dcfda2065a472be5b
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+              subPath: {{ .Release.Name }}/mongo
+            - name: mongo-init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+        - name: mongo-init
+          configMap:
+            name: {{ .Release.Name }}-mongo-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017

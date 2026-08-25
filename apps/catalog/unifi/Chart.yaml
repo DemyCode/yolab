@@ -1,0 +1,15 @@
+apiVersion: v2
+name: unifi
+description: "The controller for UniFi access points and switches"
+type: application
+version: 0.1.0
+dependencies:
+  - name: yolab-common
+    version: "0.1.0"
+    repository: "oci://ghcr.io/demycode/charts"
+annotations:
+  yolab.io/display-name: "UniFi Network"
+  yolab.io/icon: "📡"
+  yolab.io/category: "networking"
+  yolab.io/uischema: |
+    { "subdomain": { "ui:widget": "TunnelWidget" } }

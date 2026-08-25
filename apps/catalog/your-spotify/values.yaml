@@ -1,0 +1,11 @@
+config:
+  subdomain: spotify-stats
+  spotify_public: ""
+  spotify_secret: ""
+  storage_size: 5Gi
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    upstream: your-spotify:80

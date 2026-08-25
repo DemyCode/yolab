@@ -1,0 +1,174 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "5Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: your-spotify
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: your-spotify
+  template:
+    metadata:
+      labels:
+        app: your-spotify
+    spec:
+      initContainers:
+      {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
+      containers:
+        - name: your-spotify
+          image: linuxserver/your_spotify:version-1.20.0@sha256:d688da0fa8d78f7e99e644ccfbf6eadae2d0fe6f9d5e6460b70d51f1f7af3bee
+          imagePullPolicy: IfNotPresent
+          # APP_URL is the address Spotify redirects back to after you authorise it,
+          # and CORS is what the browser bundle is allowed to call. Both must be the
+          # public hostname — with localhost in either, the login round-trip fails
+          # with a Spotify error page rather than anything this app can explain.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              . /yolab/env
+              set -a
+              APP_URL="$YOLAB_URL"
+              CORS="$YOLAB_URL"
+              set +a
+              exec /init
+          ports:
+            - containerPort: 80
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: TZ
+              value: "Etc/UTC"
+            - name: SPOTIFY_PUBLIC
+              value: {{ .Values.config.spotify_public | quote }}
+            - name: SPOTIFY_SECRET
+              value: {{ .Values.config.spotify_secret | quote }}
+            - name: MONGO_ENDPOINT
+              value: "mongodb://mongo.{{ .Release.Namespace }}.svc.cluster.local:27017/your_spotify"
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: yolab
+              mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.yolabEnvVolumes" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: your-spotify
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: your-spotify
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7.0@sha256:b6421fd6d1c5ded6377b397d8983e2f82e2100dc5123332dcfda2065a472be5b
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+              subPath: {{ .Release.Name }}/mongo
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
