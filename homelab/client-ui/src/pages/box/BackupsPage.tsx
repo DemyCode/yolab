@@ -74,6 +74,22 @@ interface BackupRunStatus {
   /// Whether the etcd (cluster state) half of the backup actually made it in — a run
   /// can otherwise succeed on volumes alone with cluster state silently missing.
   etcdIncluded?: boolean;
+  /// Per-volume progress. The server has always sent this — flatten_status passes the
+  /// whole CR status through — but it was never declared here and never rendered, so
+  /// the page reduced eight volumes with individual states to the single word
+  /// "SyncingVolumes" and left no way to tell which one was holding a run up.
+  pvcs?: BackupVolumeStatus[];
+}
+
+/// One volume inside a running backup. `percent`/`eta` come from restic's own progress
+/// output and are absent until it emits its first line, so both are optional and the
+/// row simply shows less rather than showing a zero that means "unknown".
+interface BackupVolumeStatus {
+  namespace: string;
+  name: string;
+  phase: "Syncing" | "Synced" | "Stalled";
+  percent?: number;
+  eta?: string;
 }
 
 // Mirrors restore_run.rs's RestoreRun.status shape.
@@ -139,6 +155,14 @@ interface OperationState {
   backup_run: BackupRunStatus | null;
   restore_run: RestoreRunStatus | null;
   last_backup: BackupRunStatus | null;
+  /// Hours since the last backup that produced a restorable snapshot (Partial counts —
+  /// seven of eight volumes captured is still seven volumes you can restore). Null when
+  /// none ever has. This, not how long a run takes, is the number that says whether
+  /// backups are working.
+  last_ok_age_hours: number | null;
+  /// The age at which the server considers that stale, so this page states the rule
+  /// rather than hardcoding a threshold beside it.
+  stale_after_hours: number;
 }
 
 interface RecoveryKeyResponse {
@@ -198,6 +222,73 @@ const RESTORE_PHASES: { key: RestoreRunStatus["phase"]; label: string }[] = [
 
 function isTerminalRestorePhase(phase: string): boolean {
   return phase === "Succeeded" || phase === "Partial" || phase === "Failed";
+}
+
+
+/// What a backup is doing, in words, with the counts the phase name hides.
+///
+/// The page used to print the raw Rust constant — "Backup in progress
+/// (SyncingVolumes)" — which names an implementation phase rather than telling anyone
+/// what is happening to their files or how far along it is.
+function backupPhaseLabel(run: BackupRunStatus): string {
+  const vols = run.pvcs ?? [];
+  const done = vols.filter((v) => v.phase === "Synced").length;
+  switch (run.phase) {
+    case "Pending":
+      return "Getting ready…";
+    case "SyncingVolumes":
+      return vols.length > 0
+        ? `Copying your files — ${done} of ${vols.length} done`
+        : "Copying your files…";
+    case "SnapshottingCluster":
+      return "Saving your apps' settings…";
+    case "Pruning":
+      return "Tidying up old backups…";
+    default:
+      return run.phase;
+  }
+}
+
+/// The volume rows behind that summary: which are done, which is copying, and how far.
+///
+/// Everything here was already in the response and already on the page's own props —
+/// it just had nowhere to be drawn. A stalled volume is called out rather than hidden,
+/// because it is the one case where the run finishes without that volume in it.
+function BackupVolumeList({ volumes }: { volumes: BackupVolumeStatus[] }) {
+  if (volumes.length === 0) return null;
+  // Whatever is still moving goes first — that is what someone is looking for.
+  const order = { Stalled: 0, Syncing: 1, Synced: 2 } as const;
+  const sorted = [...volumes].sort(
+    (a, b) => order[a.phase] - order[b.phase] || a.name.localeCompare(b.name),
+  );
+  return (
+    <ul className="mt-3 space-y-1.5">
+      {sorted.map((v) => (
+        <li
+          key={`${v.namespace}/${v.name}`}
+          className="flex items-center gap-2 text-xs"
+        >
+          {v.phase === "Synced" ? (
+            <CheckCircle className="h-3.5 w-3.5 text-success flex-shrink-0" />
+          ) : v.phase === "Stalled" ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-warning flex-shrink-0" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5 text-primary animate-spin flex-shrink-0" />
+          )}
+          <span className="text-fg truncate">{v.name}</span>
+          <span className="text-fg-muted ml-auto flex-shrink-0 tabular-nums">
+            {v.phase === "Synced"
+              ? "Backed up"
+              : v.phase === "Stalled"
+                ? "Stopped responding"
+                : v.percent !== undefined
+                  ? `${v.percent.toFixed(0)}%${v.eta ? ` · ${v.eta} left` : ""}`
+                  : "Copying…"}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function VolumePhaseIcon({ phase }: { phase: VolumeStatus["phase"] }) {
@@ -1111,6 +1202,10 @@ export function BackupsPage() {
     backup_run: null,
     restore_run: null,
     last_backup: null,
+    // null means "we have not heard yet", which must not render as "0 hours ago"
+    // and claim a fresh backup exists before the first poll returns.
+    last_ok_age_hours: null,
+    stale_after_hours: 24,
   });
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
@@ -1246,15 +1341,50 @@ export function BackupsPage() {
       </div>
 
       {opState.backing_up && (
-        <div className="rounded-lg border border-warning-soft bg-warning-soft px-4 py-3 flex items-center gap-2">
-          <RefreshCw className="h-4 w-4 text-warning animate-spin flex-shrink-0" />
-          <p className="text-sm text-warning font-medium">
-            Backup in progress
-            {opState.backup_run ? ` (${opState.backup_run.phase})` : ""} — other
-            backup actions are disabled until it finishes.
+        <div className="rounded-lg border border-warning-soft bg-warning-soft px-4 py-3">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="h-4 w-4 text-warning animate-spin flex-shrink-0" />
+            <p className="text-sm text-warning font-medium">
+              {opState.backup_run
+                ? backupPhaseLabel(opState.backup_run)
+                : "Backup in progress"}
+            </p>
+          </div>
+          {opState.backup_run?.pvcs && (
+            <BackupVolumeList volumes={opState.backup_run.pvcs} />
+          )}
+          <p className="mt-3 text-xs text-warning">
+            Your files stay available the whole time. A large folder can take a
+            while the first time it is copied — nothing is wrong, and it will not
+            be cut short for taking long.
           </p>
         </div>
       )}
+
+      {/* Staleness, not duration. A backup that is merely slow is fine; one that
+          has not completed in days is the actual failure, and it is invisible
+          unless the page says so. */}
+      {!opState.backing_up &&
+        opState.last_ok_age_hours !== null &&
+        opState.last_ok_age_hours >= opState.stale_after_hours && (
+          <div className="rounded-lg border border-danger-soft bg-danger-soft px-4 py-3 flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 text-danger flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-danger">
+              <p className="font-medium">
+                No backup has completed in{" "}
+                {opState.last_ok_age_hours >= 48
+                  ? `${Math.floor(opState.last_ok_age_hours / 24)} days`
+                  : `${opState.last_ok_age_hours} hours`}
+                .
+              </p>
+              <p className="mt-1">
+                Anything you have changed since then is not saved anywhere else
+                yet. Try Back Up Now, and if it keeps failing the message above
+                will say which part is stuck.
+              </p>
+            </div>
+          </div>
+        )}
 
       {!opBusy &&
         opState.last_backup &&

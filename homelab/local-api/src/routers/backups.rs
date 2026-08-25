@@ -27,6 +27,9 @@ pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serd
         "backup_run": backup["active"],
         "restore_run": restore["active"],
         "last_backup": backup["last"],
+        // Staleness, not duration: how long since a restorable backup existed.
+        "last_ok_age_hours": backup["last_ok_age_hours"],
+        "stale_after_hours": backup["stale_after_hours"],
     })))
 }
 
