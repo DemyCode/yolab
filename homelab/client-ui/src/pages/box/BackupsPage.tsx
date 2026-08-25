@@ -13,6 +13,9 @@ import {
   Copy,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { api } from "@/lib/api";
+import { useResource } from "@/lib/useResource";
+import type { ClusterHealth } from "@/types/health";
 import { Button } from "@/components/ui/button";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -124,6 +127,7 @@ interface NamespaceRestoreStatus {
 interface RestoreRunStatus {
   phase:
     | "Validating"
+    | "RebuildingStorage"
     | "WaitingForStorage"
     | "RestoringVolumes"
     | "Applying"
@@ -215,6 +219,7 @@ function timeAgo(iso: string): string {
 
 const RESTORE_PHASES: { key: RestoreRunStatus["phase"]; label: string }[] = [
   { key: "Validating", label: "Validating snapshot" },
+  { key: "RebuildingStorage", label: "Rebuilding storage" },
   { key: "WaitingForStorage", label: "Waiting for storage" },
   { key: "RestoringVolumes", label: "Restoring volumes" },
   { key: "Applying", label: "Bringing services back up" },
@@ -750,6 +755,14 @@ function RestoreFlow({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Asked here rather than passed down: this dialog is the only place the answer
+  // changes what happens, and it must be the state NOW, not whenever the page loaded
+  // — a disk can be reconnected between opening Backups and confirming a restore.
+  const health = useResource<ClusterHealth>("health", () =>
+    api.get<ClusterHealth>("/api/cluster/health"),
+  );
+  const storageUnrecoverable = health.data?.storage_unrecoverable ?? false;
+
   const services: ServiceEntry[] =
     catalog.services ??
     catalog.namespaces.map((ns) => ({ namespace: ns, pvcs: [] }));
@@ -794,6 +807,12 @@ function RestoreFlow({
         body: JSON.stringify({
           snapshot_id: snapshot.id,
           namespaces: [...selected],
+          // When storage is damaged beyond repair, restoring into it is impossible —
+          // it has to be recreated first. That used to be four Ceph commands run by
+          // hand, which is not a recovery anyone here can perform. The restore does
+          // it, and the server re-checks against the cluster before deleting
+          // anything.
+          rebuild_storage: storageUnrecoverable,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -859,6 +878,28 @@ function RestoreFlow({
           </label>
         ))}
       </div>
+
+      {/* Said before the button, not after: when storage is beyond repair this
+          restore does more than restore, and the extra part is not reversible. */}
+      {storageUnrecoverable && (
+        <div className="rounded border border-danger-soft bg-danger-soft px-3 py-2 text-xs text-danger space-y-1 mb-2">
+          <p className="font-medium flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+            Your storage is damaged and cannot be repaired
+          </p>
+          <p>
+            A disk was lost and what it held is not stored anywhere else, so it
+            cannot be rebuilt. This restore will clear the damaged storage, set
+            it up again, and put your backup back — in one go. Anything changed
+            since this backup was taken will not come back.
+          </p>
+          <p>
+            If that disk still works, reconnecting it instead recovers
+            everything with nothing lost. That is the better option, if you have
+            it.
+          </p>
+        </div>
+      )}
 
       {selected.size > 0 && (
         <div className="rounded border border-danger-soft bg-danger-soft px-3 py-2 text-xs text-danger space-y-0.5">
