@@ -1501,16 +1501,99 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
 /// System disk (is_loop) defaults ON — it's always the primary storage.
 /// All other disks default OFF; the user must explicitly enable them.
 /// Foreign-Ceph disks are registered too so they show in the UI.
+
+/// Carry a disk's setting across a change in how disks are identified.
+///
+/// Records are keyed by `<node>--<disk_id>`, and disk_id changed shape in this release:
+/// it used to fall back to the kernel name (`dev-sdb`) on hardware where the old serial
+/// path did not exist, which on some machines was every disk. After the change the same
+/// disk is `serial-wwn-0x…`, so every existing record would look like it belongs to a
+/// disk that is no longer present, and every present disk would look brand new.
+///
+/// Brand new means OFF. Applied to a disk already carrying an OSD, OFF means drain,
+/// purge and wipe — which is exactly the accident this release exists to prevent, and
+/// it would have been triggered BY the release. `auto_register_all_disks` refuses to
+/// register a live OSD's disk as OFF, which covers the disks that are running; this
+/// covers the rest, so a disk deliberately switched OFF does not silently come back ON,
+/// and one switched ON before an unplug is still ON when it returns.
+///
+/// Pure so the mapping can be tested without a cluster: given the old records and the
+/// devices seen now, return the entries to write.
+fn migrate_disk_records(
+    node: &str,
+    // `current`: disk_id -> the kernel device it is at now, for every disk seen.
+    current: &[(String, String)],
+    // `desired`: existing records, `<node>--<disk_id>` -> "ON"/"OFF".
+    desired: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (disk_id, device) in current {
+        let new_key = format!("{node}--{disk_id}");
+        if desired.contains_key(&new_key) {
+            continue; // already migrated, or never needed it
+        }
+        // The only key the old scheme could have produced for this device.
+        let old_key = format!("{node}--dev-{device}");
+        if old_key == new_key {
+            continue; // still identified by kernel name; nothing to carry
+        }
+        if let Some(setting) = desired.get(&old_key) {
+            out.insert(new_key, setting.clone());
+        }
+    }
+    out
+}
+
 async fn auto_register_all_disks(
     node: &str,
     meta: &HashMap<String, Value>,
     desired: &HashMap<String, String>,
 ) {
-    let mut new_entries: HashMap<String, String> = HashMap::new();
+    // Before deciding anything is new: carry over records this release's change in
+    // disk identity would otherwise have orphaned.
+    let current: Vec<(String, String)> = meta
+        .iter()
+        .filter_map(|(id, m)| {
+            m["device"].as_str().map(|d| (id.clone(), d.to_string()))
+        })
+        .collect();
+    let mut new_entries: HashMap<String, String> = migrate_disk_records(node, &current, desired);
+    if !new_entries.is_empty() {
+        tracing::info!(
+            "auto_register_all_disks: carried {} disk setting(s) onto their hardware ids on {node}",
+            new_entries.len()
+        );
+    }
+
     for (disk_id, m) in meta {
         let key = format!("{node}--{disk_id}");
-        if desired.contains_key(&key) { continue; }
-        let default = if m["is_loop"].as_bool().unwrap_or(false) { "ON" } else { "OFF" };
+        if desired.contains_key(&key) || new_entries.contains_key(&key) { continue; }
+
+        // A disk with no record is normally new, and new disks are OFF until someone
+        // asks for them. But "no record" also happens when a disk's IDENTITY changes
+        // while the disk itself does not — a replug landing on a different kernel
+        // name, or this very release moving from `dev-sdb` to the hardware id.
+        //
+        // Defaulting those to OFF is how a running OSD carrying live data gets read as
+        // "the owner does not want this disk", then drained, purged and wiped. That is
+        // not hypothetical: it happened, twice, and destroyed the only copy of 63
+        // placement groups.
+        //
+        // A disk that is already running one of OUR OSDs is therefore ON, whatever the
+        // record says, because the OSD is itself the evidence that somebody switched it
+        // on. The record was lost; the decision it recorded was not.
+        let default = if m["is_loop"].as_bool().unwrap_or(false)
+            || m["is_our_osd"].as_bool().unwrap_or(false)
+        {
+            "ON"
+        } else {
+            "OFF"
+        };
+        if default == "ON" && !m["is_loop"].as_bool().unwrap_or(false) {
+            tracing::info!(
+                "auto_register_all_disks: {disk_id} has no record but is running one of our OSDs — registering it ON, not OFF"
+            );
+        }
         new_entries.insert(key, default.to_string());
     }
     if new_entries.is_empty() { return; }
@@ -2057,6 +2140,78 @@ mod tests {
 
     // ── disk_id ───────────────────────────────────────────────────────────────
 
+
+
+    // ── Migrating to hardware ids ─────────────────────────────────────────────
+    //
+    // disk_id changed shape in this release. Without carrying records across, every
+    // disk looks new on the first tick after updating — and new means OFF, which for a
+    // disk already carrying an OSD means drain, purge, wipe. The release that fixes
+    // the accident would have caused it.
+
+    fn recs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_setting_follows_the_disk_onto_its_hardware_id() {
+        let desired = recs(&[("node1--dev-sdb", "ON"), ("node1--dev-sda", "OFF")]);
+        let current = vec![
+            ("serial-wwn-0x50014ee214caf529".to_string(), "sdb".to_string()),
+            ("serial-wwn-0x500a0751191b8afa".to_string(), "sda".to_string()),
+        ];
+        let out = migrate_disk_records("node1", &current, &desired);
+        assert_eq!(out.get("node1--serial-wwn-0x50014ee214caf529").map(String::as_str), Some("ON"));
+        assert_eq!(out.get("node1--serial-wwn-0x500a0751191b8afa").map(String::as_str), Some("OFF"));
+    }
+
+    /// OFF has to travel too. Silently switching a deliberately-off disk back ON would
+    /// hand a disk to Ceph that its owner did not offer.
+    #[test]
+    fn a_disk_switched_off_stays_off() {
+        let desired = recs(&[("node1--dev-sdb", "OFF")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        assert_eq!(
+            migrate_disk_records("node1", &current, &desired).get("node1--serial-wwn-0xabc").map(String::as_str),
+            Some("OFF")
+        );
+    }
+
+    /// Already migrated: leave it alone rather than overwrite a newer decision with an
+    /// older one that happens to still be in the map.
+    #[test]
+    fn an_existing_record_is_never_overwritten() {
+        let desired = recs(&[("node1--dev-sdb", "ON"), ("node1--serial-wwn-0xabc", "OFF")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+    }
+
+    /// Hardware that publishes no id keeps the kernel-name key it already had; there
+    /// is nothing to carry, and carrying it onto itself would be a no-op write.
+    #[test]
+    fn a_disk_still_identified_by_kernel_name_is_left_as_is() {
+        let desired = recs(&[("node1--dev-sdb", "ON")]);
+        let current = vec![("dev-sdb".to_string(), "sdb".to_string())];
+        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+    }
+
+    /// A genuinely new disk has no old record, and must not inherit one from whichever
+    /// letter it happened to land on.
+    #[test]
+    fn a_new_disk_inherits_nothing() {
+        let desired = recs(&[("node1--dev-sdb", "ON")]);
+        // A different disk, now at sdc. sdb's record is not its to take.
+        let current = vec![("serial-wwn-0xnew".to_string(), "sdc".to_string())];
+        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+    }
+
+    /// Records belong to a node. Another machine's disk must not pick one up.
+    #[test]
+    fn records_do_not_cross_between_machines() {
+        let desired = recs(&[("node3--dev-sdb", "ON")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+    }
 
     // ── Stable identity ───────────────────────────────────────────────────────
     //
