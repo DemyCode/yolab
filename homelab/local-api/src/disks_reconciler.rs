@@ -1834,7 +1834,7 @@ fn is_uuid(s: &str) -> bool {
 /// they go in another box. Ceph can already do it — an OSD carries its own identity in
 /// the BlueStore label and reports its new location when it starts — so the only thing
 /// standing in the way was this key.
-fn record_key(node: &str, disk_id: &str) -> String {
+pub(crate) fn record_key(node: &str, disk_id: &str) -> String {
     if is_globally_unique_id(disk_id) {
         disk_id.to_string()
     } else {
@@ -1847,7 +1847,7 @@ fn record_key(node: &str, disk_id: &str) -> String {
 /// `serial-` is what disk_id emits once udev gave it something from the hardware —
 /// a WWN, an NVMe EUI, a model+serial. Everything else (`dev-<name>`, `system`) names
 /// a position, and positions repeat across machines.
-fn is_globally_unique_id(disk_id: &str) -> bool {
+pub(crate) fn is_globally_unique_id(disk_id: &str) -> bool {
     disk_id.starts_with("serial-")
 }
 
