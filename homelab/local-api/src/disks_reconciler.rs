@@ -882,6 +882,39 @@ async fn reconcile_local_osds(
                 continue;
             }
 
+            // safe-to-destroy is not the question this step is actually asking.
+            //
+            // It answers "can the CLUSTER carry on without this disk" — and at one
+            // copy, after the disk has been marked out, the answer is yes precisely
+            // BECAUSE Ceph has already written that data off as lost. The condition
+            // that makes destruction look safe is the same condition that makes it
+            // unrecoverable. Live, that combination purged and zapped a disk holding
+            // the only copy of 63 placement groups, automatically, seconds after it
+            // came back.
+            //
+            // So ask the other question too: is anything in this cluster currently
+            // unreadable and unrebuildable? If so, this disk may be the only place it
+            // still exists, and nothing here is allowed to wipe it. A human can still
+            // erase it deliberately from the Storage page — this only refuses to do it
+            // unprompted.
+            if let Some(loss) = crate::routers::ceph::assess_pg_loss().await {
+                if loss.unrecoverable && loss.stuck > 0 {
+                    tracing::warn!(
+                        "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
+                         and cannot be rebuilt, and this disk may hold the only copy",
+                        loss.stuck,
+                        loss.total
+                    );
+                    set_phase(
+                        disk_id,
+                        phase::REMOVING,
+                        "Not removing this disk: data elsewhere in the cluster is unreadable and \
+                         cannot be rebuilt, and this disk may hold the only copy of it.",
+                    );
+                    continue;
+                }
+            }
+
             match ceph_cli::ceph(&["osd", "purge", &osd, "--yes-i-really-mean-it"]).await {
                 Ok(_) => {
                     tracing::info!("{osd} ({disk_id}): purged");
@@ -1669,16 +1702,63 @@ fn is_uuid(s: &str) -> bool {
 
 // ── Stable disk identity ──────────────────────────────────────────────────────
 
+/// Identifiers udev publishes in /dev/disk/by-id, best first.
+///
+/// `wwn-` is a World Wide Name: IEEE-registered, burned in at manufacture, and the
+/// closest thing a disk has to a UUID. `nvme-eui`/`nvme-` are its NVMe equivalents.
+/// `ata-`/`scsi-` carry model plus serial. `usb-` is last because a cheap enclosure
+/// may synthesise it from the BRIDGE rather than the drive — stable per caddy, not per
+/// disk — so it identifies the slot, not what is in it. Still far better than a kernel
+/// name, and honest about being weaker.
+const ID_PREFIXES: [&str; 6] = ["wwn-", "nvme-eui.", "nvme-", "ata-", "scsi-", "usb-"];
+const BY_ID_DIR: &str = "/dev/disk/by-id";
+
+/// A stable name for a disk, from what udev knows about the hardware.
+///
+/// This used to read `/sys/block/<dev>/device/serial` and fall back to `dev-<name>`.
+/// That path does not exist for libata or USB disks — on the machine that prompted
+/// this, it was absent for EVERY disk, internal SSD included — so every disk was
+/// identified by its kernel name, and a kernel name is assignment order, not identity.
+///
+/// The cost of that was not cosmetic. A disk was unplugged as `sdb` and came back as
+/// `sdc`; the reconciler saw an unknown disk, registered it as new (and new disks are
+/// OFF), then read that OFF back as an instruction and purged and wiped the OSD living
+/// on it. Same physical disk, two names, and the data was destroyed automatically.
 fn disk_id(device: &str) -> String {
-    let serial = std::fs::read_to_string(format!("/sys/block/{device}/device/serial")).ok();
-    disk_id_from(device, serial.as_deref())
+    disk_id_from(device, stable_id_for(device).as_deref())
 }
 
-/// Split from `disk_id` so the sanitizing rules can be tested without a real
-/// /sys/block entry. A disk's id ends up as a ConfigMap *key*, so anything the
-/// vendor put in the serial has to come out as `[a-z0-9-]`.
-fn disk_id_from(device: &str, serial: Option<&str>) -> String {
-    if let Some(serial) = serial {
+/// The best `/dev/disk/by-id` link pointing at `device`.
+///
+/// Symlinks are resolved rather than parsed: `by-id` also contains partition links
+/// (`...-part1`), and matching on the name alone would happily identify a whole disk
+/// by one of its partitions.
+fn stable_id_for(device: &str) -> Option<String> {
+    let target = std::fs::canonicalize(format!("/dev/{device}")).ok()?;
+    let mut best: Option<(usize, String)> = None;
+    for entry in std::fs::read_dir(BY_ID_DIR).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with("-part") || name.contains("-part") {
+            continue;
+        }
+        let Some(rank) = ID_PREFIXES.iter().position(|p| name.starts_with(p)) else {
+            continue;
+        };
+        if std::fs::canonicalize(entry.path()).ok().as_deref() != Some(target.as_path()) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+            best = Some((rank, name));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Split from `disk_id` so the sanitizing rules can be tested without a real device.
+/// A disk's id ends up as a ConfigMap *key*, so whatever the vendor wrote in the
+/// serial has to come out as `[a-z0-9-]`.
+fn disk_id_from(device: &str, stable: Option<&str>) -> String {
+    if let Some(serial) = stable {
         let s = serial.trim();
         if !s.is_empty() {
             let safe: String = s
@@ -1976,6 +2056,63 @@ mod tests {
     }
 
     // ── disk_id ───────────────────────────────────────────────────────────────
+
+
+    // ── Stable identity ───────────────────────────────────────────────────────
+    //
+    // A disk was unplugged as sdb, came back as sdc, was registered as a new disk
+    // (new disks are OFF), and the reconciler read that OFF as an instruction and
+    // wiped the OSD on it. The kernel name was never identity; these pin what is.
+
+    #[test]
+    fn a_hardware_id_beats_the_kernel_name() {
+        assert_eq!(
+            disk_id_from("sdc", Some("wwn-0x50014ee214caf529")),
+            "serial-wwn-0x50014ee214caf529".replace('.', "-").replace('_', "-")
+        );
+    }
+
+    /// The ranking is the point: the same disk publishes several ids, and the one
+    /// chosen has to be the same one every time or the disk changes identity between
+    /// boots for a different reason.
+    #[test]
+    fn the_id_ranking_prefers_hardware_identity_over_the_enclosure() {
+        let rank = |n: &str| ID_PREFIXES.iter().position(|p| n.starts_with(p));
+        // Exactly the three links the disk in question published.
+        let wwn = rank("wwn-0x50014ee214caf529").unwrap();
+        let ata = rank("ata-WDC_WD10SDRW-11A0XS1_WD-WXD2A51LAR33").unwrap();
+        let usb = rank("usb-WD_easystore_2647_575844324135314C41523333-0:0").unwrap();
+        assert!(wwn < ata, "the World Wide Name is the strongest identity");
+        assert!(ata < usb, "a USB id may describe the caddy rather than the disk");
+    }
+
+    #[test]
+    fn unranked_links_are_ignored() {
+        let rank = |n: &str| ID_PREFIXES.iter().position(|p| n.starts_with(p));
+        // dm/lvm links point at logical volumes, not at a disk we could claim.
+        assert!(rank("dm-name-pool-ceph").is_none());
+        assert!(rank("lvm-pv-uuid-3MOvZ3-dMBQ").is_none());
+    }
+
+    /// Falling back to the kernel name is still allowed — some enclosures publish
+    /// nothing — but it must be visible as the weak case it is, not silently equal to
+    /// a hardware id.
+    #[test]
+    fn the_kernel_name_remains_the_last_resort() {
+        assert_eq!(disk_id_from("sdc", None), "dev-sdc");
+        assert_eq!(disk_id_from("sdc", Some("")), "dev-sdc");
+        assert_eq!(disk_id_from("sdc", Some("  \n ")), "dev-sdc");
+    }
+
+    /// The id becomes a ConfigMap key, so a WWN's `0x` and an ATA id's underscores
+    /// have to survive sanitising into something still unique per disk.
+    #[test]
+    fn two_different_disks_never_sanitise_to_the_same_id() {
+        let a = disk_id_from("sdb", Some("ata-WDC_WD10SDRW-11A0XS1_WD-WXD2A51LAR33"));
+        let b = disk_id_from("sdc", Some("ata-WDC_WD10SDRW-11A0XS1_WD-WXD2A51LAR34"));
+        assert_ne!(a, b);
+        assert!(a.starts_with("serial-"));
+    }
 
     #[test]
     fn disk_id_prefers_the_serial_number() {
