@@ -45,6 +45,31 @@ pub struct SetState {
     pub desired: String,
 }
 
+
+/// The inverse of `disks_reconciler::record_key`.
+///
+/// Keys come in two shapes, and this is the half that was missing when they did:
+/// `record_key` gained a bare form for hardware ids, nothing here learned to read it,
+/// and `split_once("--")` skipped every such key with `else { continue }`. The record
+/// driving a live disk drain was therefore absent from the page entirely — no row, no
+/// toggle, no way to see or undo it. A writer changed and its reader did not.
+///
+/// Returns the node a record is scoped to, or None when the record belongs to the disk
+/// itself and so to whichever machine currently holds it.
+fn split_record_key(key: &str) -> (Option<&str>, &str) {
+    // Checked before splitting: a hardware id is never node-scoped, and splitting one
+    // on the first `--` it happens to contain would cut it in the wrong place.
+    if crate::disks_reconciler::is_globally_unique_id(key) {
+        return (None, key);
+    }
+    match key.split_once("--") {
+        Some((node, id)) => (Some(node), id),
+        // Neither shape. Not skipped: a key nobody can parse still governs a disk, and
+        // dropping it is exactly how one became invisible.
+        None => (None, key),
+    }
+}
+
 pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<DiskInfo>>> {
     let config_raw = kubectl::get_json(&[
         "get", "configmap", CONFIG_CM, "-n", NS, "-o", "jsonpath={.data}",
@@ -57,6 +82,7 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
     ])
     .await
     .unwrap_or(serde_json::Value::Object(Default::default()));
+    let status_raw2 = status_raw.clone();
 
     let desired: HashMap<String, String> =
         serde_json::from_value(config_raw).unwrap_or_default();
@@ -74,11 +100,40 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
         }
     }
 
+    // Where each disk was last seen, so a bare-keyed record for a disk that is
+    // currently unplugged still lands under a machine rather than nowhere.
+    let mut last_seen: HashMap<String, String> = HashMap::new();
+    if let Some(status_map) = status_raw2.as_object() {
+        for (node, node_json) in status_map {
+            let payload: serde_json::Value =
+                serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
+            if let Some(disks) = payload["knownDisks"].as_object().or(payload["disks"].as_object()) {
+                for id in disks.keys() {
+                    last_seen.entry(id.clone()).or_insert_with(|| node.clone());
+                }
+            }
+        }
+    }
+
     // Config CM is the authoritative list of all known disks.
     // Status CM enriches connected disks with live metadata.
     let mut result: HashMap<String, Vec<DiskInfo>> = HashMap::new();
     for (cm_key, desired_val) in &desired {
-        let Some((node, disk_id)) = cm_key.split_once("--") else { continue };
+        let (scoped_node, disk_id) = split_record_key(cm_key);
+        // A record that belongs to the disk rather than to a machine is shown under
+        // whichever machine can actually see the disk right now — which is the whole
+        // point of it not being node-scoped. When nobody can see it, it is listed
+        // against the node it was last known at, so an unplugged disk still appears
+        // instead of vanishing from the page.
+        let node: &str = match scoped_node {
+            Some(n) => n,
+            None => live
+                .iter()
+                .find(|(_, disks)| disks.contains_key(disk_id))
+                .map(|(n, _)| n.as_str())
+                .or_else(|| last_seen.get(disk_id).map(String::as_str))
+                .unwrap_or(""),
+        };
         let meta = live.get(node).and_then(|m| m.get(disk_id));
         let connected = meta.is_some();
         let info = DiskInfo {
@@ -131,7 +186,9 @@ pub async fn set_disk_state(
         return Json(serde_json::json!({"ok": false, "error": "desired must be ON or OFF"}));
     }
 
-    let cm_key = format!("{}--{}", node, id);
+    // Built by the same function the reconciler reads with, so a toggle can never
+    // write a key nothing acts on (or act on one nothing can write).
+    let cm_key = crate::disks_reconciler::record_key(&node, &id);
     let patch = serde_json::json!({"data": {cm_key.as_str(): body.desired.as_str()}}).to_string();
 
     if kubectl::run(&[
@@ -263,5 +320,91 @@ pub async fn erase_disk(
             Json(serde_json::json!({"ok": false, "error": err}))
         }
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Reading the keys the reconciler writes ────────────────────────────────
+    //
+    // These two halves drifted apart once: record_key gained a bare form for hardware
+    // ids, this file kept `split_once("--") else { continue }`, and every bare key was
+    // skipped. The record draining a live disk had no row on the page and no toggle —
+    // the system was acting on state its owner could not see.
+
+    #[test]
+    fn a_node_scoped_key_splits_into_node_and_disk() {
+        assert_eq!(split_record_key("node1--dev-sda"), (Some("node1"), "dev-sda"));
+        assert_eq!(split_record_key("node1--system"), (Some("node1"), "system"));
+    }
+
+    /// A hardware id belongs to the disk, so it has no node in it — and must not be
+    /// split on a `--` it merely happens to contain.
+    #[test]
+    fn a_hardware_key_keeps_its_whole_id() {
+        assert_eq!(
+            split_record_key("serial-wwn-0x50014ee214caf529"),
+            (None, "serial-wwn-0x50014ee214caf529")
+        );
+        assert_eq!(
+            split_record_key("serial-ata-wdc--wd10"),
+            (None, "serial-ata-wdc--wd10"),
+            "a hardware id is never cut in half"
+        );
+    }
+
+    /// The failure this replaces: an unparseable key used to be dropped with
+    /// `continue`. A key nobody can read still governs a disk.
+    #[test]
+    fn an_unrecognised_key_is_surfaced_rather_than_dropped() {
+        assert_eq!(split_record_key("weird"), (None, "weird"));
+        assert_eq!(split_record_key(""), (None, ""));
+    }
+
+    /// Round trip against the writer, which is the property that actually matters:
+    /// whatever record_key produces, split_record_key has to recover.
+    #[test]
+    fn every_key_the_reconciler_writes_can_be_read_back() {
+        for (node, id) in [
+            ("node1", "dev-sda"),
+            ("node1", "system"),
+            ("node3", "system"),
+            ("node1", "serial-wwn-0x50014ee214caf529"),
+            ("node3", "serial-ata-wdc-wd10sdrw"),
+        ] {
+            let key = crate::disks_reconciler::record_key(node, id);
+            let (got_node, got_id) = split_record_key(&key);
+            assert_eq!(got_id, id, "id must survive {key}");
+            match got_node {
+                Some(n) => assert_eq!(n, node, "node must survive {key}"),
+                None => assert!(
+                    crate::disks_reconciler::is_globally_unique_id(id),
+                    "{key} lost its node without being a hardware id"
+                ),
+            }
+        }
+    }
+
+    /// The live ConfigMap at the moment the disk went missing from the page. Both
+    /// records for the easystore have to be readable; previously the second was not.
+    #[test]
+    fn the_configmap_that_hid_a_draining_disk_now_parses_completely() {
+        let keys = [
+            "node1--dev-sda",
+            "node1--dev-sdb",
+            "node1--dev-sdc",
+            "node1--serial-wwn-0x50014ee214caf529",
+            "node1--system",
+            "node3--system",
+            "serial-wwn-0x50014ee214caf529",
+        ];
+        let parsed: Vec<_> = keys.iter().map(|k| split_record_key(k)).collect();
+        assert_eq!(parsed.len(), keys.len(), "no key may be skipped");
+        // The one that was invisible.
+        assert_eq!(parsed[6], (None, "serial-wwn-0x50014ee214caf529"));
+        // And it names the same disk as the node-scoped one beside it.
+        assert_eq!(parsed[3].1, parsed[6].1);
     }
 }
