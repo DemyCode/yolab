@@ -1549,9 +1549,21 @@ fn migrate_disk_records(
         // from before disks were identified by hardware, and the node-scoped hardware
         // key from before hardware ids stopped being node-scoped. A cluster can be
         // updated straight from the first to the third, so neither may be skipped.
+        // Order matters, and getting it wrong cost a live drain.
+        //
+        // The node-scoped HARDWARE key is tried first because it is the most recent
+        // and the most specific: it was written by the previous release for this exact
+        // disk. The kernel-name key is a last resort — it belongs to whatever was at
+        // that letter under a scheme that could not tell disks apart, and stale ones
+        // linger for devices that have long since moved.
+        //
+        // Reversed, the stale one won. `node1--dev-sdc` was an orphan reading OFF;
+        // `node1--serial-wwn-…` was the live record reading ON. The migration carried
+        // OFF, the reconciler read OFF as an instruction, and started draining a disk
+        // nobody had asked to remove.
         for old_key in [
-            format!("{node}--dev-{device}"),
             format!("{node}--{disk_id}"),
+            format!("{node}--dev-{device}"),
         ] {
             if old_key == new_key {
                 continue; // nothing to carry onto itself
@@ -2269,6 +2281,38 @@ mod tests {
         assert!(migrate_disk_records("node1", &current, &desired).is_empty());
     }
 
+
+
+    /// The exact situation that drained a live disk: a stale kernel-name orphan saying
+    /// OFF, sitting beside the real record saying ON. The newest, most specific
+    /// predecessor has to win — a `dev-*` key belongs to a letter, not to a disk, and
+    /// stale ones outlive the hardware that made them.
+    #[test]
+    fn a_stale_kernel_name_record_never_beats_the_hardware_one() {
+        let desired = recs(&[
+            ("node1--dev-sdc", "OFF"),                      // orphan from the old scheme
+            ("node1--serial-wwn-0x50014ee2", "ON"),         // the record that means it
+        ]);
+        let current = vec![("serial-wwn-0x50014ee2".to_string(), "sdc".to_string())];
+        let out = migrate_disk_records("node1", &current, &desired);
+        assert_eq!(
+            out.get("serial-wwn-0x50014ee2").map(String::as_str),
+            Some("ON"),
+            "the live hardware record must win over a stale letter record"
+        );
+    }
+
+    /// With no hardware record to prefer, the kernel-name one is still the right
+    /// answer — that is the upgrade path from the oldest scheme.
+    #[test]
+    fn the_kernel_name_record_is_still_used_when_it_is_all_there_is() {
+        let desired = recs(&[("node1--dev-sdc", "ON")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdc".to_string())];
+        assert_eq!(
+            migrate_disk_records("node1", &current, &desired).get("serial-wwn-0xabc").map(String::as_str),
+            Some("ON")
+        );
+    }
 
     // ── Whether a record belongs to a disk or to a machine ────────────────────
 
