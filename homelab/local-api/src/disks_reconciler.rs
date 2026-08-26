@@ -1532,19 +1532,35 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
 ///
 /// Pure so the mapping can be tested without a cluster: given the old records and the
 /// devices seen now, return the entries to write.
+/// What a migration pass wants written and removed.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Migration {
+    /// Keys to set, in the current shape.
+    pub write: HashMap<String, String>,
+    /// Keys to delete. Carrying a value forward and leaving the source behind is what
+    /// produced two rows for one disk — and worse, two records for one disk that can
+    /// disagree, with only one of them connected to anything.
+    pub remove: Vec<String>,
+}
+
 fn migrate_disk_records(
     node: &str,
     // `current`: disk_id -> the kernel device it is at now, for every disk seen.
     current: &[(String, String)],
     // `desired`: existing records, `<node>--<disk_id>` -> "ON"/"OFF".
     desired: &HashMap<String, String>,
-) -> HashMap<String, String> {
+) -> Migration {
     let mut out = HashMap::new();
+    let mut remove: Vec<String> = Vec::new();
     for (disk_id, device) in current {
         let new_key = record_key(node, disk_id);
-        if desired.contains_key(&new_key) {
-            continue; // already migrated, or never needed it
-        }
+        // Not `continue` when the new key already exists.
+        //
+        // That is the state a half-finished migration leaves — and the one the live
+        // cluster was in: the bare key written, the node-scoped source still sitting
+        // beside it. Skipping meant the duplicate could never be cleared, so one disk
+        // kept two records that were free to disagree, and did.
+        let already_migrated = desired.contains_key(&new_key);
         // Two shapes can precede this one, and both are checked: the kernel-name key
         // from before disks were identified by hardware, and the node-scoped hardware
         // key from before hardware ids stopped being node-scoped. A cluster can be
@@ -1569,12 +1585,41 @@ fn migrate_disk_records(
                 continue; // nothing to carry onto itself
             }
             if let Some(setting) = desired.get(&old_key) {
-                out.insert(new_key.clone(), setting.clone());
-                break;
+                // Only the first match supplies the value — they are ordered
+                // best-first — but EVERY predecessor is superseded and every one goes.
+                // Keeping any of them leaves a second record for the same hardware,
+                // which is how one disk ended up with an ON record carrying the
+                // visible toggle and an OFF record doing the deciding.
+                if !already_migrated && !out.contains_key(&new_key) {
+                    out.insert(new_key.clone(), setting.clone());
+                }
+                remove.push(old_key);
             }
         }
     }
-    out
+
+    // Kernel-name records for disks that are not at that device any more.
+    //
+    // These cannot be matched by identity ever again: a disk that publishes any
+    // hardware id is now keyed by it, so a `dev-*` record can only ever be picked up
+    // by whatever unrelated disk next lands on that letter. That is not a stale
+    // record, it is a trap — and it has already sprung once, when a stale `dev-sdc`
+    // reading OFF was carried onto a live disk and started draining it.
+    //
+    // Losing a setting is the cheap failure here: a disk with no record is OFF, and
+    // OFF can no longer destroy anything now that a live OSD's disk is never
+    // registered off.
+    let devices_now: std::collections::HashSet<&str> =
+        current.iter().map(|(_, d)| d.as_str()).collect();
+    for key in desired.keys() {
+        let Some(id) = key.strip_prefix(&format!("{node}--")) else { continue };
+        let Some(device) = id.strip_prefix("dev-") else { continue };
+        if !devices_now.contains(device) && !remove.contains(key) {
+            remove.push(key.clone());
+        }
+    }
+
+    Migration { write: out, remove }
 }
 
 async fn auto_register_all_disks(
@@ -1590,12 +1635,30 @@ async fn auto_register_all_disks(
             m["device"].as_str().map(|d| (id.clone(), d.to_string()))
         })
         .collect();
-    let mut new_entries: HashMap<String, String> = migrate_disk_records(node, &current, desired);
+    let migration = migrate_disk_records(node, &current, desired);
+    let mut new_entries: HashMap<String, String> = migration.write;
     if !new_entries.is_empty() {
         tracing::info!(
             "auto_register_all_disks: carried {} disk setting(s) onto their hardware ids on {node}",
             new_entries.len()
         );
+    }
+    // A merge patch deletes by setting a key to null, so removals ride along with the
+    // writes in one request — the two must not be able to half-apply, or a value could
+    // be dropped without its replacement landing.
+    let mut patch_data: serde_json::Map<String, Value> = new_entries
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
+    if !migration.remove.is_empty() {
+        tracing::info!(
+            "auto_register_all_disks: removing {} superseded disk record(s) on {node}: {}",
+            migration.remove.len(),
+            migration.remove.join(", ")
+        );
+        for key in &migration.remove {
+            patch_data.insert(key.clone(), Value::Null);
+        }
     }
 
     for (disk_id, m) in meta {
@@ -1627,11 +1690,12 @@ async fn auto_register_all_disks(
                 "auto_register_all_disks: {disk_id} has no record but is running one of our OSDs — registering it ON, not OFF"
             );
         }
-        new_entries.insert(key, default.to_string());
+        new_entries.insert(key.clone(), default.to_string());
+        patch_data.insert(key, Value::String(default.to_string()));
     }
-    if new_entries.is_empty() { return; }
+    if patch_data.is_empty() { return; }
 
-    let patch = json!({"data": new_entries}).to_string();
+    let patch = json!({ "data": Value::Object(patch_data) }).to_string();
     if let Err(e) = kubectl::run(&[
         "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
     ]).await {
@@ -2228,7 +2292,7 @@ mod tests {
             ("serial-wwn-0x50014ee214caf529".to_string(), "sdb".to_string()),
             ("serial-wwn-0x500a0751191b8afa".to_string(), "sda".to_string()),
         ];
-        let out = migrate_disk_records("node1", &current, &desired);
+        let out = migrate_disk_records("node1", &current, &desired).write;
         assert_eq!(out.get("serial-wwn-0x50014ee214caf529").map(String::as_str), Some("ON"));
         assert_eq!(out.get("serial-wwn-0x500a0751191b8afa").map(String::as_str), Some("OFF"));
     }
@@ -2240,7 +2304,7 @@ mod tests {
         let desired = recs(&[("node1--dev-sdb", "OFF")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
         assert_eq!(
-            migrate_disk_records("node1", &current, &desired).get("serial-wwn-0xabc").map(String::as_str),
+            migrate_disk_records("node1", &current, &desired).write.get("serial-wwn-0xabc").map(String::as_str),
             Some("OFF")
         );
     }
@@ -2251,7 +2315,7 @@ mod tests {
     fn an_existing_record_is_never_overwritten() {
         let desired = recs(&[("node1--dev-sdb", "ON"), ("serial-wwn-0xabc", "OFF")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
     }
 
     /// Hardware that publishes no id keeps the kernel-name key it already had; there
@@ -2260,7 +2324,7 @@ mod tests {
     fn a_disk_still_identified_by_kernel_name_is_left_as_is() {
         let desired = recs(&[("node1--dev-sdb", "ON")]);
         let current = vec![("dev-sdb".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
     }
 
     /// A genuinely new disk has no old record, and must not inherit one from whichever
@@ -2270,7 +2334,7 @@ mod tests {
         let desired = recs(&[("node1--dev-sdb", "ON")]);
         // A different disk, now at sdc. sdb's record is not its to take.
         let current = vec![("serial-wwn-0xnew".to_string(), "sdc".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
     }
 
     /// Records belong to a node. Another machine's disk must not pick one up.
@@ -2278,7 +2342,7 @@ mod tests {
     fn records_do_not_cross_between_machines() {
         let desired = recs(&[("node3--dev-sdb", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
     }
 
 
@@ -2294,7 +2358,7 @@ mod tests {
             ("node1--serial-wwn-0x50014ee2", "ON"),         // the record that means it
         ]);
         let current = vec![("serial-wwn-0x50014ee2".to_string(), "sdc".to_string())];
-        let out = migrate_disk_records("node1", &current, &desired);
+        let out = migrate_disk_records("node1", &current, &desired).write;
         assert_eq!(
             out.get("serial-wwn-0x50014ee2").map(String::as_str),
             Some("ON"),
@@ -2309,9 +2373,85 @@ mod tests {
         let desired = recs(&[("node1--dev-sdc", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdc".to_string())];
         assert_eq!(
-            migrate_disk_records("node1", &current, &desired).get("serial-wwn-0xabc").map(String::as_str),
+            migrate_disk_records("node1", &current, &desired).write.get("serial-wwn-0xabc").map(String::as_str),
             Some("ON")
         );
+    }
+
+
+    // ── Removing what has been superseded ─────────────────────────────────────
+
+    /// Carrying a value forward and leaving the source behind gives one disk two
+    /// records that can disagree — which is exactly what happened: an ON record with
+    /// the visible toggle, and an OFF record doing the deciding.
+    #[test]
+    fn the_record_a_value_came_from_is_removed() {
+        let desired = recs(&[("node1--serial-wwn-0xabc", "ON")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        let m = migrate_disk_records("node1", &current, &desired);
+        assert_eq!(m.write.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
+        assert!(m.remove.contains(&"node1--serial-wwn-0xabc".to_string()));
+    }
+
+    /// The whole ConfigMap from the cluster this went wrong on, with the easystore
+    /// present at sdc. Afterwards there must be exactly one record for that disk.
+    #[test]
+    fn the_live_configmap_collapses_to_one_record_per_disk() {
+        let desired = recs(&[
+            ("node1--dev-sda", "OFF"),
+            ("node1--dev-sdb", "OFF"),
+            ("node1--dev-sdc", "OFF"),
+            ("node1--serial-wwn-0x50014ee214caf529", "ON"),
+            ("node1--system", "ON"),
+            ("node3--system", "ON"),
+            ("serial-wwn-0x50014ee214caf529", "OFF"),
+        ]);
+        let current = vec![
+            ("serial-wwn-0x50014ee214caf529".to_string(), "sdc".to_string()),
+            ("system".to_string(), "dm-1".to_string()),
+        ];
+        let m = migrate_disk_records("node1", &current, &desired);
+
+        // The node-scoped duplicate goes.
+        assert!(m.remove.contains(&"node1--serial-wwn-0x50014ee214caf529".to_string()));
+        // The kernel-name traps go — including the one that started the drain.
+        for orphan in ["node1--dev-sda", "node1--dev-sdb"] {
+            assert!(m.remove.contains(&orphan.to_string()), "{orphan} must go");
+        }
+        // system records are untouched: they name a machine's own disk, not a letter.
+        assert!(!m.remove.iter().any(|k| k.ends_with("--system")));
+    }
+
+    /// A kernel-name record for a disk that IS at that letter is the only identity
+    /// that disk has — some enclosures publish nothing — so it stays.
+    #[test]
+    fn a_kernel_name_record_for_a_present_disk_is_kept() {
+        let desired = recs(&[("node1--dev-sdb", "ON")]);
+        let current = vec![("dev-sdb".to_string(), "sdb".to_string())];
+        let m = migrate_disk_records("node1", &current, &desired);
+        assert!(m.remove.is_empty(), "the disk is still there under that id");
+    }
+
+    /// Another machine's records are never touched — this node cannot see that
+    /// hardware and has no standing to judge it.
+    #[test]
+    fn another_nodes_records_are_never_removed() {
+        let desired = recs(&[("node3--dev-sdb", "ON"), ("node3--system", "ON")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        let m = migrate_disk_records("node1", &current, &desired);
+        assert!(m.remove.is_empty());
+    }
+
+    /// Nothing to do on an already-clean cluster: no writes, no deletes, no patch.
+    #[test]
+    fn a_settled_cluster_produces_no_changes() {
+        let desired = recs(&[("serial-wwn-0xabc", "ON"), ("node1--system", "ON")]);
+        let current = vec![
+            ("serial-wwn-0xabc".to_string(), "sdb".to_string()),
+            ("system".to_string(), "dm-1".to_string()),
+        ];
+        let m = migrate_disk_records("node1", &current, &desired);
+        assert!(m.write.is_empty() && m.remove.is_empty());
     }
 
     // ── Whether a record belongs to a disk or to a machine ────────────────────
@@ -2360,7 +2500,7 @@ mod tests {
     fn a_kernel_name_record_migrates_all_the_way_to_a_bare_hardware_key() {
         let desired = recs(&[("node1--dev-sdb", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        let out = migrate_disk_records("node1", &current, &desired);
+        let out = migrate_disk_records("node1", &current, &desired).write;
         assert_eq!(out.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
     }
 
@@ -2369,7 +2509,7 @@ mod tests {
     fn a_node_scoped_hardware_record_loses_its_prefix() {
         let desired = recs(&[("node1--serial-wwn-0xabc", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        let out = migrate_disk_records("node1", &current, &desired);
+        let out = migrate_disk_records("node1", &current, &desired).write;
         assert_eq!(out.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
     }
 
@@ -2381,7 +2521,7 @@ mod tests {
         // Now plugged into node3, at a completely different letter.
         let current = vec![("serial-wwn-0xabc".to_string(), "sdd".to_string())];
         // Nothing to migrate — the record already applies, on any node.
-        assert!(migrate_disk_records("node3", &current, &desired).is_empty());
+        assert!(migrate_disk_records("node3", &current, &desired).write.is_empty());
         assert_eq!(record_key("node3", "serial-wwn-0xabc"), "serial-wwn-0xabc");
     }
 
