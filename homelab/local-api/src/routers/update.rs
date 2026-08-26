@@ -226,75 +226,27 @@ pub async fn update(
             return;
         }
 
-        // Ceph now runs as host daemons, so a rebuild that bumps the Ceph
-        // package restarts mon/mgr/osd on this machine as a side effect. Rook
-        // used to gate its own upgrades on cluster health; nothing does now
-        // unless we do it here.
+        // No Ceph health gate here any more.
         //
-        // The dangerous case is a rolling update across nodes: restarting this
-        // node's OSDs while another node's are still backfilling can drop PGs
-        // below min_size, which blocks I/O for every app on every node. So wait
-        // for recovery to finish first. HEALTH_WARN is fine (a single-node
-        // cluster lives there permanently) — what must be clear is PG movement.
-        yield Ok(Event::default().data("$ yolab-ceph-wait-healthy"));
-        // tokio::process, not std::process. The blocking API parks a runtime
-        // worker for the whole wait — up to 15 minutes — and this runs inside an
-        // SSE handler. Observed live: a stuck gate left local-api listening on
-        // :3001 but answering nothing, so the whole UI went blank behind a 502.
-        // Hard outer timeout. The script has its own deadline, but that only
-        // helps while it is making progress — if `ceph` itself wedges, the
-        // script never returns and `.output().await` waits forever. Anything on
-        // the update path must be incapable of blocking indefinitely: a bug
-        // here cannot be fixed by shipping a fix, because shipping it requires
-        // this very code path to run. That deadlock happened for real.
-        let gate = tokio::time::timeout(
-            std::time::Duration::from_secs(330),
-            tokio::process::Command::new("yolab-ceph-wait-healthy")
-                .arg("300")
-                .output(),
-        )
-        .await;
-
-        let gate = match gate {
-            Ok(r) => r,
-            Err(_) => {
-                yield Ok(Event::default().data(
-                    "[WARN] the Ceph health gate did not return in time — continuing"
-                ));
-                Ok(std::process::Output {
-                    status: Default::default(),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                })
-            }
-        };
-
-        match gate {
-            Ok(o) if o.status.success() => {
-                yield Ok(Event::default().data(format!(
-                    "[INFO] {}", String::from_utf8_lossy(&o.stdout).trim()
-                )));
-            }
-            Ok(o) => {
-                // Warn and continue rather than refuse. A cluster can sit
-                // degraded indefinitely for reasons an update would FIX (a bad
-                // config, a stuck daemon), so treating "not healthy" as "never
-                // update" makes the platform unrepairable from the UI — the
-                // opposite of safe.
-                yield Ok(Event::default().data(format!(
-                    "[WARN] Ceph is not fully healthy: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                )));
-                yield Ok(Event::default().data(
-                    "[WARN] continuing anyway — OSDs are not restarted by a rebuild"
-                ));
-            }
-            Err(e) => {
-                yield Ok(Event::default().data(format!(
-                    "[WARN] could not run the Ceph health gate ({e}) — continuing"
-                )));
-            }
-        }
+        // There was one: it ran `yolab-ceph-wait-healthy`, which waited up to five
+        // minutes for backfill to finish before rebuilding. It never refused. Every
+        // path out of it — recovery still running, ceph unreachable, the script itself
+        // wedging — ended in "[WARN] … continuing", deliberately, because a cluster can
+        // sit degraded for reasons an update would FIX, and refusing to update an
+        // unhealthy cluster makes the platform unrepairable from the UI exactly when
+        // repairing it matters most.
+        //
+        // Which left a wait that changed nothing except how long an update took. It
+        // also had to be wrapped in an outer timeout after it deadlocked for real: the
+        // blocking call parked a runtime worker inside this SSE handler, local-api kept
+        // listening on :3001 and answered nothing, and the whole UI went blank behind a
+        // 502. A step that cannot refuse is not worth the ways it can fail.
+        //
+        // The risk it was written for is real but narrower than it looked: a rebuild
+        // only restarts OSDs when it bumps the Ceph package or changes their unit, and
+        // the damage needs several nodes restarting while one is still backfilling. If
+        // that becomes a problem, the fix is a gate that actually refuses on a Ceph
+        // version change — not a pause that always gives way.
 
         // nixos-rebuild
         clear_stale_rebuild_unit();
