@@ -693,7 +693,7 @@ async fn reconcile_local_osds(
     // Create OSDs for disks switched ON that do not have one yet. This is the
     // half Rook used to do in response to a CephCluster patch.
     for (disk_id, m) in meta {
-        let key = format!("{node}--{disk_id}");
+        let key = record_key(node, disk_id);
         let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
         if !want_on || disk_to_osd.contains_key(disk_id) {
             continue;
@@ -741,7 +741,7 @@ async fn reconcile_local_osds(
     // Starting a stopped daemon needs no cluster state at all. It must not
     // depend on the cluster being healthy enough to describe itself.
     for (disk_id, _m) in meta {
-        let key = format!("{node}--{disk_id}");
+        let key = record_key(node, disk_id);
         let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
         if !want_on {
             continue;
@@ -792,7 +792,7 @@ async fn reconcile_local_osds(
 
 
     for (disk_id, m) in meta {
-        let key = format!("{node}--{disk_id}");
+        let key = record_key(node, disk_id);
         let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
         let Some(&osd_id) = disk_to_osd.get(disk_id) else {
             // No OSD on this disk. If it is switched OFF that is the finished
@@ -948,10 +948,23 @@ async fn reconcile_local_osds(
     // unplugged case — and if even one exists we cannot tell which leftover OSD
     // is its, so none of them get purged. Switching that disk OFF in the UI
     // clears the block and lets the cleanup run.
+    // Keys come in two shapes now — bare for a hardware id, node-scoped for one that
+    // only means something on this machine — so the disk id has to be recovered from
+    // either. Reading only the prefixed form would make every hardware-id record
+    // invisible here, and this check is what stops a leftover OSD being purged while
+    // its disk is merely unplugged.
     let prefix = format!("{node}--");
     let unplugged_but_wanted = desired.iter().any(|(k, v)| {
-        (v == "ON" || v == "USING")
-            && k.strip_prefix(&prefix).is_some_and(|d| !meta.contains_key(d))
+        if v != "ON" && v != "USING" {
+            return false;
+        }
+        match k.strip_prefix(&prefix) {
+            Some(d) => !meta.contains_key(d),
+            // A bare key belongs to whichever machine currently holds that disk, so it
+            // only counts as unplugged-but-wanted when this node cannot see it.
+            None if is_globally_unique_id(k) => !meta.contains_key(k.as_str()),
+            None => false,
+        }
     });
 
     purge_drained_osds(node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
@@ -1528,17 +1541,25 @@ fn migrate_disk_records(
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for (disk_id, device) in current {
-        let new_key = format!("{node}--{disk_id}");
+        let new_key = record_key(node, disk_id);
         if desired.contains_key(&new_key) {
             continue; // already migrated, or never needed it
         }
-        // The only key the old scheme could have produced for this device.
-        let old_key = format!("{node}--dev-{device}");
-        if old_key == new_key {
-            continue; // still identified by kernel name; nothing to carry
-        }
-        if let Some(setting) = desired.get(&old_key) {
-            out.insert(new_key, setting.clone());
+        // Two shapes can precede this one, and both are checked: the kernel-name key
+        // from before disks were identified by hardware, and the node-scoped hardware
+        // key from before hardware ids stopped being node-scoped. A cluster can be
+        // updated straight from the first to the third, so neither may be skipped.
+        for old_key in [
+            format!("{node}--dev-{device}"),
+            format!("{node}--{disk_id}"),
+        ] {
+            if old_key == new_key {
+                continue; // nothing to carry onto itself
+            }
+            if let Some(setting) = desired.get(&old_key) {
+                out.insert(new_key.clone(), setting.clone());
+                break;
+            }
         }
     }
     out
@@ -1566,7 +1587,7 @@ async fn auto_register_all_disks(
     }
 
     for (disk_id, m) in meta {
-        let key = format!("{node}--{disk_id}");
+        let key = record_key(node, disk_id);
         if desired.contains_key(&key) || new_entries.contains_key(&key) { continue; }
 
         // A disk with no record is normally new, and new disks are OFF until someone
@@ -1781,6 +1802,41 @@ fn is_uuid(s: &str) -> bool {
             .iter()
             .zip(&parts)
             .all(|(&l, p)| p.len() == l && p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+
+/// The config-map key holding a disk's ON/OFF setting.
+///
+/// Node-scoped only when the id is not unique on its own. That distinction is the
+/// whole reason the prefix existed: under the old scheme a disk could be `dev-sda`,
+/// and node1's `dev-sda` and node3's `dev-sda` are different disks, so a bare key
+/// would have had one machine's setting silently governing another's hardware. The
+/// same is true of `system`, which every node has exactly one of.
+///
+/// A hardware id is not like that. `serial-wwn-0x50014ee214caf529` is that disk
+/// anywhere on earth, so scoping it to a node makes the record describe "this disk,
+/// while it happens to be in this machine" — and moving the disk to another node makes
+/// it a stranger again: no record, registered new, and new means OFF.
+///
+/// Which is the thing a person most wants to work. A machine dies, the disks are fine,
+/// they go in another box. Ceph can already do it — an OSD carries its own identity in
+/// the BlueStore label and reports its new location when it starts — so the only thing
+/// standing in the way was this key.
+fn record_key(node: &str, disk_id: &str) -> String {
+    if is_globally_unique_id(disk_id) {
+        disk_id.to_string()
+    } else {
+        format!("{node}--{disk_id}")
+    }
+}
+
+/// True when an id identifies one physical disk rather than a slot on one machine.
+///
+/// `serial-` is what disk_id emits once udev gave it something from the hardware —
+/// a WWN, an NVMe EUI, a model+serial. Everything else (`dev-<name>`, `system`) names
+/// a position, and positions repeat across machines.
+fn is_globally_unique_id(disk_id: &str) -> bool {
+    disk_id.starts_with("serial-")
 }
 
 // ── Stable disk identity ──────────────────────────────────────────────────────
@@ -2161,8 +2217,8 @@ mod tests {
             ("serial-wwn-0x500a0751191b8afa".to_string(), "sda".to_string()),
         ];
         let out = migrate_disk_records("node1", &current, &desired);
-        assert_eq!(out.get("node1--serial-wwn-0x50014ee214caf529").map(String::as_str), Some("ON"));
-        assert_eq!(out.get("node1--serial-wwn-0x500a0751191b8afa").map(String::as_str), Some("OFF"));
+        assert_eq!(out.get("serial-wwn-0x50014ee214caf529").map(String::as_str), Some("ON"));
+        assert_eq!(out.get("serial-wwn-0x500a0751191b8afa").map(String::as_str), Some("OFF"));
     }
 
     /// OFF has to travel too. Silently switching a deliberately-off disk back ON would
@@ -2172,7 +2228,7 @@ mod tests {
         let desired = recs(&[("node1--dev-sdb", "OFF")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
         assert_eq!(
-            migrate_disk_records("node1", &current, &desired).get("node1--serial-wwn-0xabc").map(String::as_str),
+            migrate_disk_records("node1", &current, &desired).get("serial-wwn-0xabc").map(String::as_str),
             Some("OFF")
         );
     }
@@ -2181,7 +2237,7 @@ mod tests {
     /// older one that happens to still be in the map.
     #[test]
     fn an_existing_record_is_never_overwritten() {
-        let desired = recs(&[("node1--dev-sdb", "ON"), ("node1--serial-wwn-0xabc", "OFF")]);
+        let desired = recs(&[("node1--dev-sdb", "ON"), ("serial-wwn-0xabc", "OFF")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
         assert!(migrate_disk_records("node1", &current, &desired).is_empty());
     }
@@ -2211,6 +2267,78 @@ mod tests {
         let desired = recs(&[("node3--dev-sdb", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
         assert!(migrate_disk_records("node1", &current, &desired).is_empty());
+    }
+
+
+    // ── Whether a record belongs to a disk or to a machine ────────────────────
+
+    /// A hardware id names one physical disk, so its record must not be tied to
+    /// whichever machine currently holds it — otherwise moving a disk to another node
+    /// makes it a stranger, and strangers are OFF, and OFF on a disk carrying an OSD
+    /// means wipe.
+    #[test]
+    fn a_hardware_id_is_not_scoped_to_a_machine() {
+        assert_eq!(
+            record_key("node1", "serial-wwn-0x50014ee214caf529"),
+            "serial-wwn-0x50014ee214caf529"
+        );
+        // Same disk, different machine, same record.
+        assert_eq!(
+            record_key("node1", "serial-wwn-0xabc"),
+            record_key("node3", "serial-wwn-0xabc")
+        );
+    }
+
+    /// The reason the prefix existed, and still has to: these ids name a position on a
+    /// machine, and positions repeat. node1's sda and node3's sda are different disks.
+    #[test]
+    fn an_id_that_only_means_something_locally_stays_scoped() {
+        assert_eq!(record_key("node1", "dev-sda"), "node1--dev-sda");
+        assert_ne!(record_key("node1", "dev-sda"), record_key("node3", "dev-sda"));
+        assert_eq!(record_key("node1", "system"), "node1--system");
+        assert_ne!(record_key("node1", "system"), record_key("node3", "system"));
+    }
+
+    #[test]
+    fn only_hardware_ids_count_as_globally_unique() {
+        assert!(is_globally_unique_id("serial-wwn-0xabc"));
+        assert!(is_globally_unique_id("serial-ata-wdc-wd10"));
+        for local in ["dev-sda", "dev-nvme0n1", "system", "", "loop0"] {
+            assert!(!is_globally_unique_id(local), "{local} names a position");
+        }
+    }
+
+    // ── Migration, across both changes ────────────────────────────────────────
+
+    /// Straight from the oldest scheme to the newest, which is what a cluster that
+    /// skipped a release actually does.
+    #[test]
+    fn a_kernel_name_record_migrates_all_the_way_to_a_bare_hardware_key() {
+        let desired = recs(&[("node1--dev-sdb", "ON")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        let out = migrate_disk_records("node1", &current, &desired);
+        assert_eq!(out.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
+    }
+
+    /// And from the intermediate shape this release replaces.
+    #[test]
+    fn a_node_scoped_hardware_record_loses_its_prefix() {
+        let desired = recs(&[("node1--serial-wwn-0xabc", "ON")]);
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
+        let out = migrate_disk_records("node1", &current, &desired);
+        assert_eq!(out.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
+    }
+
+    /// A disk that moves to another machine keeps the setting it already had, which is
+    /// the point of the whole change.
+    #[test]
+    fn a_disk_moved_to_another_node_keeps_its_setting() {
+        let desired = recs(&[("serial-wwn-0xabc", "ON")]);
+        // Now plugged into node3, at a completely different letter.
+        let current = vec![("serial-wwn-0xabc".to_string(), "sdd".to_string())];
+        // Nothing to migrate — the record already applies, on any node.
+        assert!(migrate_disk_records("node3", &current, &desired).is_empty());
+        assert_eq!(record_key("node3", "serial-wwn-0xabc"), "serial-wwn-0xabc");
     }
 
     // ── Stable identity ───────────────────────────────────────────────────────
