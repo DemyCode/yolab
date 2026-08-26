@@ -73,7 +73,74 @@ function CopyValue({ label, value }: { label: string; value: string }) {
 function TechnicalDetails({ app }: { app: AppInfo }) {
   const [open, setOpen] = useState(false);
   const [pods, setPods] = useState<PodInfo[] | null>(null);
-  const [logs, setLogs] = useState<{ pod: string; text: string } | null>(null);
+  const [logs, setLogs] = useState<{
+    pod: string;
+    lines: string[];
+    live: boolean;
+  } | null>(null);
+  const logStream = useRef<AbortController | null>(null);
+  const logBox = useRef<HTMLPreElement | null>(null);
+
+  /**
+   * Follow one pod's logs.
+   *
+   * This used to call `api.getText`, which waits for a complete response body — but
+   * the endpoint is an SSE stream running `kubectl logs --follow`, so the body never
+   * ends and the promise never settled. The panel rendered `{text || "…"}` and showed
+   * three dots forever, whatever the pod was actually saying.
+   *
+   * Lines are capped rather than accumulated without limit: a chatty pod left open in
+   * a background tab is otherwise an unbounded array.
+   */
+  const MAX_LOG_LINES = 1000;
+
+  function stopLogs() {
+    logStream.current?.abort();
+    logStream.current = null;
+    setLogs((l) => (l ? { ...l, live: false } : null));
+  }
+
+  function startLogs(pod: string) {
+    // Only one at a time — switching pods must not leave the previous kubectl
+    // running on the server with nobody reading it.
+    logStream.current?.abort();
+    const ctrl = new AbortController();
+    logStream.current = ctrl;
+    setLogs({ pod, lines: [], live: true });
+
+    void streamEvents(
+      `/api/apps/${app.instance_name}/logs/${pod}`,
+      { signal: ctrl.signal },
+      (line) => {
+        setLogs((prev) =>
+          prev && prev.pod === pod
+            ? { ...prev, lines: [...prev.lines, line].slice(-MAX_LOG_LINES) }
+            : prev,
+        );
+      },
+    )
+      .then(() => {
+        // The stream ending means kubectl exited — the pod went away, or it was a
+        // one-shot container. Say so rather than leaving it looking live.
+        if (logStream.current === ctrl) {
+          setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
+        }
+      })
+      .catch(() => {
+        if (logStream.current === ctrl) {
+          setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
+        }
+      });
+  }
+
+  // Leaving the page must not leave kubectl following logs nobody is reading.
+  useEffect(() => () => logStream.current?.abort(), []);
+
+  // Follow the tail as lines arrive, the way a terminal would.
+  useEffect(() => {
+    const el = logBox.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs?.lines.length]);
 
   useEffect(() => {
     if (!open || pods) return;
@@ -130,23 +197,12 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                     {pod.phase}
                   </span>
                   <button
-                    onClick={async () => {
-                      setLogs({ pod: pod.name, text: "" });
-                      try {
-                        const text = await api.getText(
-                          `/api/apps/${app.instance_name}/logs/${pod.name}`,
-                        );
-                        setLogs({ pod: pod.name, text });
-                      } catch (e) {
-                        setLogs({
-                          pod: pod.name,
-                          text: e instanceof Error ? e.message : "No logs",
-                        });
-                      }
-                    }}
+                    onClick={() =>
+                      logs?.pod === pod.name ? stopLogs() : startLogs(pod.name)
+                    }
                     className="shrink-0 rounded-lg px-2 py-1 text-xs text-primary hover:bg-surface-3"
                   >
-                    Logs
+                    {logs?.pod === pod.name ? "Stop" : "Logs"}
                   </button>
                 </div>
               ))}
@@ -156,9 +212,37 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
           )}
 
           {logs && (
-            <pre className="max-h-72 overflow-auto rounded-xl bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg-muted">
-              {logs.text || "…"}
-            </pre>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-xs text-fg-subtle">
+                <span className="truncate font-mono">{logs.pod}</span>
+                {logs.live ? (
+                  <span className="flex items-center gap-1 text-success">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
+                    Live
+                  </span>
+                ) : (
+                  <span>Stopped</span>
+                )}
+                <button
+                  onClick={stopLogs}
+                  className="ml-auto rounded px-1.5 py-0.5 hover:bg-surface-3 hover:text-fg"
+                >
+                  Close
+                </button>
+              </div>
+              <pre
+                ref={logBox}
+                className="max-h-72 overflow-auto rounded-xl bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg-muted"
+              >
+                {logs.lines.length > 0
+                  ? logs.lines.join("\n")
+                  : logs.live
+                    ? // An app that has printed nothing yet is a normal state and looks
+                      // identical to a broken viewer, so it has to say which it is.
+                      "Connected — waiting for this app to print something…"
+                    : "This app printed nothing."}
+              </pre>
+            </div>
           )}
 
           {Object.keys(app.config ?? {}).length > 0 && (
