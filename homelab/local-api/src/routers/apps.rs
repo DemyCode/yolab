@@ -1104,13 +1104,37 @@ pub async fn pod_logs(
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
-        let Ok(c) = child else { return; };
+        let Ok(c) = child else {
+            yield Ok(Event::default().data("[yolab] could not run kubectl to read the logs"));
+            return;
+        };
         let mut guard = KillOnDrop(c);
         use tokio::io::AsyncBufReadExt;
         let stdout = guard.0.stdout.take().unwrap();
-        let mut lines = tokio::io::BufReader::new(stdout).lines();
-        while let Ok(Some(l)) = lines.next_line().await {
-            yield Ok(Event::default().data(l));
+        // stderr was piped and then never read, so every reason kubectl declines to
+        // show logs — a container still initialising, a pod that has gone away, a name
+        // that no longer exists — arrived as an empty stream and an empty panel. The
+        // explanation existed; nothing carried it to the person reading.
+        let stderr = guard.0.stderr.take().unwrap();
+        let mut out = tokio::io::BufReader::new(stdout).lines();
+        let mut err = tokio::io::BufReader::new(stderr).lines();
+        loop {
+            tokio::select! {
+                line = out.next_line() => match line {
+                    Ok(Some(l)) => yield Ok(Event::default().data(l)),
+                    _ => break,
+                },
+                line = err.next_line() => match line {
+                    Ok(Some(l)) => yield Ok(Event::default().data(format!("[yolab] {l}"))),
+                    // stderr closing is normal and says nothing about stdout.
+                    _ => continue,
+                },
+            }
+        }
+        // Drain whatever kubectl said on its way out, so a failure that only appears
+        // at exit is still reported rather than swallowed by the loop ending.
+        while let Ok(Some(l)) = err.next_line().await {
+            yield Ok(Event::default().data(format!("[yolab] {l}")));
         }
         let _ = guard.0.wait().await;
     };
