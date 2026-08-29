@@ -45,7 +45,6 @@ function fmtBytes(b: number): string {
   return `${(b / 1024).toFixed(0)} KiB`;
 }
 
-
 /**
  * What an offline OSD actually means — which is not one message.
  *
@@ -82,12 +81,16 @@ function OfflineDiskBanner({
 
   if (down.length === 0) {
     return (
-      <Banner tone="warning" title="A disk did not finish being set up" className="mt-2">
+      <Banner
+        tone="warning"
+        title="A disk did not finish being set up"
+        className="mt-2"
+      >
         {phantom.length === 1 ? "One disk" : `${phantom.length} disks`} started
         being added and never finished, so nothing is stored on{" "}
         {phantom.length === 1 ? "it" : "them"} yet. Switch the disk off and on
-        again to retry. Nothing is at risk — {phantom.length === 1 ? "it" : "they"}{" "}
-        never held any of your files.
+        again to retry. Nothing is at risk —{" "}
+        {phantom.length === 1 ? "it" : "they"} never held any of your files.
       </Banner>
     );
   }
@@ -101,7 +104,11 @@ function OfflineDiskBanner({
 
   if (copies <= 1 || !anyUp) {
     return (
-      <Banner tone="error" title="A disk is offline and there is no second copy" className="mt-2">
+      <Banner
+        tone="error"
+        title="A disk is offline and there is no second copy"
+        className="mt-2"
+      >
         Whatever was on {down.length === 1 ? "that disk" : "those disks"} is not
         readable right now, and it is not stored anywhere else — so do NOT
         switch it off. There is nothing to rebuild from, and switching it off
@@ -425,7 +432,8 @@ function DiskRow({
         </div>
       )}
 
-      {(state === "foreign" || (state === "blocked" && disk.has_partitions && !disk.mounted)) &&
+      {(state === "foreign" ||
+        (state === "blocked" && disk.has_partitions && !disk.mounted)) &&
         (eraseConfirm ? (
           <div className="flex shrink-0 items-center gap-2">
             <Button
@@ -825,7 +833,10 @@ function RedundancySheet({
   // first tick after auto mode was removed. The form still has to open and be
   // usable, so it starts from the safest thing that is true of any cluster:
   // one copy, on any disk. Nothing is applied until Save.
-  const saved = policyData.policy ?? { size: 1, failure_domain: "osd" as const };
+  const saved = policyData.policy ?? {
+    size: 1,
+    failure_domain: "osd" as const,
+  };
 
   const [size, setSize] = useState<number>(saved.size);
   const [domain, setDomain] = useState<Domain>(saved.failure_domain as Domain);
@@ -970,119 +981,117 @@ function RedundancySheet({
       ) : (
         <div className="space-y-6">
           <>
-              <div>
-                <p className="mb-2 text-sm font-medium text-fg">
-                  Spread copies across
-                </p>
-                <div className="flex gap-2">
-                  <Choice
-                    active={domain === "osd"}
-                    // No longer lowers the copy count to fit. Switching where
-                    // copies go should not quietly change how many you keep.
-                    onClick={() => setDomain("osd")}
-                    title="Different disks"
-                    body={`${nDisks} available`}
-                  />
-                  <Choice
-                    active={domain === "host"}
-                    onClick={() => setDomain("host")}
-                    title="Different machines"
-                    body={`${nNodes} available`}
-                  />
-                </div>
+            <div>
+              <p className="mb-2 text-sm font-medium text-fg">
+                Spread copies across
+              </p>
+              <div className="flex gap-2">
+                <Choice
+                  active={domain === "osd"}
+                  // No longer lowers the copy count to fit. Switching where
+                  // copies go should not quietly change how many you keep.
+                  onClick={() => setDomain("osd")}
+                  title="Different disks"
+                  body={`${nDisks} available`}
+                />
+                <Choice
+                  active={domain === "host"}
+                  onClick={() => setDomain("host")}
+                  title="Different machines"
+                  body={`${nNodes} available`}
+                />
               </div>
+            </div>
 
-              <div>
-                <p className="mb-2 text-sm font-medium text-fg">
-                  How many copies
-                </p>
-                {/* A stepper, not a fixed row of choices. The number is a
+            <div>
+              <p className="mb-2 text-sm font-medium text-fg">
+                How many copies
+              </p>
+              {/* A stepper, not a fixed row of choices. The number is a
                     statement of intent — "keep this many, and make the rest
                     when I add disks" — so it is not capped at what fits today.
                     The old control disabled anything above the current disk
                     count, which made a perfectly reasonable plan unselectable. */}
-                <div className="flex items-center gap-4">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={size <= 1}
-                    onClick={() => setSize((n) => Math.max(1, n - 1))}
-                    aria-label="One fewer copy"
-                  >
-                    −
-                  </Button>
-                  <span
-                    className="w-12 text-center font-display text-3xl tabular-nums text-fg"
-                    aria-live="polite"
-                  >
-                    {size}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setSize((n) => n + 1)}
-                    aria-label="One more copy"
-                  >
-                    +
-                  </Button>
-                </div>
-
-                <div className="mt-3">
-                  {size === 1 ? (
-                    <Banner tone="error" title="No protection">
-                      One copy means if a {domain === "osd" ? "disk" : "machine"}{" "}
-                      fails, whatever was on it is gone. Your backups would be
-                      the only copy left.
-                    </Banner>
-                  ) : size > places ? (
-                    <Banner
-                      tone="warning"
-                      title={`Only ${places} of those ${size} copies fit right now`}
-                    >
-                      You have {places}{" "}
-                      {domain === "osd" ? "disk" : "machine"}
-                      {places === 1 ? "" : "s"}, and each copy needs its own.
-                      YoLab will keep {places} for now and make the rest
-                      automatically when you add{" "}
-                      {domain === "osd" ? "a disk" : "a machine"}. Nothing is at
-                      risk in the meantime.
-                    </Banner>
-                  ) : (
-                    <p className="text-sm text-fg-muted">
-                      Survives {size - 1}{" "}
-                      {domain === "osd" ? "disk" : "machine"}
-                      {size - 1 === 1 ? "" : "s"} failing.
-                    </p>
-                  )}
-                </div>
+              <div className="flex items-center gap-4">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={size <= 1}
+                  onClick={() => setSize((n) => Math.max(1, n - 1))}
+                  aria-label="One fewer copy"
+                >
+                  −
+                </Button>
+                <span
+                  className="w-12 text-center font-display text-3xl tabular-nums text-fg"
+                  aria-live="polite"
+                >
+                  {size}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSize((n) => n + 1)}
+                  aria-label="One more copy"
+                >
+                  +
+                </Button>
               </div>
 
-              {feasibility === "impossible" && (
-                <Banner tone="error" title="Not enough room for that">
-                  Making {size - saved.size} more{" "}
-                  {size - saved.size === 1 ? "copy" : "copies"} needs{" "}
-                  {formatBytes(rawNeeded)} and only {formatBytes(rawFree)} is
-                  free. Add a disk first.
-                </Banner>
-              )}
-              {feasibility === "tight" && (
-                <Banner tone="warning" title="This will be a tight fit">
-                  It needs {formatBytes(rawNeeded)} and {formatBytes(rawFree)}{" "}
-                  is free. It should work, but you will be close to full while
-                  the copies are made.
-                </Banner>
-              )}
-
-              <div className="rounded-xl bg-surface-2 p-4">
-                <p className="text-sm text-fg-muted">
-                  Room for your files with this setting
-                </p>
-                <p className="mt-0.5 font-display text-2xl text-fg">
-                  {showEstimate ? "about " : ""}
-                  {formatBytes(capacity)}
-                </p>
+              <div className="mt-3">
+                {size === 1 ? (
+                  <Banner tone="error" title="No protection">
+                    One copy means if a {domain === "osd" ? "disk" : "machine"}{" "}
+                    fails, whatever was on it is gone. Your backups would be the
+                    only copy left.
+                  </Banner>
+                ) : size > places ? (
+                  <Banner
+                    tone="warning"
+                    title={`Only ${places} of those ${size} copies fit right now`}
+                  >
+                    You have {places} {domain === "osd" ? "disk" : "machine"}
+                    {places === 1 ? "" : "s"}, and each copy needs its own.
+                    YoLab will keep {places} for now and make the rest
+                    automatically when you add{" "}
+                    {domain === "osd" ? "a disk" : "a machine"}. Nothing is at
+                    risk in the meantime.
+                  </Banner>
+                ) : (
+                  <p className="text-sm text-fg-muted">
+                    Survives {size - 1} {domain === "osd" ? "disk" : "machine"}
+                    {size - 1 === 1 ? "" : "s"} failing.
+                  </p>
+                )}
               </div>
-            </>
+            </div>
+
+            {feasibility === "impossible" && (
+              <Banner tone="error" title="Not enough room for that">
+                Making {size - saved.size} more{" "}
+                {size - saved.size === 1 ? "copy" : "copies"} needs{" "}
+                {formatBytes(rawNeeded)} and only {formatBytes(rawFree)} is
+                free. Add a disk first.
+              </Banner>
+            )}
+            {feasibility === "tight" && (
+              <Banner tone="warning" title="This will be a tight fit">
+                It needs {formatBytes(rawNeeded)} and {formatBytes(rawFree)} is
+                free. It should work, but you will be close to full while the
+                copies are made.
+              </Banner>
+            )}
+
+            <div className="rounded-xl bg-surface-2 p-4">
+              <p className="text-sm text-fg-muted">
+                Room for your files with this setting
+              </p>
+              <p className="mt-0.5 font-display text-2xl text-fg">
+                {showEstimate ? "about " : ""}
+                {formatBytes(capacity)}
+              </p>
+            </div>
+          </>
 
           {result && <p className="text-sm text-danger">{result}</p>}
         </div>

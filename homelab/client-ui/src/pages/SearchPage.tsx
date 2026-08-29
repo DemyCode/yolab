@@ -84,8 +84,16 @@ export default function SearchPage() {
         if (!q) return a.name.localeCompare(b.name);
         // A name match beats a match buried in a description: someone typing
         // "photo" means the app called Photoprism before one that mentions photos.
-        const an = a.name.toLowerCase().startsWith(q) ? 0 : a.name.toLowerCase().includes(q) ? 1 : 2;
-        const bn = b.name.toLowerCase().startsWith(q) ? 0 : b.name.toLowerCase().includes(q) ? 1 : 2;
+        const an = a.name.toLowerCase().startsWith(q)
+          ? 0
+          : a.name.toLowerCase().includes(q)
+            ? 1
+            : 2;
+        const bn = b.name.toLowerCase().startsWith(q)
+          ? 0
+          : b.name.toLowerCase().includes(q)
+            ? 1
+            : 2;
         return an - bn || a.name.localeCompare(b.name);
       });
   }, [catalog.data, query, groups, source, installed, installedCounts]);
@@ -174,7 +182,11 @@ export default function SearchPage() {
                 <option value="any">Any</option>
                 {sources.map((s) => (
                   <option key={s} value={s}>
-                    {s === "official" ? "YoLab catalog" : s === "custom" ? "Your own" : s}
+                    {s === "official"
+                      ? "YoLab catalog"
+                      : s === "custom"
+                        ? "Your own"
+                        : s}
                   </option>
                 ))}
               </select>

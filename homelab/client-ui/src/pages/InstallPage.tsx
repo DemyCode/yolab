@@ -219,9 +219,9 @@ export function InstallPage() {
     seeded.current = appId;
     const seed: Record<string, unknown> = {};
     for (const [name, prop] of Object.entries(schema.properties)) {
-      const widget = (
-        (app?.uischema as Record<string, Record<string, unknown>>)?.[name] ?? {}
-      )["ui:widget"];
+      const widget = ((
+        app?.uischema as Record<string, Record<string, unknown>>
+      )?.[name] ?? {})["ui:widget"];
       if (widget === "PasswordWidget") {
         seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
       } else if (prop.default !== undefined) {
@@ -564,7 +564,6 @@ export function InstallPage() {
               }
             />
           </Field>
-
         </div>
       </Card>
 

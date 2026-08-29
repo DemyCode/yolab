@@ -20,18 +20,14 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
-        let repo_path = std::env::var("YOLAB_REPO_PATH")
-            .unwrap_or_else(|_| "/etc/nixos".into());
+        let repo_path = std::env::var("YOLAB_REPO_PATH").unwrap_or_else(|_| "/etc/nixos".into());
         let built_dir = PathBuf::from("/var/lib/yolab");
         Self {
             config_path: std::env::var("YOLAB_CONFIG")
                 .unwrap_or_else(|_| format!("{repo_path}/homelab/ignored/config.toml")),
-            platform: std::env::var("YOLAB_PLATFORM")
-                .unwrap_or_else(|_| "nixos".into()),
-            flake_target: std::env::var("YOLAB_FLAKE_TARGET")
-                .unwrap_or_else(|_| "yolab".into()),
-            node_ipv6: std::env::var("YOLAB_NODE_IPV6")
-                .unwrap_or_else(|_| "::1".into()),
+            platform: std::env::var("YOLAB_PLATFORM").unwrap_or_else(|_| "nixos".into()),
+            flake_target: std::env::var("YOLAB_FLAKE_TARGET").unwrap_or_else(|_| "yolab".into()),
+            node_ipv6: std::env::var("YOLAB_NODE_IPV6").unwrap_or_else(|_| "::1".into()),
             port: std::env::var("YOLAB_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())

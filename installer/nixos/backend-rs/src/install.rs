@@ -203,7 +203,12 @@ fn render_config_toml(
     service_name: &str,
     password_hash: &str,
 ) -> anyhow::Result<String> {
-    Ok(toml::to_string(&build_config(req, tunnel, service_name, password_hash))?)
+    Ok(toml::to_string(&build_config(
+        req,
+        tunnel,
+        service_name,
+        password_hash,
+    ))?)
 }
 
 async fn hash_password(password: &str) -> anyhow::Result<String> {
@@ -335,7 +340,9 @@ async fn do_install(
 
     // ── Hash password ─────────────────────────────────────────────────────────
     log!("Hashing password…");
-    let password_hash = hash_password(&req.password).await.context("hash_password")?;
+    let password_hash = hash_password(&req.password)
+        .await
+        .context("hash_password")?;
 
     // ── Clone repository ──────────────────────────────────────────────────────
     if Path::new(CODE_DIR).exists() {
@@ -389,10 +396,12 @@ async fn do_install(
     stream_command(
         "nixos-install",
         &[
-            "--flake", &flake_ref,
+            "--flake",
+            &flake_ref,
             "--no-root-password",
-            "--log-format", "raw",
-            "-v"
+            "--log-format",
+            "raw",
+            "-v",
         ],
         tx,
     )
@@ -486,7 +495,12 @@ mod tests {
             vec![8, 4, 4, 4, 12],
             "{f}"
         );
-        assert!(parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_hexdigit())), "{f}");
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.bytes().all(|b| b.is_ascii_hexdigit())),
+            "{f}"
+        );
         assert!(parts[2].starts_with('4'), "version nibble must be 4: {f}");
         assert!(
             ['8', '9', 'a', 'b'].contains(&parts[3].chars().next().unwrap()),
@@ -506,7 +520,9 @@ mod tests {
     #[test]
     fn config_toml_carries_a_ceph_fsid() {
         let t = rendered(&params());
-        let fsid = t["ceph"]["fsid"].as_str().expect("[ceph] fsid must be written");
+        let fsid = t["ceph"]["fsid"]
+            .as_str()
+            .expect("[ceph] fsid must be written");
         assert!(!fsid.is_empty());
     }
 
@@ -524,7 +540,10 @@ mod tests {
     #[test]
     fn the_hostname_is_the_name_assigned_by_the_platform() {
         // Not the disk, not a constant: it must match the DNS record just created.
-        assert_eq!(rendered(&params())["homelab"]["hostname"].as_str(), Some("node1"));
+        assert_eq!(
+            rendered(&params())["homelab"]["hostname"].as_str(),
+            Some("node1")
+        );
     }
 
     #[test]
@@ -532,7 +551,10 @@ mod tests {
         let cfg = rendered(&params());
         assert_eq!(cfg["homelab"]["timezone"].as_str(), Some("Europe/Paris"));
         assert_eq!(cfg["homelab"]["boot_mode"].as_str(), Some("uefi"));
-        assert_eq!(cfg["homelab"]["root_ssh_key"].as_str(), Some("ssh-ed25519 AAAA... user@host"));
+        assert_eq!(
+            cfg["homelab"]["root_ssh_key"].as_str(),
+            Some("ssh-ed25519 AAAA... user@host")
+        );
         assert_eq!(cfg["disk"]["device"].as_str(), Some("/dev/nvme0n1"));
     }
 
@@ -554,21 +576,30 @@ mod tests {
     #[test]
     fn the_account_token_lands_where_local_api_looks_for_it() {
         let cfg = rendered(&params());
-        assert_eq!(cfg["tunnel"]["account_token"].as_str(), Some("acct-tok-123"));
+        assert_eq!(
+            cfg["tunnel"]["account_token"].as_str(),
+            Some("acct-tok-123")
+        );
     }
 
     #[test]
     fn both_wireguard_keypairs_are_recorded_without_being_swapped() {
         let cfg = rendered(&params());
         // wg0 — the public tunnel.
-        assert_eq!(cfg["tunnel"]["wg_private_key"].as_str(), Some("tunnel-priv"));
+        assert_eq!(
+            cfg["tunnel"]["wg_private_key"].as_str(),
+            Some("tunnel-priv")
+        );
         assert_eq!(cfg["tunnel"]["wg_public_key"].as_str(), Some("tunnel-pub"));
         assert_eq!(cfg["tunnel"]["sub_ipv6"].as_str(), Some("2001:db8::1"));
         // wg1 — the private node mesh. Distinct keys, distinct endpoint.
         assert_eq!(cfg["node"]["wg_private_key"].as_str(), Some("node-priv"));
         assert_eq!(cfg["node"]["wg_public_key"].as_str(), Some("node-pub"));
         assert_eq!(cfg["node"]["sub_ipv6_private"].as_str(), Some("fd00:42::5"));
-        assert_eq!(cfg["node"]["wg_server_endpoint"].as_str(), Some("1.2.3.4:51821"));
+        assert_eq!(
+            cfg["node"]["wg_server_endpoint"].as_str(),
+            Some("1.2.3.4:51821")
+        );
     }
 
     // ── First node vs joining node ────────────────────────────────────────────
@@ -595,7 +626,10 @@ mod tests {
         let cfg = rendered(&req);
         let k3s = &cfg["node"]["k3s"];
         assert_eq!(k3s["token"].as_str(), Some("existing-cluster-token"));
-        assert_eq!(k3s["server_addr"].as_str(), Some("https://[fd00:42::1]:6443"));
+        assert_eq!(
+            k3s["server_addr"].as_str(),
+            Some("https://[fd00:42::1]:6443")
+        );
     }
 
     #[test]
@@ -624,7 +658,10 @@ mod tests {
     fn a_bios_install_records_bios_not_the_uefi_default() {
         let mut req = params();
         req.boot_mode = "bios".into();
-        assert_eq!(rendered(&req)["homelab"]["boot_mode"].as_str(), Some("bios"));
+        assert_eq!(
+            rendered(&req)["homelab"]["boot_mode"].as_str(),
+            Some("bios")
+        );
     }
 
     /// Skipping the SSH key is allowed; it must render as an empty string rather
@@ -635,7 +672,10 @@ mod tests {
         req.root_ssh_key = String::new();
         let cfg = rendered(&req);
         assert_eq!(cfg["homelab"]["root_ssh_key"].as_str(), Some(""));
-        assert!(cfg["homelab"]["allowed_ssh_keys"].as_array().unwrap().is_empty());
+        assert!(cfg["homelab"]["allowed_ssh_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     /// TOML has no escape for a raw newline in a basic string. If a pasted SSH key
@@ -652,6 +692,9 @@ mod tests {
             cfg["homelab"]["root_ssh_key"].as_str(),
             Some("ssh-ed25519 AAAA\nsecond line \"quoted\" \\ backslash")
         );
-        assert_eq!(cfg["homelab"]["timezone"].as_str(), Some("America/Argentina/Buenos_Aires"));
+        assert_eq!(
+            cfg["homelab"]["timezone"].as_str(),
+            Some("America/Argentina/Buenos_Aires")
+        );
     }
 }

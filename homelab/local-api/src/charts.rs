@@ -83,8 +83,9 @@ fn yes() -> bool {
 /// must not require patching code, and the old URL has to keep working until the fleet
 /// has rolled over.
 fn official_url() -> String {
-    std::env::var("YOLAB_OFFICIAL_CHART_REPO")
-        .unwrap_or_else(|_| "https://raw.githubusercontent.com/DemyCode/yolab/main/catalog.yaml".into())
+    std::env::var("YOLAB_OFFICIAL_CHART_REPO").unwrap_or_else(|_| {
+        "https://raw.githubusercontent.com/DemyCode/yolab/main/catalog.yaml".into()
+    })
 }
 
 /// Every configured repo, official first.
@@ -99,7 +100,13 @@ pub async fn list_repos() -> Vec<ChartRepo> {
         removable: false,
     }];
     let stored: std::collections::HashMap<String, String> = crate::kubectl::get_json(&[
-        "get", "configmap", REPO_CM, "-n", REPO_NS, "-o", "jsonpath={.data}",
+        "get",
+        "configmap",
+        REPO_CM,
+        "-n",
+        REPO_NS,
+        "-o",
+        "jsonpath={.data}",
     ])
     .await
     .ok()
@@ -109,7 +116,11 @@ pub async fn list_repos() -> Vec<ChartRepo> {
         if name == OFFICIAL {
             continue; // never shadowed by stored config
         }
-        repos.push(ChartRepo { name, url, removable: true });
+        repos.push(ChartRepo {
+            name,
+            url,
+            removable: true,
+        });
     }
     repos
 }
@@ -134,18 +145,41 @@ pub fn valid_repo_url(url: &str) -> bool {
 
 pub async fn add_repo(name: &str, url: &str) -> anyhow::Result<()> {
     if !valid_repo_name(name) {
-        anyhow::bail!("repo name must be lowercase letters, digits and hyphens, and not '{OFFICIAL}'");
+        anyhow::bail!(
+            "repo name must be lowercase letters, digits and hyphens, and not '{OFFICIAL}'"
+        );
     }
     if !valid_repo_url(url) {
         anyhow::bail!("repo URL must start with https://");
     }
     let patch = serde_json::json!({ "data": { name: url } }).to_string();
-    if crate::kubectl::run(&["patch", "configmap", REPO_CM, "-n", REPO_NS, "--type", "merge", "-p", &patch])
-        .await
-        .is_err()
+    if crate::kubectl::run(&[
+        "patch",
+        "configmap",
+        REPO_CM,
+        "-n",
+        REPO_NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    .is_err()
     {
         let _ = crate::kubectl::run(&["create", "configmap", REPO_CM, "-n", REPO_NS]).await;
-        crate::kubectl::run(&["patch", "configmap", REPO_CM, "-n", REPO_NS, "--type", "merge", "-p", &patch]).await?;
+        crate::kubectl::run(&[
+            "patch",
+            "configmap",
+            REPO_CM,
+            "-n",
+            REPO_NS,
+            "--type",
+            "merge",
+            "-p",
+            &patch,
+        ])
+        .await?;
     }
     Ok(())
 }
@@ -156,7 +190,18 @@ pub async fn remove_repo(name: &str) -> anyhow::Result<()> {
     }
     // JSON-patch remove on a key that isn't there fails, so go through merge-null.
     let patch = serde_json::json!({ "data": { name: null } }).to_string();
-    crate::kubectl::run(&["patch", "configmap", REPO_CM, "-n", REPO_NS, "--type", "merge", "-p", &patch]).await?;
+    crate::kubectl::run(&[
+        "patch",
+        "configmap",
+        REPO_CM,
+        "-n",
+        REPO_NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await?;
     let dir = cache_dir_for(name);
     let _ = tokio::fs::remove_dir_all(&dir).await;
     Ok(())
@@ -297,7 +342,11 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
             continue;
         }
         if !valid_chart_name(&entry.name) {
-            tracing::warn!("{}: skipping chart with unusable name {:?}", repo.name, entry.name);
+            tracing::warn!(
+                "{}: skipping chart with unusable name {:?}",
+                repo.name,
+                entry.name
+            );
             continue;
         }
         let reference = format!("{registry}/{}", entry.name);
@@ -455,7 +504,13 @@ mod tests {
         .unwrap();
         assert_eq!(m.registry, "oci://ghcr.io/demycode/charts");
         assert_eq!(m.charts.len(), 2);
-        assert_eq!(m.charts[0], CatalogEntry { name: "filebrowser".into(), version: "0.1.0".into() });
+        assert_eq!(
+            m.charts[0],
+            CatalogEntry {
+                name: "filebrowser".into(),
+                version: "0.1.0".into()
+            }
+        );
         assert_eq!(m.charts[1].version, "0.2.1");
     }
 

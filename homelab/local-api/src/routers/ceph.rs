@@ -1,4 +1,9 @@
-use axum::{extract::Path, http::StatusCode, response::{IntoResponse, Response}, Json};
+use axum::{
+    extract::Path,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -115,7 +120,11 @@ async fn compute_cluster_health() -> ClusterHealth {
         Err(_) => {
             let starting = system_uptime_secs() < 900;
             return ClusterHealth {
-                level: if starting { HealthLevel::Warn } else { HealthLevel::Error },
+                level: if starting {
+                    HealthLevel::Warn
+                } else {
+                    HealthLevel::Error
+                },
                 title: if starting {
                     "Storage is warming up".into()
                 } else {
@@ -124,7 +133,8 @@ async fn compute_cluster_health() -> ClusterHealth {
                 message: if starting {
                     "Your storage is starting after a restart. Apps will be available in a few minutes.".into()
                 } else {
-                    "Cannot connect to the storage control plane. Check that Rook is running.".into()
+                    "Cannot connect to the storage control plane. Check that Rook is running."
+                        .into()
                 },
                 issues: vec![],
                 pg_unavailable: false,
@@ -158,9 +168,10 @@ async fn compute_cluster_health() -> ClusterHealth {
 
     // Only when Ceph says something is unreadable — two extra queries, and this
     // endpoint is polled.
-    let loss = if details.as_object().is_some_and(|o| {
-        o.contains_key("PG_AVAILABILITY") || o.contains_key("PG_DOWN")
-    }) {
+    let loss = if details
+        .as_object()
+        .is_some_and(|o| o.contains_key("PG_AVAILABILITY") || o.contains_key("PG_DOWN"))
+    {
         assess_pg_loss().await
     } else {
         None
@@ -175,7 +186,13 @@ async fn compute_cluster_health() -> ClusterHealth {
     }
 
     // Sort: errors first, then warns
-    issues.sort_by_key(|i| if i.level == HealthLevel::Error { 0u8 } else { 1 });
+    issues.sort_by_key(|i| {
+        if i.level == HealthLevel::Error {
+            0u8
+        } else {
+            1
+        }
+    });
 
     let level = if health_str == "HEALTH_OK" {
         HealthLevel::Ok
@@ -197,7 +214,9 @@ async fn compute_cluster_health() -> ClusterHealth {
     // Only now: a disk being added and a disk having died produce the same counters,
     // and unreachable data is what tells them apart.
     let provisioning = osd_provisioning_active(pg_unavailable).await;
-    let storage_unrecoverable = loss.as_ref().is_some_and(|l| l.unrecoverable && l.stuck > 0);
+    let storage_unrecoverable = loss
+        .as_ref()
+        .is_some_and(|l| l.unrecoverable && l.stuck > 0);
 
     match level {
         HealthLevel::Ok => ClusterHealth {
@@ -213,7 +232,11 @@ async fn compute_cluster_health() -> ClusterHealth {
             storage_unrecoverable,
         },
         HealthLevel::Warn => ClusterHealth {
-            level: if starting { HealthLevel::Warn } else { HealthLevel::Warn },
+            level: if starting {
+                HealthLevel::Warn
+            } else {
+                HealthLevel::Warn
+            },
             title: if starting {
                 "Storage is warming up".into()
             } else {
@@ -233,7 +256,11 @@ async fn compute_cluster_health() -> ClusterHealth {
             storage_unrecoverable,
         },
         HealthLevel::Error => ClusterHealth {
-            level: if starting { HealthLevel::Warn } else { HealthLevel::Error },
+            level: if starting {
+                HealthLevel::Warn
+            } else {
+                HealthLevel::Error
+            },
             title: if starting {
                 "Storage is warming up".into()
             } else {
@@ -254,7 +281,6 @@ async fn compute_cluster_health() -> ClusterHealth {
         },
     }
 }
-
 
 /// Whether unreachable data can come back on its own, and how much of it there is.
 ///
@@ -307,7 +333,9 @@ pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
         .filter_map(|p| Some((p["pool"].as_i64()?, p["size"].as_u64()?)))
         .collect();
 
-    let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"]).await.ok()?;
+    let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"])
+        .await
+        .ok()?;
     // `ceph pg dump pgs_brief -f json` returns the array directly on some versions and
     // under `pg_stats` on others.
     let items = pgs["pg_stats"]
@@ -409,7 +437,11 @@ fn translate_health_check(
     loss: Option<&PgLoss>,
 ) -> Option<HealthIssue> {
     let severity = detail["severity"].as_str().unwrap_or("HEALTH_WARN");
-    let level = if severity == "HEALTH_ERR" { HealthLevel::Error } else { HealthLevel::Warn };
+    let level = if severity == "HEALTH_ERR" {
+        HealthLevel::Error
+    } else {
+        HealthLevel::Warn
+    };
 
     let (title, description) = match code {
         "POOL_NO_REDUNDANCY" => (
@@ -519,19 +551,25 @@ fn translate_health_check(
         }
     };
 
-    Some(HealthIssue { level, title, description })
+    Some(HealthIssue {
+        level,
+        title,
+        description,
+    })
 }
 
 pub async fn ceph_status() -> Json<CephStatus> {
     match cluster_status_from_k8s().await {
         Ok((status, osd_total, osd_ready)) => {
-            let cap = status.get("ceph")
+            let cap = status
+                .get("ceph")
                 .and_then(|c| c.get("capacity"))
                 .cloned()
                 .unwrap_or_default();
             Json(CephStatus {
                 available: status.get("phase").and_then(|p| p.as_str()) == Some("Ready"),
-                health: status.get("ceph")
+                health: status
+                    .get("ceph")
                     .and_then(|c| c.get("health"))
                     .and_then(|h| h.as_str())
                     .unwrap_or("HEALTH_UNKNOWN")
@@ -563,14 +601,16 @@ pub async fn ceph_status() -> Json<CephStatus> {
 /// had scheduled, not how many OSDs Ceph actually had up. This asks Ceph.
 ///
 /// Name kept so callers are untouched; nothing about it is k8s any more.
-pub async fn cluster_status_from_k8s()
--> anyhow::Result<(serde_json::Map<String, serde_json::Value>, u32, u32)> {
+pub async fn cluster_status_from_k8s(
+) -> anyhow::Result<(serde_json::Map<String, serde_json::Value>, u32, u32)> {
     let stat = crate::ceph_cli::ceph_json(&["osd", "stat"]).await?;
     let osd_total = stat["num_osds"].as_u64().unwrap_or(0) as u32;
     let osd_ready = stat["num_up_osds"].as_u64().unwrap_or(0) as u32;
 
     // Shaped like the old CR status so the UI contract does not change.
-    let health = crate::ceph_cli::ceph_json(&["health"]).await.unwrap_or_default();
+    let health = crate::ceph_cli::ceph_json(&["health"])
+        .await
+        .unwrap_or_default();
     let mut status = serde_json::Map::new();
     status.insert(
         "ceph".into(),
@@ -659,9 +699,13 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     use crate::ceph_cli::ceph_json;
 
     let osd_df = ceph_json(&["osd", "df", "tree"]).await.unwrap_or_default();
-    let pool_detail = ceph_json(&["osd", "pool", "ls", "detail"]).await.unwrap_or_default();
+    let pool_detail = ceph_json(&["osd", "pool", "ls", "detail"])
+        .await
+        .unwrap_or_default();
     let ceph_df = ceph_json(&["df"]).await.unwrap_or_default();
-    let crush_rules = ceph_json(&["osd", "crush", "rule", "dump"]).await.unwrap_or_default();
+    let crush_rules = ceph_json(&["osd", "crush", "rule", "dump"])
+        .await
+        .unwrap_or_default();
 
     // Ask per OSD, never in bulk. `safe-to-destroy osd.a osd.b` answers "can all
     // of these go at once?", which is nearly always false and would mark every
@@ -669,7 +713,10 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     let ids: Vec<i64> = ceph_json(&["osd", "ls"])
         .await
         .ok()
-        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()))
+        .and_then(|v| {
+            v.as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        })
         .unwrap_or_default();
 
     let mut safe_to_destroy = Vec::new();
@@ -698,12 +745,19 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
 }
 
 fn failure_domain_from_rule(rule: &serde_json::Value) -> String {
-    rule["steps"].as_array().and_then(|steps| {
-        steps.iter().find_map(|s| {
-            let op = s["op"].as_str().unwrap_or("");
-            if op.contains("choose") { s["type"].as_str().map(str::to_string) } else { None }
+    rule["steps"]
+        .as_array()
+        .and_then(|steps| {
+            steps.iter().find_map(|s| {
+                let op = s["op"].as_str().unwrap_or("");
+                if op.contains("choose") {
+                    s["type"].as_str().map(str::to_string)
+                } else {
+                    None
+                }
+            })
         })
-    }).unwrap_or_else(|| "host".into())
+        .unwrap_or_else(|| "host".into())
 }
 
 fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
@@ -722,7 +776,10 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
         .unwrap_or_default();
 
     // ── OSD tree ───────────────────────────────────────────────────────────────
-    let nodes = v["osd_df"]["nodes"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let nodes = v["osd_df"]["nodes"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
 
     let mut osd_host: HashMap<i64, String> = HashMap::new();
     for n in nodes {
@@ -730,35 +787,43 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
             let host = n["name"].as_str().unwrap_or("unknown").to_string();
             if let Some(children) = n["children"].as_array() {
                 for c in children {
-                    if let Some(id) = c.as_i64() { osd_host.insert(id, host.clone()); }
+                    if let Some(id) = c.as_i64() {
+                        osd_host.insert(id, host.clone());
+                    }
                 }
             }
         }
     }
 
-    let mut osds: Vec<OsdInfo> = nodes.iter()
+    let mut osds: Vec<OsdInfo> = nodes
+        .iter()
         .filter(|n| n["type"].as_str() == Some("osd"))
         .map(|n| {
             let id = n["id"].as_i64().unwrap_or(0);
-            let kb       = n["kb"].as_u64().unwrap_or(0);
-            let kb_used  = n["kb_used"].as_u64().unwrap_or(0);
+            let kb = n["kb"].as_u64().unwrap_or(0);
+            let kb_used = n["kb_used"].as_u64().unwrap_or(0);
             let kb_avail = n["kb_avail"].as_u64().unwrap_or(0);
             OsdInfo {
                 id,
                 name: n["name"].as_str().unwrap_or("").to_string(),
-                host: osd_host.get(&id).cloned().unwrap_or_else(|| "unknown".into()),
-                class: n["class"].as_str()
+                host: osd_host
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".into()),
+                class: n["class"]
+                    .as_str()
                     .or_else(|| n["device_class"].as_str())
-                    .unwrap_or("").to_string(),
-                size_bytes:  kb       * 1024,
-                used_bytes:  kb_used  * 1024,
+                    .unwrap_or("")
+                    .to_string(),
+                size_bytes: kb * 1024,
+                used_bytes: kb_used * 1024,
                 avail_bytes: kb_avail * 1024,
                 utilization: n["utilization"].as_f64().unwrap_or(0.0),
-                var:         n["var"].as_f64().unwrap_or(1.0),
-                pgs:         n["pgs"].as_u64().unwrap_or(0),
-                status:      n["status"].as_str().unwrap_or("unknown").to_string(),
+                var: n["var"].as_f64().unwrap_or(1.0),
+                pgs: n["pgs"].as_u64().unwrap_or(0),
+                status: n["status"].as_str().unwrap_or("unknown").to_string(),
                 crush_weight: n["crush_weight"].as_f64().unwrap_or(0.0),
-                reweight:     n["reweight"].as_f64().unwrap_or(1.0),
+                reweight: n["reweight"].as_f64().unwrap_or(1.0),
                 safe_to_destroy: safe_ids.contains(&id),
                 ok_to_stop: ok_to_stop_ids.contains(&id),
             }
@@ -767,39 +832,74 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
     osds.sort_by(|a, b| a.host.cmp(&b.host).then(a.id.cmp(&b.id)));
 
     // ── CRUSH rules → failure domain map ──────────────────────────────────────
-    let crush_rules = v["crush_rules"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-    let rule_fd: HashMap<u64, String> = crush_rules.iter()
-        .filter_map(|r| r["rule_id"].as_u64().map(|id| (id, failure_domain_from_rule(r))))
+    let crush_rules = v["crush_rules"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    let rule_fd: HashMap<u64, String> = crush_rules
+        .iter()
+        .filter_map(|r| {
+            r["rule_id"]
+                .as_u64()
+                .map(|id| (id, failure_domain_from_rule(r)))
+        })
         .collect();
-    let rule_names: HashMap<u64, String> = crush_rules.iter()
-        .filter_map(|r| r["rule_id"].as_u64().map(|id| (id, r["rule_name"].as_str().unwrap_or("").to_string())))
+    let rule_names: HashMap<u64, String> = crush_rules
+        .iter()
+        .filter_map(|r| {
+            r["rule_id"]
+                .as_u64()
+                .map(|id| (id, r["rule_name"].as_str().unwrap_or("").to_string()))
+        })
         .collect();
 
     // ── Pool df (max_avail, stored, used) ─────────────────────────────────────
-    let df_pools = v["ceph_df"]["pools"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-    let df_by_id: HashMap<u64, &serde_json::Value> = df_pools.iter()
+    let df_pools = v["ceph_df"]["pools"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    let df_by_id: HashMap<u64, &serde_json::Value> = df_pools
+        .iter()
         .filter_map(|p| p["id"].as_u64().map(|id| (id, p)))
         .collect();
 
     // ── Pool detail ────────────────────────────────────────────────────────────
-    let pool_detail = v["pool_detail"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-    let pools: Vec<PoolInfo> = pool_detail.iter().map(|pd| {
-        let pool_id = pd["pool"].as_u64().or_else(|| pd["pool_id"].as_u64()).unwrap_or(0);
-        let crush_rule_id = pd["crush_rule"].as_u64().unwrap_or(0);
-        let df = df_by_id.get(&pool_id);
-        PoolInfo {
-            id: pool_id,
-            name: pd["pool_name"].as_str().unwrap_or("").to_string(),
-            size:     pd["size"].as_u64().unwrap_or(1) as u32,
-            min_size: pd["min_size"].as_u64().unwrap_or(1) as u32,
-            crush_rule_name: rule_names.get(&crush_rule_id).cloned()
-                .unwrap_or_else(|| format!("rule-{}", crush_rule_id)),
-            failure_domain: rule_fd.get(&crush_rule_id).cloned().unwrap_or_else(|| "host".into()),
-            stored_bytes:   df.and_then(|p| p["stats"]["stored"].as_u64()).unwrap_or(0),
-            used_bytes:     df.and_then(|p| p["stats"]["bytes_used"].as_u64()).unwrap_or(0),
-            max_avail_bytes: df.and_then(|p| p["stats"]["max_avail"].as_u64()).unwrap_or(0),
-        }
-    }).collect();
+    let pool_detail = v["pool_detail"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    let pools: Vec<PoolInfo> = pool_detail
+        .iter()
+        .map(|pd| {
+            let pool_id = pd["pool"]
+                .as_u64()
+                .or_else(|| pd["pool_id"].as_u64())
+                .unwrap_or(0);
+            let crush_rule_id = pd["crush_rule"].as_u64().unwrap_or(0);
+            let df = df_by_id.get(&pool_id);
+            PoolInfo {
+                id: pool_id,
+                name: pd["pool_name"].as_str().unwrap_or("").to_string(),
+                size: pd["size"].as_u64().unwrap_or(1) as u32,
+                min_size: pd["min_size"].as_u64().unwrap_or(1) as u32,
+                crush_rule_name: rule_names
+                    .get(&crush_rule_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("rule-{}", crush_rule_id)),
+                failure_domain: rule_fd
+                    .get(&crush_rule_id)
+                    .cloned()
+                    .unwrap_or_else(|| "host".into()),
+                stored_bytes: df.and_then(|p| p["stats"]["stored"].as_u64()).unwrap_or(0),
+                used_bytes: df
+                    .and_then(|p| p["stats"]["bytes_used"].as_u64())
+                    .unwrap_or(0),
+                max_avail_bytes: df
+                    .and_then(|p| p["stats"]["max_avail"].as_u64())
+                    .unwrap_or(0),
+            }
+        })
+        .collect();
 
     let stats = &v["ceph_df"]["stats"];
     StorageDetail {
@@ -807,14 +907,14 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
         pools,
         total_bytes: stats["total_bytes"].as_u64().unwrap_or(0),
         avail_bytes: stats["total_avail_bytes"].as_u64().unwrap_or(0),
-        used_bytes:  stats["total_used_raw_bytes"].as_u64().unwrap_or(0),
+        used_bytes: stats["total_used_raw_bytes"].as_u64().unwrap_or(0),
     }
 }
 
 pub async fn storage_detail() -> Json<serde_json::Value> {
     match fetch_storage_raw().await {
         Ok(raw) => Json(serde_json::json!({ "ok": true, "data": parse_storage_detail(&raw) })),
-        Err(e)  => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
 
@@ -822,16 +922,29 @@ pub async fn set_replication(
     Json(req): Json<SetReplicationReq>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if req.size < 1 || req.size > 3 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "size must be 1–3"})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "size must be 1–3"})),
+        );
     }
     if req.min_size < 1 || req.min_size > req.size {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "min_size must be ≥1 and ≤size"})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "min_size must be ≥1 and ≤size"})),
+        );
     }
     if req.failure_domain != "osd" && req.failure_domain != "host" {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "failure_domain must be osd or host"})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "failure_domain must be osd or host"})),
+        );
     }
 
-    let rule_name = if req.failure_domain == "osd" { "replicated_osd" } else { "replicated_rule" };
+    let rule_name = if req.failure_domain == "osd" {
+        "replicated_osd"
+    } else {
+        "replicated_rule"
+    };
     let fd = &req.failure_domain;
     let size = req.size;
     let min_size = req.min_size;
@@ -843,7 +956,13 @@ pub async fn set_replication(
         .unwrap_or_default();
     if !have_rules.lines().any(|l| l.trim() == rule_name) {
         if let Err(e) = crate::ceph_cli::ceph(&[
-            "osd", "crush", "rule", "create-replicated", rule_name, "default", fd,
+            "osd",
+            "crush",
+            "rule",
+            "create-replicated",
+            rule_name,
+            "default",
+            fd,
         ])
         .await
         {
@@ -887,7 +1006,13 @@ pub async fn set_replication(
         // size=1 requires --yes-i-really-mean-it; harmless for size>1.
         let r = if size == 1 {
             crate::ceph_cli::ceph(&[
-                "osd", "pool", "set", pool, "size", &size_s, "--yes-i-really-mean-it",
+                "osd",
+                "pool",
+                "set",
+                pool,
+                "size",
+                &size_s,
+                "--yes-i-really-mean-it",
             ])
             .await
         } else {
@@ -902,7 +1027,10 @@ pub async fn set_replication(
         output.push_str(&format!("Updated pool {pool}\n"));
     }
 
-    (StatusCode::OK, Json(serde_json::json!({"ok": true, "output": output})))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"ok": true, "output": output})),
+    )
 }
 
 // ── OSD lifecycle ──────────────────────────────────────────────────────────────
@@ -929,8 +1057,13 @@ pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::
 /// same source of truth as the main toggle.
 async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_json::Value>) {
     let status = kubectl::get_json(&[
-        "get", "configmap", "yolab-disk-status", "-n", "rook-ceph",
-        "-o", "jsonpath={.data}",
+        "get",
+        "configmap",
+        "yolab-disk-status",
+        "-n",
+        "rook-ceph",
+        "-o",
+        "jsonpath={.data}",
     ])
     .await
     .ok();
@@ -939,7 +1072,9 @@ async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_j
     if let Some(map) = status.as_ref().and_then(|v| v.as_object()) {
         for (node, payload) in map {
             let Some(s) = payload.as_str() else { continue };
-            let Ok(p) = serde_json::from_str::<serde_json::Value>(s) else { continue };
+            let Ok(p) = serde_json::from_str::<serde_json::Value>(s) else {
+                continue;
+            };
             if let Some(disks) = p["disks"].as_object() {
                 for (disk_id, meta) in disks {
                     if meta["osd_id"].as_i64() == Some(id) {
@@ -951,25 +1086,58 @@ async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_j
     }
 
     let Some((node, disk_id)) = found else {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({
-            "ok": false, "error": format!("osd.{id} not found in disk inventory")
-        })));
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "ok": false, "error": format!("osd.{id} not found in disk inventory")
+            })),
+        );
     };
 
     let key = format!("{node}--{disk_id}");
     let patch = serde_json::json!({"data": {key: desired}}).to_string();
     if kubectl::run(&[
-        "patch", "configmap", "yolab-disk-config", "-n", "rook-ceph", "--type", "merge", "-p", &patch,
-    ]).await.is_err()
+        "patch",
+        "configmap",
+        "yolab-disk-config",
+        "-n",
+        "rook-ceph",
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    .is_err()
     {
-        let _ = kubectl::run(&["create", "configmap", "yolab-disk-config", "-n", "rook-ceph"]).await;
+        let _ = kubectl::run(&[
+            "create",
+            "configmap",
+            "yolab-disk-config",
+            "-n",
+            "rook-ceph",
+        ])
+        .await;
         if kubectl::run(&[
-            "patch", "configmap", "yolab-disk-config", "-n", "rook-ceph", "--type", "merge", "-p", &patch,
-        ]).await.is_err()
+            "patch",
+            "configmap",
+            "yolab-disk-config",
+            "-n",
+            "rook-ceph",
+            "--type",
+            "merge",
+            "-p",
+            &patch,
+        ])
+        .await
+        .is_err()
         {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "ok": false, "error": "failed to save disk config"
-            })));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "ok": false, "error": "failed to save disk config"
+                })),
+            );
         }
     }
     (StatusCode::OK, Json(serde_json::json!({"ok": true})))
@@ -1025,7 +1193,6 @@ mod tests {
         assert_eq!(issue.level, HealthLevel::Warn);
     }
 
-
     // ── Recoverable vs gone ───────────────────────────────────────────────────
     //
     // From a real disk pull at size=1: 63 of 81 PGs went `stale+active+clean`, every
@@ -1033,7 +1200,11 @@ mod tests {
     // recovery". Nothing was recovering. These pin the difference.
 
     fn loss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
-        PgLoss { stuck, total, unrecoverable }
+        PgLoss {
+            stuck,
+            total,
+            unrecoverable,
+        }
     }
 
     #[test]
@@ -1073,7 +1244,13 @@ mod tests {
     /// fixing those, and calling them lost would cry wolf on every reboot.
     #[test]
     fn only_states_meaning_nobody_is_answering_count_as_stuck() {
-        for gone in ["stale+active+clean", "down+peering", "incomplete", "unknown", "stale+peering"] {
+        for gone in [
+            "stale+active+clean",
+            "down+peering",
+            "incomplete",
+            "unknown",
+            "stale+peering",
+        ] {
             assert!(is_stuck_state(gone), "{gone} means unreachable");
         }
         for fine in [
@@ -1092,13 +1269,9 @@ mod tests {
     /// check was only a warning.
     #[test]
     fn the_page_is_told_this_is_an_error_not_a_warning() {
-        let issue = translate_health_check(
-            "PG_AVAILABILITY",
-            &warn(),
-            3,
-            Some(&loss(63, 81, true)),
-        )
-        .unwrap();
+        let issue =
+            translate_health_check("PG_AVAILABILITY", &warn(), 3, Some(&loss(63, 81, true)))
+                .unwrap();
         assert_eq!(issue.level, HealthLevel::Error);
         assert!(issue.title.contains("cannot be rebuilt"), "{}", issue.title);
     }
@@ -1119,7 +1292,10 @@ mod tests {
         for places in [0, 1] {
             let m = no_redundancy_message(places);
             assert!(m.contains("Turn on backups"), "places={places}: {m}");
-            assert!(!m.contains("Raise the number of copies"), "places={places}: {m}");
+            assert!(
+                !m.contains("Raise the number of copies"),
+                "places={places}: {m}"
+            );
         }
     }
 
@@ -1130,7 +1306,10 @@ mod tests {
     fn with_several_disks_the_advice_is_to_raise_the_copy_count() {
         let m = no_redundancy_message(3);
         assert!(m.contains("Raise the number of copies"), "{m}");
-        assert!(m.contains('3'), "the count the owner can see must appear: {m}");
+        assert!(
+            m.contains('3'),
+            "the count the owner can see must appear: {m}"
+        );
         assert!(!m.contains("expected"), "must not call this normal: {m}");
     }
 
@@ -1148,11 +1327,15 @@ mod tests {
     #[test]
     fn health_check_carries_cephs_severity_through() {
         assert_eq!(
-            translate_health_check("OSD_DOWN", &err(), 3, None).unwrap().level,
+            translate_health_check("OSD_DOWN", &err(), 3, None)
+                .unwrap()
+                .level,
             HealthLevel::Error
         );
         assert_eq!(
-            translate_health_check("OSD_DOWN", &warn(), 3, None).unwrap().level,
+            translate_health_check("OSD_DOWN", &warn(), 3, None)
+                .unwrap()
+                .level,
             HealthLevel::Warn
         );
     }
@@ -1190,7 +1373,10 @@ mod tests {
                 "{code} should not be shown to the user"
             );
             // Not even when Ceph escalates them.
-            assert!(translate_health_check(code, &err(), 3, None).is_none(), "{code} (err)");
+            assert!(
+                translate_health_check(code, &err(), 3, None).is_none(),
+                "{code} (err)"
+            );
         }
     }
 
@@ -1203,7 +1389,10 @@ mod tests {
         let issue = translate_health_check("BLUEFS_SPILLOVER", &detail, 3, None).unwrap();
         // Title takes the part before the first colon; the body keeps the whole line.
         assert_eq!(issue.title, "Storage issue: BLUEFS_SPILLOVER");
-        assert_eq!(issue.description, "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover");
+        assert_eq!(
+            issue.description,
+            "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover"
+        );
     }
 
     #[test]
@@ -1218,17 +1407,36 @@ mod tests {
     #[test]
     fn every_translated_code_produces_non_empty_text() {
         let codes = [
-            "POOL_NO_REDUNDANCY", "MDS_ALL_DOWN", "MDS_DAMAGE", "MDS_SLOW_METADATA_IO",
-            "MDS_SLOW_REQUEST", "OSD_DOWN", "OSD_NEARFULL", "OSD_FULL", "NOSPC",
-            "MON_DOWN", "MON_DISK_LOW", "MON_DISK_CRIT", "MON_DISK_BIG", "MON_CLOCK_SKEW",
-            "PG_DEGRADED", "PG_DOWN", "PG_AVAILABILITY", "SLOW_OPS", "OBJECT_UNFOUND",
-            "RECENT_CRASH", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED",
+            "POOL_NO_REDUNDANCY",
+            "MDS_ALL_DOWN",
+            "MDS_DAMAGE",
+            "MDS_SLOW_METADATA_IO",
+            "MDS_SLOW_REQUEST",
+            "OSD_DOWN",
+            "OSD_NEARFULL",
+            "OSD_FULL",
+            "NOSPC",
+            "MON_DOWN",
+            "MON_DISK_LOW",
+            "MON_DISK_CRIT",
+            "MON_DISK_BIG",
+            "MON_CLOCK_SKEW",
+            "PG_DEGRADED",
+            "PG_DOWN",
+            "PG_AVAILABILITY",
+            "SLOW_OPS",
+            "OBJECT_UNFOUND",
+            "RECENT_CRASH",
+            "POOL_TOTAL_SIZE_MIN_SIZE_REACHED",
         ];
         for code in codes {
             let issue = translate_health_check(code, &warn(), 3, None)
                 .unwrap_or_else(|| panic!("{code} should be surfaced, not suppressed"));
             assert!(!issue.title.trim().is_empty(), "{code} has a blank title");
-            assert!(!issue.description.trim().is_empty(), "{code} has a blank description");
+            assert!(
+                !issue.description.trim().is_empty(),
+                "{code} has a blank description"
+            );
             assert!(
                 !issue.title.contains(code),
                 "{code} fell through to the untranslated branch"
@@ -1397,7 +1605,11 @@ mod tests {
     #[test]
     fn storage_detail_resolves_pool_rules_to_names_and_failure_domains() {
         let d = parse_storage_detail(&sample_raw());
-        let pool = d.pools.iter().find(|p| p.name == "yolab-blockpool").unwrap();
+        let pool = d
+            .pools
+            .iter()
+            .find(|p| p.name == "yolab-blockpool")
+            .unwrap();
         assert_eq!(pool.crush_rule_name, "replicated_rule");
         assert_eq!(pool.failure_domain, "host");
         assert_eq!(pool.size, 2);
@@ -1482,7 +1694,9 @@ mod tests {
 /// The returned URL already carries the configured url_prefix, which is not
 /// wanted here: the caller appends the full incoming path, prefix included.
 async fn active_dashboard_origin() -> Option<String> {
-    let services = crate::ceph_cli::ceph_json(&["mgr", "services"]).await.ok()?;
+    let services = crate::ceph_cli::ceph_json(&["mgr", "services"])
+        .await
+        .ok()?;
     dashboard_origin_from(&services)
 }
 
@@ -1632,7 +1846,10 @@ mod dashboard_tests {
     #[test]
     fn a_hostname_mgr_url_works_too() {
         let v = json!({"dashboard": "http://node3:7000/"});
-        assert_eq!(dashboard_origin_from(&v).as_deref(), Some("http://node3:7000"));
+        assert_eq!(
+            dashboard_origin_from(&v).as_deref(),
+            Some("http://node3:7000")
+        );
     }
 
     /// https is what the mgr reports when ssl is left on. The scheme has to be
@@ -1672,7 +1889,12 @@ mod dashboard_tests {
 /// route again. All three spellings have to be registered, and this pins that.
 #[cfg(test)]
 mod dashboard_route_tests {
-    use axum::{body::Body, http::{Request, StatusCode}, routing::any, Router};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::any,
+        Router,
+    };
     use tower::ServiceExt;
 
     async fn reached() -> &'static str {

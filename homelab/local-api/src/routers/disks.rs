@@ -45,7 +45,6 @@ pub struct SetState {
     pub desired: String,
 }
 
-
 /// The inverse of `disks_reconciler::record_key`.
 ///
 /// Keys come in two shapes, and this is the half that was missing when they did:
@@ -72,20 +71,31 @@ fn split_record_key(key: &str) -> (Option<&str>, &str) {
 
 pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<DiskInfo>>> {
     let config_raw = kubectl::get_json(&[
-        "get", "configmap", CONFIG_CM, "-n", NS, "-o", "jsonpath={.data}",
+        "get",
+        "configmap",
+        CONFIG_CM,
+        "-n",
+        NS,
+        "-o",
+        "jsonpath={.data}",
     ])
     .await
     .unwrap_or(serde_json::Value::Object(Default::default()));
 
     let status_raw = kubectl::get_json(&[
-        "get", "configmap", STATUS_CM, "-n", NS, "-o", "jsonpath={.data}",
+        "get",
+        "configmap",
+        STATUS_CM,
+        "-n",
+        NS,
+        "-o",
+        "jsonpath={.data}",
     ])
     .await
     .unwrap_or(serde_json::Value::Object(Default::default()));
     let status_raw2 = status_raw.clone();
 
-    let desired: HashMap<String, String> =
-        serde_json::from_value(config_raw).unwrap_or_default();
+    let desired: HashMap<String, String> = serde_json::from_value(config_raw).unwrap_or_default();
 
     // Build a lookup: node → disk_id → live metadata (only if currently connected)
     let mut live: HashMap<String, HashMap<String, serde_json::Value>> = HashMap::new();
@@ -94,7 +104,8 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
             let payload: serde_json::Value =
                 serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
             if let Some(disks) = payload["disks"].as_object() {
-                live.entry(node.clone()).or_default()
+                live.entry(node.clone())
+                    .or_default()
                     .extend(disks.iter().map(|(k, v)| (k.clone(), v.clone())));
             }
         }
@@ -107,7 +118,10 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
         for (node, node_json) in status_map {
             let payload: serde_json::Value =
                 serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
-            if let Some(disks) = payload["knownDisks"].as_object().or(payload["disks"].as_object()) {
+            if let Some(disks) = payload["knownDisks"]
+                .as_object()
+                .or(payload["disks"].as_object())
+            {
                 for id in disks.keys() {
                     last_seen.entry(id.clone()).or_insert_with(|| node.clone());
                 }
@@ -140,10 +154,18 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
             id: disk_id.to_string(),
             desired: desired_val.clone(),
             connected,
-            device: meta.and_then(|v| v["device"].as_str()).unwrap_or("").to_string(),
-            model: meta.and_then(|v| v["model"].as_str()).unwrap_or("").to_string(),
+            device: meta
+                .and_then(|v| v["device"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            model: meta
+                .and_then(|v| v["model"].as_str())
+                .unwrap_or("")
+                .to_string(),
             size_bytes: meta.and_then(|v| v["size_bytes"].as_u64()).unwrap_or(0),
-            has_partitions: meta.and_then(|v| v["has_partitions"].as_bool()).unwrap_or(false),
+            has_partitions: meta
+                .and_then(|v| v["has_partitions"].as_bool())
+                .unwrap_or(false),
             mounted: meta.and_then(|v| v["mounted"].as_bool()).unwrap_or(false),
             phase: meta
                 .and_then(|v| v["phase"].as_str())
@@ -153,12 +175,14 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
                 .and_then(|v| v["message"].as_str())
                 .unwrap_or("")
                 .to_string(),
-            attempts: meta
-                .and_then(|v| v["attempts"].as_u64())
-                .unwrap_or(0) as u32,
+            attempts: meta.and_then(|v| v["attempts"].as_u64()).unwrap_or(0) as u32,
             is_loop: meta.and_then(|v| v["is_loop"].as_bool()).unwrap_or(false),
-            is_our_osd: meta.and_then(|v| v["is_our_osd"].as_bool()).unwrap_or(false),
-            foreign_ceph: meta.and_then(|v| v["foreign_ceph"].as_bool()).unwrap_or(false),
+            is_our_osd: meta
+                .and_then(|v| v["is_our_osd"].as_bool())
+                .unwrap_or(false),
+            foreign_ceph: meta
+                .and_then(|v| v["foreign_ceph"].as_bool())
+                .unwrap_or(false),
             osd_id: meta.and_then(|v| v["osd_id"].as_i64()),
         };
         result.entry(node.to_string()).or_default().push(info);
@@ -192,14 +216,30 @@ pub async fn set_disk_state(
     let patch = serde_json::json!({"data": {cm_key.as_str(): body.desired.as_str()}}).to_string();
 
     if kubectl::run(&[
-        "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
+        "patch",
+        "configmap",
+        CONFIG_CM,
+        "-n",
+        NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
     ])
     .await
     .is_err()
     {
         let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
         if kubectl::run(&[
-            "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
+            "patch",
+            "configmap",
+            CONFIG_CM,
+            "-n",
+            NS,
+            "--type",
+            "merge",
+            "-p",
+            &patch,
         ])
         .await
         .is_err()
@@ -232,7 +272,13 @@ pub async fn erase_disk(
 
     // Read the disk's published metadata from the status ConfigMap.
     let status_raw = kubectl::get_json(&[
-        "get", "configmap", STATUS_CM, "-n", NS, "-o", "jsonpath={.data}",
+        "get",
+        "configmap",
+        STATUS_CM,
+        "-n",
+        NS,
+        "-o",
+        "jsonpath={.data}",
     ])
     .await
     .unwrap_or_default();
@@ -336,7 +382,10 @@ mod tests {
 
     #[test]
     fn a_node_scoped_key_splits_into_node_and_disk() {
-        assert_eq!(split_record_key("node1--dev-sda"), (Some("node1"), "dev-sda"));
+        assert_eq!(
+            split_record_key("node1--dev-sda"),
+            (Some("node1"), "dev-sda")
+        );
         assert_eq!(split_record_key("node1--system"), (Some("node1"), "system"));
     }
 

@@ -98,7 +98,8 @@ export function appFactRows(app: AppInfo): AppFactRow[] {
   }
 
   for (const [key, o] of found) {
-    if (!seen.has(key)) rows.push({ key, label: o.label || key, value: o.value });
+    if (!seen.has(key))
+      rows.push({ key, label: o.label || key, value: o.value });
   }
 
   return rows;

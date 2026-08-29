@@ -55,10 +55,19 @@ pub enum AppEvent {
     AccountCreated(String),
     AccountVerified,
     DisksLoaded(Vec<DiskInfo>),
-    JoinConnected { server_addr: String, k3s_token: String, ceph_fsid: String },
-    SshKeyGenerated { private_key: String, public_key: String },
+    JoinConnected {
+        server_addr: String,
+        k3s_token: String,
+        ceph_fsid: String,
+    },
+    SshKeyGenerated {
+        private_key: String,
+        public_key: String,
+    },
     Log(String),
-    InstallComplete { url: String },
+    InstallComplete {
+        url: String,
+    },
     Failed(String),
 }
 
@@ -96,8 +105,8 @@ pub struct App {
     pub mode_cursor: usize, // 0=New 1=Join
 
     // Step 2 – Account (new) / Connect (join)
-    pub acct_cursor: u8,        // 0=Create 1=Existing
-    pub acct_input: String,     // existing token input
+    pub acct_cursor: u8,    // 0=Create 1=Existing
+    pub acct_input: String, // existing token input
     pub account_token: Option<String>,
     pub created_token: Option<String>,
     pub join_url: String,
@@ -149,7 +158,10 @@ impl App {
             let tx2 = tx.clone();
             tokio::spawn(async move {
                 loop {
-                    if tokio::net::lookup_host("api.demycode.ovh:443").await.is_ok() {
+                    if tokio::net::lookup_host("api.demycode.ovh:443")
+                        .await
+                        .is_ok()
+                    {
                         let _ = tx2.send(AppEvent::NetworkReady);
                         return;
                     }
@@ -236,7 +248,9 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
-        if self.loading { return false; }
+        if self.loading {
+            return false;
+        }
 
         self.error = None;
 
@@ -260,9 +274,13 @@ impl App {
 
     async fn key_mode(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.mode_cursor = self.mode_cursor.saturating_sub(1),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.mode_cursor = self.mode_cursor.saturating_sub(1)
+            }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.mode_cursor < 1 { self.mode_cursor += 1; }
+                if self.mode_cursor < 1 {
+                    self.mode_cursor += 1;
+                }
             }
             KeyCode::Enter => self.confirm_mode().await,
             _ => {}
@@ -279,7 +297,9 @@ impl App {
 
     async fn key_account_new(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => { self.step = Step::Mode; }
+            KeyCode::Esc => {
+                self.step = Step::Mode;
+            }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.acct_cursor = if self.acct_cursor == 0 { 1 } else { 0 };
                 self.error = None;
@@ -305,7 +325,9 @@ impl App {
 
     async fn key_account_join(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => { self.step = Step::Mode; }
+            KeyCode::Esc => {
+                self.step = Step::Mode;
+            }
             KeyCode::Tab => {
                 self.join_field = if self.join_field == 0 { 1 } else { 0 };
             }
@@ -314,12 +336,18 @@ impl App {
             }
             KeyCode::Enter => self.fetch_join_info().await,
             KeyCode::Char(c) => {
-                if self.join_field == 0 { self.join_url.push(c); }
-                else { self.join_pass.push(c); }
+                if self.join_field == 0 {
+                    self.join_url.push(c);
+                } else {
+                    self.join_pass.push(c);
+                }
             }
             KeyCode::Backspace => {
-                if self.join_field == 0 { self.join_url.pop(); }
-                else { self.join_pass.pop(); }
+                if self.join_field == 0 {
+                    self.join_url.pop();
+                } else {
+                    self.join_pass.pop();
+                }
             }
             _ => {}
         }
@@ -327,7 +355,9 @@ impl App {
 
     async fn key_disk(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => { self.step = Step::Account; }
+            KeyCode::Esc => {
+                self.step = Step::Account;
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.disk_cursor = self.disk_cursor.saturating_sub(1);
             }
@@ -353,12 +383,18 @@ impl App {
     async fn key_configure(&mut self, key: KeyEvent) {
         const FIELDS: u8 = 4; // timezone, pass, pass2, ssh_pub
         match key.code {
-            KeyCode::Esc => { self.step = Step::Disk; }
+            KeyCode::Esc => {
+                self.step = Step::Disk;
+            }
             KeyCode::Tab => {
                 self.cfg_field = (self.cfg_field + 1) % FIELDS;
             }
             KeyCode::BackTab => {
-                self.cfg_field = if self.cfg_field == 0 { FIELDS - 1 } else { self.cfg_field - 1 };
+                self.cfg_field = if self.cfg_field == 0 {
+                    FIELDS - 1
+                } else {
+                    self.cfg_field - 1
+                };
             }
             KeyCode::Char(c) => self.cfg_push(c),
             KeyCode::Backspace => self.cfg_pop(),
@@ -379,10 +415,18 @@ impl App {
 
     fn cfg_pop(&mut self) {
         match self.cfg_field {
-            0 => { self.timezone.pop(); }
-            1 => { self.password.pop(); }
-            2 => { self.password2.pop(); }
-            3 => { self.ssh_pub.pop(); }
+            0 => {
+                self.timezone.pop();
+            }
+            1 => {
+                self.password.pop();
+            }
+            2 => {
+                self.password2.pop();
+            }
+            3 => {
+                self.ssh_pub.pop();
+            }
             _ => {}
         }
     }
@@ -390,11 +434,20 @@ impl App {
     // ── Mouse handling ────────────────────────────────────────────────────────
 
     async fn handle_mouse(&mut self, m: MouseEvent) {
-        if self.loading { return; }
-        if m.kind != MouseEventKind::Down(MouseButton::Left) { return; }
+        if self.loading {
+            return;
+        }
+        if m.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
 
-        let pos = Position { x: m.column, y: m.row };
-        let target = self.click_areas.iter()
+        let pos = Position {
+            x: m.column,
+            y: m.row,
+        };
+        let target = self
+            .click_areas
+            .iter()
             .find(|(rect, _)| rect.contains(pos))
             .map(|(_, t)| t.clone());
 
@@ -430,25 +483,37 @@ impl App {
                 Step::Account if self.account_token.is_some() => self.goto_disk(),
                 Step::Account => {
                     if self.mode == Some(ClusterMode::New) {
-                        if self.acct_cursor == 0 { self.create_account(); }
-                        else { self.verify_token().await; }
+                        if self.acct_cursor == 0 {
+                            self.create_account();
+                        } else {
+                            self.verify_token().await;
+                        }
                     } else {
                         self.fetch_join_info().await;
                     }
                 }
                 Step::Disk => {
                     if let Some(d) = self.disks.get(self.disk_cursor) {
-                        if d.mounted { self.error = Some("Disk is in use.".into()); }
-                        else { self.step = Step::Configure; }
+                        if d.mounted {
+                            self.error = Some("Disk is in use.".into());
+                        } else {
+                            self.step = Step::Configure;
+                        }
                     }
                 }
                 Step::Configure => self.confirm_configure().await,
                 Step::Install => {}
             },
             BtnId::Back => match &self.step.clone() {
-                Step::Account => { self.step = Step::Mode; }
-                Step::Disk => { self.step = Step::Account; }
-                Step::Configure => { self.step = Step::Disk; }
+                Step::Account => {
+                    self.step = Step::Mode;
+                }
+                Step::Disk => {
+                    self.step = Step::Account;
+                }
+                Step::Configure => {
+                    self.step = Step::Disk;
+                }
                 _ => {}
             },
             BtnId::CreateAcct => self.create_account(),
@@ -469,7 +534,9 @@ impl App {
                 self.loading = false;
                 return;
             }
-            _ => { self.loading = false; }
+            _ => {
+                self.loading = false;
+            }
         }
         match ev {
             AppEvent::NetworkReady => unreachable!(),
@@ -485,7 +552,11 @@ impl App {
                 self.disks = disks;
                 self.disk_cursor = rec;
             }
-            AppEvent::JoinConnected { server_addr, k3s_token, ceph_fsid } => {
+            AppEvent::JoinConnected {
+                server_addr,
+                k3s_token,
+                ceph_fsid,
+            } => {
                 self.join_server_addr = Some(server_addr);
                 self.join_k3s_token = Some(k3s_token);
                 // Non-empty by construction: parse_join_response refuses an empty
@@ -494,12 +565,15 @@ impl App {
                 self.join_ceph_fsid = Some(ceph_fsid);
                 // Pre-fill the configure password from the join password — same homelab, same password.
                 if self.password.is_empty() {
-                    self.password  = self.join_pass.clone();
+                    self.password = self.join_pass.clone();
                     self.password2 = self.join_pass.clone();
                 }
                 self.goto_disk();
             }
-            AppEvent::SshKeyGenerated { private_key, public_key } => {
+            AppEvent::SshKeyGenerated {
+                private_key,
+                public_key,
+            } => {
                 self.gen_privkey = Some(private_key);
                 self.ssh_pub = public_key;
             }
@@ -540,8 +614,12 @@ impl App {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             match do_create_account().await {
-                Ok(token) => { let _ = tx.send(AppEvent::AccountCreated(token)); }
-                Err(e) => { let _ = tx.send(AppEvent::Failed(e.to_string())); }
+                Ok(token) => {
+                    let _ = tx.send(AppEvent::AccountCreated(token));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Failed(e.to_string()));
+                }
             }
         });
     }
@@ -557,8 +635,12 @@ impl App {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             match do_verify_token(&token).await {
-                Ok(()) => { let _ = tx.send(AppEvent::AccountVerified); }
-                Err(e) => { let _ = tx.send(AppEvent::Failed(e.to_string())); }
+                Ok(()) => {
+                    let _ = tx.send(AppEvent::AccountVerified);
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Failed(e.to_string()));
+                }
             }
         });
     }
@@ -580,9 +662,15 @@ impl App {
                     if let Some(t) = account_token {
                         let _ = tx.send(AppEvent::AccountCreated(t));
                     }
-                    let _ = tx.send(AppEvent::JoinConnected { server_addr, k3s_token, ceph_fsid });
+                    let _ = tx.send(AppEvent::JoinConnected {
+                        server_addr,
+                        k3s_token,
+                        ceph_fsid,
+                    });
                 }
-                Err(e) => { let _ = tx.send(AppEvent::Failed(e.to_string())); }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Failed(e.to_string()));
+                }
             }
         });
     }
@@ -595,8 +683,12 @@ impl App {
             let tx = self.tx.clone();
             tokio::spawn(async move {
                 match detect_disks().await {
-                    Ok(disks) => { let _ = tx.send(AppEvent::DisksLoaded(disks)); }
-                    Err(e) => { let _ = tx.send(AppEvent::Failed(e.to_string())); }
+                    Ok(disks) => {
+                        let _ = tx.send(AppEvent::DisksLoaded(disks));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Failed(e.to_string()));
+                    }
                 }
             });
         }
@@ -614,7 +706,9 @@ impl App {
                         public_key: pub_key,
                     });
                 }
-                Err(e) => { let _ = tx.send(AppEvent::Failed(e.to_string())); }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Failed(e.to_string()));
+                }
             }
         });
     }
@@ -647,7 +741,9 @@ impl App {
         self.step = Step::Install;
         self.log_lines.clear();
 
-        let disk = self.disks.get(self.disk_cursor)
+        let disk = self
+            .disks
+            .get(self.disk_cursor)
             .map(|d| d.name.clone())
             .unwrap_or_default();
 
@@ -668,11 +764,15 @@ impl App {
     }
 
     fn do_reboot(&self) {
-        let _ = std::process::Command::new("systemctl").arg("reboot").spawn();
+        let _ = std::process::Command::new("systemctl")
+            .arg("reboot")
+            .spawn();
     }
 
     fn do_poweroff(&self) {
-        let _ = std::process::Command::new("systemctl").arg("poweroff").spawn();
+        let _ = std::process::Command::new("systemctl")
+            .arg("poweroff")
+            .spawn();
     }
 }
 
@@ -816,7 +916,14 @@ fn disks_from_lsblk(data: &serde_json::Value) -> Vec<DiskInfo> {
             let tran = d["tran"].as_str().unwrap_or("").to_string();
             let is_usb = tran == "usb";
             let mounted = disk_has_mount(d);
-            Some(DiskInfo { name, size, tran, is_usb, mounted, recommended: false })
+            Some(DiskInfo {
+                name,
+                size,
+                tran,
+                is_usb,
+                mounted,
+                recommended: false,
+            })
         })
         .collect();
 
@@ -826,26 +933,43 @@ fn disks_from_lsblk(data: &serde_json::Value) -> Vec<DiskInfo> {
         .filter(|(_, d)| !d.is_usb && !d.mounted)
         .max_by_key(|(_, d)| parse_gb(&d.size))
         .map(|(i, _)| i);
-    if let Some(i) = rec { disks[i].recommended = true; }
+    if let Some(i) = rec {
+        disks[i].recommended = true;
+    }
 
     disks
 }
 
 fn disk_has_mount(d: &serde_json::Value) -> bool {
-    if d["mountpoint"].as_str().is_some_and(|s| !s.is_empty()) { return true; }
-    d["children"].as_array().is_some_and(|ch| ch.iter().any(disk_has_mount))
+    if d["mountpoint"].as_str().is_some_and(|s| !s.is_empty()) {
+        return true;
+    }
+    d["children"]
+        .as_array()
+        .is_some_and(|ch| ch.iter().any(disk_has_mount))
 }
 
 fn fmt_bytes(b: u64) -> String {
     const GB: u64 = 1_000_000_000;
     const TB: u64 = 1_000 * GB;
-    if b >= TB { format!("{:.1} TB", b as f64 / TB as f64) }
-    else { format!("{:.0} GB", b as f64 / GB as f64) }
+    if b >= TB {
+        format!("{:.1} TB", b as f64 / TB as f64)
+    } else {
+        format!("{:.0} GB", b as f64 / GB as f64)
+    }
 }
 
 fn parse_gb(s: &str) -> u64 {
-    let n: f64 = s.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    if s.contains("TB") { (n * 1000.0) as u64 } else { n as u64 }
+    let n: f64 = s
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    if s.contains("TB") {
+        (n * 1000.0) as u64
+    } else {
+        n as u64
+    }
 }
 
 async fn do_gen_ssh_key() -> anyhow::Result<(String, String)> {
@@ -860,7 +984,10 @@ async fn do_gen_ssh_key() -> anyhow::Result<(String, String)> {
 
     let private_key = tokio::fs::read_to_string(path_str).await?;
     let public_key = tokio::fs::read_to_string(format!("{path_str}.pub")).await?;
-    Ok((private_key.trim().to_string(), public_key.trim().to_string()))
+    Ok((
+        private_key.trim().to_string(),
+        public_key.trim().to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -874,7 +1001,13 @@ mod tests {
     /// up as two steps lit at once, or none.
     #[test]
     fn step_indices_are_sequential_and_unique() {
-        let steps = [Step::Mode, Step::Account, Step::Disk, Step::Configure, Step::Install];
+        let steps = [
+            Step::Mode,
+            Step::Account,
+            Step::Disk,
+            Step::Configure,
+            Step::Install,
+        ];
         let indices: Vec<usize> = steps.iter().map(Step::index).collect();
         assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
@@ -982,7 +1115,12 @@ mod tests {
 
     #[test]
     fn disks_are_listed_with_full_device_paths() {
-        let disks = disks_from_lsblk(&lsblk(json!([disk("nvme0n1", 512_000_000_000, "nvme", None)])));
+        let disks = disks_from_lsblk(&lsblk(json!([disk(
+            "nvme0n1",
+            512_000_000_000,
+            "nvme",
+            None
+        )])));
         assert_eq!(disks.len(), 1);
         assert_eq!(disks[0].name, "/dev/nvme0n1");
         assert_eq!(disks[0].size, "512 GB");
@@ -1010,7 +1148,11 @@ mod tests {
             disk("sdb", 500_000_000_000, "sata", None),
         ]));
         let disks = disks_from_lsblk(&data);
-        let rec: Vec<&str> = disks.iter().filter(|d| d.recommended).map(|d| d.name.as_str()).collect();
+        let rec: Vec<&str> = disks
+            .iter()
+            .filter(|d| d.recommended)
+            .map(|d| d.name.as_str())
+            .collect();
         assert_eq!(rec, vec!["/dev/nvme0n1"]);
     }
 
@@ -1023,7 +1165,11 @@ mod tests {
             disk("sda", 250_000_000_000, "sata", None),
         ]));
         let disks = disks_from_lsblk(&data);
-        let rec: Vec<&str> = disks.iter().filter(|d| d.recommended).map(|d| d.name.as_str()).collect();
+        let rec: Vec<&str> = disks
+            .iter()
+            .filter(|d| d.recommended)
+            .map(|d| d.name.as_str())
+            .collect();
         assert_eq!(rec, vec!["/dev/sda"]);
         // It is still listed, just not preselected — an advanced user may want it.
         assert_eq!(disks.len(), 2);
@@ -1040,7 +1186,11 @@ mod tests {
             disk("sda", 250_000_000_000, "sata", None),
         ]));
         let disks = disks_from_lsblk(&data);
-        let rec: Vec<&str> = disks.iter().filter(|d| d.recommended).map(|d| d.name.as_str()).collect();
+        let rec: Vec<&str> = disks
+            .iter()
+            .filter(|d| d.recommended)
+            .map(|d| d.name.as_str())
+            .collect();
         assert_eq!(rec, vec!["/dev/sda"]);
     }
 

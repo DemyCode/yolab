@@ -33,7 +33,7 @@ new_sandbox() {
     #   resp/records  — POST /tunnels/{id}/records
     # Each file is "<http_code>\n<body>". Every call is appended to calls.log so
     # a test can assert what was and was not requested.
-    cat > "$SANDBOX/bin/curl" <<'STUB'
+    cat >"$SANDBOX/bin/curl" <<'STUB'
 #!/bin/sh
 url=""; method="GET"; code_only=0
 while [ $# -gt 0 ]; do
@@ -64,7 +64,7 @@ fi
 STUB
 
     # wg stub — deterministic keys so the written config can be asserted exactly.
-    cat > "$SANDBOX/bin/wg" <<'STUB'
+    cat >"$SANDBOX/bin/wg" <<'STUB'
 #!/bin/sh
 case "$1" in
     genkey) echo "PRIVKEY-generated" ;;
@@ -73,59 +73,68 @@ esac
 STUB
 
     chmod +x "$SANDBOX/bin/curl" "$SANDBOX/bin/wg"
-    : > "$SANDBOX/calls.log"
+    : >"$SANDBOX/calls.log"
 }
 
 respond() { # respond <key> <http_code> <body>
-    printf '%s\n%s' "$2" "$3" > "$SANDBOX/resp/$1"
+    printf '%s\n%s' "$2" "$3" >"$SANDBOX/resp/$1"
 }
 
-write_state() { cat > "$SANDBOX/state/wg-state.json"; }
+write_state() { cat >"$SANDBOX/state/wg-state.json"; }
 
 # Runs setup.sh in the sandbox. Stdout+stderr land in $OUT, exit code in $RC.
 run_setup() {
     OUT="$SANDBOX/output.txt"
     WG_DIR="$SANDBOX/wireguard" \
-    YOLAB_DIR="$SANDBOX/yolab" \
-    STATE_FILE="$SANDBOX/state/wg-state.json" \
-    PATH="$SANDBOX/bin:$PATH" \
-    PLATFORM_API_URL="https://api.example.test" \
-    ACCOUNT_TOKEN="test-token" \
-    SERVICE_NAME="${SERVICE_NAME_OVERRIDE-myapp}" \
-        sh "$SETUP" > "$OUT" 2>&1
+        YOLAB_DIR="$SANDBOX/yolab" \
+        STATE_FILE="$SANDBOX/state/wg-state.json" \
+        PATH="$SANDBOX/bin:$PATH" \
+        PLATFORM_API_URL="https://api.example.test" \
+        ACCOUNT_TOKEN="test-token" \
+        SERVICE_NAME="${SERVICE_NAME_OVERRIDE-myapp}" \
+        sh "$SETUP" >"$OUT" 2>&1
     RC=$?
 }
 
-state()   { cat "$SANDBOX/state/wg-state.json" 2>/dev/null; }
+state() { cat "$SANDBOX/state/wg-state.json" 2>/dev/null; }
 # Reads one field, so assertions do not depend on jq's output formatting.
 state_field() { jq -r ".$1 // empty" "$SANDBOX/state/wg-state.json" 2>/dev/null; }
 wg_conf() { cat "$SANDBOX/wireguard/wg0.conf" 2>/dev/null; }
 env_file() { cat "$SANDBOX/yolab/env" 2>/dev/null; }
-called()  { grep -q "$1" "$SANDBOX/calls.log"; }
+called() { grep -q "$1" "$SANDBOX/calls.log"; }
 
-ok()   { PASS=$((PASS + 1)); }
-bad()  { FAIL=$((FAIL + 1)); printf 'FAIL %s\n     %s\n' "$CASE" "$1"; }
+ok() { PASS=$((PASS + 1)); }
+bad() {
+    FAIL=$((FAIL + 1))
+    printf 'FAIL %s\n     %s\n' "$CASE" "$1"
+}
 
 assert_contains() { # assert_contains <haystack> <needle> <what>
     case "$1" in
-        *"$2"*) ok ;;
-        *) bad "$3: expected to contain '$2', got: $(printf '%s' "$1" | head -c 300)" ;;
+    *"$2"*) ok ;;
+    *) bad "$3: expected to contain '$2', got: $(printf '%s' "$1" | head -c 300)" ;;
     esac
 }
 assert_missing() {
     case "$1" in
-        *"$2"*) bad "$3: expected NOT to contain '$2'" ;;
-        *) ok ;;
+    *"$2"*) bad "$3: expected NOT to contain '$2'" ;;
+    *) ok ;;
     esac
 }
 assert_eq() {
     if [ "$1" = "$2" ]; then ok; else bad "$3: expected '$2', got '$1'"; fi
 }
-assert_called()     { if called "$1"; then ok; else bad "$2: expected a $1 request"; fi; }
+assert_called() { if called "$1"; then ok; else bad "$2: expected a $1 request"; fi; }
 assert_not_called() { if called "$1"; then bad "$2: unexpected $1 request"; else ok; fi; }
 
-case_start() { CASE="$1"; new_sandbox; }
-case_end()   { rm -rf "$SANDBOX"; unset SERVICE_NAME_OVERRIDE; }
+case_start() {
+    CASE="$1"
+    new_sandbox
+}
+case_end() {
+    rm -rf "$SANDBOX"
+    unset SERVICE_NAME_OVERRIDE
+}
 
 # Canned platform payloads.
 TUNNEL_BODY='{"tunnel_id":77,"sub_ipv6":"2001:db8::99","wg_server_endpoint":"1.2.3.4:51820","wg_server_public_key":"SERVER-PUB"}'
@@ -324,8 +333,8 @@ case_end
 case_start "a missing account token fails immediately"
 OUT="$SANDBOX/output.txt"
 WG_DIR="$SANDBOX/wireguard" YOLAB_DIR="$SANDBOX/yolab" PATH="$SANDBOX/bin:$PATH" \
-STATE_FILE="$SANDBOX/state/wg-state.json" PLATFORM_API_URL="https://api.example.test" \
-    sh "$SETUP" > "$OUT" 2>&1
+    STATE_FILE="$SANDBOX/state/wg-state.json" PLATFORM_API_URL="https://api.example.test" \
+    sh "$SETUP" >"$OUT" 2>&1
 RC=$?
 if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
 assert_not_called "POST create" "nothing should be requested without a token"

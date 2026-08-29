@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { Plus, RefreshCw, Trash2, Library, AlertTriangle, FileCode2 } from "lucide-react";
+import {
+  Plus,
+  RefreshCw,
+  Trash2,
+  Library,
+  AlertTriangle,
+  FileCode2,
+} from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +21,10 @@ interface ChartRepo {
 }
 
 /** What `POST /api/apps/repos/sync` reports back, per repo. */
-type SyncResult = Record<string, { ok: boolean; charts?: number; error?: string }>;
+type SyncResult = Record<
+  string,
+  { ok: boolean; charts?: number; error?: string }
+>;
 
 /**
  * Where apps come from.
@@ -105,7 +115,9 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
       <div className="flex flex-wrap items-center gap-3">
         <Library className="h-4 w-4 shrink-0 text-fg-muted" />
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-fg">Where apps come from</h2>
+          <h2 className="text-sm font-semibold text-fg">
+            Where apps come from
+          </h2>
           <p className="mt-0.5 text-sm text-fg-muted">
             YoLab ships one catalog. Add another and its apps appear above,
             alongside the rest.
@@ -113,10 +125,16 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
         </div>
         <div className="flex shrink-0 gap-2">
           <Button size="sm" variant="secondary" onClick={sync} disabled={busy}>
-            <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            <RefreshCw
+              className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+            />
             Refresh
           </Button>
-          <Button size="sm" onClick={() => setAdding((v) => !v)} disabled={busy}>
+          <Button
+            size="sm"
+            onClick={() => setAdding((v) => !v)}
+            disabled={busy}
+          >
             <Plus className="h-3.5 w-3.5" />
             Add
           </Button>
@@ -131,26 +149,30 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
           <p className="mt-4 flex items-start gap-2 rounded-md border border-warning-soft bg-warning-soft p-3 text-sm text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>
-              Apps from another source run with the same access as the ones YoLab
-              ships. Only add a source you would trust with the whole machine.
+              Apps from another source run with the same access as the ones
+              YoLab ships. Only add a source you would trust with the whole
+              machine.
             </span>
           </p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name — e.g. community"
-            aria-label="Source name"
-            className="sm:w-56"
-          />
-          <Input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://…"
-            aria-label="Source URL"
-            className="flex-1"
-          />
-            <Button onClick={add} disabled={busy || !name.trim() || !url.trim()}>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name — e.g. community"
+              aria-label="Source name"
+              className="sm:w-56"
+            />
+            <Input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://…"
+              aria-label="Source URL"
+              className="flex-1"
+            />
+            <Button
+              onClick={add}
+              disabled={busy || !name.trim() || !url.trim()}
+            >
               {busy ? "Adding…" : "Add source"}
             </Button>
           </div>

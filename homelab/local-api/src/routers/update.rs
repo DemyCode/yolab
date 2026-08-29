@@ -1,5 +1,8 @@
-use std::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}, time::Duration};
-
+use std::{
+    convert::Infallible,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use axum::{
     extract::{Path, State},
@@ -29,7 +32,10 @@ pub struct Channel {
 
 impl Default for Channel {
     fn default() -> Self {
-        Self { remote: "origin".into(), ref_: "main".into() }
+        Self {
+            remote: "origin".into(),
+            ref_: "main".into(),
+        }
     }
 }
 
@@ -77,7 +83,9 @@ fn list_remotes(cfg: &Config) -> Vec<RemoteEntry> {
     let Ok(out) = std::process::Command::new("git")
         .args(["-C", &cfg.repo_path, "remote", "-v"])
         .output()
-    else { return vec![] };
+    else {
+        return vec![];
+    };
     parse_remotes(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -88,21 +96,30 @@ fn list_remotes(cfg: &Config) -> Vec<RemoteEntry> {
 /// line is taken, so each remote appears once.
 fn parse_remotes(text: &str) -> Vec<RemoteEntry> {
     let mut seen = std::collections::HashSet::new();
-    text.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 && line.contains("(fetch)") {
-            let name = parts[0].to_string();
-            if seen.insert(name.clone()) {
-                return Some(RemoteEntry { name, url: parts[1].to_string() });
+    text.lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && line.contains("(fetch)") {
+                let name = parts[0].to_string();
+                if seen.insert(name.clone()) {
+                    return Some(RemoteEntry {
+                        name,
+                        url: parts[1].to_string(),
+                    });
+                }
             }
-        }
-        None
-    }).collect()
+            None
+        })
+        .collect()
 }
 
 pub async fn get_channel(State(state): State<AppState>) -> Json<ChannelInfo> {
     let ch = read_channel(&state.config);
-    Json(ChannelInfo { remote: ch.remote, ref_: ch.ref_, remotes: list_remotes(&state.config) })
+    Json(ChannelInfo {
+        remote: ch.remote,
+        ref_: ch.ref_,
+        remotes: list_remotes(&state.config),
+    })
 }
 
 pub async fn set_channel(
@@ -110,7 +127,11 @@ pub async fn set_channel(
     Json(ch): Json<Channel>,
 ) -> impl IntoResponse {
     match write_channel(&state.config, &ch) {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"remote": ch.remote, "ref": ch.ref_}))).into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"remote": ch.remote, "ref": ch.ref_})),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -120,15 +141,27 @@ pub async fn add_remote(
     Json(body): Json<RemoteBody>,
 ) -> impl IntoResponse {
     let out = std::process::Command::new("git")
-        .args(["-C", &state.config.repo_path, "remote", "add", &body.name, &body.url])
+        .args([
+            "-C",
+            &state.config.repo_path,
+            "remote",
+            "add",
+            &body.name,
+            &body.url,
+        ])
         .output();
     match out {
-        Ok(o) if o.status.success() =>
-            (StatusCode::OK, Json(serde_json::json!({"name": body.name, "url": body.url}))).into_response(),
-        Ok(o) =>
-            (StatusCode::BAD_REQUEST, String::from_utf8_lossy(&o.stderr).to_string()).into_response(),
-        Err(e) =>
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(o) if o.status.success() => (
+            StatusCode::OK,
+            Json(serde_json::json!({"name": body.name, "url": body.url})),
+        )
+            .into_response(),
+        Ok(o) => (
+            StatusCode::BAD_REQUEST,
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -142,11 +175,16 @@ pub async fn remove_remote(
     Json(serde_json::json!({"ok": true}))
 }
 
-pub async fn update(
-    State(state): State<AppState>,
-) -> Response {
-    if IS_UPDATING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Update already in progress"}))).into_response();
+pub async fn update(State(state): State<AppState>) -> Response {
+    if IS_UPDATING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "Update already in progress"})),
+        )
+            .into_response();
     }
     let cfg = state.config;
     let stream = async_stream::stream! {
@@ -300,7 +338,10 @@ pub async fn update(
 /// background task and returns 200 immediately so the caller can drop the
 /// connection without cancelling the work.
 pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::Value> {
-    if IS_UPDATING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if IS_UPDATING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Json(serde_json::json!({"error": "already updating"}));
     }
     let cfg = state.config.clone();
@@ -308,12 +349,20 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
         let _guard = UpdateGuard;
         let ch = read_channel(&cfg);
 
-        let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
+        let _ = std::fs::create_dir_all(
+            cfg.rebuild_log
+                .parent()
+                .unwrap_or(std::path::Path::new("/")),
+        );
 
         // Helper: append a line to the rebuild log so background git ops are visible.
         let log_path = cfg.rebuild_log.clone();
         let append_log = |msg: String| {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
                 use std::io::Write;
                 let _ = writeln!(f, "{msg}");
             }
@@ -324,9 +373,15 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
             .args(["-C", &cfg.repo_path, "fetch", &ch.remote, "--tags"])
             .output()
             .await;
-        let fetch_ok = fetch_out.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        let fetch_ok = fetch_out
+            .as_ref()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         if !fetch_ok {
-            let stderr = fetch_out.as_ref().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
+            let stderr = fetch_out
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                .unwrap_or_default();
             append_log(format!("[trigger] git fetch failed: {stderr}"));
             return;
         }
@@ -338,19 +393,32 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        let target = if has_remote { remote_ref } else { ch.ref_.clone() };
+        let target = if has_remote {
+            remote_ref
+        } else {
+            ch.ref_.clone()
+        };
         let reset_out = tokio::process::Command::new("git")
             .args(["-C", &cfg.repo_path, "reset", "--hard", &target])
             .output()
             .await;
-        let reset_ok = reset_out.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        let reset_ok = reset_out
+            .as_ref()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         if !reset_ok {
-            let stderr = reset_out.as_ref().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
+            let stderr = reset_out
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                .unwrap_or_default();
             append_log(format!("[trigger] git reset failed: {stderr}"));
             return;
         }
         if let Ok(ref o) = reset_out {
-            append_log(format!("[trigger] git reset: {}", String::from_utf8_lossy(&o.stdout).trim()));
+            append_log(format!(
+                "[trigger] git reset: {}",
+                String::from_utf8_lossy(&o.stdout).trim()
+            ));
         }
 
         // nixos-rebuild (detached — survives local-api restart)
@@ -361,9 +429,18 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
             std::fs::File::create(&cfg.rebuild_log),
         ) {
             if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
-                .args(["switch", "--flake", &flake,
-                       "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
-                       "--cores", "1", "--max-jobs", "1"])
+                .args([
+                    "switch",
+                    "--flake",
+                    &flake,
+                    "--no-update-lock-file",
+                    "--print-build-logs",
+                    "--accept-flake-config",
+                    "--cores",
+                    "1",
+                    "--max-jobs",
+                    "1",
+                ])
                 .stdin(std::process::Stdio::null())
                 .stdout(log_file)
                 .stderr(log2)
@@ -412,7 +489,10 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 /// cannot interrupt a rebuild that is legitimately still going.
 fn clear_stale_rebuild_unit() {
     let _ = std::process::Command::new("systemctl")
-        .args(["reset-failed", "nixos-rebuild-switch-to-configuration.service"])
+        .args([
+            "reset-failed",
+            "nixos-rebuild-switch-to-configuration.service",
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -432,14 +512,22 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
     let cluster_token = cfg.cluster_token();
 
     for node in kubectl::get_nodes().await.unwrap_or_default() {
-        if let Some(addr) = node["status"]["addresses"].as_array()
-            .and_then(|a| a.iter().find(|a| {
-                a["type"] == "InternalIP"
-                    && a["address"].as_str().map(|s| s.contains(':')).unwrap_or(false)
-            }))
+        if let Some(addr) = node["status"]["addresses"]
+            .as_array()
+            .and_then(|a| {
+                a.iter().find(|a| {
+                    a["type"] == "InternalIP"
+                        && a["address"]
+                            .as_str()
+                            .map(|s| s.contains(':'))
+                            .unwrap_or(false)
+                })
+            })
             .and_then(|a| a["address"].as_str())
         {
-            if addr == self_ip { continue; }
+            if addr == self_ip {
+                continue;
+            }
             let base = format!("http://[{}]:{}", addr, cfg.port);
             let body = channel_body.clone();
             let token = cluster_token.clone();
@@ -449,15 +537,19 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
                 // the actual work runs in a background task on the remote node).
                 // Both carry the shared cluster token so the peer's auth
                 // middleware accepts them without a user session.
-                let _ = client.put(format!("{base}/api/update/channel"))
+                let _ = client
+                    .put(format!("{base}/api/update/channel"))
                     .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
                     .json(&body)
                     .timeout(Duration::from_secs(10))
-                    .send().await;
-                let _ = client.post(format!("{base}/api/update/trigger"))
+                    .send()
+                    .await;
+                let _ = client
+                    .post(format!("{base}/api/update/trigger"))
                     .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
                     .timeout(Duration::from_secs(10))
-                    .send().await;
+                    .send()
+                    .await;
             });
         }
     }
@@ -495,7 +587,10 @@ mod tests {
     fn a_written_channel_reads_back_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = cfg_in(&dir);
-        let written = Channel { remote: "upstream".into(), ref_: "v2.1.0".into() };
+        let written = Channel {
+            remote: "upstream".into(),
+            ref_: "v2.1.0".into(),
+        };
         write_channel(&cfg, &written).unwrap();
 
         let read = read_channel(&cfg);
@@ -524,15 +619,19 @@ mod tests {
         for body in [
             "",
             "not json at all",
-            r#"{"remote": "upstream"}"#,          // ref missing
-            r#"{"ref": "v2"}"#,                   // remote missing
-            r#"{"remote": 5, "ref": "v2"}"#,      // wrong type
+            r#"{"remote": "upstream"}"#,     // ref missing
+            r#"{"ref": "v2"}"#,              // remote missing
+            r#"{"remote": 5, "ref": "v2"}"#, // wrong type
             r#"{"remote": null, "ref": null}"#,
             "[]",
         ] {
             std::fs::write(&cfg.channel_file, body).unwrap();
             let ch = read_channel(&cfg);
-            assert_eq!((ch.remote.as_str(), ch.ref_.as_str()), ("origin", "main"), "body: {body}");
+            assert_eq!(
+                (ch.remote.as_str(), ch.ref_.as_str()),
+                ("origin", "main"),
+                "body: {body}"
+            );
         }
     }
 
@@ -541,7 +640,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = cfg_in(&dir);
         std::fs::create_dir_all(&cfg.built_dir).unwrap();
-        std::fs::write(&cfg.channel_file, r#"{"remote":"origin","ref":"dev","note":"hi"}"#).unwrap();
+        std::fs::write(
+            &cfg.channel_file,
+            r#"{"remote":"origin","ref":"dev","note":"hi"}"#,
+        )
+        .unwrap();
         assert_eq!(read_channel(&cfg).ref_, "dev");
     }
 

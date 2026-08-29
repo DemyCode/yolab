@@ -135,7 +135,6 @@ fn is_timed_out(run: &Value, now: DateTime<Utc>) -> bool {
     !is_terminal(phase) && parse_deadline(run).is_some_and(|dl| now > dl)
 }
 
-
 /// The most recent restic progress line from the VolSync mover pod backing one
 /// ReplicationSource, e.g.
 ///
@@ -152,7 +151,11 @@ async fn mover_progress(namespace: &str, rs_name: &str) -> Option<String> {
     let prefix = format!("volsync-src-{rs_name}-");
     let pods = Command::new("kubectl")
         .args([
-            "-n", namespace, "get", "pods", "-o",
+            "-n",
+            namespace,
+            "get",
+            "pods",
+            "-o",
             r#"jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}"#,
         ])
         .output()
@@ -241,14 +244,22 @@ pub async fn is_active() -> bool {
 pub async fn volsync_mover_running() -> bool {
     Command::new("kubectl")
         .args([
-            "get", "pods", "-A",
-            "-l", "app.kubernetes.io/created-by=volsync",
+            "get",
+            "pods",
+            "-A",
+            "-l",
+            "app.kubernetes.io/created-by=volsync",
             "--field-selector=status.phase=Running",
-            "-o", "name",
+            "-o",
+            "name",
         ])
         .output()
         .await
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.contains("volsync-src-")))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.contains("volsync-src-"))
+        })
         .unwrap_or(false)
 }
 
@@ -258,12 +269,23 @@ pub async fn volsync_mover_running() -> bool {
 /// tied to the lifetime of the process that created it.
 pub async fn start(triggered_by: &str) -> anyhow::Result<String> {
     let name = format!("backup-{}", Utc::now().format("%Y%m%d%H%M%S"));
-    BACKUP_RUN.create(&name, json!({ "triggeredBy": triggered_by }), &[("app.kubernetes.io/managed-by", "yolab")]).await?;
-    BACKUP_RUN.patch_status(&name, json!({
-        "phase": PHASE_PENDING,
-        "phaseDeadline": deadline_after(30),
-        "startedAt": Utc::now().to_rfc3339(),
-    })).await?;
+    BACKUP_RUN
+        .create(
+            &name,
+            json!({ "triggeredBy": triggered_by }),
+            &[("app.kubernetes.io/managed-by", "yolab")],
+        )
+        .await?;
+    BACKUP_RUN
+        .patch_status(
+            &name,
+            json!({
+                "phase": PHASE_PENDING,
+                "phaseDeadline": deadline_after(30),
+                "startedAt": Utc::now().to_rfc3339(),
+            }),
+        )
+        .await?;
     Ok(name)
 }
 
@@ -272,14 +294,24 @@ pub async fn start(triggered_by: &str) -> anyhow::Result<String> {
 /// non-terminal run on every reconcile tick — see the module doc for why this
 /// replaces the old spawned-task design.
 async fn step(name: &str) {
-    let Some(run) = BACKUP_RUN.get(name).await else { return };
-    let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING).to_string();
+    let Some(run) = BACKUP_RUN.get(name).await else {
+        return;
+    };
+    let phase = run["status"]["phase"]
+        .as_str()
+        .unwrap_or(PHASE_PENDING)
+        .to_string();
 
     let Some(cfg) = read_master_config().await else {
-        let _ = BACKUP_RUN.patch_status(name, json!({
-            "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
-            "error": "backup not configured",
-        })).await;
+        let _ = BACKUP_RUN
+            .patch_status(
+                name,
+                json!({
+                    "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
+                    "error": "backup not configured",
+                }),
+            )
+            .await;
         return;
     };
 
@@ -302,7 +334,8 @@ async fn step_pending(name: &str, cfg: &BackupConfig) {
     let since = Utc::now();
     // Watchdog, not budget: this is pushed forward on every tick that shows progress.
     let sync_deadline = since + chrono::Duration::seconds(SYNC_STALL_SECS);
-    let pvc_status: Vec<Value> = pvcs.iter()
+    let pvc_status: Vec<Value> = pvcs
+        .iter()
         .map(|p| json!({ "namespace": p.namespace, "name": p.name, "phase": "Syncing" }))
         .collect();
 
@@ -312,13 +345,18 @@ async fn step_pending(name: &str, cfg: &BackupConfig) {
         let _ = ensure_replication_source(pvc, true).await;
     }
 
-    let _ = BACKUP_RUN.patch_status(name, json!({
-        "phase": PHASE_SYNCING,
-        "phaseDeadline": sync_deadline.to_rfc3339(),
-        "syncSince": since.to_rfc3339(),
-        "syncProgressAt": since.to_rfc3339(),
-        "pvcs": pvc_status,
-    })).await;
+    let _ = BACKUP_RUN
+        .patch_status(
+            name,
+            json!({
+                "phase": PHASE_SYNCING,
+                "phaseDeadline": sync_deadline.to_rfc3339(),
+                "syncSince": since.to_rfc3339(),
+                "syncProgressAt": since.to_rfc3339(),
+                "pvcs": pvc_status,
+            }),
+        )
+        .await;
 }
 
 /// SyncingVolumes: a single observation of every tracked PVC's ReplicationSource — no
@@ -331,18 +369,24 @@ async fn step_pending(name: &str, cfg: &BackupConfig) {
 /// backup). Note what is NOT a reason to give up any more: elapsed time. A volume that
 /// is still copying keeps the run alive indefinitely by pushing the deadline forward.
 async fn step_syncing(name: &str, run: &Value) {
-    let since = run["status"]["syncSince"].as_str()
+    let since = run["status"]["syncSince"]
+        .as_str()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|t| t.with_timezone(&Utc))
         .unwrap_or_else(Utc::now);
     let deadline = parse_deadline(run)
         .unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(SYNC_STALL_SECS));
-    let pvcs: Vec<PvcInfo> = run["status"]["pvcs"].as_array().cloned().unwrap_or_default()
+    let pvcs: Vec<PvcInfo> = run["status"]["pvcs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
         .into_iter()
-        .filter_map(|p| Some(PvcInfo {
-            namespace: p["namespace"].as_str()?.to_string(),
-            name: p["name"].as_str()?.to_string(),
-        }))
+        .filter_map(|p| {
+            Some(PvcInfo {
+                namespace: p["namespace"].as_str()?.to_string(),
+                name: p["name"].as_str()?.to_string(),
+            })
+        })
         .collect();
 
     let rs = get_replication_sources().await;
@@ -405,12 +449,17 @@ async fn step_syncing(name: &str, run: &Value) {
 
     if all_done || stalled {
         const SNAPSHOTTING_BUDGET_SECS: i64 = 900;
-        let _ = BACKUP_RUN.patch_status(name, json!({
-            "phase": PHASE_SNAPSHOTTING,
-            "phaseDeadline": deadline_after(SNAPSHOTTING_BUDGET_SECS),
-            "pvcs": pvc_status,
-            "stalePvcs": stale,
-        })).await;
+        let _ = BACKUP_RUN
+            .patch_status(
+                name,
+                json!({
+                    "phase": PHASE_SNAPSHOTTING,
+                    "phaseDeadline": deadline_after(SNAPSHOTTING_BUDGET_SECS),
+                    "pvcs": pvc_status,
+                    "stalePvcs": stale,
+                }),
+            )
+            .await;
         return;
     }
 
@@ -442,28 +491,36 @@ async fn step_snapshotting(name: &str, run: &Value, cfg: &BackupConfig) {
         .unwrap_or(900) as u64;
     let stale = run["status"]["stalePvcs"].clone();
 
-    let snapshot_result = tokio::time::timeout(
-        Duration::from_secs(budget),
-        snapshot_cluster(cfg),
-    ).await;
+    let snapshot_result =
+        tokio::time::timeout(Duration::from_secs(budget), snapshot_cluster(cfg)).await;
 
     match snapshot_result {
         Ok(Ok(outcome)) => {
-            let _ = BACKUP_RUN.patch_status(name, json!({
-                "phase": PHASE_PRUNING,
-                "phaseDeadline": deadline_after(300),
-                "snapshotId": outcome.date,
-                // Whether the etcd database made it into this snapshot. Reported to the
-                // user as the "cluster state" backup age; a run can otherwise succeed
-                // with volumes backed up but etcd silently missing.
-                "etcdIncluded": outcome.etcd_included,
-            })).await;
+            let _ = BACKUP_RUN
+                .patch_status(
+                    name,
+                    json!({
+                        "phase": PHASE_PRUNING,
+                        "phaseDeadline": deadline_after(300),
+                        "snapshotId": outcome.date,
+                        // Whether the etcd database made it into this snapshot. Reported to the
+                        // user as the "cluster state" backup age; a run can otherwise succeed
+                        // with volumes backed up but etcd silently missing.
+                        "etcdIncluded": outcome.etcd_included,
+                    }),
+                )
+                .await;
         }
         Ok(Err(e)) => {
-            let _ = BACKUP_RUN.patch_status(name, json!({
-                "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
-                "error": e.to_string(), "stalePvcs": stale,
-            })).await;
+            let _ = BACKUP_RUN
+                .patch_status(
+                    name,
+                    json!({
+                        "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
+                        "error": e.to_string(), "stalePvcs": stale,
+                    }),
+                )
+                .await;
         }
         Err(_) => {
             let _ = BACKUP_RUN.patch_status(name, json!({
@@ -483,26 +540,61 @@ async fn step_pruning(name: &str, run: &Value, cfg: &BackupConfig) {
     // runs now, but this still matters — every snapshot shares the "cluster-backup"
     // tag, which is what actually buckets them together for retention to apply across.
     let forget = Command::new("restic")
-        .args(["forget", "--tag", "cluster-backup", "--group-by", "tags",
-               "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "12", "--prune"])
-        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output().await;
+        .args([
+            "forget",
+            "--tag",
+            "cluster-backup",
+            "--group-by",
+            "tags",
+            "--keep-daily",
+            "7",
+            "--keep-weekly",
+            "4",
+            "--keep-monthly",
+            "12",
+            "--prune",
+        ])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await;
     if let Ok(o) = &forget {
         if !o.status.success() {
-            tracing::warn!("backup-run {name}: forget/prune failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+            tracing::warn!(
+                "backup-run {name}: forget/prune failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
         }
     }
 
-    let stale: Vec<String> = run["status"]["stalePvcs"].as_array().cloned().unwrap_or_default()
-        .into_iter().filter_map(|v| v.as_str().map(String::from)).collect();
-    let phase = if stale.is_empty() { PHASE_SUCCEEDED } else { PHASE_PARTIAL };
-    let snapshot_id = run["status"]["snapshotId"].as_str().unwrap_or("").to_string();
-    let _ = BACKUP_RUN.patch_status(name, json!({
-        "phase": phase,
-        "finishedAt": Utc::now().to_rfc3339(),
-        "stalePvcs": stale,
-    })).await;
+    let stale: Vec<String> = run["status"]["stalePvcs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    let phase = if stale.is_empty() {
+        PHASE_SUCCEEDED
+    } else {
+        PHASE_PARTIAL
+    };
+    let snapshot_id = run["status"]["snapshotId"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let _ = BACKUP_RUN
+        .patch_status(
+            name,
+            json!({
+                "phase": phase,
+                "finishedAt": Utc::now().to_rfc3339(),
+                "stalePvcs": stale,
+            }),
+        )
+        .await;
     tracing::info!("backup-run {name}: {phase} (snapshot {snapshot_id})");
 }
 
@@ -543,7 +635,10 @@ async fn snapshot_cluster(cfg: &BackupConfig) -> anyhow::Result<SnapshotOutcome>
     result
 }
 
-async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Result<SnapshotOutcome> {
+async fn snapshot_cluster_inner(
+    cfg: &BackupConfig,
+    tmp_dir: &str,
+) -> anyhow::Result<SnapshotOutcome> {
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
 
@@ -554,7 +649,8 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
     let snap_name = format!("yolab-cluster-{date}");
     let snap_saved = Command::new("k3s")
         .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
-        .output().await;
+        .output()
+        .await;
 
     let mut etcd_included = false;
     match snap_saved {
@@ -573,17 +669,28 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
                             let _ = std::fs::remove_file(entry.path());
                         }
                         let _ = Command::new("kubectl")
-                            .args(["delete", "etcdsnapshotfile", fname_str.as_ref(), "--ignore-not-found"])
-                            .output().await;
+                            .args([
+                                "delete",
+                                "etcdsnapshotfile",
+                                fname_str.as_ref(),
+                                "--ignore-not-found",
+                            ])
+                            .output()
+                            .await;
                         break;
                     }
                 }
             }
             if !etcd_included {
-                tracing::warn!("cluster-backup: etcd snapshot {snap_name} saved but not found in {snap_dir}");
+                tracing::warn!(
+                    "cluster-backup: etcd snapshot {snap_name} saved but not found in {snap_dir}"
+                );
             }
         }
-        Ok(o) => tracing::warn!("cluster-backup: etcd-snapshot: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Ok(o) => tracing::warn!(
+            "cluster-backup: etcd-snapshot: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
         Err(e) => tracing::warn!("cluster-backup: k3s unavailable: {e}"),
     }
 
@@ -605,7 +712,9 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         // looks like it half-worked, which is worse than one that visibly failed.
         let ns_obj: Option<Value> = Command::new("kubectl")
             .args(["get", "namespace", ns, "-o", "json"])
-            .output().await.ok()
+            .output()
+            .await
+            .ok()
             .filter(|o| o.status.success())
             .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
         if let Some(v) = &ns_obj {
@@ -613,10 +722,19 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         }
 
         let obj_out = Command::new("kubectl")
-            .args(["get", "deploy,svc,secret,configmap",
-                   "-n", ns, "-o", "json", "--ignore-not-found"])
-            .output().await;
-        let workloads: Vec<Value> = obj_out.ok()
+            .args([
+                "get",
+                "deploy,svc,secret,configmap",
+                "-n",
+                ns,
+                "-o",
+                "json",
+                "--ignore-not-found",
+            ])
+            .output()
+            .await;
+        let workloads: Vec<Value> = obj_out
+            .ok()
             .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
             .and_then(|v| v["items"].as_array().cloned())
             .unwrap_or_default();
@@ -640,15 +758,28 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
             .as_ref()
             .and_then(|v| v["metadata"]["annotations"].as_object().cloned())
             .unwrap_or_default();
-        let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let app_id = ann
+            .get(ANN_APP_ID)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         // Which chart version produced this app. Together with the image digests below,
         // this is the full answer to "what was running when this data was written".
-        let chart_repo = ann.get(ANN_CHART_REPO).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let chart_version = ann.get(ANN_CHART_VERSION).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let chart_repo = ann
+            .get(ANN_CHART_REPO)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let chart_version = ann
+            .get(ANN_CHART_VERSION)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let pvc_out = Command::new("kubectl")
             .args(["get", "pvc", "-n", ns, "-o", "json"])
-            .output().await;
+            .output()
+            .await;
         let pvcs: Vec<Value> = pvc_out
             .ok()
             .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
@@ -661,7 +792,9 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
                     return None;
                 }
                 let capacity = item["spec"]["resources"]["requests"]["storage"]
-                    .as_str().unwrap_or("?").to_string();
+                    .as_str()
+                    .unwrap_or("?")
+                    .to_string();
                 Some(json!({ "name": name, "capacity": capacity }))
             })
             .collect();
@@ -683,7 +816,8 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
         }));
     }
 
-    let total_pvc_bytes: u64 = services.iter()
+    let total_pvc_bytes: u64 = services
+        .iter()
         .flat_map(|s| s["pvcs"].as_array().cloned().unwrap_or_default())
         .map(|p| parse_capacity_bytes(p["capacity"].as_str().unwrap_or("0")))
         .sum();
@@ -698,17 +832,28 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
 
     // 4. Init restic repo if needed.
     cfg.unlock("cluster-backup").await;
-    let check = Command::new("restic").args(["snapshots"])
-        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output().await;
+    let check = Command::new("restic")
+        .args(["snapshots"])
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await;
     if check.map(|o| !o.status.success()).unwrap_or(true) {
-        let init = Command::new("restic").args(["init"])
-            .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-            .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-            .output().await?;
+        let init = Command::new("restic")
+            .args(["init"])
+            .env("RESTIC_REPOSITORY", &repo)
+            .env("RESTIC_PASSWORD", &cfg.restic_password)
+            .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+            .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+            .output()
+            .await?;
         if !init.status.success() {
-            anyhow::bail!("restic init failed: {}", String::from_utf8_lossy(&init.stderr).trim());
+            anyhow::bail!(
+                "restic init failed: {}",
+                String::from_utf8_lossy(&init.stderr).trim()
+            );
         }
     }
 
@@ -718,16 +863,25 @@ async fn snapshot_cluster_inner(cfg: &BackupConfig, tmp_dir: &str) -> anyhow::Re
     let backup = Command::new("restic")
         .kill_on_drop(true)
         .args(["backup", tmp_dir, "--tag", "cluster-backup"])
-        .env("RESTIC_REPOSITORY", &repo).env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id).env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output().await?;
+        .env("RESTIC_REPOSITORY", &repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output()
+        .await?;
 
     if !backup.status.success() {
-        anyhow::bail!("restic backup failed: {}", String::from_utf8_lossy(&backup.stderr).trim());
+        anyhow::bail!(
+            "restic backup failed: {}",
+            String::from_utf8_lossy(&backup.stderr).trim()
+        );
     }
 
     tracing::info!("cluster-backup: snapshot complete ({date}, etcd_included={etcd_included})");
-    Ok(SnapshotOutcome { date, etcd_included })
+    Ok(SnapshotOutcome {
+        date,
+        etcd_included,
+    })
 }
 
 /// Every container image referenced by a namespace's workloads, deduplicated and sorted.
@@ -778,13 +932,17 @@ fn flatten_status(item: &Value) -> Value {
 /// exists, plus the most recently finished run's terminal summary either way.
 pub async fn current_status() -> Value {
     let runs = BACKUP_RUN.list().await; // newest-created first
-    let active = runs.iter().find(|r| {
-        let phase = r["status"]["phase"].as_str().unwrap_or(PHASE_PENDING);
-        !is_terminal(phase)
-    }).map(flatten_status);
-    let last_finished = runs.iter().find(|r| {
-        is_terminal(r["status"]["phase"].as_str().unwrap_or(""))
-    }).map(flatten_status);
+    let active = runs
+        .iter()
+        .find(|r| {
+            let phase = r["status"]["phase"].as_str().unwrap_or(PHASE_PENDING);
+            !is_terminal(phase)
+        })
+        .map(flatten_status);
+    let last_finished = runs
+        .iter()
+        .find(|r| is_terminal(r["status"]["phase"].as_str().unwrap_or("")))
+        .map(flatten_status);
     // Age of the last backup that actually produced a snapshot, Partial included — a
     // run that captured seven of eight volumes IS a backup of those seven.
     //
@@ -793,9 +951,14 @@ pub async fn current_status() -> Value {
     // slow", which nobody needs to know; staleness answers "when could I last have
     // restored", which is the entire point of the feature. It was already computed for
     // the scheduler on every tick and then thrown away.
-    let last_ok_age_hours = runs.iter()
-        .find(|r| matches!(r["status"]["phase"].as_str(),
-                           Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)))
+    let last_ok_age_hours = runs
+        .iter()
+        .find(|r| {
+            matches!(
+                r["status"]["phase"].as_str(),
+                Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)
+            )
+        })
         .and_then(|r| r["status"]["finishedAt"].as_str())
         .and_then(hours_since);
     json!({
@@ -846,14 +1009,22 @@ pub async fn reconcile_tick(holder: &str) {
         if !is_timed_out(&run, Utc::now()) {
             continue;
         }
-        let phase = run["status"]["phase"].as_str().unwrap_or(PHASE_PENDING).to_string();
+        let phase = run["status"]["phase"]
+            .as_str()
+            .unwrap_or(PHASE_PENDING)
+            .to_string();
         let name = run["metadata"]["name"].as_str().unwrap_or("").to_string();
         tracing::warn!("backup-run {name}: timed out in phase {phase}");
-        let _ = BACKUP_RUN.patch_status(&name, json!({
-            "phase": PHASE_FAILED,
-            "finishedAt": Utc::now().to_rfc3339(),
-            "error": format!("timed out in phase {phase}"),
-        })).await;
+        let _ = BACKUP_RUN
+            .patch_status(
+                &name,
+                json!({
+                    "phase": PHASE_FAILED,
+                    "finishedAt": Utc::now().to_rfc3339(),
+                    "error": format!("timed out in phase {phase}"),
+                }),
+            )
+            .await;
         timed_out.insert(name);
     }
 
@@ -884,8 +1055,14 @@ pub async fn reconcile_tick(holder: &str) {
     };
 
     let runs = BACKUP_RUN.list().await;
-    let last_ok_finished = runs.iter()
-        .find(|r| matches!(r["status"]["phase"].as_str(), Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)))
+    let last_ok_finished = runs
+        .iter()
+        .find(|r| {
+            matches!(
+                r["status"]["phase"].as_str(),
+                Some(PHASE_SUCCEEDED) | Some(PHASE_PARTIAL)
+            )
+        })
         .and_then(|r| r["status"]["finishedAt"].as_str());
 
     if scheduled_backup_is_due(last_ok_finished).await {
@@ -1023,7 +1200,10 @@ mod tests {
     #[test]
     fn a_run_with_no_deadline_is_not_timed_out() {
         let now = Utc::now();
-        assert!(!is_timed_out(&json!({"status": {"phase": PHASE_SYNCING}}), now));
+        assert!(!is_timed_out(
+            &json!({"status": {"phase": PHASE_SYNCING}}),
+            now
+        ));
         assert!(!is_timed_out(&json!({}), now));
         assert!(!is_timed_out(
             &json!({"status": {"phase": PHASE_SYNCING, "phaseDeadline": "garbage"}}),
@@ -1198,7 +1378,6 @@ mod tests {
         }
     }
 
-
     // ── The stall watchdog ────────────────────────────────────────────────────
     //
     // The rule these pin down: a backup never fails for being slow, only for
@@ -1219,7 +1398,9 @@ mod tests {
     /// A line with no ETA yet is still usable: the percent is what the page shows.
     #[test]
     fn restic_progress_survives_a_missing_eta() {
-        let (percent, eta) = parse_restic_progress("[00:10] 0.00%  12 files 1.0 MiB, total 88164 files 14.657 GiB, 0 errors");
+        let (percent, eta) = parse_restic_progress(
+            "[00:10] 0.00%  12 files 1.0 MiB, total 88164 files 14.657 GiB, 0 errors",
+        );
         assert_eq!(percent, Some(0.0));
         assert_eq!(eta, None);
     }
@@ -1258,7 +1439,10 @@ mod tests {
         let long_past = (Utc::now() - chrono::Duration::hours(9)).to_rfc3339();
         for phase in [PHASE_PENDING, PHASE_SNAPSHOTTING, PHASE_PRUNING] {
             let run = json!({"status": {"phase": phase, "phaseDeadline": long_past}});
-            assert!(is_timed_out(&run, Utc::now()), "{phase} must still time out");
+            assert!(
+                is_timed_out(&run, Utc::now()),
+                "{phase} must still time out"
+            );
         }
     }
 

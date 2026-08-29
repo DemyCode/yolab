@@ -29,7 +29,9 @@ pub struct LeaseGuard;
 /// very first line bailed out on every single call, for as long as this code has
 /// existed, with no error ever surfaced anywhere.
 fn now_rfc3339() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+        .to_string()
 }
 
 fn is_expired(lease: &Value, fallback_duration_secs: i64) -> bool {
@@ -40,7 +42,9 @@ fn is_expired(lease: &Value, fallback_duration_secs: i64) -> bool {
         .as_i64()
         .unwrap_or(fallback_duration_secs);
     match renew {
-        Some(t) => (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() > duration_secs,
+        Some(t) => {
+            (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() > duration_secs
+        }
         None => true,
     }
 }
@@ -53,10 +57,22 @@ fn is_expired(lease: &Value, fallback_duration_secs: i64) -> bool {
 /// a missed tick or two without another node/process taking over mid-operation.
 pub async fn acquire(name: &str, holder: &str, duration_secs: i64) -> Option<LeaseGuard> {
     let existing = match kubectl::run(&[
-        "get", "lease", name, "-n", LEASE_NS, "-o", "json", "--ignore-not-found",
-    ]).await {
+        "get",
+        "lease",
+        name,
+        "-n",
+        LEASE_NS,
+        "-o",
+        "json",
+        "--ignore-not-found",
+    ])
+    .await
+    {
         Ok(o) => o,
-        Err(e) => { tracing::warn!("lease {name}: get failed: {e}"); return None; }
+        Err(e) => {
+            tracing::warn!("lease {name}: get failed: {e}");
+            return None;
+        }
     };
 
     if existing.trim().is_empty() {
@@ -81,13 +97,19 @@ pub async fn acquire(name: &str, holder: &str, duration_secs: i64) -> Option<Lea
             // else (e.g. a malformed manifest the apiserver rejects) must be visible —
             // this exact `.ok()` used to swallow a format bug that made every lease
             // acquisition fail silently, permanently, with no trace anywhere.
-            Err(e) => { tracing::debug!("lease {name}: create: {e}"); None }
+            Err(e) => {
+                tracing::debug!("lease {name}: create: {e}");
+                None
+            }
         };
     }
 
     let lease: Value = match serde_json::from_str(&existing) {
         Ok(v) => v,
-        Err(e) => { tracing::warn!("lease {name}: parse failed: {e}"); return None; }
+        Err(e) => {
+            tracing::warn!("lease {name}: parse failed: {e}");
+            return None;
+        }
     };
     let current_holder = lease["spec"]["holderIdentity"].as_str().unwrap_or("");
     if !is_expired(&lease, duration_secs) && current_holder != holder {
@@ -108,10 +130,25 @@ pub async fn acquire(name: &str, holder: &str, duration_secs: i64) -> Option<Lea
             "acquireTime": now_rfc3339(),
             "renewTime": now_rfc3339(),
         },
-    }).to_string();
-    match kubectl::run(&["patch", "lease", name, "-n", LEASE_NS, "--type=merge", "-p", &patch]).await {
+    })
+    .to_string();
+    match kubectl::run(&[
+        "patch",
+        "lease",
+        name,
+        "-n",
+        LEASE_NS,
+        "--type=merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    {
         Ok(_) => Some(LeaseGuard),
-        Err(e) => { tracing::debug!("lease {name}: renew/takeover: {e}"); None }
+        Err(e) => {
+            tracing::debug!("lease {name}: renew/takeover: {e}");
+            None
+        }
     }
 }
 
@@ -128,7 +165,10 @@ mod tests {
     fn now_rfc3339_matches_kubernetes_microtime_format() {
         let s = now_rfc3339();
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$").unwrap();
-        assert!(re.is_match(&s), "expected exactly 6 fractional digits + Z, got: {s}");
+        assert!(
+            re.is_match(&s),
+            "expected exactly 6 fractional digits + Z, got: {s}"
+        );
     }
 
     #[test]

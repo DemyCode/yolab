@@ -113,12 +113,21 @@ pub struct InstallRequest {
 /// A silently-failed annotate loses an app's persisted config or outputs.
 async fn annotate_ns(ns: &str, key: &str, value: &str) {
     match tokio::process::Command::new("kubectl")
-        .args(["annotate", "namespace", ns, &format!("{key}={value}"), "--overwrite=true"])
+        .args([
+            "annotate",
+            "namespace",
+            ns,
+            &format!("{key}={value}"),
+            "--overwrite=true",
+        ])
         .output()
         .await
     {
         Ok(o) if !o.status.success() => {
-            tracing::warn!("annotate {ns} {key} failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+            tracing::warn!(
+                "annotate {ns} {key} failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
         }
         Err(e) => tracing::warn!("annotate {ns} {key} spawn failed: {e}"),
         _ => {}
@@ -178,7 +187,11 @@ struct ChartMeta {
 
 impl ChartMeta {
     fn ann(&self, key: &str) -> &str {
-        self.chart.annotations.get(key).map(String::as_str).unwrap_or("")
+        self.chart
+            .annotations
+            .get(key)
+            .map(String::as_str)
+            .unwrap_or("")
     }
     /// Annotations hold JSON as a string (YAML block scalar); parse or fall back.
     fn ann_json(&self, key: &str) -> Value {
@@ -186,7 +199,11 @@ impl ChartMeta {
     }
     fn display_name(&self) -> String {
         let n = self.ann(ANN_DISPLAY_NAME);
-        if n.is_empty() { self.chart.name.clone() } else { n.to_string() }
+        if n.is_empty() {
+            self.chart.name.clone()
+        } else {
+            n.to_string()
+        }
     }
 }
 
@@ -291,7 +308,9 @@ fn build_values(
 /// Helm writes progress and errors to stderr, so both are forwarded — the old
 /// `kubectl apply` streamer only forwarded stdout, which is why a failed apply surfaced
 /// as a bare exit code with no explanation.
-fn helm_stream(args: Vec<String>) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
+fn helm_stream(
+    args: Vec<String>,
+) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
         let child = tokio::process::Command::new("helm")
             .args(&args)
@@ -395,21 +414,40 @@ fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
     if raw.is_empty() {
         return vec![];
     }
-    let Ok(outputs) = serde_json::from_str::<Vec<Value>>(raw) else { return vec![] };
+    let Ok(outputs) = serde_json::from_str::<Vec<Value>>(raw) else {
+        return vec![];
+    };
     // Handle old format [{url, ipv6}]
-    if outputs.first().map(|o| o.get("url").is_some() || o.get("ipv6").is_some()).unwrap_or(false) {
+    if outputs
+        .first()
+        .map(|o| o.get("url").is_some() || o.get("ipv6").is_some())
+        .unwrap_or(false)
+    {
         let mut result = vec![];
         for o in &outputs {
             if let Some(url) = o["url"].as_str().filter(|s| !s.is_empty()) {
-                result.push(AppOutput { key: "url".into(), label: "Web URL".into(), value: url.into(), type_: "url".into() });
+                result.push(AppOutput {
+                    key: "url".into(),
+                    label: "Web URL".into(),
+                    value: url.into(),
+                    type_: "url".into(),
+                });
             }
             if let Some(ip) = o["ipv6"].as_str().filter(|s| !s.is_empty()) {
-                result.push(AppOutput { key: "ipv6".into(), label: "IPv6".into(), value: ip.into(), type_: "text".into() });
+                result.push(AppOutput {
+                    key: "ipv6".into(),
+                    label: "IPv6".into(),
+                    value: ip.into(),
+                    type_: "text".into(),
+                });
             }
         }
         return result;
     }
-    outputs.into_iter().filter_map(|o| serde_json::from_value(o).ok()).collect()
+    outputs
+        .into_iter()
+        .filter_map(|o| serde_json::from_value(o).ok())
+        .collect()
 }
 
 /// Reject config scalars that could break out of a YAML scalar and inject
@@ -417,7 +455,9 @@ fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
 /// verbatim, so an embedded newline in e.g. a "domain" field could smuggle an
 /// extra key/document into the applied manifest. All current catalog fields are
 /// single-line scalars, so rejecting control characters has no false positives.
-fn validate_config_values(config: &serde_json::Map<String, Value>) -> std::result::Result<(), String> {
+fn validate_config_values(
+    config: &serde_json::Map<String, Value>,
+) -> std::result::Result<(), String> {
     fn check(v: &Value) -> std::result::Result<(), String> {
         match v {
             Value::String(s) => {
@@ -459,7 +499,9 @@ pub async fn account_token(State(state): State<AppState>) -> Result<Json<Account
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    Ok(Json(AccountTokenResponse { account_token: token }))
+    Ok(Json(AccountTokenResponse {
+        account_token: token,
+    }))
 }
 
 /// Strip scheme and trailing slash from a dns_url, then drop the leading
@@ -481,7 +523,9 @@ fn derive_domain(dns_url: &str) -> String {
 pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainResponse>> {
     let tunnel = tunnel_config(&state.config)?;
     let dns_url = tunnel.get("dns_url").and_then(|v| v.as_str()).unwrap_or("");
-    Ok(Json(DomainResponse { domain: derive_domain(dns_url) }))
+    Ok(Json(DomainResponse {
+        domain: derive_domain(dns_url),
+    }))
 }
 
 /// The storefront: every chart across every configured source.
@@ -557,9 +601,13 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
     let mut seen: std::collections::HashSet<String> = Default::default();
 
     for (repo, dir) in crate::charts::chart_sources(&catalog_dir).await {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
-            let Some(meta) = read_chart(&entry.path()) else { continue };
+            let Some(meta) = read_chart(&entry.path()) else {
+                continue;
+            };
             // An id can legitimately exist in several repos; the earlier source wins, and
             // the UI shows which repo it came from so "gitea from someone else's repo"
             // can never masquerade as the curated one.
@@ -599,7 +647,11 @@ pub async fn add_repo(
         if let Err(e) = crate::charts::sync_repo(r).await {
             // The repo is registered but unusable — surface it rather than leaving an
             // empty section in the UI with no explanation.
-            return (StatusCode::BAD_GATEWAY, format!("added, but sync failed: {e}")).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("added, but sync failed: {e}"),
+            )
+                .into_response();
         }
     }
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
@@ -628,7 +680,6 @@ pub async fn sync_repos(State(_s): State<AppState>) -> Json<serde_json::Value> {
     }
     Json(Value::Object(results))
 }
-
 
 /// True when a pod sitting in an app's namespace belongs to YoLab's backup
 /// machinery rather than to the app.
@@ -661,7 +712,14 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let catalog_dir = state.config.catalog_dir();
     let (ns_out, pods_out) = tokio::join!(
         tokio::process::Command::new("kubectl")
-            .args(["get", "namespaces", "-l", &format!("{LABEL_MANAGED}=true"), "-o", "json"])
+            .args([
+                "get",
+                "namespaces",
+                "-l",
+                &format!("{LABEL_MANAGED}=true"),
+                "-o",
+                "json"
+            ])
             .output(),
         tokio::process::Command::new("kubectl")
             .args(["get", "pods", "--all-namespaces", "-o", "json"])
@@ -671,7 +729,8 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
 
     // Build a pod-by-namespace index from the single bulk query so list_apps
     // requires only two kubectl calls regardless of app count.
-    let pods_v: Value = pods_out.ok()
+    let pods_v: Value = pods_out
+        .ok()
         .and_then(|o| serde_json::from_slice(&o.stdout).ok())
         .unwrap_or_else(|| serde_json::json!({"items": []}));
     let empty_pods: Vec<Value> = vec![];
@@ -686,8 +745,15 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let mut apps = vec![];
     let empty_ns: Vec<Value> = vec![];
     for ns in v["items"].as_array().unwrap_or(&empty_ns) {
-        let ann = ns["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-        let name = ns["metadata"]["name"].as_str().unwrap_or("").trim_start_matches("yolab-").to_string();
+        let ann = ns["metadata"]["annotations"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let name = ns["metadata"]["name"]
+            .as_str()
+            .unwrap_or("")
+            .trim_start_matches("yolab-")
+            .to_string();
         let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
         let status = if phase == "Terminating" {
             "uninstalling".to_string()
@@ -707,16 +773,25 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 "starting".to_string()
             } else {
                 let all_ready = items.iter().all(|p| {
-                    p["status"]["conditions"].as_array()
-                        .map(|cs| cs.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
+                    p["status"]["conditions"]
+                        .as_array()
+                        .map(|cs| {
+                            cs.iter()
+                                .any(|c| c["type"] == "Ready" && c["status"] == "True")
+                        })
                         .unwrap_or(false)
                 });
                 if all_ready { "running" } else { "starting" }.to_string()
             }
         };
 
-        let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
+        let id = ann
+            .get(ANN_APP_ID)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let config: serde_json::Map<String, Value> = ann
+            .get(ANN_CONFIG)
             .and_then(|v| v.as_str())
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
@@ -724,14 +799,31 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let outputs_spec = chart_outputs_spec(&catalog_dir, &id)
             .into_iter()
             .filter(|o| o["type"].as_str() != Some("hidden"))
-            .filter_map(|o| Some(OutputSpec {
-                key: o["key"].as_str()?.to_string(),
-                label: o.get("label").and_then(|v| v.as_str()).unwrap_or(o["key"].as_str()?).to_string(),
-                type_: o.get("type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
-            }))
+            .filter_map(|o| {
+                Some(OutputSpec {
+                    key: o["key"].as_str()?.to_string(),
+                    label: o
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(o["key"].as_str()?)
+                        .to_string(),
+                    type_: o
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("text")
+                        .to_string(),
+                })
+            })
             .collect();
 
-        apps.push(AppInfo { app_id: id, instance_name: name, status, outputs: normalize_outputs(&ann), outputs_spec, config });
+        apps.push(AppInfo {
+            app_id: id,
+            instance_name: name,
+            status,
+            outputs: normalize_outputs(&ann),
+            outputs_spec,
+            config,
+        });
     }
     Ok(Json(apps))
 }
@@ -741,8 +833,16 @@ pub async fn install_app(
     Path(id): Path<String>,
     Json(body): Json<InstallRequest>,
 ) -> impl IntoResponse {
-    if !body.instance_name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-        return (StatusCode::BAD_REQUEST, "instance_name must be lowercase alphanumeric and hyphens").into_response();
+    if !body
+        .instance_name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "instance_name must be lowercase alphanumeric and hyphens",
+        )
+            .into_response();
     }
     if let Err(e) = validate_config_values(&body.config) {
         return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
@@ -842,16 +942,25 @@ pub async fn update_app(
     let ns = format!("yolab-{instance_name}");
     let Ok(ns_out) = tokio::process::Command::new("kubectl")
         .args(["get", "namespace", &ns, "-o", "json"])
-        .output().await
+        .output()
+        .await
     else {
         return (StatusCode::NOT_FOUND, "Instance not found").into_response();
     };
     let Ok(ns_v) = serde_json::from_slice::<Value>(&ns_out.stdout) else {
         return (StatusCode::NOT_FOUND, "Instance not found").into_response();
     };
-    let ann = ns_v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-    let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let stored_config: serde_json::Map<String, Value> = ann.get(ANN_CONFIG)
+    let ann = ns_v["metadata"]["annotations"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let id = ann
+        .get(ANN_APP_ID)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let stored_config: serde_json::Map<String, Value> = ann
+        .get(ANN_CONFIG)
         .and_then(|v| v.as_str())
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
@@ -936,13 +1045,23 @@ pub async fn scan_outputs(
     let ns = format!("yolab-{instance_name}");
     let ns_out = tokio::process::Command::new("kubectl")
         .args(["get", "namespace", &ns, "-o", "json"])
-        .output().await?;
+        .output()
+        .await?;
     let ns_v: Value = serde_json::from_slice(&ns_out.stdout)?;
-    let ann = ns_v["metadata"]["annotations"].as_object().cloned().unwrap_or_default();
-    let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let ann = ns_v["metadata"]["annotations"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let id = ann
+        .get(ANN_APP_ID)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let outputs_spec = chart_outputs_spec(&state.config.catalog_dir(), &id);
     if outputs_spec.is_empty() {
-        return Ok(Json(ScanOutputsResponse { outputs: normalize_outputs(&ann) }));
+        return Ok(Json(ScanOutputsResponse {
+            outputs: normalize_outputs(&ann),
+        }));
     }
 
     // Compile regex patterns once — recompiling inside the inner log-line loop
@@ -953,19 +1072,33 @@ pub async fn scan_outputs(
         type_: String,
         re: Option<regex::Regex>,
     }
-    let compiled: Vec<CompiledSpec> = outputs_spec.iter().filter_map(|spec| {
-        let key = spec["key"].as_str()?.to_string();
-        Some(CompiledSpec {
-            re: spec["pattern"].as_str().and_then(|p| regex::Regex::new(p).ok()),
-            label: spec.get("label").and_then(|v| v.as_str()).unwrap_or(&key).to_string(),
-            type_: spec.get("type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
-            key,
+    let compiled: Vec<CompiledSpec> = outputs_spec
+        .iter()
+        .filter_map(|spec| {
+            let key = spec["key"].as_str()?.to_string();
+            Some(CompiledSpec {
+                re: spec["pattern"]
+                    .as_str()
+                    .and_then(|p| regex::Regex::new(p).ok()),
+                label: spec
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&key)
+                    .to_string(),
+                type_: spec
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("text")
+                    .to_string(),
+                key,
+            })
         })
-    }).collect();
+        .collect();
 
     let pods_out = tokio::process::Command::new("kubectl")
         .args(["get", "pods", "-n", &ns, "-o", "json"])
-        .output().await?;
+        .output()
+        .await?;
     let pods_v: Value = serde_json::from_slice(&pods_out.stdout)?;
     let mut found: std::collections::HashMap<String, String> = Default::default();
 
@@ -974,18 +1107,31 @@ pub async fn scan_outputs(
         let empty = vec![];
         let init_containers = pod["spec"]["initContainers"].as_array().unwrap_or(&empty);
         let main_containers = pod["spec"]["containers"].as_array().unwrap_or(&empty);
-        let containers: Vec<&str> = init_containers.iter().chain(main_containers.iter())
-            .filter_map(|c| c["name"].as_str()).collect();
+        let containers: Vec<&str> = init_containers
+            .iter()
+            .chain(main_containers.iter())
+            .filter_map(|c| c["name"].as_str())
+            .collect();
         for container in containers {
             let logs = tokio::process::Command::new("kubectl")
-                .args(["logs", "-n", &ns, pod_name, "-c", container,
-                       &format!("--tail={LOGS_SCAN_TAIL}")])
-                .output().await;
+                .args([
+                    "logs",
+                    "-n",
+                    &ns,
+                    pod_name,
+                    "-c",
+                    container,
+                    &format!("--tail={LOGS_SCAN_TAIL}"),
+                ])
+                .output()
+                .await;
             let Ok(logs) = logs else { continue };
             let text = String::from_utf8_lossy(&logs.stdout);
             for line in text.lines() {
                 for cs in &compiled {
-                    if found.contains_key(&cs.key) { continue; }
+                    if found.contains_key(&cs.key) {
+                        continue;
+                    }
                     if let Some(re) = &cs.re {
                         if let Some(cap) = re.captures(line).and_then(|c| c.get(1)) {
                             found.insert(cs.key.clone(), cap.as_str().to_string());
@@ -994,15 +1140,20 @@ pub async fn scan_outputs(
                 }
             }
             // Stop as soon as all keys are found.
-            if found.len() == compiled.len() { break 'outer; }
+            if found.len() == compiled.len() {
+                break 'outer;
+            }
         }
     }
 
     if found.is_empty() {
-        return Ok(Json(ScanOutputsResponse { outputs: normalize_outputs(&ann) }));
+        return Ok(Json(ScanOutputsResponse {
+            outputs: normalize_outputs(&ann),
+        }));
     }
 
-    let outputs: Vec<AppOutput> = compiled.iter()
+    let outputs: Vec<AppOutput> = compiled
+        .iter()
         .filter_map(|cs| {
             let value = found.get(&cs.key)?.clone();
             Some(AppOutput {
@@ -1032,7 +1183,14 @@ pub async fn uninstall_app(
     // unlike that version, a hook that fails shows up in the output instead of being
     // silently skipped on its way to deleting the namespace anyway.
     let out = tokio::process::Command::new("helm")
-        .args(["uninstall", &instance_name, "-n", &ns, "--ignore-not-found", "--wait"])
+        .args([
+            "uninstall",
+            &instance_name,
+            "-n",
+            &ns,
+            "--ignore-not-found",
+            "--wait",
+        ])
         .output()
         .await;
     match out {
@@ -1050,29 +1208,53 @@ pub async fn uninstall_app(
     }
 
     tokio::process::Command::new("kubectl")
-        .args(["delete", "namespace", &ns, "--ignore-not-found=true", "--wait=false"])
-        .output().await?;
+        .args([
+            "delete",
+            "namespace",
+            &ns,
+            "--ignore-not-found=true",
+            "--wait=false",
+        ])
+        .output()
+        .await?;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
-pub async fn list_pods(
-    Path(instance_name): Path<String>,
-) -> Result<Json<Vec<PodInfo>>> {
+pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<PodInfo>>> {
     let out = tokio::process::Command::new("kubectl")
-        .args(["get", "pods", "-n", &format!("yolab-{instance_name}"), "-o", "json"])
-        .output().await?;
+        .args([
+            "get",
+            "pods",
+            "-n",
+            &format!("yolab-{instance_name}"),
+            "-o",
+            "json",
+        ])
+        .output()
+        .await?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
     Ok(Json(
-        v["items"].as_array().unwrap_or(&vec![]).iter()
+        v["items"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
             .filter(|p| !is_backup_mover_pod(p))
             .map(|p| PodInfo {
-            name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
-            phase: p["status"]["phase"].as_str().unwrap_or("Unknown").to_string(),
-            ready: p["status"]["conditions"].as_array()
-                .map(|cs| cs.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
-                .unwrap_or(false),
-        }).collect()
+                name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
+                phase: p["status"]["phase"]
+                    .as_str()
+                    .unwrap_or("Unknown")
+                    .to_string(),
+                ready: p["status"]["conditions"]
+                    .as_array()
+                    .map(|cs| {
+                        cs.iter()
+                            .any(|c| c["type"] == "Ready" && c["status"] == "True")
+                    })
+                    .unwrap_or(false),
+            })
+            .collect(),
     ))
 }
 
@@ -1080,8 +1262,15 @@ pub async fn describe_pod(
     Path((instance_name, pod_name)): Path<(String, String)>,
 ) -> Result<Json<DescribeResponse>> {
     let out = tokio::process::Command::new("kubectl")
-        .args(["describe", "pod", &pod_name, "-n", &format!("yolab-{instance_name}")])
-        .output().await?;
+        .args([
+            "describe",
+            "pod",
+            &pod_name,
+            "-n",
+            &format!("yolab-{instance_name}"),
+        ])
+        .output()
+        .await?;
     Ok(Json(DescribeResponse {
         output: format!(
             "{}{}",
@@ -1158,9 +1347,13 @@ mod tests {
     #[test]
     fn a_backup_mover_is_not_one_of_the_apps_pods() {
         // The exact name observed live in yolab-filebrowser during a backup.
-        assert!(is_backup_mover_pod(&pod("volsync-src-volsync-filebrowser-data-4k46c")));
+        assert!(is_backup_mover_pod(&pod(
+            "volsync-src-volsync-filebrowser-data-4k46c"
+        )));
         // And the restore-side mover, which appears while an app is scaled to zero.
-        assert!(is_backup_mover_pod(&pod("volsync-dst-volsync-vaultwarden-data-abc12")));
+        assert!(is_backup_mover_pod(&pod(
+            "volsync-dst-volsync-vaultwarden-data-abc12"
+        )));
     }
 
     /// The label is a second, independent signal so an upstream rename of the pod
@@ -1186,14 +1379,19 @@ mod tests {
             "my-backup-tool-123",
             "",
         ] {
-            assert!(!is_backup_mover_pod(&pod(name)), "{name} is the app's own pod");
+            assert!(
+                !is_backup_mover_pod(&pod(name)),
+                "{name} is the app's own pod"
+            );
         }
     }
 
     /// A pod with no labels at all must not panic the label check.
     #[test]
     fn a_pod_without_labels_is_handled() {
-        assert!(!is_backup_mover_pod(&json!({"metadata": {"name": "app-1"}})));
+        assert!(!is_backup_mover_pod(
+            &json!({"metadata": {"name": "app-1"}})
+        ));
         assert!(!is_backup_mover_pod(&json!({})));
     }
 
@@ -1226,7 +1424,10 @@ mod tests {
     }
 
     fn cfg(pairs: &[(&str, &str)]) -> serde_json::Map<String, Value> {
-        pairs.iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect()
     }
 
     #[test]
@@ -1243,10 +1444,15 @@ mod tests {
     #[test]
     fn a_top_level_only_search_would_have_returned_nothing() {
         let schema = real_schema();
-        let top_level_hit = schema["properties"].as_object().unwrap().iter().any(|(_, v)| {
-            v["format"].as_str() == Some("tunnel")
-        });
-        assert!(!top_level_hit, "the tunnel field is not at the top level — that was the bug");
+        let top_level_hit = schema["properties"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .any(|(_, v)| v["format"].as_str() == Some("tunnel"));
+        assert!(
+            !top_level_hit,
+            "the tunnel field is not at the top level — that was the bug"
+        );
     }
 
     /// A flat schema must keep working.
@@ -1255,7 +1461,10 @@ mod tests {
         let schema = serde_json::json!({
             "properties": {"subdomain": {"format": "tunnel"}}
         });
-        assert_eq!(resolve_service_name(&schema, &cfg(&[("subdomain", "flat")])), "flat");
+        assert_eq!(
+            resolve_service_name(&schema, &cfg(&[("subdomain", "flat")])),
+            "flat"
+        );
     }
 
     #[test]
@@ -1263,7 +1472,10 @@ mod tests {
         let schema = serde_json::json!({
             "properties": {"config": {"properties": {"storage_size": {"type": "string"}}}}
         });
-        assert_eq!(resolve_service_name(&schema, &cfg(&[("storage_size", "1Gi")])), "");
+        assert_eq!(
+            resolve_service_name(&schema, &cfg(&[("storage_size", "1Gi")])),
+            ""
+        );
     }
 
     /// Declared in the schema but absent from the user's answers: still empty,
@@ -1274,14 +1486,20 @@ mod tests {
     /// producing an app with no DNS name.
     #[test]
     fn a_missing_answer_falls_back_to_the_schema_default() {
-        assert_eq!(resolve_service_name(&real_schema(), &cfg(&[])), "qbittorrent");
+        assert_eq!(
+            resolve_service_name(&real_schema(), &cfg(&[])),
+            "qbittorrent"
+        );
     }
 
     /// An explicitly empty string is as absent as a missing key — it must not
     /// win over the default, or it reintroduces the blank-FQDN failure.
     #[test]
     fn an_empty_answer_also_falls_back_to_the_default() {
-        assert_eq!(resolve_service_name(&real_schema(), &cfg(&[("subdomain", "")])), "qbittorrent");
+        assert_eq!(
+            resolve_service_name(&real_schema(), &cfg(&[("subdomain", "")])),
+            "qbittorrent"
+        );
     }
 
     /// A real answer still wins over the default.
@@ -1326,7 +1544,10 @@ mod tests {
 
     #[test]
     fn derive_domain_drops_subdomain() {
-        assert_eq!(derive_domain("https://yolab.10.demycode.ovh"), "10.demycode.ovh");
+        assert_eq!(
+            derive_domain("https://yolab.10.demycode.ovh"),
+            "10.demycode.ovh"
+        );
         assert_eq!(derive_domain("http://node1.example.com/"), "example.com");
     }
 

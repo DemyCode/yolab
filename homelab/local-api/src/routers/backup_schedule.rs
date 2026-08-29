@@ -57,22 +57,42 @@ pub struct Schedule {
 }
 
 const DOW_NAMES: [&str; 7] = [
-    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
 ];
 const MONTH_NAMES: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 fn dow_from_name(s: &str) -> Option<u32> {
     let s = s.to_ascii_lowercase();
-    DOW_NAMES.iter().position(|n| n.to_ascii_lowercase().starts_with(&s) && s.len() >= 3)
+    DOW_NAMES
+        .iter()
+        .position(|n| n.to_ascii_lowercase().starts_with(&s) && s.len() >= 3)
         .map(|i| i as u32)
 }
 
 fn month_from_name(s: &str) -> Option<u32> {
     let s = s.to_ascii_lowercase();
-    MONTH_NAMES.iter().position(|n| n.to_ascii_lowercase().starts_with(&s) && s.len() >= 3)
+    MONTH_NAMES
+        .iter()
+        .position(|n| n.to_ascii_lowercase().starts_with(&s) && s.len() >= 3)
         .map(|i| i as u32 + 1)
 }
 
@@ -100,7 +120,9 @@ fn parse_field(
                     format!("\"{s}\" is not a whole number, so \"{part}\" is not a step the {label} field can use")
                 })?;
                 if step == 0 {
-                    return Err(format!("a step of 0 in the {label} field would mean \"never\""));
+                    return Err(format!(
+                        "a step of 0 in the {label} field would mean \"never\""
+                    ));
                 }
                 (r, step)
             }
@@ -133,7 +155,11 @@ fn parse_field(
         } else {
             let v = single(range_part)?;
             // "5/15" means "from 5 onwards, every 15" — not "just 5".
-            if step > 1 { (v, max) } else { (v, v) }
+            if step > 1 {
+                (v, max)
+            } else {
+                (v, v)
+            }
         };
 
         let mut v = lo;
@@ -149,7 +175,6 @@ fn parse_field(
     }
     Ok(out)
 }
-
 
 /// A wall-clock time turned into a real instant, tolerating the clock jumps that
 /// exist somewhere in the world on most weekends of the year.
@@ -378,7 +403,13 @@ impl Schedule {
         // Several minutes and several hours: describable, but not prettily.
         format!(
             "at minute {} of hour {}",
-            join_list(&self.minute.iter().map(|m| m.to_string()).collect::<Vec<_>>()),
+            join_list(
+                &self
+                    .minute
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect::<Vec<_>>()
+            ),
             join_list(&self.hour.iter().map(|h| h.to_string()).collect::<Vec<_>>()),
         )
     }
@@ -390,7 +421,9 @@ impl Schedule {
             Some(format!(
                 "in {}",
                 join_list(
-                    &self.month.iter()
+                    &self
+                        .month
+                        .iter()
                         .map(|m| MONTH_NAMES[(*m as usize) - 1].to_string())
                         .collect::<Vec<_>>()
                 )
@@ -412,7 +445,9 @@ impl Schedule {
                     Some(format!(
                         "every {}",
                         join_list(
-                            &self.day_of_week.iter()
+                            &self
+                                .day_of_week
+                                .iter()
                                 .map(|d| DOW_NAMES[*d as usize].to_string())
                                 .collect::<Vec<_>>()
                         )
@@ -422,15 +457,27 @@ impl Schedule {
             (true, false) => Some(format!(
                 "on the {} of the month",
                 join_list(
-                    &self.day_of_month.iter().map(|d| ordinal(*d)).collect::<Vec<_>>()
+                    &self
+                        .day_of_month
+                        .iter()
+                        .map(|d| ordinal(*d))
+                        .collect::<Vec<_>>()
                 )
             )),
             // OR semantics: say so, rather than implying an intersection.
             (true, true) => Some(format!(
                 "on the {} of the month and every {}",
-                join_list(&self.day_of_month.iter().map(|d| ordinal(*d)).collect::<Vec<_>>()),
                 join_list(
-                    &self.day_of_week.iter()
+                    &self
+                        .day_of_month
+                        .iter()
+                        .map(|d| ordinal(*d))
+                        .collect::<Vec<_>>()
+                ),
+                join_list(
+                    &self
+                        .day_of_week
+                        .iter()
                         .map(|d| DOW_NAMES[*d as usize].to_string())
                         .collect::<Vec<_>>()
                 ),
@@ -460,9 +507,12 @@ fn step_of(values: &[u32], range: u32) -> Option<u32> {
     if step == 0 || range % step != 0 || values.len() != (range / step) as usize {
         return None;
     }
-    values.iter().enumerate().all(|(i, v)| *v == i as u32 * step).then_some(step)
+    values
+        .iter()
+        .enumerate()
+        .all(|(i, v)| *v == i as u32 * step)
+        .then_some(step)
 }
-
 
 /// First and last of an unbroken run of values, or None if there are gaps.
 ///
@@ -505,11 +555,7 @@ fn join_list(items: &[String]) -> String {
 /// snapshot. None means none ever did, which is due on the first occurrence that has
 /// passed — not immediately on boot, so a freshly installed cluster does not start a
 /// backup during first-boot setup.
-pub fn is_due(
-    schedule: &Schedule,
-    last_ok: Option<DateTime<Local>>,
-    now: DateTime<Local>,
-) -> bool {
+pub fn is_due(schedule: &Schedule, last_ok: Option<DateTime<Local>>, now: DateTime<Local>) -> bool {
     let Some(occurrence) = schedule.previous_occurrence(now) else {
         return false;
     };
@@ -541,7 +587,6 @@ pub fn preview(expr: &str) -> serde_json::Value {
     }
 }
 
-
 // ── Persistence ───────────────────────────────────────────────────────────────
 //
 // A ConfigMap rather than the backup Secret next door: this is not a credential, and a
@@ -560,7 +605,13 @@ const SCHEDULE_NS: &str = "kube-system";
 /// unchanged behaviour rather than no behaviour.
 pub async fn load() -> Schedule {
     let stored = crate::kubectl::get_json(&[
-        "get", "configmap", SCHEDULE_CM, "-n", SCHEDULE_NS, "-o", "json",
+        "get",
+        "configmap",
+        SCHEDULE_CM,
+        "-n",
+        SCHEDULE_NS,
+        "-o",
+        "json",
     ])
     .await
     .ok()
@@ -568,7 +619,9 @@ pub async fn load() -> Schedule {
 
     match stored {
         Some(expr) => Schedule::parse(&expr).unwrap_or_else(|e| {
-            tracing::warn!("backup schedule {expr:?} is not usable ({e}) — falling back to {DEFAULT_EXPR}");
+            tracing::warn!(
+                "backup schedule {expr:?} is not usable ({e}) — falling back to {DEFAULT_EXPR}"
+            );
             Schedule::parse(DEFAULT_EXPR).expect("the default schedule must parse")
         }),
         None => Schedule::parse(DEFAULT_EXPR).expect("the default schedule must parse"),
@@ -579,7 +632,13 @@ pub async fn load() -> Schedule {
 /// of implying the owner picked 02:00.
 pub async fn is_configured() -> bool {
     crate::kubectl::get_json(&[
-        "get", "configmap", SCHEDULE_CM, "-n", SCHEDULE_NS, "-o", "json",
+        "get",
+        "configmap",
+        SCHEDULE_CM,
+        "-n",
+        SCHEDULE_NS,
+        "-o",
+        "json",
     ])
     .await
     .ok()
@@ -663,7 +722,12 @@ mod tests {
 
     fn local(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Local> {
         Local
-            .from_local_datetime(&NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(h, min, 0).unwrap())
+            .from_local_datetime(
+                &NaiveDate::from_ymd_opt(y, m, d)
+                    .unwrap()
+                    .and_hms_opt(h, min, 0)
+                    .unwrap(),
+            )
             .earliest()
             .unwrap()
     }
@@ -691,7 +755,6 @@ mod tests {
             assert_eq!(sched(expr).describe(), want, "for {expr}");
         }
     }
-
 
     /// The full wording table, pinned. Every string here is something an owner reads
     /// and acts on, so a change to any of them should be a deliberate edit to this list
@@ -730,12 +793,18 @@ mod tests {
     #[test]
     fn named_days_and_months_are_accepted() {
         assert_eq!(sched("0 3 * * MON").describe(), "every Monday, at 03:00");
-        assert_eq!(sched("0 3 * JAN *").describe(), "every day in January, at 03:00");
+        assert_eq!(
+            sched("0 3 * JAN *").describe(),
+            "every day in January, at 03:00"
+        );
     }
 
     #[test]
     fn several_days_read_as_a_list() {
-        assert_eq!(sched("0 2 * * 1,3,5").describe(), "every Monday, Wednesday, and Friday, at 02:00");
+        assert_eq!(
+            sched("0 2 * * 1,3,5").describe(),
+            "every Monday, Wednesday, and Friday, at 02:00"
+        );
     }
 
     /// Both day fields restricted is OR in cron, and the description has to say so —
@@ -770,7 +839,10 @@ mod tests {
         ];
         for (expr, needle) in cases {
             let err = Schedule::parse(expr).unwrap_err();
-            assert!(err.contains(needle), "{expr}: {err:?} should mention {needle:?}");
+            assert!(
+                err.contains(needle),
+                "{expr}: {err:?} should mention {needle:?}"
+            );
         }
     }
 
@@ -779,29 +851,47 @@ mod tests {
     #[test]
     fn the_previous_occurrence_of_a_daily_schedule_is_today_or_yesterday() {
         let s = sched("0 2 * * *");
-        assert_eq!(s.previous_occurrence(local(2026, 8, 25, 9, 30)), Some(local(2026, 8, 25, 2, 0)));
-        assert_eq!(s.previous_occurrence(local(2026, 8, 25, 1, 30)), Some(local(2026, 8, 24, 2, 0)));
+        assert_eq!(
+            s.previous_occurrence(local(2026, 8, 25, 9, 30)),
+            Some(local(2026, 8, 25, 2, 0))
+        );
+        assert_eq!(
+            s.previous_occurrence(local(2026, 8, 25, 1, 30)),
+            Some(local(2026, 8, 24, 2, 0))
+        );
     }
 
     /// Exactly on the minute counts as having occurred.
     #[test]
     fn an_occurrence_includes_its_own_minute() {
         let s = sched("0 2 * * *");
-        assert_eq!(s.previous_occurrence(local(2026, 8, 25, 2, 0)), Some(local(2026, 8, 25, 2, 0)));
+        assert_eq!(
+            s.previous_occurrence(local(2026, 8, 25, 2, 0)),
+            Some(local(2026, 8, 25, 2, 0))
+        );
     }
 
     #[test]
     fn the_next_occurrence_is_strictly_in_the_future() {
         let s = sched("0 2 * * *");
-        assert_eq!(s.next_occurrence(local(2026, 8, 25, 2, 0)), Some(local(2026, 8, 26, 2, 0)));
-        assert_eq!(s.next_occurrence(local(2026, 8, 25, 1, 59)), Some(local(2026, 8, 25, 2, 0)));
+        assert_eq!(
+            s.next_occurrence(local(2026, 8, 25, 2, 0)),
+            Some(local(2026, 8, 26, 2, 0))
+        );
+        assert_eq!(
+            s.next_occurrence(local(2026, 8, 25, 1, 59)),
+            Some(local(2026, 8, 25, 2, 0))
+        );
     }
 
     #[test]
     fn a_weekly_schedule_finds_the_right_weekday() {
         // 2026-08-25 is a Tuesday; the previous Sunday is the 23rd.
         let s = sched("30 3 * * 0");
-        assert_eq!(s.previous_occurrence(local(2026, 8, 25, 9, 0)), Some(local(2026, 8, 23, 3, 30)));
+        assert_eq!(
+            s.previous_occurrence(local(2026, 8, 25, 9, 0)),
+            Some(local(2026, 8, 23, 3, 30))
+        );
     }
 
     // ── is_due: the suspend case this whole module is shaped around ───────────
@@ -822,7 +912,11 @@ mod tests {
         let now = local(2026, 8, 25, 9, 0);
         assert!(!is_due(&s, Some(local(2026, 8, 25, 2, 5)), now));
         // ...until the next occurrence has passed.
-        assert!(is_due(&s, Some(local(2026, 8, 25, 2, 5)), local(2026, 8, 26, 2, 0)));
+        assert!(is_due(
+            &s,
+            Some(local(2026, 8, 25, 2, 5)),
+            local(2026, 8, 26, 2, 0)
+        ));
     }
 
     #[test]
@@ -841,7 +935,6 @@ mod tests {
         assert!(!is_due(&s, Some(now), now));
     }
 
-
     /// A `finishedAt` in the future relative to this node's clock — NTP correction, or a
     /// laptop resuming from suspend with a stale RTC — must read as "already backed up",
     /// not start a run every tick. The comparison against the occurrence handles it
@@ -853,8 +946,6 @@ mod tests {
         assert!(!is_due(&s, Some(local(2026, 8, 25, 23, 0)), now));
         assert!(!is_due(&s, Some(local(2027, 1, 1, 0, 0)), now));
     }
-
-
 
     #[test]
     fn preview_reports_a_bad_expression_without_panicking() {

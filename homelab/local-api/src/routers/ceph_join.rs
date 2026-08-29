@@ -134,12 +134,18 @@ mod tests {
 
     #[test]
     fn a_bracketed_ipv6_literal_keeps_its_colons() {
-        assert_eq!(strip_port("[fd00:cafe::1]:3300").as_deref(), Some("fd00:cafe::1"));
+        assert_eq!(
+            strip_port("[fd00:cafe::1]:3300").as_deref(),
+            Some("fd00:cafe::1")
+        );
     }
 
     #[test]
     fn the_nonce_suffix_is_dropped() {
-        assert_eq!(strip_port("[fd00:cafe::1]:6789/0").as_deref(), Some("fd00:cafe::1"));
+        assert_eq!(
+            strip_port("[fd00:cafe::1]:6789/0").as_deref(),
+            Some("fd00:cafe::1")
+        );
     }
 
     #[test]
@@ -168,7 +174,10 @@ mod tests {
     #[test]
     fn every_mon_in_the_map_is_returned_once() {
         let got = parse_mon_addrs(&dump_with(&["fd00:cafe::1", "fd00:cafe::2"]));
-        assert_eq!(got, vec!["fd00:cafe::1".to_string(), "fd00:cafe::2".to_string()]);
+        assert_eq!(
+            got,
+            vec!["fd00:cafe::1".to_string(), "fd00:cafe::2".to_string()]
+        );
     }
 
     /// Both addrvec entries are the same host; the joining node wants one seed
@@ -188,7 +197,7 @@ mod tests {
     /// Silence must never read as "a cluster with no mons is fine" — the Nix
     /// side treats an empty list as a hard failure and retries.
     #[test]
-    fn an_unrecognisable_dump_yields_no_addresses(){
+    fn an_unrecognisable_dump_yields_no_addresses() {
         assert!(parse_mon_addrs(&json!({})).is_empty());
         assert!(parse_mon_addrs(&json!({"mons": []})).is_empty());
         assert!(parse_mon_addrs(&json!({"mons": [{"name": "n"}]})).is_empty());
