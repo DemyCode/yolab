@@ -12,4 +12,3 @@ impl Drop for KillOnDrop {
         let _ = self.0.start_kill();
     }
 }
-

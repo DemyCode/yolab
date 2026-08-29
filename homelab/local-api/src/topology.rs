@@ -150,9 +150,23 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
 /// "auto": that is the genuine first-run state, and the `kind` check is what
 /// tells the two apart.
 pub async fn read_policy() -> Option<PolicyState> {
-    let v = kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"])
+    let v = match kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"])
         .await
-        .ok()?;
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // A missing ConfigMap is the genuine first-run state and must mean
+            // NotChosen, not "unreadable": only the former lets the controller
+            // seed a policy, and nothing else creates this map. An unreachable
+            // API server is the other, dangerous case and must stay None — the
+            // `kind` check below is what told those two apart until a fresh
+            // install's missing map was swallowed into None by `.ok()?`.
+            if kubectl::is_not_found(&e) {
+                return Some(PolicyState::NotChosen);
+            }
+            return None;
+        }
+    };
     if v["kind"].as_str() != Some("ConfigMap") {
         return None;
     }

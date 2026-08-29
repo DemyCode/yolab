@@ -1394,4 +1394,3 @@ mod tests {
         assert!(normalize_outputs(&serde_json::Map::new()).is_empty());
     }
 }
-

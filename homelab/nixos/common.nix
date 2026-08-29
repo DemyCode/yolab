@@ -3,10 +3,10 @@
   lib,
   config,
   inputs,
+  yolabConfigPath,
   ...
-}:
-let
-  s = import ../shared.nix { inherit pkgs lib inputs; };
+}: let
+  s = import ../shared.nix {inherit pkgs lib inputs yolabConfigPath;};
   k3sCfg = s.nodeCfg.k3s;
 
   # The first node initialises the embedded-etcd cluster (--cluster-init).
@@ -19,7 +19,7 @@ let
   # Ceph runs as host daemons rather than Rook pods so containerd's image store
   # can live on an RBD — see homelab/nixos/ceph/default.nix for why that is not
   # possible while the mons are pods.
-  cephCfg = s.homelabConfig.ceph or { };
+  cephCfg = s.homelabConfig.ceph or {};
 
   # The mesh address of a machine already in the cluster, taken from the k3s
   # server URL the installer wrote — same tunnel, same peer, one fewer thing to
@@ -30,21 +30,18 @@ let
   # bootstrap its own Ceph cluster instead of joining, which looks healthy on
   # both nodes and is only discovered when the storage turns out to be split.
   cephSeedAddr =
-    if isFirstNode then
-      ""
-    else
-      let
-        # `]` is deliberately unescaped outside the bracket expression: Nix uses POSIX
-        # ERE, where `\]` is not a valid escape and the whole pattern is rejected at
-        # eval time with "invalid regular expression".
-        m = builtins.match "https?://\\[([^]]+)]:[0-9]+" k3sCfg.server_addr;
-      in
-      if m == null then
-        throw "[ceph] cannot read a cluster address out of node.k3s.server_addr (${k3sCfg.server_addr}); expected https://[<ipv6>]:6443"
-      else
-        builtins.head m;
-in
-{
+    if isFirstNode
+    then ""
+    else let
+      # `]` is deliberately unescaped outside the bracket expression: Nix uses POSIX
+      # ERE, where `\]` is not a valid escape and the whole pattern is rejected at
+      # eval time with "invalid regular expression".
+      m = builtins.match "https?://\\[([^]]+)]:[0-9]+" k3sCfg.server_addr;
+    in
+      if m == null
+      then throw "[ceph] cannot read a cluster address out of node.k3s.server_addr (${k3sCfg.server_addr}); expected https://[<ipv6>]:6443"
+      else builtins.head m;
+in {
   imports = [
     ./ceph
     ./ceph/images-store.nix
@@ -181,7 +178,7 @@ in
       #  C. Default route on wg0 (metric 200):
       #     Pod traffic (fd00:42::/56) SNATs to sub_ipv6, then exits via wg0.
       wireguard.interfaces.wg0 = {
-        ips = [ "${s.tunnelCfg.sub_ipv6}/128" ];
+        ips = ["${s.tunnelCfg.sub_ipv6}/128"];
         privateKey = s.tunnelCfg.wg_private_key;
 
         postSetup = ''
@@ -205,14 +202,14 @@ in
           {
             publicKey = s.tunnelCfg.wg_server_public_key;
             endpoint = s.tunnelCfg.wg_server_endpoint;
-            allowedIPs = [ "::/0" ];
+            allowedIPs = ["::/0"];
             persistentKeepalive = 25;
           }
         ];
       };
 
       wireguard.interfaces.wg1 = {
-        ips = [ "${s.nodeCfg.sub_ipv6_private}/128" ];
+        ips = ["${s.nodeCfg.sub_ipv6_private}/128"];
         privateKey = s.nodeCfg.wg_private_key;
 
         postSetup = ''
@@ -228,7 +225,7 @@ in
           {
             publicKey = s.nodeCfg.wg_server_public_key;
             endpoint = s.nodeCfg.wg_server_endpoint;
-            allowedIPs = [ "${s.privateSubnet}" ];
+            allowedIPs = ["${s.privateSubnet}"];
             persistentKeepalive = 25;
           }
         ];
@@ -238,7 +235,7 @@ in
     # ── SSH ───────────────────────────────────────────────────────────────
     services.openssh = {
       enable = true;
-      ports = [ s.sshPort ];
+      ports = [s.sshPort];
       settings = {
         PermitRootLogin = "prohibit-password";
         PasswordAuthentication = false;
@@ -334,9 +331,9 @@ in
         "wireguard-wg1.service"
         "network-online.target"
       ];
-      wants = [ "network-online.target" ];
-      before = [ "k3s.service" ];
-      wantedBy = [ "k3s.service" ];
+      wants = ["network-online.target"];
+      before = ["k3s.service"];
+      wantedBy = ["k3s.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -415,7 +412,7 @@ in
             @hashed path_regexp \.[0-9a-zA-Z_-]{8,}\.(js|css|woff2?|png|svg|jpg|webp)$
             header @hashed Cache-Control "public, max-age=31536000, immutable"
             @entry path / /index.html
-            header @entry Cache-Control "no-cache" 
+            header @entry Cache-Control "no-cache"
             file_server
           }
         }
@@ -423,8 +420,8 @@ in
     };
 
     systemd.services.caddy = {
-      after = [ "wireguard-wg0.service" ];
-      wants = [ "wireguard-wg0.service" ];
+      after = ["wireguard-wg0.service"];
+      wants = ["wireguard-wg0.service"];
     };
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
@@ -444,8 +441,8 @@ in
         "network.target"
         "k3s.service"
       ];
-      wants = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
+      wants = ["k3s.service"];
+      wantedBy = ["multi-user.target"];
       environment = {
         PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
         YOLAB_REPO_PATH = config.yolab.repoPath;
@@ -489,8 +486,8 @@ in
     # so app pods and VolSync backup jobs can mount volumes without delay.
     systemd.services.yolab-csi-recovery = {
       description = "Restart CephFS CSI plugin to clear stale volume locks";
-      after = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
+      after = ["k3s.service"];
+      wantedBy = ["multi-user.target"];
       environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       serviceConfig = {
         Type = "oneshot";
@@ -512,13 +509,15 @@ in
     };
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey ++ [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
-    ];
+    users.users.root.openssh.authorizedKeys.keys =
+      lib.optional (s.rootSshKey != "") s.rootSshKey
+      ++ [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
+      ];
 
     users.users.homelab = {
       isNormalUser = true;
-      extraGroups = [ "wheel" ];
+      extraGroups = ["wheel"];
       openssh.authorizedKeys.keys = s.allowedSshKeys;
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
@@ -530,9 +529,9 @@ in
     # the login prompt.  agetty is configured to display that file.
     systemd.services.yolab-banner = {
       description = "Generate boot banner with management URL QR code";
-      before = [ "getty@tty1.service" ];
-      wantedBy = [ "getty@tty1.service" ];
-      after = [ "local-fs.target" ];
+      before = ["getty@tty1.service"];
+      wantedBy = ["getty@tty1.service"];
+      after = ["local-fs.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -557,10 +556,9 @@ in
       };
     };
 
-    services.getty.extraArgs = [ "--issue-file" "/run/issue" "--noclear" ];
+    services.getty.extraArgs = ["--issue-file" "/run/issue" "--noclear"];
 
-    environment.systemPackages =
-      with pkgs;
+    environment.systemPackages = with pkgs;
       map lib.lowPrio [
         curl
         gitMinimal
@@ -665,7 +663,7 @@ in
     #
     # With vm.swappiness = 10 the kernel avoids swapping anyway, so in the common case
     # swapspace allocates nothing at all.
-    swapDevices = [ ];
+    swapDevices = [];
     services.swapspace = {
       enable = true;
       settings = {
@@ -687,7 +685,7 @@ in
     # machine down. After a reboot it is no longer in /proc/swaps and can go.
     systemd.services.yolab-drop-legacy-swapfile = {
       description = "Remove the pre-swapspace fixed swapfile once it is inactive";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

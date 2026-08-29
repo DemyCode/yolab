@@ -9,101 +9,51 @@
 #   nix run .#ci                                      # everything
 #   nix build .#checks.x86_64-linux.local-api-tests   # just one
 #
-# `nix flake check` runs these too, but it additionally evaluates
-# nixosConfigurations, which needs homelab/ignored/config.toml — untracked, and
-# absent on a fresh clone. `nix run .#ci` is the entry point that works
-# everywhere.
+# `nix flake check` runs these too. It used to be unusable on a fresh clone,
+# because it additionally evaluates nixosConfigurations and those read
+# homelab/ignored/config.toml — untracked, and absent anywhere but a real node.
+# The config path is now threaded in from flake.nix instead of hardcoded, so
+# the machine configs evaluate from the committed CI stubs and `yolab` itself
+# is only defined when a real config.toml is present. Both commands work
+# everywhere now.
 #
 # Note: nix builds from the git index, not the working directory, so a brand new
 # file is invisible to these until `git add -N` (or a real `git add`). Editing a
 # file that is already tracked needs nothing.
 #
-# THE NIXOS MODULES ARE NOT COVERED HERE, and that is a real gap. Evaluating
-# them needs a config.toml at a fixed path, so it cannot be a pure derivation
-# without a refactor of homelab/shared.nix. Until then, both halves of the
-# cluster have to be checked by hand — and BOTH matter, because creating a
-# cluster and joining one are different code paths in k3s and in Ceph:
+# The NixOS modules ARE covered here now — see `nixos-create` and `nixos-join`
+# below. Both matter, because creating a cluster and joining one are different
+# code paths in k3s and in Ceph.
 #
-#   # only on a machine with no real config.toml to lose:
-#   cp homelab/ci-config.toml      homelab/ignored/config.toml   # creates
-#   nix build --no-link path:.#nixosConfigurations.yolab.config.system.build.toplevel
-#   cp homelab/ci-join-config.toml homelab/ignored/config.toml   # joins
-#   nix build --no-link path:.#nixosConfigurations.yolab.config.system.build.toplevel
-#   rm homelab/ignored/config.toml
-#
-# NEVER run that on a node: it overwrites the machine's real config.toml, which
-# is untracked and holds secrets that exist nowhere else.
+# What this replaces was a hand-run ritual that copied a CI stub over
+# homelab/ignored/config.toml and rebuilt against it. It carried a "NEVER run
+# this on a node" warning, because the file it overwrote holds secrets that
+# exist nowhere else — a check nobody could run safely on the machine they were
+# working on is a check nobody ran.
 {
   pkgs,
   inputs,
+  treefmtEval,
+  rust,
+  nixosSystems,
 }: let
   # The same derivation the NixOS module serves from Caddy, reused as a check.
   # Building it IS the test: its installPhase runs `npm run build`, which is
   # `tsc -b && vite build`.
-  builds = import ./homelab/builds.nix {inherit pkgs inputs;};
-  rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
-    .rust-bin.fromRustupToolchainFile ./homelab/local-api/rust-toolchain.toml;
-  craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
+  builds = import ./homelab/builds.nix {inherit pkgs inputs rust;};
 
-  # Builds `cargo test` for a crate as a derivation, reusing a dependency-only
-  # build so a source change does not rebuild the world.
-  cargoTests = {
-    name,
-    path,
-    nativeBuildInputs ? [],
-    buildInputs ? [],
-  }: let
-    args = {
-      pname = name;
-      version = "0.1.0";
-      src = craneLib.cleanCargoSource (craneLib.path path);
-      strictDeps = true;
-      inherit nativeBuildInputs buildInputs;
-    };
-  in
-    craneLib.cargoTest (args
-      // {
-        cargoArtifacts = craneLib.buildDepsOnly args;
-      });
-  # Line/region coverage for a crate, as a browsable HTML report.
-  #
-  # Deliberately NOT one of the checks below: it is a tool for looking at where
-  # the tests are thin, not a gate. Wiring it into CI would either fail builds on
-  # an arbitrary percentage or, worse, invite writing tests that move the number
-  # rather than tests that catch bugs.
-  #
-  #   nix run .#coverage           # build both reports and print where they are
-  #   nix build .#coverage-local-api
-  cargoCoverage = {
-    name,
-    path,
-    nativeBuildInputs ? [],
-    buildInputs ? [],
-  }: let
-    args = {
-      pname = "${name}-coverage";
-      version = "0.1.0";
-      src = craneLib.cleanCargoSource (craneLib.path path);
-      strictDeps = true;
-      inherit nativeBuildInputs buildInputs;
-    };
-  in
-    craneLib.cargoLlvmCov (args
-      // {
-        cargoArtifacts = craneLib.buildDepsOnly args;
-        cargoLlvmCovCommand = "test";
-        # --summary-only cannot be combined with --html, so the browsable report
-        # is produced here and the text summary below reuses the same profile
-        # data rather than re-running the suite.
-        cargoLlvmCovExtraArgs = "--html --output-dir $out";
-        # --release must match the flag the test run used, or `report` looks for
-        # profile data in the debug target dir and silently finds none.
-        postInstall = ''
-          echo "── coverage summary: ${name} ──"
-          cargo llvm-cov report --release --summary-only \
-            | tee "$out/coverage-summary.txt"
-        '';
-      });
+  # The toolchain, the crane setup and both crates' build inputs live in
+  # rust.nix — the checks, the packages, the devshell and the ISO all read the
+  # same definitions from there. `.tests` is `cargo test` as a derivation,
+  # reusing a dependency-only build so a source change does not rebuild the
+  # world.
+  inherit (rust) crates;
+
+  # A machine config built end to end, as a check. Evaluating these is most of
+  # the value: it is what catches an option that moved, a module that stopped
+  # importing, or a config.toml key a module reads but the installer never
+  # writes.
+  toplevel = name: nixosSystems.${name}.config.system.build.toplevel;
 in {
   # ── The client ──────────────────────────────────────────────────────────────
   #
@@ -124,21 +74,8 @@ in {
 
   # ── Rust ────────────────────────────────────────────────────────────────────
 
-  local-api-tests = cargoTests {
-    name = "local-api";
-    path = ./homelab/local-api;
-    nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
-    buildInputs = [pkgs.openssl];
-  };
-
-  # First-boot provisioning: partitioning, tunnel registration, and the
-  # config.toml every later rebuild reads. It only ever runs on a stranger's bare
-  # metal, so this is the one place it is exercised at all.
-  installer-tests = cargoTests {
-    name = "yolab-installer";
-    path = ./installer/nixos/backend-rs;
-    nativeBuildInputs = [pkgs.pkg-config];
-  };
+  local-api-tests = crates.local-api.tests;
+  installer-tests = crates.installer.tests;
 
   # ── wg-register ─────────────────────────────────────────────────────────────
   #
@@ -186,18 +123,41 @@ in {
   # `checks` (so `nix flake check` and `nix run .#ci` stay fast and stay about
   # correctness) while still exposing them as buildable packages.
 
-  coverage-local-api = cargoCoverage {
-    name = "local-api";
-    path = ./homelab/local-api;
-    nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
-    buildInputs = [pkgs.openssl];
-  };
+  coverage-local-api = crates.local-api.coverage;
+  coverage-installer = crates.installer.coverage;
 
-  coverage-installer = cargoCoverage {
-    name = "yolab-installer";
-    path = ./installer/nixos/backend-rs;
-    nativeBuildInputs = [pkgs.pkg-config];
-  };
+  # ── Machine configs ─────────────────────────────────────────────────────────
+  #
+  # Both halves of the cluster, built from the CI stubs committed next to them.
+  # Creating a cluster and joining one are different code paths in k3s and in
+  # Ceph, and nothing else in this file touches either of them.
+  #
+  # These are the only checks whose config.toml is not the real one, which is
+  # the entire point: the path is threaded in from flake.nix, so a stub can be
+  # used without a node ever having its own config.toml overwritten.
+  nixos-create = toplevel "yolab-ci";
+  nixos-join = toplevel "yolab-ci-join";
+
+  # WSL shares common.nix with the two above but overrides the platform, the
+  # flake target and the repo path, so it is a genuinely different evaluation.
+  nixos-wsl = toplevel "yolab-wsl";
+
+  # ── Formatting ──────────────────────────────────────────────────────────────
+  #
+  # The gate behind `nix fmt`. Built from the same treefmt module the formatter
+  # is, so a file this rejects is a file `nix fmt` fixes — there is no second
+  # opinion to reconcile, and no way for the two to drift as versions move.
+  #
+  # The source is gitignore-filtered rather than passed as `self`, because
+  # `path:.` is the ref this repo tells you to use — it is the one that reads
+  # the gitignored config.toml — and it hands over the working directory as it
+  # sits. Unfiltered that is 7.5G of target/ and node_modules copied into the
+  # store before treefmt gets to skip them, and it would carry
+  # homelab/ignored/config.toml in with it. Reusing .gitignore rather than a
+  # second hand-written list means the two cannot disagree about what is source.
+  formatting = treefmtEval.config.build.check (
+    pkgs.nix-gitignore.gitignoreRecursiveSource [".git/"] ./.
+  );
 
   # ── Static analysis ─────────────────────────────────────────────────────────
 

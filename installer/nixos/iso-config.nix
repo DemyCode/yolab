@@ -2,12 +2,15 @@
   pkgs,
   lib,
   inputs,
+  rust,
   ...
 }: let
-  craneLib = inputs.crane.mkLib pkgs;
-  yolabInstaller = craneLib.buildPackage {
-    src = craneLib.cleanCargoSource ./backend-rs;
-  };
+  # The same derivation `installer-tests` runs its tests against. This used to
+  # be a local `inputs.crane.mkLib pkgs` — nixpkgs' rustc rather than the one
+  # rust-toolchain.toml pins, and missing the pkg-config the tests pass — so
+  # the binary that shipped on the ISO was built by a different compiler than
+  # the binary the tests exercised.
+  yolabInstaller = rust.crates.installer.package;
 in {
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
