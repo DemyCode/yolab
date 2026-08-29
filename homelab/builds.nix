@@ -9,7 +9,6 @@
 # nix/rust.nix exists to prevent.
 {
   pkgs,
-  inputs,
   rust,
 }: {
   clientUi = pkgs.buildNpmPackage {

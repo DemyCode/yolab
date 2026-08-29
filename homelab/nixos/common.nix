@@ -7,7 +7,7 @@
   rust,
   ...
 }: let
-  s = import ../shared.nix {inherit pkgs lib inputs yolabConfigPath rust;};
+  s = import ../shared.nix {inherit pkgs lib yolabConfigPath rust;};
   k3sCfg = s.nodeCfg.k3s;
 
   # The first node initialises the embedded-etcd cluster (--cluster-init).

@@ -8,7 +8,6 @@
 # against the committed CI stubs, and a node still gets its real config.
 {
   pkgs,
-  inputs,
   yolabConfigPath,
   rust,
   ...
@@ -27,7 +26,7 @@
   # Falls back to a sensible ULA default if absent (e.g. dev/WSL).
   privateSubnet = nodeCfg.sub_ipv6_private_subnet or "fd00:cafe::/112";
 
-  builds = import ./builds.nix {inherit pkgs inputs rust;};
+  builds = import ./builds.nix {inherit pkgs rust;};
   inherit (builds) clientUi localApiEnv;
 in {
   inherit (cfg) hostname;

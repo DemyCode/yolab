@@ -32,7 +32,6 @@
 # working on is a check nobody ran.
 {
   pkgs,
-  inputs,
   treefmtEval,
   rust,
   nixosSystems,
@@ -40,7 +39,7 @@
   # The same derivation the NixOS module serves from Caddy, reused as a check.
   # Building it IS the test: its installPhase runs `npm run build`, which is
   # `tsc -b && vite build`.
-  builds = import ../homelab/builds.nix {inherit pkgs inputs rust;};
+  builds = import ../homelab/builds.nix {inherit pkgs rust;};
 
   # The toolchain, the crane setup and both crates' build inputs live in
   # rust.nix — the checks, the packages, the devshell and the ISO all read the
@@ -48,6 +47,17 @@
   # reusing a dependency-only build so a source change does not rebuild the
   # world.
   inherit (rust) crates;
+
+  # The whole tree, gitignore-filtered. Reused by every check below that needs
+  # to look at more than one directory.
+  #
+  # Filtered rather than passed raw because `path:.` — the ref this repo tells
+  # you to use, since it is the one that reads the gitignored config.toml —
+  # hands over the working directory as it sits: 7.5G of target/ and
+  # node_modules on any machine that has built the workspace, plus
+  # homelab/ignored/config.toml. Reusing .gitignore rather than a second
+  # hand-written list means the two cannot disagree about what is source.
+  treeSrc = pkgs.nix-gitignore.gitignoreRecursiveSource [".git/"] ../.;
 
   # A machine config built end to end, as a check. Evaluating these is most of
   # the value: it is what catches an option that moved, a module that stopped
@@ -147,28 +157,65 @@ in {
   # The gate behind `nix fmt`. Built from the same treefmt module the formatter
   # is, so a file this rejects is a file `nix fmt` fixes — there is no second
   # opinion to reconcile, and no way for the two to drift as versions move.
-  #
-  # The source is gitignore-filtered rather than passed as `self`, because
-  # `path:.` is the ref this repo tells you to use — it is the one that reads
-  # the gitignored config.toml — and it hands over the working directory as it
-  # sits. Unfiltered that is 7.5G of target/ and node_modules copied into the
-  # store before treefmt gets to skip them, and it would carry
-  # homelab/ignored/config.toml in with it. Reusing .gitignore rather than a
-  # second hand-written list means the two cannot disagree about what is source.
-  formatting = treefmtEval.config.build.check (
-    pkgs.nix-gitignore.gitignoreRecursiveSource [".git/"] ../.
-  );
+  formatting = treefmtEval.config.build.check treeSrc;
 
   # ── Static analysis ─────────────────────────────────────────────────────────
+  #
+  # These three used to exist only as pre-commit hooks, and the pre-commit job
+  # in .github/workflows/push.yml is commented out — so on a machine without the
+  # hook installed, nothing ran them at all. As derivations they run wherever
+  # `nix run .#ci` runs.
 
+  # Every shell script in the tree, not just apps/. installer/macos/install.sh
+  # was checked by nothing before this.
+  #
+  # No `-s sh`: that forced one dialect on every file and made install.sh — a
+  # `#!/usr/bin/env bash` script using `&>` and `set -o pipefail` — fail as
+  # POSIX. shellcheck reads the shebang, which is the thing that actually
+  # decides what interpreter runs the script.
   shellcheck =
     pkgs.runCommand "shellcheck" {
       nativeBuildInputs = [pkgs.shellcheck];
-      src = ../apps;
+      src = treeSrc;
     } ''
-      cp -r "$src" ./apps
-      # -x so sourced files are followed; the wg-* scripts run as POSIX sh.
-      find ./apps -name '*.sh' -print0 | xargs -0 shellcheck -s sh -x
+      cp -r "$src" ./src
+      chmod -R +w ./src
+      # -x so sourced files are followed.
+      find ./src -name '*.sh' -print0 | xargs -0 shellcheck -x
+      touch $out
+    '';
+
+  hadolint =
+    pkgs.runCommand "hadolint" {
+      nativeBuildInputs = [pkgs.hadolint];
+      src = treeSrc;
+    } ''
+      cp -r "$src" ./src
+      chmod -R +w ./src
+      # DL3018 wants every apk package pinned. These images track upstream
+      # Alpine deliberately, and the wg-* tools have to match the host kernel's
+      # WireGuard, so pinning here buys a stale userland rather than safety.
+      find ./src -name 'Dockerfile' -print0 | xargs -0 hadolint --ignore DL3018
+      touch $out
+    '';
+
+  # Dead code in nix. This caught two unused lambda patterns the moment it was
+  # switched on — `inputs` in homelab/builds.nix and `pkgs` in nix/treefmt.nix,
+  # both left behind when arguments were threaded through rather than rebuilt
+  # locally. That is exactly the class of thing that rots quietly.
+  #
+  # statix is deliberately NOT here. Its remaining findings are all "avoid
+  # repeated keys in attribute sets", which is a style preference — 39 of them
+  # across 9 files, and flattening `boot.loader.grub.*` into a nested block is
+  # not obviously an improvement. Run it by hand: `nix run nixpkgs#statix check`.
+  deadnix =
+    pkgs.runCommand "deadnix" {
+      nativeBuildInputs = [pkgs.deadnix];
+      src = treeSrc;
+    } ''
+      cp -r "$src" ./src
+      chmod -R +w ./src
+      deadnix --fail ./src
       touch $out
     '';
 
