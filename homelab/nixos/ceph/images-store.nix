@@ -277,9 +277,29 @@ in {
           exit 0
         fi
 
+        # "Mounted" was never the question. "Works" is.
+        #
+        # This used to exit here on the strength of mountpoint alone, and that is how
+        # both machines in a cluster sat dead for seventeen hours. The images pool is
+        # size 1 by design; a disk was lost, its placement groups were recreated empty,
+        # and the RBD came back with holes where its objects had been. XFS mounted,
+        # hit metadata that was now zeros, shut itself down, and every read returned
+        # EIO. containerd could not start, so k3s never finished starting, so the whole
+        # cluster was down — while `mountpoint` cheerfully returned success.
+        #
+        # Nothing here is the owner's data. Every byte is a container layer a registry
+        # will send again, so the right response to any doubt is to rebuild, not to
+        # preserve.
         if mountpoint -q ${containerdRoot}; then
-          echo "${containerdRoot} is already mounted"
-          exit 0
+          if ls ${containerdRoot} >/dev/null 2>&1; then
+            echo "${containerdRoot} is already mounted and readable"
+            exit 0
+          fi
+          echo "${containerdRoot} is mounted but cannot be read — rebuilding the image store" >&2
+          # Lazy as a fallback: containerd may already hold descriptors on a
+          # filesystem that has shut down, and a plain umount would refuse.
+          umount ${containerdRoot} 2>/dev/null || umount -l ${containerdRoot} 2>/dev/null || true
+          NEEDS_REBUILD=1
         fi
 
         # Idempotent: rbd map on an already-mapped image just reports it.
@@ -299,9 +319,26 @@ in {
         fi
         echo "images RBD mapped at $DEV"
 
-        # Format only when genuinely blank — a reboot must reuse the existing
-        # image, not silently discard every pulled layer.
-        if ! blkid "$DEV" >/dev/null 2>&1; then
+        # Blank is not the only reason to format.
+        #
+        # blkid only reads the superblock, which is one object out of tens of
+        # thousands and very likely to survive a partial loss — so a filesystem full
+        # of holes looks exactly like a healthy one here, gets mounted, and fails on
+        # first real use. A read-only check of the metadata is what tells them apart,
+        # and it is cheap because it never writes.
+        NEEDS_REBUILD=''${NEEDS_REBUILD:-0}
+        if blkid "$DEV" >/dev/null 2>&1 && [ "$NEEDS_REBUILD" = "0" ]; then
+          if ! ${
+          if cfg.filesystem == "xfs"
+          then "xfs_repair -n \"$DEV\" >/dev/null 2>&1"
+          else "fsck.ext4 -n -f \"$DEV\" >/dev/null 2>&1"
+        }; then
+            echo "the image store on $DEV is damaged — rebuilding it" >&2
+            NEEDS_REBUILD=1
+          fi
+        fi
+
+        if ! blkid "$DEV" >/dev/null 2>&1 || [ "$NEEDS_REBUILD" = "1" ]; then
           echo "no filesystem on $DEV, creating ${cfg.filesystem}"
           if ! ${
           if cfg.filesystem == "xfs"
