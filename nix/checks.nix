@@ -40,7 +40,7 @@
   # The same derivation the NixOS module serves from Caddy, reused as a check.
   # Building it IS the test: its installPhase runs `npm run build`, which is
   # `tsc -b && vite build`.
-  builds = import ./homelab/builds.nix {inherit pkgs inputs rust;};
+  builds = import ../homelab/builds.nix {inherit pkgs inputs rust;};
 
   # The toolchain, the crane setup and both crates' build inputs live in
   # rust.nix — the checks, the packages, the devshell and the ISO all read the
@@ -85,7 +85,7 @@ in {
   wg-register-tests =
     pkgs.runCommand "wg-register-tests" {
       nativeBuildInputs = [pkgs.busybox pkgs.jq];
-      src = ./apps/wg-register;
+      src = ../apps/wg-register;
     } ''
       cp -r "$src" ./wg-register
       chmod -R +w ./wg-register
@@ -105,7 +105,7 @@ in {
         pkgs.kubernetes-helm
         (pkgs.python3.withPackages (ps: [ps.pyyaml]))
       ];
-      src = ./apps/catalog;
+      src = ../apps/catalog;
     } ''
       cp -r "$src" ./catalog
       chmod -R +w ./catalog
@@ -156,7 +156,7 @@ in {
   # homelab/ignored/config.toml in with it. Reusing .gitignore rather than a
   # second hand-written list means the two cannot disagree about what is source.
   formatting = treefmtEval.config.build.check (
-    pkgs.nix-gitignore.gitignoreRecursiveSource [".git/"] ./.
+    pkgs.nix-gitignore.gitignoreRecursiveSource [".git/"] ../.
   );
 
   # ── Static analysis ─────────────────────────────────────────────────────────
@@ -164,7 +164,7 @@ in {
   shellcheck =
     pkgs.runCommand "shellcheck" {
       nativeBuildInputs = [pkgs.shellcheck];
-      src = ./apps;
+      src = ../apps;
     } ''
       cp -r "$src" ./apps
       # -x so sourced files are followed; the wg-* scripts run as POSIX sh.
@@ -172,11 +172,8 @@ in {
       touch $out
     '';
 
-  # Not included: a repo-wide `alejandra --check`. It passes for everything added
-  # here, but three pre-existing files (homelab/nixos/{configuration,disk-config,
-  # common}.nix) would need reformatting first, and that is a large diff with
-  # nothing to do with correctness. Add it whenever that reformat is wanted:
-  #
-  #   nix-fmt = pkgs.runCommand "nix-fmt" { nativeBuildInputs = [pkgs.alejandra]; }
-  #     '' alejandra --check ${./.}; touch $out '';
+  # The repo-wide `alejandra --check` that used to be deferred here is now part
+  # of `formatting` above, which treefmt runs over every .nix file in the tree.
+  # The three files that were holding it back — homelab/nixos/{configuration,
+  # disk-config,common}.nix — turned out to be alejandra-clean already.
 }

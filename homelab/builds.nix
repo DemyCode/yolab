@@ -2,11 +2,11 @@
 # local-api binary.
 #
 # The Rust half is a thin re-export now — the toolchain, the crane setup and
-# this crate's build inputs live in ../rust.nix, which the checks and the ISO
+# this crate's build inputs live in ../nix/rust.nix, which the checks and the ISO
 # read from too. See the header there for what that consolidation fixed.
 # `rust` is required rather than defaulted: a default would let a caller
 # silently construct a second toolchain instance, which is the exact thing
-# rust.nix exists to prevent.
+# nix/rust.nix exists to prevent.
 {
   pkgs,
   inputs,
