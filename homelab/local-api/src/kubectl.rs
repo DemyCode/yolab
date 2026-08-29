@@ -27,6 +27,18 @@ pub async fn get_json(args: &[&str]) -> Result<Value> {
     serde_json::from_str(&out).context("JSON parse")
 }
 
+/// Whether a `kubectl get` failure means "this object does not exist" rather
+/// than "the API server did not answer".
+///
+/// The two must never be confused where the caller maps the result onto a
+/// default: NotFound is the genuine first-run state and may be read as empty;
+/// an unreachable API server must stay "unknown" so a brief outage is not read
+/// as "every disk switched off" (which ends in a drain/purge/wipe — see
+/// disks_reconciler::read_desired).
+pub fn is_not_found(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains("NotFound")
+}
+
 // ── Shared apply / secret helpers ─────────────────────────────────────────────
 //
 // One implementation for the whole crate. Previously auth.rs, backups.rs, and
@@ -372,5 +384,34 @@ mod tests {
         // The whole payload stays a single quoted literal — no unescaped metachars.
         let got = shell_escape("; rm -rf /");
         assert_eq!(got, "'; rm -rf /'");
+    }
+
+    // ── is_not_found ─────────────────────────────────────────────────────────
+    //
+    // This is the one place in the crate that reads a failed `kubectl get` and
+    // has to say whether the resource was absent or the server was unreachable.
+    // A missing ConfigMap means "fresh install, safe to treat as empty"; a
+    // broken connection must never be read that way.
+
+    #[test]
+    fn a_kubectl_not_found_is_a_missing_resource() {
+        let e = anyhow::anyhow!(
+            "kubectl get configmap yolab-disk-config -n rook-ceph -o json: \
+             Error from server (NotFound): configmaps \"yolab-disk-config\" not found"
+        );
+        assert!(is_not_found(&e));
+    }
+
+    #[test]
+    fn a_connection_failure_is_not_a_missing_resource() {
+        for msg in [
+            "kubectl get configmap yolab-disk-config: The connection to the server \
+             localhost:6443 was refused - did you specify the right host or port?",
+            "kubectl get configmap yolab-disk-config: context deadline exceeded",
+            "kubectl get configmap yolab-disk-config: unable to connect to the server: EOF",
+        ] {
+            let e = anyhow::anyhow!("{msg}");
+            assert!(!is_not_found(&e), "{msg}");
+        }
     }
 }

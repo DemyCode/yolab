@@ -2,9 +2,10 @@
   pkgs,
   lib,
   inputs,
+  yolabConfigPath,
   ...
 }: let
-  s = import ../shared.nix {inherit pkgs lib inputs;};
+  s = import ../shared.nix {inherit pkgs lib inputs yolabConfigPath;};
   k3sCfg = s.nodeCfg.k3s or {};
 
   wg0Conf = pkgs.writeText "wg0.conf" (lib.optionalString s.tunnelEnabled ''

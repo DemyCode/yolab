@@ -1,9 +1,12 @@
-{lib, ...}: let
-  configPath = ../ignored/config.toml;
-  homelabConfig =
-    if builtins.pathExists configPath
-    then builtins.fromTOML (builtins.readFile configPath)
-    else throw "config.toml not found! Please create it from config.toml.example";
+{
+  lib,
+  yolabConfigPath,
+  ...
+}: let
+  # No pathExists guard any more, and no throw. The path is supplied by
+  # flake.nix, which only defines `yolab` when a real config.toml exists — so
+  # by the time this evaluates, the file is there by construction.
+  homelabConfig = builtins.fromTOML (builtins.readFile yolabConfigPath);
 
   diskConfig = homelabConfig.disk or (throw "[disk] section missing in config.toml");
   diskDevice = diskConfig.device or (throw "[disk] device is required in config.toml");
@@ -25,26 +28,30 @@ in {
       content = {
         type = "gpt";
         partitions =
-          (if bootMode == "bios" then {
-            # 1 MB BIOS boot partition — GRUB embeds its core.img here on GPT disks.
-            # No content block: GRUB writes directly to this partition.
-            bios = {
-              name = "BIOS";
-              size = "1M";
-              type = "EF02"; # for GRUB MBR on GPT
-            };
-          } else {
-            esp = {
-              name = "ESP";
-              size = espSize;
-              type = "EF00";
-              content = {
-                type = "filesystem";
-                format = "vfat";
-                mountpoint = "/boot";
+          (
+            if bootMode == "bios"
+            then {
+              # 1 MB BIOS boot partition — GRUB embeds its core.img here on GPT disks.
+              # No content block: GRUB writes directly to this partition.
+              bios = {
+                name = "BIOS";
+                size = "1M";
+                type = "EF02"; # for GRUB MBR on GPT
               };
-            };
-          })
+            }
+            else {
+              esp = {
+                name = "ESP";
+                size = espSize;
+                type = "EF00";
+                content = {
+                  type = "filesystem";
+                  format = "vfat";
+                  mountpoint = "/boot";
+                };
+              };
+            }
+          )
           // {
             root = {
               name = "root";

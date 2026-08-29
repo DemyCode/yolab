@@ -1,10 +1,18 @@
+# yolabConfigPath is threaded in from flake.nix rather than hardcoded here.
+#
+# This file used to read ./ignored/config.toml directly and unconditionally,
+# which made it the reason `nix flake check` could not run on a fresh clone:
+# common.nix imports it for every NixOS config and darwin/configuration.nix for
+# both Darwin ones, so a missing file failed the evaluation of every machine
+# output. With the path as an argument the same modules can be evaluated
+# against the committed CI stubs, and a node still gets its real config.
 {
   pkgs,
   inputs,
+  yolabConfigPath,
   ...
 }: let
-  configPath = ./ignored/config.toml;
-  homelabConfig = builtins.fromTOML (builtins.readFile configPath);
+  homelabConfig = builtins.fromTOML (builtins.readFile yolabConfigPath);
 
   cfg = homelabConfig.homelab;
   tunnelCfg = homelabConfig.tunnel or {};

@@ -28,11 +28,7 @@
 /// so removal no longer has to be one atomic burst inside a single tick.
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::{
-    collections::HashMap,
-    io::Read,
-    path::Path,
-};
+use std::{collections::HashMap, io::Read, path::Path};
 use tokio::time::{sleep, Duration};
 
 use crate::{ceph_cli, kubectl};
@@ -54,7 +50,6 @@ const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
 // directly rather than discovered/classified like pluggable physical disks.
 const SYSTEM_OSD_DEV: &str = "/dev/mapper/pool-ceph";
 const SYSTEM_OSD_ID: &str = "system";
-
 
 // ── Per-disk progress ─────────────────────────────────────────────────────────
 //
@@ -215,9 +210,9 @@ mod leader {
         // MicroTime requires microsecond precision (.000000Z).
         let fmt = chrono::SecondsFormat::Micros;
 
-        let lease_json = crate::kubectl::get_json(&[
-            "get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json",
-        ]).await;
+        let lease_json =
+            crate::kubectl::get_json(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
+                .await;
 
         match &lease_json {
             Err(_) => {
@@ -238,7 +233,9 @@ mod leader {
             Ok(v) => {
                 let spec = &v["spec"];
                 let holder = spec["holderIdentity"].as_str().unwrap_or("");
-                let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS as i64);
+                let dur = spec["leaseDurationSeconds"]
+                    .as_i64()
+                    .unwrap_or(LEASE_SECS as i64);
                 let expired = spec["renewTime"]
                     .as_str()
                     .and_then(|t| {
@@ -253,7 +250,8 @@ mod leader {
 
                 let acquire_time = if holder == identity {
                     // Renewing: preserve original acquireTime.
-                    spec["acquireTime"].as_str()
+                    spec["acquireTime"]
+                        .as_str()
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or(now)
@@ -287,12 +285,17 @@ mod leader {
     }
 
     pub async fn is_holder(identity: &str) -> bool {
-        let Ok(v) = crate::kubectl::get_json(&[
-            "get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json",
-        ]).await else { return false };
+        let Ok(v) =
+            crate::kubectl::get_json(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
+                .await
+        else {
+            return false;
+        };
         let spec = &v["spec"];
         let holder = spec["holderIdentity"].as_str().unwrap_or("");
-        let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS as i64);
+        let dur = spec["leaseDurationSeconds"]
+            .as_i64()
+            .unwrap_or(LEASE_SECS as i64);
         let fresh = spec["renewTime"]
             .as_str()
             .and_then(|t| {
@@ -347,14 +350,19 @@ pub async fn run() {
 /// when someone is looking at the Storage page. (The `node` argument is no
 /// longer needed to filter by hostname, since ceph-volume only ever reports
 /// this host's OSDs, but is kept so callers read the same.)
-async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> Option<HashMap<String, i64>> {
+async fn fetch_disk_to_osd(
+    _node: &str,
+    meta: &HashMap<String, Value>,
+) -> Option<HashMap<String, i64>> {
     // Build full device path → disk_id from our local inventory.
     // Index both the stored path and its canonical (symlink-resolved) path so
     // that /dev/mapper/pool-ceph (a symlink → /dev/dm-1) matches whichever
     // path Ceph actually opened and reports in bluestore_bdev_dev_node.
     let mut device_to_disk_id: HashMap<String, String> = HashMap::new();
     for (disk_id, m) in meta {
-        let Some(dev) = m["device"].as_str() else { continue };
+        let Some(dev) = m["device"].as_str() else {
+            continue;
+        };
         device_to_disk_id.insert(canonical_device(dev), disk_id.clone());
     }
 
@@ -392,7 +400,10 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> Option
                         );
                         return None;
                     }
-                    tracing::info!("fetch_disk_to_osd: recovered {} OSD(s) from the mon", from_mon.len());
+                    tracing::info!(
+                        "fetch_disk_to_osd: recovered {} OSD(s) from the mon",
+                        from_mon.len()
+                    );
                     from_mon
                 }
                 Err(e2) => {
@@ -421,7 +432,6 @@ async fn fetch_disk_to_osd(_node: &str, meta: &HashMap<String, Value>) -> Option
     }
     Some(result)
 }
-
 
 /// Parse `ceph osd metadata -f json` into (device identity, osd id) pairs for
 /// one host.
@@ -601,9 +611,11 @@ pub(crate) fn drain_targets_remaining(
         .iter()
         .filter(|n| n["type"].as_str() == Some("host"))
         .filter(|h| {
-            h["children"]
-                .as_array()
-                .is_some_and(|c| c.iter().filter_map(|x| x.as_i64()).any(|id| usable.contains(&id)))
+            h["children"].as_array().is_some_and(|c| {
+                c.iter()
+                    .filter_map(|x| x.as_i64())
+                    .any(|id| usable.contains(&id))
+            })
         })
         .count()
 }
@@ -656,7 +668,6 @@ fn drain_message(targets: usize, size: Option<u32>) -> String {
 }
 
 async fn reconcile_local_osds(
-
     node: &str,
     meta: &HashMap<String, Value>,
     desired: &HashMap<String, String>,
@@ -667,7 +678,11 @@ async fn reconcile_local_osds(
     if !ceph_cli::reachable().await {
         tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
         for disk_id in meta.keys() {
-            set_phase(disk_id, phase::UNKNOWN, "Waiting for the storage cluster to answer.");
+            set_phase(
+                disk_id,
+                phase::UNKNOWN,
+                "Waiting for the storage cluster to answer.",
+            );
         }
         return;
     }
@@ -694,14 +709,21 @@ async fn reconcile_local_osds(
     // half Rook used to do in response to a CephCluster patch.
     for (disk_id, m) in meta {
         let key = record_key(node, disk_id);
-        let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
+        let want_on = desired
+            .get(&key)
+            .map(|v| v == "ON" || v == "USING")
+            .unwrap_or(false);
         if !want_on || disk_to_osd.contains_key(disk_id) {
             continue;
         }
         // A create started on an earlier tick may still be running. Starting a
         // second one for the same disk is how ceph-volume invocations used to
         // stack up.
-        if CREATING.lock().map(|c| c.contains(disk_id)).unwrap_or(false) {
+        if CREATING
+            .lock()
+            .map(|c| c.contains(disk_id))
+            .unwrap_or(false)
+        {
             continue;
         }
         if let Some(reason) = refuse_osd_creation(m) {
@@ -720,7 +742,6 @@ async fn reconcile_local_osds(
 
         spawn_create(disk_id.clone(), dev_path);
     }
-
 
     // ── Bring back anything that is simply not running ───────────────────────
     //
@@ -742,7 +763,10 @@ async fn reconcile_local_osds(
     // depend on the cluster being healthy enough to describe itself.
     for (disk_id, _m) in meta {
         let key = record_key(node, disk_id);
-        let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
+        let want_on = desired
+            .get(&key)
+            .map(|v| v == "ON" || v == "USING")
+            .unwrap_or(false);
         if !want_on {
             continue;
         }
@@ -780,31 +804,34 @@ async fn reconcile_local_osds(
 
     let mut osd_state: HashMap<i64, (f64, f64, u64)> = HashMap::new();
     for n in &crush_nodes {
-        if n["type"].as_str() != Some("osd") { continue; }
+        if n["type"].as_str() != Some("osd") {
+            continue;
+        }
         if let Some(id) = n["id"].as_i64() {
-            osd_state.insert(id, (
-                n["crush_weight"].as_f64().unwrap_or(0.0),
-                n["reweight"].as_f64().unwrap_or(1.0),
-                n["kb"].as_u64().unwrap_or(0),
-            ));
+            osd_state.insert(
+                id,
+                (
+                    n["crush_weight"].as_f64().unwrap_or(0.0),
+                    n["reweight"].as_f64().unwrap_or(1.0),
+                    n["kb"].as_u64().unwrap_or(0),
+                ),
+            );
         }
     }
 
-
     for (disk_id, m) in meta {
         let key = record_key(node, disk_id);
-        let want_on = desired.get(&key).map(|v| v == "ON" || v == "USING").unwrap_or(false);
+        let want_on = desired
+            .get(&key)
+            .map(|v| v == "ON" || v == "USING")
+            .unwrap_or(false);
         let Some(&osd_id) = disk_to_osd.get(disk_id) else {
             // No OSD on this disk. If it is switched OFF that is the finished
             // state, not a missing one — say so, because "you can unplug this
             // now" is the whole point of the OFF toggle and nothing used to
             // report it.
             if !want_on {
-                set_phase(
-                    disk_id,
-                    phase::REMOVABLE,
-                    "Not in use. Safe to unplug.",
-                );
+                set_phase(disk_id, phase::REMOVABLE, "Not in use. Safe to unplug.");
             }
             continue;
         };
@@ -821,12 +848,23 @@ async fn reconcile_local_osds(
             if crush_weight == 0.0 {
                 let weight = weight_tib_from(kb, m["size_bytes"].as_u64().unwrap_or(0));
                 if weight > 0.0 {
-                    tracing::info!("{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}");
-                    let _ = ceph_cli::ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")]).await;
+                    tracing::info!(
+                        "{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}"
+                    );
+                    let _ = ceph_cli::ceph(&[
+                        "osd",
+                        "crush",
+                        "reweight",
+                        &osd,
+                        &format!("{weight:.5}"),
+                    ])
+                    .await;
                 }
             }
             if reweight < 0.5 {
-                tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
+                tracing::info!(
+                    "{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in"
+                );
                 let _ = ceph_cli::ceph(&["osd", "in", &osd]).await;
             }
 
@@ -849,7 +887,11 @@ async fn reconcile_local_osds(
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = ceph_cli::ceph(&["osd", "out", &osd]).await;
             let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
-            set_phase(disk_id, phase::DRAINING, drain_message(targets, want_copies));
+            set_phase(
+                disk_id,
+                phase::DRAINING,
+                drain_message(targets, want_copies),
+            );
         } else {
             // Already out and drained. Under Rook this was the hard part: its
             // operator would rediscover the still-valid BlueStore data and
@@ -868,10 +910,18 @@ async fn reconcile_local_osds(
             if !ceph_cli::osd_safe_to_destroy(osd_id).await {
                 tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
                 let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
-                set_phase(disk_id, phase::DRAINING, drain_message(targets, want_copies));
+                set_phase(
+                    disk_id,
+                    phase::DRAINING,
+                    drain_message(targets, want_copies),
+                );
                 continue;
             }
-            set_phase(disk_id, phase::REMOVING, "Finishing up — do not unplug yet.");
+            set_phase(
+                disk_id,
+                phase::REMOVING,
+                "Finishing up — do not unplug yet.",
+            );
 
             // Stop the daemon before purging. Purging while it still runs is
             // the EBUSY race the old code had to guard against separately.
@@ -922,7 +972,11 @@ async fn reconcile_local_osds(
                         tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
                         wipe_device(device).await;
                     }
-                    set_phase(disk_id, phase::REMOVABLE, "Removed from the pool. Safe to unplug.");
+                    set_phase(
+                        disk_id,
+                        phase::REMOVABLE,
+                        "Removed from the pool. Safe to unplug.",
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("{osd} ({disk_id}): purge failed: {e}");
@@ -970,7 +1024,6 @@ async fn reconcile_local_osds(
     purge_drained_osds(node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
 }
 
-
 /// Run `ceph-volume lvm create` off the reconcile tick.
 ///
 /// It used to be awaited inline, and ceph-volume's timeout is ten minutes. One
@@ -983,7 +1036,9 @@ async fn reconcile_local_osds(
 /// for the same disk on the next pass.
 fn spawn_create(disk_id: String, dev_path: String) {
     {
-        let Ok(mut running) = CREATING.lock() else { return };
+        let Ok(mut running) = CREATING.lock() else {
+            return;
+        };
         // insert() returns false when it was already there — a create for this
         // disk is still going, so leave it alone.
         if !running.insert(disk_id.clone()) {
@@ -1012,7 +1067,9 @@ fn spawn_create(disk_id: String, dev_path: String) {
             format!("Still setting this disk up… (attempt {attempt})")
         },
     );
-    tracing::info!("{disk_id} ({dev_path}): switched ON with no OSD — creating (attempt {attempt})");
+    tracing::info!(
+        "{disk_id} ({dev_path}): switched ON with no OSD — creating (attempt {attempt})"
+    );
 
     tokio::spawn(async move {
         create_osd(&disk_id, &dev_path).await;
@@ -1039,7 +1096,12 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     let before = ceph_cli::osd_ids().await.ok();
 
     let result = ceph_cli::ceph_volume(&[
-        "lvm", "create", "--bluestore", "--data", dev_path, "--no-systemd",
+        "lvm",
+        "create",
+        "--bluestore",
+        "--data",
+        dev_path,
+        "--no-systemd",
     ])
     .await;
 
@@ -1050,7 +1112,9 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
             match ceph_cli::local_osds().await {
                 Ok(local) => {
                     let want = canonical_device(dev_path);
-                    if let Some((_, osd_id)) = local.iter().find(|(d, _)| canonical_device(d) == want) {
+                    if let Some((_, osd_id)) =
+                        local.iter().find(|(d, _)| canonical_device(d) == want)
+                    {
                         start_osd_unit(*osd_id).await;
                         set_phase(disk_id, phase::ACTIVE, "Added to the storage pool.");
                         if let Ok(mut p) = PROGRESS.lock() {
@@ -1077,13 +1141,17 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
             // instead of leaving another blank OSD in the cluster. Only when
             // BOTH snapshots are real — a guess here ends in a purge.
             let leaked: Vec<i64> = match (&before, ceph_cli::osd_ids().await.ok()) {
-                (Some(before), Some(after)) => {
-                    after.iter().copied().filter(|id| !before.contains(id)).collect()
-                }
+                (Some(before), Some(after)) => after
+                    .iter()
+                    .copied()
+                    .filter(|id| !before.contains(id))
+                    .collect(),
                 _ => Vec::new(),
             };
             if let Some(&id) = leaked.first() {
-                tracing::warn!("{disk_id}: create failed after allocating osd.{id} — reclaiming it");
+                tracing::warn!(
+                    "{disk_id}: create failed after allocating osd.{id} — reclaiming it"
+                );
                 if let Ok(mut p) = PROGRESS.lock() {
                     p.entry(disk_id.to_string()).or_default().orphan_osd_id = Some(id);
                 }
@@ -1233,9 +1301,7 @@ fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
         return Some("This machine is using this disk for something else.");
     }
     if m["has_partitions"].as_bool().unwrap_or(false) {
-        return Some(
-            "There is already something on this disk. Erase it to use it for storage.",
-        );
+        return Some("There is already something on this disk. Erase it to use it for storage.");
     }
     None
 }
@@ -1252,7 +1318,8 @@ pub(crate) fn parse_lvm_list(raw: &str) -> Result<Vec<(String, i64)>> {
     let json_start = raw
         .find('{')
         .ok_or_else(|| anyhow::anyhow!("no JSON object in ceph-volume output"))?;
-    let v: Value = serde_json::from_str(&raw[json_start..]).context("parse ceph-volume lvm list")?;
+    let v: Value =
+        serde_json::from_str(&raw[json_start..]).context("parse ceph-volume lvm list")?;
 
     let mut out = Vec::new();
     let Some(map) = v.as_object() else {
@@ -1452,10 +1519,18 @@ async fn purge_drained_osds(
     let active_osd_ids: std::collections::HashSet<i64> = disk_to_osd.values().copied().collect();
 
     for n in crush_nodes {
-        if n["type"].as_str() != Some("osd") { continue; }
-        let Some(osd_id) = n["id"].as_i64() else { continue };
-        if !host_osd_ids.contains(&osd_id) { continue; }   // not this node's OSD
-        if active_osd_ids.contains(&osd_id) { continue; }  // disk still here, main loop handles it
+        if n["type"].as_str() != Some("osd") {
+            continue;
+        }
+        let Some(osd_id) = n["id"].as_i64() else {
+            continue;
+        };
+        if !host_osd_ids.contains(&osd_id) {
+            continue;
+        } // not this node's OSD
+        if active_osd_ids.contains(&osd_id) {
+            continue;
+        } // disk still here, main loop handles it
 
         // Some disk on this node is switched ON and not here. Any of these
         // leftovers could be its, so none of them are touched.
@@ -1478,8 +1553,10 @@ async fn purge_drained_osds(
         }
 
         let reweight = n["reweight"].as_f64().unwrap_or(1.0);
-        let status   = n["status"].as_str().unwrap_or("up");
-        if reweight > 0.5 || status != "down" { continue; } // not fully drained/stopped
+        let status = n["status"].as_str().unwrap_or("up");
+        if reweight > 0.5 || status != "down" {
+            continue;
+        } // not fully drained/stopped
 
         // The daemon must not be running — never purge underneath a live OSD.
         disable_osd_unit(osd_id).await;
@@ -1491,7 +1568,14 @@ async fn purge_drained_osds(
         }
 
         tracing::info!("osd.{osd_id}: disk gone, out, safe-to-destroy — purging from Ceph");
-        match ceph_cli::ceph(&["osd", "purge", &format!("osd.{osd_id}"), "--yes-i-really-mean-it"]).await {
+        match ceph_cli::ceph(&[
+            "osd",
+            "purge",
+            &format!("osd.{osd_id}"),
+            "--yes-i-really-mean-it",
+        ])
+        .await
+        {
             Ok(_) => tracing::info!("osd.{osd_id}: purged"),
             Err(e) => tracing::warn!("osd.{osd_id}: purge failed: {e}"),
         }
@@ -1502,7 +1586,7 @@ async fn purge_drained_osds(
 /// Prefers Ceph's own `kb` (from `osd df tree`) over lsblk size_bytes when available.
 fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
     if kb > 0 {
-        kb as f64 / (1u64 << 30) as f64  // KB → TiB: divide by 2^30 (1 TiB = 2^30 KB)
+        kb as f64 / (1u64 << 30) as f64 // KB → TiB: divide by 2^30 (1 TiB = 2^30 KB)
     } else if size_bytes > 0 {
         size_bytes as f64 / (1u64 << 40) as f64
     } else {
@@ -1612,8 +1696,12 @@ fn migrate_disk_records(
     let devices_now: std::collections::HashSet<&str> =
         current.iter().map(|(_, d)| d.as_str()).collect();
     for key in desired.keys() {
-        let Some(id) = key.strip_prefix(&format!("{node}--")) else { continue };
-        let Some(device) = id.strip_prefix("dev-") else { continue };
+        let Some(id) = key.strip_prefix(&format!("{node}--")) else {
+            continue;
+        };
+        let Some(device) = id.strip_prefix("dev-") else {
+            continue;
+        };
         if !devices_now.contains(device) && !remove.contains(key) {
             remove.push(key.clone());
         }
@@ -1631,9 +1719,7 @@ async fn auto_register_all_disks(
     // disk identity would otherwise have orphaned.
     let current: Vec<(String, String)> = meta
         .iter()
-        .filter_map(|(id, m)| {
-            m["device"].as_str().map(|d| (id.clone(), d.to_string()))
-        })
+        .filter_map(|(id, m)| m["device"].as_str().map(|d| (id.clone(), d.to_string())))
         .collect();
     let migration = migrate_disk_records(node, &current, desired);
     let mut new_entries: HashMap<String, String> = migration.write;
@@ -1663,7 +1749,9 @@ async fn auto_register_all_disks(
 
     for (disk_id, m) in meta {
         let key = record_key(node, disk_id);
-        if desired.contains_key(&key) || new_entries.contains_key(&key) { continue; }
+        if desired.contains_key(&key) || new_entries.contains_key(&key) {
+            continue;
+        }
 
         // A disk with no record is normally new, and new disks are OFF until someone
         // asks for them. But "no record" also happens when a disk's IDENTITY changes
@@ -1693,22 +1781,50 @@ async fn auto_register_all_disks(
         new_entries.insert(key.clone(), default.to_string());
         patch_data.insert(key, Value::String(default.to_string()));
     }
-    if patch_data.is_empty() { return; }
+    if patch_data.is_empty() {
+        return;
+    }
 
     let patch = json!({ "data": Value::Object(patch_data) }).to_string();
     if let Err(e) = kubectl::run(&[
-        "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
-    ]).await {
+        "patch",
+        "configmap",
+        CONFIG_CM,
+        "-n",
+        NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    {
         let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
         if let Err(e2) = kubectl::run(&[
-            "patch", "configmap", CONFIG_CM, "-n", NS, "--type", "merge", "-p", &patch,
-        ]).await {
+            "patch",
+            "configmap",
+            CONFIG_CM,
+            "-n",
+            NS,
+            "--type",
+            "merge",
+            "-p",
+            &patch,
+        ])
+        .await
+        {
             tracing::warn!("auto_register_all_disks: {e}, then {e2}");
         } else {
-            tracing::info!("auto_register_all_disks: registered {} new disk(s) on {node}", new_entries.len());
+            tracing::info!(
+                "auto_register_all_disks: registered {} new disk(s) on {node}",
+                new_entries.len()
+            );
         }
     } else {
-        tracing::info!("auto_register_all_disks: registered {} new disk(s) on {node}", new_entries.len());
+        tracing::info!(
+            "auto_register_all_disks: registered {} new disk(s) on {node}",
+            new_entries.len()
+        );
     }
 }
 
@@ -1736,7 +1852,6 @@ fn is_user_disk(name: &str) -> bool {
     const VIRTUAL_PREFIXES: [&str; 6] = ["rbd", "loop", "zram", "zd", "md", "dm-"];
     !VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
 }
-
 
 /// What lsblk knows about a disk that /sys does not: whether it is carved into
 /// partitions, and whether this machine is using any of them.
@@ -1859,7 +1974,9 @@ fn bluestore_fsid(device: &str) -> Option<String> {
     if !buf.starts_with(BLUESTORE_MAGIC) {
         return None;
     }
-    let pos = buf.windows(CEPH_FSID_KEY.len()).position(|w| w == CEPH_FSID_KEY)?;
+    let pos = buf
+        .windows(CEPH_FSID_KEY.len())
+        .position(|w| w == CEPH_FSID_KEY)?;
     let vs = pos + CEPH_FSID_KEY.len();
     if vs + 40 > buf.len() {
         return None;
@@ -1879,7 +1996,6 @@ fn is_uuid(s: &str) -> bool {
             .zip(&parts)
             .all(|(&l, p)| p.len() == l && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
-
 
 /// The config-map key holding a disk's ON/OFF setting.
 ///
@@ -2084,9 +2200,28 @@ async fn write_status(node: &str, meta: &HashMap<String, Value>) {
 /// is indistinguishable from a failed call — and those two must never be
 /// confused. The `kind` check is what proves a real object came back.
 async fn read_desired() -> Option<HashMap<String, String>> {
-    let v = kubectl::get_json(&["get", "configmap", CONFIG_CM, "-n", NS, "-o", "json"])
-        .await
-        .ok()?;
+    let v = match kubectl::get_json(&["get", "configmap", CONFIG_CM, "-n", NS, "-o", "json"]).await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // A missing ConfigMap is the genuine first-run state: nothing has
+            // been switched on or off yet. It must not read as "cannot reach
+            // Kubernetes" — that reading is what deadlocked a fresh install,
+            // because the only path that creates this map
+            // (auto_register_all_disks) runs behind read_desired. NotFound is
+            // the one error that means "no one has ever set a disk", so it is
+            // safe to return an empty map and let the caller register every
+            // disk and create the map.
+            //
+            // Every other error still means None: an unreachable API server
+            // read as "all disks OFF" is the drain/purge/wipe accident the None
+            // return exists to prevent (see the header above).
+            if kubectl::is_not_found(&e) {
+                return Some(HashMap::new());
+            }
+            return None;
+        }
+    };
     if v["kind"].as_str() != Some("ConfigMap") {
         return None;
     }
@@ -2272,8 +2407,6 @@ mod tests {
 
     // ── disk_id ───────────────────────────────────────────────────────────────
 
-
-
     // ── Migrating to hardware ids ─────────────────────────────────────────────
     //
     // disk_id changed shape in this release. Without carrying records across, every
@@ -2282,19 +2415,34 @@ mod tests {
     // the accident would have caused it.
 
     fn recs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn a_setting_follows_the_disk_onto_its_hardware_id() {
         let desired = recs(&[("node1--dev-sdb", "ON"), ("node1--dev-sda", "OFF")]);
         let current = vec![
-            ("serial-wwn-0x50014ee214caf529".to_string(), "sdb".to_string()),
-            ("serial-wwn-0x500a0751191b8afa".to_string(), "sda".to_string()),
+            (
+                "serial-wwn-0x50014ee214caf529".to_string(),
+                "sdb".to_string(),
+            ),
+            (
+                "serial-wwn-0x500a0751191b8afa".to_string(),
+                "sda".to_string(),
+            ),
         ];
         let out = migrate_disk_records("node1", &current, &desired).write;
-        assert_eq!(out.get("serial-wwn-0x50014ee214caf529").map(String::as_str), Some("ON"));
-        assert_eq!(out.get("serial-wwn-0x500a0751191b8afa").map(String::as_str), Some("OFF"));
+        assert_eq!(
+            out.get("serial-wwn-0x50014ee214caf529").map(String::as_str),
+            Some("ON")
+        );
+        assert_eq!(
+            out.get("serial-wwn-0x500a0751191b8afa").map(String::as_str),
+            Some("OFF")
+        );
     }
 
     /// OFF has to travel too. Silently switching a deliberately-off disk back ON would
@@ -2304,7 +2452,10 @@ mod tests {
         let desired = recs(&[("node1--dev-sdb", "OFF")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
         assert_eq!(
-            migrate_disk_records("node1", &current, &desired).write.get("serial-wwn-0xabc").map(String::as_str),
+            migrate_disk_records("node1", &current, &desired)
+                .write
+                .get("serial-wwn-0xabc")
+                .map(String::as_str),
             Some("OFF")
         );
     }
@@ -2315,7 +2466,9 @@ mod tests {
     fn an_existing_record_is_never_overwritten() {
         let desired = recs(&[("node1--dev-sdb", "ON"), ("serial-wwn-0xabc", "OFF")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired)
+            .write
+            .is_empty());
     }
 
     /// Hardware that publishes no id keeps the kernel-name key it already had; there
@@ -2324,7 +2477,9 @@ mod tests {
     fn a_disk_still_identified_by_kernel_name_is_left_as_is() {
         let desired = recs(&[("node1--dev-sdb", "ON")]);
         let current = vec![("dev-sdb".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired)
+            .write
+            .is_empty());
     }
 
     /// A genuinely new disk has no old record, and must not inherit one from whichever
@@ -2334,7 +2489,9 @@ mod tests {
         let desired = recs(&[("node1--dev-sdb", "ON")]);
         // A different disk, now at sdc. sdb's record is not its to take.
         let current = vec![("serial-wwn-0xnew".to_string(), "sdc".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired)
+            .write
+            .is_empty());
     }
 
     /// Records belong to a node. Another machine's disk must not pick one up.
@@ -2342,10 +2499,10 @@ mod tests {
     fn records_do_not_cross_between_machines() {
         let desired = recs(&[("node3--dev-sdb", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired).write.is_empty());
+        assert!(migrate_disk_records("node1", &current, &desired)
+            .write
+            .is_empty());
     }
-
-
 
     /// The exact situation that drained a live disk: a stale kernel-name orphan saying
     /// OFF, sitting beside the real record saying ON. The newest, most specific
@@ -2354,8 +2511,8 @@ mod tests {
     #[test]
     fn a_stale_kernel_name_record_never_beats_the_hardware_one() {
         let desired = recs(&[
-            ("node1--dev-sdc", "OFF"),                      // orphan from the old scheme
-            ("node1--serial-wwn-0x50014ee2", "ON"),         // the record that means it
+            ("node1--dev-sdc", "OFF"),              // orphan from the old scheme
+            ("node1--serial-wwn-0x50014ee2", "ON"), // the record that means it
         ]);
         let current = vec![("serial-wwn-0x50014ee2".to_string(), "sdc".to_string())];
         let out = migrate_disk_records("node1", &current, &desired).write;
@@ -2373,11 +2530,13 @@ mod tests {
         let desired = recs(&[("node1--dev-sdc", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdc".to_string())];
         assert_eq!(
-            migrate_disk_records("node1", &current, &desired).write.get("serial-wwn-0xabc").map(String::as_str),
+            migrate_disk_records("node1", &current, &desired)
+                .write
+                .get("serial-wwn-0xabc")
+                .map(String::as_str),
             Some("ON")
         );
     }
-
 
     // ── Removing what has been superseded ─────────────────────────────────────
 
@@ -2389,7 +2548,10 @@ mod tests {
         let desired = recs(&[("node1--serial-wwn-0xabc", "ON")]);
         let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
         let m = migrate_disk_records("node1", &current, &desired);
-        assert_eq!(m.write.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
+        assert_eq!(
+            m.write.get("serial-wwn-0xabc").map(String::as_str),
+            Some("ON")
+        );
         assert!(m.remove.contains(&"node1--serial-wwn-0xabc".to_string()));
     }
 
@@ -2407,13 +2569,18 @@ mod tests {
             ("serial-wwn-0x50014ee214caf529", "OFF"),
         ]);
         let current = vec![
-            ("serial-wwn-0x50014ee214caf529".to_string(), "sdc".to_string()),
+            (
+                "serial-wwn-0x50014ee214caf529".to_string(),
+                "sdc".to_string(),
+            ),
             ("system".to_string(), "dm-1".to_string()),
         ];
         let m = migrate_disk_records("node1", &current, &desired);
 
         // The node-scoped duplicate goes.
-        assert!(m.remove.contains(&"node1--serial-wwn-0x50014ee214caf529".to_string()));
+        assert!(m
+            .remove
+            .contains(&"node1--serial-wwn-0x50014ee214caf529".to_string()));
         // The kernel-name traps go — including the one that started the drain.
         for orphan in ["node1--dev-sda", "node1--dev-sdb"] {
             assert!(m.remove.contains(&orphan.to_string()), "{orphan} must go");
@@ -2478,7 +2645,10 @@ mod tests {
     #[test]
     fn an_id_that_only_means_something_locally_stays_scoped() {
         assert_eq!(record_key("node1", "dev-sda"), "node1--dev-sda");
-        assert_ne!(record_key("node1", "dev-sda"), record_key("node3", "dev-sda"));
+        assert_ne!(
+            record_key("node1", "dev-sda"),
+            record_key("node3", "dev-sda")
+        );
         assert_eq!(record_key("node1", "system"), "node1--system");
         assert_ne!(record_key("node1", "system"), record_key("node3", "system"));
     }
@@ -2521,7 +2691,9 @@ mod tests {
         // Now plugged into node3, at a completely different letter.
         let current = vec![("serial-wwn-0xabc".to_string(), "sdd".to_string())];
         // Nothing to migrate — the record already applies, on any node.
-        assert!(migrate_disk_records("node3", &current, &desired).write.is_empty());
+        assert!(migrate_disk_records("node3", &current, &desired)
+            .write
+            .is_empty());
         assert_eq!(record_key("node3", "serial-wwn-0xabc"), "serial-wwn-0xabc");
     }
 
@@ -2535,7 +2707,9 @@ mod tests {
     fn a_hardware_id_beats_the_kernel_name() {
         assert_eq!(
             disk_id_from("sdc", Some("wwn-0x50014ee214caf529")),
-            "serial-wwn-0x50014ee214caf529".replace('.', "-").replace('_', "-")
+            "serial-wwn-0x50014ee214caf529"
+                .replace('.', "-")
+                .replace('_', "-")
         );
     }
 
@@ -2550,7 +2724,10 @@ mod tests {
         let ata = rank("ata-WDC_WD10SDRW-11A0XS1_WD-WXD2A51LAR33").unwrap();
         let usb = rank("usb-WD_easystore_2647_575844324135314C41523333-0:0").unwrap();
         assert!(wwn < ata, "the World Wide Name is the strongest identity");
-        assert!(ata < usb, "a USB id may describe the caddy rather than the disk");
+        assert!(
+            ata < usb,
+            "a USB id may describe the caddy rather than the disk"
+        );
     }
 
     #[test]
@@ -2773,7 +2950,10 @@ mod tests {
     #[test]
     fn real_disks_are_still_offered() {
         for n in ["sda", "sdb", "nvme0n1", "vda", "hda"] {
-            assert!(is_user_disk(n), "{n} is a real disk and must stay selectable");
+            assert!(
+                is_user_disk(n),
+                "{n} is a real disk and must stay selectable"
+            );
         }
     }
 
@@ -2855,7 +3035,10 @@ mod tests {
     #[test]
     fn lvm_list_tolerates_a_progress_preamble() {
         let raw = "--> Falling back to /tmp/ for logging\n{\"0\": [{\"devices\": [\"/dev/sdb\"]}]}";
-        assert_eq!(parse_lvm_list(raw).unwrap(), vec![("/dev/sdb".to_string(), 0)]);
+        assert_eq!(
+            parse_lvm_list(raw).unwrap(),
+            vec![("/dev/sdb".to_string(), 0)]
+        );
     }
 
     /// The exact record ceph-volume produces for an OSD on an LVM logical
@@ -2910,7 +3093,10 @@ mod tests {
     #[test]
     fn lvm_list_skips_entries_that_are_not_osd_ids() {
         let raw = r#"{"notanid": [{"devices": ["/dev/sdz"]}], "2": [{"devices": ["/dev/sde"]}]}"#;
-        assert_eq!(parse_lvm_list(raw).unwrap(), vec![("/dev/sde".to_string(), 2)]);
+        assert_eq!(
+            parse_lvm_list(raw).unwrap(),
+            vec![("/dev/sde".to_string(), 2)]
+        );
     }
 
     #[test]
@@ -2918,7 +3104,6 @@ mod tests {
         let raw = r#"{"0": [{"tags": {}}], "1": [{"devices": [""]}]}"#;
         assert!(parse_lvm_list(raw).unwrap().is_empty());
     }
-
 
     // ── parse_disk_flags ──────────────────────────────────────────────────────
     //
@@ -2930,7 +3115,10 @@ mod tests {
         let v = json!({"name": "sdb", "type": "disk"});
         assert_eq!(
             parse_disk_flags(&v),
-            DiskFlags { has_partitions: false, mounted: false }
+            DiskFlags {
+                has_partitions: false,
+                mounted: false
+            }
         );
     }
 
@@ -3010,7 +3198,6 @@ mod tests {
         assert!(msg.contains("another storage system"), "{msg}");
     }
 
-
     // ── scan_devices filtering ────────────────────────────────────────────────
 
     /// The OS disk must not appear as a second row alongside "System disk".
@@ -3041,7 +3228,14 @@ mod tests {
         ];
         // Every internal term that used to appear in these messages.
         const JARGON: [&str; 8] = [
-            "BlueStore", "OSD", "ceph", "Ceph", "LVM", "device path", "metadata", "superblock",
+            "BlueStore",
+            "OSD",
+            "ceph",
+            "Ceph",
+            "LVM",
+            "device path",
+            "metadata",
+            "superblock",
         ];
         for c in cases {
             let msg = refuse_osd_creation(&c).expect("every case must refuse");
@@ -3161,7 +3355,11 @@ mod tests {
             host("node2", vec![2]),
             osd(2, true, 1.0),
         ];
-        assert_eq!(drain_targets_remaining(&nodes, 0, "host"), 2, "node1 still has osd.1");
+        assert_eq!(
+            drain_targets_remaining(&nodes, 0, "host"),
+            2,
+            "node1 still has osd.1"
+        );
         // Emptying the only disk on node2 removes that machine as a target.
         assert_eq!(drain_targets_remaining(&nodes, 2, "host"), 1);
     }

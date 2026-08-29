@@ -1,7 +1,14 @@
+# The two artifacts the NixOS module serves: the front-end bundle and the
+# local-api binary.
+#
+# The Rust half is a thin re-export now — the toolchain, the crane setup and
+# this crate's build inputs live in ../rust.nix, which the checks and the ISO
+# read from too. See the header there for what that consolidation fixed.
 {
   pkgs,
   inputs,
-}: let
+  rust ? import ../rust.nix {inherit pkgs inputs;},
+}: {
   clientUi = pkgs.buildNpmPackage {
     pname = "client-ui";
     version = "0.1.0";
@@ -15,21 +22,5 @@
     '';
   };
 
-  rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
-    .rust-bin.fromRustupToolchainFile ./local-api/rust-toolchain.toml;
-  craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
-  localApiSrc = craneLib.cleanCargoSource (craneLib.path ./local-api);
-  localApiArgs = {
-    src = localApiSrc;
-    strictDeps = true;
-    nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
-    buildInputs = [pkgs.openssl];
-  };
-  localApiDeps = craneLib.buildDepsOnly localApiArgs;
-  localApiEnv = craneLib.buildPackage (localApiArgs
-    // {
-      cargoArtifacts = localApiDeps;
-    });
-in {
-  inherit clientUi localApiEnv;
+  localApiEnv = rust.crates.local-api.package;
 }
