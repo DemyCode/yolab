@@ -1,0 +1,78 @@
+name: format
+
+# Formatting is already gated — `nix run .#ci` builds `checks.formatting`, so an
+# unformatted branch is red before it can merge. This workflow exists for the
+# one case that gate cannot catch: main drifting because the *formatter* moved
+# rather than the code. Bumping treefmt-nix, nixpkgs' prettier or the Rust
+# toolchain all change what "formatted" means, and then a tree nobody has
+# touched goes red on the next unrelated push.
+#
+# It never pushes to main. It opens a pull request, so a mechanical rewrite of
+# every file is reviewed like anything else.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 06:00 UTC — after a weekend of flake bumps, before the week starts.
+    - cron: "0 6 * * 1"
+  push:
+    branches: [main]
+
+# A second run must not race the first for the same branch.
+concurrency:
+  group: format
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      # `nix fmt` and `checks.formatting` are the same treefmt wrapper, built
+      # from nix/treefmt.nix — so whatever this writes is exactly what the check
+      # would otherwise have demanded. There is no second formatter here that
+      # could disagree with the gate.
+      #
+      # Note this resolves the flake as `.`, the git tree, which is what the
+      # checkout above provides.
+      - name: Run nix fmt
+        run: nix fmt
+
+      - name: Open a pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # A fixed branch, so a later run updates the open PR rather than
+          # stacking a second one.
+          branch: bot/nix-fmt
+          delete-branch: true
+          title: "style: nix fmt"
+          commit-message: |
+            style: nix fmt
+
+            Produced by `nix fmt`, the same treefmt wrapper that
+            `checks.formatting` gates on.
+          labels: formatting
+          body: |
+            `nix fmt` produced changes against `main`.
+
+            This is mechanical output — the same treefmt wrapper
+            `checks.formatting` builds, so merging it is what makes
+            `nix run .#ci` green again.
+
+            If this appeared without anyone editing the affected files, a
+            formatter version moved: check the most recent bump to
+            `treefmt-nix`, `nixpkgs` (prettier, shfmt, alejandra) or
+            `homelab/local-api/rust-toolchain.toml` (rustfmt).
