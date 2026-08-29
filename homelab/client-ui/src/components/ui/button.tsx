@@ -5,7 +5,8 @@ import { buttonClass } from "./button-variants";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 export interface ButtonProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">,
+  extends
+    Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">,
     VariantProps<typeof buttonClass> {
   /** Shows a spinner and blocks input, without changing the button's width. */
   loading?: boolean;

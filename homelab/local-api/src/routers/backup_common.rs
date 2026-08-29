@@ -111,7 +111,13 @@ impl BackupConfig {
     }
 
     pub async fn unlock(&self, path: &str) {
-        restic_unlock(&self.restic_repo(path), &self.restic_password, &self.access_key_id, &self.secret_access_key).await;
+        restic_unlock(
+            &self.restic_repo(path),
+            &self.restic_password,
+            &self.access_key_id,
+            &self.secret_access_key,
+        )
+        .await;
     }
 }
 
@@ -137,7 +143,10 @@ pub(crate) async fn restic_unlock(repo: &str, password: &str, key_id: &str, secr
                 tracing::info!("restic unlock ({repo}): {}", msg.trim());
             }
         }
-        Ok(o) => tracing::debug!("restic unlock ({repo}): {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Ok(o) => tracing::debug!(
+            "restic unlock ({repo}): {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
         Err(e) => tracing::debug!("restic unlock ({repo}): {e}"),
     }
 }
@@ -183,13 +192,28 @@ pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Resu
             MASTER_SECRET,
             MASTER_NS,
             &[
-                ("access_key_id", data.get("access_key_id").map(|s| s.as_str()).unwrap_or("")),
-                ("secret_access_key", data.get("secret_access_key").map(|s| s.as_str()).unwrap_or("")),
-                ("bucket", data.get("bucket").map(|s| s.as_str()).unwrap_or("")),
-                ("endpoint", data.get("endpoint").map(|s| s.as_str()).unwrap_or("")),
+                (
+                    "access_key_id",
+                    data.get("access_key_id").map(|s| s.as_str()).unwrap_or(""),
+                ),
+                (
+                    "secret_access_key",
+                    data.get("secret_access_key")
+                        .map(|s| s.as_str())
+                        .unwrap_or(""),
+                ),
+                (
+                    "bucket",
+                    data.get("bucket").map(|s| s.as_str()).unwrap_or(""),
+                ),
+                (
+                    "endpoint",
+                    data.get("endpoint").map(|s| s.as_str()).unwrap_or(""),
+                ),
                 ("restic_password", &restic_password),
             ],
-        ).await?;
+        )
+        .await?;
         return Ok(BackupConfig {
             access_key_id: data.get("access_key_id").cloned().unwrap_or_default(),
             secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
@@ -252,8 +276,15 @@ pub(crate) async fn refresh_master_config(url: &str, token: &str) -> anyhow::Res
 
     // Preserve the existing restic_password — only the S3-side credentials rotate.
     let restic_password = match kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
-        Some(data) if !data.get("restic_password").cloned().unwrap_or_default().is_empty() =>
-            data["restic_password"].clone(),
+        Some(data)
+            if !data
+                .get("restic_password")
+                .cloned()
+                .unwrap_or_default()
+                .is_empty() =>
+        {
+            data["restic_password"].clone()
+        }
         _ => random_hex(32),
     };
 
@@ -267,7 +298,8 @@ pub(crate) async fn refresh_master_config(url: &str, token: &str) -> anyhow::Res
             ("endpoint", &s3.endpoint),
             ("restic_password", &restic_password),
         ],
-    ).await?;
+    )
+    .await?;
 
     Ok(BackupConfig {
         access_key_id: s3.access_key_id,
@@ -282,15 +314,25 @@ pub(crate) async fn refresh_master_config(url: &str, token: &str) -> anyhow::Res
 /// Required so the restic mover can call lchown to restore original file ownership.
 pub(crate) async fn annotate_ns_privileged_movers(ns: &str) {
     let _ = Command::new("kubectl")
-        .args(["annotate", "namespace", ns,
-               "volsync.backube/privileged-movers=true", "--overwrite"])
-        .output().await;
+        .args([
+            "annotate",
+            "namespace",
+            ns,
+            "volsync.backube/privileged-movers=true",
+            "--overwrite",
+        ])
+        .output()
+        .await;
 }
 
 /// Create (or update) the per-PVC restic secret in its namespace.
 /// Contains the full repo URL so VolSync knows where to read/write.
 /// Keyed by the canonical PVC id so the repo path (and thus backup history) survives restores.
-pub(crate) async fn ensure_restic_secret(ns: &str, pvc: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
+pub(crate) async fn ensure_restic_secret(
+    ns: &str,
+    pvc: &str,
+    cfg: &BackupConfig,
+) -> anyhow::Result<()> {
     let cid = canonical_pvc_id(pvc);
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let repo = cfg.restic_repo(&format!("volsync/{ns}/{cid}"));
@@ -325,7 +367,8 @@ pub(crate) struct PvcInfo {
 /// Filtering on the same label here closes that gap structurally: nothing this
 /// function returns can ever be outside what the export captures.
 pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
-    let managed: std::collections::HashSet<String> = list_managed_namespaces().await.into_iter().collect();
+    let managed: std::collections::HashSet<String> =
+        list_managed_namespaces().await.into_iter().collect();
 
     let out = Command::new("kubectl")
         .args(["get", "pvc", "-A", "-o", "json"])
@@ -357,7 +400,10 @@ pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
             if name.starts_with("volsync-") {
                 return None;
             }
-            Some(PvcInfo { namespace: ns, name })
+            Some(PvcInfo {
+                namespace: ns,
+                name,
+            })
         })
         .collect())
 }
@@ -368,11 +414,21 @@ pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 /// `list_user_pvcs`) can compare the two sets instead of assuming they match.
 pub(crate) async fn list_managed_namespaces() -> Vec<String> {
     let out = Command::new("kubectl")
-        .args(["get", "namespaces", "-l", "yolab.io/managed=true",
-               "-o", "jsonpath={.items[*].metadata.name}"])
-        .output().await;
+        .args([
+            "get",
+            "namespaces",
+            "-l",
+            "yolab.io/managed=true",
+            "-o",
+            "jsonpath={.items[*].metadata.name}",
+        ])
+        .output()
+        .await;
     match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect(),
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .map(String::from)
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -392,15 +448,20 @@ pub(crate) async fn list_managed_namespaces() -> Vec<String> {
 /// yet exist (first call for a PVC — install time, or the hourly self-heal reconciler picking
 /// up something new), it's still created with a concrete one-off manual value rather than an
 /// empty trigger, so it syncs exactly once and then idles rather than looping continuously.
-pub(crate) async fn ensure_replication_source(pvc: &PvcInfo, trigger_now: bool) -> anyhow::Result<()> {
+pub(crate) async fn ensure_replication_source(
+    pvc: &PvcInfo,
+    trigger_now: bool,
+) -> anyhow::Result<()> {
     let cid = canonical_pvc_id(&pvc.name);
     let rs_name = format!("volsync-{cid}");
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
 
     // Self-healing path: only create if missing — never overwrite a live manual trigger.
     if !trigger_now {
-        let exists = crate::kubectl::run(&["get", "replicationsource", &rs_name,
-                                          "-n", &pvc.namespace]).await.is_ok();
+        let exists =
+            crate::kubectl::run(&["get", "replicationsource", &rs_name, "-n", &pvc.namespace])
+                .await
+                .is_ok();
         if exists {
             return Ok(());
         }
@@ -494,46 +555,71 @@ pub(crate) fn hours_since(timestamp: &str) -> Option<i64> {
 /// credentials that cannot be re-used across clusters.
 pub(crate) fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
     const META_DROP: &[&str] = &[
-        "resourceVersion", "uid", "creationTimestamp", "generation",
-        "managedFields", "selfLink", "ownerReferences", "finalizers",
+        "resourceVersion",
+        "uid",
+        "creationTimestamp",
+        "generation",
+        "managedFields",
+        "selfLink",
+        "ownerReferences",
+        "finalizers",
     ];
     const ANN_DROP: &[&str] = &[
         "kubectl.kubernetes.io/last-applied-configuration",
         "deployment.kubernetes.io/revision",
         "control-plane.alpha.kubernetes.io/leader",
     ];
-    items.iter().filter_map(|item| {
-        let kind = item["kind"].as_str().unwrap_or("");
-        if kind == "Secret"
-            && item["type"].as_str() == Some("kubernetes.io/service-account-token")
-        {
-            return None;
-        }
-        let mut obj = item.clone();
-        if let Some(meta) = obj["metadata"].as_object_mut() {
-            for &f in META_DROP { meta.remove(f); }
-            if let Some(anns) = meta.get_mut("annotations").and_then(|a| a.as_object_mut()) {
-                for &f in ANN_DROP { anns.remove(f); }
-                if anns.is_empty() { meta.remove("annotations"); }
+    items
+        .iter()
+        .filter_map(|item| {
+            let kind = item["kind"].as_str().unwrap_or("");
+            if kind == "Secret"
+                && item["type"].as_str() == Some("kubernetes.io/service-account-token")
+            {
+                return None;
             }
-        }
-        if let Some(m) = obj.as_object_mut() { m.remove("status"); }
-        if kind == "Service" {
-            if let Some(spec) = obj["spec"].as_object_mut() {
-                spec.remove("clusterIP");
-                spec.remove("clusterIPs");
+            let mut obj = item.clone();
+            if let Some(meta) = obj["metadata"].as_object_mut() {
+                for &f in META_DROP {
+                    meta.remove(f);
+                }
+                if let Some(anns) = meta.get_mut("annotations").and_then(|a| a.as_object_mut()) {
+                    for &f in ANN_DROP {
+                        anns.remove(f);
+                    }
+                    if anns.is_empty() {
+                        meta.remove("annotations");
+                    }
+                }
             }
-        }
-        Some(obj)
-    }).collect()
+            if let Some(m) = obj.as_object_mut() {
+                m.remove("status");
+            }
+            if kind == "Service" {
+                if let Some(spec) = obj["spec"].as_object_mut() {
+                    spec.remove("clusterIP");
+                    spec.remove("clusterIPs");
+                }
+            }
+            Some(obj)
+        })
+        .collect()
 }
 
 pub(crate) fn parse_capacity_bytes(s: &str) -> u64 {
     let s = s.trim();
-    if let Some(n) = s.strip_suffix("Ti") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024 * 1024; }
-    if let Some(n) = s.strip_suffix("Gi") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024; }
-    if let Some(n) = s.strip_suffix("Mi") { return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024; }
-    if let Some(n) = s.strip_suffix("Ki") { return n.trim().parse::<u64>().unwrap_or(0) * 1024; }
+    if let Some(n) = s.strip_suffix("Ti") {
+        return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024 * 1024;
+    }
+    if let Some(n) = s.strip_suffix("Gi") {
+        return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024;
+    }
+    if let Some(n) = s.strip_suffix("Mi") {
+        return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024;
+    }
+    if let Some(n) = s.strip_suffix("Ki") {
+        return n.trim().parse::<u64>().unwrap_or(0) * 1024;
+    }
     s.parse::<u64>().unwrap_or(0)
 }
 
@@ -546,15 +632,21 @@ pub(crate) async fn reclaimable_pvc_bytes(namespaces: &[String]) -> u64 {
     for ns in namespaces {
         let out = Command::new("kubectl")
             .args(["get", "pvc", "-n", ns, "-o", "json"])
-            .output().await;
-        let pvcs = out.ok()
+            .output()
+            .await;
+        let pvcs = out
+            .ok()
             .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
             .and_then(|v| v["items"].as_array().cloned())
             .unwrap_or_default();
         for item in pvcs {
             let name = item["metadata"]["name"].as_str().unwrap_or("");
-            if name.starts_with("volsync-") { continue; }
-            let cap = item["spec"]["resources"]["requests"]["storage"].as_str().unwrap_or("0");
+            if name.starts_with("volsync-") {
+                continue;
+            }
+            let cap = item["spec"]["resources"]["requests"]["storage"]
+                .as_str()
+                .unwrap_or("0");
             total = total.saturating_add(parse_capacity_bytes(cap));
         }
     }
@@ -574,21 +666,41 @@ pub(crate) async fn reclaimable_pvc_bytes(namespaces: &[String]) -> u64 {
 /// finalizers first means it's removed immediately, before VolSync's controller ever gets a
 /// chance to react to the deletion at all — leftover VolSync-internal staging objects (temp
 /// PVC/snapshot) are an acceptable trade-off; destroying the live app's data is not.
-pub(crate) async fn delete_replication_destination_without_touching_pvc(name: &str, namespace: &str) {
+pub(crate) async fn delete_replication_destination_without_touching_pvc(
+    name: &str,
+    namespace: &str,
+) {
     let _ = Command::new("kubectl")
         .args([
-            "patch", "replicationdestination", name, "-n", namespace,
-            "--type=merge", "-p", r#"{"metadata":{"finalizers":[]}}"#,
+            "patch",
+            "replicationdestination",
+            name,
+            "-n",
+            namespace,
+            "--type=merge",
+            "-p",
+            r#"{"metadata":{"finalizers":[]}}"#,
         ])
         .output()
         .await;
     let _ = Command::new("kubectl")
-        .args(["delete", "replicationdestination", name, "-n", namespace, "--ignore-not-found"])
+        .args([
+            "delete",
+            "replicationdestination",
+            name,
+            "-n",
+            namespace,
+            "--ignore-not-found",
+        ])
         .output()
         .await;
 }
 
-pub(crate) async fn scale_deployment(namespace: &str, name: &str, replicas: u32) -> anyhow::Result<()> {
+pub(crate) async fn scale_deployment(
+    namespace: &str,
+    name: &str,
+    replicas: u32,
+) -> anyhow::Result<()> {
     let out = Command::new("kubectl")
         .args([
             "scale",
@@ -672,8 +784,7 @@ mod tests {
     fn canonical_pvc_id_strips_nested_restore_layers() {
         // Re-restoring an already-restored PVC must collapse back to the same id
         // so RS/secret/S3-path names stay stable instead of growing each time.
-        let mangled =
-            "volsync-emergency-restore-volsync-emergency-restore-gitea-data-dest-dest";
+        let mangled = "volsync-emergency-restore-volsync-emergency-restore-gitea-data-dest-dest";
         assert_eq!(canonical_pvc_id(mangled), "gitea-data");
     }
 
@@ -718,9 +829,15 @@ mod tests {
     fn restic_repo_never_doubles_the_separator() {
         let mut c = cfg();
         c.endpoint = "https://s3.example.com/".into();
-        assert_eq!(c.restic_repo("p"), "s3:https://s3.example.com/yolab-backups/p");
+        assert_eq!(
+            c.restic_repo("p"),
+            "s3:https://s3.example.com/yolab-backups/p"
+        );
         c.endpoint = "https://s3.example.com///".into();
-        assert_eq!(c.restic_repo("p"), "s3:https://s3.example.com/yolab-backups/p");
+        assert_eq!(
+            c.restic_repo("p"),
+            "s3:https://s3.example.com/yolab-backups/p"
+        );
     }
 
     // ── hours_since ───────────────────────────────────────────────────────────
@@ -824,8 +941,14 @@ mod tests {
         let meta = out[0]["metadata"].as_object().unwrap();
 
         for dropped in [
-            "resourceVersion", "uid", "creationTimestamp", "generation",
-            "managedFields", "selfLink", "ownerReferences", "finalizers",
+            "resourceVersion",
+            "uid",
+            "creationTimestamp",
+            "generation",
+            "managedFields",
+            "selfLink",
+            "ownerReferences",
+            "finalizers",
         ] {
             assert!(!meta.contains_key(dropped), "{dropped} must not survive");
         }
@@ -833,7 +956,10 @@ mod tests {
         assert_eq!(meta["name"], serde_json::json!("app"));
         assert_eq!(meta["namespace"], serde_json::json!("yolab-app"));
         assert_eq!(out[0]["spec"]["replicas"], serde_json::json!(1));
-        assert!(out[0].get("status").is_none(), "status is always rebuilt on apply");
+        assert!(
+            out[0].get("status").is_none(),
+            "status is always rebuilt on apply"
+        );
     }
 
     #[test]
@@ -847,7 +973,9 @@ mod tests {
             }},
         })];
         let anns = &sanitize_k8s_items_for_backup(&items)[0]["metadata"]["annotations"];
-        assert!(anns.get("kubectl.kubernetes.io/last-applied-configuration").is_none());
+        assert!(anns
+            .get("kubectl.kubernetes.io/last-applied-configuration")
+            .is_none());
         assert!(anns.get("deployment.kubernetes.io/revision").is_none());
         assert_eq!(anns["yolab.io/app-id"], serde_json::json!("gitea"));
     }
@@ -861,7 +989,10 @@ mod tests {
             }},
         })];
         let meta = sanitize_k8s_items_for_backup(&items)[0]["metadata"].clone();
-        assert!(meta.get("annotations").is_none(), "an empty map is noise on re-apply");
+        assert!(
+            meta.get("annotations").is_none(),
+            "an empty map is noise on re-apply"
+        );
     }
 
     /// A pinned clusterIP blocks re-apply whenever the address is already taken or
@@ -909,7 +1040,10 @@ mod tests {
         ];
         let out = sanitize_k8s_items_for_backup(&items);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["metadata"]["name"], serde_json::json!("app-credentials"));
+        assert_eq!(
+            out[0]["metadata"]["name"],
+            serde_json::json!("app-credentials")
+        );
     }
 
     #[test]
@@ -924,7 +1058,10 @@ mod tests {
 
     #[test]
     fn sanitize_survives_objects_with_no_metadata() {
-        let items = vec![serde_json::json!({}), serde_json::json!({"kind": "Service"})];
+        let items = vec![
+            serde_json::json!({}),
+            serde_json::json!({"kind": "Service"}),
+        ];
         assert_eq!(sanitize_k8s_items_for_backup(&items).len(), 2);
     }
 }

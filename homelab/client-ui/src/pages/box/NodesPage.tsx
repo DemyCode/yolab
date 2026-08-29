@@ -45,8 +45,8 @@ export function NodesPage() {
         <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3">
           <AlertTriangle className="h-4 w-4 text-warning mt-0.5 flex-shrink-0" />
           <p className="text-sm text-warning">
-            Cluster API unreachable — the control plane is restarting. This
-            will update automatically once it responds again.
+            Cluster API unreachable — the control plane is restarting. This will
+            update automatically once it responds again.
           </p>
         </div>
       )}

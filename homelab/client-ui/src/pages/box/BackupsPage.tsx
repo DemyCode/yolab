@@ -229,8 +229,6 @@ function isTerminalRestorePhase(phase: string): boolean {
   return phase === "Succeeded" || phase === "Partial" || phase === "Failed";
 }
 
-
-
 // ── Schedule ──────────────────────────────────────────────────────────────────
 
 interface SchedulePreview {
@@ -325,7 +323,9 @@ function ScheduleCard() {
       setSaved(d.expr);
       setPreview(d);
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "Could not save the schedule");
+      setSaveError(
+        e instanceof Error ? e.message : "Could not save the schedule",
+      );
     } finally {
       setSaving(false);
     }
@@ -1599,8 +1599,8 @@ export function BackupsPage() {
           )}
           <p className="mt-3 text-xs text-warning">
             Your files stay available the whole time. A large folder can take a
-            while the first time it is copied — nothing is wrong, and it will not
-            be cut short for taking long.
+            while the first time it is copied — nothing is wrong, and it will
+            not be cut short for taking long.
           </p>
         </div>
       )}

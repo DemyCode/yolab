@@ -317,7 +317,10 @@ mod tests {
 
     #[test]
     fn the_next_name_follows_the_highest_existing_node() {
-        assert_eq!(next_node_name_from(&tunnels(&[&["node1"], &["node2"]])), "node3");
+        assert_eq!(
+            next_node_name_from(&tunnels(&[&["node1"], &["node2"]])),
+            "node3"
+        );
     }
 
     /// The hostname must be free, not merely next in sequence: after node2 is
@@ -325,7 +328,10 @@ mod tests {
     /// with any cluster state still referring to it.
     #[test]
     fn a_gap_in_the_sequence_is_not_reused() {
-        assert_eq!(next_node_name_from(&tunnels(&[&["node1"], &["node3"]])), "node4");
+        assert_eq!(
+            next_node_name_from(&tunnels(&[&["node1"], &["node3"]])),
+            "node4"
+        );
     }
 
     #[test]
@@ -336,22 +342,37 @@ mod tests {
 
     #[test]
     fn several_records_on_one_tunnel_are_all_considered() {
-        assert_eq!(next_node_name_from(&tunnels(&[&["node1", "node7", "node3"]])), "node8");
+        assert_eq!(
+            next_node_name_from(&tunnels(&[&["node1", "node7", "node3"]])),
+            "node8"
+        );
     }
 
     #[test]
     fn double_digit_node_names_are_compared_numerically() {
         // Lexical comparison would rank "node9" above "node10" and hand out a
         // name that is already taken.
-        assert_eq!(next_node_name_from(&tunnels(&[&["node9"], &["node10"]])), "node11");
+        assert_eq!(
+            next_node_name_from(&tunnels(&[&["node9"], &["node10"]])),
+            "node11"
+        );
     }
 
     #[test]
     fn a_malformed_or_error_response_still_yields_a_usable_name() {
-        assert_eq!(next_node_name_from(&json!({"detail": "Unauthorized"})), "node1");
+        assert_eq!(
+            next_node_name_from(&json!({"detail": "Unauthorized"})),
+            "node1"
+        );
         assert_eq!(next_node_name_from(&json!(null)), "node1");
-        assert_eq!(next_node_name_from(&json!([{"dns_records": "nope"}])), "node1");
+        assert_eq!(
+            next_node_name_from(&json!([{"dns_records": "nope"}])),
+            "node1"
+        );
         assert_eq!(next_node_name_from(&json!([{}])), "node1");
-        assert_eq!(next_node_name_from(&json!([{"dns_records": [{}]}])), "node1");
+        assert_eq!(
+            next_node_name_from(&json!([{"dns_records": [{}]}])),
+            "node1"
+        );
     }
 }

@@ -60,7 +60,10 @@ pub async fn apply(manifest: &str) -> Result<()> {
     }
     let out = child.wait_with_output().await?;
     if !out.status.success() {
-        bail!("kubectl apply: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "kubectl apply: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -81,7 +84,10 @@ pub async fn create(manifest: &str) -> Result<()> {
     }
     let out = child.wait_with_output().await?;
     if !out.status.success() {
-        bail!("kubectl create: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "kubectl create: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -103,17 +109,19 @@ pub async fn replace(manifest: &str) -> Result<()> {
     }
     let out = child.wait_with_output().await?;
     if !out.status.success() {
-        bail!("kubectl replace: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "kubectl replace: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
 
 /// Read a Secret and return its decoded string data. `None` if missing.
-pub async fn get_secret(
-    name: &str,
-    ns: &str,
-) -> Option<std::collections::HashMap<String, String>> {
-    let raw = run(&["get", "secret", name, "-n", ns, "-o", "json"]).await.ok()?;
+pub async fn get_secret(name: &str, ns: &str) -> Option<std::collections::HashMap<String, String>> {
+    let raw = run(&["get", "secret", name, "-n", ns, "-o", "json"])
+        .await
+        .ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     let mut result = std::collections::HashMap::new();
     if let Some(data) = v["data"].as_object() {
@@ -187,19 +195,37 @@ const CEPH_NS: &str = "rook-ceph";
 /// completely healthy the whole time. OSD is still tried first since those
 /// pods are the most numerous/most likely to have one Ready.
 pub async fn ceph_exec_pod() -> Result<String> {
-    for selector in ["app=rook-ceph-osd", "app=rook-ceph-mon", "app=rook-ceph-mgr", "app=rook-ceph-mds"] {
+    for selector in [
+        "app=rook-ceph-osd",
+        "app=rook-ceph-mon",
+        "app=rook-ceph-mgr",
+        "app=rook-ceph-mds",
+    ] {
         let Ok(out) = run(&[
-            "get", "pod", "-n", CEPH_NS,
-            "-l", selector,
+            "get",
+            "pod",
+            "-n",
+            CEPH_NS,
+            "-l",
+            selector,
             "--field-selector=status.phase=Running",
-            "-o", "json",
-        ]).await else { continue };
-        let Ok(pods) = serde_json::from_str::<Value>(&out) else { continue };
+            "-o",
+            "json",
+        ])
+        .await
+        else {
+            continue;
+        };
+        let Ok(pods) = serde_json::from_str::<Value>(&out) else {
+            continue;
+        };
         for pod in pods["items"].as_array().unwrap_or(&vec![]) {
             let name = pod["metadata"]["name"].as_str().unwrap_or("");
-            let ready = pod["status"]["conditions"].as_array()
+            let ready = pod["status"]["conditions"]
+                .as_array()
                 .and_then(|cs| cs.iter().find(|c| c["type"] == "Ready"))
-                .and_then(|c| c["status"].as_str()) == Some("True");
+                .and_then(|c| c["status"].as_str())
+                == Some("True");
             if !name.is_empty() && ready {
                 return Ok(name.to_string());
             }
@@ -226,15 +252,26 @@ pub async fn ceph_exec(args: &[&str]) -> Result<String> {
 #[allow(dead_code)]
 async fn ceph_exec_via_pod(args: &[&str]) -> Result<String> {
     let keyring_b64 = run(&[
-        "get", "secret", "-n", CEPH_NS, "rook-ceph-admin-keyring",
-        "-o", "jsonpath={.data.keyring}",
+        "get",
+        "secret",
+        "-n",
+        CEPH_NS,
+        "rook-ceph-admin-keyring",
+        "-o",
+        "jsonpath={.data.keyring}",
     ])
     .await
     .context("read admin keyring")?;
 
     let mon_ip = run(&[
-        "get", "svc", "-n", CEPH_NS, "-l", "app=rook-ceph-mon",
-        "-o", "jsonpath={.items[0].spec.clusterIP}",
+        "get",
+        "svc",
+        "-n",
+        CEPH_NS,
+        "-l",
+        "app=rook-ceph-mon",
+        "-o",
+        "jsonpath={.items[0].spec.clusterIP}",
     ])
     .await
     .context("find mon service")?;
@@ -256,7 +293,7 @@ async fn ceph_exec_via_pod(args: &[&str]) -> Result<String> {
     // could share a worker, collide on the same /tmp paths, and clobber or
     // `rm` each other's keyring mid-run.
     let uniq: u64 = rand::random();
-    let key_path  = format!("/tmp/ceph-key-{uniq:016x}.keyring");
+    let key_path = format!("/tmp/ceph-key-{uniq:016x}.keyring");
     let conf_path = format!("/tmp/ceph-conf-{uniq:016x}.conf");
 
     let shell_cmd = format!(
@@ -315,7 +352,9 @@ impl Crd {
     }
 
     pub async fn get(&self, name: &str) -> Option<Value> {
-        let raw = run(&["get", &self.res(), name, "-o", "json", "--ignore-not-found"]).await.ok()?;
+        let raw = run(&["get", &self.res(), name, "-o", "json", "--ignore-not-found"])
+            .await
+            .ok()?;
         if raw.trim().is_empty() {
             return None;
         }
@@ -358,9 +397,16 @@ impl Crd {
     pub async fn patch_status(&self, name: &str, status: Value) -> Result<()> {
         let patch = serde_json::json!({ "status": status }).to_string();
         run(&[
-            "patch", &self.res(), name,
-            "--type=merge", "--subresource=status", "-p", &patch,
-        ]).await.map(|_| ())
+            "patch",
+            &self.res(),
+            name,
+            "--type=merge",
+            "--subresource=status",
+            "-p",
+            &patch,
+        ])
+        .await
+        .map(|_| ())
     }
 
     pub async fn delete(&self, name: &str) {

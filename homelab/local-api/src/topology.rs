@@ -150,8 +150,7 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
 /// "auto": that is the genuine first-run state, and the `kind` check is what
 /// tells the two apart.
 pub async fn read_policy() -> Option<PolicyState> {
-    let v = match kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"])
-        .await
+    let v = match kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"]).await
     {
         Ok(v) => v,
         Err(e) => {
@@ -233,7 +232,10 @@ async fn seed_policy_from_cluster() -> Option<StoragePolicy> {
     let osd_hosts = observe().await.map(|t| t.osd_hosts).unwrap_or(0);
     let failure_domain = if osd_hosts >= size { "host" } else { "osd" };
 
-    let p = StoragePolicy { size, failure_domain: failure_domain.into() };
+    let p = StoragePolicy {
+        size,
+        failure_domain: failure_domain.into(),
+    };
     match write_policy(&p).await {
         Ok(()) => {
             tracing::info!(
@@ -259,13 +261,33 @@ async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
         "failure_domain": p.failure_domain,
     }})
     .to_string();
-    if kubectl::run(&["patch", "configmap", POLICY_CM, "-n", NS, "--type", "merge", "-p", &patch])
-        .await
-        .is_err()
+    if kubectl::run(&[
+        "patch",
+        "configmap",
+        POLICY_CM,
+        "-n",
+        NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    .is_err()
     {
         let _ = kubectl::run(&["create", "configmap", POLICY_CM, "-n", NS]).await;
-        kubectl::run(&["patch", "configmap", POLICY_CM, "-n", NS, "--type", "merge", "-p", &patch])
-            .await?;
+        kubectl::run(&[
+            "patch",
+            "configmap",
+            POLICY_CM,
+            "-n",
+            NS,
+            "--type",
+            "merge",
+            "-p",
+            &patch,
+        ])
+        .await?;
     }
     Ok(())
 }
@@ -295,10 +317,8 @@ pub(crate) async fn observe() -> Option<Topology> {
     // ready replica; there are no such Deployments now, and the count was always
     // a proxy — it measured pods Rook had scheduled, not OSDs Ceph had up.
     // `num_up_osds` is the quantity the replication targets actually depend on.
-    let osds = crate::ceph_cli::ceph_json(&["osd", "stat"])
-        .await
-        .ok()?["num_up_osds"]
-        .as_u64()? as u32;
+    let osds =
+        crate::ceph_cli::ceph_json(&["osd", "stat"]).await.ok()?["num_up_osds"].as_u64()? as u32;
 
     // Host buckets in the CRUSH tree that hold at least one OSD.
     let tree = crate::ceph_cli::ceph_json(&["osd", "tree"]).await.ok()?;
@@ -311,7 +331,11 @@ pub(crate) async fn observe() -> Option<Topology> {
         })
         .count() as u32;
 
-    Some(Topology { nodes, osds, osd_hosts })
+    Some(Topology {
+        nodes,
+        osds,
+        osd_hosts,
+    })
 }
 
 /// Health straight from the mon rather than from a Rook CR status field.
@@ -320,9 +344,7 @@ pub(crate) async fn observe() -> Option<Topology> {
 /// not act" — the same discipline as an unknown fsid. Reading silence as
 /// HEALTH_OK would let a reduction proceed against a cluster that cannot answer.
 async fn cluster_health() -> Option<String> {
-    crate::ceph_cli::ceph_json(&["health"])
-        .await
-        .ok()?["status"]
+    crate::ceph_cli::ceph_json(&["health"]).await.ok()?["status"]
         .as_str()
         .map(str::to_string)
 }
@@ -450,7 +472,6 @@ fn is_unreplicated_pool(pool: &str) -> bool {
 }
 
 async fn pool_size(pool: &str) -> u32 {
-
     crate::ceph_cli::ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
         .await
         .ok()
@@ -464,20 +485,34 @@ async fn pool_size(pool: &str) -> u32 {
 /// Auto mode raises copies only (never silently drops a replica); manual mode
 /// applies the pinned size exactly (the UI confirms reductions).
 async fn apply_pools(target: &Target) {
-    let rule = if target.failure_domain == "osd" { "replicated_osd" } else { "replicated_rule" };
+    let rule = if target.failure_domain == "osd" {
+        "replicated_osd"
+    } else {
+        "replicated_rule"
+    };
 
     // Ensure the OSD-domain rule exists (the host rule ships by default).
     if target.failure_domain == "osd" {
-        let have = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"]).await.unwrap_or_default();
+        let have = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"])
+            .await
+            .unwrap_or_default();
         if !have.lines().any(|l| l.trim() == rule) {
             let _ = crate::ceph_cli::ceph(&[
-                "osd", "crush", "rule", "create-replicated", rule, "default", "osd",
+                "osd",
+                "crush",
+                "rule",
+                "create-replicated",
+                rule,
+                "default",
+                "osd",
             ])
             .await;
         }
     }
 
-    let pools = crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await.unwrap_or_default();
+    let pools = crate::ceph_cli::ceph(&["osd", "pool", "ls"])
+        .await
+        .unwrap_or_default();
     for pool in pools
         .lines()
         .map(|l| l.trim())
@@ -496,12 +531,24 @@ async fn apply_pools(target: &Target) {
         if want != cur {
             let ws = want.to_string();
             let res = if want == 1 {
-                crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &ws, "--yes-i-really-mean-it"]).await
+                crate::ceph_cli::ceph(&[
+                    "osd",
+                    "pool",
+                    "set",
+                    pool,
+                    "size",
+                    &ws,
+                    "--yes-i-really-mean-it",
+                ])
+                .await
             } else {
                 crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &ws]).await
             };
             if res.is_ok() {
-                tracing::info!("topology: pool {pool} size {cur}→{want} (fd={})", target.failure_domain);
+                tracing::info!(
+                    "topology: pool {pool} size {cur}→{want} (fd={})",
+                    target.failure_domain
+                );
             }
         }
         let ms = min.to_string();
@@ -596,10 +643,19 @@ pub async fn set_policy(
             Json(serde_json::json!({"error": "failure_domain must be osd or host"})),
         );
     }
-    let p = StoragePolicy { size, failure_domain };
+    let p = StoragePolicy {
+        size,
+        failure_domain,
+    };
     match write_policy(&p).await {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "policy": p}))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "policy": p})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
     }
 }
 
@@ -608,11 +664,18 @@ mod tests {
     use super::*;
 
     fn policy(size: u32, fd: &str) -> StoragePolicy {
-        StoragePolicy { size, failure_domain: fd.into() }
+        StoragePolicy {
+            size,
+            failure_domain: fd.into(),
+        }
     }
 
     fn topo(nodes: u32, osds: u32, osd_hosts: u32) -> Topology {
-        Topology { nodes, osds, osd_hosts }
+        Topology {
+            nodes,
+            osds,
+            osd_hosts,
+        }
     }
 
     // ── The policy is applied as given ────────────────────────────────────────
@@ -670,9 +733,15 @@ mod tests {
         let all_gone = compute_target(&p, &topo(0, 0, 0));
 
         assert_eq!(healthy.size, 3);
-        assert_eq!(one_gone.size, 3, "a disconnected disk is not a smaller cluster");
+        assert_eq!(
+            one_gone.size, 3,
+            "a disconnected disk is not a smaller cluster"
+        );
         assert_eq!(two_gone.size, 3);
-        assert_eq!(all_gone.size, 3, "even an unreadable cluster keeps the promise");
+        assert_eq!(
+            all_gone.size, 3,
+            "even an unreadable cluster keeps the promise"
+        );
     }
 
     // ── min_size ──────────────────────────────────────────────────────────────

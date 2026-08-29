@@ -14,8 +14,11 @@ else
     FLAKE_TARGET="yolab-mac-x86"
 fi
 
-step() { echo; echo ">>> $*"; }
-ok()   { echo "    ✓ $*"; }
+step() {
+    echo
+    echo ">>> $*"
+}
+ok() { echo "    ✓ $*"; }
 warn() { echo "    ⚠  $*"; }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

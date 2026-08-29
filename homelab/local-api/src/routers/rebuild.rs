@@ -16,7 +16,8 @@ fn pid_is_running(pid: u32) -> bool {
     // local-api service restarts mid-rebuild and the reaper thread is killed.
     match std::fs::read_to_string(format!("/proc/{pid}/status")) {
         Err(_) => false,
-        Ok(s) => !s.lines()
+        Ok(s) => !s
+            .lines()
             .find(|l| l.starts_with("State:"))
             .map(|l| l.contains('Z'))
             .unwrap_or(false),

@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, Check, FileCode2, Package, Trash2, Upload } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  FileCode2,
+  Package,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,7 +98,8 @@ export default function CustomAppPage() {
         app?: CustomApp;
         has_form?: boolean;
       };
-      if (!res.ok || !d.app) throw new Error(d.error ?? `Server error ${res.status}`);
+      if (!res.ok || !d.app)
+        throw new Error(d.error ?? `Server error ${res.status}`);
       setUploadedId(d.app.id);
       setSaved(
         d.has_form

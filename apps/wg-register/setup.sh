@@ -80,7 +80,7 @@ if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
         FQDN=$(printf '%s' "$REASSERT_BODY" | jq -r .fqdn)
         # Persist the (possibly refreshed) FQDN back to state.
         TMP_STATE=$(mktemp)
-        jq --arg fqdn "$FQDN" '.fqdn = $fqdn' "$STATE_FILE" > "$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
+        jq --arg fqdn "$FQDN" '.fqdn = $fqdn' "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
         echo "DNS record re-asserted: $FQDN -> $SUB_IPV6"
     else
         # Non-fatal: keep serving with cached state. If DNS was already correct the
@@ -136,14 +136,14 @@ if [ "$REUSE" = "0" ]; then
         --arg fqdn "$FQDN" \
         '{tunnel_id: $tunnel_id, sub_ipv6: $sub_ipv6, wg_private_key: $wg_private_key,
           wg_server_endpoint: $wg_server_endpoint, wg_server_public_key: $wg_server_public_key,
-          fqdn: $fqdn}' > "$STATE_FILE"
+          fqdn: $fqdn}' >"$STATE_FILE"
     chmod 600 "$STATE_FILE"
 fi
 
 URL=""
 [ -n "$FQDN" ] && URL="https://$FQDN"
 
-cat > "$WG_DIR/wg0.conf" << EOF
+cat >"$WG_DIR/wg0.conf" <<EOF
 [Interface]
 PrivateKey = $PRIVATE_KEY
 Table = off
@@ -158,7 +158,7 @@ PersistentKeepalive = 25
 EOF
 chmod 600 "$WG_DIR/wg0.conf"
 
-cat > "$YOLAB_DIR/env" << EOF
+cat >"$YOLAB_DIR/env" <<EOF
 export YOLAB_TUNNEL_ID=$TUNNEL_ID
 export YOLAB_IPV6=$SUB_IPV6
 export YOLAB_FQDN=$FQDN

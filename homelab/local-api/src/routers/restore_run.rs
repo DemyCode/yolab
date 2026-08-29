@@ -172,7 +172,11 @@ fn terminal_phase(volumes: &[&VolumeState], aborted: bool) -> &'static str {
     if total == 0 {
         // No PVCs to restore — a YAML-only namespace applied fine, unless we got here
         // by aborting.
-        return if aborted { PHASE_FAILED } else { PHASE_SUCCEEDED };
+        return if aborted {
+            PHASE_FAILED
+        } else {
+            PHASE_SUCCEEDED
+        };
     }
     let succeeded = volumes.iter().filter(|v| v.phase == VOL_SUCCEEDED).count();
     let failed = volumes.iter().filter(|v| v.phase == VOL_FAILED).count();
@@ -344,7 +348,11 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     let want_all = run["spec"]["all"].as_bool().unwrap_or(false);
     let requested_namespaces: Vec<String> = run["spec"]["namespaces"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let repo = cfg.restic_repo("cluster-backup");
@@ -457,7 +465,11 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     let namespaces: Vec<String> = if want_all {
         catalog["namespaces"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     } else {
         requested_namespaces
@@ -478,24 +490,33 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
         match crate::kubectl::ceph_exec(&["df", "-f", "json"]).await {
             Ok(df_raw) => {
                 if let Ok(df) = serde_json::from_str::<Value>(&df_raw) {
-                    let avail = df["stats"]["total_avail_bytes"].as_u64().unwrap_or(u64::MAX);
+                    let avail = df["stats"]["total_avail_bytes"]
+                        .as_u64()
+                        .unwrap_or(u64::MAX);
                     let reclaimable = reclaimable_pvc_bytes(&namespaces).await;
                     let effective_avail = avail.saturating_add(reclaimable);
                     let need = total_pvc_bytes * 6 / 5;
                     if effective_avail < need {
-                        terminate(name, run, format!(
+                        terminate(
+                            name,
+                            run,
+                            format!(
                             "insufficient storage: {avail} bytes free (+{reclaimable} reclaimable \
                              from PVCs being replaced), ~{need} bytes needed \
                              ({total_pvc_bytes} bytes of PVC data + 20% headroom). \
                              Add more disks or reduce replication before restoring."
-                        )).await;
+                        ),
+                        )
+                        .await;
                         return;
                     }
                     tracing::info!("restore-run {name}: space pre-flight ok — {avail} free + {reclaimable} reclaimable, {need} needed");
                 }
             }
             Err(e) => {
-                tracing::warn!("restore-run {name}: space pre-flight skipped (ceph unavailable: {e})")
+                tracing::warn!(
+                    "restore-run {name}: space pre-flight skipped (ceph unavailable: {e})"
+                )
             }
         }
     }
@@ -549,7 +570,6 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
         .await;
 }
 
-
 // ── RebuildingStorage ─────────────────────────────────────────────────────────
 //
 // The phase that exists because "restore from backup" was four Ceph commands and a
@@ -593,7 +613,6 @@ const PHASE_REBUILDING: &str = "RebuildingStorage";
 /// images-store.nix recreates it unprompted.
 const REBUILD_POOLS: &[&str] = &["yolab-fs-metadata", "yolab-fs-data0", "images"];
 
-
 /// Whether the cluster's own state justifies deleting its pools.
 ///
 /// Separate from the flag on the request on purpose. The flag is the owner saying "you
@@ -623,7 +642,10 @@ async fn ceph_ok(args: &[&str]) -> Result<String, String> {
 /// One bounded pass of the teardown, driven by `rebuildStep` in the status so a crash
 /// resumes where it stopped rather than starting the destruction again.
 async fn step_rebuilding_storage(name: &str, run: &Value) {
-    let at = run["status"]["rebuildStep"].as_str().unwrap_or("check").to_string();
+    let at = run["status"]["rebuildStep"]
+        .as_str()
+        .unwrap_or("check")
+        .to_string();
 
     match at.as_str() {
         // ── Refuse unless the data is genuinely gone ─────────────────────────
@@ -662,16 +684,24 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
                     if !osd_is_lost(&node) {
                         continue;
                     }
-                    let Some(id) = node["id"].as_i64() else { continue };
+                    let Some(id) = node["id"].as_i64() else {
+                        continue;
+                    };
                     let id_s = id.to_string();
-                    if ceph_ok(&["osd", "purge", &id_s, "--yes-i-really-mean-it"]).await.is_ok() {
+                    if ceph_ok(&["osd", "purge", &id_s, "--yes-i-really-mean-it"])
+                        .await
+                        .is_ok()
+                    {
                         purged.push(id);
                     }
                 }
             }
             tracing::info!("restore-run {name}: purged OSDs {purged:?}");
             let _ = RESTORE_RUN
-                .patch_status(name, json!({ "rebuildStep": "teardown", "purgedOsds": purged }))
+                .patch_status(
+                    name,
+                    json!({ "rebuildStep": "teardown", "purgedOsds": purged }),
+                )
                 .await;
         }
 
@@ -689,7 +719,16 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
             let _ = ceph_ok(&["config", "set", "mon", "mon_allow_pool_delete", "true"]).await;
             let mut failures = Vec::new();
             for pool in REBUILD_POOLS {
-                if let Err(e) = ceph_ok(&["osd", "pool", "delete", pool, pool, "--yes-i-really-really-mean-it"]).await {
+                if let Err(e) = ceph_ok(&[
+                    "osd",
+                    "pool",
+                    "delete",
+                    pool,
+                    pool,
+                    "--yes-i-really-really-mean-it",
+                ])
+                .await
+                {
                     // A pool that is already gone is not a failure.
                     if !e.contains("does not exist") {
                         failures.push(format!("{pool}: {e}"));
@@ -706,7 +745,9 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
                 })).await;
                 return;
             }
-            let _ = RESTORE_RUN.patch_status(name, json!({ "rebuildStep": "claims" })).await;
+            let _ = RESTORE_RUN
+                .patch_status(name, json!({ "rebuildStep": "claims" }))
+                .await;
         }
 
         // ── The volume claims go with them ───────────────────────────────────
@@ -716,13 +757,20 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
             // objects are restored from the cluster snapshot afterwards, so removing
             // them here loses nothing that is not already gone.
             let _ = crate::kubectl::run(&[
-                "delete", "pvc", "--all", "--all-namespaces",
-                "--selector", "app.kubernetes.io/managed-by!=ignore",
+                "delete",
+                "pvc",
+                "--all",
+                "--all-namespaces",
+                "--selector",
+                "app.kubernetes.io/managed-by!=ignore",
                 "--wait=false",
-            ]).await;
+            ])
+            .await;
             // Released PVs do not go on their own once their claim is deleted.
             let _ = crate::kubectl::run(&["delete", "pv", "--all", "--wait=false"]).await;
-            let _ = RESTORE_RUN.patch_status(name, json!({ "rebuildStep": "recreate" })).await;
+            let _ = RESTORE_RUN
+                .patch_status(name, json!({ "rebuildStep": "recreate" }))
+                .await;
         }
 
         // ── And it is built again ────────────────────────────────────────────
@@ -738,11 +786,14 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
                 .output()
                 .await;
             let _ = RESTORE_RUN
-                .patch_status(name, json!({
-                    "phase": PHASE_WAITING_STORAGE,
-                    "phaseDeadline": deadline_after(900),
-                    "rebuildStep": "done",
-                }))
+                .patch_status(
+                    name,
+                    json!({
+                        "phase": PHASE_WAITING_STORAGE,
+                        "phaseDeadline": deadline_after(900),
+                        "rebuildStep": "done",
+                    }),
+                )
                 .await;
         }
 
@@ -891,7 +942,10 @@ async fn setup_namespace(
     cfg: &BackupConfig,
 ) {
     let ns = ns_state[idx].namespace.clone();
-    let snapshot_id = run["status"]["snapshotId"].as_str().unwrap_or("").to_string();
+    let snapshot_id = run["status"]["snapshotId"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let catalog = run["status"]["catalog"].clone();
     let repo = cfg.restic_repo("cluster-backup");
 
@@ -971,7 +1025,10 @@ async fn setup_namespace(
     if ns_state[idx].volumes.is_empty() {
         ns_state[idx].volumes = catalog["services"]
             .as_array()
-            .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(ns.as_str())))
+            .and_then(|svcs| {
+                svcs.iter()
+                    .find(|s| s["namespace"].as_str() == Some(ns.as_str()))
+            })
             .and_then(|s| s["pvcs"].as_array())
             .map(|pvcs| {
                 pvcs.iter()
@@ -1014,7 +1071,10 @@ async fn advance_volume(
                 tracing::warn!("restore-run {name}: {ns}/{pvc}: restic secret: {e}");
             }
             let _ = ensure_replication_source(
-                &PvcInfo { namespace: ns.clone(), name: pvc.clone() },
+                &PvcInfo {
+                    namespace: ns.clone(),
+                    name: pvc.clone(),
+                },
                 false,
             )
             .await;
@@ -1049,7 +1109,13 @@ async fn advance_volume(
             // Non-blocking delete; the Deleting branch below waits it out across ticks.
             let _ = Command::new("kubectl")
                 .args([
-                    "delete", "pvc", &pvc, "-n", &ns, "--wait=false", "--ignore-not-found",
+                    "delete",
+                    "pvc",
+                    &pvc,
+                    "-n",
+                    &ns,
+                    "--wait=false",
+                    "--ignore-not-found",
                 ])
                 .output()
                 .await;
@@ -1143,7 +1209,8 @@ async fn step_applying(name: &str, run: &Value) {
     for state in &ns_state {
         // Unconditional: whatever happened to the data, the app must not stay dark.
         for deploy in &state.scaled_deployments {
-            if let Err(e) = scale_deployment(&state.namespace, &deploy.name, deploy.replicas).await {
+            if let Err(e) = scale_deployment(&state.namespace, &deploy.name, deploy.replicas).await
+            {
                 tracing::warn!(
                     "restore-run {name}: {}/{}: scale to {}: {e}",
                     state.namespace,
@@ -1162,7 +1229,10 @@ async fn step_applying(name: &str, run: &Value) {
     }
 
     let all_volumes: Vec<&VolumeState> = ns_state.iter().flat_map(|s| &s.volumes).collect();
-    let succeeded = all_volumes.iter().filter(|v| v.phase == VOL_SUCCEEDED).count();
+    let succeeded = all_volumes
+        .iter()
+        .filter(|v| v.phase == VOL_SUCCEEDED)
+        .count();
     let total = all_volumes.len();
     let phase = terminal_phase(&all_volumes, abort_reason.is_some());
 
@@ -1329,7 +1399,10 @@ fn parse_scaled_deployments(v: &Value) -> Vec<DeploymentScale> {
         .filter_map(|d| {
             if let Some(n) = d.as_str() {
                 // Old shape recorded names only; 1 is what that build always scaled to.
-                return Some(DeploymentScale { name: n.to_string(), replicas: 1 });
+                return Some(DeploymentScale {
+                    name: n.to_string(),
+                    replicas: 1,
+                });
             }
             Some(DeploymentScale {
                 name: d["name"].as_str()?.to_string(),
@@ -1439,7 +1512,10 @@ mod tests {
             setup_complete: true,
             scaled_deployments: scaled
                 .iter()
-                .map(|(n, r)| DeploymentScale { name: (*n).into(), replicas: *r })
+                .map(|(n, r)| DeploymentScale {
+                    name: (*n).into(),
+                    replicas: *r,
+                })
                 .collect(),
             volumes: vols
                 .iter()
@@ -1460,10 +1536,13 @@ mod tests {
         // reach Applying even when it is giving up, because Applying is the only code
         // that scales them back up. Marking it Failed here is what left two real apps at
         // 0 replicas until a human noticed.
-        let state = [ns("yolab-gitea", &[("gitea", 1)], &[("gitea-data", VOL_RESTORING)])];
+        let state = [ns(
+            "yolab-gitea",
+            &[("gitea", 1)],
+            &[("gitea-data", VOL_RESTORING)],
+        )];
         assert_eq!(abort_phase(PHASE_RESTORING, &state), PHASE_APPLYING);
     }
-
 
     // ── RebuildingStorage ─────────────────────────────────────────────────────
     //
@@ -1474,7 +1553,11 @@ mod tests {
     use crate::routers::ceph::PgLoss;
 
     fn pgloss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
-        PgLoss { stuck, total, unrecoverable }
+        PgLoss {
+            stuck,
+            total,
+            unrecoverable,
+        }
     }
 
     /// The case this exists for: a disk died in a cluster keeping one copy, and the
@@ -1529,8 +1612,12 @@ mod tests {
     /// Hosts and roots appear in the same array and have neither status nor reweight.
     #[test]
     fn non_osd_tree_nodes_are_never_purged() {
-        assert!(!osd_is_lost(&json!({"type": "host", "id": -3, "name": "node1"})));
-        assert!(!osd_is_lost(&json!({"type": "root", "id": -1, "name": "default"})));
+        assert!(!osd_is_lost(
+            &json!({"type": "host", "id": -3, "name": "node1"})
+        ));
+        assert!(!osd_is_lost(
+            &json!({"type": "root", "id": -1, "name": "default"})
+        ));
         assert!(!osd_is_lost(&json!({})));
     }
 
@@ -1555,7 +1642,11 @@ mod tests {
         // re-arm the deadline on every tick and the run would never finish — a restore
         // stuck "Bringing services back up" forever, which reads to the user exactly
         // like the hang this whole design exists to prevent.
-        let state = [ns("yolab-gitea", &[("gitea", 1)], &[("gitea-data", VOL_SUCCEEDED)])];
+        let state = [ns(
+            "yolab-gitea",
+            &[("gitea", 1)],
+            &[("gitea-data", VOL_SUCCEEDED)],
+        )];
         assert_eq!(abort_phase(PHASE_APPLYING, &state), PHASE_FAILED);
     }
 
@@ -1586,7 +1677,11 @@ mod tests {
 
     #[test]
     fn terminal_mixed_is_partial() {
-        let s = ns("a", &[("d", 1)], &[("p1", VOL_SUCCEEDED), ("p2", VOL_FAILED)]);
+        let s = ns(
+            "a",
+            &[("d", 1)],
+            &[("p1", VOL_SUCCEEDED), ("p2", VOL_FAILED)],
+        );
         let v: Vec<&VolumeState> = s.volumes.iter().collect();
         assert_eq!(terminal_phase(&v, false), PHASE_PARTIAL);
     }
@@ -1672,8 +1767,14 @@ mod tests {
         assert_eq!(
             parsed[0].scaled_deployments,
             vec![
-                DeploymentScale { name: "gitea".into(), replicas: 1 },
-                DeploymentScale { name: "gateway".into(), replicas: 1 },
+                DeploymentScale {
+                    name: "gitea".into(),
+                    replicas: 1
+                },
+                DeploymentScale {
+                    name: "gateway".into(),
+                    replicas: 1
+                },
             ]
         );
         // Legacy status had no setupComplete — must not re-run destructive setup blindly;
@@ -1686,8 +1787,7 @@ mod tests {
         // The bug this guards: Applying used to scale everything to 1 unconditionally,
         // silently rewriting the scale of any app that ran more than one replica.
         let state = [ns("a", &[("web", 3), ("worker", 2)], &[])];
-        let encoded =
-            json!({ "status": { "namespaces": state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() } });
+        let encoded = json!({ "status": { "namespaces": state.iter().map(NamespaceState::to_json).collect::<Vec<_>>() } });
         let parsed = parse_ns_state(&encoded);
         assert_eq!(parsed[0].scaled_deployments[0].replicas, 3);
         assert_eq!(parsed[0].scaled_deployments[1].replicas, 2);

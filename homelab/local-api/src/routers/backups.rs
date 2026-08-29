@@ -61,7 +61,9 @@ pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
 
 pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Ok(Json(serde_json::json!({ "provisioned": false, "reason": "platform API not configured" })));
+        return Ok(Json(
+            serde_json::json!({ "provisioned": false, "reason": "platform API not configured" }),
+        ));
     };
     let resp = http_client()
         .get(format!("{url}/storage/s3"))
@@ -83,7 +85,9 @@ pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Va
 
 pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some((url, token)) = ye_creds(&state.config) else {
-        return Ok(Json(serde_json::json!({ "provisioned": false, "reason": "platform API not configured" })));
+        return Ok(Json(
+            serde_json::json!({ "provisioned": false, "reason": "platform API not configured" }),
+        ));
     };
     let resp = http_client()
         .get(format!("{url}/storage/sftp"))
@@ -100,13 +104,17 @@ pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::
         .json()
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(Json(serde_json::json!({ "provisioned": true, "sftp": body })))
+    Ok(Json(
+        serde_json::json!({ "provisioned": true, "sftp": body }),
+    ))
 }
 
 /// True while any backup/restore activity holds a stake in the restic repos — gates
 /// enable/run-now/dr-start so two operations never contend for the same repo lock.
 async fn any_operation_in_progress() -> bool {
-    backup_run::is_active().await || restore_run::is_active().await || backup_run::volsync_mover_running().await
+    backup_run::is_active().await
+        || restore_run::is_active().await
+        || backup_run::volsync_mover_running().await
 }
 
 async fn ensure_no_operation_in_progress() -> anyhow::Result<()> {
@@ -188,23 +196,29 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     let v = get_replication_sources().await;
 
     // Build a (namespace, pvc_name) → (phase, deletionTimestamp) map from all PVCs.
-    let pvc_health_map: HashMap<(String, String), (String, Option<String>)> = Command::new("kubectl")
-        .args(["get", "pvc", "-A", "-o", "json"])
-        .output()
-        .await
-        .ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| v["items"].as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| {
-            let ns = item["metadata"]["namespace"].as_str()?.to_string();
-            let name = item["metadata"]["name"].as_str()?.to_string();
-            let phase = item["status"]["phase"].as_str().unwrap_or("Unknown").to_string();
-            let deletion_ts = item["metadata"]["deletionTimestamp"].as_str().map(String::from);
-            Some(((ns, name), (phase, deletion_ts)))
-        })
-        .collect();
+    let pvc_health_map: HashMap<(String, String), (String, Option<String>)> =
+        Command::new("kubectl")
+            .args(["get", "pvc", "-A", "-o", "json"])
+            .output()
+            .await
+            .ok()
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|v| v["items"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                let ns = item["metadata"]["namespace"].as_str()?.to_string();
+                let name = item["metadata"]["name"].as_str()?.to_string();
+                let phase = item["status"]["phase"]
+                    .as_str()
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let deletion_ts = item["metadata"]["deletionTimestamp"]
+                    .as_str()
+                    .map(String::from);
+                Some(((ns, name), (phase, deletion_ts)))
+            })
+            .collect();
 
     let pvcs: Vec<serde_json::Value> = v["items"]
         .as_array()
@@ -212,15 +226,25 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
         .unwrap_or_default()
         .iter()
         .map(|item| {
-            let namespace = item["metadata"]["namespace"].as_str().unwrap_or("").to_string();
+            let namespace = item["metadata"]["namespace"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let pvc = item["spec"]["sourcePVC"].as_str().unwrap_or("").to_string();
-            let created = item["metadata"]["creationTimestamp"].as_str().map(String::from);
+            let created = item["metadata"]["creationTimestamp"]
+                .as_str()
+                .map(String::from);
             let last_sync_time = item["status"]["lastSyncTime"].as_str().map(String::from);
-            let last_sync_duration =
-                item["status"]["lastSyncDuration"].as_str().map(String::from);
+            let last_sync_duration = item["status"]["lastSyncDuration"]
+                .as_str()
+                .map(String::from);
             let result = item["status"]["latestMoverStatus"]["result"]
                 .as_str()
-                .unwrap_or(if last_sync_time.is_some() { "Successful" } else { "Pending" })
+                .unwrap_or(if last_sync_time.is_some() {
+                    "Successful"
+                } else {
+                    "Pending"
+                })
                 .to_string();
             let (pvc_phase, pvc_deletion_ts) = pvc_health_map
                 .get(&(namespace.clone(), pvc.clone()))
@@ -309,7 +333,9 @@ pub async fn dr_start(
         body.rebuild_storage,
     )
     .await?;
-    Ok(Json(serde_json::json!({ "ok": true, "started": true, "name": name })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "started": true, "name": name }),
+    ))
 }
 
 /// GET /api/backups/dr/status — the active RestoreRun's full status (phase, per-namespace/
@@ -323,7 +349,9 @@ pub async fn dr_status(State(_state): State<AppState>) -> Result<Json<serde_json
 /// GET /api/backups/snapshots — list available cluster-backup restic snapshots.
 pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some(cfg) = read_master_config().await else {
-        return Ok(Json(serde_json::json!({ "snapshots": [], "configured": false })));
+        return Ok(Json(
+            serde_json::json!({ "snapshots": [], "configured": false }),
+        ));
     };
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
@@ -340,13 +368,17 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
 
     if !out.status.success() {
         // Repo not initialised yet — no snapshots exist.
-        return Ok(Json(serde_json::json!({ "snapshots": [], "configured": true })));
+        return Ok(Json(
+            serde_json::json!({ "snapshots": [], "configured": true }),
+        ));
     }
 
     let snapshots: serde_json::Value =
         serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!([]));
 
-    Ok(Json(serde_json::json!({ "snapshots": snapshots, "configured": true })))
+    Ok(Json(
+        serde_json::json!({ "snapshots": snapshots, "configured": true }),
+    ))
 }
 
 /// GET /api/backups/snapshots/:id/catalog
@@ -362,7 +394,14 @@ pub async fn snapshot_catalog(
     let target = format!("/tmp/yolab-catalog-{}", random_hex(8));
 
     let restore_out = Command::new("restic")
-        .args(["restore", &snapshot_id, "--target", &target, "--include", "**/catalog.json"])
+        .args([
+            "restore",
+            &snapshot_id,
+            "--target",
+            &target,
+            "--include",
+            "**/catalog.json",
+        ])
         .env("RESTIC_REPOSITORY", &repo)
         .env("RESTIC_PASSWORD", &cfg.restic_password)
         .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
@@ -376,7 +415,8 @@ pub async fn snapshot_catalog(
         return Err(anyhow::anyhow!(
             "restic restore failed: {}",
             String::from_utf8_lossy(&restore_out.stderr).trim()
-        ).into());
+        )
+        .into());
     }
 
     let find_out = Command::new("find")
@@ -389,7 +429,8 @@ pub async fn snapshot_catalog(
     let catalog: serde_json::Value = if file_path.is_empty() {
         serde_json::json!({"namespaces": [], "timestamp": null})
     } else {
-        let bytes = tokio::fs::read(&file_path).await
+        let bytes = tokio::fs::read(&file_path)
+            .await
             .map_err(|e| anyhow::anyhow!("read catalog.json: {e}"))?;
         serde_json::from_slice(&bytes)
             .unwrap_or(serde_json::json!({"namespaces": [], "timestamp": null}))
@@ -420,7 +461,9 @@ pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde
         return Err(anyhow::anyhow!("backup not configured").into());
     }
     let name = backup_run::start("manual").await?;
-    Ok(Json(serde_json::json!({ "ok": true, "started": true, "name": name })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "started": true, "name": name }),
+    ))
 }
 
 // ── Per-namespace install-time / self-healing hooks ───────────────────────────
@@ -429,8 +472,12 @@ pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde
 /// time. Called by apps.rs immediately after the namespace is created.
 /// `namespace` is the raw app namespace (e.g. "yolab-gitea"), not the instance name.
 pub async fn setup_namespace_backup(namespace: &str) {
-    let Some(cfg) = read_master_config().await else { return };
-    let Ok(pvcs) = list_user_pvcs().await else { return };
+    let Some(cfg) = read_master_config().await else {
+        return;
+    };
+    let Ok(pvcs) = list_user_pvcs().await else {
+        return;
+    };
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
@@ -443,9 +490,17 @@ pub async fn setup_namespace_backup(namespace: &str) {
 /// After this, RSes only fire when the backup job explicitly stamps a `manual` trigger.
 async fn strip_rs_schedules() {
     let out = match Command::new("kubectl")
-        .args(["get", "replicationsource", "-A",
-               "-l", "app.kubernetes.io/managed-by=yolab", "-o", "json"])
-        .output().await
+        .args([
+            "get",
+            "replicationsource",
+            "-A",
+            "-l",
+            "app.kubernetes.io/managed-by=yolab",
+            "-o",
+            "json",
+        ])
+        .output()
+        .await
     {
         Ok(o) => o,
         Err(_) => return,
@@ -454,17 +509,26 @@ async fn strip_rs_schedules() {
         serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!({"items": []}));
     for item in v["items"].as_array().cloned().unwrap_or_default() {
         let name = item["metadata"]["name"].as_str().unwrap_or("");
-        let ns   = item["metadata"]["namespace"].as_str().unwrap_or("");
-        if name.is_empty() || ns.is_empty() { continue; }
-        if item["spec"]["trigger"]["schedule"].as_str().is_none() { continue; }
+        let ns = item["metadata"]["namespace"].as_str().unwrap_or("");
+        if name.is_empty() || ns.is_empty() {
+            continue;
+        }
+        if item["spec"]["trigger"]["schedule"].as_str().is_none() {
+            continue;
+        }
         tracing::info!("backup-reconciler: {ns}/{name} — removing legacy schedule trigger");
         let _ = Command::new("kubectl")
             .args([
-                "patch", "replicationsource", name, "-n", ns,
+                "patch",
+                "replicationsource",
+                name,
+                "-n",
+                ns,
                 "--type=json",
                 r#"-p=[{"op":"remove","path":"/spec/trigger/schedule"}]"#,
             ])
-            .output().await;
+            .output()
+            .await;
     }
 }
 
@@ -482,10 +546,18 @@ pub async fn run_replication_source_reconciler() {
                 for pvc in pvcs {
                     annotate_ns_privileged_movers(&pvc.namespace).await;
                     if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await {
-                        tracing::debug!("backup-reconciler: restic secret {}/{}: {e}", pvc.namespace, pvc.name);
+                        tracing::debug!(
+                            "backup-reconciler: restic secret {}/{}: {e}",
+                            pvc.namespace,
+                            pvc.name
+                        );
                     }
                     if let Err(e) = ensure_replication_source(&pvc, false).await {
-                        tracing::debug!("backup-reconciler: RS {}/{}: {e}", pvc.namespace, pvc.name);
+                        tracing::debug!(
+                            "backup-reconciler: RS {}/{}: {e}",
+                            pvc.namespace,
+                            pvc.name
+                        );
                     }
                 }
             }
@@ -500,6 +572,9 @@ mod tests {
 
     #[test]
     fn format_recovery_key_groups_and_uppercases() {
-        assert_eq!(format_recovery_key("abcdef0123456789"), "ABCDE-F0123-45678-9");
+        assert_eq!(
+            format_recovery_key("abcdef0123456789"),
+            "ABCDE-F0123-45678-9"
+        );
     }
 }

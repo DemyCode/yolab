@@ -31,7 +31,9 @@
 //! boundary the catalog is held to, applied at the point the YAML arrives rather
 //! than trusting whoever pasted it.
 
-use axum::{extract::Path as AxPath, extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::Path as AxPath, extract::State, http::StatusCode, response::IntoResponse, Json,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -73,7 +75,9 @@ pub struct Rejection {
 }
 
 fn reject(reason: impl Into<String>) -> Rejection {
-    Rejection { reason: reason.into() }
+    Rejection {
+        reason: reason.into(),
+    }
 }
 
 /// Walks a parsed document looking for the things a namespaced app may not do.
@@ -138,10 +142,18 @@ fn scan_inner(node: &Value, privileged_ok: bool, allow_sidecar: bool, out: &mut 
                 }
                 // Descending into a container list is where the exception is decided,
                 // per container, rather than anywhere else in the document.
-                if matches!(k.as_str(), "containers" | "initContainers" | "ephemeralContainers") {
+                if matches!(
+                    k.as_str(),
+                    "containers" | "initContainers" | "ephemeralContainers"
+                ) {
                     if let Value::Array(items) = v {
                         for item in items {
-                            scan_inner(item, allow_sidecar && is_tunnel_sidecar(item), allow_sidecar, out);
+                            scan_inner(
+                                item,
+                                allow_sidecar && is_tunnel_sidecar(item),
+                                allow_sidecar,
+                                out,
+                            );
                         }
                         continue;
                     }
@@ -182,7 +194,9 @@ pub fn validate_manifest(yaml: &str) -> Result<usize, Rejection> {
             return Err(reject("every document needs a `kind` — this looks like Kubernetes YAML is missing, or a Docker Compose file was pasted instead"));
         };
         if v["apiVersion"].as_str().is_none() {
-            return Err(reject(format!("the {kind} document is missing `apiVersion`")));
+            return Err(reject(format!(
+                "the {kind} document is missing `apiVersion`"
+            )));
         }
         if CLUSTER_SCOPED.contains(&kind) {
             return Err(reject(format!(
@@ -197,7 +211,9 @@ pub fn validate_manifest(yaml: &str) -> Result<usize, Rejection> {
         let mut escapes = Vec::new();
         scan_for_escapes(&v, false, &mut escapes);
         if let Some(first) = escapes.first() {
-            return Err(reject(format!("the {kind} document is not allowed: {first}")));
+            return Err(reject(format!(
+                "the {kind} document is not allowed: {first}"
+            )));
         }
         count += 1;
     }
@@ -212,7 +228,9 @@ pub fn validate_manifest(yaml: &str) -> Result<usize, Rejection> {
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 40
-        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !id.starts_with('-')
         && !id.ends_with('-')
 }
@@ -364,7 +382,11 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
             }
         }
     });
-    tokio::fs::write(dir.join("values.schema.json"), serde_json::to_string_pretty(&schema)?).await?;
+    tokio::fs::write(
+        dir.join("values.schema.json"),
+        serde_json::to_string_pretty(&schema)?,
+    )
+    .await?;
 
     // The gateway half only when the app actually serves something. An app with no
     // port would otherwise get a subdomain that resolves to a Caddy with nowhere to
@@ -374,11 +396,7 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
     }
     tokio::fs::write(dir.join("templates/user.yaml"), USER_TEMPLATE).await?;
     tokio::fs::write(dir.join("user-manifest.yaml"), yaml).await?;
-    tokio::fs::write(
-        dir.join("yolab-custom.json"),
-        serde_json::to_string(app)?,
-    )
-    .await?;
+    tokio::fs::write(dir.join("yolab-custom.json"), serde_json::to_string(app)?).await?;
     Ok(())
 }
 
@@ -409,7 +427,9 @@ pub async fn save_custom(
     if !valid_id(&req.id) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "the id may use lowercase letters, digits and hyphens, and cannot start or end with a hyphen"})),
+            Json(
+                serde_json::json!({"error": "the id may use lowercase letters, digits and hyphens, and cannot start or end with a hyphen"}),
+            ),
         );
     }
     if req.display_name.trim().is_empty() {
@@ -421,7 +441,10 @@ pub async fn save_custom(
     let docs = match validate_manifest(&req.yaml) {
         Ok(n) => n,
         Err(r) => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": r.reason})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": r.reason})),
+            )
         }
     };
     let app = CustomApp {
@@ -448,14 +471,19 @@ pub async fn save_custom(
 /// from it keeps running; it is an ordinary app now and is uninstalled like one.
 pub async fn delete_custom(AxPath(id): AxPath<String>) -> impl IntoResponse {
     if !valid_id(&id) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "unknown app"})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "unknown app"})),
+        );
     }
     match tokio::fs::remove_dir_all(custom_dir().join(&id)).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
     }
 }
-
 
 // ── A packaged chart, uploaded ────────────────────────────────────────────────
 //
@@ -544,7 +572,11 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
     for doc in serde_norway::Deserializer::from_str(rendered) {
         let v: Value = match serde::Deserialize::deserialize(doc) {
             Ok(v) => v,
-            Err(e) => return Err(reject(format!("the chart rendered something that is not valid YAML: {e}"))),
+            Err(e) => {
+                return Err(reject(format!(
+                    "the chart rendered something that is not valid YAML: {e}"
+                )))
+            }
         };
         if v.is_null() {
             continue;
@@ -567,7 +599,9 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
         let mut escapes = Vec::new();
         scan_for_escapes(&v, true, &mut escapes);
         if let Some(first) = escapes.first() {
-            return Err(reject(format!("this chart's {kind} is not allowed: {first}")));
+            return Err(reject(format!(
+                "this chart's {kind} is not allowed: {first}"
+            )));
         }
     }
     Ok(())
@@ -592,21 +626,39 @@ async fn run(cmd: &str, args: &[&str]) -> Result<String, Rejection> {
 ///
 /// Deliberately not multipart: the only field is the file, and multipart would mean a
 /// parser dependency to carry one value that the request body already is.
-pub async fn upload_chart(State(state): State<AppState>, body: axum::body::Bytes) -> impl IntoResponse {
-    let bad = |msg: String| (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg })));
+pub async fn upload_chart(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let bad = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": msg })),
+        )
+    };
 
     let Some(kind) = sniff(&body) else {
         return bad("that file is not a .zip or a .tgz — package a chart with `helm package`, or zip the chart folder".into());
     };
 
-    let tmp = std::env::temp_dir().join(format!("yolab-chart-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+    let tmp = std::env::temp_dir().join(format!(
+        "yolab-chart-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
     let _ = tokio::fs::remove_dir_all(&tmp).await;
     if let Err(e) = tokio::fs::create_dir_all(&tmp).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() })));
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        );
     }
     let archive = tmp.join("upload");
     if let Err(e) = tokio::fs::write(&archive, &body).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() })));
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        );
     }
 
     let dest = tmp.join("x");
@@ -616,10 +668,30 @@ pub async fn upload_chart(State(state): State<AppState>, body: axum::body::Bytes
         // unzip because it declines absolute and ../ paths by default. Without that,
         // an archive entry named ../../etc/something writes there.
         Archive::TarGz => {
-            run("tar", &["-xzf", archive.to_str().unwrap_or(""), "-C", dest.to_str().unwrap_or(""), "--no-same-owner"]).await
+            run(
+                "tar",
+                &[
+                    "-xzf",
+                    archive.to_str().unwrap_or(""),
+                    "-C",
+                    dest.to_str().unwrap_or(""),
+                    "--no-same-owner",
+                ],
+            )
+            .await
         }
         Archive::Zip => {
-            run("unzip", &["-q", "-o", archive.to_str().unwrap_or(""), "-d", dest.to_str().unwrap_or("")]).await
+            run(
+                "unzip",
+                &[
+                    "-q",
+                    "-o",
+                    archive.to_str().unwrap_or(""),
+                    "-d",
+                    dest.to_str().unwrap_or(""),
+                ],
+            )
+            .await
         }
     };
     if let Err(r) = extracted {
@@ -663,14 +735,28 @@ pub async fn upload_chart(State(state): State<AppState>, body: axum::body::Bytes
         if lib.is_dir() {
             let charts_dir = root.join("charts");
             let _ = tokio::fs::create_dir_all(&charts_dir).await;
-            let _ = run("cp", &["-r", lib.to_str().unwrap_or(""), charts_dir.to_str().unwrap_or("")]).await;
+            let _ = run(
+                "cp",
+                &[
+                    "-r",
+                    lib.to_str().unwrap_or(""),
+                    charts_dir.to_str().unwrap_or(""),
+                ],
+            )
+            .await;
         }
     }
 
     let release_ns = format!("yolab-{}", meta.name);
     let rendered = match run(
         "helm",
-        &["template", &meta.name, root.to_str().unwrap_or(""), "--namespace", &release_ns],
+        &[
+            "template",
+            &meta.name,
+            root.to_str().unwrap_or(""),
+            "--namespace",
+            &release_ns,
+        ],
     )
     .await
     {
@@ -689,12 +775,27 @@ pub async fn upload_chart(State(state): State<AppState>, body: axum::body::Bytes
     let final_dir = custom_dir().join(&meta.name);
     if let Err(e) = tokio::fs::create_dir_all(custom_dir()).await {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() })));
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        );
     }
     let _ = tokio::fs::remove_dir_all(&final_dir).await;
-    if let Err(r) = run("cp", &["-r", root.to_str().unwrap_or(""), final_dir.to_str().unwrap_or("")]).await {
+    if let Err(r) = run(
+        "cp",
+        &[
+            "-r",
+            root.to_str().unwrap_or(""),
+            final_dir.to_str().unwrap_or(""),
+        ],
+    )
+    .await
+    {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": r.reason })));
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": r.reason })),
+        );
     }
 
     let app = CustomApp {
@@ -704,7 +805,11 @@ pub async fn upload_chart(State(state): State<AppState>, body: axum::body::Bytes
             .get("yolab.io/display-name")
             .cloned()
             .unwrap_or_else(|| meta.name.clone()),
-        icon: meta.annotations.get("yolab.io/icon").cloned().unwrap_or_default(),
+        icon: meta
+            .annotations
+            .get("yolab.io/icon")
+            .cloned()
+            .unwrap_or_default(),
         description: meta.description.clone(),
         port: None,
         service: String::new(),
@@ -775,16 +880,27 @@ spec:
 
     #[test]
     fn cluster_scoped_kinds_are_refused() {
-        for kind in ["ClusterRoleBinding", "CustomResourceDefinition", "Namespace", "PersistentVolume", "StorageClass"] {
+        for kind in [
+            "ClusterRoleBinding",
+            "CustomResourceDefinition",
+            "Namespace",
+            "PersistentVolume",
+            "StorageClass",
+        ] {
             let doc = format!("apiVersion: v1\nkind: {kind}\nmetadata:\n  name: x\n");
             let err = validate_manifest(&doc).unwrap_err();
-            assert!(err.reason.contains("whole cluster"), "{kind}: {}", err.reason);
+            assert!(
+                err.reason.contains("whole cluster"),
+                "{kind}: {}",
+                err.reason
+            );
         }
     }
 
     #[test]
     fn a_manifest_naming_another_namespace_is_refused() {
-        let doc = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n  namespace: kube-system\n";
+        let doc =
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n  namespace: kube-system\n";
         let err = validate_manifest(doc).unwrap_err();
         assert!(err.reason.contains("kube-system"), "{}", err.reason);
     }
@@ -801,7 +917,8 @@ spec:
             ("nodeName", "spec:\n  template:\n    spec:\n      nodeName: node1\n"),
         ];
         for (label, body) in cases {
-            let doc = format!("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\n{body}");
+            let doc =
+                format!("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\n{body}");
             assert!(
                 validate_manifest(&doc).is_err(),
                 "{label} should be refused, but was accepted"
@@ -850,7 +967,16 @@ spec:
         for ok in ["hello", "my-app-2"] {
             assert!(valid_id(ok));
         }
-        for bad in ["", "-x", "x-", "Upper", "has space", "under_score", "a/b", &"a".repeat(41)] {
+        for bad in [
+            "",
+            "-x",
+            "x-",
+            "Upper",
+            "has space",
+            "under_score",
+            "a/b",
+            &"a".repeat(41),
+        ] {
             assert!(!valid_id(bad), "{bad:?}");
         }
     }
@@ -888,19 +1014,33 @@ spec:
 
         let tmp = std::env::temp_dir().join(format!("yolab-custom-test-{}", std::process::id()));
         let _ = tokio::fs::remove_dir_all(&tmp).await;
-        write_chart_at(&tmp, &app, manifest).await.expect("chart should be written");
+        write_chart_at(&tmp, &app, manifest)
+            .await
+            .expect("chart should be written");
         let chart = tmp.join("my-thing");
 
         // The library is vendored the same way check_charts.py does it.
-        tokio::fs::create_dir_all(chart.join("charts")).await.unwrap();
+        tokio::fs::create_dir_all(chart.join("charts"))
+            .await
+            .unwrap();
         let status = std::process::Command::new("cp")
-            .args(["-r", lib.to_str().unwrap(), chart.join("charts").to_str().unwrap()])
+            .args([
+                "-r",
+                lib.to_str().unwrap(),
+                chart.join("charts").to_str().unwrap(),
+            ])
             .status()
             .unwrap();
         assert!(status.success());
 
         let out = std::process::Command::new(helm)
-            .args(["template", "rel", chart.to_str().unwrap(), "--namespace", "yolab-my-thing"])
+            .args([
+                "template",
+                "rel",
+                chart.to_str().unwrap(),
+                "--namespace",
+                "yolab-my-thing",
+            ])
             .output()
             .expect("helm should run");
         assert!(
@@ -917,8 +1057,14 @@ spec:
             "the manifest was evaluated instead of shipped:\n{rendered}"
         );
         // And the gateway came along, so the app is actually reachable.
-        assert!(rendered.contains("name: gateway"), "no gateway in:\n{rendered}");
-        assert!(rendered.contains("localhost:8080"), "upstream missing in:\n{rendered}");
+        assert!(
+            rendered.contains("name: gateway"),
+            "no gateway in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("localhost:8080"),
+            "upstream missing in:\n{rendered}"
+        );
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
@@ -943,7 +1089,6 @@ spec:
         assert!(tmp.join("worker/templates/user.yaml").exists());
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
-
 
     // ── Uploaded charts ───────────────────────────────────────────────────────
 
@@ -1008,7 +1153,10 @@ spec:
     #[test]
     fn a_rendered_chart_is_held_to_the_same_boundary_as_pasted_yaml() {
         let cluster = "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: x\n";
-        assert!(validate_rendered(cluster, "yolab-x").unwrap_err().reason.contains("whole cluster"));
+        assert!(validate_rendered(cluster, "yolab-x")
+            .unwrap_err()
+            .reason
+            .contains("whole cluster"));
 
         let host = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      volumes:\n        - name: v\n          hostPath:\n            path: /\n";
         assert!(validate_rendered(host, "yolab-x").is_err());
@@ -1032,20 +1180,37 @@ spec:
         // does not try to reach the network for the dependency.
         let src = tmp.join("pairdrop");
         std::process::Command::new("cp")
-            .args(["-r", catalog.join("pairdrop").to_str().unwrap(), src.to_str().unwrap()])
+            .args([
+                "-r",
+                catalog.join("pairdrop").to_str().unwrap(),
+                src.to_str().unwrap(),
+            ])
             .status()
             .unwrap();
         std::fs::create_dir_all(src.join("charts")).unwrap();
         std::process::Command::new("cp")
-            .args(["-r", catalog.join("yolab-common").to_str().unwrap(), src.join("charts").to_str().unwrap()])
+            .args([
+                "-r",
+                catalog.join("yolab-common").to_str().unwrap(),
+                src.join("charts").to_str().unwrap(),
+            ])
             .status()
             .unwrap();
 
         let out = std::process::Command::new(&helm)
-            .args(["package", src.to_str().unwrap(), "--destination", tmp.to_str().unwrap()])
+            .args([
+                "package",
+                src.to_str().unwrap(),
+                "--destination",
+                tmp.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
-        assert!(out.status.success(), "helm package: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "helm package: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let tgz = std::fs::read_dir(&tmp)
             .unwrap()
@@ -1061,24 +1226,46 @@ spec:
         let dest = tmp.join("x");
         std::fs::create_dir_all(&dest).unwrap();
         let status = std::process::Command::new("tar")
-            .args(["-xzf", tgz.to_str().unwrap(), "-C", dest.to_str().unwrap(), "--no-same-owner"])
+            .args([
+                "-xzf",
+                tgz.to_str().unwrap(),
+                "-C",
+                dest.to_str().unwrap(),
+                "--no-same-owner",
+            ])
             .status()
             .unwrap();
         assert!(status.success());
 
         let root = find_chart_root(&dest, 3).expect("Chart.yaml should be found in the package");
         let meta: ChartYaml =
-            serde_norway::from_str(&std::fs::read_to_string(root.join("Chart.yaml")).unwrap()).unwrap();
+            serde_norway::from_str(&std::fs::read_to_string(root.join("Chart.yaml")).unwrap())
+                .unwrap();
         assert_eq!(meta.name, "pairdrop");
         assert!(valid_id(&meta.name));
-        assert_eq!(meta.annotations.get("yolab.io/display-name").map(String::as_str), Some("PairDrop"));
+        assert_eq!(
+            meta.annotations
+                .get("yolab.io/display-name")
+                .map(String::as_str),
+            Some("PairDrop")
+        );
 
         let ns = format!("yolab-{}", meta.name);
         let rendered = std::process::Command::new(&helm)
-            .args(["template", &meta.name, root.to_str().unwrap(), "--namespace", &ns])
+            .args([
+                "template",
+                &meta.name,
+                root.to_str().unwrap(),
+                "--namespace",
+                &ns,
+            ])
             .output()
             .unwrap();
-        assert!(rendered.status.success(), "helm template: {}", String::from_utf8_lossy(&rendered.stderr));
+        assert!(
+            rendered.status.success(),
+            "helm template: {}",
+            String::from_utf8_lossy(&rendered.stderr)
+        );
         let text = String::from_utf8_lossy(&rendered.stdout);
 
         // A catalog chart must pass the boundary an uploaded chart is held to. If it
@@ -1090,7 +1277,6 @@ spec:
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-
 
     // ── The one privileged exception ──────────────────────────────────────────
     //

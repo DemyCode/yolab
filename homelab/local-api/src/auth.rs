@@ -51,13 +51,8 @@ async fn load_sessions_from_k8s() -> HashMap<String, i64> {
 
 async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
     let json = serde_json::to_string(sessions).unwrap_or_default();
-    if let Err(e) = crate::kubectl::apply_secret(
-        SECRET_NAME,
-        SECRET_NS,
-        &[("sessions", &json)],
-        &[],
-    )
-    .await
+    if let Err(e) =
+        crate::kubectl::apply_secret(SECRET_NAME, SECRET_NS, &[("sessions", &json)], &[]).await
     {
         tracing::warn!("failed to persist sessions to k8s: {e}");
     }
@@ -173,12 +168,18 @@ pub async fn auth_middleware(
         }
         return (StatusCode::UNAUTHORIZED, r#"{"detail":"Unauthorized"}"#).into_response();
     }
-    let token = jar.get("yolab_session").map(|c| c.value().to_string()).unwrap_or_default();
+    let token = jar
+        .get("yolab_session")
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
     let valid = if token.is_empty() {
         false
     } else {
         let sessions = state.sessions.read().await;
-        sessions.get(&token).map(|&exp| exp > now_secs()).unwrap_or(false)
+        sessions
+            .get(&token)
+            .map(|&exp| exp > now_secs())
+            .unwrap_or(false)
     };
     if !valid {
         return (StatusCode::UNAUTHORIZED, r#"{"detail":"Unauthorized"}"#).into_response();
@@ -232,11 +233,11 @@ pub async fn check() -> StatusCode {
     StatusCode::OK
 }
 
-pub async fn logout(
-    State(state): State<crate::AppState>,
-    jar: CookieJar,
-) -> Response {
-    let token = jar.get("yolab_session").map(|c| c.value().to_string()).unwrap_or_default();
+pub async fn logout(State(state): State<crate::AppState>, jar: CookieJar) -> Response {
+    let token = jar
+        .get("yolab_session")
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
     if !token.is_empty() {
         let mut sessions = state.auth.sessions.write().await;
         sessions.remove(&token);
@@ -286,7 +287,10 @@ mod tests {
     }
 
     fn auth_state(config: Arc<Config>) -> AuthState {
-        AuthState { sessions: new_sessions(), config }
+        AuthState {
+            sessions: new_sessions(),
+            config,
+        }
     }
 
     /// Two protected routes plus /api/login, behind the real middleware.
@@ -300,10 +304,7 @@ mod tests {
     /// Builds a request as if it arrived from `peer`, which is what `is_loopback`
     /// keys off. `None` models the ConnectInfo extension being absent entirely.
     fn request(uri: &str, peer: Option<&str>) -> Request<Body> {
-        let mut req = Request::builder()
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
         if let Some(peer) = peer {
             let addr: SocketAddr = peer.parse().unwrap();
             req.extensions_mut().insert(ConnectInfo(addr));
@@ -437,7 +438,11 @@ mod tests {
             .await
             .insert("valid-token".into(), now_secs() + 3600);
         assert_eq!(
-            status_of(state, with_session(request("/api/protected", OFF_BOX), "valid-token")).await,
+            status_of(
+                state,
+                with_session(request("/api/protected", OFF_BOX), "valid-token")
+            )
+            .await,
             StatusCode::UNAUTHORIZED
         );
     }
@@ -450,15 +455,26 @@ mod tests {
     #[tokio::test]
     async fn the_cluster_token_authorizes_a_call_from_another_node() {
         let (_d, cfg) = provisioned();
-        let req = with_header(request("/api/protected", OFF_BOX), CLUSTER_AUTH_HEADER, "cluster-tok");
+        let req = with_header(
+            request("/api/protected", OFF_BOX),
+            CLUSTER_AUTH_HEADER,
+            "cluster-tok",
+        );
         assert_eq!(status_of(auth_state(cfg), req).await, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn a_wrong_cluster_token_is_rejected() {
         let (_d, cfg) = provisioned();
-        let req = with_header(request("/api/protected", OFF_BOX), CLUSTER_AUTH_HEADER, "wrong-tok");
-        assert_eq!(status_of(auth_state(cfg), req).await, StatusCode::UNAUTHORIZED);
+        let req = with_header(
+            request("/api/protected", OFF_BOX),
+            CLUSTER_AUTH_HEADER,
+            "wrong-tok",
+        );
+        assert_eq!(
+            status_of(auth_state(cfg), req).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     /// `cluster_token()` returns "" when config.toml is missing or malformed. A
@@ -469,16 +485,30 @@ mod tests {
         let (_d, cfg) = write_config("[homelab]\nhomelab_password_hash = \"x\"\n");
         let state = auth_state(cfg);
         for presented in ["", " "] {
-            let req = with_header(request("/api/protected", OFF_BOX), CLUSTER_AUTH_HEADER, presented);
-            assert_eq!(status_of(state.clone(), req).await, StatusCode::UNAUTHORIZED);
+            let req = with_header(
+                request("/api/protected", OFF_BOX),
+                CLUSTER_AUTH_HEADER,
+                presented,
+            );
+            assert_eq!(
+                status_of(state.clone(), req).await,
+                StatusCode::UNAUTHORIZED
+            );
         }
     }
 
     #[tokio::test]
     async fn a_cluster_token_that_is_a_prefix_of_the_real_one_is_rejected() {
         let (_d, cfg) = provisioned();
-        let req = with_header(request("/api/protected", OFF_BOX), CLUSTER_AUTH_HEADER, "cluster");
-        assert_eq!(status_of(auth_state(cfg), req).await, StatusCode::UNAUTHORIZED);
+        let req = with_header(
+            request("/api/protected", OFF_BOX),
+            CLUSTER_AUTH_HEADER,
+            "cluster",
+        );
+        assert_eq!(
+            status_of(auth_state(cfg), req).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     // ── Middleware: session cookies ───────────────────────────────────────────
@@ -493,7 +523,11 @@ mod tests {
             .await
             .insert("live-token".into(), now_secs() + 3600);
         assert_eq!(
-            status_of(state, with_session(request("/api/protected", OFF_BOX), "live-token")).await,
+            status_of(
+                state,
+                with_session(request("/api/protected", OFF_BOX), "live-token")
+            )
+            .await,
             StatusCode::OK
         );
     }
@@ -508,7 +542,11 @@ mod tests {
             .await
             .insert("stale-token".into(), now_secs() - 1);
         assert_eq!(
-            status_of(state, with_session(request("/api/protected", OFF_BOX), "stale-token")).await,
+            status_of(
+                state,
+                with_session(request("/api/protected", OFF_BOX), "stale-token")
+            )
+            .await,
             StatusCode::UNAUTHORIZED
         );
     }
@@ -551,7 +589,11 @@ mod tests {
         let (_d, cfg) = provisioned();
         let state = auth_state(cfg);
         // An empty token must not match an empty-keyed map entry, if one existed.
-        state.sessions.write().await.insert(String::new(), now_secs() + 3600);
+        state
+            .sessions
+            .write()
+            .await
+            .insert(String::new(), now_secs() + 3600);
         assert_eq!(
             status_of(state, with_session(request("/api/protected", OFF_BOX), "")).await,
             StatusCode::UNAUTHORIZED
@@ -587,13 +629,18 @@ mod tests {
     // ── login / logout handlers ───────────────────────────────────────────────
 
     fn app_state(config: Arc<Config>) -> crate::AppState {
-        crate::AppState { auth: auth_state(Arc::clone(&config)), config }
+        crate::AppState {
+            auth: auth_state(Arc::clone(&config)),
+            config,
+        }
     }
 
     async fn do_login(state: &crate::AppState, password: &str) -> Response {
         login(
             State(state.clone()),
-            axum::Json(LoginRequest { password: password.to_string() }),
+            axum::Json(LoginRequest {
+                password: password.to_string(),
+            }),
         )
         .await
     }
@@ -612,7 +659,10 @@ mod tests {
         let state = app_state(cfg);
         let res = do_login(&state, "hunter2").await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        assert!(issued_cookie(&res).is_none(), "a failed login must not set a cookie");
+        assert!(
+            issued_cookie(&res).is_none(),
+            "a failed login must not set a cookie"
+        );
         assert!(
             state.auth.sessions.read().await.is_empty(),
             "a failed login must not create a session"
@@ -627,11 +677,18 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
 
         let sessions = state.auth.sessions.read().await;
-        assert_eq!(sessions.len(), 1, "exactly one session should have been created");
+        assert_eq!(
+            sessions.len(),
+            1,
+            "exactly one session should have been created"
+        );
         let (token, expiry) = sessions.iter().next().unwrap();
         assert_eq!(token.len(), 64);
         assert!(token.chars().all(|c| c.is_ascii_alphanumeric()));
-        assert!(*expiry > now_secs(), "a freshly issued session must not be pre-expired");
+        assert!(
+            *expiry > now_secs(),
+            "a freshly issued session must not be pre-expired"
+        );
     }
 
     #[tokio::test]
@@ -685,7 +742,15 @@ mod tests {
         let (_d, cfg) = provisioned();
         let state = app_state(cfg);
         do_login(&state, PASSWORD).await;
-        let token = state.auth.sessions.read().await.keys().next().unwrap().clone();
+        let token = state
+            .auth
+            .sessions
+            .read()
+            .await
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
 
         let jar = CookieJar::new().add(Cookie::new("yolab_session", token.clone()));
         let res = logout(State(state.clone()), jar).await;
@@ -720,7 +785,15 @@ mod tests {
         let (_d, cfg) = provisioned();
         let state = app_state(cfg);
         do_login(&state, PASSWORD).await;
-        let token = state.auth.sessions.read().await.keys().next().unwrap().clone();
+        let token = state
+            .auth
+            .sessions
+            .read()
+            .await
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
 
         let req = with_session(request("/api/protected", OFF_BOX), &token);
         assert_eq!(status_of(state.auth.clone(), req).await, StatusCode::OK);
@@ -729,6 +802,9 @@ mod tests {
         logout(State(state.clone()), jar).await;
 
         let req = with_session(request("/api/protected", OFF_BOX), &token);
-        assert_eq!(status_of(state.auth.clone(), req).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(state.auth.clone(), req).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

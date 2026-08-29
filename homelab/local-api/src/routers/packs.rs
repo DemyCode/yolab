@@ -52,7 +52,10 @@ pub struct Pack {
 }
 
 fn app(id: &str) -> PackApp {
-    PackApp { id: id.to_string(), instance_name: None }
+    PackApp {
+        id: id.to_string(),
+        instance_name: None,
+    }
 }
 
 /// Packs that ship with YoLab.
@@ -121,16 +124,16 @@ pub fn builtin_packs() -> Vec<Pack> {
 fn valid_pack_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !name.starts_with('-')
         && !name.ends_with('-')
 }
 
 async fn read_user_packs() -> Vec<Pack> {
-    let Ok(v) = crate::kubectl::get_json(&[
-        "get", "configmap", PACK_CM, "-n", PACK_NS, "-o", "json",
-    ])
-    .await
+    let Ok(v) =
+        crate::kubectl::get_json(&["get", "configmap", PACK_CM, "-n", PACK_NS, "-o", "json"]).await
     else {
         return Vec::new();
     };
@@ -215,7 +218,10 @@ pub async fn save_pack(Json(req): Json<SavePackReq>) -> impl IntoResponse {
     let encoded = match serde_json::to_string(&pack) {
         Ok(s) => s,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() })))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
                 .into_response()
         }
     };
@@ -223,17 +229,46 @@ pub async fn save_pack(Json(req): Json<SavePackReq>) -> impl IntoResponse {
     // Same create-then-patch as add_repo: the ConfigMap does not exist until the
     // first pack is saved, and `patch` on a missing object is an error rather than a
     // create.
-    if crate::kubectl::run(&["patch", "configmap", PACK_CM, "-n", PACK_NS, "--type", "merge", "-p", &patch])
-        .await
-        .is_err()
+    if crate::kubectl::run(&[
+        "patch",
+        "configmap",
+        PACK_CM,
+        "-n",
+        PACK_NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    .is_err()
     {
         let _ = crate::kubectl::run(&["create", "configmap", PACK_CM, "-n", PACK_NS]).await;
-        if let Err(e) = crate::kubectl::run(&["patch", "configmap", PACK_CM, "-n", PACK_NS, "--type", "merge", "-p", &patch]).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() })))
+        if let Err(e) = crate::kubectl::run(&[
+            "patch",
+            "configmap",
+            PACK_CM,
+            "-n",
+            PACK_NS,
+            "--type",
+            "merge",
+            "-p",
+            &patch,
+        ])
+        .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
                 .into_response();
         }
     }
-    (StatusCode::OK, Json(serde_json::to_value(&pack).unwrap_or(Value::Null))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(&pack).unwrap_or(Value::Null)),
+    )
+        .into_response()
 }
 
 /// DELETE /api/apps/packs/:name — removes the definition only. Apps it installed are
@@ -247,9 +282,25 @@ pub async fn delete_pack(Path(name): Path<String>) -> impl IntoResponse {
             .into_response();
     }
     let patch = serde_json::json!({ "data": { &name: Value::Null } }).to_string();
-    match crate::kubectl::run(&["patch", "configmap", PACK_CM, "-n", PACK_NS, "--type", "merge", "-p", &patch]).await {
+    match crate::kubectl::run(&[
+        "patch",
+        "configmap",
+        PACK_CM,
+        "-n",
+        PACK_NS,
+        "--type",
+        "merge",
+        "-p",
+        &patch,
+    ])
+    .await
+    {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -262,7 +313,15 @@ mod tests {
         for ok in ["media-stack", "a", "my-pack-2"] {
             assert!(valid_pack_name(ok), "{ok} should be accepted");
         }
-        for bad in ["", "-leading", "trailing-", "Upper", "has space", "under_score", "a/b"] {
+        for bad in [
+            "",
+            "-leading",
+            "trailing-",
+            "Upper",
+            "has space",
+            "under_score",
+            "a/b",
+        ] {
             assert!(!valid_pack_name(bad), "{bad:?} should be rejected");
         }
     }
@@ -299,8 +358,7 @@ mod tests {
     /// namespaces and claimed subdomains for the members before it.
     #[test]
     fn every_builtin_pack_member_is_a_chart_in_this_repo() {
-        let catalog = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/catalog");
+        let catalog = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog");
         if !catalog.exists() {
             return; // packaged build without the catalog beside it
         }
@@ -322,7 +380,10 @@ mod tests {
     fn a_stored_pack_cannot_promote_itself_to_builtin() {
         let stored = r#"{"name":"x","display_name":"X","apps":[{"id":"gitea"}],"builtin":true}"#;
         let mut p: Pack = serde_json::from_str(stored).unwrap();
-        assert!(p.builtin, "the field does parse — which is why it has to be overridden");
+        assert!(
+            p.builtin,
+            "the field does parse — which is why it has to be overridden"
+        );
         p.builtin = false;
         assert!(!p.builtin);
     }

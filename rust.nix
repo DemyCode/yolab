@@ -15,8 +15,7 @@
   pkgs,
   inputs,
 }: let
-  rustToolchain =
-    (pkgs.extend inputs.rust-overlay.overlays.default)
+  rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
     .rust-bin.fromRustupToolchainFile ./homelab/local-api/rust-toolchain.toml;
 
   craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;

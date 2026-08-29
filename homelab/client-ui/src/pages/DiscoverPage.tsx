@@ -96,7 +96,11 @@ export function DiscoverPage() {
           />
         </div>
         <Link
-          to={query.trim() ? `/search?q=${encodeURIComponent(query.trim())}` : "/search"}
+          to={
+            query.trim()
+              ? `/search?q=${encodeURIComponent(query.trim())}`
+              : "/search"
+          }
           className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 text-sm text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />

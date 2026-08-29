@@ -95,7 +95,10 @@ pub async fn rbd(args: &[&str]) -> Result<String> {
 /// so it gets its own generous limit rather than the shared 30s.
 pub async fn ceph_volume(args: &[&str]) -> Result<String> {
     let Ok(_serialised) = CEPH_VOLUME_LOCK.try_lock() else {
-        bail!("ceph-volume is already running on this node — skipping `{}`", args.join(" "));
+        bail!(
+            "ceph-volume is already running on this node — skipping `{}`",
+            args.join(" ")
+        );
     };
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(600),
@@ -111,7 +114,10 @@ pub async fn ceph_volume(args: &[&str]) -> Result<String> {
         // homelab/nixos/ceph/images-store.nix) so lvs never blocks in the first
         // place. What this fixes is every *other* timeout, where the child is
         // killable and previously was simply abandoned.
-        Command::new("ceph-volume").args(args).kill_on_drop(true).output(),
+        Command::new("ceph-volume")
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .map_err(|_| anyhow::anyhow!("ceph-volume timed out after 600s"))?
@@ -210,5 +216,11 @@ pub async fn osd_ids() -> Result<Vec<i64>> {
 /// CRUSH location has never held a PG, so that check passes trivially for a
 /// genuine phantom and fails loudly for anything else.
 pub async fn osd_purge(osd_id: i64) -> Result<String> {
-    ceph(&["osd", "purge", &format!("osd.{osd_id}"), "--yes-i-really-mean-it"]).await
+    ceph(&[
+        "osd",
+        "purge",
+        &format!("osd.{osd_id}"),
+        "--yes-i-really-mean-it",
+    ])
+    .await
 }
