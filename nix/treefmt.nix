@@ -17,11 +17,7 @@
 # packages, the devshell and the ISO all share. `cargo fmt` in the devshell and
 # `nix fmt` have to be the same rustfmt, or the two of them rewrite each
 # other's output every time the toolchain moves.
-{rustToolchain}: {
-  pkgs,
-  lib,
-  ...
-}: let
+{rustToolchain}: {lib, ...}: let
   # Prettier is scoped to the front end by path. Its stock `includes` covers
   # *.json and *.yaml anywhere in the tree, which reaches two places it must
   # not:

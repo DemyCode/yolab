@@ -1,12 +1,11 @@
 {
   pkgs,
   lib,
-  inputs,
   yolabConfigPath,
   rust,
   ...
 }: let
-  s = import ../shared.nix {inherit pkgs lib inputs yolabConfigPath rust;};
+  s = import ../shared.nix {inherit pkgs lib yolabConfigPath rust;};
   k3sCfg = s.nodeCfg.k3s or {};
 
   wg0Conf = pkgs.writeText "wg0.conf" (lib.optionalString s.tunnelEnabled ''

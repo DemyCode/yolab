@@ -1,61 +1,50 @@
+# Thin on purpose. Everything this used to duplicate — alejandra, deadnix,
+# shellcheck, hadolint, prettier — is a derivation in nix/checks.nix now, so
+# there is one definition of each and it is the one CI runs. This file just
+# calls into that.
+#
+# What is NOT here, deliberately:
+#
+#   the whole check suite   `nix run .#ci` builds three NixOS toplevels. That
+#                           is a CI job, not something to sit through on every
+#                           `git commit`.
+#   statix                  39 pre-existing findings, all "avoid repeated keys
+#                           in attribute sets" — a style preference, not
+#                           correctness. Run it by hand if you want it:
+#                           `nix run nixpkgs#statix -- check`.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-        args: [--allow-multiple-documents]
-      - id: check-json
-        exclude: tsconfig.*\.json$
-      - id: check-toml
+      # Things nix cannot reasonably do from inside a derivation, because they
+      # are about what is entering the commit rather than what the tree says.
       - id: check-merge-conflict
       - id: check-added-large-files
 
-  - repo: https://github.com/ddanier/sub-pre-commit
-    rev: v4.5.1
-    hooks:
-      - id: sub-pre-commit
-        alias: installer-backend
-        name: pre-commit for installer/nixos/backend/
-        args: ["-p", "installer/nixos/backend"]
-        files: ^installer/nixos/backend/
-
-      - id: sub-pre-commit
-        alias: client-ui
-        name: pre-commit for homelab/client-ui/
-        args: ["-p", "homelab/client-ui"]
-        files: ^homelab/client-ui/
-
   - repo: local
     hooks:
-      - id: alejandra
-        name: alejandra
-        entry: alejandra
+      # The one hook that FIXES rather than reports. Same treefmt wrapper
+      # `checks.formatting` gates on, so a commit that passes this cannot fail
+      # that.
+      #
+      # `nix run path:.#format`, not `nix fmt`: bare `nix fmt` resolves the
+      # flake as `.`, the git tree, so a not-yet-staged file is invisible to it.
+      # `path:.` reads the working directory, which is what a commit hook is
+      # actually looking at. Same wrapper either way.
+      - id: nix-fmt
+        name: nix fmt
+        entry: nix run path:.#format
         language: system
-        files: \.nix$
-
-      - id: statix
-        name: statix
-        entry: statix fix
-        language: system
-        files: \.nix$
         pass_filenames: false
 
-      - id: deadnix
-        name: deadnix
-        entry: deadnix --edit
+      # The cheap checks — seconds each once nix has them cached, and they are
+      # the ones most likely to catch something before it reaches CI. The
+      # expensive half of the suite (client-ui, the Rust crates, the machine
+      # configs) is left to `nix run .#ci`.
+      - id: nix-lint
+        name: deadnix / shellcheck / hadolint
+        entry: nix build --no-link path:.#checks.x86_64-linux.deadnix
+          path:.#checks.x86_64-linux.shellcheck
+          path:.#checks.x86_64-linux.hadolint
         language: system
-        files: \.nix$
-
-      - id: shellcheck
-        name: shellcheck
-        entry: shellcheck
-        language: system
-        types: [shell]
-
-      - id: hadolint
-        name: hadolint
-        entry: hadolint --ignore DL3018
-        language: system
-        files: Dockerfile$
+        pass_filenames: false

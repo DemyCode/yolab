@@ -119,7 +119,6 @@
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
-        inputs
         treefmtEval
         rust
         nixosSystems
@@ -162,7 +161,7 @@
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
 
     packages.x86_64-linux = let
-      builds = import ./homelab/builds.nix {inherit pkgs inputs rust;};
+      builds = import ./homelab/builds.nix {inherit pkgs rust;};
       checks = self.checks.x86_64-linux;
     in {
       inherit (allChecks) coverage-local-api;
