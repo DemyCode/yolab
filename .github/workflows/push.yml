@@ -28,11 +28,11 @@ jobs:
 
   # ── Tests ───────────────────────────────────────────────────────────────────
   #
-  # Deliberately thin. Every check is a derivation in checks.nix, and this job
+  # Deliberately thin. Every check is a derivation in nix/checks.nix, and this job
   # runs the same `nix run .#ci` a developer runs — same rust toolchain, same
   # helm, same shell, all pinned by flake.lock. There is nothing to keep in sync
   # between this file and a laptop, because there is nothing here to get out of
-  # sync: adding a check means editing checks.nix, not this workflow.
+  # sync: adding a check means editing nix/checks.nix, not this workflow.
   #
   # `charts` depends on this job: a red tree must not publish.
   test:

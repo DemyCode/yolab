@@ -16,7 +16,7 @@
   inputs,
 }: let
   rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
-    .rust-bin.fromRustupToolchainFile ./homelab/local-api/rust-toolchain.toml;
+    .rust-bin.fromRustupToolchainFile ../homelab/local-api/rust-toolchain.toml;
 
   craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
 
@@ -75,7 +75,7 @@ in {
   crates = {
     local-api = mkCrate {
       pname = "local-api";
-      path = ./homelab/local-api;
+      path = ../homelab/local-api;
       # llvmPackages.bintools for the profiler runtime coverage shells out to.
       nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
       buildInputs = [pkgs.openssl];
@@ -86,7 +86,7 @@ in {
     # bare metal, so the tests are the one place it is exercised at all.
     installer = mkCrate {
       pname = "yolab-installer";
-      path = ./installer/nixos/backend-rs;
+      path = ../installer/nixos/backend-rs;
       nativeBuildInputs = [pkgs.pkg-config];
     };
   };
