@@ -139,12 +139,9 @@
       inherit (allChecks) coverage-local-api;
       inherit (allChecks) coverage-installer;
 
-      # Packages, not checks: all three are red on pre-existing findings
-      # (eslint 7, local-api clippy 12). A gate that is red the day it lands
-      # teaches people to ignore red. Each belongs in `checks` once fixed.
+      # eslint is a package, not a check: 7 pre-existing findings. It belongs in
+      # `checks` once those are fixed, as clippy now is.
       client-ui-lint = builds.clientUiLint;
-      clippy-local-api = rust.crates.local-api.clippy;
-      clippy-installer = rust.crates.installer.clippy;
 
       # `nix run .#coverage` — build both HTML reports and say where they are.
       # Kept out of `ci` deliberately; see the note on checks.x86_64-linux.

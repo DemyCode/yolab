@@ -50,10 +50,11 @@ export function DiscoverPage() {
     return counts;
   }, [apps.data]);
 
-  // Browsing shows everything; narrowing is the search page's job.
-  const matches = catalog.data ?? [];
-
   const grouped = useMemo(() => {
+    // Browsing shows everything; narrowing is the search page's job. Built
+    // inside the memo because `?? []` is a fresh array every render, which
+    // meant this never memoised.
+    const matches = catalog.data ?? [];
     const byGroup = new Map<string, CatalogApp[]>();
     for (const app of matches) {
       const g = groupFor(app);
@@ -66,7 +67,7 @@ export function DiscoverPage() {
     return [...byGroup.entries()].sort(
       (a, b) => order.indexOf(a[0]) - order.indexOf(b[0]),
     );
-  }, [matches, activeGroup]);
+  }, [catalog.data, activeGroup]);
 
   return (
     <Page

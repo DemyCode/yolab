@@ -504,7 +504,7 @@ fn step_of(values: &[u32], range: u32) -> Option<u32> {
         return None;
     }
     let step = values[1];
-    if step == 0 || range % step != 0 || values.len() != (range / step) as usize {
+    if step == 0 || !range.is_multiple_of(step) || values.len() != (range / step) as usize {
         return None;
     }
     values

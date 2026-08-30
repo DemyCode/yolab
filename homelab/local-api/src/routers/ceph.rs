@@ -203,10 +203,10 @@ async fn compute_cluster_health() -> ClusterHealth {
     };
 
     // Derive machine-readable flags from the active issue codes.
-    let pg_unavailable = details.as_object().map_or(false, |obj| {
-        obj.contains_key("PG_AVAILABILITY") || obj.contains_key("PG_DOWN")
-    });
-    let osd_full = details.as_object().map_or(false, |obj| {
+    let pg_unavailable = details
+        .as_object()
+        .is_some_and(|obj| obj.contains_key("PG_AVAILABILITY") || obj.contains_key("PG_DOWN"));
+    let osd_full = details.as_object().is_some_and(|obj| {
         obj.contains_key("OSD_FULL") || obj.contains_key("NOSPC") || obj.contains_key("POOL_FULL")
     });
     // "Starting" when reachable but PGs are still peering/recovering and system just booted.
@@ -232,11 +232,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             storage_unrecoverable,
         },
         HealthLevel::Warn => ClusterHealth {
-            level: if starting {
-                HealthLevel::Warn
-            } else {
-                HealthLevel::Warn
-            },
+            level: HealthLevel::Warn,
             title: if starting {
                 "Storage is warming up".into()
             } else {
