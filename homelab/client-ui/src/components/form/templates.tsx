@@ -139,9 +139,3 @@ export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
     </div>
   );
 }
-
-export const templates = {
-  FieldTemplate,
-  ObjectFieldTemplate,
-  ArrayFieldTemplate,
-};

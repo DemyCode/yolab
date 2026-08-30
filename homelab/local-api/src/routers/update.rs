@@ -192,10 +192,8 @@ pub async fn update(State(state): State<AppState>) -> Response {
         let ch = read_channel(&cfg);
 
         // Fetch
-        let fetch_args = vec![
-            "-C".to_string(), cfg.repo_path.clone(),
-            "fetch".to_string(), ch.remote.clone(), "--tags".to_string(),
-        ];
+        let fetch_args = ["-C".to_string(), cfg.repo_path.clone(),
+            "fetch".to_string(), ch.remote.clone(), "--tags".to_string()];
         yield Ok::<Event, Infallible>(Event::default().data(format!("$ git {}", fetch_args.join(" "))));
 
         let fetch_rc = {

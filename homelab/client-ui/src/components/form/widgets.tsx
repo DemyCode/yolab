@@ -135,10 +135,3 @@ export function TextareaWidget(props: WidgetProps) {
     />
   );
 }
-
-export const widgets = {
-  TunnelWidget,
-  PasswordWidget,
-  CheckboxWidget,
-  TextareaWidget,
-};

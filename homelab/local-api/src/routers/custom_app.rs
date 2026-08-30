@@ -614,10 +614,9 @@ async fn run(cmd: &str, args: &[&str]) -> Result<String, Rejection> {
         .await
         .map_err(|e| reject(format!("could not run {cmd}: {e}")))?;
     if !out.status.success() {
-        return Err(reject(format!(
-            "{}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        return Err(reject(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -981,16 +980,16 @@ spec:
         }
     }
 
-    /// A manifest full of Go template braces — a Grafana dashboard, a Prometheus
-    /// rule — must survive as written. It is carried by `.Files.Get`, so nothing here
-    /// evaluates it; this pins that it is not rejected on the way in either.
-
     // ── The generated chart ───────────────────────────────────────────────────
 
     /// Materialises a chart and renders it with the real yolab-common from this
     /// working tree. This is the assertion that matters: everything above checks the
     /// YAML going in, and this checks that what comes out is a chart Helm accepts and
     /// that the manifest survived verbatim.
+    ///
+    /// The manifest is deliberately full of Go template braces — a Grafana dashboard,
+    /// a Prometheus rule. `.Files.Get` carries it, so nothing evaluates it, and this
+    /// pins that it is not rejected on the way in either.
     #[tokio::test]
     async fn the_generated_chart_renders_and_ships_the_manifest_untouched() {
         let Ok(helm) = which("helm") else { return };

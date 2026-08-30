@@ -42,6 +42,9 @@ in {
   local-api-tests = crates.local-api.tests;
   installer-tests = crates.installer.tests;
 
+  clippy-local-api = crates.local-api.clippy;
+  clippy-installer = crates.installer.clippy;
+
   # busybox sh, not bash-in-POSIX-mode, because busybox sh is what the Alpine
   # image actually runs this under.
   wg-register-tests =

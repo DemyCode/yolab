@@ -312,7 +312,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             y: rows[4].y + 4,
             width: 18,
             height: 3,
-            ..rows[4]
         };
         render_button(
             f,
@@ -335,7 +334,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             y: rows[4].y + 3,
             width: 22,
             height: 3,
-            ..rows[4]
         };
         render_button(
             f,
@@ -359,7 +357,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             y: input_area.y + 3,
             width: 18,
             height: 3,
-            ..input_area
         };
         render_button(
             f,
@@ -389,7 +386,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             y: rows[6].y + 1,
             width: 18,
             height: 3,
-            ..rows[6]
         };
         render_button(
             f,
@@ -523,8 +519,6 @@ fn render_disk(f: &mut Frame, area: Rect, app: &mut App) {
 fn render_disk_row(f: &mut Frame, area: Rect, disk: &DiskInfo, _idx: usize, selected: bool) {
     let border_style = if selected {
         Style::default().fg(PURPLE)
-    } else if disk.mounted {
-        Style::default().fg(BORDER)
     } else {
         Style::default().fg(BORDER)
     };

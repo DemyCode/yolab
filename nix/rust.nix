@@ -21,6 +21,9 @@
       version = "0.1.0";
       src = craneLib.cleanCargoSource (craneLib.path path);
       strictDeps = true;
+      # Registry crates get --cap-lints allow from cargo, so this only binds
+      # our own code.
+      RUSTFLAGS = "-D warnings";
     };
 
     cargoArtifacts = craneLib.buildDepsOnly args;

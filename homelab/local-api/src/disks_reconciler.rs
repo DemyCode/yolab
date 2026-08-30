@@ -761,7 +761,7 @@ async fn reconcile_local_osds(
     //
     // Starting a stopped daemon needs no cluster state at all. It must not
     // depend on the cluster being healthy enough to describe itself.
-    for (disk_id, _m) in meta {
+    for disk_id in meta.keys() {
         let key = record_key(node, disk_id);
         let want_on = desired
             .get(&key)
@@ -1594,11 +1594,6 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
     }
 }
 
-/// Register every newly detected disk in the config CM on first sight.
-/// System disk (is_loop) defaults ON — it's always the primary storage.
-/// All other disks default OFF; the user must explicitly enable them.
-/// Foreign-Ceph disks are registered too so they show in the UI.
-
 /// Carry a disk's setting across a change in how disks are identified.
 ///
 /// Records are keyed by `<node>--<disk_id>`, and disk_id changed shape in this release:
@@ -1710,6 +1705,10 @@ fn migrate_disk_records(
     Migration { write: out, remove }
 }
 
+/// Register every newly detected disk in the config CM on first sight.
+/// System disk (is_loop) defaults ON — it's always the primary storage.
+/// All other disks default OFF; the user must explicitly enable them.
+/// Foreign-Ceph disks are registered too so they show in the UI.
 async fn auto_register_all_disks(
     node: &str,
     meta: &HashMap<String, Value>,
@@ -2707,9 +2706,7 @@ mod tests {
     fn a_hardware_id_beats_the_kernel_name() {
         assert_eq!(
             disk_id_from("sdc", Some("wwn-0x50014ee214caf529")),
-            "serial-wwn-0x50014ee214caf529"
-                .replace('.', "-")
-                .replace('_', "-")
+            "serial-wwn-0x50014ee214caf529".replace(['.', '_'], "-")
         );
     }
 

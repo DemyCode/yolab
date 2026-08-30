@@ -256,11 +256,11 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
             // that looks "Pending" forever with no visible alert is exactly how a dead backup
             // goes unnoticed until the day it's needed.
             let stale = match &last_sync_time {
-                Some(t) => hours_since(t).map_or(true, |h| h > STALE_AFTER_HOURS),
+                Some(t) => hours_since(t).is_none_or(|h| h > STALE_AFTER_HOURS),
                 None => created
                     .as_deref()
                     .and_then(hours_since)
-                    .map_or(false, |h| h > STALE_AFTER_HOURS),
+                    .is_some_and(|h| h > STALE_AFTER_HOURS),
             };
             // The PVC has a pending deletion but is still present (finalizer blocking) —
             // the exact state that makes every future backup job permanently unschedulable.
