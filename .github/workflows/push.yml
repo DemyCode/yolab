@@ -7,7 +7,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space
         run: |
@@ -18,7 +18,7 @@ jobs:
           df -h /
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
@@ -35,7 +35,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set branch tag
         id: tag
@@ -73,7 +73,7 @@ jobs:
       group: charts-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Helm
         uses: azure/setup-helm@v4
@@ -195,7 +195,7 @@ jobs:
 
       - name: Upload the branch catalog manifest
         if: github.ref != 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Branch charts are published but not discoverable — main's catalog.yaml is the
           # only one committed. Serve this artifact somewhere (or set
@@ -234,7 +234,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set branch tag
         id: tag
@@ -242,7 +242,7 @@ jobs:
           $GITHUB_OUTPUT
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
@@ -289,7 +289,7 @@ jobs:
           ls -lh "$ISO_PATH"
 
       - name: Create/Update Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.value }}-latest
           name: NixOS Homelab Installer — ${{ steps.tag.outputs.value }}
@@ -314,7 +314,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload ISO as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nixos-homelab-installer-${{ steps.tag.outputs.value }}-${{ github.sha }}
           path: ${{ steps.iso_info.outputs.iso_path }}
