@@ -40,15 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ubuntu-latest ships ~14G free on /, and the nix store lives there. That
-      # is not enough for this suite: crane archives the workspace dependency
-      # build and every consumer decompresses it into its own build directory,
-      # and the NixOS toplevels land in the store on top of that. The run that
-      # forced this died with "No space left on device" while unpacking those
-      # dependencies.
-      #
-      # The preinstalled Android SDK, .NET and GHC are worth ~25G between them
-      # and nothing here uses any of them.
+      # ubuntu-latest ships ~14G free on /, and the nix store lives there. Not
+      # enough for this suite — a run died with "No space left on device". The
+      # preinstalled SDKs are worth ~25G and nothing here uses them.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \

@@ -34,24 +34,14 @@
     pkgs = nixpkgs.legacyPackages.x86_64-linux;
     inherit (nixpkgs) lib;
 
-    # The Rust toolchain and both crates, defined once and shared by the
-    # checks, the packages, the devshell, the formatter and the ISO. Four
-    # copies of this expression used to exist and one had already drifted —
-    # see the header of nix/rust.nix.
     rust = import ./nix/rust.nix {inherit pkgs inputs;};
 
-    # One formatter for the whole tree, and the check that gates it, both built
-    # from nix/treefmt.nix. Same wrapper, same config file, same pinned binaries,
-    # so `nix fmt` and `checks.formatting` cannot disagree about what
-    # formatted means. See the header of nix/treefmt.nix.
     treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs (
       import ./nix/treefmt.nix {inherit (rust) rustToolchain;}
     );
 
-    # A machine config. The config.toml path is an argument rather than a
-    # path hardcoded in each module, which is what lets the CI stubs below be
-    # evaluated without a node's real config.toml being touched. See
-    # homelab/shared.nix.
+    # The config.toml path is an argument so the CI stubs can be evaluated
+    # without a node's real config.toml being touched.
     mkYolabSystem = {
       configPath,
       modules,
@@ -71,10 +61,8 @@
       ./homelab/nixos/disk-config.nix
     ];
 
-    # Every machine config that can be evaluated anywhere, plus `yolab`
-    # itself when this checkout has a real config.toml. Defined here rather
-    # than inline under `nixosConfigurations` so nix/checks.nix can build their
-    # toplevels without reaching back through `self`.
+    # Bound here rather than inline under `nixosConfigurations` so nix/checks.nix
+    # can build their toplevels without reaching back through `self`.
     nixosSystems =
       {
         yolab-ci = mkYolabSystem {
@@ -101,12 +89,9 @@
           specialArgs = {inherit inputs rust;};
         };
       }
-      # `yolab` is the real machine, and it only exists where its config.toml
-      # does. Guarding it is what makes `nix flake check` work on a fresh
-      # clone: without this the evaluation of every output fails on a missing
-      # file. On a node the file is present and `#yolab` resolves as before;
-      # where it is absent you get "flake output does not provide attribute"
-      # instead of a readFile error from three modules deep.
+      # Guarded so `nix flake check` works on a clone that has no config.toml.
+      # Where it is absent you get "flake output does not provide attribute"
+      # rather than a readFile error three modules deep.
       // lib.optionalAttrs (builtins.pathExists ./homelab/ignored/config.toml) {
         yolab = mkYolabSystem {
           configPath = ./homelab/ignored/config.toml;
@@ -114,8 +99,6 @@
         };
       };
 
-    # Everything nix/checks.nix defines, including the `coverage-*` reports that are
-    # filtered back out of `checks` below.
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
@@ -137,27 +120,16 @@
   in {
     nixosConfigurations = nixosSystems;
 
-    # Guarded the same way `yolab` is, and for the same reason: these import
-    # shared.nix too, so without it a checkout with no config.toml fails to
-    # evaluate them. There is no CI stub variant because a Darwin toplevel
-    # cannot be built from the x86_64-linux checks.
+    # Guarded like `yolab`: these import shared.nix too. No CI stub variant,
+    # because a Darwin toplevel cannot be built from x86_64-linux checks.
     darwinConfigurations = lib.optionalAttrs (builtins.pathExists ./homelab/ignored/config.toml) {
       "yolab-mac" = mkDarwinSystem "aarch64-darwin";
       "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
     };
 
-    # Every check lives in nix/checks.nix as a derivation, so the same command runs
-    # them on a laptop and on a runner. `nix flake check` builds all of them.
-    #
-    # The `coverage-*` entries are filtered out: they are reports, not checks.
-    # Leaving them in would make `nix flake check` build a full instrumented
-    # rebuild of every crate, and would turn a coverage percentage into a thing
-    # CI can fail on — which pushes people to write tests that move the number
-    # instead of tests that catch bugs. They are exposed under packages instead.
+    # `coverage-*` filtered out: they are reports, not gates. See nix/checks.nix.
     checks.x86_64-linux = lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks;
 
-    # `nix fmt`. The wrapper is the same derivation `checks.formatting` runs,
-    # so formatting the tree and gating on it can never be two opinions.
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
 
     packages.x86_64-linux = let
@@ -167,20 +139,9 @@
       inherit (allChecks) coverage-local-api;
       inherit (allChecks) coverage-installer;
 
-      # Linters that are real, configured, and currently failing on
-      # pre-existing findings. Packages rather than checks, deliberately — the
-      # same call made for statix: a gate that is red on the day it lands
-      # teaches people to ignore red, and none of these are new problems.
-      #
-      #   nix build .#client-ui-lint    7 problems (6 errors), eslint
-      #   nix build .#clippy-local-api  12 findings
-      #   nix build .#clippy-installer
-      #
-      # eslint in particular used to run as a pre-commit hook and was lost when
-      # that file was reduced to calling the checks. It was already failing
-      # then, and the pre-commit CI job is commented out, so nothing had
-      # actually enforced it for some time. Each belongs back in `checks` the
-      # moment its findings are dealt with.
+      # Packages, not checks: all three are red on pre-existing findings
+      # (eslint 7, local-api clippy 12). A gate that is red the day it lands
+      # teaches people to ignore red. Each belongs in `checks` once fixed.
       client-ui-lint = builds.clientUiLint;
       clippy-local-api = rust.crates.local-api.clippy;
       clippy-installer = rust.crates.installer.clippy;
@@ -206,11 +167,8 @@
       homelab-ui = builds.clientUi;
       homelab-api = builds.localApiEnv;
 
-      # `nix run .#ci` — the whole suite. Every check is a build input of this
-      # script, so nix has already built (i.e. run) all of them before the first
-      # line executes: a failing check fails `nix run` itself, with that check's
-      # own log. What this prints is therefore a summary of what passed, not a
-      # test runner. `nix flake check` is equivalent and is what CI calls.
+      # Every check is a build input, so nix has already run them all before the
+      # first line executes: this prints a summary, it is not a test runner.
       ci = pkgs.writeShellApplication {
         name = "yolab-ci";
         text = ''
@@ -231,17 +189,13 @@
           meta.description = "Run every check, exactly as CI does";
         };
 
-        # Literally `nix fmt`: the same wrapper, reached by the verb people
-        # expect when every other entry point in this repo is a `nix run`.
         format = {
           type = "app";
           program = lib.getExe treefmtEval.config.build.wrapper;
           meta.description = "Format the whole tree";
         };
       }
-      # meta.description on each: without it `nix flake check` prints a
-      # "lacks attribute meta" warning per app, which was twelve lines of noise
-      # on every run.
+      # meta.description silences a "lacks attribute meta" warning per app.
       // lib.mapAttrs (name: drv: {
         type = "app";
         program = toString (pkgs.writeShellScript "check" "echo ${drv}");
@@ -249,10 +203,8 @@
       })
       self.checks.x86_64-linux;
 
-    # The same packages the checks and the formatter use, so a tool run by
-    # hand here behaves exactly as it does inside a derivation. The toolchain
-    # comes from nix/rust.nix and the formatters come from treefmtEval, rather
-    # than being a second list that has to be kept in step with them.
+    # Toolchain from nix/rust.nix and formatters from treefmtEval, so a tool run
+    # by hand behaves exactly as it does inside a derivation.
     devShells.x86_64-linux.default = pkgs.mkShell {
       packages =
         (with pkgs; [
@@ -272,10 +224,7 @@
           nodejs
           # Runner
           pre-commit
-          # Everything the checks need, so each can also be run by hand while
-          # iterating: `cargo test`, `sh apps/wg-register/setup_test.sh`,
-          # `python3 apps/catalog/check_charts.py`. `nix run .#ci` runs the lot
-          # the way CI does.
+          # So each check can also be run by hand while iterating.
           busybox
           jq
           (python3.withPackages (ps: [ps.pyyaml]))
