@@ -31,7 +31,7 @@
     ]
     ../.;
 
-  toplevel = name: nixosSystems.${name}.config.system.build.toplevel;
+  toplevel  = name: nixosSystems.${name}.config.system.build.toplevel;
 in {
   # The shipped bundle itself, not a re-implementation of its build, so the
   # check and the deployed artifact cannot drift. `tsc --noEmit` is not a
