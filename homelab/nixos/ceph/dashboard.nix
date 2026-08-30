@@ -1,27 +1,12 @@
 # The Ceph dashboard, served from the host mgr instead of Rook.
 #
-# WHY THIS FILE EXISTS
-# --------------------
-# The dashboard link on the Storage page pointed at [fd00:43::cefd]:7000 — a
-# Kubernetes ClusterIP for Rook's dashboard Service. Ceph moved out of
-# Kubernetes (see ./default.nix), that Service went with it, and the link has
-# been returning 502 ever since. The credentials shown next to it came from the
-# `rook-ceph-dashboard-password` Secret, which no longer exists either, so the
-# page displayed a masked empty string.
+# Not a reverse proxy to [::1]:7000: the dashboard runs on the ACTIVE mgr only,
+# and a standby redirects to the active one's WireGuard address, which is
+# unreachable from a browser. Whether proxying locally worked would depend on
+# which machine happened to hold the active mgr.
 #
-# WHY IT IS NOT SIMPLY A REVERSE PROXY TO [::1]:7000
-# --------------------------------------------------
-# The dashboard runs on the ACTIVE mgr only. Every node here runs one, so on any
-# given machine the local mgr is usually a standby — and a standby does not
-# serve the dashboard, it redirects to the active one. That redirect names the
-# active mgr's own address, which is on the WireGuard mesh and unreachable from
-# a browser out on the internet. Proxying to the local mgr therefore works or
-# breaks depending on which machine happens to hold the active mgr, which is
-# exactly the kind of invisible state this project keeps getting bitten by.
-#
-# So local-api proxies it instead: it asks Ceph which mgr is active
-# (`ceph mgr services`) and forwards there over the mesh. Failover changes the
-# answer and nothing else has to notice.
+# local-api asks Ceph which mgr is active (`ceph mgr services`) and forwards
+# there over the mesh, so failover changes the answer and nothing else notices.
 {
   config,
   lib,
@@ -127,31 +112,19 @@ in {
         #   {"status": "404 Not Found",
         #    "detail": "The path '/ceph-dashboard' was not found."}
         #
-        # which is a CherryPy miss, not a proxy or auth failure. The `*)` branch
-        # of the login check below already named this exact fault — "404 that
-        # url_prefix and the proxy disagree" — and then left it for a human to
-        # notice. Nobody did.
+        # `ceph config set` stores a value; it does not restart anything, and
+        # the dashboard reads ssl/server_port/url_prefix once at module start.
+        # So the first run always sets them on an already-serving module, where
+        # they sit stored and unused.
         #
-        # Compared against what the mgr REPORTS it is serving, never against
-        # what `ceph config get` returns: config holding the right value while
-        # the running module ignores it IS the fault being repaired here, so
-        # config cannot be the thing that decides whether it is fixed.
-
-        # `|| true` on every one of these, and it is not decoration. NixOS
-        # prepends `set -e` to a systemd `script`, ahead of this file's own
-        # `set -uo pipefail`, and pipefail makes a substitution inherit the
-        # failing side of the pipe. So a `ceph` that legitimately reports
-        # nothing kills the unit at that line — taking with it the `[ -z ... ]`
-        # branch written to handle exactly that case, which can never run.
+        # The symptom is a dashboard working perfectly at "/" instead of under
+        # the prefix, so every proxied request returns Ceph's own CherryPy 404
+        # — not a proxy or auth failure.
         #
-        # `ceph config-key get` on an absent key exits ENOENT(2), which is the
-        # NORMAL state on the first run after this change. Every node failed its
-        # rebuild with status=2/INVALIDARGUMENT and printed nothing.
-        ACTIVE=$(timeout 20 ceph mgr stat -f json 2>/dev/null | jq -r '.active_name // empty' || true)
-        SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty' || true)
-
-        # Only the active mgr's own node restarts the module. `ceph mgr
-        # services` answers identically on every machine, so without this guard
+        # Compared against what the mgr REPORTS it serves, never against `ceph
+        # config get`: config holding the right value while the running module
+        # ignores it IS the fault being repaired, so it cannot be the thing
+        # that decides whether it is fixed.
         # all of them would see the same mismatch and disable/enable the module
         # at once — three restarts racing to fix one problem. mgr ids are the
         # hostname (see default.nix), so this comparison is exact.
@@ -193,29 +166,18 @@ in {
           fi
         fi
 
-        # ── One password, for the whole cluster ──────────────────────────────
+        # The dashboard user database is not per-node — it lives in the mon KV
+        # store, so there is one `admin` account for the whole cluster.
         #
-        # The dashboard user database is NOT per-node. It lives in the mon KV
-        # store (mgr/dashboard/accessdb_v2), so there is exactly one `admin`
-        # account for the entire cluster, and ac-user-set-password below
-        # rewrites it for everyone.
+        # This used to generate a different random password per node, and three
+        # machines fought over that one account every 30 minutes: the last
+        # timer to fire owned it while each Storage page showed its own file.
+        # One node's password worked and another's did not, swapping with no
+        # user action and nothing admitting it.
         #
-        # This used to generate a DIFFERENT random password per node into a
-        # local file, and every node re-applied its own every 30 minutes. Three
-        # machines therefore fought over one account: the last timer to fire
-        # owned the cluster password, while each Storage page went on showing
-        # its own node's file. So node1's password gave "Invalid Credentials"
-        # and node3's worked — and half an hour later it could swap, with no
-        # user action in between and nothing on any page admitting it.
-        #
-        # The cluster now holds the password and the local file is a cache of
-        # it, because local-api reads the file (dashboard_creds) rather than
-        # asking Ceph.
-        #
-        # Plaintext in config-key is deliberate. The Storage page displays this
-        # value by design, so it has to stay recoverable — a hash would not do —
-        # and config-key already requires the admin keyring, the same trust
-        # boundary as the 0600 file it replaces as the source of truth.
+        # Plaintext in config-key is deliberate: the Storage page displays this
+        # by design so it must stay recoverable, and config-key needs the admin
+        # keyring — the same trust boundary as the 0600 file it replaces.
         PW_KEY=yolab/dashboard/admin-password
 
         install -d -m 0755 "$(dirname ${cfg.passwordFile})"
@@ -251,28 +213,19 @@ in {
           exit 0
         fi
 
-        # printf, NOT `... | cut > file`. cut terminates its output with a
-        # newline, so the file held "<password>\n" — Ceph was given the newline
-        # as part of the password while local-api trims it before showing it on
-        # the Storage page. The password on screen was then not the password
-        # Ceph had stored, and logging in failed with "Invalid credentials"
-        # while both halves looked correct.
+        # printf, NOT `... | cut > file`: cut appends a newline, so Ceph stored
+        # "<password>\n" while local-api trimmed it for display. The password
+        # on screen was then not the one Ceph had, and both halves looked fine.
         printf '%s' "$PW" > ${cfg.passwordFile}
         chmod 0600 ${cfg.passwordFile}
 
-        # Create the account only when it is missing.
+        # Only when missing. Re-applying unconditionally is what spread the
+        # per-node conflict every 30 minutes, and it invalidates any open
+        # session — three nodes on a timer would log the owner out mid-page.
         #
-        # This used to re-apply the password unconditionally on every run. That
-        # is what spread the per-node conflict every 30 minutes, and it is worth
-        # keeping out even now that all nodes agree on the value: re-applying
-        # invalidates any open session, so three nodes doing it on a timer logs
-        # the owner out while they are reading a page. The verify block below
-        # re-applies it too — but only when a login genuinely fails, which is
-        # the only moment that is worth someone's session.
-        #
-        # Neither output is discarded any more. Both were sent to /dev/null, so
-        # a dashboard user that was never created looked exactly like one that
-        # was, and the only symptom reached the person trying to log in.
+        # Neither output is discarded: a user that was never created used to
+        # look exactly like one that was, and the only symptom reached the
+        # person trying to log in.
         if ! timeout 30 ceph dashboard ac-user-show admin >/dev/null 2>&1; then
           if CREATE_ERR=$(timeout 30 ceph dashboard ac-user-create admin \
                -i ${cfg.passwordFile} administrator --force-password 2>&1); then
@@ -283,21 +236,13 @@ in {
           fi
         fi
 
-        # ── Prove the credentials work ───────────────────────────────────────
+        # Everything above can succeed and the login still fail — twice now:
+        # once from a trailing newline Ceph kept and the page trimmed, once for
+        # a reason no log recorded because errors were discarded.
         #
-        # Everything above can succeed and the login can still fail. That has
-        # happened twice already: once because the password file ended in a
-        # newline that Ceph kept and the Storage page trimmed, and once for a
-        # reason no log recorded, because the errors were being discarded.
-        #
-        # `ac-user-show` only proves the account exists. The question that
-        # matters is whether the password the Storage page displays actually
-        # logs in, so ask the dashboard itself. When the answer is no, the
-        # password is re-applied — which fixes any drift between the file and
-        # what Ceph stored, whatever caused it.
-        #
-        # Only on failure, never routinely: re-applying invalidates any session
-        # already open, and doing that every half hour would log the owner out
+        # `ac-user-show` only proves the account exists. Ask the dashboard
+        # whether the password the page displays actually logs in, and
+        # re-apply on failure only: re-applying invalidates any open session.
         # while they were reading a page.
         DASH_URL=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty' || true)
         if [ -z "$DASH_URL" ]; then

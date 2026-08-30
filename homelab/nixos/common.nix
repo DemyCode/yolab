@@ -147,37 +147,17 @@ in {
 
       # ── WireGuard ──────────────────────────────────────────────────────
       #
-      # Topology: hub-and-spoke.  Every node connects to the external WireGuard
-      # server in yolab-external via TWO independent interfaces, each with its
-      # own keypair:
+      # Hub-and-spoke. Every node reaches the external WireGuard server over
+      # TWO interfaces with separate keypairs, so tunnel clients (public
+      # access) and mesh nodes (cluster only) can be provisioned independently:
       #
-      #   wg0 — tunnel interface (public address sub_ipv6 = 2a01::...)
-      #     • Caddy binds here to serve the management UI over HTTPS.
-      #     • Source-policy routing ensures outbound/return tunnel traffic always
-      #       exits wg0, preventing asymmetric routing.
-      #     • Pod egress SNATs to sub_ipv6 via Flannel, then exits via wg0.
+      #   wg0 — public address. Caddy binds here; pod egress SNATs to it.
+      #   wg1 — private mesh. K3s, Flannel VXLAN, kubelet, local-api fan-out.
       #
-      #   wg1 — node mesh interface (private address sub_ipv6_private = fd00:cafe::...)
-      #     • K3s, Flannel VXLAN, kubelet, and local-api fan-out use this.
-      #     • A single destination route sends all cluster-subnet traffic here
-      #       regardless of source address (needed for VXLAN sockets).
-      #
-      # Decoupling the two interfaces means tunnel clients (public access only)
-      # and mesh nodes (cluster only) can be provisioned independently.
-      #
-      # Routing rules:
-      #
-      #  A. Destination route on wg1 (main table):
-      #       ip -6 route add <privateSubnet> dev wg1
-      #     Cluster-bound traffic exits wg1, regardless of source.
-      #
-      #  B. Source policy on wg0 (table 51820):
-      #       ip -6 rule add from <sub_ipv6> lookup 51820
-      #       ip -6 route add ::/0 dev wg0 table 51820
-      #     Outbound/return traffic from our public address exits wg0.
-      #
-      #  C. Default route on wg0 (metric 200):
-      #     Pod traffic (fd00:42::/56) SNATs to sub_ipv6, then exits via wg0.
+      # Three rules, and the split matters: wg1 is a destination route so
+      # cluster traffic exits it regardless of source (VXLAN sockets need
+      # that), while wg0 needs a *source* policy in table 51820 so return
+      # traffic from our public address does not exit asymmetrically.
       wireguard.interfaces.wg0 = {
         ips = ["${s.tunnelCfg.sub_ipv6}/128"];
         privateKey = s.tunnelCfg.wg_private_key;
@@ -270,28 +250,17 @@ in {
 
     # ── K3s ───────────────────────────────────────────────────────────────
     #
-    # Every node runs as a K3s *server* (control plane + worker).
-    # Apps can be scheduled on any node; the cluster is HA once there are
-    # 3+ nodes (embedded etcd quorum = n/2 + 1).
+    # Every node is a server (control plane + worker); the cluster is HA once
+    # there are 3+ (embedded etcd quorum).
     #
-    # Flannel backend: vxlan — NOT wireguard-native.
-    #   wg1 already encrypts all inter-node traffic end-to-end (node mesh key).
-    #   wireguard-native would add a second WireGuard layer on top (double
-    #   encapsulation, ~2× overhead, more complex routing).  With vxlan, pod
-    #   traffic is encapsulated then encrypted once by wg1 — simpler and faster.
+    # Flannel vxlan, not wireguard-native: wg1 already encrypts inter-node
+    # traffic, so wireguard-native would double-encapsulate for no gain.
     #
-    # --cluster-dns: the 10th address of the service CIDR (fd00:43::a).
-    #   K3s normally infers this, but we set it explicitly because the
-    #   auto-inference can silently pick the wrong address with a custom
-    #   IPv6-only CIDR.
-    #
-    # --tls-san: adds sub_ipv6_private to the API-server TLS certificate.
-    #   Without this, joining nodes get a certificate mismatch when they
-    #   connect to https://[sub_ipv6_private]:6443.
-    #
-    # --advertise-address: tells the API server which address to advertise
-    #   to the rest of the cluster — must be the private cluster IP so that
-    #   other nodes (via the hub relay) can reach it.
+    # --cluster-dns is set explicitly because K3s's auto-inference can silently
+    # pick the wrong address on a custom IPv6-only CIDR. --tls-san is needed or
+    # joining nodes hit a certificate mismatch against the private IP.
+    # --advertise-address must be the private cluster IP for peers to reach it
+    # through the hub relay.
     services.k3s = {
       enable = true;
       role = "server";

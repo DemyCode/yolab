@@ -1,55 +1,30 @@
 # Ceph as host-level systemd daemons, outside Kubernetes.
 #
-# WHY THIS EXISTS — the constraint that forced it
-# ------------------------------------------------
-# The goal is that adding a disk grows the space available for *container
-# images*, not just for PVC data. Images are per-node and disposable, so the
-# only way to make cluster storage back them is to put containerd's data-root
-# on a Ceph RBD.
+# Forced by one constraint: adding a disk should grow the space for *container
+# images*, which means containerd's data-root on a Ceph RBD. That is impossible
+# with Ceph inside Kubernetes — mapping an RBD needs a mon, under Rook the mon
+# is a pod, a pod needs containerd, containerd needs the RBD. On a single node
+# there is nothing to break the cycle, and no ordering trick escapes it because
+# containerd has exactly one image store. Host daemons need no container
+# runtime, so they are up long before containerd.
 #
-# That is impossible while Ceph runs inside Kubernetes. Mapping an RBD needs a
-# mon; under Rook the mon is a *pod*; a pod needs containerd; containerd needs
-# the RBD. On a single-node cluster there is no other machine to break the
-# cycle, so it is a hard deadlock, not a race — and no ordering trick escapes
-# it, because containerd has exactly one image store. A "seed cache" on the root
-# disk does not help: mounting the RBD over the data-root hides the seed, and
-# leaving it local means nothing moved.
-#
-# Ceph as host daemons breaks the cycle: mon/mgr/osd are plain binaries that
-# need no container runtime at all, so they are up long before containerd.
-#
-# WHAT services.ceph DOES AND DOES NOT DO
-# ---------------------------------------
-# nixos/modules/services/network-filesystems/ceph.nix is daemon *supervision*
-# only — it generates systemd units from static daemon-id lists and writes
-# ceph.conf. It contains no ceph-volume, no --mkfs, and no keyring generation.
-# So:
+# services.ceph is daemon *supervision* only — it generates units from static
+# id lists and writes ceph.conf, with no ceph-volume, --mkfs or keyring
+# generation. Hence the split:
 #   - mon/mgr ids are the hostname, known at build time -> declared here.
 #   - cluster bootstrap (keyrings, monmap, mon --mkfs) -> yolab-ceph-bootstrap.
-#   - OSDs get ids allocated by Ceph at creation time, so they can never be a
-#     static list. Creation is driven at runtime by local-api from the
-#     yolab-disk-config ConfigMap (unchanged UI contract: the disk ON/OFF
-#     toggle), and this module only re-activates already-prepared OSDs at boot.
+#   - OSD ids are allocated by Ceph at creation, so they can never be static.
+#     local-api creates them at runtime from the yolab-disk-config ConfigMap;
+#     this module only re-activates prepared OSDs at boot.
 #
-# EVERY NODE IS A PEER
-# --------------------
-# There is no master. Every machine runs its own mon, mgr, MDS and OSDs, and
-# the only thing the first machine does differently is *create* the cluster —
-# a one-time event, not a role it keeps. After that it is interchangeable with
-# any other node, and losing it costs no more than losing any other.
+# Every node is a peer. The first machine only *creates* the cluster, which is
+# an event and not a role it keeps. The cost is stated because it cannot be
+# designed away: mons agree by majority, so two machines means both must be up.
+# Accepted deliberately — two copies across two hosts already leaves you at
+# min_size, and three machines is where survival starts.
 #
-# The cost is stated plainly because it cannot be designed away: mons agree by
-# majority, so N mons tolerate (N-1)/2 failures. Two machines means two mons
-# means both must be up. That is deliberately accepted here — two machines was
-# never going to survive one of them dying anyway (two copies across two hosts
-# leaves you at min_size), and three machines is where it starts to.
-#
-# IF THE CLUSTER LOSES QUORUM
-# ---------------------------
-# Symptom: every `ceph` command hangs, and `ceph -s --connect-timeout 5` times
-# out on every node. It means fewer than a majority of the mons in the monmap
-# are running. If a machine is merely off, turn it back on — that is the whole
-# fix. If it is gone for good, edit the monmap by hand on a surviving node:
+# Lost quorum shows up as every `ceph` command hanging. If a machine is merely
+# off, turn it on. If it is gone for good, edit the monmap by hand:
 #
 #   systemctl stop ceph-mon-$(hostname)
 #   ceph-mon -i $(hostname) --extract-monmap /tmp/monmap
@@ -57,9 +32,9 @@
 #   ceph-mon -i $(hostname) --inject-monmap /tmp/monmap
 #   systemctl start ceph-mon-$(hostname)
 #
-# Nothing automates that on purpose: a node that is offline is indistinguishable
-# from one that has left, so an automatic version would let a rebooting machine
-# be evicted by its peer.
+# Deliberately not automated: an offline node is indistinguishable from a
+# departed one, so an automatic version would let a rebooting machine be
+# evicted by its peer.
 {
   config,
   lib,
@@ -172,22 +147,15 @@ in {
 
         # mon_warn_on_pool_no_redundancy is deliberately NOT disabled.
         #
-        # It used to be set to "false" here, with the reasoning that a one-disk
-        # cluster cannot replicate and a permanent warning would be noise. The
-        # reasoning is right about a one-disk cluster and wrong about every
-        # other one: the setting is global, so it also silenced the case that
-        # matters — several disks, still one copy.
+        # Setting it false silences a permanent warning on a one-disk cluster,
+        # but the setting is global, so it also silenced the case that matters:
+        # several disks, still one copy. routers/ceph.rs translates
+        # POOL_NO_REDUNDANCY into plain language, and with the check off it
+        # could never fire — a three-disk cluster with one copy of everything
+        # reported HEALTH_OK. Observed live.
         #
-        # That is not a cosmetic difference. routers/ceph.rs carries a
-        # translation for POOL_NO_REDUNDANCY, in plain language, saying the data
-        # has no second copy. With the check off it could never fire, so a
-        # cluster with three disks and one copy of everything reported
-        # HEALTH_OK, and the product had no way to tell its owner that a single
-        # disk failure would be unrecoverable. Observed exactly that, live.
-        #
-        # A warning on a genuinely single-disk machine is not noise either. It
-        # is true, and it is the one thing that machine's owner most needs to
-        # know before a disk dies.
+        # On a genuinely single-disk machine the warning is true, and the one
+        # thing its owner most needs to know before a disk dies.
 
         # New OSDs attract no data until explicitly activated from the UI.
         # Carried over from the Rook config so the disk ON/OFF flow behaves the
@@ -544,61 +512,43 @@ in {
     };
 
     # ── OSD daemons ──────────────────────────────────────────────────────────
-    # A systemd *template* unit, which is what makes dynamic OSD ids work at
-    # all. services.ceph can only generate units for a statically declared
-    # `osd.daemons` list, but Ceph assigns an OSD its id at creation time — so
-    # the id can never be known when the config is built.
+    # A systemd *template* unit, because Ceph assigns an OSD its id at creation
+    # time and services.ceph can only generate units from a static list. The
+    # template is declarative; only the instance is dynamic. local-api starts
+    # and stops yolab-ceph-osd@<id> from the yolab-disk-config ConfigMap.
     #
-    # The template is declarative; only the instance is dynamic. local-api runs
-    # `systemctl start yolab-ceph-osd@<id>` when a disk is switched ON and
-    # `stop` when it is switched OFF, driven by the shared yolab-disk-config
-    # ConfigMap.
-    #
-    # It is `start`, never `enable`: enabling writes a symlink into
-    # /etc/systemd/system, which on NixOS is a read-only Nix store path.
-    # `systemctl enable` therefore fails outright ("Read-only file system"),
-    # observed live with both OSDs created but neither ever started. Boot
-    # persistence comes from yolab-ceph-osd-activate below instead, which is the
-    # declarative equivalent and the only shape NixOS actually supports.
+    # `start`, never `enable`: enabling writes into /etc/systemd/system, a
+    # read-only Nix store path, so it fails outright — observed with both OSDs
+    # created and neither started. Boot persistence comes from
+    # yolab-ceph-osd-activate below.
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
       after = ["network-online.target" "ceph-mon-${host}.service"];
       wants = ["network-online.target"];
       requires = ["ceph-mon-${host}.service"];
-      # No wantedBy here: enablement is per-instance and owned by local-api.
+      # No wantedBy: enablement is per-instance and owned by local-api.
       #
-      # Do NOT let switch-to-configuration restart these. The default
-      # (restartIfChanged = true) means any change to the unit — above all a
-      # Ceph version bump, which rewrites ExecStart — cycles EVERY OSD on the
-      # node simultaneously, in the middle of an unattended auto-update.
+      # restartIfChanged = false because the default cycles EVERY OSD on the
+      # node at once on any unit change — above all a Ceph version bump, which
+      # rewrites ExecStart, in the middle of an unattended auto-update. Ceph
+      # wants mon -> mgr -> osd one at a time with health checks between;
+      # restarting a node's OSDs while another node backfills can drop PGs
+      # below min_size and block I/O cluster-wide.
       #
-      # That is both the riskiest possible moment and the wrong order: Ceph is
-      # meant to be upgraded mon → mgr → osd, one daemon at a time, checking
-      # health in between. On a replicated cluster, restarting a node's OSDs
-      # while another node is still backfilling can drop PGs below min_size and
-      # block I/O for every app on every node.
-      #
-      # So a new Ceph build takes effect for OSDs on the next reboot (or a
-      # deliberate `systemctl restart yolab-ceph-osd@N`), not as a side effect
-      # of a rebuild. Ceph explicitly supports running mixed daemon versions
-      # within a release line, which is exactly what makes that safe. mon/mgr/mds
-      # keep the default and restart normally — they are the ones Ceph wants
-      # upgraded first anyway.
+      # A new Ceph build therefore reaches OSDs on the next reboot, not as a
+      # side effect of a rebuild. Mixed daemon versions within a release line
+      # are explicitly supported, which is what makes that safe.
       restartIfChanged = false;
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils];
-      # Keep retrying, but slowly, and never give up.
+      # systemd's default (5 starts per 10s, then permanent failure) is the
+      # wrong shape for a disk: the reasons an OSD cannot start — cluster down,
+      # peer rebooting, machine still coming up — are transient and outlast any
+      # burst budget. An OSD that stopped trying looks exactly like a dead one,
+      # and nothing else brings it back.
       #
-      # systemd's defaults are 5 starts per 10s and then permanent failure,
-      # which is the wrong shape for a disk: the reasons an OSD cannot start
-      # (the cluster is down, a peer is rebooting, the machine is still coming
-      # up) are transient and can outlast any burst budget. An OSD that stopped
-      # trying is indistinguishable from a dead disk, and nothing else brings it
-      # back — ensure_osd_unit_running only acts on OSDs the reconciler can see,
-      # which needs the very ceph-volume metadata this unit is waiting on.
-      #
-      # 30s between attempts rather than 10s because each failed attempt runs
-      # ceph-volume, and a hot loop around it is how one stalled device turned
-      # into twenty-one stuck processes.
+      # 30s rather than 10s because each attempt runs ceph-volume, and a hot
+      # loop around it is how one stalled device became twenty-one stuck
+      # processes.
       startLimitIntervalSec = 0; # never rate-limit
       serviceConfig = {
         Type = "simple";

@@ -14,18 +14,20 @@ repos:
 
   - repo: local
     hooks:
-      # `path:.` not `nix fmt`: the bare form resolves the flake as `.`, the
-      # git tree, so a not-yet-staged file is invisible to it.
+      # `.` and not `path:.`: the git ref hands nix a 4.8M source, `path:.`
+      # hands it the whole working directory — 8.6G with target/ in it — and
+      # copies that into the store on every invocation. A new file has to be
+      # `git add`ed to be visible, which pre-commit does anyway.
       - id: nix-fmt
         name: nix fmt
-        entry: nix run path:.#format
+        entry: nix run .#format
         language: system
         pass_filenames: false
 
       - id: nix-lint
         name: deadnix / shellcheck / hadolint
-        entry: nix build --no-link path:.#checks.x86_64-linux.deadnix
-          path:.#checks.x86_64-linux.shellcheck
-          path:.#checks.x86_64-linux.hadolint
+        entry: nix build --no-link .#checks.x86_64-linux.deadnix
+          .#checks.x86_64-linux.shellcheck
+          .#checks.x86_64-linux.hadolint
         language: system
         pass_filenames: false

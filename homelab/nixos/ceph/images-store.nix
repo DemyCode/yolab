@@ -1,30 +1,20 @@
 # containerd's image store, backed by Ceph RBD.
 #
-# This is the whole point of moving Ceph out of Kubernetes: with the daemons
-# running as host units, a node can map an RBD and mount it as containerd's
-# data-root *before* containerd starts. Adding a disk then grows the space
-# available for container images, not just for PVC data.
+# The whole point of moving Ceph out of Kubernetes: host daemons let a node map
+# an RBD and mount it as containerd's data-root *before* containerd starts, so
+# adding a disk grows the space for images and not just for PVC data.
 #
-# Verified on real hardware before this was written: RBD -> ext4/xfs ->
-# overlayfs with an upperdir on it all work, which is what containerd's
-# overlayfs snapshotter requires.
+# Two properties are load-bearing — do not "simplify" either:
 #
-# TWO PROPERTIES HERE ARE LOAD-BEARING — do not "simplify" either one:
+# 1. size=1 on the pool. Every node needs its own unpacked copy of every image,
+#    so pooling across nodes saves nothing; at 3 nodes the topology controller
+#    would set size=3 and cost 9x the bytes for data a registry can resend.
 #
-# 1. size=1 on the pool. Every node needs its own unpacked copy of every image
-#    it runs, so pooling images across nodes saves nothing; at 3 nodes the
-#    topology controller sets size=3, which would cost 9x the bytes for data
-#    that is re-downloadable from a registry.
-#
-# 2. The RBD is sized to capacity that really exists, never oversubscribed.
-#    Kubelet's image GC (imageGCHighThresholdPercent, see k3s/kubelet-image-gc.yaml)
-#    works by statfs on the image filesystem. Hand it a thin 2TB image over a
-#    500GB pool and it reports 5% full forever, never garbage collects, and the
-#    pool silently reaches full-ratio — at which point Ceph blocks writes for
-#    *every* app on *every* node, not just image pulls. Today's equivalent
-#    failure is one node's root filling with ext4 ENOSPC and GC recovering. The
-#    thin version is strictly worse, so the size tracks real capacity and grows
-#    only as the pool grows.
+# 2. The RBD tracks capacity that really exists, never oversubscribed. Kubelet's
+#    image GC works by statfs, so a thin 2TB image over a 500GB pool reports 5%
+#    full forever, never collects, and the pool silently reaches full-ratio — at
+#    which point Ceph blocks writes for every app on every node. The equivalent
+#    failure today is one node's root filling with ENOSPC and GC recovering.
 {
   config,
   lib,
@@ -131,31 +121,24 @@ in {
   config = mkIf (cephCfg.enable && cfg.enable) {
     # ── LVM must never scan an RBD ───────────────────────────────────────────
     #
-    # Every LVM command reads every block device it can see, looking for PV
-    # labels — and that includes /dev/rbd0, this node's container image store.
+    # Every LVM command reads every block device looking for PV labels,
+    # including this node's /dev/rbd0. Ceph blocks rather than fails a read it
+    # cannot serve and krbd retries forever, so scanning a stalled RBD parks
+    # `lvs` in uninterruptible sleep, where SIGKILL is ignored and the
+    # leftovers stay in the unit's cgroup.
     #
-    # Ceph *blocks* I/O rather than failing it when it cannot serve a read, and
-    # krbd retries indefinitely, so scanning a stalled RBD parks `lvs` in
-    # uninterruptible sleep. A D-state process cannot be killed: SIGKILL is
-    # ignored, systemd gives up, and the leftovers stay in the unit's cgroup.
+    # Observed on node1: eight leaked `lvs`, yolab-local-api unstoppable, and
+    # the nixos-rebuild trying to stop it wedged for 17 minutes.
     #
-    # Observed live on node1: eight leaked `lvs` processes, "Processes still
-    # around after final SIGKILL", yolab-local-api unstoppable, and the
-    # nixos-rebuild that was trying to stop it wedged for 17 minutes.
+    # It is circular, not merely slow: ceph-volume runs lvs to create an OSD,
+    # that OSD is what would let the cluster serve I/O again, and the cluster
+    # not serving I/O is what stalls the RBD lvs is blocked on.
     #
-    # It is a circular dependency, not merely a hang. ceph-volume runs lvs to
-    # create an OSD; that OSD is what would make the cluster able to serve I/O
-    # again; and the cluster being unable to serve I/O is what stalls the RBD
-    # that lvs is blocked reading. Nothing breaks that loop from inside.
-    #
-    # No OSD ever lives on an RBD — they are created on real disks — so LVM has
-    # no reason to read one at all. global_filter rather than filter because
-    # only the former applies to every command, including the udev-triggered
-    # scans, which is where this bites.
-    #
-    # Written in lvm.conf's flat `section/key` form to match how the upstream
-    # NixOS module contributes its own settings; a second `devices { }` block
-    # would be a duplicate section in the same file.
+    # No OSD ever lives on an RBD, so LVM has no reason to read one.
+    # global_filter rather than filter because only the former covers every
+    # command including udev-triggered scans, which is where this bites.
+    # Flat `section/key` form to match how the upstream NixOS module
+    # contributes its own settings.
     environment.etc."lvm/lvm.conf".text = lib.mkAfter ''
       devices/global_filter = [ "r|^/dev/rbd[0-9]+|", "a|.*|" ]
     '';

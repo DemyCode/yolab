@@ -36,7 +36,7 @@ Add more machines with the same account token and they join the cluster automati
 Download from [Releases](../../releases), or build it:
 
 ```bash
-nix build path:.#iso
+nix build .#iso
 ```
 
 ### 2. Boot the installer
@@ -85,7 +85,10 @@ pre-commit run --all-files
 WSL and macOS configs are included:
 
 ```bash
-sudo nixos-rebuild switch --flake path:.#yolab-wsl
+sudo nixos-rebuild switch --flake .#yolab-wsl
+# path:. here and not `.`, because the Darwin config reads the gitignored
+# homelab/ignored/config.toml. Everywhere else prefer `.`: path:. copies the
+# whole working directory into the store (8.6G against 4.8M) every time.
 darwin-rebuild switch --flake path:.#yolab-mac
 ```
 
