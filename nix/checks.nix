@@ -4,8 +4,10 @@
 #   nix run .#ci                                      # everything
 #   nix build .#checks.x86_64-linux.local-api-tests   # just one
 #
-# nix builds from the git index, so a brand new file is invisible to these
-# until `git add -N`. Use `path:.` to read the working directory instead.
+# nix builds from the git index, so a brand new file is invisible until
+# `git add -N`. Prefer the bare `.` ref: `path:.` copies the entire working
+# directory into the store, which here is 8.6G against 4.8M, on every
+# invocation. It is only needed for `#yolab`, whose config.toml is gitignored.
 {
   pkgs,
   treefmtEval,
