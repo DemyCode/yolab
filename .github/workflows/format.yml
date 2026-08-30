@@ -1,26 +1,28 @@
 name: format
 
-# Formatting is already gated — `nix run .#ci` builds `checks.formatting`, so an
-# unformatted branch is red before it can merge. This workflow exists for the
-# one case that gate cannot catch: main drifting because the *formatter* moved
-# rather than the code. Bumping treefmt-nix, nixpkgs' prettier or the Rust
-# toolchain all change what "formatted" means, and then a tree nobody has
-# touched goes red on the next unrelated push.
+# Every branch gets its own formatting PR: push `ok`, and if `nix fmt` has work
+# to do you get `fmt-ok` opened against `ok`. Not just the default branch,
+# because an unformatted feature branch is red on `formatting` the moment it is
+# pushed, and the fix should arrive before review rather than after.
 #
-# It never pushes to main. It opens a pull request, so a mechanical rewrite of
-# every file is reviewed like anything else.
+# Push-triggered only. There is no schedule: a formatter version moving is
+# something you find out about on the next push, and a cron that opens PRs
+# against every stale branch in the repo is noise.
+#
+# `fmt-**` is excluded or this eats itself — the bot's push to `fmt-ok` would
+# trigger a run that opens `fmt-fmt-ok`. In practice a push made with
+# GITHUB_TOKEN does not start another workflow, but relying on that as the only
+# guard means the loop returns the day someone swaps in a PAT.
 
 on:
   workflow_dispatch:
-  schedule:
-    # Monday 06:00 UTC — after a weekend of flake bumps, before the week starts.
-    - cron: "0 6 * * 1"
   push:
-    branches: [main]
+    branches-ignore:
+      - "fmt-**"
 
-# A second run must not race the first for the same branch.
+# Per branch, so two branches formatting at once do not cancel each other.
 concurrency:
-  group: format
+  group: format-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -45,20 +47,18 @@ jobs:
       # from nix/treefmt.nix — so whatever this writes is exactly what the check
       # would otherwise have demanded. There is no second formatter here that
       # could disagree with the gate.
-      #
-      # Note this resolves the flake as `.`, the git tree, which is what the
-      # checkout above provides.
       - name: Run nix fmt
         run: nix fmt
 
       - name: Open a pull request
         uses: peter-evans/create-pull-request@v7
         with:
-          # A fixed branch, so a later run updates the open PR rather than
-          # stacking a second one.
-          branch: bot/nix-fmt
+          # fmt-<branch>, targeting <branch>. A fixed name per source branch, so
+          # a later push updates the open PR rather than stacking a second one.
+          branch: fmt-${{ github.ref_name }}
+          base: ${{ github.ref_name }}
           delete-branch: true
-          title: "style: nix fmt"
+          title: "style: nix fmt (${{ github.ref_name }})"
           commit-message: |
             style: nix fmt
 
@@ -66,13 +66,13 @@ jobs:
             `checks.formatting` gates on.
           labels: formatting
           body: |
-            `nix fmt` produced changes against `main`.
+            `nix fmt` produced changes against `${{ github.ref_name }}`.
 
             This is mechanical output — the same treefmt wrapper
             `checks.formatting` builds, so merging it is what makes
-            `nix run .#ci` green again.
+            `nix run .#ci` green on that branch.
 
             If this appeared without anyone editing the affected files, a
             formatter version moved: check the most recent bump to
-            `treefmt-nix`, `nixpkgs` (prettier, shfmt, alejandra) or
-            `homelab/local-api/rust-toolchain.toml` (rustfmt).
+            `treefmt-nix`, `nixpkgs` (prettier, shfmt, alejandra) or the
+            pinned Rust toolchain (rustfmt).

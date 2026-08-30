@@ -182,6 +182,11 @@ in {
   # in .github/workflows/push.yml is commented out — so on a machine without the
   # hook installed, nothing ran them at all. As derivations they run wherever
   # `nix run .#ci` runs.
+  #
+  # All three read the source in place. They used to `cp -r` the whole tree into
+  # the build directory and chmod it writable first, which a read-only linter
+  # has no use for — that is an extra copy of the tree per check, and the
+  # sibling repo's CI ran out of disk doing exactly this sort of thing.
 
   # Every shell script in the tree, not just apps/. installer/macos/install.sh
   # was checked by nothing before this.
@@ -193,26 +198,21 @@ in {
   shellcheck =
     pkgs.runCommand "shellcheck" {
       nativeBuildInputs = [pkgs.shellcheck];
-      src = treeSrc;
     } ''
-      cp -r "$src" ./src
-      chmod -R +w ./src
       # -x so sourced files are followed.
-      find ./src -name '*.sh' -print0 | xargs -0 shellcheck -x
+      find ${treeSrc} -name '*.sh' -print0 | xargs -0 shellcheck -x
       touch $out
     '';
 
   hadolint =
     pkgs.runCommand "hadolint" {
       nativeBuildInputs = [pkgs.hadolint];
-      src = treeSrc;
     } ''
-      cp -r "$src" ./src
-      chmod -R +w ./src
       # DL3018 wants every apk package pinned. These images track upstream
       # Alpine deliberately, and the wg-* tools have to match the host kernel's
       # WireGuard, so pinning here buys a stale userland rather than safety.
-      find ./src -name 'Dockerfile' -print0 | xargs -0 hadolint --ignore DL3018
+      find ${treeSrc} -name 'Dockerfile' -print0 \
+        | xargs -0 hadolint --ignore DL3018
       touch $out
     '';
 
@@ -228,11 +228,8 @@ in {
   deadnix =
     pkgs.runCommand "deadnix" {
       nativeBuildInputs = [pkgs.deadnix];
-      src = treeSrc;
     } ''
-      cp -r "$src" ./src
-      chmod -R +w ./src
-      deadnix --fail ./src
+      deadnix --fail ${treeSrc}
       touch $out
     '';
 
