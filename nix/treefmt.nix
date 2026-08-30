@@ -59,6 +59,13 @@ in {
     simplify = false;
   };
 
+  # Three python files, one of which (apps/catalog/check_charts.py) the charts
+  # check actually executes. Nothing formatted or linted any of them before.
+  # ruff does both, and its lint pass here is the default rule set — not an
+  # opinionated expansion that would land red.
+  programs.ruff-format.enable = true;
+  programs.ruff-check.enable = true;
+
   programs.prettier.enable = true;
 
   # mkForce, not a plain assignment: `includes` is a bare list option, so

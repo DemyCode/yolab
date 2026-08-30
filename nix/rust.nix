@@ -50,6 +50,13 @@
 
     package = craneLib.buildPackage (args // {inherit cargoArtifacts;});
 
+    clippy = craneLib.cargoClippy (args
+      // {
+        inherit cargoArtifacts;
+        pname = "${pname}-clippy";
+        cargoClippyExtraArgs = "--all-targets -- -D warnings";
+      });
+
     tests = craneLib.cargoTest (args // {inherit cargoArtifacts;});
 
     coverage = craneLib.cargoLlvmCov (covArgs

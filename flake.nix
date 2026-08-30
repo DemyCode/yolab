@@ -167,6 +167,24 @@
       inherit (allChecks) coverage-local-api;
       inherit (allChecks) coverage-installer;
 
+      # Linters that are real, configured, and currently failing on
+      # pre-existing findings. Packages rather than checks, deliberately — the
+      # same call made for statix: a gate that is red on the day it lands
+      # teaches people to ignore red, and none of these are new problems.
+      #
+      #   nix build .#client-ui-lint    7 problems (6 errors), eslint
+      #   nix build .#clippy-local-api  12 findings
+      #   nix build .#clippy-installer
+      #
+      # eslint in particular used to run as a pre-commit hook and was lost when
+      # that file was reduced to calling the checks. It was already failing
+      # then, and the pre-commit CI job is commented out, so nothing had
+      # actually enforced it for some time. Each belongs back in `checks` the
+      # moment its findings are dealt with.
+      client-ui-lint = builds.clientUiLint;
+      clippy-local-api = rust.crates.local-api.clippy;
+      clippy-installer = rust.crates.installer.clippy;
+
       # `nix run .#coverage` — build both HTML reports and say where they are.
       # Kept out of `ci` deliberately; see the note on checks.x86_64-linux.
       coverage = pkgs.writeShellApplication {
