@@ -9,16 +9,22 @@ name: format
 # something you find out about on the next push, and a cron that opens PRs
 # against every stale branch in the repo is noise.
 #
-# `fmt-**` is excluded or this eats itself — the bot's push to `fmt-ok` would
-# trigger a run that opens `fmt-fmt-ok`. In practice a push made with
-# GITHUB_TOKEN does not start another workflow, but relying on that as the only
-# guard means the loop returns the day someone swaps in a PAT.
+# This does not recurse, and it does not need a branch exclusion to avoid it: a
+# formatted tree produces no diff, so the run triggered by the bot pushing
+# `fmt-ok` finds nothing to do and stops. That is checked explicitly below
+# rather than left to the PR action no-opping, so the terminating condition is
+# visible in the file instead of being a property of a dependency.
+#
+# Excluding `fmt-**` would also have meant those branches could never be
+# formatted, which matters the moment someone pushes a manual fix onto one.
+#
+# `branches: ["**"]` rather than a bare `push:` — every branch, but not tags.
+# A tag push would try to open a PR whose base is a tag, which is not a thing.
 
 on:
   workflow_dispatch:
   push:
-    branches-ignore:
-      - "fmt-**"
+    branches: ["**"]
 
 # Per branch, so two branches formatting at once do not cancel each other.
 concurrency:
@@ -48,9 +54,19 @@ jobs:
       # would otherwise have demanded. There is no second formatter here that
       # could disagree with the gate.
       - name: Run nix fmt
-        run: nix fmt
+        id: fmt
+        run: |
+          nix fmt
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already formatted; nothing to open a PR for."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat
+          fi
 
       - name: Open a pull request
+        if: steps.fmt.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           # fmt-<branch>, targeting <branch>. A fixed name per source branch, so
