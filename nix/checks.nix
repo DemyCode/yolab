@@ -57,7 +57,24 @@
   # node_modules on any machine that has built the workspace, plus
   # homelab/ignored/config.toml. Reusing .gitignore rather than a second
   # hand-written list means the two cannot disagree about what is source.
-  treeSrc = pkgs.nix-gitignore.gitignoreRecursiveSource [".git/"] ../.;
+  treeSrc =
+    pkgs.nix-gitignore.gitignoreRecursiveSource [
+      ".git/"
+      # Named explicitly as well as being gitignored.
+      #
+      # .gitignore alone is not enough here, and the failure mode is severe: in
+      # the sibling yolab-external repo the identical filter excluded target/
+      # when applied to the working directory and did NOT when applied to the
+      # flake source under `path:.`, so 5.4G of build tree was copied into the
+      # store once per check until the disk hit 100%. The two target/ trees here
+      # are 7.5G together. This is the one exclusion that cannot be allowed to
+      # depend on a gitignore-to-regex translation being right.
+      "target/"
+      "node_modules/"
+      "result"
+      "result-*"
+    ]
+    ../.;
 
   # A machine config built end to end, as a check. Evaluating these is most of
   # the value: it is what catches an option that moved, a module that stopped

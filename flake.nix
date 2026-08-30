@@ -210,6 +210,7 @@
         default = {
           type = "app";
           program = lib.getExe self.packages.x86_64-linux.ci;
+          meta.description = "Run every check, exactly as CI does";
         };
 
         # Literally `nix fmt`: the same wrapper, reached by the verb people
@@ -217,11 +218,16 @@
         format = {
           type = "app";
           program = lib.getExe treefmtEval.config.build.wrapper;
+          meta.description = "Format the whole tree";
         };
       }
-      // lib.mapAttrs (_: drv: {
+      # meta.description on each: without it `nix flake check` prints a
+      # "lacks attribute meta" warning per app, which was twelve lines of noise
+      # on every run.
+      // lib.mapAttrs (name: drv: {
         type = "app";
         program = toString (pkgs.writeShellScript "check" "echo ${drv}");
+        meta.description = "Build the ${name} check and print its store path";
       })
       self.checks.x86_64-linux;
 
