@@ -4,9 +4,6 @@ YoLab macOS interactive setup — stdlib only, no external deps.
 Writes homelab/ignored/config.toml from user input.
 """
 
-import getpass
-import os
-import re
 import subprocess
 import sys
 import uuid
@@ -14,6 +11,7 @@ from pathlib import Path
 
 
 # ─── TOML writer (simple, only handles our config shape) ──────────────────────
+
 
 def _toml_value(v):
     if isinstance(v, bool):
@@ -41,6 +39,7 @@ def write_toml(data: dict, path: Path) -> None:
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
 
+
 def prompt(question: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     value = input(f"{question}{suffix}: ").strip()
@@ -56,7 +55,9 @@ def prompt_bool(question: str, default: bool = True) -> bool:
 
 
 def generate_wg_keypair() -> tuple[str, str]:
-    result = subprocess.run(["wg", "genkey"], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ["wg", "genkey"], capture_output=True, text=True, check=True
+    )
     private_key = result.stdout.strip()
     result = subprocess.run(
         ["wg", "pubkey"], input=private_key, capture_output=True, text=True, check=True
@@ -66,6 +67,7 @@ def generate_wg_keypair() -> tuple[str, str]:
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
+
 
 def main():
     if len(sys.argv) < 2:
@@ -77,7 +79,9 @@ def main():
     config_path = yolab_dir / "homelab" / "ignored" / "config.toml"
 
     if config_path.exists():
-        overwrite = prompt_bool(f"\nconfig.toml already exists at {config_path}. Overwrite?", default=False)
+        overwrite = prompt_bool(
+            f"\nconfig.toml already exists at {config_path}. Overwrite?", default=False
+        )
         if not overwrite:
             print("Keeping existing config.toml.")
             return
@@ -95,12 +99,16 @@ def main():
         swarm = {"enabled": True, "mode": "manager" if is_first else "worker"}
 
     print("\n--- Tunnel setup ---")
-    wants_tunnel = prompt_bool("Register a YoLab tunnel (makes your homelab reachable from the internet)?")
+    wants_tunnel = prompt_bool(
+        "Register a YoLab tunnel (makes your homelab reachable from the internet)?"
+    )
 
     tunnel: dict = {"enabled": False}
 
     if wants_tunnel:
-        platform_api_url = prompt("YoLab platform API URL", "http://188.245.104.63:5000")
+        platform_api_url = prompt(
+            "YoLab platform API URL", "http://188.245.104.63:5000"
+        )
         account_token = prompt("Account token")
         service_name = prompt("Service name", "homelab")
 
@@ -136,11 +144,13 @@ def main():
                 sub_ipv6 = tunnel_data["sub_ipv6"]
 
                 # Step 2: attach AAAA record for the management domain
-                payload2 = json.dumps({
-                    "record_type": "AAAA",
-                    "name": service_name,
-                    "value": sub_ipv6,
-                }).encode()
+                payload2 = json.dumps(
+                    {
+                        "record_type": "AAAA",
+                        "name": service_name,
+                        "value": sub_ipv6,
+                    }
+                ).encode()
                 req2 = urllib.request.Request(
                     f"{platform_api_url}/tunnels/{tunnel_id}/records",
                     data=payload2,

@@ -29,6 +29,7 @@ a library change is checked against the charts before it is released.
 Usage:
     check_charts.py [chart-dir ...]     # default: every chart in this directory
 """
+
 import glob
 import json
 import os
@@ -127,7 +128,10 @@ def check(app, docs, fail):
     # as a normal manifest it would be deleted along with everything else and the
     # tunnel would leak.
     job = (kinds.get("Job") or [{}])[0]
-    if job.get("metadata", {}).get("annotations", {}).get("helm.sh/hook") != "pre-delete":
+    if (
+        job.get("metadata", {}).get("annotations", {}).get("helm.sh/hook")
+        != "pre-delete"
+    ):
         fail(app, "uninstall Job is not a pre-delete hook")
 
     deploys = {d["metadata"]["name"]: d for d in kinds.get("Deployment", [])}
@@ -143,7 +147,10 @@ def check(app, docs, fail):
         )
     ]
     if len(tunnel_pods) != 1:
-        fail(app, f"expected exactly one pod running wg-register, found {len(tunnel_pods)}")
+        fail(
+            app,
+            f"expected exactly one pod running wg-register, found {len(tunnel_pods)}",
+        )
         return
     gw_name, gw = tunnel_pods[0]
     conts = {c["name"]: c for c in gw.get("containers") or []}
@@ -152,7 +159,10 @@ def check(app, docs, fail):
         if req not in conts:
             fail(app, f"pod {gw_name} missing {req} container")
 
-    if conts.get("wireguard", {}).get("securityContext", {}).get("privileged") is not True:
+    if (
+        conts.get("wireguard", {}).get("securityContext", {}).get("privileged")
+        is not True
+    ):
         fail(app, "wireguard sidecar is not privileged (the tunnel cannot come up)")
 
     for name, c in conts.items():
@@ -175,11 +185,17 @@ def check(app, docs, fail):
             if not uses:
                 continue
             if not any(m["mountPath"] == "/yolab" for m in c.get("volumeMounts") or []):
-                fail(app, f"pod {dname}: container {c['name']} reads YOLAB_* but does "
-                          f"not mount /yolab")
+                fail(
+                    app,
+                    f"pod {dname}: container {c['name']} reads YOLAB_* but does "
+                    f"not mount /yolab",
+                )
             if not writes_yolab_env:
-                fail(app, f"pod {dname}: container {c['name']} reads YOLAB_* but no init "
-                          f"container writes /yolab/env (needs wg-register or yolab-env)")
+                fail(
+                    app,
+                    f"pod {dname}: container {c['name']} reads YOLAB_* but no init "
+                    f"container writes /yolab/env (needs wg-register or yolab-env)",
+                )
 
         # Several containers start with a `sh -c` script that sources /yolab/env,
         # exports the app's own-URL variables, then execs the image's entrypoint.
@@ -188,13 +204,20 @@ def check(app, docs, fail):
         # perfectly valid YAML and crashloops the container. Parse them.
         for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
             cmd = c.get("command") or []
-            if len(cmd) >= 3 and cmd[0] in ("/bin/sh", "sh", "/bin/bash") and cmd[1] == "-c":
+            if (
+                len(cmd) >= 3
+                and cmd[0] in ("/bin/sh", "sh", "/bin/bash")
+                and cmd[1] == "-c"
+            ):
                 syntax = subprocess.run(
                     ["sh", "-n"], input=cmd[2], capture_output=True, text=True
                 )
                 if syntax.returncode != 0:
-                    fail(app, f"pod {dname}: container {c['name']} command is not valid "
-                              f"shell: {syntax.stderr.strip()}")
+                    fail(
+                        app,
+                        f"pod {dname}: container {c['name']} command is not valid "
+                        f"shell: {syntax.stderr.strip()}",
+                    )
 
         # Containers in a pod share one network namespace, so two claiming the
         # same port means whichever starts second fails to bind — silently.
@@ -203,21 +226,29 @@ def check(app, docs, fail):
             for p in c.get("ports") or []:
                 cp = p["containerPort"]
                 if cp in seen:
-                    fail(app, f"pod {dname}: containerPort {cp} claimed by both "
-                              f"{seen[cp]} and {c['name']}")
+                    fail(
+                        app,
+                        f"pod {dname}: containerPort {cp} claimed by both "
+                        f"{seen[cp]} and {c['name']}",
+                    )
                 seen[cp] = c["name"]
 
         vols = {v["name"] for v in spec.get("volumes") or []}
         for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
             for m in c.get("volumeMounts") or []:
                 if m["name"] not in vols:
-                    fail(app, f"pod {dname}: container {c['name']} mounts undeclared "
-                              f"volume {m['name']}")
+                    fail(
+                        app,
+                        f"pod {dname}: container {c['name']} mounts undeclared "
+                        f"volume {m['name']}",
+                    )
 
     # Every Caddy upstream must resolve to this pod or to a Service that exists.
     if has_caddy:
         caddyfile = next(
-            c["data"]["Caddyfile"] for c in kinds["ConfigMap"] if "Caddyfile" in (c.get("data") or {})
+            c["data"]["Caddyfile"]
+            for c in kinds["ConfigMap"]
+            if "Caddyfile" in (c.get("data") or {})
         )
         ups = re.findall(r"reverse_proxy\s+(\S+)", caddyfile)
         if not ups:
@@ -227,20 +258,34 @@ def check(app, docs, fail):
             # Helm does not re-render values, so a `{{ … }}` left in a value is
             # emitted literally and Caddy proxies to a host that cannot resolve.
             if "{{" in up or "}}" in up:
-                fail(app, f"upstream {up!r} still contains an unrendered template expression")
+                fail(
+                    app,
+                    f"upstream {up!r} still contains an unrendered template expression",
+                )
                 continue
             host, _, port = up.rpartition(":")
             if host == "localhost":
                 if not [n for n in conts if n not in GATEWAY_CONTAINERS]:
-                    fail(app, f"upstream {up} is localhost but no app container runs in {gw_name}")
+                    fail(
+                        app,
+                        f"upstream {up} is localhost but no app container runs in {gw_name}",
+                    )
                 if port in ("80", "443"):
-                    fail(app, f"upstream port {port} collides with Caddy in the same pod")
+                    fail(
+                        app, f"upstream port {port} collides with Caddy in the same pod"
+                    )
             elif host not in svcs:
-                fail(app, f"upstream {up} names Service '{host}' which the chart does not create")
+                fail(
+                    app,
+                    f"upstream {up} names Service '{host}' which the chart does not create",
+                )
             else:
                 exposed = {str(p["port"]) for p in svcs[host]["spec"]["ports"]}
                 if port not in exposed:
-                    fail(app, f"upstream {up}: Service {host} exposes {sorted(exposed)}, not {port}")
+                    fail(
+                        app,
+                        f"upstream {up}: Service {host} exposes {sorted(exposed)}, not {port}",
+                    )
 
     pod_labels = [
         tuple(sorted(d["spec"]["template"]["metadata"]["labels"].items()))
@@ -249,7 +294,10 @@ def check(app, docs, fail):
     for s in kinds.get("Service", []):
         sel = tuple(sorted(s["spec"]["selector"].items()))
         if not any(all(kv in lbl for kv in sel) for lbl in pod_labels):
-            fail(app, f"Service {s['metadata']['name']} selector {dict(sel)} matches no pod")
+            fail(
+                app,
+                f"Service {s['metadata']['name']} selector {dict(sel)} matches no pod",
+            )
 
     for d in list(deploys.values()) + kinds.get("Job", []):
         spec = d["spec"]["template"]["spec"]
@@ -279,7 +327,8 @@ def check(app, docs, fail):
 
 def main(argv):
     chart_dirs = argv[1:] or sorted(
-        d for d in glob.glob(os.path.join(HERE, "*/"))
+        d
+        for d in glob.glob(os.path.join(HERE, "*/"))
         if os.path.isfile(os.path.join(d, "Chart.yaml"))
         and "type: library" not in open(os.path.join(d, "Chart.yaml")).read()
     )
@@ -287,13 +336,24 @@ def main(argv):
         print("no charts found", file=sys.stderr)
         return 1
 
-    lib_version = chart_field(open(os.path.join(LIBRARY, "Chart.yaml")).read(), "version")
+    lib_version = chart_field(
+        open(os.path.join(LIBRARY, "Chart.yaml")).read(), "version"
+    )
     fail = Failures()
 
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(
-            ["helm", "package", LIBRARY, "--version", lib_version, "--destination", tmp],
-            check=True, capture_output=True,
+            [
+                "helm",
+                "package",
+                LIBRARY,
+                "--version",
+                lib_version,
+                "--destination",
+                tmp,
+            ],
+            check=True,
+            capture_output=True,
         )
         library_tgz = glob.glob(os.path.join(tmp, "yolab-common-*.tgz"))[0]
 
@@ -303,14 +363,22 @@ def main(argv):
 
             # A chart pinned to a library version other than the one in this tree
             # is rendered against something that is not what would ship with it.
-            declared = re.search(r"- name: yolab-common\s*\n\s*version:\s*\"?([^\"\n]+)", text)
+            declared = re.search(
+                r"- name: yolab-common\s*\n\s*version:\s*\"?([^\"\n]+)", text
+            )
             if declared and declared.group(1).strip() != lib_version:
-                fail(app, f"depends on yolab-common {declared.group(1).strip()}, "
-                          f"but this tree has {lib_version}")
+                fail(
+                    app,
+                    f"depends on yolab-common {declared.group(1).strip()}, "
+                    f"but this tree has {lib_version}",
+                )
 
             rendered, err = render(chart_dir, library_tgz, tmp)
             if rendered is None:
-                fail(app, f"helm template failed: {err.splitlines()[-1] if err else 'unknown'}")
+                fail(
+                    app,
+                    f"helm template failed: {err.splitlines()[-1] if err else 'unknown'}",
+                )
                 continue
             try:
                 docs = [d for d in yaml.safe_load_all(rendered) if d]
