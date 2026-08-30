@@ -673,74 +673,54 @@ async fn reconcile_local_osds(
     desired: &HashMap<String, String>,
     disk_to_osd: Option<&HashMap<String, i64>>,
 ) {
-    // Everything below needs a live cluster. Bail rather than misread silence
-    // as "no OSDs", which would look like every disk needs creating.
-    if !ceph_cli::reachable().await {
-        tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
-        for disk_id in meta.keys() {
-            set_phase(
-                disk_id,
-                phase::UNKNOWN,
-                "Waiting for the storage cluster to answer.",
-            );
+    // The two guards that stand between a bad answer and `ceph-volume lvm
+    // create` over live data. See `plan_tick`, where they are asserted.
+    match plan_tick(ceph_cli::reachable().await, disk_to_osd.is_some()) {
+        TickPlan::Unreachable => {
+            tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
+            for disk_id in meta.keys() {
+                set_phase(
+                    disk_id,
+                    phase::UNKNOWN,
+                    "Waiting for the storage cluster to answer.",
+                );
+            }
+            return;
         }
-        return;
+        TickPlan::UnknownOsdMap => {
+            tracing::warn!(
+                "reconcile_local_osds: the local OSD map is unknown this tick — making no changes"
+            );
+            for disk_id in meta.keys() {
+                set_phase(
+                    disk_id,
+                    phase::UNKNOWN,
+                    "Cannot read this machine's disk setup right now. Nothing will be changed until it can.",
+                );
+            }
+            return;
+        }
+        TickPlan::Proceed => {}
     }
-
-    // The single most important guard in this file. `None` means ceph-volume
-    // could not be read, so we do not know which disks already carry an OSD —
-    // and acting on that guess means `ceph-volume lvm create` over live data.
-    // Do nothing at all until the answer is known.
     let Some(disk_to_osd) = disk_to_osd else {
-        tracing::warn!(
-            "reconcile_local_osds: the local OSD map is unknown this tick — making no changes"
-        );
-        for disk_id in meta.keys() {
-            set_phase(
-                disk_id,
-                phase::UNKNOWN,
-                "Cannot read this machine's disk setup right now. Nothing will be changed until it can.",
-            );
-        }
         return;
     };
 
     // Create OSDs for disks switched ON that do not have one yet. This is the
     // half Rook used to do in response to a CephCluster patch.
     for (disk_id, m) in meta {
-        let key = record_key(node, disk_id);
-        let want_on = desired
-            .get(&key)
-            .map(|v| v == "ON" || v == "USING")
-            .unwrap_or(false);
-        if !want_on || disk_to_osd.contains_key(disk_id) {
-            continue;
-        }
-        // A create started on an earlier tick may still be running. Starting a
-        // second one for the same disk is how ceph-volume invocations used to
-        // stack up.
-        if CREATING
+        let creating = CREATING
             .lock()
             .map(|c| c.contains(disk_id))
-            .unwrap_or(false)
-        {
-            continue;
+            .unwrap_or(false);
+        match plan_create(node, disk_id, m, desired, disk_to_osd, creating) {
+            CreatePlan::Skip => continue,
+            CreatePlan::Blocked(reason) => {
+                tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
+                set_phase(disk_id, phase::BLOCKED, reason);
+            }
+            CreatePlan::Create { dev_path } => spawn_create(disk_id.clone(), dev_path),
         }
-        if let Some(reason) = refuse_osd_creation(m) {
-            tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
-            set_phase(disk_id, phase::BLOCKED, reason);
-            continue;
-        }
-        let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) else {
-            continue;
-        };
-        let dev_path = if device.starts_with('/') {
-            device.to_string()
-        } else {
-            format!("/dev/{device}")
-        };
-
-        spawn_create(disk_id.clone(), dev_path);
     }
 
     // ── Bring back anything that is simply not running ───────────────────────
@@ -762,11 +742,7 @@ async fn reconcile_local_osds(
     // Starting a stopped daemon needs no cluster state at all. It must not
     // depend on the cluster being healthy enough to describe itself.
     for disk_id in meta.keys() {
-        let key = record_key(node, disk_id);
-        let want_on = desired
-            .get(&key)
-            .map(|v| v == "ON" || v == "USING")
-            .unwrap_or(false);
+        let want_on = wants_on(desired, node, disk_id);
         if !want_on {
             continue;
         }
@@ -820,11 +796,7 @@ async fn reconcile_local_osds(
     }
 
     for (disk_id, m) in meta {
-        let key = record_key(node, disk_id);
-        let want_on = desired
-            .get(&key)
-            .map(|v| v == "ON" || v == "USING")
-            .unwrap_or(false);
+        let want_on = wants_on(desired, node, disk_id);
         let Some(&osd_id) = disk_to_osd.get(disk_id) else {
             // No OSD on this disk. If it is switched OFF that is the finished
             // state, not a missing one — say so, because "you can unplug this
@@ -907,53 +879,48 @@ async fn reconcile_local_osds(
             // safe-to-destroy is re-confirmed immediately before the purge and
             // is never inferred from reweight or PG counts; inferring it from
             // `pg ls-by-osd` once caused real data loss.
-            if !ceph_cli::osd_safe_to_destroy(osd_id).await {
-                tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
-                let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
+            // Asked before the daemon is stopped, again after, and combined
+            // with the cluster's data-loss state. See `plan_purge`.
+            let safe_before = ceph_cli::osd_safe_to_destroy(osd_id).await;
+            if safe_before {
                 set_phase(
                     disk_id,
-                    phase::DRAINING,
-                    drain_message(targets, want_copies),
+                    phase::REMOVING,
+                    "Finishing up — do not unplug yet.",
                 );
-                continue;
+                // Stop the daemon before purging. Purging while it still runs
+                // is the EBUSY race the old code guarded against separately.
+                disable_osd_unit(osd_id).await;
             }
-            set_phase(
-                disk_id,
-                phase::REMOVING,
-                "Finishing up — do not unplug yet.",
-            );
+            let safe_after = safe_before && ceph_cli::osd_safe_to_destroy(osd_id).await;
+            let loss = if safe_after {
+                crate::routers::ceph::assess_pg_loss().await
+            } else {
+                None
+            };
 
-            // Stop the daemon before purging. Purging while it still runs is
-            // the EBUSY race the old code had to guard against separately.
-            disable_osd_unit(osd_id).await;
-
-            if !ceph_cli::osd_safe_to_destroy(osd_id).await {
-                tracing::warn!("{osd} ({disk_id}): stopped, but no longer reports safe-to-destroy — leaving it alone");
-                continue;
-            }
-
-            // safe-to-destroy is not the question this step is actually asking.
-            //
-            // It answers "can the CLUSTER carry on without this disk" — and at one
-            // copy, after the disk has been marked out, the answer is yes precisely
-            // BECAUSE Ceph has already written that data off as lost. The condition
-            // that makes destruction look safe is the same condition that makes it
-            // unrecoverable. Live, that combination purged and zapped a disk holding
-            // the only copy of 63 placement groups, automatically, seconds after it
-            // came back.
-            //
-            // So ask the other question too: is anything in this cluster currently
-            // unreadable and unrebuildable? If so, this disk may be the only place it
-            // still exists, and nothing here is allowed to wipe it. A human can still
-            // erase it deliberately from the Storage page — this only refuses to do it
-            // unprompted.
-            if let Some(loss) = crate::routers::ceph::assess_pg_loss().await {
-                if loss.unrecoverable && loss.stuck > 0 {
+            match plan_purge(safe_before, safe_after, loss.as_ref()) {
+                PurgeVerdict::Wait => {
+                    tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
+                    let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
+                    set_phase(
+                        disk_id,
+                        phase::DRAINING,
+                        drain_message(targets, want_copies),
+                    );
+                    continue;
+                }
+                PurgeVerdict::Recheck => {
+                    tracing::warn!("{osd} ({disk_id}): stopped, but no longer reports safe-to-destroy — leaving it alone");
+                    continue;
+                }
+                PurgeVerdict::RefuseDataAtRisk => {
+                    let l = loss.as_ref().expect("a refusal names the loss it saw");
                     tracing::warn!(
                         "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
                          and cannot be rebuilt, and this disk may hold the only copy",
-                        loss.stuck,
-                        loss.total
+                        l.stuck,
+                        l.total
                     );
                     set_phase(
                         disk_id,
@@ -963,6 +930,7 @@ async fn reconcile_local_osds(
                     );
                     continue;
                 }
+                PurgeVerdict::Purge => {}
             }
 
             match ceph_cli::ceph(&["osd", "purge", &osd, "--yes-i-really-mean-it"]).await {
@@ -1267,6 +1235,122 @@ fn mark_known_osds(meta: &mut HashMap<String, Value>, disk_to_osd: &HashMap<Stri
 /// right response to it missing from the map is to complain, never to wipe.
 /// Both flags come from reading the on-disk superblock, so they stay correct
 /// even when no mon is reachable.
+/// Whether a drained OSD may actually be purged and its disk wiped.
+///
+/// `safe-to-destroy` alone is not enough, and that is not a theoretical
+/// objection. It answers "can the CLUSTER carry on without this disk" — and at
+/// one copy, after the disk is marked out, the answer is yes precisely BECAUSE
+/// Ceph has already written that data off as lost. The condition that makes
+/// destruction look safe is the condition that makes it unrecoverable. Live,
+/// that combination purged and zapped a disk holding the only copy of 63
+/// placement groups, seconds after it came back.
+#[derive(Debug, PartialEq, Eq)]
+enum PurgeVerdict {
+    /// Still draining. Ceph has not agreed yet.
+    Wait,
+    /// It agreed, then stopped agreeing once the daemon went down. Something
+    /// changed underneath; leave the disk alone.
+    Recheck,
+    /// Data elsewhere is unreadable and unrebuildable, so this disk may hold
+    /// the only copy of it.
+    RefuseDataAtRisk,
+    Purge,
+}
+
+fn plan_purge(
+    safe_before_stop: bool,
+    safe_after_stop: bool,
+    loss: Option<&crate::routers::ceph::PgLoss>,
+) -> PurgeVerdict {
+    if !safe_before_stop {
+        return PurgeVerdict::Wait;
+    }
+    if !safe_after_stop {
+        return PurgeVerdict::Recheck;
+    }
+    if loss.is_some_and(|l| l.unrecoverable && l.stuck > 0) {
+        return PurgeVerdict::RefuseDataAtRisk;
+    }
+    PurgeVerdict::Purge
+}
+
+/// Whether this tick may act at all.
+///
+/// Both arms exist because acting on a guess here means `ceph-volume lvm
+/// create` over live data. Split out from the reconcile loop so they can be
+/// asserted without a cluster.
+#[derive(Debug, PartialEq, Eq)]
+enum TickPlan {
+    /// Ceph did not answer. Silence is not "no OSDs".
+    Unreachable,
+    /// ceph-volume could not be read, so which disks already carry an OSD is
+    /// unknown.
+    UnknownOsdMap,
+    Proceed,
+}
+
+fn plan_tick(reachable: bool, disk_to_osd_known: bool) -> TickPlan {
+    if !reachable {
+        TickPlan::Unreachable
+    } else if !disk_to_osd_known {
+        TickPlan::UnknownOsdMap
+    } else {
+        TickPlan::Proceed
+    }
+}
+
+/// What the create half of a tick decides for one disk.
+#[derive(Debug, PartialEq, Eq)]
+enum CreatePlan {
+    Create { dev_path: String },
+    Blocked(&'static str),
+    Skip,
+}
+
+/// The decision to run `ceph-volume lvm create` over a device, as a pure
+/// function of the tick's inputs. This is the one place in the system that
+/// turns somebody's disk into an OSD, and doing so destroys whatever was on it.
+fn plan_create(
+    node: &str,
+    disk_id: &str,
+    m: &Value,
+    desired: &HashMap<String, String>,
+    disk_to_osd: &HashMap<String, i64>,
+    already_creating: bool,
+) -> CreatePlan {
+    if !wants_on(desired, node, disk_id) || disk_to_osd.contains_key(disk_id) {
+        return CreatePlan::Skip;
+    }
+    // A create started on an earlier tick may still be running. Starting a
+    // second one for the same disk is how ceph-volume invocations used to stack
+    // up.
+    if already_creating {
+        return CreatePlan::Skip;
+    }
+    if let Some(reason) = refuse_osd_creation(m) {
+        return CreatePlan::Blocked(reason);
+    }
+    let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) else {
+        return CreatePlan::Skip;
+    };
+    CreatePlan::Create {
+        dev_path: if device.starts_with('/') {
+            device.to_string()
+        } else {
+            format!("/dev/{device}")
+        },
+    }
+}
+
+/// The owner's intent for one disk on one node. "USING" is the same intent as
+/// "ON"; anything else, including an absent record, means off.
+fn wants_on(desired: &HashMap<String, String>, node: &str, disk_id: &str) -> bool {
+    desired
+        .get(&record_key(node, disk_id))
+        .map(|v| v == "ON" || v == "USING")
+        .unwrap_or(false)
+}
+
 fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
     // These strings are shown to the person using the machine, not written to a
     // log, so they say what is true and what to do — no Ceph vocabulary, no
@@ -3394,5 +3478,435 @@ mod tests {
         let m = drain_message(2, None);
         assert!(!m.contains("cannot be emptied"), "{m}");
         assert!(!m.contains("until this finishes"), "{m}");
+    }
+
+    // ── plan_tick: the two guards that stand in front of a disk wipe ──────────
+    //
+    // Both arms are "do nothing". That is the whole point: the failure these
+    // prevent is not an error, it is a confident wrong answer. Silence from
+    // Ceph, or an unreadable ceph-volume, both look exactly like "no disk here
+    // carries an OSD" — and the reconciler's response to that is
+    // `ceph-volume lvm create`, which destroys whatever the disk held.
+
+    #[test]
+    fn an_unreachable_cluster_does_nothing() {
+        assert_eq!(plan_tick(false, true), TickPlan::Unreachable);
+    }
+
+    #[test]
+    fn an_unreadable_osd_map_does_nothing() {
+        assert_eq!(plan_tick(true, false), TickPlan::UnknownOsdMap);
+    }
+
+    /// Order matters only for the message; both refuse to act. Pinned so a
+    /// reordering cannot quietly turn the outer guard into the inner one.
+    #[test]
+    fn an_unreachable_cluster_is_reported_before_an_unreadable_map() {
+        assert_eq!(plan_tick(false, false), TickPlan::Unreachable);
+    }
+
+    #[test]
+    fn a_reachable_cluster_with_a_readable_map_proceeds() {
+        assert_eq!(plan_tick(true, true), TickPlan::Proceed);
+    }
+
+    // ── plan_create: the decision that turns somebody's disk into an OSD ─────
+
+    fn osds(pairs: &[(&str, i64)]) -> HashMap<String, i64> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    fn blank_disk(device: &str) -> Value {
+        json!({
+            "device": device,
+            "size_bytes": 1_000_000_000u64,
+            "is_our_osd": false,
+            "foreign_ceph": false,
+        })
+    }
+
+    #[test]
+    fn a_disk_switched_on_with_no_osd_is_created() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert_eq!(
+            plan,
+            CreatePlan::Create {
+                dev_path: "/dev/sdb".to_string()
+            }
+        );
+    }
+
+    /// "USING" is the same intent as "ON" — it is what the page writes once a
+    /// disk is actually carrying data. Reading it as "not ON" would make the
+    /// reconciler try to create a second OSD on a disk already holding one.
+    #[test]
+    fn using_counts_as_on() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node1--dev-sdb", "USING")]),
+            &osds(&[]),
+            false,
+        );
+        assert!(matches!(plan, CreatePlan::Create { .. }));
+    }
+
+    #[test]
+    fn a_disk_switched_off_is_never_created() {
+        for state in ["OFF", "", "on", "true", "1"] {
+            let plan = plan_create(
+                "node1",
+                "dev-sdb",
+                &blank_disk("sdb"),
+                &recs(&[("node1--dev-sdb", state)]),
+                &osds(&[]),
+                false,
+            );
+            assert_eq!(plan, CreatePlan::Skip, "state {state:?} must not create");
+        }
+    }
+
+    /// An absent record is the state of every disk the moment it is plugged in.
+    /// Defaulting that to ON would wipe a stranger's disk on sight.
+    #[test]
+    fn a_disk_with_no_record_at_all_is_never_created() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[]),
+            &osds(&[]),
+            false,
+        );
+        assert_eq!(plan, CreatePlan::Skip);
+    }
+
+    /// Records are node-scoped. Another machine switching its disk on must not
+    /// reach across and provision this one.
+    #[test]
+    fn another_nodes_record_never_creates_on_this_node() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node2--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert_eq!(plan, CreatePlan::Skip);
+    }
+
+    /// The disk already carries an OSD. Creating a second one over it is the
+    /// exact accident the `disk_to_osd` guard in plan_tick exists to prevent,
+    /// and this is the same refusal one level down.
+    #[test]
+    fn a_disk_that_already_has_an_osd_is_never_created() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[("dev-sdb", 3)]),
+            false,
+        );
+        assert_eq!(plan, CreatePlan::Skip);
+    }
+
+    /// ceph-volume takes up to ten minutes. The tick is 30s, so without this
+    /// the same disk gets twenty creates in flight at once — which is how
+    /// invocations used to stack up.
+    #[test]
+    fn a_create_already_in_flight_is_not_started_again() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            true,
+        );
+        assert_eq!(plan, CreatePlan::Skip);
+    }
+
+    /// In-flight is checked before refusal, so a disk that would be blocked
+    /// reports Skip rather than flapping its phase to BLOCKED mid-create.
+    #[test]
+    fn an_in_flight_create_wins_over_a_refusal() {
+        let mounted = json!({"device": "sdb", "mounted": true});
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &mounted,
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            true,
+        );
+        assert_eq!(plan, CreatePlan::Skip);
+    }
+
+    // Everything refuse_osd_creation rejects must come back as Blocked, never
+    // as Create. These are the disks with something on them.
+
+    #[test]
+    fn a_mounted_disk_switched_on_is_blocked_not_created() {
+        let plan = plan_create(
+            "node1",
+            "dev-sda",
+            &json!({"device": "sda", "mounted": true}),
+            &recs(&[("node1--dev-sda", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
+    }
+
+    #[test]
+    fn a_partitioned_disk_switched_on_is_blocked_not_created() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &json!({"device": "sdb", "has_partitions": true}),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
+    }
+
+    /// A disk carrying another cluster's BlueStore label. Wiping it is somebody
+    /// else's data loss.
+    #[test]
+    fn a_foreign_cluster_disk_switched_on_is_blocked_not_created() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &json!({"device": "sdb", "foreign_ceph": true}),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
+    }
+
+    /// A device field that is missing or empty means the inventory did not
+    /// identify this disk. Guessing a path from a disk id would be a path to
+    /// somewhere, and ceph-volume would wipe whatever is at it.
+    ///
+    /// The requirement is only that it is never created. refuse_osd_creation
+    /// gets there first and says so in words, which is better than skipping
+    /// silently — the disk shows a reason on the page instead of nothing. The
+    /// `device` fallthrough in plan_create is the belt to that braces.
+    #[test]
+    fn a_disk_without_a_usable_device_name_is_never_created() {
+        for m in [
+            json!({"device": "", "is_our_osd": false, "foreign_ceph": false}),
+            json!({"size_bytes": 1u64, "is_our_osd": false, "foreign_ceph": false}),
+            json!({"device": null, "is_our_osd": false, "foreign_ceph": false}),
+        ] {
+            let plan = plan_create(
+                "node1",
+                "dev-sdb",
+                &m,
+                &recs(&[("node1--dev-sdb", "ON")]),
+                &osds(&[]),
+                false,
+            );
+            assert!(
+                !matches!(plan, CreatePlan::Create { .. }),
+                "{m:?} produced {plan:?}"
+            );
+        }
+    }
+
+    /// And the reason reaches the page rather than being swallowed.
+    #[test]
+    fn a_disk_that_vanished_says_so() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &json!({"device": "", "is_our_osd": false, "foreign_ceph": false}),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        let CreatePlan::Blocked(reason) = plan else {
+            panic!("expected a reason, got {plan:?}");
+        };
+        assert!(reason.contains("disappeared"), "{reason}");
+    }
+
+    #[test]
+    fn a_bare_device_name_is_rooted_under_dev() {
+        let plan = plan_create(
+            "node1",
+            "d",
+            &blank_disk("nvme0n1"),
+            &recs(&[("node1--d", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert_eq!(
+            plan,
+            CreatePlan::Create {
+                dev_path: "/dev/nvme0n1".to_string()
+            }
+        );
+    }
+
+    /// An absolute path is passed through untouched — "/dev//dev/sdb" would
+    /// not exist, and ceph-volume's error for that is not obviously this.
+    #[test]
+    fn an_absolute_device_path_is_left_alone() {
+        let plan = plan_create(
+            "node1",
+            "d",
+            &blank_disk("/dev/disk/by-id/wwn-0x5000"),
+            &recs(&[("node1--d", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert_eq!(
+            plan,
+            CreatePlan::Create {
+                dev_path: "/dev/disk/by-id/wwn-0x5000".to_string()
+            }
+        );
+    }
+
+    // ── wants_on ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn an_absent_record_is_off() {
+        assert!(!wants_on(&recs(&[]), "node1", "dev-sdb"));
+    }
+
+    #[test]
+    fn only_on_and_using_are_on() {
+        assert!(wants_on(&recs(&[("node1--d", "ON")]), "node1", "d"));
+        assert!(wants_on(&recs(&[("node1--d", "USING")]), "node1", "d"));
+        for off in ["OFF", "off", "On", "using", "", "REMOVING"] {
+            assert!(
+                !wants_on(&recs(&[("node1--d", off)]), "node1", "d"),
+                "{off:?} must not read as on"
+            );
+        }
+    }
+
+    /// A hardware id is globally unique, so its record is bare rather than
+    /// node-scoped, and record_key is what decides which shape to look for.
+    #[test]
+    fn a_hardware_id_record_is_found_without_a_node_prefix() {
+        let id = "serial-wwn-0x50014ee214caf529";
+        assert!(wants_on(&recs(&[(id, "ON")]), "node1", id));
+        assert!(wants_on(&recs(&[(id, "ON")]), "node2", id));
+    }
+
+    // ── plan_purge: the last gate before a disk is wiped ─────────────────────
+
+    use crate::routers::ceph::PgLoss;
+
+    fn loss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
+        PgLoss {
+            stuck,
+            total,
+            unrecoverable,
+        }
+    }
+
+    #[test]
+    fn a_drain_still_in_progress_waits() {
+        assert_eq!(plan_purge(false, false, None), PurgeVerdict::Wait);
+    }
+
+    /// The first answer is taken before the daemon is stopped, so a "no" there
+    /// must not be overridden by anything later.
+    #[test]
+    fn an_unsafe_osd_waits_whatever_else_is_true() {
+        assert_eq!(
+            plan_purge(false, true, Some(&loss(0, 100, false))),
+            PurgeVerdict::Wait
+        );
+    }
+
+    /// Ceph agreed, the daemon went down, and now it does not agree. Something
+    /// moved underneath; the disk is not ours to destroy on that basis.
+    #[test]
+    fn an_osd_that_stops_being_safe_after_the_daemon_stops_is_left_alone() {
+        assert_eq!(plan_purge(true, false, None), PurgeVerdict::Recheck);
+    }
+
+    /// The incident this whole gate exists for. safe-to-destroy says yes
+    /// BECAUSE Ceph has written the data off; that is exactly when the disk
+    /// must not be wiped.
+    #[test]
+    fn a_cluster_with_unrecoverable_stuck_pgs_refuses_to_purge() {
+        assert_eq!(
+            plan_purge(true, true, Some(&loss(63, 200, true))),
+            PurgeVerdict::RefuseDataAtRisk
+        );
+    }
+
+    /// Both halves are required. Unreadable-but-rebuildable is ordinary
+    /// recovery, and refusing there would mean a disk could never be removed
+    /// from a degraded cluster.
+    #[test]
+    fn stuck_pgs_that_can_still_be_rebuilt_do_not_block_a_purge() {
+        assert_eq!(
+            plan_purge(true, true, Some(&loss(63, 200, false))),
+            PurgeVerdict::Purge
+        );
+    }
+
+    /// And a single-copy pool with nothing actually stuck is not at risk.
+    #[test]
+    fn a_single_copy_pool_with_nothing_stuck_does_not_block_a_purge() {
+        assert_eq!(
+            plan_purge(true, true, Some(&loss(0, 200, true))),
+            PurgeVerdict::Purge
+        );
+    }
+
+    #[test]
+    fn a_healthy_cluster_purges() {
+        assert_eq!(
+            plan_purge(true, true, Some(&loss(0, 200, false))),
+            PurgeVerdict::Purge
+        );
+        assert_eq!(plan_purge(true, true, None), PurgeVerdict::Purge);
+    }
+
+    /// Every path that is not an unambiguous yes must not reach Purge. Written
+    /// as an exhaustive sweep so a new condition cannot be added to the middle
+    /// of the chain and default to destroying the disk.
+    #[test]
+    fn nothing_but_a_clear_yes_ever_reaches_purge() {
+        for before in [false, true] {
+            for after in [false, true] {
+                for l in [
+                    None,
+                    Some(loss(0, 10, false)),
+                    Some(loss(5, 10, false)),
+                    Some(loss(0, 10, true)),
+                    Some(loss(5, 10, true)),
+                ] {
+                    let at_risk = l.as_ref().is_some_and(|x| x.unrecoverable && x.stuck > 0);
+                    let verdict = plan_purge(before, after, l.as_ref());
+                    let should_purge = before && after && !at_risk;
+                    assert_eq!(
+                        verdict == PurgeVerdict::Purge,
+                        should_purge,
+                        "before={before} after={after} at_risk={at_risk} gave {verdict:?}"
+                    );
+                }
+            }
+        }
     }
 }
