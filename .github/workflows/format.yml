@@ -1,32 +1,20 @@
 name: format
 
-# Every branch gets its own formatting PR: push `ok`, and if `nix fmt` has work
-# to do you get `fmt-ok` opened against `ok`. Not just the default branch,
-# because an unformatted feature branch is red on `formatting` the moment it is
-# pushed, and the fix should arrive before review rather than after.
+# Push `ok` and, if `nix fmt` has work to do, `fmt-ok` opens against `ok`.
 #
-# Push-triggered only. There is no schedule: a formatter version moving is
-# something you find out about on the next push, and a cron that opens PRs
-# against every stale branch in the repo is noise.
+# No branch exclusion and no schedule. This cannot recurse because a formatted
+# tree produces no diff, which is checked explicitly below rather than left to
+# the PR action no-opping — excluding `fmt-**` would also have made those
+# branches permanently unformattable.
 #
-# This does not recurse, and it does not need a branch exclusion to avoid it: a
-# formatted tree produces no diff, so the run triggered by the bot pushing
-# `fmt-ok` finds nothing to do and stops. That is checked explicitly below
-# rather than left to the PR action no-opping, so the terminating condition is
-# visible in the file instead of being a property of a dependency.
-#
-# Excluding `fmt-**` would also have meant those branches could never be
-# formatted, which matters the moment someone pushes a manual fix onto one.
-#
-# `branches: ["**"]` rather than a bare `push:` — every branch, but not tags.
-# A tag push would try to open a PR whose base is a tag, which is not a thing.
+# `branches: ["**"]` rather than a bare `push:` — every branch, but not tags. A
+# tag push would open a PR whose base is a tag.
 
 on:
   workflow_dispatch:
   push:
     branches: ["**"]
 
-# Per branch, so two branches formatting at once do not cancel each other.
 concurrency:
   group: format-${{ github.ref_name }}
   cancel-in-progress: true
@@ -49,10 +37,6 @@ jobs:
 
       - uses: DeterminateSystems/magic-nix-cache-action@v8
 
-      # `nix fmt` and `checks.formatting` are the same treefmt wrapper, built
-      # from nix/treefmt.nix — so whatever this writes is exactly what the check
-      # would otherwise have demanded. There is no second formatter here that
-      # could disagree with the gate.
       - name: Run nix fmt
         id: fmt
         run: |
@@ -69,8 +53,8 @@ jobs:
         if: steps.fmt.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
-          # fmt-<branch>, targeting <branch>. A fixed name per source branch, so
-          # a later push updates the open PR rather than stacking a second one.
+          # Fixed name per source branch, so a later push updates the open PR
+          # rather than stacking a second one.
           branch: fmt-${{ github.ref_name }}
           base: ${{ github.ref_name }}
           delete-branch: true
