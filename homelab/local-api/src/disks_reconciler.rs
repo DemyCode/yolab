@@ -1066,17 +1066,7 @@ async fn foreign_osd_on(dev_path: &str) -> Option<i64> {
         .await
         .ok()?;
     let our_fsid = cluster_fsid().await.filter(|f| !f.is_empty())?;
-    let ours: Vec<i64> = parse_lvm_list(&raw, &our_fsid)
-        .ok()?
-        .iter()
-        .map(|(_, id)| *id)
-        .collect();
-    let want = canonical_device(dev_path);
-    parse_lvm_list(&raw, "")
-        .ok()?
-        .into_iter()
-        .find(|(d, id)| !ours.contains(id) && canonical_device(d) == want)
-        .map(|(_, id)| id)
+    foreign_osd_in_list(&raw, &our_fsid, dev_path)
 }
 
 /// One creation attempt, including cleaning up after the previous one.
@@ -1125,14 +1115,7 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
             .map(|e| e.to_string())
             .unwrap_or_default();
         let foreign_lvm = foreign_osd_on(dev_path).await;
-        let zap: Option<Vec<&str>> = if foreign_lvm.is_some() {
-            Some(vec!["lvm", "zap", "--destroy", dev_path])
-        } else if is_stale_signature(&err) {
-            Some(vec!["lvm", "zap", dev_path])
-        } else {
-            None
-        };
-        if let Some(args) = zap {
+        if let Some(args) = zap_args(dev_path, foreign_lvm.is_some(), &err) {
             match foreign_lvm {
                 Some(id) => tracing::warn!(
                     "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it and retrying"
@@ -1551,6 +1534,46 @@ pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i
     Ok(out)
 }
 
+/// Ids in `raw` that do not belong to this cluster.
+fn foreign_osd_ids(raw: &str, our_fsid: &str) -> Vec<i64> {
+    let (Ok(all), Ok(ours)) = (parse_lvm_list(raw, ""), parse_lvm_list(raw, our_fsid)) else {
+        return Vec::new();
+    };
+    let our_ids: Vec<i64> = ours.iter().map(|(_, id)| *id).collect();
+    all.iter()
+        .map(|(_, id)| *id)
+        .filter(|id| !our_ids.contains(id))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The foreign OSD sitting on one specific device, if any.
+fn foreign_osd_in_list(raw: &str, our_fsid: &str, dev_path: &str) -> Option<i64> {
+    let foreign = foreign_osd_ids(raw, our_fsid);
+    let want = canonical_device(dev_path);
+    parse_lvm_list(raw, "")
+        .ok()?
+        .into_iter()
+        .find(|(d, id)| foreign.contains(id) && canonical_device(d) == want)
+        .map(|(_, id)| id)
+}
+
+/// Which zap, if any, clears the way for a create that just failed.
+///
+/// `--destroy` removes the volume group. Right for a foreign stack, which is
+/// the leftover being erased; wrong for the system LV, which disko owns and
+/// only whose contents are stale.
+fn zap_args<'a>(dev_path: &'a str, foreign: bool, err: &str) -> Option<Vec<&'a str>> {
+    if foreign {
+        Some(vec!["lvm", "zap", "--destroy", dev_path])
+    } else if is_stale_signature(err) {
+        Some(vec!["lvm", "zap", dev_path])
+    } else {
+        None
+    }
+}
+
 /// Stop OSD units belonging to another cluster.
 ///
 /// The counterpart to `ensure_osd_unit_running`. A disk left by an earlier
@@ -1566,20 +1589,7 @@ async fn stop_foreign_osd_units() {
     let Some(our_fsid) = cluster_fsid().await.filter(|f| !f.is_empty()) else {
         return;
     };
-    let Ok(all) = parse_lvm_list(&raw, "") else {
-        return;
-    };
-    let Ok(ours) = parse_lvm_list(&raw, &our_fsid) else {
-        return;
-    };
-    let our_ids: Vec<i64> = ours.iter().map(|(_, id)| *id).collect();
-
-    for id in all
-        .iter()
-        .map(|(_, id)| *id)
-        .filter(|id| !our_ids.contains(id))
-        .collect::<std::collections::BTreeSet<_>>()
-    {
+    for id in foreign_osd_ids(&raw, &our_fsid) {
         let unit = format!("yolab-ceph-osd@{id}.service");
         // ActiveState, not is-active/is-failed: a flapping unit sits in
         // `activating (auto-restart)`, and both of those report non-zero for
@@ -3366,6 +3376,85 @@ mod tests {
             "RuntimeError: Device /dev/mapper/pool-ceph has bluestore signature."
         ));
         assert!(!is_stale_signature("RuntimeError: Unable to reach the mon"));
+    }
+
+    /// The shape ceph-volume reports for a disk it wrapped in LVM itself:
+    /// `devices` names the raw disk, `lv_path` the volume inside it. Both must
+    /// resolve to the same foreign OSD or the erase never fires.
+    fn foreign_disk_list(fsid: &str) -> String {
+        format!(
+            r#"{{"1": [{{"devices": ["/dev/sdb"],
+                        "lv_path": "/dev/ceph-e6462b10/osd-block-9f537fef",
+                        "tags": {{"ceph.cluster_fsid": "{fsid}"}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn a_disk_holding_another_clusters_osd_is_found_by_either_name() {
+        let raw = foreign_disk_list(THEIRS);
+        assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdb"), Some(1));
+        assert_eq!(
+            foreign_osd_in_list(&raw, OURS, "/dev/ceph-e6462b10/osd-block-9f537fef"),
+            Some(1)
+        );
+    }
+
+    /// The guard that stops this erasing a live OSD of ours.
+    #[test]
+    fn a_disk_holding_our_own_osd_is_never_reported_as_foreign() {
+        let raw = foreign_disk_list(OURS);
+        assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdb"), None);
+        assert!(foreign_osd_ids(&raw, OURS).is_empty());
+    }
+
+    #[test]
+    fn an_untagged_osd_is_not_treated_as_foreign() {
+        let raw = r#"{"1": [{"devices": ["/dev/sdb"]}]}"#;
+        assert_eq!(foreign_osd_in_list(raw, OURS, "/dev/sdb"), None);
+        assert!(foreign_osd_ids(raw, OURS).is_empty());
+    }
+
+    #[test]
+    fn a_disk_with_no_osd_on_it_is_not_reported() {
+        let raw = foreign_disk_list(THEIRS);
+        assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdc"), None);
+    }
+
+    #[test]
+    fn foreign_ids_are_listed_once_each_and_ours_excluded() {
+        let raw = format!(
+            r#"{{"0": [{{"devices": ["/dev/sda2"], "lv_path": "/dev/pool/ceph",
+                         "tags": {{"ceph.cluster_fsid": "{OURS}"}}}}],
+                 "1": [{{"devices": ["/dev/sdb"], "lv_path": "/dev/ceph-x/osd-block-y",
+                         "tags": {{"ceph.cluster_fsid": "{THEIRS}"}}}}]}}"#
+        );
+        assert_eq!(foreign_osd_ids(&raw, OURS), vec![1]);
+    }
+
+    /// --destroy removes the volume group. That is the point on a foreign
+    /// stack, and destructive on the system LV, which disko owns — only its
+    /// contents are ever stale.
+    #[test]
+    fn only_a_foreign_stack_is_zapped_with_destroy() {
+        assert_eq!(
+            zap_args("/dev/sdb", true, "anything"),
+            Some(vec!["lvm", "zap", "--destroy", "/dev/sdb"])
+        );
+        assert_eq!(
+            zap_args(
+                "/dev/mapper/pool-ceph",
+                false,
+                "Device /dev/mapper/pool-ceph has bluestore signature."
+            ),
+            Some(vec!["lvm", "zap", "/dev/mapper/pool-ceph"])
+        );
+    }
+
+    /// A create that failed for some other reason — an unreachable mon, a
+    /// busy device — must not lead to erasing the disk.
+    #[test]
+    fn an_unrelated_failure_erases_nothing() {
+        assert_eq!(zap_args("/dev/sdb", false, "Unable to reach the mon"), None);
     }
 
     /// Must be an error, never `Ok(vec![])`. An empty result reads as "this host
