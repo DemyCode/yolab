@@ -107,12 +107,27 @@ in {
       pkgs.writeText "store.sh"
       nixosSystems.yolab-ci.config.systemd.services.yolab-containerd-store.script
     }
-    grep -q 'systemctl start --no-block k3s.service' "$script" || {
-      echo "the store unit must start k3s with --no-block, or it deadlocks against its own After= ordering" >&2
+
+    # The ordering is what makes a blocking start fatal. If it ever goes away
+    # this check is arguing about nothing and should be revisited, so assert it
+    # rather than assume it.
+    grep -qx 'yolab-containerd-store.service' ${
+      pkgs.writeText "k3s-after"
+      (builtins.concatStringsSep "\n" nixosSystems.yolab-ci.config.systemd.services.k3s.after)
+    } || {
+      echo "k3s.service is no longer After= the store unit — re-read why this check exists" >&2
       exit 1
     }
-    ! grep -qE 'systemctl start k3s\.service' "$script" || {
-      echo "found a blocking 'systemctl start k3s.service' in the store unit" >&2
+
+    # Every start, not just k3s's: any blocking one from inside this unit hits
+    # the same trap the moment the target is ordered after it.
+    if grep -oE 'systemctl start [^|&;]*' "$script" | grep -qv -- '--no-block'; then
+      echo "a blocking 'systemctl start' remains in the store unit:" >&2
+      grep -nE 'systemctl start [^|&;]*' "$script" >&2
+      exit 1
+    fi
+    grep -q 'systemctl start --no-block k3s.service' "$script" || {
+      echo "the store unit must start k3s again after stopping it" >&2
       exit 1
     }
     touch $out
