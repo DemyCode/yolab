@@ -303,6 +303,16 @@ async fn capture_command(
     Ok(stdout_bytes)
 }
 
+fn disko_args(flake_ref: &str) -> [&str; 5] {
+    [
+        "--yes-wipe-all-disks",
+        "--mode",
+        "destroy,format,mount",
+        "--flake",
+        flake_ref,
+    ]
+}
+
 // ── Main install runner ───────────────────────────────────────────────────────
 
 pub async fn run_install(req: InstallParams, tx: mpsc::UnboundedSender<AppEvent>) {
@@ -374,25 +384,16 @@ async fn do_install(
     tokio::fs::write(format!("{ignored_dir}/hardware-configuration.nix"), hw_nix).await?;
     log!("✓ Hardware config generated");
 
+    // path: not git+file:// — config.toml and hardware-configuration.nix are gitignored.
+    let flake_ref = format!("path:{CODE_DIR}#yolab");
+
     // ── Partition disk ────────────────────────────────────────────────────────
     log!("Partitioning {} with disko…", req.disk);
-    let disk_config = format!("{CODE_DIR}/homelab/nixos/disk-config.nix");
-    stream_command(
-        "disko",
-        &[
-            "--yes-wipe-all-disks",
-            "--mode",
-            "destroy,format,mount",
-            &disk_config,
-        ],
-        tx,
-    )
-    .await?;
+    stream_command("disko", &disko_args(&flake_ref), tx).await?;
     log!("✓ Disk partitioned and mounted");
 
     // ── Install NixOS ─────────────────────────────────────────────────────────
     log!("Installing NixOS — this takes several minutes…");
-    let flake_ref = format!("path:{CODE_DIR}#yolab");
     stream_command(
         "nixos-install",
         &[
@@ -652,6 +653,22 @@ mod tests {
         assert_eq!(cfg["disk"]["esp_size"].as_str(), Some("500M"));
         assert_eq!(cfg["swarm"]["enabled"].as_bool(), Some(false));
         assert_eq!(cfg["tunnel"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn disko_partitions_via_the_flake_not_the_bare_module() {
+        let args = disko_args("path:/tmp/yolab-install#yolab");
+        assert!(args.contains(&"--flake"));
+        assert!(args.iter().any(|a| a.ends_with("#yolab")));
+        assert!(
+            !args.iter().any(|a| a.ends_with(".nix")),
+            "passing a module file drops specialArgs and fails on yolabConfigPath"
+        );
+    }
+
+    #[test]
+    fn the_flake_ref_is_path_so_gitignored_config_is_visible() {
+        assert!(disko_args("path:/tmp/yolab-install#yolab")[4].starts_with("path:"));
     }
 
     #[test]
