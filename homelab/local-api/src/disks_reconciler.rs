@@ -1047,6 +1047,11 @@ fn spawn_create(disk_id: String, dev_path: String) {
     });
 }
 
+fn is_stale_signature(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("bluestore signature") || e.contains("has a filesystem signature")
+}
+
 /// One creation attempt, including cleaning up after the previous one.
 async fn create_osd(disk_id: &str, dev_path: &str) {
     // Clear the wreckage of an earlier attempt first, so ids stop accumulating.
@@ -1063,7 +1068,7 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     // snapshot fails, the leak simply goes undetected this round.
     let before = ceph_cli::osd_ids().await.ok();
 
-    let result = ceph_cli::ceph_volume(&[
+    let mut result = ceph_cli::ceph_volume(&[
         "lvm",
         "create",
         "--bluestore",
@@ -1072,6 +1077,32 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
         "--no-systemd",
     ])
     .await;
+
+    // A reinstall leaves the previous cluster's BlueStore signature behind:
+    // disko recreates the LV but LVM does not zero reused extents, and
+    // ceph-volume then refuses the device forever ("has bluestore signature").
+    // Nothing here is recoverable — refuse_osd_creation already established
+    // this disk is not running an OSD of ours — so clear it and try once more.
+    // zap without --destroy: the LV is disko's, only its contents are stale.
+    if result
+        .as_ref()
+        .is_err_and(|e| is_stale_signature(&e.to_string()))
+    {
+        tracing::warn!("{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying");
+        if let Err(e) = ceph_cli::ceph_volume(&["lvm", "zap", dev_path]).await {
+            tracing::warn!("{disk_id}: zap failed: {e}");
+        } else {
+            result = ceph_cli::ceph_volume(&[
+                "lvm",
+                "create",
+                "--bluestore",
+                "--data",
+                dev_path,
+                "--no-systemd",
+            ])
+            .await;
+        }
+    }
 
     match result {
         Ok(_) => {
@@ -1398,7 +1429,7 @@ fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
 /// first `{` is stripped rather than failing the parse — that failure would
 /// otherwise surface as an empty OSD map, which is the dangerous state described
 /// on `refuse_osd_creation`.
-pub(crate) fn parse_lvm_list(raw: &str) -> Result<Vec<(String, i64)>> {
+pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i64)>> {
     let json_start = raw
         .find('{')
         .ok_or_else(|| anyhow::anyhow!("no JSON object in ceph-volume output"))?;
@@ -1417,6 +1448,19 @@ pub(crate) fn parse_lvm_list(raw: &str) -> Result<Vec<(String, i64)>> {
             continue;
         };
         for e in list {
+            // ceph-volume lists every OSD whose LVM tags are on this host,
+            // including ones belonging to another cluster — a disk carried over
+            // from an earlier install still reads as "osd.1" here. Callers treat
+            // an id from this list as proof the disk is ours, so a foreign OSD
+            // got auto-enabled and its unit restarted forever against a mon that
+            // rightly refused its key. Trust the tag, not the id.
+            let tag_fsid = e["tags"]["ceph.cluster_fsid"].as_str().unwrap_or_default();
+            if !tag_fsid.is_empty() && !our_fsid.is_empty() && tag_fsid != our_fsid {
+                tracing::info!(
+                    "parse_lvm_list: skipping osd.{id} — belongs to cluster {tag_fsid}, not {our_fsid}"
+                );
+                continue;
+            }
             // BOTH identities, because ceph-volume reports different ones
             // depending on how the OSD was made:
             //
@@ -3098,7 +3142,7 @@ mod tests {
           "0": [{"devices": ["/dev/sdb"], "tags": {"ceph.osd_fsid": "abc"}}],
           "1": [{"devices": ["/dev/pool/ceph"], "tags": {"ceph.osd_fsid": "def"}}]
         }"#;
-        let mut got = parse_lvm_list(raw).unwrap();
+        let mut got = parse_lvm_list(raw, OURS).unwrap();
         got.sort();
         assert_eq!(
             got,
@@ -3117,7 +3161,7 @@ mod tests {
     fn lvm_list_tolerates_a_progress_preamble() {
         let raw = "--> Falling back to /tmp/ for logging\n{\"0\": [{\"devices\": [\"/dev/sdb\"]}]}";
         assert_eq!(
-            parse_lvm_list(raw).unwrap(),
+            parse_lvm_list(raw, OURS).unwrap(),
             vec![("/dev/sdb".to_string(), 0)]
         );
     }
@@ -3128,7 +3172,7 @@ mod tests {
     #[test]
     fn lvm_list_reports_the_lv_path_for_an_lvm_backed_osd() {
         let raw = r#"{"0": [{"devices": ["/dev/sda2"], "lv_path": "/dev/pool/ceph"}]}"#;
-        let got = parse_lvm_list(raw).unwrap();
+        let got = parse_lvm_list(raw, OURS).unwrap();
         assert!(
             got.contains(&("/dev/pool/ceph".to_string(), 0)),
             "lv_path must be reported or the system OSD can never be matched: {got:?}"
@@ -3140,7 +3184,7 @@ mod tests {
     #[test]
     fn lvm_list_still_reports_a_raw_disk_osd() {
         let raw = r#"{"1": [{"devices": ["/dev/sdb"], "lv_path": "/dev/ceph-abc/osd-block-def"}]}"#;
-        let got = parse_lvm_list(raw).unwrap();
+        let got = parse_lvm_list(raw, OURS).unwrap();
         assert!(got.contains(&("/dev/sdb".to_string(), 1)), "{got:?}");
     }
 
@@ -3148,34 +3192,88 @@ mod tests {
     fn lvm_list_handles_an_osd_spanning_several_devices() {
         let raw = r#"{"3": [{"devices": ["/dev/sdc", "/dev/sdd"]}]}"#;
         assert_eq!(
-            parse_lvm_list(raw).unwrap(),
+            parse_lvm_list(raw, OURS).unwrap(),
             vec![("/dev/sdc".to_string(), 3), ("/dev/sdd".to_string(), 3)]
         );
     }
 
     #[test]
     fn lvm_list_reports_no_osds_for_an_empty_object() {
-        assert!(parse_lvm_list("{}").unwrap().is_empty());
+        assert!(parse_lvm_list("{}", OURS).unwrap().is_empty());
+    }
+
+    /// A disk carried over from an earlier install still has this host's LVM
+    /// tags, so ceph-volume lists it as a perfectly ordinary local OSD. Callers
+    /// treat an id from this list as proof the disk is ours: mark_known_osds
+    /// stamps is_our_osd, auto_register_all_disks then defaults it ON, and the
+    /// reconciler restarts its unit forever against a mon that refuses the key.
+    #[test]
+    fn lvm_list_ignores_an_osd_belonging_to_another_cluster() {
+        let raw = format!(
+            r#"{{"1": [{{"devices": ["/dev/sdb"], "tags": {{"ceph.cluster_fsid": "{THEIRS}"}}}}]}}"#
+        );
+        assert!(
+            parse_lvm_list(&raw, OURS).unwrap().is_empty(),
+            "a foreign cluster's OSD must not be reported as one of ours"
+        );
+    }
+
+    #[test]
+    fn lvm_list_keeps_an_osd_tagged_with_our_own_cluster() {
+        let raw = format!(
+            r#"{{"1": [{{"devices": ["/dev/sdb"], "tags": {{"ceph.cluster_fsid": "{OURS}"}}}}]}}"#
+        );
+        assert_eq!(
+            parse_lvm_list(&raw, OURS).unwrap(),
+            vec![("/dev/sdb".to_string(), 1)]
+        );
+    }
+
+    /// Older OSDs predate the tag, and an unreachable mon leaves our fsid
+    /// empty. Dropping those would empty the map, which is the exact state
+    /// refuse_osd_creation exists to survive — every healthy OSD would look
+    /// like a blank disk awaiting provisioning.
+    #[test]
+    fn lvm_list_keeps_an_untagged_osd_and_survives_an_unknown_fsid() {
+        let untagged = r#"{"1": [{"devices": ["/dev/sdb"]}]}"#;
+        assert_eq!(parse_lvm_list(untagged, OURS).unwrap().len(), 1);
+
+        let tagged = format!(
+            r#"{{"1": [{{"devices": ["/dev/sdb"], "tags": {{"ceph.cluster_fsid": "{THEIRS}"}}}}]}}"#
+        );
+        assert_eq!(
+            parse_lvm_list(&tagged, "").unwrap().len(),
+            1,
+            "an unknown cluster fsid must not be read as 'everything is foreign'"
+        );
+    }
+
+    #[test]
+    fn a_stale_bluestore_signature_is_recognised() {
+        assert!(is_stale_signature(
+            "RuntimeError: Device /dev/mapper/pool-ceph has bluestore signature."
+        ));
+        assert!(!is_stale_signature("RuntimeError: Unable to reach the mon"));
     }
 
     /// Must be an error, never `Ok(vec![])`. An empty result reads as "this host
     /// has no OSDs", which is the input that makes the reconciler start wiping.
     #[test]
     fn lvm_list_errors_on_output_with_no_json() {
-        assert!(parse_lvm_list("").is_err());
-        assert!(parse_lvm_list("--> something went wrong").is_err());
+        assert!(parse_lvm_list("", OURS).is_err());
+        assert!(parse_lvm_list("--> something went wrong", OURS).is_err());
     }
 
     #[test]
     fn lvm_list_errors_on_malformed_json() {
-        assert!(parse_lvm_list("{\"0\": [").is_err());
+        assert!(parse_lvm_list("{\"0\": [", OURS).is_err());
     }
 
     #[test]
     fn lvm_list_skips_entries_that_are_not_osd_ids() {
         let raw = r#"{"notanid": [{"devices": ["/dev/sdz"]}], "2": [{"devices": ["/dev/sde"]}]}"#;
         assert_eq!(
-            parse_lvm_list(raw).unwrap(),
+            parse_lvm_list(raw, OURS).unwrap(),
             vec![("/dev/sde".to_string(), 2)]
         );
     }
@@ -3183,7 +3281,7 @@ mod tests {
     #[test]
     fn lvm_list_skips_records_with_no_devices() {
         let raw = r#"{"0": [{"tags": {}}], "1": [{"devices": [""]}]}"#;
-        assert!(parse_lvm_list(raw).unwrap().is_empty());
+        assert!(parse_lvm_list(raw, OURS).unwrap().is_empty());
     }
 
     // ── parse_disk_flags ──────────────────────────────────────────────────────
