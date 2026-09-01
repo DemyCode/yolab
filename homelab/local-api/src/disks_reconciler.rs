@@ -1085,6 +1085,27 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     // snapshot fails, the leak simply goes undetected this round.
     let before = ceph_cli::osd_ids().await.ok();
 
+    // Before creating, not after a failure. A disk still carrying an earlier
+    // install's LVM stack does not make ceph-volume fail — it exits 0 in about
+    // two seconds having done nothing, because as far as it is concerned the
+    // device is already an OSD. Nothing is created, the disk never joins any
+    // map, and the reconciler tries again every tick forever. Erasing only on
+    // Err never fired here.
+    if let Some(id) = foreign_osd_on(dev_path).await {
+        tracing::warn!(
+            "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it first"
+        );
+        if let Err(e) = ceph_cli::ceph_volume(&["lvm", "zap", "--destroy", dev_path]).await {
+            tracing::warn!("{disk_id}: zap failed, leaving the disk alone: {e}");
+            set_phase(
+                disk_id,
+                phase::RETRYING,
+                "Could not erase this disk yet. YoLab will keep trying.",
+            );
+            return;
+        }
+    }
+
     let mut result = ceph_cli::ceph_volume(&[
         "lvm",
         "create",
@@ -1095,35 +1116,20 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     ])
     .await;
 
-    // Two kinds of leftover block creation, and neither clears itself:
-    //
-    //   - the system LV keeps the previous cluster's BlueStore signature,
-    //     because disko recreates the LV but LVM does not zero reused extents;
-    //   - a disk from an earlier install still carries that install's whole LVM
-    //     stack, so the device is an LVM2_member and ceph-volume will not take
-    //     it. It is not caught by refuse_osd_creation: the BlueStore label sits
-    //     inside the LV, not at offset 0 where the label sniff reads.
-    //
-    // Both mean the same thing — this disk is switched ON, holds no OSD of
-    // ours, and something stale is in the way — so clear it and try once more.
-    // --destroy only for the second: it removes the VG, which is right for a
-    // foreign stack and wrong for the system LV, which is disko's to own.
+    // The system LV keeps the previous cluster's BlueStore signature, because
+    // disko recreates the LV but LVM does not zero reused extents. Unlike the
+    // foreign stack above this one does fail, so it is cleared on the way out.
+    // No --destroy: that volume is disko's to own, only its contents are stale.
     if result.is_err() {
         let err = result
             .as_ref()
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
-        let foreign_lvm = foreign_osd_on(dev_path).await;
-        if let Some(args) = zap_args(dev_path, foreign_lvm.is_some(), &err) {
-            match foreign_lvm {
-                Some(id) => tracing::warn!(
-                    "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it and retrying"
-                ),
-                None => tracing::warn!(
-                    "{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying"
-                ),
-            }
+        if let Some(args) = zap_args(dev_path, false, &err) {
+            tracing::warn!(
+                "{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying"
+            );
             if let Err(e) = ceph_cli::ceph_volume(&args).await {
                 tracing::warn!("{disk_id}: zap failed: {e}");
             } else {
@@ -3455,6 +3461,16 @@ mod tests {
     #[test]
     fn an_unrelated_failure_erases_nothing() {
         assert_eq!(zap_args("/dev/sdb", false, "Unable to reach the mon"), None);
+    }
+
+    /// Why the erase has to happen before the create rather than after a
+    /// failure: a disk carrying an earlier install's LVM stack does not make
+    /// ceph-volume fail. It exits 0 having done nothing, so there is no error
+    /// to react to — `zap_args` on a successful create sees an empty string
+    /// and correctly declines, which is exactly why gating on Err never fired.
+    #[test]
+    fn a_successful_create_offers_no_error_to_trigger_an_erase() {
+        assert_eq!(zap_args("/dev/sdb", false, ""), None);
     }
 
     /// Must be an error, never `Ok(vec![])`. An empty result reads as "this host
