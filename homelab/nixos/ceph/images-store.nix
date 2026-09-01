@@ -264,7 +264,13 @@ in {
           fi
           if [ "$K3S_STOPPED" = yes ]; then
             echo "starting k3s again"
-            systemctl start k3s.service || true
+            # --no-block, and it is not optional. k3s.service is After= this
+            # unit, so its start job cannot run until this one finishes, while
+            # a blocking `systemctl start` waits for that job — the unit waits
+            # for k3s, k3s waits for the unit, and the node sits with k3s dead
+            # until this unit's 900s timeout fires. Queue it and let the
+            # ordering release it once we exit.
+            systemctl start --no-block k3s.service || true
           fi
         }
         trap cleanup EXIT INT TERM

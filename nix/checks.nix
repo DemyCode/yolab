@@ -96,6 +96,28 @@ in {
   formatting = treefmtEval.config.build.check treeSrc;
 
   # No `-s sh`: forcing one dialect made installer/macos/install.sh fail as
+  # The store unit stops k3s for the handover and must start it again without
+  # blocking. k3s.service is After= that unit, so a blocking `systemctl start`
+  # from inside it deadlocks: the unit waits for k3s's job, k3s's job waits for
+  # the unit to finish, and the node sits with k3s dead until the 900s timeout.
+  # That happened on node1. Pinned here because it is a property of the
+  # generated script, invisible to any Rust or shell test.
+  containerd-store-no-block = pkgs.runCommand "containerd-store-no-block" {} ''
+    script=${
+      pkgs.writeText "store.sh"
+      nixosSystems.yolab-ci.config.systemd.services.yolab-containerd-store.script
+    }
+    grep -q 'systemctl start --no-block k3s.service' "$script" || {
+      echo "the store unit must start k3s with --no-block, or it deadlocks against its own After= ordering" >&2
+      exit 1
+    }
+    ! grep -qE 'systemctl start k3s\.service' "$script" || {
+      echo "found a blocking 'systemctl start k3s.service' in the store unit" >&2
+      exit 1
+    }
+    touch $out
+  '';
+
   # The image RBD's sizing arithmetic, driven with stubbed `ceph` output.
   #
   # It decides how much of the cluster one node's container store may claim,
