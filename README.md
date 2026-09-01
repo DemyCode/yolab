@@ -97,3 +97,9 @@ darwin-rebuild switch --flake path:.#yolab-mac
 ## CI
 
 Every push lints, builds and pushes `wg-sidecar` and `wg-register` to `ghcr.io/demycode/`, and publishes an installer ISO as a GitHub release. Everything is tagged `<branch>-latest`.
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
