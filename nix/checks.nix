@@ -96,6 +96,72 @@ in {
   formatting = treefmtEval.config.build.check treeSrc;
 
   # No `-s sh`: forcing one dialect made installer/macos/install.sh fail as
+  # The image RBD's sizing arithmetic, driven with stubbed `ceph` output.
+  #
+  # It decides how much of the cluster one node's container store may claim,
+  # and the failure it guards against is not local: oversize the image and the
+  # pool reaches full-ratio, at which point Ceph blocks writes for every app on
+  # every machine. The pool follows the replica policy now, so a logical MB
+  # costs `size` raw MB — the case worth pinning is that raising the replica
+  # count does NOT raise what the image consumes.
+  images-sizing =
+    pkgs.runCommand "images-sizing" {
+      nativeBuildInputs = [pkgs.jq pkgs.gawk pkgs.bash];
+    } ''
+      cat > sizing.sh <<'SNIPPET'
+      ${
+        import ../homelab/nixos/ceph/images-sizing.nix {
+          poolName = "images";
+          shareOfPool = 0.25;
+          minSizeGb = 40;
+        }
+      }
+      SNIPPET
+
+      # RAW MB, replica count, host count -> the WANT_MB the snippet computes.
+      want() {
+        RAW=$1 REP=$2 HOSTS_N=$3 bash -c '
+          timeout() { shift; "$@"; }
+          ceph() {
+            case "$*" in
+              *"osd tree"*)
+                printf "{\"nodes\":["
+                for i in $(seq 1 "$HOSTS_N"); do
+                  [ "$i" -gt 1 ] && printf ","
+                  printf "{\"type\":\"host\",\"children\":[1]}"
+                done
+                printf "]}" ;;
+              *"df -f json"*) printf "{\"stats\":{\"total_bytes\":%s}}" "$((RAW * 1048576))" ;;
+              *"pool get"*)   printf "{\"size\":%s}" "$REP" ;;
+            esac
+          }
+          . ./sizing.sh >/dev/null 2>&1
+          echo "$WANT_MB"
+        '
+      }
+
+      one=$(want 1000000 1 1)
+      two=$(want 1000000 2 1)
+      [ "$one" = 250000 ] || { echo "one copy: want 250000, got $one" >&2; exit 1; }
+      [ "$two" = 125000 ] || { echo "two copies: want 125000, got $two" >&2; exit 1; }
+
+      # The whole point: two copies of half the image is the same raw bytes.
+      [ "$((one * 1))" = "$((two * 2))" ] || {
+        echo "raw cost changed with the replica count: $((one * 1)) vs $((two * 2))" >&2
+        exit 1
+      }
+
+      # The floor never wins over the ceiling — exceeding it is the full-ratio
+      # failure, and a too-small image only costs re-pulling layers.
+      tiny=$(want 1000 2 4)
+      [ "$tiny" -le $((1000 / 2 / (4 * 2))) ] || {
+        echo "ceiling lost to the 40G floor on a small pool: got $tiny" >&2
+        exit 1
+      }
+
+      touch $out
+    '';
+
   # POSIX for using the bash its own shebang asks for. shellcheck reads the
   # shebang. -x follows sourced files.
   shellcheck =

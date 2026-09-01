@@ -6,9 +6,10 @@
 #
 # Two properties are load-bearing — do not "simplify" either:
 #
-# 1. size=1 on the pool. Every node needs its own unpacked copy of every image,
-#    so pooling across nodes saves nothing; at 3 nodes the topology controller
-#    would set size=3 and cost 9x the bytes for data a registry can resend.
+# 1. The RBD is sized against USABLE capacity, not raw. The pool follows the
+#    cluster's replica policy like any other, so a logical MB costs `size` raw
+#    MB. It was pinned at one copy to avoid paying that, which meant losing one
+#    disk took the whole container store with it and the node could not start.
 #
 # 2. The RBD tracks capacity that really exists, never oversubscribed. Kubelet's
 #    image GC works by statfs, so a thin 2TB image over a 500GB pool reports 5%
@@ -43,47 +44,12 @@ with lib; let
     gawk
     jq
   ];
-  # How big this node's image store may be. Shared verbatim by the create and
-  # the grow path, because they computed it separately and a disagreement
-  # between them means an image that is repeatedly resized in both directions.
-  #
-  # Sets HOSTS, TOTAL_MB and WANT_MB. Requires ceph, jq, awk and coreutils.
-  sizingSnippet = ''
-    # Every machine sizes its own image store out of the SAME pool, so a fixed
-    # per-node share is a promise the pool cannot keep: at four machines, 25%
-    # each is the entire pool and there is nothing left for app data. The
-    # comment on shareOfPool described exactly this failure and then hardcoded
-    # the constant that causes it.
-    HOSTS=$(timeout 30 ceph osd tree -f json 2>/dev/null \
-      | jq '[.nodes[] | select(.type == "host" and (.children | length) > 0)] | length' 2>/dev/null \
-      || echo "")
-    case "''${HOSTS:-}" in
-      ''' | *[!0-9]* | 0) HOSTS=1 ;;
-    esac
-
-    TOTAL_MB=$(timeout 30 ceph df -f json | jq -r '.stats.total_bytes / 1048576 | floor')
-    case "''${TOTAL_MB:-}" in
-      ''' | *[!0-9]* ) echo "could not read pool capacity — not sizing anything"; exit 0 ;;
-    esac
-
-    WANT_MB=$(awk -v t="$TOTAL_MB" -v s=${toString cfg.shareOfPool} 'BEGIN{printf "%d", t*s}')
-    MIN_MB=$(( ${toString cfg.minSizeGb} * 1024 ))
-    if [ "$WANT_MB" -lt "$MIN_MB" ]; then WANT_MB=$MIN_MB; fi
-
-    # The ceiling, applied LAST so it also beats the minimum. Exceeding it is
-    # the failure this whole file warns about: images fill the pool, Ceph hits
-    # full-ratio, and writes block for every app on every machine. A too-small
-    # image store only costs re-pulling images, so when the two limits conflict
-    # this one has to win.
-    CAP_MB=$(( TOTAL_MB / (HOSTS * 2) ))
-    if [ "$WANT_MB" -gt "$CAP_MB" ]; then
-      echo "capping the image store at ''${CAP_MB}MB: ''${HOSTS} machine(s) share this pool and images may claim at most half of it"
-      WANT_MB=$CAP_MB
-    fi
-    if [ "$WANT_MB" -lt "$MIN_MB" ]; then
-      echo "warning: ''${WANT_MB}MB is below the ''${MIN_MB}MB floor — this pool is small for ''${HOSTS} machine(s); add a disk"
-    fi
-  '';
+  # Sets HOSTS, TOTAL_MB, REPLICAS, USABLE_MB and WANT_MB. Shared verbatim by
+  # the create and the grow path, because they computed it separately once and
+  # a disagreement between them resized the image in both directions forever.
+  sizingSnippet = import ./images-sizing.nix {
+    inherit (cfg) poolName shareOfPool minSizeGb;
+  };
 in {
   options.yolab.ceph.imagesStore = {
     enable = mkEnableOption "back containerd's image store with a Ceph RBD";
