@@ -128,6 +128,13 @@ in {
         # all of them would see the same mismatch and disable/enable the module
         # at once — three restarts racing to fix one problem. mgr ids are the
         # hostname (see default.nix), so this comparison is exact.
+        #
+        # `|| true` on both: pipefail makes a substitution inherit the failing
+        # side of the pipe, so a ceph that legitimately reports nothing would
+        # kill the unit here under `set -u` instead of reaching the guard below.
+        ACTIVE=$(timeout 20 ceph mgr stat -f json 2>/dev/null | jq -r '.active_name // empty' || true)
+        SERVED=$(timeout 20 ceph mgr services -f json 2>/dev/null | jq -r '.dashboard // empty' || true)
+
         if [ -n "$SERVED" ] && [ "$ACTIVE" = "${host}" ]; then
           SCHEME=''${SERVED%%://*}
           REST=''${SERVED#*://}
