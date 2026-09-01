@@ -751,6 +751,8 @@ async fn reconcile_local_osds(
         }
     }
 
+    stop_foreign_osd_units().await;
+
     let crush_nodes: Vec<Value> = match ceph_cli::ceph_json(&["osd", "df", "tree"]).await {
         Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
         Err(e) => {
@@ -1488,6 +1490,57 @@ pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i
         }
     }
     Ok(out)
+}
+
+/// Stop OSD units belonging to another cluster.
+///
+/// The counterpart to `ensure_osd_unit_running`. A disk left by an earlier
+/// install still has this host's LVM tags, so its unit can be started — once,
+/// by a release that had not yet learned to read `ceph.cluster_fsid`, or by
+/// hand. The mon then refuses its key and `Restart=on-failure` flaps it
+/// forever. Skipping such an OSD is enough to stop starting it, but not to
+/// stop one already running: nothing else ever looks at it again.
+async fn stop_foreign_osd_units() {
+    let Ok(raw) = ceph_cli::ceph_volume(&["lvm", "list", "--format", "json"]).await else {
+        return;
+    };
+    let Some(our_fsid) = cluster_fsid().await.filter(|f| !f.is_empty()) else {
+        return;
+    };
+    let Ok(all) = parse_lvm_list(&raw, "") else {
+        return;
+    };
+    let Ok(ours) = parse_lvm_list(&raw, &our_fsid) else {
+        return;
+    };
+    let our_ids: Vec<i64> = ours.iter().map(|(_, id)| *id).collect();
+
+    for id in all
+        .iter()
+        .map(|(_, id)| *id)
+        .filter(|id| !our_ids.contains(id))
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let unit = format!("yolab-ceph-osd@{id}.service");
+        // ActiveState, not is-active/is-failed: a flapping unit sits in
+        // `activating (auto-restart)`, and both of those report non-zero for
+        // it — the one state this exists to catch would have been skipped.
+        let state = tokio::process::Command::new("systemctl")
+            .args(["show", "-p", "ActiveState", "--value", &unit])
+            .output()
+            .await
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if state.is_empty() || state == "inactive" {
+            continue;
+        }
+        tracing::warn!("osd.{id}: belongs to another cluster — stopping {unit}");
+        let _ = tokio::process::Command::new("systemctl")
+            .args(["stop", &unit])
+            .status()
+            .await;
+    }
 }
 
 /// Start this OSD's unit if it is not already running. Cheap enough to call on
