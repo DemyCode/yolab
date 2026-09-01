@@ -1054,6 +1054,31 @@ fn is_stale_signature(err: &str) -> bool {
     e.contains("bluestore signature") || e.contains("has a filesystem signature")
 }
 
+/// The id of an OSD from another cluster sitting on this device, if any.
+///
+/// ceph-volume reports it because the LVM tags are on this host; the label
+/// sniff in `disk_meta` does not, because on a disk ceph-volume wrapped in LVM
+/// the BlueStore label lives inside the LV rather than at offset 0. So a disk
+/// like this reads as blank, passes `refuse_osd_creation`, and then fails
+/// creation forever against its own leftover volume group.
+async fn foreign_osd_on(dev_path: &str) -> Option<i64> {
+    let raw = ceph_cli::ceph_volume(&["lvm", "list", "--format", "json"])
+        .await
+        .ok()?;
+    let our_fsid = cluster_fsid().await.filter(|f| !f.is_empty())?;
+    let ours: Vec<i64> = parse_lvm_list(&raw, &our_fsid)
+        .ok()?
+        .iter()
+        .map(|(_, id)| *id)
+        .collect();
+    let want = canonical_device(dev_path);
+    parse_lvm_list(&raw, "")
+        .ok()?
+        .into_iter()
+        .find(|(d, id)| !ours.contains(id) && canonical_device(d) == want)
+        .map(|(_, id)| id)
+}
+
 /// One creation attempt, including cleaning up after the previous one.
 async fn create_osd(disk_id: &str, dev_path: &str) {
     // Clear the wreckage of an earlier attempt first, so ids stop accumulating.
@@ -1080,29 +1105,55 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     ])
     .await;
 
-    // A reinstall leaves the previous cluster's BlueStore signature behind:
-    // disko recreates the LV but LVM does not zero reused extents, and
-    // ceph-volume then refuses the device forever ("has bluestore signature").
-    // Nothing here is recoverable — refuse_osd_creation already established
-    // this disk is not running an OSD of ours — so clear it and try once more.
-    // zap without --destroy: the LV is disko's, only its contents are stale.
-    if result
-        .as_ref()
-        .is_err_and(|e| is_stale_signature(&e.to_string()))
-    {
-        tracing::warn!("{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying");
-        if let Err(e) = ceph_cli::ceph_volume(&["lvm", "zap", dev_path]).await {
-            tracing::warn!("{disk_id}: zap failed: {e}");
+    // Two kinds of leftover block creation, and neither clears itself:
+    //
+    //   - the system LV keeps the previous cluster's BlueStore signature,
+    //     because disko recreates the LV but LVM does not zero reused extents;
+    //   - a disk from an earlier install still carries that install's whole LVM
+    //     stack, so the device is an LVM2_member and ceph-volume will not take
+    //     it. It is not caught by refuse_osd_creation: the BlueStore label sits
+    //     inside the LV, not at offset 0 where the label sniff reads.
+    //
+    // Both mean the same thing — this disk is switched ON, holds no OSD of
+    // ours, and something stale is in the way — so clear it and try once more.
+    // --destroy only for the second: it removes the VG, which is right for a
+    // foreign stack and wrong for the system LV, which is disko's to own.
+    if result.is_err() {
+        let err = result
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        let foreign_lvm = foreign_osd_on(dev_path).await;
+        let zap: Option<Vec<&str>> = if foreign_lvm.is_some() {
+            Some(vec!["lvm", "zap", "--destroy", dev_path])
+        } else if is_stale_signature(&err) {
+            Some(vec!["lvm", "zap", dev_path])
         } else {
-            result = ceph_cli::ceph_volume(&[
-                "lvm",
-                "create",
-                "--bluestore",
-                "--data",
-                dev_path,
-                "--no-systemd",
-            ])
-            .await;
+            None
+        };
+        if let Some(args) = zap {
+            match foreign_lvm {
+                Some(id) => tracing::warn!(
+                    "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it and retrying"
+                ),
+                None => tracing::warn!(
+                    "{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying"
+                ),
+            }
+            if let Err(e) = ceph_cli::ceph_volume(&args).await {
+                tracing::warn!("{disk_id}: zap failed: {e}");
+            } else {
+                result = ceph_cli::ceph_volume(&[
+                    "lvm",
+                    "create",
+                    "--bluestore",
+                    "--data",
+                    dev_path,
+                    "--no-systemd",
+                ])
+                .await;
+            }
         }
     }
 
@@ -1124,6 +1175,14 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
                             e.orphan_osd_id = None;
                         }
                     } else {
+                        // Silent until now, and it is the state a stuck disk
+                        // actually sits in: creation reported success, the disk
+                        // is still in no OSD map, and the next tick tries again.
+                        // Twenty-odd rounds of that left nothing in the journal
+                        // to say why.
+                        tracing::warn!(
+                            "{disk_id}: ceph-volume reported success but {dev_path} is in no OSD map — will retry"
+                        );
                         set_phase(
                             disk_id,
                             phase::CREATING,
