@@ -285,6 +285,24 @@ in {
           NEEDS_REBUILD=1
         fi
 
+        # From here on this unit may stop k3s, and every exit path below has to
+        # put it back. One trap for both that and the staging mount: a second
+        # `trap ... EXIT` would replace this one rather than add to it, and the
+        # node would be left with k3s down.
+        STAGE=""
+        K3S_STOPPED=no
+        cleanup() {
+          if [ -n "$STAGE" ]; then
+            umount "$STAGE" 2>/dev/null || true
+            rmdir "$STAGE" 2>/dev/null || true
+          fi
+          if [ "$K3S_STOPPED" = yes ]; then
+            echo "starting k3s again"
+            systemctl start k3s.service || true
+          fi
+        }
+        trap cleanup EXIT INT TERM
+
         # Idempotent: rbd map on an already-mapped image just reports it.
         # osd_request_timeout is THE setting behind the worst failure this
         # storage stack has had. krbd defaults to 0 — wait forever — so when the
@@ -335,6 +353,19 @@ in {
 
         mkdir -p ${containerdRoot}
 
+        # At boot this unit runs Before=k3s, so nothing holds the store open and
+        # the work below is safe as written. The timer runs it again on a live
+        # node — the case that matters, because on a fresh install there are no
+        # OSDs until someone switches a disk on, so the first boot always lands
+        # containerd on root and only a later run can move it off. Copying a
+        # store containerd has open, or mounting over it, corrupts it, so k3s
+        # comes down for the handover and the trap above brings it back.
+        if systemctl is-active --quiet k3s.service; then
+          echo "stopping k3s to move its image store onto Ceph"
+          systemctl stop k3s.service
+          K3S_STOPPED=yes
+        fi
+
         # One-time migration off the root disk.
         #
         # On every boot after the first, k3s has already populated this directory
@@ -348,12 +379,13 @@ in {
         # running and nothing holds these files open.
         if [ -n "$(ls -A ${containerdRoot} 2>/dev/null)" ]; then
           echo "migrating the existing image store off the root disk"
+          # Assigned, not trapped: the cleanup registered above already covers
+          # this mount. The copy below can run for minutes and so is the one
+          # operation here that gets interrupted — by the backstop timeout, or
+          # by someone rebooting a machine that looks stuck — and without the
+          # cleanup the staging mount survives into the next boot and the RBD
+          # is busy.
           STAGE=$(mktemp -d)
-          # The copy below is the one operation here that can run for minutes, so
-          # it is also the one that can be interrupted — by the backstop timeout,
-          # or by someone rebooting a machine that looks stuck. Without this the
-          # staging mount survives into the next boot and the RBD is busy.
-          trap 'umount "$STAGE" 2>/dev/null || true; rmdir "$STAGE" 2>/dev/null || true' EXIT INT TERM
           if ! mount "$DEV" "$STAGE"; then
             echo "could not mount $DEV for migration — staying on the root disk" >&2
             rmdir "$STAGE" 2>/dev/null || true
@@ -454,6 +486,19 @@ in {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "2min";
+        OnUnitActiveSec = "5min";
+      };
+    };
+
+    # The other half of that. Provisioning creating the RBD achieved nothing on
+    # its own: the unit that mounts it only ran at boot, so a first install left
+    # containerd on the root disk until somebody rebooted — indefinitely, and
+    # invisibly. Runs behind the provisioning timer so the image exists by the
+    # time it looks, and exits immediately once the mount is in place.
+    systemd.timers.yolab-containerd-store = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnBootSec = "4min";
         OnUnitActiveSec = "5min";
       };
     };
