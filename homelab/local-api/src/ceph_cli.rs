@@ -159,7 +159,8 @@ pub async fn osd_safe_to_destroy(osd_id: i64) -> bool {
 /// create` wipes the device. See `refuse_osd_creation`.
 pub async fn local_osds() -> Result<Vec<(String, i64)>> {
     let raw = ceph_volume(&["lvm", "list", "--format", "json"]).await?;
-    crate::disks_reconciler::parse_lvm_list(&raw)
+    let our_fsid = cluster_fsid().await.unwrap_or_default();
+    crate::disks_reconciler::parse_lvm_list(&raw, &our_fsid)
 }
 
 /// Used to catch the id `ceph-volume lvm create` allocates. Creation takes an
