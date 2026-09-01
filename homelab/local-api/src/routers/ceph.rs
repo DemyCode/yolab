@@ -318,9 +318,9 @@ fn is_stuck_state(state: &str) -> bool {
 /// Only called when Ceph has actually raised PG_AVAILABILITY or PG_DOWN — it is two
 /// extra queries, and the endpoint they sit in is polled.
 ///
-/// Per pool, not cluster-wide: `images` is deliberately size 1 forever (see
-/// topology::is_unreplicated_pool), so "any pool keeps one copy" is true on every
-/// healthy cluster and would mark every transient blip unrecoverable.
+/// Per pool, not cluster-wide: a pool may legitimately sit at one copy — a
+/// fresh cluster with a single OSD does — and reading that as "any pool keeps
+/// one copy" would mark every transient blip unrecoverable.
 pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
     let dump = crate::ceph_cli::ceph_json(&["osd", "dump"]).await.ok()?;
     let sizes: std::collections::HashMap<i64, u64> = dump["pools"]

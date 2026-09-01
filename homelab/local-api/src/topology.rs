@@ -215,7 +215,7 @@ async fn seed_policy_from_cluster() -> Option<StoragePolicy> {
     for pool in pools
         .lines()
         .map(str::trim)
-        .filter(|p| !p.is_empty() && !p.starts_with('.') && !is_unreplicated_pool(p))
+        .filter(|p| !p.is_empty() && !p.starts_with('.'))
     {
         size = size.max(pool_size(pool).await);
     }
@@ -450,25 +450,13 @@ async fn apply_mon_mgr(target: &Target) {
     }
 }
 
-/// Pools that must stay at one copy no matter how many machines join.
+/// Whether `apply_pools` owns this pool's replica count.
 ///
-/// `images` holds each node's container image store, and its size=1 is load
-/// bearing in two ways that homelab/nixos/ceph/images-store.nix spells out:
-///
-///   1. Every node needs its own unpacked copy of every image it runs, so
-///      replicating across nodes buys nothing. At three machines this loop would
-///      set size=3 and spend 9x the bytes on data any registry can re-send.
-///
-///   2. Worse, and the reason this is a filter and not a preference: each node
-///      sizes its image RBD as a share of the pool's RAW capacity. At size=3 a
-///      25% image consumes 75% of raw, three nodes consume 225%, and the pool
-///      reaches full-ratio — at which point Ceph blocks writes for EVERY app on
-///      EVERY node, not just image pulls.
-///
-/// images-store.nix predicted this exact failure in a comment. Nothing enforced
-/// it, so the prediction was the only thing standing in its way.
-fn is_unreplicated_pool(pool: &str) -> bool {
-    pool == "images"
+/// Ceph's own rgw and nfs pools manage themselves. `images` is deliberately
+/// included: pinning it at one copy is what made losing a single disk take the
+/// whole container store with it.
+fn apply_pools_selects(pool: &str) -> bool {
+    !pool.is_empty() && !pool.starts_with(".nfs") && !pool.starts_with(".rgw")
 }
 
 async fn pool_size(pool: &str) -> u32 {
@@ -516,8 +504,7 @@ async fn apply_pools(target: &Target) {
     for pool in pools
         .lines()
         .map(|l| l.trim())
-        .filter(|p| !p.is_empty() && !p.starts_with(".nfs") && !p.starts_with(".rgw"))
-        .filter(|p| !is_unreplicated_pool(p))
+        .filter(|p| apply_pools_selects(p))
     {
         let cur = pool_size(pool).await;
         // The owner's number, applied as given — up or down. There is no
@@ -786,26 +773,26 @@ mod tests {
         assert_eq!((t.mon, t.mgr), (1, 1));
     }
 
-    // ── Pools that must never be replicated ───────────────────────────────────
+    // ── Pool selection ────────────────────────────────────────────────────────
 
+    /// `images` used to be pinned at one copy, which made a single disk loss
+    /// take the container store with it. It now follows the chosen size like
+    /// every other pool; the raw cost of that is paid for in images-store.nix,
+    /// which divides the RBD by the replica count.
     #[test]
-    fn the_images_pool_is_never_resized() {
-        assert!(is_unreplicated_pool("images"));
-    }
-
-    #[test]
-    fn app_data_pools_are_resized() {
-        for p in ["yolab-fs-data0", "yolab-fs-metadata", ".mgr"] {
-            assert!(!is_unreplicated_pool(p), "{p} must follow the chosen size");
+    fn every_data_pool_including_images_follows_the_chosen_size() {
+        for p in ["images", "yolab-fs-data0", "yolab-fs-metadata"] {
+            assert!(apply_pools_selects(p), "{p} must follow the chosen size");
         }
     }
 
-    /// Guards against a pool called something like "images-backup" being caught
-    /// by a prefix match if this ever becomes one.
+    /// Ceph's own pools are still left alone: `.mgr` sizes itself, and the
+    /// rgw/nfs ones are not ours to touch.
     #[test]
-    fn only_the_exact_images_pool_is_exempt() {
-        assert!(!is_unreplicated_pool("images-old"));
-        assert!(!is_unreplicated_pool("my-images"));
+    fn cephs_own_pools_are_left_alone() {
+        for p in [".rgw.root", ".nfs"] {
+            assert!(!apply_pools_selects(p), "{p} must not be resized");
+        }
     }
 
     // ── The request body the page actually sends ────────────────────────────────
