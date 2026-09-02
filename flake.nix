@@ -52,6 +52,7 @@
         specialArgs = {
           inherit inputs rust;
           yolabConfigPath = configPath;
+          localApiEnv = rust.crates.local-api.package;
         };
       };
 
