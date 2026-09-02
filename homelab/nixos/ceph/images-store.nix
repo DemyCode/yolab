@@ -20,16 +20,13 @@
   config,
   lib,
   pkgs,
+  localApiEnv,
   ...
 }:
 with lib; let
   cfg = config.yolab.ceph.imagesStore;
   cephCfg = config.yolab.ceph;
   host = config.networking.hostName;
-
-  # k3s's embedded containerd keeps its image store here. Mounting over this
-  # path is what moves images off the root disk.
-  containerdRoot = "/var/lib/rancher/k3s/agent/containerd";
 
   # Every unit here runs before k3s, so it can only use host binaries — which is
   # exactly why Ceph had to leave Kubernetes in the first place.
@@ -40,15 +37,17 @@ with lib; let
     e2fsprogs
     util-linux
     coreutils
-    gnugrep
-    gawk
-    jq
+    systemd
   ];
-  # Sets HOSTS, TOTAL_MB, REPLICAS, USABLE_MB and WANT_MB. Shared verbatim by
-  # the create and the grow path, because they computed it separately once and
-  # a disagreement between them resized the image in both directions forever.
-  sizingSnippet = import ./images-sizing.nix {
-    inherit (cfg) poolName shareOfPool minSizeGb;
+
+  # homelab/local-api/src/storage/{images_rbd,containerd_store,images_grow}.rs
+  # read these; kept as one set so the three subcommands can never disagree
+  # about which pool or filesystem they mean.
+  imagesStoreEnv = {
+    YOLAB_CEPH_IMAGES_POOL = cfg.poolName;
+    YOLAB_CEPH_IMAGES_SHARE = toString cfg.shareOfPool;
+    YOLAB_CEPH_IMAGES_MIN_GB = toString cfg.minSizeGb;
+    YOLAB_CEPH_IMAGES_FS = cfg.filesystem;
   };
 in {
   options.yolab.ceph.imagesStore = {
@@ -130,52 +129,15 @@ in {
         # never started at all. Nothing was broken on that machine; it was
         # waiting on a disk in another one.
         TimeoutStartSec = "300s";
+        ExecStart = "${localApiEnv}/bin/local-api storage images-rbd";
       };
-      path = cephPath;
-      script = ''
-        set -uo pipefail
-        # `timeout` on every Ceph call in this file. client_mount_timeout bounds
-        # reaching a MON; it does nothing for a request to an OSD, which is what
-        # `rbd ls` and `ceph df` actually do. With no OSD up those block forever.
-        for _ in $(seq 1 90); do timeout 20 ceph -s >/dev/null 2>&1 && break; sleep 1; done
-        if ! timeout 20 ceph -s >/dev/null 2>&1; then
-          echo "ceph not reachable — nothing to provision yet"
-          exit 0
-        fi
-
-        # A pool cannot hold anything until an OSD is up. On a fresh cluster
-        # there are none until the user switches a disk ON in the UI and the
-        # reconciler creates one, so this is an ordinary state to be in — exit
-        # cleanly and let a later run pick it up, rather than failing the boot.
-        for _ in $(seq 1 90); do
-          timeout 20 ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up' && break
-          sleep 1
-        done
-        if ! timeout 20 ceph osd stat 2>/dev/null | grep -qE '[1-9][0-9]* up'; then
-          echo "no OSD is up yet — the images pool will be created once a disk is switched on"
-          exit 0
-        fi
-
-        set -e
-        if ! ceph osd pool ls | grep -qx ${cfg.poolName}; then
-          ceph osd pool create ${cfg.poolName} 32 32
-          ceph osd pool set ${cfg.poolName} size 1 --yes-i-really-mean-it
-          ceph osd pool application enable ${cfg.poolName} rbd
-          rbd pool init ${cfg.poolName}
-        fi
-
-        # Size from capacity that actually exists (see header, point 2).
-        ${sizingSnippet}
-
-        if ! rbd ls ${cfg.poolName} | grep -qx ${host}; then
-          # krbd cannot map object-map/fast-diff/deep-flatten, so create with
-          # only the features the kernel client supports. Getting this wrong
-          # produces a map failure that reads like a permissions error —
-          # confirmed the hard way on real hardware.
-          rbd create ${cfg.poolName}/${host} --size "$WANT_MB" \
-            --image-feature layering,exclusive-lock
-        fi
-      '';
+      # The reachability/OSD-up waits, the pool-create-if-missing check and the
+      # sizing arithmetic now live in
+      # homelab/local-api/src/storage/{images_rbd,images_sizing}.rs, with unit
+      # tests pinning the same three cases the old images-sizing.nix check drove
+      # against the shell version.
+      path = with pkgs; [ceph ceph-client];
+      environment = imagesStoreEnv;
     };
 
     # ── Map + mount it, before containerd can start ──────────────────────────
@@ -196,207 +158,22 @@ in {
         RemainAfterExit = true;
         # Never let this unit's failure propagate into k3s.
         SuccessExitStatus = "0 1";
-        # Generous ON PURPOSE, and the two kinds of timeout here do different
-        # jobs. The `timeout N` wrappers inside the script are what make FAILURE
-        # fast: every check that could stall against an unreachable cluster gives
-        # up in 20-30s and exits 0, so k3s is never held for long by a broken
-        # Ceph. This one is only a last-resort backstop.
-        #
-        # It has to be generous because one legitimate path here is slow: the
-        # first time the RBD takes over, the whole existing image store is copied
-        # onto it. That is gigabytes, possibly across the network to another
-        # machine's disk, and killing it midway leaves a half-copied store and a
-        # stray mount. A tight backstop would turn a working migration into a
-        # recurring failure — the opposite of the problem it was meant to solve.
+        # Generous ON PURPOSE. The bounded checks that make FAILURE fast — an
+        # unreachable cluster giving up in 20-30s rather than holding k3s —
+        # are inside storage::containerd_store now; this is only a last-resort
+        # backstop, and it has to be generous because the legitimate slow path
+        # (the first migration onto the RBD, possibly gigabytes across the
+        # network) must not be mistaken for a hang and killed mid-copy.
         TimeoutStartSec = "900s";
+        ExecStart = "${localApiEnv}/bin/local-api storage containerd-store";
       };
+      # The mount/readability check that replaced a bare `mountpoint` (see this
+      # file's header — the seventeen-hour incident), the k3s stop/start
+      # bracket, and the migrate-then-swap dance all live in
+      # homelab/local-api/src/storage/containerd_store.rs now, with unit tests
+      # covering the migration end to end and the k3s restart ordering.
       path = cephPath;
-      script = ''
-        set -uo pipefail
-
-        # Bail out cleanly whenever Ceph is not ready yet. containerd then comes
-        # up on the root disk, exactly as it did before this feature existed,
-        # and the next boot picks up the RBD once an OSD exists.
-        if ! timeout 20 ceph -s >/dev/null 2>&1; then
-          echo "ceph not reachable — leaving containerd on the root disk for this boot"
-          exit 0
-        fi
-        if ! timeout 30 rbd ls ${cfg.poolName} 2>/dev/null | grep -qx ${host}; then
-          echo "no ${cfg.poolName}/${host} image yet — leaving containerd on the root disk for this boot"
-          exit 0
-        fi
-
-        # "Mounted" was never the question. "Works" is.
-        #
-        # This used to exit here on the strength of mountpoint alone, and that is how
-        # both machines in a cluster sat dead for seventeen hours. The images pool was
-        # pinned at size 1 at the time (see this file's header, point 1 — topology.rs
-        # now raises it as machines join, same as any other pool); a disk was lost,
-        # its placement groups were recreated empty, and the RBD came back with holes
-        # where its objects had been. XFS mounted, hit metadata that was now zeros,
-        # shut itself down, and every read returned EIO. containerd could not start,
-        # so k3s never finished starting, so the whole cluster was down — while
-        # `mountpoint` cheerfully returned success. The check below has nothing to do
-        # with the replica count: a partially-readable RBD is exactly as fatal at
-        # size 3 as it was at size 1, so it stays regardless of what topology.rs sets.
-        #
-        # Nothing here is the owner's data. Every byte is a container layer a registry
-        # will send again, so the right response to any doubt is to rebuild, not to
-        # preserve.
-        if mountpoint -q ${containerdRoot}; then
-          if ls ${containerdRoot} >/dev/null 2>&1; then
-            echo "${containerdRoot} is already mounted and readable"
-            exit 0
-          fi
-          echo "${containerdRoot} is mounted but cannot be read — rebuilding the image store" >&2
-          # Lazy as a fallback: containerd may already hold descriptors on a
-          # filesystem that has shut down, and a plain umount would refuse.
-          umount ${containerdRoot} 2>/dev/null || umount -l ${containerdRoot} 2>/dev/null || true
-          NEEDS_REBUILD=1
-        fi
-
-        # From here on this unit may stop k3s, and every exit path below has to
-        # put it back. One trap for both that and the staging mount: a second
-        # `trap ... EXIT` would replace this one rather than add to it, and the
-        # node would be left with k3s down.
-        STAGE=""
-        K3S_STOPPED=no
-        cleanup() {
-          if [ -n "$STAGE" ]; then
-            umount "$STAGE" 2>/dev/null || true
-            rmdir "$STAGE" 2>/dev/null || true
-          fi
-          if [ "$K3S_STOPPED" = yes ]; then
-            echo "starting k3s again"
-            # --no-block, and it is not optional. k3s.service is After= this
-            # unit, so its start job cannot run until this one finishes, while
-            # a blocking `systemctl start` waits for that job — the unit waits
-            # for k3s, k3s waits for the unit, and the node sits with k3s dead
-            # until this unit's 900s timeout fires. Queue it and let the
-            # ordering release it once we exit.
-            systemctl start --no-block k3s.service || true
-          fi
-        }
-        trap cleanup EXIT INT TERM
-
-        # Idempotent: rbd map on an already-mapped image just reports it.
-        # osd_request_timeout is THE setting behind the worst failure this
-        # storage stack has had. krbd defaults to 0 — wait forever — so when the
-        # pool cannot serve a read, anything touching the mapped device parks in
-        # uninterruptible sleep. SIGKILL does not end a D-state process: systemd
-        # gave up, left the debris in the cgroup, and a nixos-rebuild hung behind
-        # it for 17 minutes. With a timeout the same situation produces an I/O
-        # error, which is recoverable.
-        DEV=$(timeout 60 rbd map ${cfg.poolName}/${host} -o osd_request_timeout=30 2>/dev/null \
-          || timeout 30 rbd showmapped --format json \
-          | jq -r '.[] | select(.pool=="${cfg.poolName}" and .name=="${host}") | .device')
-        if [ -z "$DEV" ]; then
-          echo "could not map ${cfg.poolName}/${host} — leaving containerd on the root disk" >&2
-          exit 0
-        fi
-        echo "images RBD mapped at $DEV"
-
-        # Blank is not the only reason to format.
-        #
-        # blkid only reads the superblock, which is one object out of tens of
-        # thousands and very likely to survive a partial loss — so a filesystem full
-        # of holes looks exactly like a healthy one here, gets mounted, and fails on
-        # first real use. A read-only check of the metadata is what tells them apart,
-        # and it is cheap because it never writes.
-        NEEDS_REBUILD=''${NEEDS_REBUILD:-0}
-        if blkid "$DEV" >/dev/null 2>&1 && [ "$NEEDS_REBUILD" = "0" ]; then
-          if ! ${
-          if cfg.filesystem == "xfs"
-          then "xfs_repair -n \"$DEV\" >/dev/null 2>&1"
-          else "fsck.ext4 -n -f \"$DEV\" >/dev/null 2>&1"
-        }; then
-            echo "the image store on $DEV is damaged — rebuilding it" >&2
-            NEEDS_REBUILD=1
-          fi
-        fi
-
-        if ! blkid "$DEV" >/dev/null 2>&1 || [ "$NEEDS_REBUILD" = "1" ]; then
-          echo "no filesystem on $DEV, creating ${cfg.filesystem}"
-          if ! ${
-          if cfg.filesystem == "xfs"
-          then "mkfs.xfs -f -m crc=1 \"$DEV\""
-          else "mkfs.ext4 -q -m0 \"$DEV\""
-        }; then
-            echo "mkfs failed — leaving containerd on the root disk" >&2
-            exit 0
-          fi
-        fi
-
-        mkdir -p ${containerdRoot}
-
-        # At boot this unit runs Before=k3s, so nothing holds the store open and
-        # the work below is safe as written. The timer runs it again on a live
-        # node — the case that matters, because on a fresh install there are no
-        # OSDs until someone switches a disk on, so the first boot always lands
-        # containerd on root and only a later run can move it off. Copying a
-        # store containerd has open, or mounting over it, corrupts it, so k3s
-        # comes down for the handover and the trap above brings it back.
-        if systemctl is-active --quiet k3s.service; then
-          echo "stopping k3s to move its image store onto Ceph"
-          systemctl stop k3s.service
-          K3S_STOPPED=yes
-        fi
-
-        # One-time migration off the root disk.
-        #
-        # On every boot after the first, k3s has already populated this directory
-        # on root — the images pool does not exist until a disk is switched on,
-        # which cannot happen before k3s runs. Mounting straight over it would
-        # strand those layers: still consuming root, invisible, unreclaimable.
-        # An earlier version refused to mount in that case, which meant the RBD
-        # could never take over at all.
-        #
-        # Safe to do here because this unit runs Before=k3s, so containerd is not
-        # running and nothing holds these files open.
-        if [ -n "$(ls -A ${containerdRoot} 2>/dev/null)" ]; then
-          echo "migrating the existing image store off the root disk"
-          # Assigned, not trapped: the cleanup registered above already covers
-          # this mount. The copy below can run for minutes and so is the one
-          # operation here that gets interrupted — by the backstop timeout, or
-          # by someone rebooting a machine that looks stuck — and without the
-          # cleanup the staging mount survives into the next boot and the RBD
-          # is busy.
-          STAGE=$(mktemp -d)
-          if ! mount "$DEV" "$STAGE"; then
-            echo "could not mount $DEV for migration — staying on the root disk" >&2
-            rmdir "$STAGE" 2>/dev/null || true
-            exit 0
-          fi
-          # -a preserves hardlinks, xattrs and sparseness, all of which
-          # containerd's content store relies on.
-          if cp -a ${containerdRoot}/. "$STAGE"/; then
-            umount "$STAGE"
-            rmdir "$STAGE" 2>/dev/null || true
-            # Remove and recreate rather than `rm -rf <dir>/*`: the glob misses
-            # dotfiles, which would leave stale state behind for containerd to
-            # trip over. (Do not write $\{dir:?} here — bash's guard syntax is
-            # also Nix interpolation, and Nix wins, emitting a literal relative
-            # path that silently deletes nothing.)
-            rm -rf ${containerdRoot}
-            mkdir -p ${containerdRoot}
-            echo "migration complete, freed the copy on root"
-          else
-            # Most likely the image is smaller than the existing store. Roll
-            # back rather than mount a half-populated store, which containerd
-            # would read as a corrupt content store.
-            echo "copy failed (is the RBD large enough?) — staying on the root disk" >&2
-            umount "$STAGE" 2>/dev/null || true
-            rmdir "$STAGE" 2>/dev/null || true
-            exit 0
-          fi
-        fi
-
-        if ! mount "$DEV" ${containerdRoot}; then
-          echo "mount failed — leaving containerd on the root disk" >&2
-          exit 0
-        fi
-        echo "containerd data-root now on $(findmnt -no SOURCE ${containerdRoot})"
-      '';
+      environment = imagesStoreEnv;
     };
 
     # Ordered after the store unit so the mount lands before containerd opens
@@ -417,43 +194,13 @@ in {
       serviceConfig = {
         Type = "oneshot";
         TimeoutStartSec = "300s";
+        ExecStart = "${localApiEnv}/bin/local-api storage images-grow";
       };
+      # The not-ready checks, the current-vs-wanted size comparison and the
+      # grow-only guard (never shrink a mounted filesystem) now live in
+      # homelab/local-api/src/storage/images_grow.rs.
       path = cephPath;
-      script = ''
-        set -uo pipefail
-        # The timer fires on a schedule, so it can land during bootstrap before
-        # the admin keyring exists, or on a boot where the store never mounted.
-        # Both are normal states, not failures — observed live as a spurious
-        # "unable to find a keyring" failure on a perfectly healthy cluster.
-        if ! ceph -s >/dev/null 2>&1; then
-          echo "ceph not reachable yet — nothing to grow"
-          exit 0
-        fi
-        if ! mountpoint -q ${containerdRoot}; then
-          echo "${containerdRoot} is not RBD-backed on this boot — nothing to grow"
-          exit 0
-        fi
-        set -e
-        CUR_MB=$(timeout 30 rbd info ${cfg.poolName}/${host} --format json | jq -r '.size / 1048576 | floor')
-        ${sizingSnippet}
-
-        # Only ever grow. Shrinking a mounted filesystem under a running
-        # containerd would corrupt it, and a pool that shrank (a disk was
-        # removed) is exactly when you least want to be truncating the image
-        # store.
-        if [ "$WANT_MB" -gt "$CUR_MB" ]; then
-          echo "growing images RBD: ''${CUR_MB}MB -> ''${WANT_MB}MB"
-          rbd resize ${cfg.poolName}/${host} --size "$WANT_MB"
-          DEV=$(findmnt -no SOURCE ${containerdRoot})
-          ${
-          if cfg.filesystem == "xfs"
-          then "xfs_growfs ${containerdRoot}"
-          else "resize2fs \"$DEV\""
-        }
-        else
-          echo "images RBD already at ''${CUR_MB}MB (target ''${WANT_MB}MB), nothing to do"
-        fi
-      '';
+      environment = imagesStoreEnv;
     };
 
     # Re-runs provisioning so the pool and image appear shortly after the first

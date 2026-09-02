@@ -102,15 +102,16 @@ in {
   # the unit to finish, and the node sits with k3s dead until the 900s timeout.
   # That happened on node1. Pinned here because it is a property of the
   # generated script, invisible to any Rust or shell test.
-  containerd-store-no-block = pkgs.runCommand "containerd-store-no-block" {} ''
-    script=${
-      pkgs.writeText "store.sh"
-      nixosSystems.yolab-ci.config.systemd.services.yolab-containerd-store.script
-    }
-
-    # The ordering is what makes a blocking start fatal. If it ever goes away
-    # this check is arguing about nothing and should be revisited, so assert it
-    # rather than assume it.
+  # k3s.service is After= the store unit, which is what makes a *blocking*
+  # `systemctl start k3s.service` from inside that unit fatal: k3s's start job
+  # cannot run until the store unit finishes, so a blocking start would
+  # deadlock the node until the unit's own timeout fired. The store unit's
+  # body — including that it restarts k3s with --no-block after stopping it —
+  # moved to homelab/local-api/src/storage/containerd_store.rs, whose
+  # `stops_and_restarts_k3s_around_an_active_migration` test asserts the
+  # ordering directly; what is left to assert here is the Nix-level half:
+  # that the ordering this property depends on is still in place.
+  containerd-store-after-order = pkgs.runCommand "containerd-store-after-order" {} ''
     grep -qx 'yolab-containerd-store.service' ${
       pkgs.writeText "k3s-after"
       (builtins.concatStringsSep "\n" nixosSystems.yolab-ci.config.systemd.services.k3s.after)
@@ -118,86 +119,17 @@ in {
       echo "k3s.service is no longer After= the store unit — re-read why this check exists" >&2
       exit 1
     }
-
-    # Every start, not just k3s's: any blocking one from inside this unit hits
-    # the same trap the moment the target is ordered after it.
-    if grep -oE 'systemctl start [^|&;]*' "$script" | grep -qv -- '--no-block'; then
-      echo "a blocking 'systemctl start' remains in the store unit:" >&2
-      grep -nE 'systemctl start [^|&;]*' "$script" >&2
-      exit 1
-    fi
-    grep -q 'systemctl start --no-block k3s.service' "$script" || {
-      echo "the store unit must start k3s again after stopping it" >&2
-      exit 1
-    }
     touch $out
   '';
 
-  # The image RBD's sizing arithmetic, driven with stubbed `ceph` output.
-  #
-  # It decides how much of the cluster one node's container store may claim,
-  # and the failure it guards against is not local: oversize the image and the
-  # pool reaches full-ratio, at which point Ceph blocks writes for every app on
-  # every machine. The pool follows the replica policy now, so a logical MB
-  # costs `size` raw MB — the case worth pinning is that raising the replica
-  # count does NOT raise what the image consumes.
-  images-sizing =
-    pkgs.runCommand "images-sizing" {
-      nativeBuildInputs = [pkgs.jq pkgs.gawk pkgs.bash];
-    } ''
-      cat > sizing.sh <<'SNIPPET'
-      ${
-        import ../homelab/nixos/ceph/images-sizing.nix {
-          poolName = "images";
-          shareOfPool = 0.25;
-          minSizeGb = 40;
-        }
-      }
-      SNIPPET
-
-      # RAW MB, replica count, host count -> the WANT_MB the snippet computes.
-      want() {
-        RAW=$1 REP=$2 HOSTS_N=$3 bash -c '
-          timeout() { shift; "$@"; }
-          ceph() {
-            case "$*" in
-              *"osd tree"*)
-                printf "{\"nodes\":["
-                for i in $(seq 1 "$HOSTS_N"); do
-                  [ "$i" -gt 1 ] && printf ","
-                  printf "{\"type\":\"host\",\"children\":[1]}"
-                done
-                printf "]}" ;;
-              *"df -f json"*) printf "{\"stats\":{\"total_bytes\":%s}}" "$((RAW * 1048576))" ;;
-              *"pool get"*)   printf "{\"size\":%s}" "$REP" ;;
-            esac
-          }
-          . ./sizing.sh >/dev/null 2>&1
-          echo "$WANT_MB"
-        '
-      }
-
-      one=$(want 1000000 1 1)
-      two=$(want 1000000 2 1)
-      [ "$one" = 250000 ] || { echo "one copy: want 250000, got $one" >&2; exit 1; }
-      [ "$two" = 125000 ] || { echo "two copies: want 125000, got $two" >&2; exit 1; }
-
-      # The whole point: two copies of half the image is the same raw bytes.
-      [ "$((one * 1))" = "$((two * 2))" ] || {
-        echo "raw cost changed with the replica count: $((one * 1)) vs $((two * 2))" >&2
-        exit 1
-      }
-
-      # The floor never wins over the ceiling — exceeding it is the full-ratio
-      # failure, and a too-small image only costs re-pulling layers.
-      tiny=$(want 1000 2 4)
-      [ "$tiny" -le $((1000 / 2 / (4 * 2))) ] || {
-        echo "ceiling lost to the 40G floor on a small pool: got $tiny" >&2
-        exit 1
-      }
-
-      touch $out
-    '';
+  # The image RBD's sizing arithmetic used to be pinned here against a shell
+  # fragment driven with stubbed `ceph` output. That fragment moved into
+  # homelab/local-api/src/storage/images_sizing.rs (part of the Ceph
+  # shell->Rust migration), and `local-api-tests` above already builds and
+  # runs its unit tests — including the exact three cases this check used to
+  # assert (one/two copies costing the same raw bytes, and the ceiling
+  # beating the 40G floor on a small pool) — so a separate nix check would
+  # only be testing the same arithmetic twice.
 
   # POSIX for using the bash its own shebang asks for. shellcheck reads the
   # shebang. -x follows sourced files.
