@@ -43,7 +43,7 @@ pub async fn run(args: &[String]) -> i32 {
     // machine that creates the cluster, and an empty positional through a
     // systemd single-string ExecStart is not something to depend on.
     let env = |name: &str| std::env::var(name).unwrap_or_default();
-    let node = ceph_shared::hostname();
+    let node = crate::system::hostname();
 
     // Shared by images-rbd, containerd-store and images-grow — the pool name,
     // share-of-pool and floor are the yolab.ceph.imagesStore.* Nix options;

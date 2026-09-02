@@ -1,4 +1,5 @@
 mod auth;
+mod boot;
 mod ceph_cli;
 mod cephfs;
 mod charts;
@@ -11,6 +12,7 @@ mod lease;
 mod proc;
 mod routers;
 mod storage;
+mod system;
 mod topology;
 
 use std::sync::Arc;
@@ -87,6 +89,9 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("storage") {
         std::process::exit(storage::run(&args[2..]).await);
+    }
+    if args.get(1).map(String::as_str) == Some("boot") {
+        std::process::exit(boot::run(&args[2..]).await);
     }
 
     tracing_subscriber::fmt()
