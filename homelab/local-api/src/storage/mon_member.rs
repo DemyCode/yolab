@@ -47,7 +47,9 @@ async fn reachable_fast<H: Host>(host: &H) -> bool {
 }
 
 async fn mon_dump_fast<H: Host>(host: &H) -> Option<Value> {
-    host.ceph_json(&["--connect-timeout", "10", "mon", "dump"]).await.ok()
+    host.ceph_json(&["--connect-timeout", "10", "mon", "dump"])
+        .await
+        .ok()
 }
 
 pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArgs) -> Result<()> {
@@ -76,18 +78,31 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArg
         return Ok(());
     }
 
-    if mon_dump_fast(host).await.is_some_and(|d| in_monmap(&d, node)) {
+    if mon_dump_fast(host)
+        .await
+        .is_some_and(|d| in_monmap(&d, node))
+    {
         tracing::info!("{node} is already in the monmap");
         return Ok(());
     }
 
     tracing::info!("adding {node} to the monmap");
     let _ = host
-        .ceph(&["--connect-timeout", "10", "mon", "add", node, &addrvec(&args.mon_addr)])
+        .ceph(&[
+            "--connect-timeout",
+            "10",
+            "mon",
+            "add",
+            node,
+            &addrvec(&args.mon_addr),
+        ])
         .await;
 
     for _ in 0..60 {
-        if mon_dump_fast(host).await.is_some_and(|d| in_monmap(&d, node)) {
+        if mon_dump_fast(host)
+            .await
+            .is_some_and(|d| in_monmap(&d, node))
+        {
             tracing::info!("{node} joined the quorum");
             return Ok(());
         }
@@ -177,7 +192,10 @@ mod tests {
         let host = FakeHost::new()
             .ok("systemctl is-active --quiet ceph-mon-yolab-n1.service", "")
             .ok("ceph --connect-timeout 10 -s", "")
-            .ok("ceph --connect-timeout 10 mon dump", &dump_with(&["yolab-n1"]));
+            .ok(
+                "ceph --connect-timeout 10 mon dump",
+                &dump_with(&["yolab-n1"]),
+            );
         let dir = tempfile::tempdir().unwrap();
         joined(&dir, "yolab-n1");
 
@@ -200,7 +218,10 @@ mod tests {
         let host = FakeHost::new()
             .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
             .ok("ceph --connect-timeout 10 -s", "")
-            .ok("ceph --connect-timeout 10 mon dump", &dump_with(&["yolab-n1"])) // not in it yet
+            .ok(
+                "ceph --connect-timeout 10 mon dump",
+                &dump_with(&["yolab-n1"]),
+            ) // not in it yet
             .ok("ceph --connect-timeout 10 mon add", "")
             .ok(
                 "ceph --connect-timeout 10 mon dump",
