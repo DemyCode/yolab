@@ -95,6 +95,5 @@ in {
     systemd.tmpfiles.rules = [
       "d /var/lib/ceph/mds 0750 ceph ceph -"
     ];
-
   };
 }

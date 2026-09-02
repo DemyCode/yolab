@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::kubectl;
@@ -321,17 +322,38 @@ fn is_stuck_state(state: &str) -> bool {
 /// Per pool, not cluster-wide: a pool may legitimately sit at one copy — a
 /// fresh cluster with a single OSD does — and reading that as "any pool keeps
 /// one copy" would mark every transient blip unrecoverable.
+/// Fetches the two dumps this needs via the plain `ceph_cli` binary path, for
+/// the HTTP handlers that have no `Host` to inject. The reconciler goes
+/// through `assess_pg_loss_via`/`compute_pg_loss` instead — see there for why.
 pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
     let dump = crate::ceph_cli::ceph_json(&["osd", "dump"]).await.ok()?;
+    let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"])
+        .await
+        .ok()?;
+    compute_pg_loss(&dump, &pgs)
+}
+
+/// Same, through the `Host` seam. The disk reconciler is the one caller that
+/// must never fall back to a real `ceph` binary in a test: it decides
+/// `PurgeVerdict::RefuseDataAtRisk`, the branch standing between a purge and
+/// data loss, and a test that cannot script this call cannot exercise that
+/// branch at all — it was invisible to `FakeHost` until this existed.
+pub(crate) async fn assess_pg_loss_via<H: crate::host::Host>(host: &H) -> Option<PgLoss> {
+    let dump = host.ceph_json(&["osd", "dump"]).await.ok()?;
+    let pgs = host.ceph_json(&["pg", "dump", "pgs_brief"]).await.ok()?;
+    compute_pg_loss(&dump, &pgs)
+}
+
+/// The arithmetic, pulled out so it is testable on two JSON blobs with no
+/// process spawned at all — pure logic first, effects as a thin shell around
+/// it, same shape as `zap_args`/`Ownership::read` elsewhere in this codebase.
+fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
     let sizes: std::collections::HashMap<i64, u64> = dump["pools"]
         .as_array()?
         .iter()
         .filter_map(|p| Some((p["pool"].as_i64()?, p["size"].as_u64()?)))
         .collect();
 
-    let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"])
-        .await
-        .ok()?;
     // `ceph pg dump pgs_brief -f json` returns the array directly on some versions and
     // under `pg_stats` on others.
     let items = pgs["pg_stats"]
