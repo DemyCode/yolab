@@ -1100,16 +1100,28 @@ async fn reconcile_local_osds<H: Host + 'static>(
                 .await
             {
                 Ok(_) => {
-                    tracing::info!("{osd} ({disk_id}): purged");
-                    if let Some(device) = Some(m.device.as_str()).filter(|d| !d.is_empty()) {
-                        tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
-                        wipe_device(host, device).await;
+                    let ids = host.osd_ids().await.ok();
+                    if purge_confirmed(ids.as_deref(), osd_id) {
+                        tracing::info!("{osd} ({disk_id}): purged");
+                        if let Some(device) = Some(m.device.as_str()).filter(|d| !d.is_empty()) {
+                            tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
+                            wipe_device(host, device).await;
+                        }
+                        set_phase(
+                            disk_id,
+                            phase::REMOVABLE,
+                            "Removed from the pool. Safe to unplug.",
+                        );
+                    } else {
+                        tracing::warn!(
+                            "{osd} ({disk_id}): purge reported success but {osd} is still listed — leaving the disk alone"
+                        );
+                        set_phase(
+                            disk_id,
+                            phase::REMOVING,
+                            "Still finishing up — do not unplug this disk yet.",
+                        );
                     }
-                    set_phase(
-                        disk_id,
-                        phase::REMOVABLE,
-                        "Removed from the pool. Safe to unplug.",
-                    );
                 }
                 Err(e) => {
                     tracing::warn!("{osd} ({disk_id}): purge failed: {e}");
@@ -1427,9 +1439,16 @@ async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
 
     match host.osd_purge(id).await {
         Ok(_) => {
-            tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
-            if let Ok(mut p) = PROGRESS.lock() {
-                p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
+            let ids = host.osd_ids().await.ok();
+            if purge_confirmed(ids.as_deref(), id) {
+                tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
+                if let Ok(mut p) = PROGRESS.lock() {
+                    p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
+                }
+            } else {
+                tracing::warn!(
+                    "{disk_id}: purge of osd.{id} reported success but it is still listed — keeping the record"
+                );
             }
         }
         Err(e) => tracing::warn!("{disk_id}: could not remove leftover osd.{id}: {e}"),
@@ -1515,6 +1534,13 @@ fn plan_purge(
         return PurgeVerdict::RefuseDataAtRisk;
     }
     PurgeVerdict::Purge
+}
+
+/// A purge is only "done" when the OSD list confirms the id is gone. An
+/// unreadable list never counts as gone — reading it that way would let a
+/// spurious purge success proceed to wipe a disk.
+fn purge_confirmed(ids: Option<&[i64]>, osd_id: i64) -> bool {
+    ids.is_some_and(|ids| !ids.contains(&osd_id))
 }
 
 /// Whether this tick may act at all.
@@ -3473,6 +3499,13 @@ mod tests {
         assert!(!steer.mark_in);
         assert_eq!(steer.phase, None);
         assert_eq!(steer.message, None);
+    }
+
+    #[test]
+    fn a_purge_is_confirmed_only_when_the_id_is_gone() {
+        assert!(purge_confirmed(Some(&[1, 2]), 3));
+        assert!(!purge_confirmed(Some(&[1, 2, 3]), 3));
+        assert!(!purge_confirmed(None, 3));
     }
 
     #[test]
