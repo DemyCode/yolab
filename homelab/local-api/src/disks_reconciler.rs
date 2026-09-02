@@ -1082,7 +1082,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             }
             let safe_after = safe_before && host.osd_safe_to_destroy(osd_id).await;
             let loss = if safe_after {
-                crate::routers::ceph::assess_pg_loss().await
+                crate::routers::ceph::assess_pg_loss_via(host).await
             } else {
                 None
             };
@@ -2781,6 +2781,334 @@ mod tests {
         ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
             async move { Err(anyhow::anyhow!("command unreachable")) }
         }
+    }
+
+    /// A host that records every command and answers from a script.
+    ///
+    /// `RecordingHost` above can only say "unreachable", which is why exactly
+    /// one test ever drove the reconcile path through it — leaving the
+    /// orchestration untested while its constituent decisions were covered
+    /// well. That gap is how a8ba132 shipped: the decision function was right
+    /// and the wiring that called it was not.
+    ///
+    /// Every effect the reconciler has on a disk is a command, so scripting
+    /// commands is what makes the wiring assertable. Unscripted commands fail
+    /// by default: a test must say what the machine answers, rather than
+    /// silently getting a plausible one.
+    type ScriptedAnswer = std::result::Result<String, String>;
+    type Script = Vec<(String, std::collections::VecDeque<ScriptedAnswer>)>;
+
+    #[derive(Clone, Default)]
+    struct FakeHost {
+        calls: Arc<Mutex<Vec<String>>>,
+        // Each prefix maps to a queue of answers, consumed in call order; the
+        // last answer repeats once the queue is empty, so a test only has to
+        // spell out the calls whose answer actually changes (e.g. `ceph-volume
+        // lvm list` before and after a create) and can leave a steady-state
+        // answer for everything else.
+        script: Arc<Mutex<Script>>,
+    }
+
+    impl FakeHost {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn push(&self, prefix: &str, answer: ScriptedAnswer) {
+            let mut script = self.script.lock().unwrap();
+            match script.iter_mut().find(|(p, _)| p == prefix) {
+                Some((_, q)) => q.push_back(answer),
+                None => {
+                    let mut q = std::collections::VecDeque::new();
+                    q.push_back(answer);
+                    script.push((prefix.to_string(), q));
+                }
+            }
+        }
+
+        fn ok(self, prefix: &str, out: &str) -> Self {
+            self.push(prefix, Ok(out.to_string()));
+            self
+        }
+
+        fn fail(self, prefix: &str, err: &str) -> Self {
+            self.push(prefix, Err(err.to_string()));
+            self
+        }
+
+        /// Longest matching prefix wins, so a general steady-state answer and
+        /// a more specific override can coexist without colliding.
+        fn answer(&self, cmd: &str) -> Result<String> {
+            self.calls.lock().unwrap().push(cmd.to_string());
+            let mut script = self.script.lock().unwrap();
+            let best = script
+                .iter_mut()
+                .filter(|(p, _)| cmd.starts_with(p.as_str()))
+                .max_by_key(|(p, _)| p.len());
+            match best {
+                Some((_, q)) => {
+                    let out = if q.len() > 1 {
+                        q.pop_front().unwrap()
+                    } else {
+                        q.front().unwrap().clone()
+                    };
+                    out.map_err(|e| anyhow::anyhow!("{e}"))
+                }
+                None => Err(anyhow::anyhow!("unscripted command: {cmd}")),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn ran(&self, needle: &str) -> bool {
+            self.calls().iter().any(|c| c.contains(needle))
+        }
+
+        /// Index of the first call containing `needle`, for ordering asserts.
+        fn position(&self, needle: &str) -> Option<usize> {
+            self.calls().iter().position(|c| c.contains(needle))
+        }
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    impl Host for FakeHost {
+        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("ceph {}", args.join(" "))) }
+        }
+
+        fn ceph_json<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let raw = me.answer(&format!("ceph {}", args.join(" ")))?;
+                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
+            }
+        }
+
+        fn ceph_volume<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("ceph-volume {}", args.join(" "))) }
+        }
+
+        fn kubectl<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("kubectl {}", args.join(" "))) }
+        }
+
+        fn kubectl_json<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let raw = me.answer(&format!("kubectl {}", args.join(" ")))?;
+                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
+            }
+        }
+
+        fn systemctl<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let out = me.answer(&format!("systemctl {}", args.join(" ")));
+                Ok(CommandOutput {
+                    success: out.is_ok(),
+                    stdout: out.unwrap_or_default(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        fn run_cmd<'a>(
+            &self,
+            bin: &'a str,
+            args: &'a [&'a str],
+        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let out = me.answer(&format!("{bin} {}", args.join(" ")));
+                Ok(CommandOutput {
+                    success: out.is_ok(),
+                    stdout: out.unwrap_or_default(),
+                    stderr: String::new(),
+                })
+            }
+        }
+    }
+    #[tokio::test]
+    async fn create_osd_the_happy_path_confirms_and_starts_the_unit() {
+        let host = FakeHost::new()
+            .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#)
+            .ok("ceph osd ls", "[]")
+            .ok("ceph-volume lvm list", "{}")
+            .ok("ceph-volume lvm create", "")
+            .ok(
+                "ceph-volume lvm list",
+                r#"{"5":[{"devices":["/dev/sdb"],"tags":{"ceph.cluster_fsid":"11111111-2222-3333-4444-555555555555"}}]}"#,
+            )
+            .ok("systemctl start yolab-ceph-osd@5.service", "");
+
+        create_osd(&host, "disk-happy", "/dev/sdb").await;
+
+        assert_eq!(progress_of("disk-happy").phase, phase::ACTIVE);
+        assert!(host.ran("start yolab-ceph-osd@5.service"));
+        assert!(
+            !host.ran("lvm zap"),
+            "a blank disk must never be zapped: {:?}",
+            host.calls()
+        );
+    }
+
+    /// Regression test for a8ba132: gating the erase on the create's `Err`
+    /// missed the actual failure mode, because a disk still carrying another
+    /// cluster's LVM stack makes `ceph-volume lvm create` exit 0 having done
+    /// nothing. The fix moved the erase before the create attempt — this pins
+    /// that ordering so it cannot silently move back to "after a failure".
+    #[tokio::test]
+    async fn create_osd_erases_a_foreign_disk_before_attempting_create() {
+        let host = FakeHost::new()
+            .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#)
+            .ok("ceph osd ls", "[]")
+            .ok(
+                "ceph-volume lvm list",
+                r#"{"1":[{"devices":["/dev/sdc"],"tags":{"ceph.cluster_fsid":"99999999-8888-7777-6666-555555555555"}}]}"#,
+            )
+            .ok("ceph-volume lvm zap", "")
+            .ok("ceph-volume lvm create", "");
+
+        create_osd(&host, "disk-foreign", "/dev/sdc").await;
+
+        let zap_at = host
+            .position("lvm zap")
+            .expect("a foreign disk must be zapped");
+        let create_at = host
+            .position("lvm create")
+            .expect("create must still be attempted after the erase");
+        assert!(
+            zap_at < create_at,
+            "zap must happen before create, not after a failure: {:?}",
+            host.calls()
+        );
+        assert!(
+            host.ran("lvm zap --destroy"),
+            "a foreign stack is a volume group and must be removed, not just its contents: {:?}",
+            host.calls()
+        );
+    }
+
+    /// The system LV keeps a previous cluster's BlueStore signature after
+    /// disko recreates it, because LVM does not zero reused extents. Unlike
+    /// the foreign-disk case this really does fail the first create, and the
+    /// fix must retry exactly once rather than loop.
+    #[tokio::test]
+    async fn create_osd_retries_once_after_a_stale_bluestore_signature() {
+        let host = FakeHost::new()
+            .ok(
+                "ceph fsid",
+                r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#,
+            )
+            .ok("ceph osd ls", "[]")
+            .ok("ceph-volume lvm list", "{}")
+            .fail(
+                "ceph-volume lvm create",
+                "RuntimeError: Device /dev/mapper/pool-ceph has bluestore signature.",
+            )
+            .ok("ceph-volume lvm create", "")
+            .ok("ceph-volume lvm zap", "");
+
+        create_osd(&host, "disk-stale", "/dev/mapper/pool-ceph").await;
+
+        let creates = host
+            .calls()
+            .iter()
+            .filter(|c| c.contains("lvm create"))
+            .count();
+        assert_eq!(
+            creates,
+            2,
+            "must retry exactly once, not loop: {:?}",
+            host.calls()
+        );
+        assert!(
+            !host.ran("lvm zap --destroy"),
+            "the system LV belongs to disko and must never be --destroy'd: {:?}",
+            host.calls()
+        );
+    }
+
+    /// Regression test for 240cdde: a purge that reports success is not
+    /// proof the OSD actually left the map, and wiping on that trust alone
+    /// is how a disk Ceph still tracks as live gets erased.
+    #[tokio::test]
+    async fn purge_wipes_the_disk_once_the_osd_is_confirmed_gone() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#)
+            .ok("ceph-volume lvm list", "{}")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":7,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[7]}"#)
+            .ok("ceph osd purge", "purged osd.7")
+            .ok("ceph osd ls", "[]")
+            .ok("ceph-volume lvm zap", "");
+
+        let meta = HashMap::from([("disk-purge".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-purge".to_string(), "OFF".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-purge".to_string(), 7i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+
+        assert!(
+            host.ran("lvm zap"),
+            "a confirmed purge must wipe the disk: {:?}",
+            host.calls()
+        );
+        assert_eq!(progress_of("disk-purge").phase, phase::REMOVABLE);
+    }
+
+    /// The other half of 240cdde: `ceph osd ls` still listing the id after a
+    /// purge that reported success must leave the disk alone, not wipe it.
+    #[tokio::test]
+    async fn purge_never_wipes_when_the_osd_is_still_listed_afterward() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#)
+            .ok("ceph-volume lvm list", "{}")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":9,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[9]}"#)
+            .ok("ceph osd purge", "purged osd.9")
+            .ok("ceph osd ls", "[9]");
+
+        let meta = HashMap::from([("disk-stuck".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-stuck".to_string(), "OFF".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-stuck".to_string(), 9i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+
+        assert!(
+            !host.ran("lvm zap"),
+            "a purge that is not confirmed gone must never wipe the disk: {:?}",
+            host.calls()
+        );
+        assert_eq!(progress_of("disk-stuck").phase, phase::REMOVING);
     }
 
     #[tokio::test]
