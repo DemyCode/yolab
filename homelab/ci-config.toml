@@ -51,3 +51,14 @@ server_addr = ""
 # one per cluster and it must never change afterwards.
 [ceph]
 fsid = "00000000-0000-4000-8000-000000000000"
+
+# disk-config.nix throws without a [disk] section, so nixosSystems.*.config
+# .system.build.diskoScript went completely unbuilt by any check — the code
+# that partitions a disk had zero CI coverage. /dev/vda is never touched (disko
+# bakes the device path into a generated script; nothing at eval/build time
+# reads the real filesystem for it), same placeholder nix/tests/boot.nix's
+# real-booting VM harness already uses.
+[disk]
+device = "/dev/vda"
+esp_size = "512M"
+system_size = "8G"

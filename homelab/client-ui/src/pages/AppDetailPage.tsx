@@ -412,7 +412,8 @@ export function AppDetailPage() {
       )}
       {state === "removing" && (
         <Banner tone="warning" title="Being removed" className="mb-5">
-          This app and its data are being deleted.
+          This app is being removed. Its data is kept, not deleted — the storage
+          class retains it, so reinstalling can be pointed back at it.
         </Banner>
       )}
       {error && (

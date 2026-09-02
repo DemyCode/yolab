@@ -260,25 +260,13 @@ pub async fn run<H: Host>(host: &H) -> Result<()> {
         ],
     )
     .await?;
-    let rbd_prov = ensure_key(
-        host,
-        "client.csi-rbd-provisioner",
-        &[
-            "mon",
-            "profile rbd",
-            "mgr",
-            "allow rw",
-            "osd",
-            "profile rbd",
-        ],
-    )
-    .await?;
-    let rbd_node = ensure_key(
-        host,
-        "client.csi-rbd-node",
-        &["mon", "profile rbd", "osd", "profile rbd"],
-    )
-    .await?;
+    // No client.csi-rbd-provisioner/-node keys or Secrets: operator.yaml sets
+    // enableRbdDriver: false and no StorageClass here is RBD-backed (only
+    // yolab-cephfs, in rook/cluster-external.yaml), so no CSI pod would ever
+    // read them — minting them would just be two more standing cephx
+    // credentials against the cluster with nothing consuming them. If an
+    // RBD-backed StorageClass is ever added, restore this alongside enabling
+    // the driver in operator.yaml.
 
     apply_rook_secret(
         host,
@@ -296,24 +284,6 @@ pub async fn run<H: Host>(host: &H) -> Result<()> {
         "csi-cephfs-node",
         "adminKey",
         &cephfs_node,
-    )
-    .await?;
-    apply_rook_secret(
-        host,
-        "rook-csi-rbd-provisioner",
-        "userID",
-        "csi-rbd-provisioner",
-        "userKey",
-        &rbd_prov,
-    )
-    .await?;
-    apply_rook_secret(
-        host,
-        "rook-csi-rbd-node",
-        "userID",
-        "csi-rbd-node",
-        "userKey",
-        &rbd_node,
     )
     .await?;
 
@@ -409,8 +379,6 @@ mod tests {
                 "cephfsprovkey",
             )
             .ok("ceph auth get-key client.csi-cephfs-node", "cephfsnodekey")
-            .ok("ceph auth get-key client.csi-rbd-provisioner", "rbdprovkey")
-            .ok("ceph auth get-key client.csi-rbd-node", "rbdnodekey")
             .ok("kubectl get secret", "") // no secrets exist yet — never wrong-typed
             .ok("kubectl-apply", "")
             .ok("kubectl patch configmap", "")
@@ -447,17 +415,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishes_all_four_csi_secrets_and_both_configmaps() {
+    async fn publishes_the_cephfs_secrets_and_both_configmaps() {
         let host = scripted_ok_host().ok("ceph auth get-key client.admin", "adminkey");
 
         run(&host).await.unwrap();
 
         let calls = host.calls();
+        // No rook-csi-rbd-provisioner/-node: enableRbdDriver is false and no
+        // StorageClass here is RBD-backed, so nothing should ever mint or
+        // publish RBD credentials.
         for name in [
             "rook-csi-cephfs-provisioner",
             "rook-csi-cephfs-node",
-            "rook-csi-rbd-provisioner",
-            "rook-csi-rbd-node",
             "rook-ceph-mon",
         ] {
             assert!(
@@ -468,6 +437,10 @@ mod tests {
             );
         }
         assert!(calls.iter().any(|c| c.contains("csi-cluster-config-json")));
+        assert!(
+            !calls.iter().any(|c| c.contains("csi-rbd")),
+            "no RBD credential should ever be minted or published: {calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -500,8 +473,6 @@ mod tests {
                 "freshly-minted-key",
             )
             .ok("ceph auth get-key client.csi-cephfs-node", "k")
-            .ok("ceph auth get-key client.csi-rbd-provisioner", "k")
-            .ok("ceph auth get-key client.csi-rbd-node", "k")
             .ok("ceph auth get-key client.admin", "adminkey")
             .ok("kubectl get secret", "")
             .ok("kubectl-apply", "")
@@ -517,7 +488,8 @@ mod tests {
         // The base host scripts a bare "kubectl get secret" -> "" (not found,
         // nothing to fix) for every secret; this pushes a longer, more
         // specific prefix for ONE of them, which wins the match for that call
-        // only — the other three still see the generic "not found" answer.
+        // only — rook-csi-cephfs-node and rook-ceph-mon still see the generic
+        // "not found" answer.
         let host = scripted_ok_host()
             .ok("ceph auth get-key client.admin", "adminkey")
             .ok(
