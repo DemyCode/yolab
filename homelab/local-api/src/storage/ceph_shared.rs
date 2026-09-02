@@ -1,16 +1,12 @@
-//! Small pieces shared by more than one storage subcommand: the hostname
-//! every daemon id is built from, the mon address form Ceph expects, and the
-//! per-host mon store path. Kept out of any one subcommand's file so
-//! bootstrap.rs and mon_member.rs (both of which touch the monmap) cannot
-//! drift apart on the address format.
+//! Small pieces shared by more than one storage subcommand: the mon address
+//! form Ceph expects, and the per-host mon store path. Kept out of any one
+//! subcommand's file so bootstrap.rs and mon_member.rs (both of which touch
+//! the monmap) cannot drift apart on the address format.
+//!
+//! `hostname()` used to live here too; it moved to `crate::system` once
+//! `boot::*` (not just `storage::*`) needed it.
 
 use std::path::{Path, PathBuf};
-
-pub fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
 
 /// Ceph's address form: one bracketed group per mon, v2 and v1 inside it.
 /// Mirrors `addrvec` in homelab/nixos/ceph/default.nix — the two must never

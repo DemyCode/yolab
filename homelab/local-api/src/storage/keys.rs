@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 
 use crate::host::Host;
 
-use super::ceph_shared::hostname;
+use crate::system::hostname;
 
 /// The `ceph auth get-or-create` caps for a daemon. The one bug-prone detail:
 /// a typo here silently mints a key with the wrong grants, so it is pinned.

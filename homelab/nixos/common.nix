@@ -5,6 +5,7 @@
   inputs,
   yolabConfigPath,
   rust,
+  localApiEnv,
   ...
 }: let
   s = import ../shared.nix {
@@ -294,20 +295,12 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "k3s-node-ip" ''
-          IPV4=$(${pkgs.iproute2}/bin/ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || true)
-          CONFIG="${config.yolab.repoPath}/homelab/ignored/config.toml"
-          mkdir -p /etc/rancher/k3s
-          {
-            if [ -n "$IPV4" ]; then
-              echo "node-ip: ${s.nodeCfg.sub_ipv6_private},$IPV4"
-            else
-              echo "node-ip: ${s.nodeCfg.sub_ipv6_private}"
-            fi
-          } > /etc/rancher/k3s/config.yaml
-          chmod 600 /etc/rancher/k3s/config.yaml
-        '';
+        ExecStart = "${localApiEnv}/bin/local-api boot node-ip";
       };
+      # The IPv4 detection and the dual-stack-vs-IPv6-only line now live in
+      # homelab/local-api/src/boot/node_ip.rs, with unit tests for both.
+      path = [pkgs.iproute2];
+      environment.YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
     };
 
     # K3s must start after both WireGuard interfaces so all addresses are up
@@ -449,20 +442,12 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "csi-recovery" ''
-          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH
-          # Wait for the CSI DaemonSet to exist — Rook may not have reconciled yet.
-          until kubectl get daemonset csi-cephfsplugin -n rook-ceph 2>/dev/null; do sleep 10; done
-          # Delete only THIS node's plugin pod. The stale locks being cleared are held in
-          # the local plugin's memory from the session before this node rebooted, so a
-          # `rollout restart` of the whole DaemonSet — which is what this used to do —
-          # bounced the plugin on every other node too, interrupting their live CephFS
-          # mounts for a problem they do not have.
-          kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin \
-            --field-selector "spec.nodeName=$(cat /etc/hostname)" --ignore-not-found || true
-        '';
+        ExecStart = "${localApiEnv}/bin/local-api boot csi-recovery";
         TimeoutStartSec = "300";
       };
+      # The wait-for-DaemonSet loop and the this-node-only pod delete now live
+      # in homelab/local-api/src/boot/csi_recovery.rs.
+      path = [pkgs.k3s];
     };
 
     # ── Users ─────────────────────────────────────────────────────────────
@@ -492,25 +477,12 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "yolab-banner" ''
-          CONFIG="${config.yolab.repoPath}/homelab/ignored/config.toml"
-          DNS_URL=""
-
-          if [ -f "$CONFIG" ]; then
-            DNS_URL=$(${pkgs.gnugrep}/bin/grep -oP 'dns_url\s*=\s*"\K[^"]+' "$CONFIG" 2>/dev/null || true)
-          fi
-
-          {
-            printf '\n'
-            if [ -n "$DNS_URL" ]; then
-              ${pkgs.qrencode}/bin/qrencode -t UTF8 -m 1 "$DNS_URL" 2>/dev/null || true
-              printf '\n  YoLab Management: %s\n\n' "$DNS_URL"
-            else
-              printf '  YoLab — not yet configured\n\n'
-            fi
-          } > /run/issue
-        '';
+        ExecStart = "${localApiEnv}/bin/local-api boot banner";
       };
+      # The config.toml parsing (a real TOML parse now, not a regex) and the
+      # banner text now live in homelab/local-api/src/boot/banner.rs.
+      path = [pkgs.qrencode];
+      environment.YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
     };
 
     services.getty.extraArgs = [
