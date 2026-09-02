@@ -4,6 +4,7 @@ mod charts;
 mod config;
 mod disks_reconciler;
 mod error;
+mod host;
 mod kubectl;
 mod lease;
 mod proc;

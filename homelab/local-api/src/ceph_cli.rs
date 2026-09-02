@@ -111,12 +111,6 @@ pub async fn ceph_volume(args: &[&str]) -> Result<String> {
     }
 }
 
-/// Gates anything that would otherwise read "Ceph unreachable" as "Ceph says
-/// no".
-pub async fn reachable() -> bool {
-    ceph(&["-s"]).await.is_ok()
-}
-
 /// Callers compare this against the fsid in a disk's BlueStore superblock to
 /// tell our disks from a stranger's, so an unreachable mon must yield None and
 /// never a default — otherwise every foreign disk starts looking like ours.
@@ -148,48 +142,4 @@ pub async fn osd_safe_to_destroy(osd_id: i64) -> bool {
                 .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
         })
         .unwrap_or(false)
-}
-
-/// Device path -> OSD id for this host. Reads the LVM tags ceph-volume wrote,
-/// so it needs no mon and works with the cluster down — unlike `ceph osd
-/// metadata`.
-///
-/// Errors propagate. A failure must NOT be read as "no OSDs": the reconciler
-/// creates an OSD for any ON disk missing from this map, and `ceph-volume lvm
-/// create` wipes the device. See `refuse_osd_creation`.
-pub async fn local_osds() -> Result<Vec<(String, i64)>> {
-    let raw = ceph_volume(&["lvm", "list", "--format", "json"]).await?;
-    let our_fsid = cluster_fsid().await.unwrap_or_default();
-    crate::disks_reconciler::parse_lvm_list(&raw, &our_fsid)
-}
-
-/// Used to catch the id `ceph-volume lvm create` allocates. Creation takes an
-/// id from the mon before the slow work, so a create that dies partway leaves
-/// an id in the osdmap with no CRUSH location and nothing on disk; diffing this
-/// before and after names it, so the next attempt reuses it.
-///
-/// Errors propagate. An empty list must never be inferred from a failure — the
-/// caller diffs two snapshots, and a silent empty one makes every existing OSD
-/// look newly created.
-pub async fn osd_ids() -> Result<Vec<i64>> {
-    let v = ceph_json(&["osd", "ls"]).await?;
-    Ok(v.as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
-        .unwrap_or_default())
-}
-
-/// Drops an OSD id from the osdmap without touching any disk.
-///
-/// Only ever called on an id this process allocated and failed to finish
-/// creating, and only when `ceph osd safe-to-destroy` agrees — an id with no
-/// CRUSH location has never held a PG, so that passes trivially for a genuine
-/// phantom and fails loudly for anything else.
-pub async fn osd_purge(osd_id: i64) -> Result<String> {
-    ceph(&[
-        "osd",
-        "purge",
-        &format!("osd.{osd_id}"),
-        "--yes-i-really-mean-it",
-    ])
-    .await
 }
