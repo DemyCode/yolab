@@ -847,6 +847,20 @@ fn decide_steer(
     }
 }
 
+/// The phase to report after steering. When the effects failed, the optimistic
+/// ACTIVE/DRAINING answer would hide that the OSD never moved, so it becomes
+/// RETRYING instead.
+fn steer_report(steer: &Steer, applied: bool) -> (&'static str, String) {
+    if applied {
+        (steer.phase.unwrap(), steer.message.clone().unwrap())
+    } else {
+        (
+            phase::RETRYING,
+            "YoLab could not finish this step and will keep trying.".to_string(),
+        )
+    }
+}
+
 async fn reconcile_local_osds<H: Host + 'static>(
     host: &H,
     node: &str,
@@ -1011,19 +1025,31 @@ async fn reconcile_local_osds<H: Host + 'static>(
             want_copies,
         );
 
+        let mut applied = true;
         if let Some(weight) = steer.set_weight {
             tracing::info!("{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}");
-            let _ = host
+            if host
                 .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
-                .await;
+                .await
+                .is_err()
+            {
+                applied = false;
+                tracing::warn!("{osd} ({disk_id}): could not set its weight");
+            }
         }
         if steer.mark_in {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
-            let _ = host.ceph(&["osd", "in", &osd]).await;
+            if host.ceph(&["osd", "in", &osd]).await.is_err() {
+                applied = false;
+                tracing::warn!("{osd} ({disk_id}): could not mark it in");
+            }
         }
         if steer.mark_out {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
-            let _ = host.ceph(&["osd", "out", &osd]).await;
+            if host.ceph(&["osd", "out", &osd]).await.is_err() {
+                applied = false;
+                tracing::warn!("{osd} ({disk_id}): could not mark it out");
+            }
         }
 
         if steer.needs_purge {
@@ -1133,7 +1159,8 @@ async fn reconcile_local_osds<H: Host + 'static>(
                 }
             }
         } else {
-            set_phase(disk_id, steer.phase.unwrap(), steer.message.unwrap());
+            let (phase, message) = steer_report(&steer, applied);
+            set_phase(disk_id, phase, message);
         }
     }
 
@@ -3506,6 +3533,21 @@ mod tests {
         assert!(purge_confirmed(Some(&[1, 2]), 3));
         assert!(!purge_confirmed(Some(&[1, 2, 3]), 3));
         assert!(!purge_confirmed(None, 3));
+    }
+
+    #[test]
+    fn a_successful_steer_reports_its_own_phase() {
+        let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, true), 0, &[], "osd", None);
+        let (phase, _) = steer_report(&steer, true);
+        assert_eq!(phase, phase::ACTIVE);
+    }
+
+    #[test]
+    fn a_failed_steer_reports_retrying_not_active() {
+        let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, true), 0, &[], "osd", None);
+        let (phase, message) = steer_report(&steer, false);
+        assert_eq!(phase, phase::RETRYING);
+        assert!(message.contains("keep trying"));
     }
 
     #[test]
