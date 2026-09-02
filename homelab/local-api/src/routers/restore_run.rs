@@ -775,16 +775,7 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
 
         // ── And it is built again ────────────────────────────────────────────
         "recreate" => {
-            // The unit that creates the filesystem on a fresh install is idempotent and
-            // already knows every detail — pool names the StorageClass depends on, the
-            // replica floor, and the `csi` subvolume group without which every PVC
-            // fails with "subvolume group 'csi' does not exist". Reusing it means the
-            // rebuilt filesystem is identical to a newly installed one, rather than
-            // something this file believes is equivalent.
-            let _ = tokio::process::Command::new("systemctl")
-                .args(["restart", "yolab-cephfs-init.service"])
-                .output()
-                .await;
+            let _ = crate::cephfs::ensure().await;
             let _ = RESTORE_RUN
                 .patch_status(
                     name,
@@ -805,7 +796,7 @@ async fn step_rebuilding_storage(name: &str, run: &Value) {
 /// now. Stays in this phase until it observes Ready, or until the deadline passes.
 ///
 /// This used to read `.status.phase` off Rook's CephFilesystem CR. That CR no
-/// longer exists — CephFS is created on the host by yolab-cephfs-init — so
+/// longer exists — CephFS is created by local-api's cephfs reconciler — so
 /// readiness is asked of Ceph directly: the filesystem must exist and have an
 /// MDS that is actually `active`. A filesystem with no active MDS is present in
 /// `fs ls` but cannot be mounted, so checking existence alone would let a

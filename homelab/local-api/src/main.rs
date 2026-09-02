@@ -1,5 +1,6 @@
 mod auth;
 mod ceph_cli;
+mod cephfs;
 mod charts;
 mod config;
 mod disks_reconciler;
@@ -217,6 +218,7 @@ async fn main() {
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISK→ON/OFF config — no separate watcher.
     tokio::spawn(disks_reconciler::run());
+    tokio::spawn(cephfs::run());
     tokio::spawn(topology::run_topology_controller());
     // Keeps the app catalog current without a nixos-rebuild — see charts.rs.
     tokio::spawn(charts::run_chart_sync());

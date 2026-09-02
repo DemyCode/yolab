@@ -30,7 +30,7 @@ spec:
 # Names here are load-bearing and match what the old Rook-managed
 # CephFilesystem produced: existing PersistentVolumes reference `yolab-cephfs`,
 # `yolab-fs` and `yolab-fs-data0` by name, so changing any of them orphans real
-# user data. The filesystem itself is created by yolab-cephfs-init on the host.
+# user data. The filesystem itself is created by local-api's cephfs reconciler.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
