@@ -14,11 +14,7 @@
     ../../homelab/nixos/configuration.nix
     ../../homelab/nixos/disk-config.nix
   ];
-  vmModule = {
-    config,
-    lib,
-    ...
-  }: {
+  vmModule = {lib, ...}: {
     _module.args = {
       inherit inputs rust;
       yolabConfigPath = bootConfigPath;

@@ -470,8 +470,9 @@ async fn pool_size(pool: &str) -> u32 {
 }
 
 /// Apply the target crush rule + size + min_size to every data pool.
-/// Auto mode raises copies only (never silently drops a replica); manual mode
-/// applies the pinned size exactly (the UI confirms reductions).
+/// There is no "auto" mode any more (see this module's header) and no
+/// raise-only rule to go with it: `target.size` is the owner's own number,
+/// and it is applied exactly, up or down.
 async fn apply_pools(target: &Target) {
     let rule = if target.failure_domain == "osd" {
         "replicated_osd"

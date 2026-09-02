@@ -165,14 +165,33 @@ pub async fn add_remote(
     }
 }
 
-pub async fn remove_remote(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Json<serde_json::Value> {
-    let _ = std::process::Command::new("git")
+pub async fn remove_remote(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    let out = std::process::Command::new("git")
         .args(["-C", &state.config.repo_path, "remote", "remove", &name])
         .output();
-    Json(serde_json::json!({"ok": true}))
+    match out {
+        Ok(o) if o.status.success() => {
+            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+        }
+        // Idempotent: a remote that is already gone is the end state a DELETE
+        // asked for either way, so this does not count as a failure.
+        Ok(o) if String::from_utf8_lossy(&o.stderr).contains("No such remote") => {
+            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+        }
+        Ok(o) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": String::from_utf8_lossy(&o.stderr).trim(),
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn update(State(state): State<AppState>) -> Response {
@@ -693,5 +712,103 @@ fork\tgit@github.com:someone/yolab.git (push)
         let text = "zebra\turl-z (fetch)\nalpha\turl-a (fetch)\n";
         let names: Vec<String> = parse_remotes(text).into_iter().map(|r| r.name).collect();
         assert_eq!(names, vec!["zebra", "alpha"]);
+    }
+
+    // ── remove_remote ────────────────────────────────────────────────────────
+    //
+    // This used to be `let _ = ...output(); Json({"ok": true})` — every call
+    // reported success, whether or not git did anything at all. These run a
+    // real git against a throwaway repo (see nix/rust.nix's gitMinimal note on
+    // the local-api crate) rather than mocking the subprocess, because the bug
+    // was specifically in what happens when that subprocess fails.
+
+    fn git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        dir
+    }
+
+    fn state_in(dir: &tempfile::TempDir) -> crate::AppState {
+        let mut cfg = Config::for_test(&dir.path().join("config.toml"));
+        cfg.repo_path = dir.path().to_string_lossy().into_owned();
+        let cfg = std::sync::Arc::new(cfg);
+        crate::AppState {
+            auth: crate::auth::AuthState {
+                sessions: crate::auth::new_sessions(),
+                config: std::sync::Arc::clone(&cfg),
+            },
+            config: cfg,
+        }
+    }
+
+    async fn body_json(res: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn remove_remote_deletes_a_remote_that_exists() {
+        let dir = git_repo();
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/repo.git",
+            ])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        let state = state_in(&dir);
+
+        let res = remove_remote(State(state.clone()), Path("origin".to_string())).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["ok"], true);
+
+        let list = std::process::Command::new("git")
+            .args(["remote"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&list.stdout).trim().is_empty());
+    }
+
+    /// DELETE is idempotent: a remote that is already gone is the end state
+    /// being asked for, not a failure — the caller should not have to check
+    /// "does it exist?" before every delete just to avoid a spurious error.
+    #[tokio::test]
+    async fn remove_remote_on_a_nonexistent_remote_still_reports_ok() {
+        let dir = git_repo();
+        let state = state_in(&dir);
+
+        let res = remove_remote(State(state), Path("never-existed".to_string())).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["ok"], true);
+    }
+
+    /// A real failure — not "already gone" — must be reported, not swallowed
+    /// into the same {"ok": true} every call used to return.
+    #[tokio::test]
+    async fn remove_remote_reports_a_real_git_failure() {
+        // Not a git repository at all: `git remote remove` fails with something
+        // other than "No such remote", which is the case that must surface.
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(&dir);
+
+        let res = remove_remote(State(state), Path("origin".to_string())).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["error"].as_str().unwrap().contains("git"),
+            "expected git's own error text, got: {body}"
+        );
     }
 }

@@ -39,3 +39,7 @@ time = "0.3"
 # `ServiceExt::oneshot`, so middleware and handlers can be driven through a real
 # Router in tests instead of being called directly (Next is opaque).
 tower = { version = "0.4", features = ["util"] }
+# `#[tokio::test(start_paused = true)]`, so a retry loop's real `sleep` calls
+# (e.g. storage::noout waiting up to 60s for the cluster) resolve instantly
+# under a virtual clock instead of making the test suite actually wait.
+tokio = { version = "1", features = ["test-util"] }

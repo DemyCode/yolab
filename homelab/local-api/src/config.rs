@@ -1,5 +1,26 @@
 use std::path::PathBuf;
 
+/// Reads `[tunnel] account_token` out of a config.toml at `path`. A free
+/// function — not just a `Config` method — because `storage::bootstrap`'s
+/// cluster-join path needs the same value before `local-api serve` (and its
+/// `Config`) exists at all; both read it through here so there is one parser
+/// rather than two that could drift. Empty on any failure to read or parse —
+/// callers MUST treat empty as "no valid token" and never authorize on it.
+pub fn read_account_token(config_path: &str) -> String {
+    let Ok(text) = std::fs::read_to_string(config_path) else {
+        return String::new();
+    };
+    let Ok(table) = toml::from_str::<toml::Table>(&text) else {
+        return String::new();
+    };
+    table
+        .get("tunnel")
+        .and_then(|t| t.get("account_token"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub repo_path: String,
@@ -54,18 +75,7 @@ impl Config {
     /// pre-shared key for the mesh. Returns an empty string if unreadable —
     /// callers MUST treat empty as "no valid token" and never authorize on it.
     pub fn cluster_token(&self) -> String {
-        let Ok(text) = std::fs::read_to_string(&self.config_path) else {
-            return String::new();
-        };
-        let Ok(table) = toml::from_str::<toml::Table>(&text) else {
-            return String::new();
-        };
-        table
-            .get("tunnel")
-            .and_then(|t| t.get("account_token"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+        read_account_token(&self.config_path)
     }
 
     /// A Config pointing at a throwaway `config.toml`, for tests that need to

@@ -183,148 +183,17 @@ pub async fn get_nodes() -> Result<Vec<Value>> {
 
 // ── Ceph helpers ─────────────────────────────────────────────────────────────
 
-const CEPH_NS: &str = "rook-ceph";
-
-/// Find a running pod that bundles the `ceph` CLI, to exec commands into.
-///
-/// Every daemon pod here shares the same Ceph image, so any of them can run
-/// `ceph -s`/`ceph osd tree`/etc. — this used to only ever look at OSD pods,
-/// which meant losing every OSD (exactly the scenario a disk actually going
-/// missing produces) made the entire Storage page unable to answer *any*
-/// Ceph question, including basic capacity, even though mon and mgr were
-/// completely healthy the whole time. OSD is still tried first since those
-/// pods are the most numerous/most likely to have one Ready.
-pub async fn ceph_exec_pod() -> Result<String> {
-    for selector in [
-        "app=rook-ceph-osd",
-        "app=rook-ceph-mon",
-        "app=rook-ceph-mgr",
-        "app=rook-ceph-mds",
-    ] {
-        let Ok(out) = run(&[
-            "get",
-            "pod",
-            "-n",
-            CEPH_NS,
-            "-l",
-            selector,
-            "--field-selector=status.phase=Running",
-            "-o",
-            "json",
-        ])
-        .await
-        else {
-            continue;
-        };
-        let Ok(pods) = serde_json::from_str::<Value>(&out) else {
-            continue;
-        };
-        for pod in pods["items"].as_array().unwrap_or(&vec![]) {
-            let name = pod["metadata"]["name"].as_str().unwrap_or("");
-            let ready = pod["status"]["conditions"]
-                .as_array()
-                .and_then(|cs| cs.iter().find(|c| c["type"] == "Ready"))
-                .and_then(|c| c["status"].as_str())
-                == Some("True");
-            if !name.is_empty() && ready {
-                return Ok(name.to_string());
-            }
-        }
-    }
-    bail!("Every storage service on this machine is currently down, so storage status can't be checked right now")
-}
-
 /// Run a `ceph` command.
 ///
 /// Kept under this name and signature so its ~10 call sites did not all have to
 /// change, but the implementation is now a plain local subprocess: Ceph runs as
 /// host daemons rather than Rook pods (see homelab/nixos/ceph/), so there is no
-/// pod to exec into.
-///
-/// The old implementation is preserved below as `ceph_exec_via_pod` only
-/// because `ceph_exec_pod` still has callers in routers/ceph.rs that shell into
-/// a pod for reasons other than running `ceph`. It is dead for this path and
-/// should go when those are migrated.
+/// pod to exec into any more. The old pod-exec implementation (`ceph_exec_pod`
+/// / `ceph_exec_via_pod`, dead since that move, with no other caller) was
+/// removed rather than kept "just in case" — it shelled a keyring into a Rook
+/// OSD pod that no longer exists on a host-Ceph node.
 pub async fn ceph_exec(args: &[&str]) -> Result<String> {
     crate::ceph_cli::ceph(args).await
-}
-
-#[allow(dead_code)]
-async fn ceph_exec_via_pod(args: &[&str]) -> Result<String> {
-    let keyring_b64 = run(&[
-        "get",
-        "secret",
-        "-n",
-        CEPH_NS,
-        "rook-ceph-admin-keyring",
-        "-o",
-        "jsonpath={.data.keyring}",
-    ])
-    .await
-    .context("read admin keyring")?;
-
-    let mon_ip = run(&[
-        "get",
-        "svc",
-        "-n",
-        CEPH_NS,
-        "-l",
-        "app=rook-ceph-mon",
-        "-o",
-        "jsonpath={.items[0].spec.clusterIP}",
-    ])
-    .await
-    .context("find mon service")?;
-
-    if mon_ip.is_empty() {
-        bail!("Cannot find rook-ceph-mon service");
-    }
-
-    let quoted_args = args
-        .iter()
-        .map(|a| shell_escape(a))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    // Use a per-call random id so concurrent ceph_exec calls never race on the
-    // same files inside the OSD pod. The previous code keyed these paths on
-    // std::thread::current().id(), but this fn awaits (kubectl exec) and Tokio
-    // multiplexes many tasks onto few worker threads — so two concurrent calls
-    // could share a worker, collide on the same /tmp paths, and clobber or
-    // `rm` each other's keyring mid-run.
-    let uniq: u64 = rand::random();
-    let key_path = format!("/tmp/ceph-key-{uniq:016x}.keyring");
-    let conf_path = format!("/tmp/ceph-conf-{uniq:016x}.conf");
-
-    let shell_cmd = format!(
-        "echo {keyring_b64} | base64 -d > {key_path} && \
-         printf '[global]\\nmon_host = v2:[{mon_ip}]:3300\\n\
-         ms_cluster_mode = crc\\nms_service_mode = crc\\nms_client_mode = crc\\n\
-         [client.admin]\\nkeyring = {key_path}\\n' > {conf_path} && \
-         ceph -c {conf_path} --name client.admin {quoted_args}; \
-         RC=$?; rm -f {key_path} {conf_path}; exit $RC"
-    );
-
-    let pod = ceph_exec_pod().await?;
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Command::new("kubectl")
-            .args(["exec", "-n", CEPH_NS, &pod, "--", "bash", "-c", &shell_cmd])
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("ceph_exec timed out after 30s"))?
-    .context("kubectl exec")?;
-
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim())
-    }
-}
-
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ── Generic CRD helpers (yolab.io custom resources) ──────────────────────────
@@ -417,20 +286,6 @@ impl Crd {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shell_escape_wraps_and_escapes_quotes() {
-        assert_eq!(shell_escape("plain"), "'plain'");
-        // A single quote in the arg must be broken out and re-quoted.
-        assert_eq!(shell_escape("a'b"), "'a'\\''b'");
-    }
-
-    #[test]
-    fn shell_escape_neutralizes_injection() {
-        // The whole payload stays a single quoted literal — no unescaped metachars.
-        let got = shell_escape("; rm -rf /");
-        assert_eq!(got, "'; rm -rf /'");
-    }
 
     // ── is_not_found ─────────────────────────────────────────────────────────
     //
