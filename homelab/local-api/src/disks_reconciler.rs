@@ -768,6 +768,85 @@ fn drain_message(targets: usize, size: Option<u32>) -> String {
     "Moving this disk's files onto the others. Do not unplug it until this finishes.".to_string()
 }
 
+/// The steering one OSD needs this tick, computed from its observed state and
+/// the owner's intent. Pure so every branch is pinned by a test rather than by
+/// watching a cluster.
+#[derive(Debug, PartialEq)]
+struct Steer {
+    set_weight: Option<f64>,
+    mark_in: bool,
+    mark_out: bool,
+    needs_purge: bool,
+    phase: Option<&'static str>,
+    message: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+struct OsdState {
+    crush_weight: f64,
+    reweight: f64,
+    kb: u64,
+    up: bool,
+}
+
+fn decide_steer(
+    want_on: bool,
+    size_bytes: u64,
+    state: OsdState,
+    osd_id: i64,
+    crush_nodes: &[Value],
+    failure_domain: &str,
+    want_copies: Option<u32>,
+) -> Steer {
+    if want_on {
+        let set_weight = if state.crush_weight == 0.0 {
+            let weight = weight_tib_from(state.kb, size_bytes);
+            (weight > 0.0).then_some(weight)
+        } else {
+            None
+        };
+        let (phase, message) = if state.up {
+            (phase::ACTIVE, "In use, storing your files.".to_string())
+        } else {
+            (
+                phase::RETRYING,
+                "This disk is switched on but is not currently serving data. \
+                 YoLab keeps trying to bring it back."
+                    .to_string(),
+            )
+        };
+        return Steer {
+            set_weight,
+            mark_in: state.reweight < 0.5,
+            mark_out: false,
+            needs_purge: false,
+            phase: Some(phase),
+            message: Some(message),
+        };
+    }
+
+    if state.reweight > 0.5 {
+        let targets = drain_targets_remaining(crush_nodes, osd_id, failure_domain);
+        return Steer {
+            set_weight: None,
+            mark_in: false,
+            mark_out: true,
+            needs_purge: false,
+            phase: Some(phase::DRAINING),
+            message: Some(drain_message(targets, want_copies)),
+        };
+    }
+
+    Steer {
+        set_weight: None,
+        mark_in: false,
+        mark_out: false,
+        needs_purge: true,
+        phase: None,
+        message: None,
+    }
+}
+
 async fn reconcile_local_osds<H: Host + 'static>(
     host: &H,
     node: &str,
@@ -916,56 +995,38 @@ async fn reconcile_local_osds<H: Host + 'static>(
         let (crush_weight, reweight, kb) = osd_state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
         let osd = format!("osd.{osd_id}");
 
-        if want_on {
-            // The daemon was already started above, before anything that could
-            // fail. Do not re-check it here: that is what put the recovery
-            // behind a statistics call in the first place.
+        let state = OsdState {
+            crush_weight,
+            reweight,
+            kb,
+            up: osd_state_up.contains(&osd_id),
+        };
+        let steer = decide_steer(
+            want_on,
+            m.size_bytes,
+            state,
+            osd_id,
+            &crush_nodes,
+            &failure_domain,
+            want_copies,
+        );
 
-            // A freshly created OSD starts at weight 0 (osd_crush_initial_weight)
-            // so it attracts no data until the user activates it.
-            if crush_weight == 0.0 {
-                let weight = weight_tib_from(kb, m.size_bytes);
-                if weight > 0.0 {
-                    tracing::info!(
-                        "{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}"
-                    );
-                    let _ = host
-                        .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
-                        .await;
-                }
-            }
-            if reweight < 0.5 {
-                tracing::info!(
-                    "{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in"
-                );
-                let _ = host.ceph(&["osd", "in", &osd]).await;
-            }
-
-            // Report the daemon, not just the intent. An OSD whose process is
-            // down is the difference between "your files are being served" and
-            // "your files are not readable", and the page had no way to tell
-            // them apart.
-            let up = osd_state_up.contains(&osd_id);
-            if up {
-                set_phase(disk_id, phase::ACTIVE, "In use, storing your files.");
-            } else {
-                set_phase(
-                    disk_id,
-                    phase::RETRYING,
-                    "This disk is switched on but is not currently serving data. \
-                     YoLab keeps trying to bring it back.",
-                );
-            }
-        } else if reweight > 0.5 {
+        if let Some(weight) = steer.set_weight {
+            tracing::info!("{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}");
+            let _ = host
+                .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
+                .await;
+        }
+        if steer.mark_in {
+            tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
+            let _ = host.ceph(&["osd", "in", &osd]).await;
+        }
+        if steer.mark_out {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
             let _ = host.ceph(&["osd", "out", &osd]).await;
-            let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
-            set_phase(
-                disk_id,
-                phase::DRAINING,
-                drain_message(targets, want_copies),
-            );
-        } else {
+        }
+
+        if steer.needs_purge {
             // Already out and drained. Under Rook this was the hard part: its
             // operator would rediscover the still-valid BlueStore data and
             // recreate the OSD deployment within ~15-35s, so teardown had to be
@@ -1059,41 +1120,35 @@ async fn reconcile_local_osds<H: Host + 'static>(
                     );
                 }
             }
+        } else {
+            set_phase(disk_id, steer.phase.unwrap(), steer.message.unwrap());
         }
     }
 
-    // Is any disk on this node switched ON but not physically here?
-    //
-    // An OSD whose disk has vanished is either a disk someone REMOVED (fine to
-    // clean up) or one someone UNPLUGGED while it was still in use (must not be
-    // touched). Nothing in the CRUSH map distinguishes them, and the disk is
-    // gone so it cannot be asked.
-    //
-    // But the config map still holds the user's intent for disks that are not
-    // present, so "switched ON, not in this tick's inventory" is exactly the
-    // unplugged case — and if even one exists we cannot tell which leftover OSD
-    // is its, so none of them get purged. Switching that disk OFF in the UI
-    // clears the block and lets the cleanup run.
-    // Keys come in two shapes now — bare for a hardware id, node-scoped for one that
-    // only means something on this machine — so the disk id has to be recovered from
-    // either. Reading only the prefixed form would make every hardware-id record
-    // invisible here, and this check is what stops a leftover OSD being purged while
-    // its disk is merely unplugged.
+    let unplugged_but_wanted = any_unplugged_but_wanted(desired, node, meta);
+
+    purge_drained_osds(host, node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
+}
+
+/// Is any disk on this node switched ON but not physically here? If so, a
+/// leftover OSD whose disk vanished could belong to an unplugged disk, so none
+/// of them may be purged. Switching that disk OFF clears the block.
+fn any_unplugged_but_wanted(
+    desired: &HashMap<String, String>,
+    node: &str,
+    meta: &HashMap<String, Disk>,
+) -> bool {
     let prefix = format!("{node}--");
-    let unplugged_but_wanted = desired.iter().any(|(k, v)| {
+    desired.iter().any(|(k, v)| {
         if v != "ON" && v != "USING" {
             return false;
         }
         match k.strip_prefix(&prefix) {
             Some(d) => !meta.contains_key(d),
-            // A bare key belongs to whichever machine currently holds that disk, so it
-            // only counts as unplugged-but-wanted when this node cannot see it.
             None if is_globally_unique_id(k) => !meta.contains_key(k.as_str()),
             None => false,
         }
-    });
-
-    purge_drained_osds(host, node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
+    })
 }
 
 /// Run `ceph-volume lvm create` off the reconcile tick.
@@ -3352,6 +3407,100 @@ mod tests {
             osd_id: None,
             progress: None,
         }
+    }
+
+    fn seen(crush_weight: f64, reweight: f64, kb: u64, up: bool) -> OsdState {
+        OsdState {
+            crush_weight,
+            reweight,
+            kb,
+            up,
+        }
+    }
+
+    #[test]
+    fn a_freshly_created_osd_is_activated_with_a_weight() {
+        let steer = decide_steer(
+            true,
+            1u64 << 40,
+            seen(0.0, 0.0, 0, true),
+            0,
+            &[],
+            "osd",
+            None,
+        );
+        assert_eq!(steer.set_weight, Some(1.0));
+        assert!(steer.mark_in);
+        assert!(!steer.mark_out);
+        assert!(!steer.needs_purge);
+        assert_eq!(steer.phase, Some(phase::ACTIVE));
+    }
+
+    #[test]
+    fn an_on_osd_that_is_down_reports_retrying() {
+        let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, false), 0, &[], "osd", None);
+        assert_eq!(steer.set_weight, None);
+        assert!(!steer.mark_in);
+        assert!(!steer.mark_out);
+        assert!(!steer.needs_purge);
+        assert_eq!(steer.phase, Some(phase::RETRYING));
+    }
+
+    #[test]
+    fn a_weighted_in_osd_that_is_up_needs_no_steering() {
+        let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, true), 0, &[], "osd", None);
+        assert_eq!(steer.set_weight, None);
+        assert!(!steer.mark_in);
+        assert!(!steer.mark_out);
+        assert!(!steer.needs_purge);
+        assert_eq!(steer.phase, Some(phase::ACTIVE));
+    }
+
+    #[test]
+    fn an_off_disk_still_in_is_marked_out() {
+        let steer = decide_steer(false, 0, seen(1.0, 1.0, 0, false), 0, &[], "osd", None);
+        assert!(steer.mark_out);
+        assert!(!steer.needs_purge);
+        assert_eq!(steer.phase, Some(phase::DRAINING));
+        assert!(steer.message.is_some());
+    }
+
+    #[test]
+    fn an_off_disk_already_out_needs_purge() {
+        let steer = decide_steer(false, 0, seen(1.0, 0.0, 0, false), 0, &[], "osd", None);
+        assert!(steer.needs_purge);
+        assert!(!steer.mark_out);
+        assert!(!steer.mark_in);
+        assert_eq!(steer.phase, None);
+        assert_eq!(steer.message, None);
+    }
+
+    #[test]
+    fn a_wanted_disk_absent_from_the_node_is_unplugged() {
+        let desired = HashMap::from([("serial-abc".to_string(), "ON".to_string())]);
+        let meta: HashMap<String, Disk> = HashMap::new();
+        assert!(any_unplugged_but_wanted(&desired, "node1", &meta));
+    }
+
+    #[test]
+    fn a_node_scoped_wanted_disk_absent_is_unplugged() {
+        let desired = HashMap::from([("node1--dev-sdb".to_string(), "USING".to_string())]);
+        let meta: HashMap<String, Disk> = HashMap::new();
+        assert!(any_unplugged_but_wanted(&desired, "node1", &meta));
+    }
+
+    #[test]
+    fn a_present_disk_is_not_unplugged() {
+        let desired = HashMap::from([("serial-abc".to_string(), "ON".to_string())]);
+        let meta = HashMap::from([("serial-abc".to_string(), disk(Ownership::Blank))]);
+        assert!(!any_unplugged_but_wanted(&desired, "node1", &meta));
+    }
+
+    #[test]
+    fn an_off_disk_is_not_unplugged() {
+        let desired = HashMap::from([("serial-abc".to_string(), "OFF".to_string())]);
+        let meta: HashMap<String, Disk> = HashMap::new();
+        assert!(!any_unplugged_but_wanted(&desired, "node1", &meta));
     }
 
     #[test]
