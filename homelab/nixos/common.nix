@@ -7,7 +7,14 @@
   rust,
   ...
 }: let
-  s = import ../shared.nix {inherit pkgs lib yolabConfigPath rust;};
+  s = import ../shared.nix {
+    inherit
+      pkgs
+      lib
+      yolabConfigPath
+      rust
+      ;
+  };
   k3sCfg = s.nodeCfg.k3s;
 
   # The first node initialises the embedded-etcd cluster (--cluster-init).
@@ -74,26 +81,6 @@ in {
   };
 
   config = {
-    # No glances. It was a web system monitor on :61208, proxied at /glances.
-    #
-    # It is gone because it could not be installed reliably. glances 4.5.5 is not
-    # in cache.nixos.org (its narinfo is a 404), so every node compiled it from
-    # source — running its test suite, two of whose REST tests are racy. That is
-    # a coin flip per machine at install time, and it is what made the second
-    # machine fail to install while the first, which had already won that toss
-    # and kept the result in its store, kept working.
-    #
-    # An overlay used to patch those tests out. Removing it was right in itself —
-    # overriding the derivation is what forced the from-source build in the first
-    # place — but it was removed on the belief that a prebuilt 4.5.5 existed. It
-    # does not. Bringing glances back means depending on a cached build, not
-    # patching the tests again.
-
-    # Ceph, and only Ceph, comes from a newer nixpkgs. The main pin's 20.2.2
-    # fails its own python-common test suite, so Hydra never built it and it is
-    # absent from the binary cache — leaving every node to compile Ceph from
-    # source. 20.2.3 is fixed and cached. Scoped to two attributes so nothing
-    # else in the closure moves.
     nixpkgs.overlays = [
       (_final: prev: {
         inherit (inputs.nixpkgs-ceph.legacyPackages.${prev.stdenv.hostPlatform.system}) ceph ceph-client;
@@ -526,7 +513,11 @@ in {
       };
     };
 
-    services.getty.extraArgs = ["--issue-file" "/run/issue" "--noclear"];
+    services.getty.extraArgs = [
+      "--issue-file"
+      "/run/issue"
+      "--noclear"
+    ];
 
     environment.systemPackages = with pkgs;
       map lib.lowPrio [
@@ -614,57 +605,25 @@ in {
       "nix-command"
       "flakes"
     ];
-    # Limit build parallelism so deploys don't starve k3s and Ceph.
-    # One job at a time, capped at 2 cores — Rust link phase is single-threaded anyway.
     nix.settings.max-jobs = 1;
     nix.settings.cores = 2;
     nix.gc.automatic = true;
-    # Automatic was already on, but with no options it only clears truly
-    # unreachable garbage — every generation from every past rebuild stays a
-    # GC root forever and /nix grows without bound. Bounding it to 2 weeks is
-    # part of the same "root disk must not silently fill up" fix as the
-    # kubelet image-gc thresholds above.
     nix.gc.options = "--delete-older-than 14d";
 
-    # Swap is allocated on demand rather than reserved up front. The fixed 8 GB swapfile
-    # this replaces sat on the root LV permanently, used or not, and root is whatever is
-    # left after disko hands 100%FREE to Ceph — so it was 8 GB taken from the smaller of
-    # the two volumes to cover a case that mostly never happens.
-    #
-    # With vm.swappiness = 10 the kernel avoids swapping anyway, so in the common case
-    # swapspace allocates nothing at all.
-    swapDevices = [];
     services.swapspace = {
       enable = true;
-      settings = {
-        # Per-file cap. The module default is "2t", which on a laptop is not a limit.
-        max_swapsize = "4g";
-        # swapspace stops when the disk fills and then backs off for `cooldown` seconds,
-        # but total swap is otherwise bounded only by free space — and this LV also holds
-        # /nix. A full root here does not just mean swap thrashing, it means
-        # nixos-rebuild can no longer write, i.e. the node loses the ability to update or
-        # roll back. Keeping a larger free margin than the default (20/60/30) is cheap
-        # insurance against the one failure this product cannot recover from remotely.
-        lower_freelimit = 15;
-        freetarget = 25;
-      };
-    };
-
-    # Reclaim the old fixed swapfile from nodes that were built before the switch —
-    # guarded, because deleting a file the kernel is actively swapping to would take the
-    # machine down. After a reboot it is no longer in /proc/swaps and can go.
-    systemd.services.yolab-drop-legacy-swapfile = {
-      description = "Remove the pre-swapspace fixed swapfile once it is inactive";
-      wantedBy = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "drop-legacy-swapfile" ''
-          if [ -f /var/lib/swapfile ] && ! ${pkgs.gnugrep}/bin/grep -q '/var/lib/swapfile' /proc/swaps; then
-            rm -f /var/lib/swapfile && echo "removed legacy /var/lib/swapfile"
-          fi
-        '';
-      };
+      # settings = {
+      #   # Per-file cap. The module default is "2t", which on a laptop is not a limit.
+      #   max_swapsize = "4g";
+      #   # swapspace stops when the disk fills and then backs off for `cooldown` seconds,
+      #   # but total swap is otherwise bounded only by free space — and this LV also holds
+      #   # /nix. A full root here does not just mean swap thrashing, it means
+      #   # nixos-rebuild can no longer write, i.e. the node loses the ability to update or
+      #   # roll back. Keeping a larger free margin than the default (20/60/30) is cheap
+      #   # insurance against the one failure this product cannot recover from remotely.
+      #   lower_freelimit = 15;
+      #   freetarget = 25;
+      # };
     };
   };
 }
