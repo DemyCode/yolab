@@ -31,7 +31,8 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, io::Read, path::Path};
 use tokio::time::{sleep, Duration};
 
-use crate::{ceph_cli, kubectl};
+use crate::host::{Host, RealHost};
+use crate::kubectl;
 
 /// Kept as "rook-ceph" even though Rook no longer runs the cluster: it is where
 /// the existing ConfigMaps, Lease and CSI resources already live, and renaming
@@ -415,9 +416,10 @@ pub async fn run() {
         }
     };
     tracing::info!("disk reconciler started on {node}");
+    let host = RealHost;
     loop {
         // Every node: publish its own disk inventory + run its own OSD lifecycle.
-        if let Err(e) = publish_local(&node).await {
+        if let Err(e) = publish_local(&host, &node).await {
             tracing::warn!("disk publish: {e}");
         }
         // The lease is still taken even though there is no longer a shared CR to
@@ -439,7 +441,8 @@ pub async fn run() {
 /// when someone is looking at the Storage page. (The `node` argument is no
 /// longer needed to filter by hostname, since ceph-volume only ever reports
 /// this host's OSDs, but is kept so callers read the same.)
-async fn fetch_disk_to_osd(
+async fn fetch_disk_to_osd<H: Host>(
+    host: &H,
     _node: &str,
     meta: &HashMap<String, Disk>,
 ) -> Option<HashMap<String, i64>> {
@@ -473,11 +476,11 @@ async fn fetch_disk_to_osd(
     // unrelated failure modes, and needing both is not hypothetical — a wedged
     // `lvs` took ceph-volume out on node1 and left an OSD marked `out` with no
     // way back in, because marking it in needs this map.
-    let local = match ceph_cli::local_osds().await {
+    let local = match local_osds(host).await {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("fetch_disk_to_osd: ceph-volume failed ({e}) — asking the mon instead");
-            match ceph_cli::ceph_json(&["osd", "metadata"]).await {
+            match host.ceph_json(&["osd", "metadata"]).await {
                 Ok(v) => {
                     let from_mon = parse_osd_metadata(&v, _node);
                     if from_mon.is_empty() {
@@ -586,14 +589,22 @@ fn canonical_device(dev: &str) -> String {
         .unwrap_or(full)
 }
 
+async fn local_osds<H: Host>(host: &H) -> Result<Vec<(String, i64)>> {
+    let raw = host
+        .ceph_volume(&["lvm", "list", "--format", "json"])
+        .await?;
+    let our_fsid = host.cluster_fsid().await.unwrap_or_default();
+    parse_lvm_list(&raw, &our_fsid)
+}
+
 /// Per-node: publish this node's disk inventory + its effective device list to
 /// the status ConfigMap, and run this node's own OSD lifecycle. No shared-CR
 /// writes happen here, so every node can run it concurrently without racing.
-async fn publish_local(node: &str) -> Result<()> {
-    let Some(scanned) = scan_devices() else {
+async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
+    let Some(scanned) = scan_devices(host).await else {
         anyhow::bail!("could not read the disk list from lsblk — skipping this tick");
     };
-    let our_fsid = cluster_fsid().await.unwrap_or_default();
+    let our_fsid = host.cluster_fsid().await.unwrap_or_default();
 
     let mut meta: HashMap<String, Disk> = scanned
         .iter()
@@ -611,7 +622,7 @@ async fn publish_local(node: &str) -> Result<()> {
     let disk_to_osd: Option<HashMap<String, i64>> = if our_fsid.is_empty() {
         None
     } else {
-        fetch_disk_to_osd(node, &meta).await
+        fetch_disk_to_osd(host, node, &meta).await
     };
     if let Some(map) = &disk_to_osd {
         mark_known_osds(&mut meta, map);
@@ -619,16 +630,16 @@ async fn publish_local(node: &str) -> Result<()> {
 
     // Publish the inventory whatever happens: the Storage page has to keep
     // working when Kubernetes does not, and this is the only source it has.
-    let desired = read_desired().await;
+    let desired = read_desired(host).await;
 
     match &desired {
         Some(d) => {
             // Register first, so a disk that has just been plugged in is
             // reconciled on this tick rather than reported as "not in use" for
             // 30 seconds before its real state is known.
-            auto_register_all_disks(node, &meta, d).await;
-            let d = read_desired().await.unwrap_or_else(|| d.clone());
-            reconcile_local_osds(node, &meta, &d, disk_to_osd.as_ref()).await;
+            auto_register_all_disks(host, node, &meta, d).await;
+            let d = read_desired(host).await.unwrap_or_else(|| d.clone());
+            reconcile_local_osds(host, node, &meta, &d, disk_to_osd.as_ref()).await;
         }
         None => {
             tracing::warn!(
@@ -645,7 +656,7 @@ async fn publish_local(node: &str) -> Result<()> {
     }
 
     mark_progress(&mut meta);
-    write_status(node, &meta).await;
+    write_status(host, node, &meta).await;
     Ok(())
 }
 
@@ -757,7 +768,8 @@ fn drain_message(targets: usize, size: Option<u32>) -> String {
     "Moving this disk's files onto the others. Do not unplug it until this finishes.".to_string()
 }
 
-async fn reconcile_local_osds(
+async fn reconcile_local_osds<H: Host + 'static>(
+    host: &H,
     node: &str,
     meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
@@ -765,7 +777,7 @@ async fn reconcile_local_osds(
 ) {
     // The two guards that stand between a bad answer and `ceph-volume lvm
     // create` over live data. See `plan_tick`, where they are asserted.
-    match plan_tick(ceph_cli::reachable().await, disk_to_osd.is_some()) {
+    match plan_tick(host.reachable().await, disk_to_osd.is_some()) {
         TickPlan::Unreachable => {
             tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
             for disk_id in meta.keys() {
@@ -809,7 +821,9 @@ async fn reconcile_local_osds(
                 tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
                 set_phase(disk_id, phase::BLOCKED, reason);
             }
-            CreatePlan::Create { dev_path } => spawn_create(disk_id.clone(), dev_path),
+            CreatePlan::Create { dev_path } => {
+                spawn_create(host.clone(), disk_id.clone(), dev_path)
+            }
         }
     }
 
@@ -837,13 +851,13 @@ async fn reconcile_local_osds(
             continue;
         }
         if let Some(&osd_id) = disk_to_osd.get(disk_id) {
-            ensure_osd_unit_running(osd_id).await;
+            ensure_osd_unit_running(host, osd_id).await;
         }
     }
 
-    stop_foreign_osd_units().await;
+    stop_foreign_osd_units(host).await;
 
-    let crush_nodes: Vec<Value> = match ceph_cli::ceph_json(&["osd", "df", "tree"]).await {
+    let crush_nodes: Vec<Value> = match host.ceph_json(&["osd", "df", "tree"]).await {
         Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
         Err(e) => {
             // Not silent any more. This return skips weighting, in/out and the
@@ -915,21 +929,16 @@ async fn reconcile_local_osds(
                     tracing::info!(
                         "{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}"
                     );
-                    let _ = ceph_cli::ceph(&[
-                        "osd",
-                        "crush",
-                        "reweight",
-                        &osd,
-                        &format!("{weight:.5}"),
-                    ])
-                    .await;
+                    let _ = host
+                        .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
+                        .await;
                 }
             }
             if reweight < 0.5 {
                 tracing::info!(
                     "{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in"
                 );
-                let _ = ceph_cli::ceph(&["osd", "in", &osd]).await;
+                let _ = host.ceph(&["osd", "in", &osd]).await;
             }
 
             // Report the daemon, not just the intent. An OSD whose process is
@@ -949,7 +958,7 @@ async fn reconcile_local_osds(
             }
         } else if reweight > 0.5 {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
-            let _ = ceph_cli::ceph(&["osd", "out", &osd]).await;
+            let _ = host.ceph(&["osd", "out", &osd]).await;
             let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
             set_phase(
                 disk_id,
@@ -973,7 +982,7 @@ async fn reconcile_local_osds(
             // `pg ls-by-osd` once caused real data loss.
             // Asked before the daemon is stopped, again after, and combined
             // with the cluster's data-loss state. See `plan_purge`.
-            let safe_before = ceph_cli::osd_safe_to_destroy(osd_id).await;
+            let safe_before = host.osd_safe_to_destroy(osd_id).await;
             if safe_before {
                 set_phase(
                     disk_id,
@@ -982,9 +991,9 @@ async fn reconcile_local_osds(
                 );
                 // Stop the daemon before purging. Purging while it still runs
                 // is the EBUSY race the old code guarded against separately.
-                disable_osd_unit(osd_id).await;
+                disable_osd_unit(host, osd_id).await;
             }
-            let safe_after = safe_before && ceph_cli::osd_safe_to_destroy(osd_id).await;
+            let safe_after = safe_before && host.osd_safe_to_destroy(osd_id).await;
             let loss = if safe_after {
                 crate::routers::ceph::assess_pg_loss().await
             } else {
@@ -1025,12 +1034,15 @@ async fn reconcile_local_osds(
                 PurgeVerdict::Purge => {}
             }
 
-            match ceph_cli::ceph(&["osd", "purge", &osd, "--yes-i-really-mean-it"]).await {
+            match host
+                .ceph(&["osd", "purge", &osd, "--yes-i-really-mean-it"])
+                .await
+            {
                 Ok(_) => {
                     tracing::info!("{osd} ({disk_id}): purged");
                     if let Some(device) = Some(m.device.as_str()).filter(|d| !d.is_empty()) {
                         tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
-                        wipe_device(device).await;
+                        wipe_device(host, device).await;
                     }
                     set_phase(
                         disk_id,
@@ -1081,7 +1093,7 @@ async fn reconcile_local_osds(
         }
     });
 
-    purge_drained_osds(node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
+    purge_drained_osds(host, node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
 }
 
 /// Run `ceph-volume lvm create` off the reconcile tick.
@@ -1094,7 +1106,7 @@ async fn reconcile_local_osds(
 /// Off-tick, the loop keeps running at 30s and reports what this create is
 /// doing while it does it. `CREATING` is what stops a second one being started
 /// for the same disk on the next pass.
-fn spawn_create(disk_id: String, dev_path: String) {
+fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
     {
         let Ok(mut running) = CREATING.lock() else {
             return;
@@ -1132,7 +1144,7 @@ fn spawn_create(disk_id: String, dev_path: String) {
     );
 
     tokio::spawn(async move {
-        create_osd(&disk_id, &dev_path).await;
+        create_osd(&host, &disk_id, &dev_path).await;
         if let Ok(mut c) = CREATING.lock() {
             c.remove(&disk_id);
         }
@@ -1151,18 +1163,19 @@ fn is_stale_signature(err: &str) -> bool {
 /// the BlueStore label lives inside the LV rather than at offset 0. So a disk
 /// like this reads as blank, passes `refuse_osd_creation`, and then fails
 /// creation forever against its own leftover volume group.
-async fn foreign_osd_on(dev_path: &str) -> Option<i64> {
-    let raw = ceph_cli::ceph_volume(&["lvm", "list", "--format", "json"])
+async fn foreign_osd_on<H: Host>(host: &H, dev_path: &str) -> Option<i64> {
+    let raw = host
+        .ceph_volume(&["lvm", "list", "--format", "json"])
         .await
         .ok()?;
-    let our_fsid = cluster_fsid().await.filter(|f| !f.is_empty())?;
+    let our_fsid = host.cluster_fsid().await.filter(|f| !f.is_empty())?;
     foreign_osd_in_list(&raw, &our_fsid, dev_path)
 }
 
 /// One creation attempt, including cleaning up after the previous one.
-async fn create_osd(disk_id: &str, dev_path: &str) {
+async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
     // Clear the wreckage of an earlier attempt first, so ids stop accumulating.
-    reclaim_orphan(disk_id).await;
+    reclaim_orphan(host, disk_id).await;
 
     // ceph-volume takes an id from the mon before it zaps the device, builds the
     // LVM stack or mkfs's BlueStore. Snapshotting ids around the call is what
@@ -1173,7 +1186,7 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     // as this disk's orphan and offered to `reclaim_orphan` — which purges. On a
     // cluster whose data happens to have moved, that purges a live OSD. If the
     // snapshot fails, the leak simply goes undetected this round.
-    let before = ceph_cli::osd_ids().await.ok();
+    let before = host.osd_ids().await.ok();
 
     // Before creating, not after a failure. A disk still carrying an earlier
     // install's LVM stack does not make ceph-volume fail — it exits 0 in about
@@ -1181,11 +1194,14 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
     // device is already an OSD. Nothing is created, the disk never joins any
     // map, and the reconciler tries again every tick forever. Erasing only on
     // Err never fired here.
-    if let Some(id) = foreign_osd_on(dev_path).await {
+    if let Some(id) = foreign_osd_on(host, dev_path).await {
         tracing::warn!(
             "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it first"
         );
-        if let Err(e) = ceph_cli::ceph_volume(&["lvm", "zap", "--destroy", dev_path]).await {
+        if let Err(e) = host
+            .ceph_volume(&["lvm", "zap", "--destroy", dev_path])
+            .await
+        {
             tracing::warn!("{disk_id}: zap failed, leaving the disk alone: {e}");
             set_phase(
                 disk_id,
@@ -1196,15 +1212,16 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
         }
     }
 
-    let mut result = ceph_cli::ceph_volume(&[
-        "lvm",
-        "create",
-        "--bluestore",
-        "--data",
-        dev_path,
-        "--no-systemd",
-    ])
-    .await;
+    let mut result = host
+        .ceph_volume(&[
+            "lvm",
+            "create",
+            "--bluestore",
+            "--data",
+            dev_path,
+            "--no-systemd",
+        ])
+        .await;
 
     // The system LV keeps the previous cluster's BlueStore signature, because
     // disko recreates the LV but LVM does not zero reused extents. Unlike the
@@ -1220,18 +1237,19 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
             tracing::warn!(
                 "{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying"
             );
-            if let Err(e) = ceph_cli::ceph_volume(&args).await {
+            if let Err(e) = host.ceph_volume(&args).await {
                 tracing::warn!("{disk_id}: zap failed: {e}");
             } else {
-                result = ceph_cli::ceph_volume(&[
-                    "lvm",
-                    "create",
-                    "--bluestore",
-                    "--data",
-                    dev_path,
-                    "--no-systemd",
-                ])
-                .await;
+                result = host
+                    .ceph_volume(&[
+                        "lvm",
+                        "create",
+                        "--bluestore",
+                        "--data",
+                        dev_path,
+                        "--no-systemd",
+                    ])
+                    .await;
             }
         }
     }
@@ -1240,13 +1258,13 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
         Ok(_) => {
             // Re-read the mapping so we learn the id Ceph just assigned; it
             // cannot be known before creation.
-            match ceph_cli::local_osds().await {
+            match local_osds(host).await {
                 Ok(local) => {
                     let want = canonical_device(dev_path);
                     if let Some((_, osd_id)) =
                         local.iter().find(|(d, _)| canonical_device(d) == want)
                     {
-                        start_osd_unit(*osd_id).await;
+                        start_osd_unit(host, *osd_id).await;
                         set_phase(disk_id, phase::ACTIVE, "Added to the storage pool.");
                         if let Ok(mut p) = PROGRESS.lock() {
                             let e = p.entry(disk_id.to_string()).or_default();
@@ -1279,7 +1297,7 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
             // Name the id this attempt allocated, so the next one can clear it
             // instead of leaving another blank OSD in the cluster. Only when
             // BOTH snapshots are real — a guess here ends in a purge.
-            let leaked: Vec<i64> = match (&before, ceph_cli::osd_ids().await.ok()) {
+            let leaked: Vec<i64> = match (&before, host.osd_ids().await.ok()) {
                 (Some(before), Some(after)) => after
                     .iter()
                     .copied()
@@ -1295,7 +1313,7 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
                     p.entry(disk_id.to_string()).or_default().orphan_osd_id = Some(id);
                 }
                 // Try now; if it does not work, the next attempt retries it.
-                reclaim_orphan(disk_id).await;
+                reclaim_orphan(host, disk_id).await;
             }
             // The error text is ceph-volume's, and it is for whoever reads the
             // journal. Putting it on the Storage page turns a clear "this is not
@@ -1322,7 +1340,7 @@ async fn create_osd(disk_id: &str, dev_path: &str) {
 /// multi-node cluster a phantom carries nothing that says which machine made it,
 /// so a sweep on one node could purge an id another node is mid-way through
 /// creating.
-async fn reclaim_orphan(disk_id: &str) {
+async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
     let Some(id) = PROGRESS
         .lock()
         .ok()
@@ -1335,7 +1353,7 @@ async fn reclaim_orphan(disk_id: &str) {
     // here would read an unreadable OSD list as "gone" and drop the only record
     // of the id, leaking it permanently — the exact bug this function exists to
     // prevent.
-    let Ok(existing) = ceph_cli::osd_ids().await else {
+    let Ok(existing) = host.osd_ids().await else {
         return;
     };
     if !existing.contains(&id) {
@@ -1345,14 +1363,14 @@ async fn reclaim_orphan(disk_id: &str) {
         return;
     }
 
-    if !ceph_cli::osd_safe_to_destroy(id).await {
+    if !host.osd_safe_to_destroy(id).await {
         tracing::warn!(
             "{disk_id}: osd.{id} was left by a failed setup but Ceph will not confirm it is empty — leaving it"
         );
         return;
     }
 
-    match ceph_cli::osd_purge(id).await {
+    match host.osd_purge(id).await {
         Ok(_) => {
             tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
             if let Ok(mut p) = PROGRESS.lock() {
@@ -1678,11 +1696,11 @@ fn zap_args<'a>(dev_path: &'a str, foreign: bool, err: &str) -> Option<Vec<&'a s
 /// hand. The mon then refuses its key and `Restart=on-failure` flaps it
 /// forever. Skipping such an OSD is enough to stop starting it, but not to
 /// stop one already running: nothing else ever looks at it again.
-async fn stop_foreign_osd_units() {
-    let Ok(raw) = ceph_cli::ceph_volume(&["lvm", "list", "--format", "json"]).await else {
+async fn stop_foreign_osd_units<H: Host>(host: &H) {
+    let Ok(raw) = host.ceph_volume(&["lvm", "list", "--format", "json"]).await else {
         return;
     };
-    let Some(our_fsid) = cluster_fsid().await.filter(|f| !f.is_empty()) else {
+    let Some(our_fsid) = host.cluster_fsid().await.filter(|f| !f.is_empty()) else {
         return;
     };
     for id in foreign_osd_ids(&raw, &our_fsid) {
@@ -1690,21 +1708,17 @@ async fn stop_foreign_osd_units() {
         // ActiveState, not is-active/is-failed: a flapping unit sits in
         // `activating (auto-restart)`, and both of those report non-zero for
         // it — the one state this exists to catch would have been skipped.
-        let state = tokio::process::Command::new("systemctl")
-            .args(["show", "-p", "ActiveState", "--value", &unit])
-            .output()
+        let state = host
+            .systemctl(&["show", "-p", "ActiveState", "--value", &unit])
             .await
             .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .map(|o| o.stdout.trim().to_string())
             .unwrap_or_default();
         if state.is_empty() || state == "inactive" {
             continue;
         }
         tracing::warn!("osd.{id}: belongs to another cluster — stopping {unit}");
-        let _ = tokio::process::Command::new("systemctl")
-            .args(["stop", &unit])
-            .status()
-            .await;
+        let _ = host.systemctl(&["stop", &unit]).await;
     }
 }
 
@@ -1716,19 +1730,18 @@ async fn stop_foreign_osd_units() {
 /// systemctl stop, a crash past the restart limit. Without it an OSD could sit
 /// created-but-down indefinitely with the reconciler reporting nothing wrong,
 /// which is exactly what a read-only /etc/systemd/system produced.
-async fn ensure_osd_unit_running(osd_id: i64) {
+async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
-    let active = tokio::process::Command::new("systemctl")
-        .args(["is-active", "--quiet", &unit])
-        .status()
+    let active = host
+        .systemctl(&["is-active", "--quiet", &unit])
         .await
-        .map(|s| s.success())
+        .map(|o| o.success)
         .unwrap_or(false);
     if active {
         return;
     }
     tracing::warn!("osd.{osd_id}: {unit} is not running — starting it");
-    start_osd_unit(osd_id).await;
+    start_osd_unit(host, osd_id).await;
 }
 
 /// Start this OSD's systemd instance.
@@ -1739,19 +1752,12 @@ async fn ensure_osd_unit_running(osd_id: i64) {
 /// both OSDs created and neither running. Persistence across reboots comes from
 /// the declarative yolab-ceph-osd-activate unit, which enumerates prepared OSDs
 /// from ceph-volume and starts an instance for each.
-async fn start_osd_unit(osd_id: i64) {
+async fn start_osd_unit<H: Host>(host: &H, osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
     tracing::info!("osd.{osd_id}: starting {unit}");
-    match tokio::process::Command::new("systemctl")
-        .args(["start", &unit])
-        .output()
-        .await
-    {
-        Ok(o) if o.status.success() => tracing::info!("osd.{osd_id}: {unit} started"),
-        Ok(o) => tracing::warn!(
-            "osd.{osd_id}: starting {unit} failed: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
+    match host.systemctl(&["start", &unit]).await {
+        Ok(o) if o.success => tracing::info!("osd.{osd_id}: {unit} started"),
+        Ok(o) => tracing::warn!("osd.{osd_id}: starting {unit} failed: {}", o.stderr.trim()),
         Err(e) => tracing::warn!("osd.{osd_id}: could not run systemctl: {e}"),
     }
 }
@@ -1759,26 +1765,22 @@ async fn start_osd_unit(osd_id: i64) {
 /// Stop this OSD's systemd instance and wait for the process to actually be
 /// gone. Purging an OSD whose daemon still holds the device fails with EBUSY,
 /// so this must complete before any purge.
-async fn disable_osd_unit(osd_id: i64) {
+async fn disable_osd_unit<H: Host>(host: &H, osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
     tracing::info!("osd.{osd_id}: stopping {unit}");
     // `stop`, not `disable --now`, for the same reason start is not enable:
     // disabling touches the read-only /etc/systemd/system. Nothing needs
     // un-enabling anyway — yolab-ceph-osd-activate derives what to start from
     // ceph-volume, and a purged OSD disappears from there on its own.
-    let _ = tokio::process::Command::new("systemctl")
-        .args(["stop", &unit])
-        .output()
-        .await;
+    let _ = host.systemctl(&["stop", &unit]).await;
 
     // `systemctl disable --now` returns once systemd has reaped the unit, but
     // give the device a moment to be released before anything touches it.
     for _ in 0..15 {
-        let active = tokio::process::Command::new("systemctl")
-            .args(["is-active", "--quiet", &unit])
-            .status()
+        let active = host
+            .systemctl(&["is-active", "--quiet", &unit])
             .await
-            .map(|s| s.success())
+            .map(|o| o.success)
             .unwrap_or(false);
         if !active {
             return;
@@ -1815,7 +1817,7 @@ async fn disable_osd_unit(osd_id: i64) {
 ///
 /// Only ever called after our own successful `ceph osd purge` of that exact OSD
 /// in this same call — never on a disk we merely suspect is drained.
-async fn wipe_device(device: &str) {
+async fn wipe_device<H: Host>(host: &H, device: &str) {
     let dev_path = if device.starts_with('/') {
         device.to_string()
     } else {
@@ -1831,7 +1833,7 @@ async fn wipe_device(device: &str) {
     }
     args.push(&dev_path);
 
-    match ceph_cli::ceph_volume(&args).await {
+    match host.ceph_volume(&args).await {
         Ok(_) => tracing::info!("wipe_device: {dev_path} zapped and returned to a blank state"),
         Err(e) => tracing::warn!(
             "wipe_device: could not zap {dev_path}: {e} — the disk stays registered and this \
@@ -1847,7 +1849,8 @@ async fn wipe_device(device: &str) {
 ///   3. OSD is down + reweight ≤ 0.5 (out)
 ///   4. Rook deployment is gone (no EBUSY — daemon is not running)
 ///   5. `ceph osd safe-to-destroy` confirms no PG data remains
-async fn purge_drained_osds(
+async fn purge_drained_osds<H: Host>(
+    host: &H,
     node: &str,
     crush_nodes: &[Value],
     disk_to_osd: &HashMap<String, i64>,
@@ -1905,22 +1908,23 @@ async fn purge_drained_osds(
         } // not fully drained/stopped
 
         // The daemon must not be running — never purge underneath a live OSD.
-        disable_osd_unit(osd_id).await;
+        disable_osd_unit(host, osd_id).await;
 
         // Confirm no PG data remains before destroying the OSD record.
-        if !ceph_cli::osd_safe_to_destroy(osd_id).await {
+        if !host.osd_safe_to_destroy(osd_id).await {
             tracing::info!("osd.{osd_id}: disk gone but not yet safe-to-destroy — waiting");
             continue;
         }
 
         tracing::info!("osd.{osd_id}: disk gone, out, safe-to-destroy — purging from Ceph");
-        match ceph_cli::ceph(&[
-            "osd",
-            "purge",
-            &format!("osd.{osd_id}"),
-            "--yes-i-really-mean-it",
-        ])
-        .await
+        match host
+            .ceph(&[
+                "osd",
+                "purge",
+                &format!("osd.{osd_id}"),
+                "--yes-i-really-mean-it",
+            ])
+            .await
         {
             Ok(_) => tracing::info!("osd.{osd_id}: purged"),
             Err(e) => tracing::warn!("osd.{osd_id}: purge failed: {e}"),
@@ -2055,7 +2059,8 @@ fn migrate_disk_records(
 /// System disk (is_loop) defaults ON — it's always the primary storage.
 /// All other disks default OFF; the user must explicitly enable them.
 /// Foreign-Ceph disks are registered too so they show in the UI.
-async fn auto_register_all_disks(
+async fn auto_register_all_disks<H: Host>(
+    host: &H,
     node: &str,
     meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
@@ -2130,21 +2135,8 @@ async fn auto_register_all_disks(
     }
 
     let patch = json!({ "data": Value::Object(patch_data) }).to_string();
-    if let Err(e) = kubectl::run(&[
-        "patch",
-        "configmap",
-        CONFIG_CM,
-        "-n",
-        NS,
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await
-    {
-        let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
-        if let Err(e2) = kubectl::run(&[
+    if let Err(e) = host
+        .kubectl(&[
             "patch",
             "configmap",
             CONFIG_CM,
@@ -2156,6 +2148,23 @@ async fn auto_register_all_disks(
             &patch,
         ])
         .await
+    {
+        let _ = host
+            .kubectl(&["create", "configmap", CONFIG_CM, "-n", NS])
+            .await;
+        if let Err(e2) = host
+            .kubectl(&[
+                "patch",
+                "configmap",
+                CONFIG_CM,
+                "-n",
+                NS,
+                "--type",
+                "merge",
+                "-p",
+                &patch,
+            ])
+            .await
         {
             tracing::warn!("auto_register_all_disks: {e}, then {e2}");
         } else {
@@ -2245,17 +2254,17 @@ pub(crate) fn parse_disk_flags(dev: &Value) -> DiskFlags {
 /// None when lsblk could not be read. Not an empty list: "this machine has no
 /// disks" would make `purge_drained_osds` believe every OSD's disk had been
 /// unplugged.
-fn scan_devices() -> Option<Vec<(String, DiskFlags)>> {
+async fn scan_devices<H: Host>(host: &H) -> Option<Vec<(String, DiskFlags)>> {
     // MOUNTPOINTS, not just NAME/TYPE: mount state is what keeps the OS disk
     // from being offered as storage now that partitioned disks are listed.
-    let out = std::process::Command::new("lsblk")
-        .args(["-J", "-o", "NAME,TYPE,MOUNTPOINTS"])
-        .output()
+    let out = host
+        .run_cmd("lsblk", &["-J", "-o", "NAME,TYPE,MOUNTPOINTS"])
+        .await
         .ok()?;
-    if !out.status.success() {
+    if !out.success {
         return None;
     }
-    let json = serde_json::from_slice::<Value>(&out.stdout).ok()?;
+    let json = serde_json::from_slice::<Value>(out.stdout.as_bytes()).ok()?;
     let mut devices = Vec::new();
     if let Some(devs) = json["blockdevices"].as_array() {
         for dev in devs {
@@ -2475,11 +2484,7 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
 /// is unreachable — never a default — because callers compare it against a
 /// disk's BlueStore label to tell our disks from a stranger's, and an empty
 /// string would make every foreign disk match.
-async fn cluster_fsid() -> Option<String> {
-    ceph_cli::cluster_fsid().await
-}
-
-async fn write_status(node: &str, meta: &HashMap<String, Disk>) {
+async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk>) {
     // Only `disks`. There used to be an `effective` device list here, assembled
     // for the leader to write into the Rook CephCluster CR. There is no CR any
     // more — each node creates its own OSDs — and nothing had read the field
@@ -2494,23 +2499,8 @@ async fn write_status(node: &str, meta: &HashMap<String, Disk>) {
     let payload = json!({ "disks": wire });
     let json_val = serde_json::to_string(&payload).unwrap_or_default();
     let patch = json!({"data": {node: json_val}}).to_string();
-    if kubectl::run(&[
-        "patch",
-        "configmap",
-        STATUS_CM,
-        "-n",
-        NS,
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await
-    .is_err()
-    {
-        // ConfigMap doesn't exist yet — create it
-        let _ = kubectl::run(&["create", "configmap", STATUS_CM, "-n", NS]).await;
-        let _ = kubectl::run(&[
+    if host
+        .kubectl(&[
             "patch",
             "configmap",
             STATUS_CM,
@@ -2521,7 +2511,26 @@ async fn write_status(node: &str, meta: &HashMap<String, Disk>) {
             "-p",
             &patch,
         ])
-        .await;
+        .await
+        .is_err()
+    {
+        // ConfigMap doesn't exist yet — create it
+        let _ = host
+            .kubectl(&["create", "configmap", STATUS_CM, "-n", NS])
+            .await;
+        let _ = host
+            .kubectl(&[
+                "patch",
+                "configmap",
+                STATUS_CM,
+                "-n",
+                NS,
+                "--type",
+                "merge",
+                "-p",
+                &patch,
+            ])
+            .await;
     }
 }
 
@@ -2545,8 +2554,10 @@ async fn write_status(node: &str, meta: &HashMap<String, Disk>) {
 /// ConfigMap that exists with no data yet produces an empty jsonpath result that
 /// is indistinguishable from a failed call — and those two must never be
 /// confused. The `kind` check is what proves a real object came back.
-async fn read_desired() -> Option<HashMap<String, String>> {
-    let v = match kubectl::get_json(&["get", "configmap", CONFIG_CM, "-n", NS, "-o", "json"]).await
+async fn read_desired<H: Host>(host: &H) -> Option<HashMap<String, String>> {
+    let v = match host
+        .kubectl_json(&["get", "configmap", CONFIG_CM, "-n", NS, "-o", "json"])
+        .await
     {
         Ok(v) => v,
         Err(e) => {
@@ -2594,10 +2605,88 @@ fn node_name() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use crate::host::CommandOutput;
 
     const OURS: &str = "11111111-2222-3333-4444-555555555555";
     const THEIRS: &str = "99999999-8888-7777-6666-555555555555";
+
+    /// A host that never reaches the cluster or the machine, but counts the one
+    /// call that would destroy data if it slipped past the guards.
+    #[derive(Clone, Default)]
+    struct RecordingHost {
+        ceph_volume_calls: Arc<Mutex<usize>>,
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    impl Host for RecordingHost {
+        fn ceph<'a>(&self, _args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("ceph unreachable")) }
+        }
+
+        fn ceph_json<'a>(
+            &self,
+            _args: &'a [&str],
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("ceph unreachable")) }
+        }
+
+        fn ceph_volume<'a>(
+            &self,
+            _args: &'a [&str],
+        ) -> impl Future<Output = Result<String>> + Send + 'a {
+            let calls = self.ceph_volume_calls.clone();
+            async move {
+                *calls.lock().unwrap() += 1;
+                Err(anyhow::anyhow!("ceph unreachable"))
+            }
+        }
+
+        fn kubectl<'a>(
+            &self,
+            _args: &'a [&str],
+        ) -> impl Future<Output = Result<String>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("kubectl unreachable")) }
+        }
+
+        fn kubectl_json<'a>(
+            &self,
+            _args: &'a [&str],
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("kubectl unreachable")) }
+        }
+
+        fn systemctl<'a>(
+            &self,
+            _args: &'a [&str],
+        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("systemctl unreachable")) }
+        }
+
+        fn run_cmd<'a>(
+            &self,
+            _bin: &'a str,
+            _args: &'a [&'a str],
+        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("command unreachable")) }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_cluster_reports_unknown_and_never_touches_a_disk() {
+        let host = RecordingHost::default();
+        let meta = HashMap::from([("disk-a".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-a".to_string(), "ON".to_string())]);
+        let disk_to_osd = HashMap::new();
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+
+        assert_eq!(progress_of("disk-a").phase, phase::UNKNOWN);
+        assert_eq!(*host.ceph_volume_calls.lock().unwrap(), 0);
+    }
 
     /// Build a 4096-byte BlueStore superblock carrying `fsid`, exactly as
     /// `bluestore_fsid` expects to find it: magic at offset 0, then the
