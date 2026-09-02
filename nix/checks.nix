@@ -91,6 +91,15 @@ in {
   nixos-join = toplevel "yolab-ci-join";
   nixos-wsl = toplevel "yolab-wsl";
 
+  # `system.build.toplevel` never forces `system.build.diskoScript` — disko is
+  # a separate install-time build target, not part of the normal system
+  # closure — so the code that partitions a disk had zero CI coverage until
+  # these two were added. Built, not just evaluated: a `disko.devices` typo
+  # that only fails when the generator actually runs (not at parse time) still
+  # gets caught here.
+  disko-create = nixosSystems.yolab-ci.config.system.build.diskoScript;
+  disko-join = nixosSystems.yolab-ci-join.config.system.build.diskoScript;
+
   # Same treefmt module `nix fmt` uses, so a file this rejects is a file
   # `nix fmt` fixes.
   formatting = treefmtEval.config.build.check treeSrc;

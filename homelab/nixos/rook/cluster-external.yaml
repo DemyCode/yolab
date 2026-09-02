@@ -49,5 +49,13 @@ parameters:
   csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
   csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
 allowVolumeExpansion: true
-reclaimPolicy: Delete
+# Retain, not Delete: an uninstalled app (or a PVC deleted by mistake) leaves
+# its volume behind as a Released PV instead of destroying it immediately.
+# This only affects PVs provisioned after the change — reclaimPolicy is
+# copied onto each PV at provision time, not read live from the
+# StorageClass, so existing volumes keep whatever policy they were created
+# under. Known gap: nothing in local-api or the UI cleans up or re-binds a
+# Released PV yet, so this trades "uninstall can't destroy data" for
+# "orphaned PVs accumulate until someone removes them by hand."
+reclaimPolicy: Retain
 volumeBindingMode: Immediate

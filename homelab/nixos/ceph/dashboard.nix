@@ -87,6 +87,9 @@ in {
       timerConfig = {
         OnBootSec = "4min";
         OnUnitActiveSec = "30min";
+        # A failed attempt never reaches the active state OnUnitActiveSec
+        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        OnUnitInactiveSec = "2min";
       };
     };
   };

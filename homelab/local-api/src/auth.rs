@@ -220,6 +220,7 @@ pub async fn login(
     }
     let cookie = Cookie::build(("yolab_session", token))
         .http_only(true)
+        .secure(true)
         .same_site(SameSite::Strict)
         .max_age(time::Duration::days(SESSION_DAYS))
         .path("/")
@@ -692,13 +693,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_marks_the_cookie_http_only_and_same_site_strict() {
+    async fn login_marks_the_cookie_http_only_secure_and_same_site_strict() {
         // The session cookie is a bearer credential for the whole API; it must be
-        // unreadable from JS and unattached to cross-site requests.
+        // unreadable from JS, sent only over TLS, and unattached to cross-site
+        // requests. Every real login goes through Caddy over HTTPS, so Secure
+        // costs nothing here.
         let (_d, cfg) = provisioned();
         let res = do_login(&app_state(cfg), PASSWORD).await;
         let cookie = issued_cookie(&res).expect("login should set a cookie");
         assert!(cookie.contains("HttpOnly"), "got: {cookie}");
+        assert!(cookie.contains("Secure"), "got: {cookie}");
         assert!(cookie.contains("SameSite=Strict"), "got: {cookie}");
         assert!(cookie.contains("Path=/"), "got: {cookie}");
     }

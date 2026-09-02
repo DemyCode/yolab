@@ -55,3 +55,10 @@ server_addr = "https://[fd00:cafe::1]:6443"
 # one per cluster and it must never change afterwards.
 [ceph]
 fsid = "00000000-0000-4000-8000-000000000000"
+
+# See ci-config.toml's note — required so diskoScript builds under this
+# config too.
+[disk]
+device = "/dev/vda"
+esp_size = "512M"
+system_size = "8G"

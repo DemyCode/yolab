@@ -323,6 +323,9 @@ in {
       timerConfig = {
         OnBootSec = "3min";
         OnUnitActiveSec = "5min";
+        # A failed attempt never reaches the active state OnUnitActiveSec
+        # measures from — see the note on yolab-ceph-mgr-key's timer, below.
+        OnUnitInactiveSec = "2min";
       };
     };
     # ── mgr key ──────────────────────────────────────────────────────────────
@@ -489,6 +492,9 @@ in {
       timerConfig = {
         OnBootSec = "3min";
         OnUnitActiveSec = "5min";
+        # A failed attempt never reaches the active state OnUnitActiveSec
+        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        OnUnitInactiveSec = "2min";
       };
     };
 

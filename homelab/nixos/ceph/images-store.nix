@@ -210,6 +210,9 @@ in {
       timerConfig = {
         OnBootSec = "2min";
         OnUnitActiveSec = "5min";
+        # A failed attempt never reaches the active state OnUnitActiveSec
+        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        OnUnitInactiveSec = "2min";
       };
     };
 
@@ -223,6 +226,11 @@ in {
       timerConfig = {
         OnBootSec = "4min";
         OnUnitActiveSec = "5min";
+        # SuccessExitStatus above covers the unit's own exit code, not a kill
+        # by TimeoutStartSec — that is a real failure this still needs to
+        # retry from, so OnUnitInactiveSec stays even though "failure" is rare
+        # here. See the note on yolab-ceph-mgr-key's timer.
+        OnUnitInactiveSec = "2min";
       };
     };
 
@@ -231,6 +239,9 @@ in {
       timerConfig = {
         OnBootSec = "10min";
         OnUnitActiveSec = "1h";
+        # A failed attempt never reaches the active state OnUnitActiveSec
+        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        OnUnitInactiveSec = "2min";
       };
     };
   };
