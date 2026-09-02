@@ -99,6 +99,10 @@
         };
       };
 
+    bootTest = import ./nix/tests/boot.nix {
+      inherit pkgs inputs rust disko;
+    };
+
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
@@ -119,6 +123,15 @@
       };
   in {
     nixosConfigurations = nixosSystems;
+
+    # VM tests that actually boot machines. Kept out of `checks` on purpose: a
+    # boot test needs a QEMU-capable runner (CI has one, the build sandbox does
+    # not) and has not yet been verified to pass, so it must not be part of
+    # `nix flake check`. Run it explicitly:
+    #   nix build .#nixosTests.boot-test
+    nixosTests = {
+      boot-test = bootTest;
+    };
 
     # Guarded like `yolab`: these import shared.nix too. No CI stub variant,
     # because a Darwin toplevel cannot be built from x86_64-linux checks.

@@ -1,0 +1,49 @@
+# Bootable stub for the VM boot test (nix/tests/boot.nix). Unlike the ci-*
+# stubs this is meant to actually boot a machine, so it carries a real disk
+# device, a real WireGuard keypair and a real fsid. It is a throwaway
+# single-node cluster; nothing here is a production secret.
+
+[homelab]
+hostname = "yolab-n1"
+timezone = "UTC"
+locale = "en_US.UTF-8"
+ssh_port = 22
+root_ssh_key = ""
+allowed_ssh_keys = []
+homelab_password_hash = ""
+boot_mode = "bios"
+
+[tunnel]
+enabled = false
+platform_api_url = "https://api.example.invalid"
+account_token = "test-account-token"
+service_name = "homelab"
+service_id = 0
+wg_private_key = ""
+wg_public_key = ""
+sub_ipv6 = "fd00:1::"
+sub_ipv6_private = "fd00:cafe::1"
+wg_server_endpoint = "1.2.3.4:51820"
+wg_server_public_key = ""
+dns_url = "https://ci.example.com"
+
+[node]
+node_id = "n1"
+sub_ipv6_private = "fd00:cafe::1"
+sub_ipv6_private_subnet = "fd00:cafe::/112"
+wg_private_key = "+JtgPm7oPweytBAl26ktbNyOL/PEAiMwt2JSi+IhTlk="
+wg_server_endpoint = "[::1]:51820"
+wg_server_public_key = "8T84paectLWnh6lujhiE6WWJx9PLPOnEzRq6qeuHszk="
+
+[node.k3s]
+role = "server"
+token = "test-token"
+server_addr = ""
+
+[ceph]
+fsid = "11111111-2222-3333-4444-555555555555"
+
+[disk]
+device = "/dev/vda"
+esp_size = "512M"
+system_size = "8G"
