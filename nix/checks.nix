@@ -91,6 +91,47 @@ in {
   nixos-join = toplevel "yolab-ci-join";
   nixos-wsl = toplevel "yolab-wsl";
 
+  # The Nix<->Rust binary contract. Every `Command::new("x")` /
+  # `Host::run_cmd("x", ...)` call site in local-api names an OS binary the
+  # crate assumes is on PATH at runtime — and nothing else checks that: a
+  # typo, or a shell-out added without adding it to any systemd unit's `path`,
+  # compiles, passes clippy and cargo test, and only fails on a real node.
+  #
+  # `allBins` is the union of every yolab-owned systemd unit's own `path`
+  # (each unit's PATH is that list PLUS the default `/run/current-system/sw`,
+  # which is `environment.systemPackages` — see common.nix's yolab-local-api
+  # unit, the one exception, for why that default cannot just be assumed
+  # instead of read from real config) — built from the REAL Nix values every
+  # unit already uses, not a hand-maintained parallel list, so it can't drift
+  # from what a node actually gets.
+  binary-contract = let
+    allBins = pkgs.symlinkJoin {
+      name = "yolab-all-unit-bins";
+      paths =
+        nixosSystems.yolab-ci.config.environment.systemPackages
+        ++ pkgs.lib.concatMap (u: u.path or [])
+        (builtins.attrValues nixosSystems.yolab-ci.config.systemd.services);
+    };
+  in
+    pkgs.runCommand "binary-contract" {nativeBuildInputs = [pkgs.gnugrep];} ''
+      grep -rhoE 'Command::new\("[^"]+"\)|\.run_cmd\(\s*"[^"]+"' \
+        ${treeSrc}/homelab/local-api/src \
+        | grep -oE '"[^"]+"' | tr -d '"' | sort -u > "$TMPDIR/needed.txt"
+
+      missing=""
+      while read -r bin; do
+        [ -e "${allBins}/bin/$bin" ] || missing="$missing $bin"
+      done < "$TMPDIR/needed.txt"
+
+      if [ -n "$missing" ]; then
+        echo "local-api shells out to these binaries, but no yolab-owned" >&2
+        echo "systemd unit's path (or environment.systemPackages) provides" >&2
+        echo "them:$missing" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
   # `system.build.toplevel` never forces `system.build.diskoScript` — disko is
   # a separate install-time build target, not part of the normal system
   # closure — so the code that partitions a disk had zero CI coverage until
