@@ -112,6 +112,12 @@ pub(crate) struct DiskProgress {
     /// Holding the id here means the retry reuses it instead of leaking a new
     /// one. Only ever an id this process watched appear.
     pub orphan_osd_id: Option<i64>,
+    /// When the last create attempt was spawned. `Instant`, not a wall-clock
+    /// time: this only ever compares against `Instant::now()` on the same
+    /// process, and never survives a restart — which is fine, since a
+    /// restarted local-api starting the backoff over is a smaller cost than
+    /// the retry-forever bug this exists to fix.
+    pub last_attempt: Option<std::time::Instant>,
 }
 
 static PROGRESS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, DiskProgress>>> =
@@ -908,8 +914,24 @@ async fn reconcile_local_osds<H: Host + 'static>(
             .lock()
             .map(|c| c.contains(disk_id))
             .unwrap_or(false);
-        match plan_create(node, disk_id, m, desired, disk_to_osd, creating) {
+        let (attempts, since_last) = PROGRESS
+            .lock()
+            .ok()
+            .and_then(|p| p.get(disk_id).cloned())
+            .map(|p| (p.attempts, p.last_attempt.map(|t| t.elapsed())))
+            .unwrap_or((0, None));
+        match plan_create(
+            node,
+            disk_id,
+            m,
+            desired,
+            disk_to_osd,
+            creating,
+            attempts,
+            since_last,
+        ) {
             CreatePlan::Skip => continue,
+            CreatePlan::Waiting => continue,
             CreatePlan::Blocked(reason) => {
                 tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
                 set_phase(disk_id, phase::BLOCKED, reason);
@@ -1217,6 +1239,7 @@ fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
         if let Ok(mut p) = PROGRESS.lock() {
             let e = p.entry(disk_id.clone()).or_default();
             e.attempts += 1;
+            e.last_attempt = Some(std::time::Instant::now());
             n = e.attempts;
         }
         n
@@ -1363,6 +1386,7 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                         if let Ok(mut p) = PROGRESS.lock() {
                             let e = p.entry(disk_id.to_string()).or_default();
                             e.attempts = 0;
+                            e.last_attempt = None;
                             e.orphan_osd_id = None;
                         }
                     } else {
@@ -1598,14 +1622,44 @@ fn plan_tick(reachable: bool, disk_to_osd_known: bool) -> TickPlan {
 /// What the create half of a tick decides for one disk.
 #[derive(Debug, PartialEq, Eq)]
 enum CreatePlan {
-    Create { dev_path: String },
+    Create {
+        dev_path: String,
+    },
     Blocked(&'static str),
+    /// Wants an OSD, nothing is blocking it, but the last attempt was too
+    /// recent — see `retry_backoff`. Distinct from `Skip` so a test can tell
+    /// "there is nothing to do here" from "there is, just not yet".
+    Waiting,
     Skip,
+}
+
+/// How long to wait before retrying a failed create, given how many attempts
+/// have already run. Exponential and capped: nothing existed to slow this
+/// down before, and a permanently-stuck disk retried every 30s tick forever —
+/// the Easystore was seen at attempt 22, each one still a full ceph-volume
+/// invocation on the same interval as attempt 1.
+fn retry_backoff(attempts: u32) -> std::time::Duration {
+    const BASE_SECS: u64 = 30;
+    const CAP_SECS: u64 = 600; // 10 minutes
+    let shift = attempts.saturating_sub(1).min(6); // 2^6 * 30s already exceeds the cap
+    std::time::Duration::from_secs((BASE_SECS.saturating_mul(1 << shift)).min(CAP_SECS))
+}
+
+/// Whether enough time has passed since the last attempt to try again.
+/// `since_last: None` — never attempted, or the timestamp did not survive a
+/// process restart — always means "yes": this backs off *repeated* attempts,
+/// it must never be the reason the very first one is delayed.
+fn retry_due(attempts: u32, since_last: Option<std::time::Duration>) -> bool {
+    match since_last {
+        None => true,
+        Some(elapsed) => elapsed >= retry_backoff(attempts),
+    }
 }
 
 /// The decision to run `ceph-volume lvm create` over a device, as a pure
 /// function of the tick's inputs. This is the one place in the system that
 /// turns somebody's disk into an OSD, and doing so destroys whatever was on it.
+#[allow(clippy::too_many_arguments)]
 fn plan_create(
     node: &str,
     disk_id: &str,
@@ -1613,6 +1667,8 @@ fn plan_create(
     desired: &HashMap<String, String>,
     disk_to_osd: &HashMap<String, i64>,
     already_creating: bool,
+    attempts: u32,
+    since_last_attempt: Option<std::time::Duration>,
 ) -> CreatePlan {
     if !wants_on(desired, node, disk_id) || disk_to_osd.contains_key(disk_id) {
         return CreatePlan::Skip;
@@ -1629,6 +1685,9 @@ fn plan_create(
     let Some(dev_path) = d.dev_path() else {
         return CreatePlan::Skip;
     };
+    if !retry_due(attempts, since_last_attempt) {
+        return CreatePlan::Waiting;
+    }
     CreatePlan::Create { dev_path }
 }
 
@@ -3049,6 +3108,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn retry_backoff_grows_exponentially_and_is_capped() {
+        assert_eq!(retry_backoff(1), std::time::Duration::from_secs(30));
+        assert_eq!(retry_backoff(2), std::time::Duration::from_secs(60));
+        assert_eq!(retry_backoff(3), std::time::Duration::from_secs(120));
+        assert_eq!(retry_backoff(7), std::time::Duration::from_secs(600));
+        assert_eq!(
+            retry_backoff(20),
+            std::time::Duration::from_secs(600),
+            "must stay capped, not overflow or keep growing forever"
+        );
+    }
+
+    #[test]
+    fn retry_due_is_always_true_on_the_first_attempt() {
+        // None means "never attempted, or the timestamp did not survive a
+        // restart" — either way this must never be the reason attempt 1 waits.
+        assert!(retry_due(0, None));
+        assert!(retry_due(1, None));
+    }
+
+    #[test]
+    fn retry_due_blocks_until_the_backoff_elapses() {
+        // attempts=3 -> retry_backoff(3) == 120s.
+        assert!(!retry_due(3, Some(std::time::Duration::from_secs(100))));
+        assert!(retry_due(3, Some(std::time::Duration::from_secs(120))));
+        assert!(retry_due(3, Some(std::time::Duration::from_secs(121))));
+    }
+
+    /// Regression test for the Easystore sitting at "attempt 22": before this,
+    /// nothing stood between a permanently-stuck disk and a fresh
+    /// ceph-volume invocation every single 30s tick, forever.
+    #[test]
+    fn plan_create_waits_rather_than_hammering_a_disk_that_just_failed() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+            3,
+            Some(std::time::Duration::from_secs(5)),
+        );
+        assert_eq!(plan, CreatePlan::Waiting);
+    }
+
+    #[test]
+    fn plan_create_retries_once_the_backoff_has_elapsed() {
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk("sdb"),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+            3,
+            Some(std::time::Duration::from_secs(120)),
+        );
+        assert_eq!(
+            plan,
+            CreatePlan::Create {
+                dev_path: "/dev/sdb".to_string()
+            }
+        );
+    }
+
     /// Regression test for 240cdde: a purge that reports success is not
     /// proof the OSD actually left the map, and wiping on that trust alone
     /// is how a disk Ceph still tracks as live gets erased.
@@ -3339,6 +3465,7 @@ mod tests {
                 message: "In use".into(),
                 attempts: 2,
                 orphan_osd_id: None,
+                last_attempt: None,
             }),
             ..base.clone()
         }
@@ -4331,6 +4458,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(
             plan,
@@ -4352,6 +4481,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "USING")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert!(matches!(plan, CreatePlan::Create { .. }));
     }
@@ -4366,6 +4497,8 @@ mod tests {
                 &recs(&[("node1--dev-sdb", state)]),
                 &osds(&[]),
                 false,
+                0,    // attempts
+                None, // since_last_attempt
             );
             assert_eq!(plan, CreatePlan::Skip, "state {state:?} must not create");
         }
@@ -4382,6 +4515,8 @@ mod tests {
             &recs(&[]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(plan, CreatePlan::Skip);
     }
@@ -4397,6 +4532,8 @@ mod tests {
             &recs(&[("node2--dev-sdb", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(plan, CreatePlan::Skip);
     }
@@ -4413,6 +4550,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[("dev-sdb", 3)]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(plan, CreatePlan::Skip);
     }
@@ -4429,6 +4568,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             true,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(plan, CreatePlan::Skip);
     }
@@ -4448,6 +4589,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             true,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(plan, CreatePlan::Skip);
     }
@@ -4467,6 +4610,8 @@ mod tests {
             &recs(&[("node1--dev-sda", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
     }
@@ -4483,6 +4628,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
     }
@@ -4501,6 +4648,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
     }
@@ -4521,6 +4670,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert!(!matches!(plan, CreatePlan::Create { .. }), "{plan:?}");
     }
@@ -4535,6 +4686,8 @@ mod tests {
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         let CreatePlan::Blocked(reason) = plan else {
             panic!("expected a reason, got {plan:?}");
@@ -4551,6 +4704,8 @@ mod tests {
             &recs(&[("node1--d", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(
             plan,
@@ -4571,6 +4726,8 @@ mod tests {
             &recs(&[("node1--d", "ON")]),
             &osds(&[]),
             false,
+            0,    // attempts
+            None, // since_last_attempt
         );
         assert_eq!(
             plan,
