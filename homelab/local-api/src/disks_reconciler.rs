@@ -1863,6 +1863,26 @@ fn zap_args<'a>(dev_path: &'a str, foreign: bool, err: &str) -> Option<Vec<&'a s
 /// hand. The mon then refuses its key and `Restart=on-failure` flaps it
 /// forever. Skipping such an OSD is enough to stop starting it, but not to
 /// stop one already running: nothing else ever looks at it again.
+fn is_running(state: Option<&str>) -> bool {
+    matches!(state, Some("active" | "activating" | "reloading"))
+}
+
+/// "Stopped" is only ever a *known* dead state. None is the systemctl-error
+/// case, and reading it as stopped would let a purge run against a daemon that
+/// may still hold the device.
+fn is_stopped(state: Option<&str>) -> bool {
+    matches!(state, Some("inactive" | "failed"))
+}
+
+async fn osd_unit_state<H: Host>(host: &H, osd_id: i64) -> Option<String> {
+    let unit = format!("yolab-ceph-osd@{osd_id}.service");
+    host.systemctl(&["show", "-p", "ActiveState", "--value", &unit])
+        .await
+        .ok()
+        .map(|o| o.stdout.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 async fn stop_foreign_osd_units<H: Host>(host: &H) {
     let Ok(raw) = host.ceph_volume(&["lvm", "list", "--format", "json"]).await else {
         return;
@@ -1899,12 +1919,7 @@ async fn stop_foreign_osd_units<H: Host>(host: &H) {
 /// which is exactly what a read-only /etc/systemd/system produced.
 async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
-    let active = host
-        .systemctl(&["is-active", "--quiet", &unit])
-        .await
-        .map(|o| o.success)
-        .unwrap_or(false);
-    if active {
+    if is_running(osd_unit_state(host, osd_id).await.as_deref()) {
         return;
     }
     tracing::warn!("osd.{osd_id}: {unit} is not running — starting it");
@@ -1944,12 +1959,7 @@ async fn disable_osd_unit<H: Host>(host: &H, osd_id: i64) {
     // `systemctl disable --now` returns once systemd has reaped the unit, but
     // give the device a moment to be released before anything touches it.
     for _ in 0..15 {
-        let active = host
-            .systemctl(&["is-active", "--quiet", &unit])
-            .await
-            .map(|o| o.success)
-            .unwrap_or(false);
-        if !active {
+        if is_stopped(osd_unit_state(host, osd_id).await.as_deref()) {
             return;
         }
         sleep(Duration::from_secs(1)).await;
@@ -3189,6 +3199,10 @@ mod tests {
                 r#"{"nodes":[{"id":7,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
             )
             .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[7]}"#)
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@7.service",
+                "inactive",
+            )
             .ok("ceph osd purge", "purged osd.7")
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm zap", "");
@@ -3220,6 +3234,10 @@ mod tests {
                 r#"{"nodes":[{"id":9,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
             )
             .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[9]}"#)
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9.service",
+                "inactive",
+            )
             .ok("ceph osd purge", "purged osd.9")
             .ok("ceph osd ls", "[9]");
 
@@ -3988,6 +4006,24 @@ mod tests {
         assert!(purge_confirmed(Some(&[1, 2]), 3));
         assert!(!purge_confirmed(Some(&[1, 2, 3]), 3));
         assert!(!purge_confirmed(None, 3));
+    }
+
+    #[test]
+    fn a_unit_is_stopped_only_in_a_definitely_dead_state() {
+        assert!(is_stopped(Some("inactive")));
+        assert!(is_stopped(Some("failed")));
+        assert!(!is_stopped(Some("active")));
+        assert!(!is_stopped(Some("activating")));
+        assert!(!is_stopped(None));
+    }
+
+    #[test]
+    fn a_unit_is_running_when_active_or_coming_up() {
+        assert!(is_running(Some("active")));
+        assert!(is_running(Some("activating")));
+        assert!(is_running(Some("reloading")));
+        assert!(!is_running(Some("inactive")));
+        assert!(!is_running(None));
     }
 
     #[test]
