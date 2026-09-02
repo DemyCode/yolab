@@ -603,42 +603,9 @@ in {
         # periodically. Every step it takes is `systemctl start` on an already
         # running unit, which is a no-op, so running it often is free.
         TimeoutStartSec = "600s";
+        ExecStart = "${localApiEnv}/bin/local-api storage osd-activate";
       };
-      path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq systemd];
-      script = ''
-        set -uo pipefail
-        IDS=$(timeout 60 ceph-volume lvm list --format json 2>/dev/null | jq -r 'keys[]' 2>/dev/null || true)
-        if [ -z "$IDS" ]; then
-          echo "no OSDs prepared on this host"
-          exit 0
-        fi
-
-        # Which OSDs does the cluster still have? ceph-volume lists what is
-        # PREPARED on this disk, which outlives the OSD itself: teardown purges
-        # the OSD from Ceph and only then zaps the disk, so between those two
-        # steps an OSD that no longer exists is still listed here. Starting a
-        # daemon for it would put a live process on a volume that is about to be
-        # destroyed.
-        #
-        # When Ceph cannot be reached the list is empty and nothing is filtered —
-        # which is the boot case, and starting everything is exactly right there.
-        KNOWN=$(timeout 20 ceph --connect-timeout 10 osd ls 2>/dev/null || true)
-
-        for id in $IDS; do
-          if [ -n "$KNOWN" ] && ! printf '%s\n' "$KNOWN" | grep -qx "$id"; then
-            echo "osd.$id: prepared on this disk but no longer part of the cluster — not starting it"
-            continue
-          fi
-          echo "starting yolab-ceph-osd@$id"
-          # --no-block: this unit's job is to REQUEST the starts, not to wait for
-          # them. Waiting made it as slow as the slowest OSD, and since it now
-          # also runs on every nixos-rebuild, a machine whose ceph-volume is
-          # wedged would hold the rebuild for minutes — on exactly the machine
-          # least able to afford it.
-          systemctl start --no-block "yolab-ceph-osd@$id.service" || \
-            echo "osd.$id: could not request a start" >&2
-        done
-      '';
+      path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
     };
 
     # Re-assert the OSDs periodically as well as at boot. local-api's reconciler

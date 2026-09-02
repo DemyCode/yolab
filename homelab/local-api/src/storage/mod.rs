@@ -5,6 +5,7 @@
 //! daemons and k3s, which used to be bash embedded in Nix strings. systemd
 //! keeps the ordering/timers; only the script body moved here.
 pub mod keys;
+pub mod osd;
 
 use anyhow::Result;
 
@@ -20,6 +21,7 @@ pub async fn run(args: &[String]) -> i32 {
     let result: Result<()> = match sub {
         "mgr-key" => keys::mint(&host, "mgr").await,
         "mds-key" => keys::mint(&host, "mds").await,
+        "osd-activate" => osd::run(&host).await,
         _ => {
             eprintln!("storage: unknown subcommand '{sub}'");
             return 2;
