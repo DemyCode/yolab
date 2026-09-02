@@ -39,6 +39,7 @@
   config,
   lib,
   pkgs,
+  localApiEnv,
   ...
 }:
 with lib; let
@@ -465,6 +466,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "180s";
+        ExecStart = "${localApiEnv}/bin/local-api storage mgr-key";
       };
       path = with pkgs; [ceph ceph-client coreutils systemd];
       # Same reason as yolab-ceph-bootstrap's: at boot systemd already orders
@@ -472,28 +474,6 @@ in {
       # with it, and nothing would bring the daemon up when the retry succeeds.
       postStart = ''
         ${pkgs.systemd}/bin/systemctl start --no-block ceph-mgr-${host}.service || true
-      '';
-      script = ''
-        set -euo pipefail
-        MGR_DIR=/var/lib/ceph/mgr/ceph-${host}
-        [ -f "$MGR_DIR/keyring" ] && exit 0
-        mkdir -p "$MGR_DIR"
-        for _ in $(seq 1 60); do
-          ceph -s >/dev/null 2>&1 && break
-          sleep 1
-        done
-        # Fail rather than press on: only the mon can mint this key, so an
-        # unreachable cluster means "not yet", not "no key needed". On a joining
-        # node this is the ordinary state until yolab-ceph-bootstrap succeeds,
-        # which is why the unit has a retry timer.
-        if ! ceph -s >/dev/null 2>&1; then
-          echo "cluster not reachable — cannot mint the mgr key yet" >&2
-          exit 1
-        fi
-        ceph auth get-or-create mgr.${host} \
-          mon 'allow profile mgr' osd 'allow *' mds 'allow *' \
-          -o "$MGR_DIR/keyring"
-        chown -R ceph:ceph "$MGR_DIR"
       '';
     };
 

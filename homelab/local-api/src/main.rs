@@ -10,6 +10,7 @@ mod kubectl;
 mod lease;
 mod proc;
 mod routers;
+mod storage;
 mod topology;
 
 use std::sync::Arc;
@@ -48,6 +49,11 @@ fn random_holder_id() -> String {
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("storage") {
+        std::process::exit(storage::run(&args[2..]).await);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
