@@ -229,12 +229,16 @@ in {
         # "Mounted" was never the question. "Works" is.
         #
         # This used to exit here on the strength of mountpoint alone, and that is how
-        # both machines in a cluster sat dead for seventeen hours. The images pool is
-        # size 1 by design; a disk was lost, its placement groups were recreated empty,
-        # and the RBD came back with holes where its objects had been. XFS mounted,
-        # hit metadata that was now zeros, shut itself down, and every read returned
-        # EIO. containerd could not start, so k3s never finished starting, so the whole
-        # cluster was down — while `mountpoint` cheerfully returned success.
+        # both machines in a cluster sat dead for seventeen hours. The images pool was
+        # pinned at size 1 at the time (see this file's header, point 1 — topology.rs
+        # now raises it as machines join, same as any other pool); a disk was lost,
+        # its placement groups were recreated empty, and the RBD came back with holes
+        # where its objects had been. XFS mounted, hit metadata that was now zeros,
+        # shut itself down, and every read returned EIO. containerd could not start,
+        # so k3s never finished starting, so the whole cluster was down — while
+        # `mountpoint` cheerfully returned success. The check below has nothing to do
+        # with the replica count: a partially-readable RBD is exactly as fatal at
+        # size 3 as it was at size 1, so it stays regardless of what topology.rs sets.
         #
         # Nothing here is the owner's data. Every byte is a container layer a registry
         # will send again, so the right response to any doubt is to rebuild, not to

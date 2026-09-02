@@ -47,6 +47,41 @@ fn random_holder_id() -> String {
     format!("local-api-{}", hex::encode(buf))
 }
 
+/// Keeps a reconcile loop running for the life of the process.
+///
+/// Every loop passed here is written as `loop { ... sleep ... }` and never
+/// returns on its own — its own internal errors are already caught and logged
+/// a level down. So a `tokio::spawn`ed copy ending, for any reason (a panic,
+/// or the one loop that can return early: disks_reconciler::run() bails out if
+/// it cannot read this node's hostname), means the reconciler behind it is
+/// gone for good. Nothing else would ever notice: local-api keeps answering
+/// HTTP 200 on every other route while, say, the disk reconciler has been
+/// dead for a week. `f` is called again to get a fresh future every restart
+/// (this is why it takes a factory rather than one future), so a `catch_unwind`
+/// per attempt is enough — there is no state inside the loop to lose, since a
+/// reconcile tick recomputes everything from cluster/Kubernetes state anyway.
+fn supervise<F, Fut>(name: &'static str, mut f: F)
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            match tokio::spawn(f()).await {
+                Ok(()) => {
+                    tracing::error!(
+                        "{name}: reconcile loop exited unexpectedly — restarting in 30s"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("{name}: reconcile loop panicked ({e}) — restarting in 30s");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -219,15 +254,21 @@ async fn main() {
     // Single reconcile loop drives both BackupRun and RestoreRun objects (see
     // routers/backup_run.rs's module doc for why this replaced three separate
     // ConfigMap-lock-guarded timers).
-    tokio::spawn(routers::backup_run::run(random_holder_id()));
-    tokio::spawn(backups::run_replication_source_reconciler());
+    supervise(
+        "backup-run",
+        || routers::backup_run::run(random_holder_id()),
+    );
+    supervise(
+        "replication-source",
+        backups::run_replication_source_reconciler,
+    );
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISK→ON/OFF config — no separate watcher.
-    tokio::spawn(disks_reconciler::run());
-    tokio::spawn(cephfs::run());
-    tokio::spawn(topology::run_topology_controller());
+    supervise("disks", disks_reconciler::run);
+    supervise("cephfs", cephfs::run);
+    supervise("topology", topology::run_topology_controller);
     // Keeps the app catalog current without a nixos-rebuild — see charts.rs.
-    tokio::spawn(charts::run_chart_sync());
+    supervise("chart-sync", charts::run_chart_sync);
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");

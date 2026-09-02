@@ -2836,6 +2836,13 @@ mod tests {
             async move { Err(anyhow::anyhow!("kubectl unreachable")) }
         }
 
+        fn kubectl_apply<'a>(
+            &self,
+            _manifest: &'a str,
+        ) -> impl Future<Output = Result<()>> + Send + 'a {
+            async move { Err(anyhow::anyhow!("kubectl unreachable")) }
+        }
+
         fn systemctl<'a>(
             &self,
             _args: &'a [&str],
@@ -2984,6 +2991,14 @@ mod tests {
                 let raw = me.answer(&format!("kubectl {}", args.join(" ")))?;
                 Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
             }
+        }
+
+        fn kubectl_apply<'a>(
+            &self,
+            manifest: &'a str,
+        ) -> impl Future<Output = Result<()>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("kubectl-apply {manifest}")).map(|_| ()) }
         }
 
         fn systemctl<'a>(

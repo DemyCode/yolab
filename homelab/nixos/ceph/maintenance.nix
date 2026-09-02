@@ -8,6 +8,7 @@
   config,
   lib,
   pkgs,
+  localApiEnv,
   ...
 }:
 with lib; let
@@ -44,38 +45,14 @@ in {
         TimeoutStartSec = "120s";
         TimeoutStopSec = "60s";
         # Nothing to do on start beyond clearing the flag the shutdown set.
-        ExecStart = pkgs.writeShellScript "ceph-noout-clear" ''
-          set -uo pipefail
-          export PATH=${makeBinPath (with pkgs; [ceph ceph-client coreutils])}:$PATH
-          # Wait for the mon, but never block boot on it.
-          for _ in $(seq 1 60); do timeout 15 ceph -s >/dev/null 2>&1 && break; sleep 1; done
-          if ! timeout 15 ceph -s >/dev/null 2>&1; then
-            echo "ceph unreachable — leaving flags alone"
-            exit 0
-          fi
-          # Only clear noout if *we* set it. An operator may have set it by hand
-          # for a maintenance window that outlives this reboot, and stomping that
-          # would resume rebalancing in the middle of their work.
-          if [ -f /var/lib/ceph/.yolab-set-noout ]; then
-            ceph osd unset noout || true
-            rm -f /var/lib/ceph/.yolab-set-noout
-            echo "cleared noout"
-          fi
-        '';
-        ExecStop = pkgs.writeShellScript "ceph-noout-set" ''
-          set -uo pipefail
-          export PATH=${makeBinPath (with pkgs; [ceph ceph-client coreutils gnugrep])}:$PATH
-          timeout 15 ceph -s >/dev/null 2>&1 || exit 0
-          # Don't touch it if it is already set — see above.
-          if ceph osd dump 2>/dev/null | grep -q '^flags.*noout'; then
-            echo "noout already set by someone else — leaving it"
-            exit 0
-          fi
-          ceph osd set noout || true
-          touch /var/lib/ceph/.yolab-set-noout
-          echo "set noout for shutdown"
-        '';
+        # The reachability wait, the "only if we set it" check and the
+        # "already set by someone else" guard all live in
+        # homelab/local-api/src/storage/noout.rs now, with unit tests for
+        # both directions.
+        ExecStart = "${localApiEnv}/bin/local-api storage noout-clear";
+        ExecStop = "${localApiEnv}/bin/local-api storage noout-set";
       };
+      path = with pkgs; [ceph ceph-client coreutils];
     };
   };
 }

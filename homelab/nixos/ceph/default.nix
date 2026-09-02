@@ -244,8 +244,21 @@ in {
         # theoretical risk: on node3 `rbd ls` blocked on an OSD read that could
         # never complete, and k3s, ordered behind it, never started.
         TimeoutStartSec = "300s";
+        ExecStart = "${localApiEnv}/bin/local-api storage bootstrap";
       };
-      path = with pkgs; [ceph ceph-client coreutils curl jq gnugrep systemd];
+      # The script body — create-or-join, the fsid check, the monmap fetch —
+      # now lives in homelab/local-api/src/storage/bootstrap.rs, with unit
+      # tests covering both paths and the fsid-mismatch refusal (the one check
+      # in this whole file that must never be skipped: see that module's
+      # header). Only the binaries it shells out to are still named here.
+      path = with pkgs; [ceph ceph-client coreutils];
+      environment = {
+        YOLAB_CEPH_FSID = cfg.fsid;
+        YOLAB_CEPH_MON_ADDR = cfg.monAddr;
+        # "" on the machine that creates the cluster.
+        YOLAB_CEPH_JOIN_SEED_ADDR = cfg.joinSeedAddr;
+        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+      };
       # At boot this is redundant — systemd already orders ceph-mon after us.
       # It matters on a *retry*: when the first attempt failed, the mon's start
       # job was dropped with it, so nothing would bring the daemon up when a
@@ -253,105 +266,6 @@ in {
       # waited on from inside a unit it is ordered after.
       postStart = ''
         ${pkgs.systemd}/bin/systemctl start --no-block ceph-mon-${host}.service || true
-      '';
-      script = ''
-        set -euo pipefail
-        MON_DIR=/var/lib/ceph/mon/ceph-${host}
-        if [ -f "$MON_DIR/keyring" ]; then
-          echo "already a member of this cluster"
-          exit 0
-        fi
-
-        ${
-          if isBootstrap
-          then ''
-            # ── Create ────────────────────────────────────────────────────────
-            ceph-authtool --create-keyring /tmp/ceph.mon.keyring \
-              --gen-key -n mon. --cap mon 'allow *'
-            ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring \
-              --gen-key -n client.admin \
-              --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *'
-            ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring \
-              --gen-key -n client.bootstrap-osd \
-              --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'
-            ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
-            ceph-authtool /tmp/ceph.mon.keyring --import-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
-
-            monmaptool --create \
-              --addv ${host} '${addrvec cfg.monAddr}' \
-              --fsid ${cfg.fsid} /tmp/monmap
-
-            mkdir -p "$MON_DIR"
-          ''
-          else ''
-            # ── Join ──────────────────────────────────────────────────────────
-            # Same WireGuard mesh and same shared secret as the k3s join: the
-            # account_token in config.toml is what already authorizes a machine
-            # to become a control-plane peer, so it authorizes this too. It is a
-            # separate endpoint from /api/cluster/join-info only because that one
-            # must keep answering when Ceph is down — otherwise a storage fault
-            # on this machine would stop a new node joining Kubernetes at all.
-            SEED='${cfg.joinSeedAddr}'
-            CONFIG="${config.yolab.repoPath}/homelab/ignored/config.toml"
-
-            TOKEN=$(grep -oP 'account_token\s*=\s*"\K[^"]+' "$CONFIG" 2>/dev/null | head -n1 || true)
-            if [ -z "$TOKEN" ]; then
-              echo "no tunnel.account_token in $CONFIG — cannot authenticate to [$SEED]" >&2
-              exit 1
-            fi
-
-            if ! BUNDLE=$(curl -fsS --max-time 20 \
-                  -H "x-yolab-cluster: $TOKEN" \
-                  "http://[$SEED]:3001/api/cluster/ceph-join"); then
-              echo "[$SEED] did not hand over the cluster credentials; retrying on the timer" >&2
-              exit 1
-            fi
-
-            # The one check that must never be skipped. The installer copies the
-            # fsid across with the k3s token, and a mismatch means this machine
-            # is about to mkfs a mon for a DIFFERENT cluster — which does not
-            # fail loudly, it quietly produces a second isolated cluster that
-            # looks fine until someone wonders where their data went.
-            SEED_FSID=$(printf '%s' "$BUNDLE" | jq -r '.fsid // ""')
-            if [ "$SEED_FSID" != '${cfg.fsid}' ]; then
-              echo "refusing to join: [$SEED] runs cluster $SEED_FSID, this node is configured for ${cfg.fsid}" >&2
-              exit 1
-            fi
-
-            umask 077
-            printf '%s' "$BUNDLE" | jq -er '.admin_keyring' > /etc/ceph/ceph.client.admin.keyring
-            printf '%s' "$BUNDLE" | jq -er '.bootstrap_osd_keyring' > /var/lib/ceph/bootstrap-osd/ceph.keyring
-            printf '%s' "$BUNDLE" | jq -er '.mon_keyring' > /tmp/ceph.mon.keyring
-            chown ceph:ceph /etc/ceph/ceph.client.admin.keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
-
-            # Fetched live rather than shipped in the bundle: a copied monmap is
-            # a snapshot that is wrong the moment mon membership changes, and
-            # with client.admin in place this is one call.
-            rm -f /tmp/monmap
-            for _ in $(seq 1 30); do
-              ceph --connect-timeout 10 mon getmap -o /tmp/monmap >/dev/null 2>&1 && break
-              sleep 2
-            done
-            if [ ! -s /tmp/monmap ]; then
-              echo "could not fetch a monmap from the cluster; retrying on the timer" >&2
-              exit 1
-            fi
-
-            # Only reached when $MON_DIR/keyring is absent, i.e. the store is not
-            # one the mon can start from (ConditionPathExists in the upstream
-            # unit guarantees the daemon never opened it). Clearing a half-built
-            # store is what makes a retry after an interrupted join work at all:
-            # ceph-mon --mkfs refuses to write into a non-empty directory.
-            rm -rf "$MON_DIR"
-            mkdir -p "$MON_DIR"
-          ''
-        }
-
-        ceph-mon --mkfs -i ${host} --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring
-        cp /tmp/ceph.mon.keyring "$MON_DIR/keyring"
-        chown -R ceph:ceph /var/lib/ceph
-        chown ceph:ceph /etc/ceph/ceph.client.admin.keyring
-        rm -f /tmp/ceph.mon.keyring /tmp/monmap
       '';
     };
 
@@ -393,57 +307,15 @@ in {
       serviceConfig = {
         Type = "oneshot";
         TimeoutStartSec = "300s";
+        ExecStart = "${localApiEnv}/bin/local-api storage mon-member";
       };
-      path = with pkgs; [ceph ceph-client coreutils jq systemd];
-      script = ''
-        set -uo pipefail
-        MON_DIR=/var/lib/ceph/mon/ceph-${host}
-        if [ ! -f "$MON_DIR/keyring" ]; then
-          echo "this node has not joined yet — yolab-ceph-bootstrap runs first"
-          exit 0
-        fi
-
-        if ! systemctl is-active --quiet ceph-mon-${host}.service; then
-          systemctl start --no-block ceph-mon-${host}.service
-          echo "started the local mon; membership is checked on the next run"
-          exit 0
-        fi
-
-        in_monmap() {
-          ceph --connect-timeout 10 mon dump -f json 2>/dev/null \
-            | jq -e --arg n '${host}' 'any(.mons[]; .name == $n)' >/dev/null
-        }
-
-        # --connect-timeout on every call, tighter than the 30s
-        # client_mount_timeout in ceph.conf: this unit runs on a timer, so
-        # returning quickly and trying again beats waiting out a full timeout
-        # while a peer reboots.
-        for _ in $(seq 1 30); do
-          ceph --connect-timeout 10 -s >/dev/null 2>&1 && break
-          sleep 2
-        done
-        if ! ceph --connect-timeout 10 -s >/dev/null 2>&1; then
-          echo "cluster is not answering — not touching the monmap"
-          exit 0
-        fi
-
-        if in_monmap; then
-          echo "${host} is already in the monmap"
-          exit 0
-        fi
-
-        echo "adding ${host} to the monmap"
-        ceph --connect-timeout 10 mon add ${host} '${addrvec cfg.monAddr}' || true
-
-        for _ in $(seq 1 60); do
-          if in_monmap; then
-            echo "${host} joined the quorum"
-            exit 0
-          fi
-          sleep 2
-        done
-        echo "${host} is still not in the monmap — see this module's header for recovery" >&2
-      '';
+      # THE ORDERING RULE (never touch the monmap while this node's own mon is
+      # down) and the retry/confirm loops now live in
+      # homelab/local-api/src/storage/mon_member.rs, with unit tests covering
+      # each branch — including that the monmap is never touched while the
+      # local mon is inactive.
+      path = with pkgs; [ceph ceph-client coreutils systemd];
+      environment.YOLAB_CEPH_MON_ADDR = cfg.monAddr;
     };
 
     systemd.timers.yolab-ceph-mon-member = mkIf (!isBootstrap) {

@@ -11,6 +11,11 @@ metadata:
 spec:
   chart: volsync
   repo: https://backube.github.io/helm-charts/
+  # Pinned like Rook (operator.yaml) and the snapshot controller
+  # (external-snapshotter/controller.yaml) — this HelmChart otherwise floats
+  # to whatever backube last published, so a fresh install six months from now
+  # would silently get an untested version of the backup operator.
+  version: 0.16.0
   targetNamespace: volsync-system
   createNamespace: false
   valuesContent: |-

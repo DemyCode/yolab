@@ -68,8 +68,12 @@ in {
     local-api = mkCrate {
       pname = "local-api";
       path = ../homelab/local-api;
-      # bintools for the profiler runtime coverage shells out to.
-      nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools];
+      # bintools for the profiler runtime coverage shells out to. gitMinimal
+      # because routers/update.rs's remote-management tests run real git
+      # against a throwaway repo rather than mocking the subprocess away —
+      # without it, those tests fail only inside `cargo test`'s Nix sandbox,
+      # where nothing outside declared inputs is on PATH.
+      nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools pkgs.gitMinimal];
       buildInputs = [pkgs.openssl];
     };
 

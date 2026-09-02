@@ -7,11 +7,7 @@ use anyhow::{bail, Result};
 
 use crate::host::Host;
 
-fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
+use super::ceph_shared::hostname;
 
 /// The `ceph auth get-or-create` caps for a daemon. The one bug-prone detail:
 /// a typo here silently mints a key with the wrong grants, so it is pinned.

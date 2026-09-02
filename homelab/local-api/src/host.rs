@@ -38,6 +38,12 @@ pub trait Host: Send + Sync + Clone {
     fn kubectl<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a;
     fn kubectl_json<'a>(&self, args: &'a [&str])
         -> impl Future<Output = Result<Value>> + Send + 'a;
+    /// Pipe a manifest to `kubectl apply -f -`. A distinct primitive (not
+    /// folded into `run_cmd`) so callers that write Kubernetes objects — like
+    /// storage::csi_secrets — stay behind the same seam as their reads,
+    /// rather than reaching around it to `crate::kubectl::apply` the way
+    /// pre-existing code (lease.rs, routers/ceph_join.rs) does.
+    fn kubectl_apply<'a>(&self, manifest: &'a str) -> impl Future<Output = Result<()>> + Send + 'a;
     fn systemctl<'a>(
         &self,
         args: &'a [&str],
@@ -134,6 +140,10 @@ impl Host for RealHost {
         async move { crate::kubectl::get_json(args).await }
     }
 
+    fn kubectl_apply<'a>(&self, manifest: &'a str) -> impl Future<Output = Result<()>> + Send + 'a {
+        async move { crate::kubectl::apply(manifest).await }
+    }
+
     fn systemctl<'a>(
         &self,
         args: &'a [&str],
@@ -162,6 +172,180 @@ impl Host for RealHost {
                 .await
                 .with_context(|| format!("spawn {bin}"))?;
             Ok(from_output(out))
+        }
+    }
+}
+
+/// A scripted `Host` for tests, shared by every module under `storage/` so
+/// each one does not grow its own copy. (disks_reconciler.rs predates this and
+/// keeps its own private version — not worth the churn of migrating a 4900-line
+/// file's existing, passing test suite onto a shared one.)
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::{
+        collections::VecDeque,
+        future::Future,
+        sync::{Arc, Mutex},
+    };
+
+    use anyhow::Result;
+    use serde_json::Value;
+
+    use super::{CommandOutput, Host};
+
+    type ScriptedAnswer = std::result::Result<String, String>;
+    type Script = Vec<(String, VecDeque<ScriptedAnswer>)>;
+
+    /// Every effect a storage subcommand performs is a command, so scripting
+    /// commands is what makes the sequence assertable. Unscripted commands
+    /// fail loudly by default — a test must say what the machine answers
+    /// rather than silently getting a plausible one.
+    #[derive(Clone, Default)]
+    pub(crate) struct FakeHost {
+        calls: Arc<Mutex<Vec<String>>>,
+        script: Arc<Mutex<Script>>,
+    }
+
+    impl FakeHost {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        fn push(&self, prefix: &str, answer: ScriptedAnswer) {
+            let mut script = self.script.lock().unwrap();
+            match script.iter_mut().find(|(p, _)| p == prefix) {
+                Some((_, q)) => q.push_back(answer),
+                None => {
+                    let mut q = VecDeque::new();
+                    q.push_back(answer);
+                    script.push((prefix.to_string(), q));
+                }
+            }
+        }
+
+        pub fn ok(self, prefix: &str, out: &str) -> Self {
+            self.push(prefix, Ok(out.to_string()));
+            self
+        }
+
+        pub fn fail(self, prefix: &str, err: &str) -> Self {
+            self.push(prefix, Err(err.to_string()));
+            self
+        }
+
+        /// Longest matching prefix wins, so a general steady-state answer and a
+        /// more specific override can coexist without colliding.
+        fn answer(&self, cmd: &str) -> Result<String> {
+            self.calls.lock().unwrap().push(cmd.to_string());
+            let mut script = self.script.lock().unwrap();
+            let best = script
+                .iter_mut()
+                .filter(|(p, _)| cmd.starts_with(p.as_str()))
+                .max_by_key(|(p, _)| p.len());
+            match best {
+                Some((_, q)) => {
+                    let out = if q.len() > 1 {
+                        q.pop_front().unwrap()
+                    } else {
+                        q.front().unwrap().clone()
+                    };
+                    out.map_err(|e| anyhow::anyhow!("{e}"))
+                }
+                None => Err(anyhow::anyhow!("unscripted command: {cmd}")),
+            }
+        }
+
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        pub fn ran(&self, needle: &str) -> bool {
+            self.calls().iter().any(|c| c.contains(needle))
+        }
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    impl Host for FakeHost {
+        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("ceph {}", args.join(" "))) }
+        }
+
+        fn ceph_json<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let raw = me.answer(&format!("ceph {}", args.join(" ")))?;
+                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
+            }
+        }
+
+        fn ceph_volume<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("ceph-volume {}", args.join(" "))) }
+        }
+
+        fn kubectl<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("kubectl {}", args.join(" "))) }
+        }
+
+        fn kubectl_json<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let raw = me.answer(&format!("kubectl {}", args.join(" ")))?;
+                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
+            }
+        }
+
+        fn kubectl_apply<'a>(
+            &self,
+            manifest: &'a str,
+        ) -> impl Future<Output = Result<()>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("kubectl-apply {manifest}")).map(|_| ()) }
+        }
+
+        fn systemctl<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let out = me.answer(&format!("systemctl {}", args.join(" ")));
+                Ok(CommandOutput {
+                    success: out.is_ok(),
+                    stdout: out.unwrap_or_default(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        fn run_cmd<'a>(
+            &self,
+            bin: &'a str,
+            args: &'a [&'a str],
+        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let out = me.answer(&format!("{bin} {}", args.join(" ")));
+                Ok(CommandOutput {
+                    success: out.is_ok(),
+                    stdout: out.unwrap_or_default(),
+                    stderr: String::new(),
+                })
+            }
         }
     }
 }
