@@ -121,6 +121,104 @@ static PROGRESS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, DiskProgre
 static CREATING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
+/// What a device's own BlueStore label says about who owns it.
+///
+/// Replaces a pair of independent booleans (`is_our_osd`, `foreign_ceph`) that
+/// could encode states no device can be in, and that were read back out of
+/// untyped JSON with `as_bool().unwrap_or(false)` — so a renamed or absent key
+/// silently meant "not ours, not foreign", i.e. safe to wipe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ownership {
+    /// Labelled with this cluster's fsid.
+    Ours,
+    /// Labelled with a different cluster's fsid.
+    Foreign,
+    /// No BlueStore label at offset 0.
+    Blank,
+    /// Labelled, but our own fsid could not be read, so it cannot be
+    /// attributed. Distinct from `Foreign` in meaning and identical to it in
+    /// consequence: both refuse creation.
+    Unknown,
+}
+
+impl Ownership {
+    fn read(device_fsid: Option<&str>, our_fsid: &str) -> Self {
+        match device_fsid {
+            None => Ownership::Blank,
+            Some(_) if our_fsid.is_empty() => Ownership::Unknown,
+            Some(f) if f == our_fsid => Ownership::Ours,
+            Some(_) => Ownership::Foreign,
+        }
+    }
+
+    fn is_ours(self) -> bool {
+        self == Ownership::Ours
+    }
+
+    /// True for anything carrying a label this cluster cannot claim. Drives
+    /// both the wire field and the refusal, so they cannot disagree.
+    fn is_foreign(self) -> bool {
+        matches!(self, Ownership::Foreign | Ownership::Unknown)
+    }
+}
+
+/// One device as this node sees it.
+///
+/// The published shape is produced in exactly one place (`to_value`) so the
+/// ConfigMap the UI reads cannot drift field by field.
+#[derive(Clone, Debug)]
+pub(crate) struct Disk {
+    pub device: String,
+    pub model: String,
+    pub size_bytes: u64,
+    /// The UI renders this as the built-in "System disk".
+    pub is_loop: bool,
+    pub ownership: Ownership,
+    pub has_partitions: bool,
+    pub mounted: bool,
+    pub osd_id: Option<i64>,
+    pub progress: Option<DiskProgress>,
+}
+
+impl Disk {
+    fn to_value(&self) -> Value {
+        let mut v = json!({
+            "device": self.device,
+            "model": self.model,
+            "size_bytes": self.size_bytes,
+            "is_our_osd": self.ownership.is_ours(),
+            "foreign_ceph": self.ownership.is_foreign(),
+            "has_partitions": self.has_partitions,
+            "mounted": self.mounted,
+            "osd_id": self.osd_id,
+        });
+        // Only the system disk carried this key before, and the UI branches on
+        // its presence, so it stays absent rather than present-and-false.
+        if self.is_loop {
+            v["is_loop"] = json!(true);
+        }
+        if let Some(p) = self.progress.as_ref().filter(|p| !p.phase.is_empty()) {
+            v["phase"] = json!(p.phase);
+            v["message"] = json!(p.message);
+            v["attempts"] = json!(p.attempts);
+        }
+        v
+    }
+
+    /// Full device path, as the ceph tools want it.
+    fn dev_path(&self) -> Option<String> {
+        let d = self.device.trim();
+        if d.is_empty() {
+            return None;
+        }
+        Some(if d.starts_with('/') {
+            d.to_string()
+        } else {
+            format!("/dev/{d}")
+        })
+    }
+}
+
 fn set_phase(disk_id: &str, phase: &str, message: impl Into<String>) {
     let Ok(mut p) = PROGRESS.lock() else { return };
     let e = p.entry(disk_id.to_string()).or_default();
@@ -137,14 +235,9 @@ fn progress_of(disk_id: &str) -> DiskProgress {
 }
 
 /// Merge each disk's progress into the metadata published to the UI.
-fn mark_progress(meta: &mut HashMap<String, Value>) {
-    for (disk_id, m) in meta.iter_mut() {
-        let p = progress_of(disk_id);
-        if !p.phase.is_empty() {
-            m["phase"] = json!(p.phase);
-            m["message"] = json!(p.message);
-            m["attempts"] = json!(p.attempts);
-        }
+fn mark_progress(meta: &mut HashMap<String, Disk>) {
+    for (disk_id, d) in meta.iter_mut() {
+        d.progress = Some(progress_of(disk_id));
     }
 }
 
@@ -172,26 +265,22 @@ fn system_osd_size_bytes() -> u64 {
 /// system disk stayed stuck on that label forever with no way to reach the
 /// "safe to switch on again" state. Now reads the real on-disk label, exactly
 /// like `disk_meta` does for pluggable disks.
-fn system_osd_meta(our_fsid: &str) -> Value {
-    let fsid = bluestore_fsid(SYSTEM_OSD_DEV);
-    let is_our_osd = !our_fsid.is_empty() && fsid.as_deref() == Some(our_fsid);
-    let foreign_ceph = fsid.is_some() && !is_our_osd;
-    json!({
-        "device": SYSTEM_OSD_DEV,
-        "model": "System disk",
-        "size_bytes": system_osd_size_bytes(),
-        "is_loop": true, // the UI renders is_loop as the built-in "System disk"
-        "is_our_osd": is_our_osd,
-        "foreign_ceph": foreign_ceph,
-        // Both false, and not a lookup: this is a dedicated LVM volume disko
-        // carved out for Ceph at install. It has no partition table of its own
-        // and is never mounted — the OS lives on a sibling volume. Reporting it
-        // as partitioned or mounted would make refuse_osd_creation block the one
-        // disk that is supposed to be on by default.
-        "has_partitions": false,
-        "mounted": false,
-        "osd_id": null, // populated by fetch_disk_to_osd in publish_local
-    })
+fn system_osd_meta(our_fsid: &str) -> Disk {
+    Disk {
+        device: SYSTEM_OSD_DEV.to_string(),
+        model: "System disk".to_string(),
+        size_bytes: system_osd_size_bytes(),
+        is_loop: true,
+        ownership: Ownership::read(bluestore_fsid(SYSTEM_OSD_DEV).as_deref(), our_fsid),
+        // Never looked up: a dedicated LVM volume disko carves out for Ceph at
+        // install. It has no partition table of its own and is never mounted —
+        // the OS lives on a sibling volume. Reporting either would make
+        // refuse_osd_creation block the one disk meant to be on by default.
+        has_partitions: false,
+        mounted: false,
+        osd_id: None,
+        progress: None,
+    }
 }
 
 // ── Leader election ───────────────────────────────────────────────────────────
@@ -352,7 +441,7 @@ pub async fn run() {
 /// this host's OSDs, but is kept so callers read the same.)
 async fn fetch_disk_to_osd(
     _node: &str,
-    meta: &HashMap<String, Value>,
+    meta: &HashMap<String, Disk>,
 ) -> Option<HashMap<String, i64>> {
     // Build full device path → disk_id from our local inventory.
     // Index both the stored path and its canonical (symlink-resolved) path so
@@ -360,9 +449,10 @@ async fn fetch_disk_to_osd(
     // path Ceph actually opened and reports in bluestore_bdev_dev_node.
     let mut device_to_disk_id: HashMap<String, String> = HashMap::new();
     for (disk_id, m) in meta {
-        let Some(dev) = m["device"].as_str() else {
+        let dev = m.device.as_str();
+        if dev.is_empty() {
             continue;
-        };
+        }
         device_to_disk_id.insert(canonical_device(dev), disk_id.clone());
     }
 
@@ -505,7 +595,7 @@ async fn publish_local(node: &str) -> Result<()> {
     };
     let our_fsid = cluster_fsid().await.unwrap_or_default();
 
-    let mut meta: HashMap<String, Value> = scanned
+    let mut meta: HashMap<String, Disk> = scanned
         .iter()
         .map(|(d, flags)| (disk_id(d), disk_meta(d, &our_fsid, *flags)))
         .collect();
@@ -669,7 +759,7 @@ fn drain_message(targets: usize, size: Option<u32>) -> String {
 
 async fn reconcile_local_osds(
     node: &str,
-    meta: &HashMap<String, Value>,
+    meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
     disk_to_osd: Option<&HashMap<String, i64>>,
 ) {
@@ -820,7 +910,7 @@ async fn reconcile_local_osds(
             // A freshly created OSD starts at weight 0 (osd_crush_initial_weight)
             // so it attracts no data until the user activates it.
             if crush_weight == 0.0 {
-                let weight = weight_tib_from(kb, m["size_bytes"].as_u64().unwrap_or(0));
+                let weight = weight_tib_from(kb, m.size_bytes);
                 if weight > 0.0 {
                     tracing::info!(
                         "{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}"
@@ -938,7 +1028,7 @@ async fn reconcile_local_osds(
             match ceph_cli::ceph(&["osd", "purge", &osd, "--yes-i-really-mean-it"]).await {
                 Ok(_) => {
                     tracing::info!("{osd} ({disk_id}): purged");
-                    if let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) {
+                    if let Some(device) = Some(m.device.as_str()).filter(|d| !d.is_empty()) {
                         tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
                         wipe_device(device).await;
                     }
@@ -1287,12 +1377,11 @@ async fn reclaim_orphan(disk_id: &str) {
 /// An id from `ceph-volume lvm list` is authoritative — it comes from the LVM tags
 /// ceph-volume itself wrote — so it overrides the label sniff, including
 /// `foreign_ceph`: a disk cannot be OSD N of this cluster and another cluster's.
-fn mark_known_osds(meta: &mut HashMap<String, Value>, disk_to_osd: &HashMap<String, i64>) {
+fn mark_known_osds(meta: &mut HashMap<String, Disk>, disk_to_osd: &HashMap<String, i64>) {
     for (disk_id, &osd_id) in disk_to_osd {
-        if let Some(m) = meta.get_mut(disk_id) {
-            m["osd_id"] = json!(osd_id);
-            m["is_our_osd"] = json!(true);
-            m["foreign_ceph"] = json!(false);
+        if let Some(d) = meta.get_mut(disk_id) {
+            d.osd_id = Some(osd_id);
+            d.ownership = Ownership::Ours;
         }
     }
 }
@@ -1394,7 +1483,7 @@ enum CreatePlan {
 fn plan_create(
     node: &str,
     disk_id: &str,
-    m: &Value,
+    d: &Disk,
     desired: &HashMap<String, String>,
     disk_to_osd: &HashMap<String, i64>,
     already_creating: bool,
@@ -1408,19 +1497,13 @@ fn plan_create(
     if already_creating {
         return CreatePlan::Skip;
     }
-    if let Some(reason) = refuse_osd_creation(m) {
+    if let Some(reason) = refuse_osd_creation(d) {
         return CreatePlan::Blocked(reason);
     }
-    let Some(device) = m["device"].as_str().filter(|d| !d.is_empty()) else {
+    let Some(dev_path) = d.dev_path() else {
         return CreatePlan::Skip;
     };
-    CreatePlan::Create {
-        dev_path: if device.starts_with('/') {
-            device.to_string()
-        } else {
-            format!("/dev/{device}")
-        },
-    }
+    CreatePlan::Create { dev_path }
 }
 
 /// The owner's intent for one disk on one node. "USING" is the same intent as
@@ -1432,24 +1515,31 @@ fn wants_on(desired: &HashMap<String, String>, node: &str, disk_id: &str) -> boo
         .unwrap_or(false)
 }
 
-fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
+fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
     // These strings are shown to the person using the machine, not written to a
     // log, so they say what is true and what to do — no Ceph vocabulary, no
     // internal state names. The detail that used to live here is in the log line
     // at the call site instead.
-    if m["foreign_ceph"].as_bool().unwrap_or(false) {
-        return Some(
-            "This disk holds files from another storage system. Erase it first if you \
-             no longer need them.",
-        );
+    //
+    // Matched exhaustively on purpose: a new Ownership variant has to be given
+    // an answer here rather than defaulting into "safe to wipe", which is what
+    // the boolean pair this replaced did whenever a key was missing.
+    match d.ownership {
+        Ownership::Foreign | Ownership::Unknown => {
+            return Some(
+                "This disk holds files from another storage system. Erase it first if you \
+                 no longer need them.",
+            )
+        }
+        Ownership::Ours => {
+            return Some(
+                "This disk already holds your files, but YoLab has lost track of it. It is \
+                 being left alone rather than risk erasing it.",
+            )
+        }
+        Ownership::Blank => {}
     }
-    if m["is_our_osd"].as_bool().unwrap_or(false) {
-        return Some(
-            "This disk already holds your files, but YoLab has lost track of it. It is \
-             being left alone rather than risk erasing it.",
-        );
-    }
-    if m["device"].as_str().filter(|d| !d.is_empty()).is_none() {
+    if d.dev_path().is_none() {
         return Some("This disk disappeared before it could be set up.");
     }
     // Both of these became load-bearing when partitioned disks started being
@@ -1462,10 +1552,10 @@ fn refuse_osd_creation(m: &Value) -> Option<&'static str> {
     // disk this machine is running from out of reach. It is also stronger
     // evidence than "has a partition table" ever was, because it describes use
     // rather than shape.
-    if m["mounted"].as_bool().unwrap_or(false) {
+    if d.mounted {
         return Some("This machine is using this disk for something else.");
     }
-    if m["has_partitions"].as_bool().unwrap_or(false) {
+    if d.has_partitions {
         return Some("There is already something on this disk. Erase it to use it for storage.");
     }
     None
@@ -1967,14 +2057,15 @@ fn migrate_disk_records(
 /// Foreign-Ceph disks are registered too so they show in the UI.
 async fn auto_register_all_disks(
     node: &str,
-    meta: &HashMap<String, Value>,
+    meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
 ) {
     // Before deciding anything is new: carry over records this release's change in
     // disk identity would otherwise have orphaned.
     let current: Vec<(String, String)> = meta
         .iter()
-        .filter_map(|(id, m)| m["device"].as_str().map(|d| (id.clone(), d.to_string())))
+        .filter(|(_, m)| !m.device.is_empty())
+        .map(|(id, m)| (id.clone(), m.device.clone()))
         .collect();
     let migration = migrate_disk_records(node, &current, desired);
     let mut new_entries: HashMap<String, String> = migration.write;
@@ -2021,14 +2112,12 @@ async fn auto_register_all_disks(
         // A disk that is already running one of OUR OSDs is therefore ON, whatever the
         // record says, because the OSD is itself the evidence that somebody switched it
         // on. The record was lost; the decision it recorded was not.
-        let default = if m["is_loop"].as_bool().unwrap_or(false)
-            || m["is_our_osd"].as_bool().unwrap_or(false)
-        {
+        let default = if m.is_loop || m.ownership.is_ours() {
             "ON"
         } else {
             "OFF"
         };
-        if default == "ON" && !m["is_loop"].as_bool().unwrap_or(false) {
+        if default == "ON" && !m.is_loop {
             tracing::info!(
                 "auto_register_all_disks: {disk_id} has no record but is running one of our OSDs — registering it ON, not OFF"
             );
@@ -2358,7 +2447,7 @@ fn disk_id_from(device: &str, stable: Option<&str>) -> String {
     format!("dev-{device}")
 }
 
-fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Value {
+fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
     let model = std::fs::read_to_string(format!("/sys/block/{device}/device/model"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
@@ -2367,21 +2456,17 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Value {
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0)
         * 512;
-    let fsid = bluestore_fsid(device);
-    let is_our_osd = !our_fsid.is_empty() && fsid.as_deref() == Some(our_fsid);
-    // A disk with a BlueStore header from a *different* cluster — data from another
-    // Ceph installation. Never auto-wipe; surface for explicit user confirmation.
-    let foreign_ceph = fsid.is_some() && !is_our_osd;
-    json!({
-        "device": device,
-        "model": model,
-        "size_bytes": size_bytes,
-        "is_our_osd": is_our_osd,
-        "foreign_ceph": foreign_ceph,
-        "has_partitions": flags.has_partitions,
-        "mounted": flags.mounted,
-        "osd_id": null, // populated by fetch_disk_to_osd in publish_local
-    })
+    Disk {
+        device: device.to_string(),
+        model,
+        size_bytes,
+        is_loop: false,
+        ownership: Ownership::read(bluestore_fsid(device).as_deref(), our_fsid),
+        has_partitions: flags.has_partitions,
+        mounted: flags.mounted,
+        osd_id: None,
+        progress: None,
+    }
 }
 
 // ── ConfigMap helpers ─────────────────────────────────────────────────────────
@@ -2394,13 +2479,19 @@ async fn cluster_fsid() -> Option<String> {
     ceph_cli::cluster_fsid().await
 }
 
-async fn write_status(node: &str, meta: &HashMap<String, Value>) {
+async fn write_status(node: &str, meta: &HashMap<String, Disk>) {
     // Only `disks`. There used to be an `effective` device list here, assembled
     // for the leader to write into the Rook CephCluster CR. There is no CR any
     // more — each node creates its own OSDs — and nothing had read the field
     // since, so it was ~30 lines (and a `classify` pass over every disk) whose
     // only effect was to make the format look like it still meant something.
-    let payload = json!({ "disks": meta });
+    // One place turns Disk into wire JSON, so the ConfigMap the UI reads
+    // cannot drift field by field.
+    let wire: HashMap<&str, Value> = meta
+        .iter()
+        .map(|(k, d)| (k.as_str(), d.to_value()))
+        .collect();
+    let payload = json!({ "disks": wire });
     let json_val = serde_json::to_string(&payload).unwrap_or_default();
     let patch = json!({"data": {node: json_val}}).to_string();
     if kubectl::run(&[
@@ -2615,49 +2706,142 @@ mod tests {
         assert_eq!(bluestore_fsid(&dev), None);
     }
 
-    // ── disk_meta ─────────────────────────────────────────────────────────────
+    // ── disk_meta / Ownership ─────────────────────────────────────────────────
 
     #[test]
-    fn disk_meta_flags_our_own_osd() {
+    fn a_label_matching_our_cluster_is_ours() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
-        let m = disk_meta(&dev, OURS, DiskFlags::default());
-        assert_eq!(m["is_our_osd"], json!(true));
-        assert_eq!(m["foreign_ceph"], json!(false));
-    }
-
-    #[test]
-    fn disk_meta_flags_a_foreign_cluster_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sda", &bluestore_label(THEIRS));
-        let m = disk_meta(&dev, OURS, DiskFlags::default());
-        assert_eq!(m["is_our_osd"], json!(false));
         assert_eq!(
-            m["foreign_ceph"],
-            json!(true),
-            "the UI needs this flag to ask before erasing"
+            disk_meta(&dev, OURS, DiskFlags::default()).ownership,
+            Ownership::Ours
         );
     }
 
-    /// With an unknown cluster fsid, our own disk is indistinguishable from a
-    /// stranger's, so it is reported as foreign — the conservative reading, and
-    /// the one that makes the UI ask rather than assume.
     #[test]
-    fn disk_meta_treats_a_labelled_disk_as_foreign_when_our_fsid_is_unknown() {
+    fn a_label_from_another_cluster_is_foreign() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "sda", &bluestore_label(THEIRS));
+        assert_eq!(
+            disk_meta(&dev, OURS, DiskFlags::default()).ownership,
+            Ownership::Foreign
+        );
+    }
+
+    /// With an unknown cluster fsid our own disk is indistinguishable from a
+    /// stranger's. It is reported Unknown rather than guessed either way, and
+    /// Unknown refuses creation exactly like Foreign — the conservative
+    /// reading, and the one that makes the UI ask rather than assume.
+    #[test]
+    fn a_label_we_cannot_attribute_is_unknown_and_still_refuses() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
-        let m = disk_meta(&dev, "", DiskFlags::default());
-        assert_eq!(m["is_our_osd"], json!(false));
-        assert_eq!(m["foreign_ceph"], json!(true));
+        let d = disk_meta(&dev, "", DiskFlags::default());
+        assert_eq!(d.ownership, Ownership::Unknown);
+        assert!(refuse_osd_creation(&d).is_some());
     }
 
     #[test]
-    fn disk_meta_reports_a_blank_disk_as_neither_ours_nor_foreign() {
+    fn an_unlabelled_disk_is_blank() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &vec![0u8; 4096]);
-        let m = disk_meta(&dev, OURS, DiskFlags::default());
-        assert_eq!(m["is_our_osd"], json!(false));
-        assert_eq!(m["foreign_ceph"], json!(false));
+        assert_eq!(
+            disk_meta(&dev, OURS, DiskFlags::default()).ownership,
+            Ownership::Blank
+        );
+    }
+
+    /// The published shape is a contract with the Storage page, which reads
+    /// is_our_osd, foreign_ceph, is_loop, osd_id, size_bytes, device, model,
+    /// has_partitions, mounted, phase, message and attempts. Ownership is one
+    /// enum internally but has to keep arriving as the two booleans the UI
+    /// branches on, and Unknown has to look like Foreign on the wire or a disk
+    /// nobody can attribute would render as safe to erase.
+    #[test]
+    fn the_wire_shape_the_ui_reads_is_unchanged() {
+        let base = Disk {
+            device: "sdb".into(),
+            model: "easystore".into(),
+            size_bytes: 1000,
+            is_loop: false,
+            ownership: Ownership::Blank,
+            has_partitions: false,
+            mounted: false,
+            osd_id: None,
+            progress: None,
+        };
+
+        let v = base.to_value();
+        assert_eq!(v["device"], json!("sdb"));
+        assert_eq!(v["model"], json!("easystore"));
+        assert_eq!(v["size_bytes"], json!(1000));
+        assert_eq!(v["is_our_osd"], json!(false));
+        assert_eq!(v["foreign_ceph"], json!(false));
+        assert_eq!(v["has_partitions"], json!(false));
+        assert_eq!(v["mounted"], json!(false));
+        assert_eq!(v["osd_id"], json!(null));
+        assert!(
+            v.get("is_loop").is_none(),
+            "absent on a normal disk, as before"
+        );
+
+        for (own, ours, foreign) in [
+            (Ownership::Ours, true, false),
+            (Ownership::Foreign, false, true),
+            (Ownership::Unknown, false, true),
+            (Ownership::Blank, false, false),
+        ] {
+            let v = Disk {
+                ownership: own,
+                ..base.clone()
+            }
+            .to_value();
+            assert_eq!(v["is_our_osd"], json!(ours), "{own:?}");
+            assert_eq!(v["foreign_ceph"], json!(foreign), "{own:?}");
+        }
+
+        let sys = Disk {
+            is_loop: true,
+            ..base.clone()
+        }
+        .to_value();
+        assert_eq!(sys["is_loop"], json!(true));
+
+        let running = Disk {
+            osd_id: Some(3),
+            progress: Some(DiskProgress {
+                phase: phase::ACTIVE.into(),
+                message: "In use".into(),
+                attempts: 2,
+                orphan_osd_id: None,
+            }),
+            ..base.clone()
+        }
+        .to_value();
+        assert_eq!(running["osd_id"], json!(3));
+        assert_eq!(running["phase"], json!(phase::ACTIVE));
+        assert_eq!(running["message"], json!("In use"));
+        assert_eq!(running["attempts"], json!(2));
+    }
+
+    /// An empty phase used to mean "write no phase key at all". Preserved so a
+    /// disk that has never been acted on does not gain a blank phase the UI
+    /// would have to special-case.
+    #[test]
+    fn a_disk_with_no_progress_publishes_no_phase() {
+        let v = Disk {
+            device: "sdb".into(),
+            model: String::new(),
+            size_bytes: 0,
+            is_loop: false,
+            ownership: Ownership::Blank,
+            has_partitions: false,
+            mounted: false,
+            osd_id: None,
+            progress: Some(DiskProgress::default()),
+        }
+        .to_value();
+        assert!(v.get("phase").is_none());
     }
 
     // ── disk_id ───────────────────────────────────────────────────────────────
@@ -3067,512 +3251,156 @@ mod tests {
     // disk missing from a map that is EMPTY whenever `ceph-volume lvm list`
     // fails. These tests exist so that failure mode can never become data loss.
 
-    fn disk(is_our_osd: bool, foreign_ceph: bool) -> Value {
-        json!({
-            "device": "sdb",
-            "size_bytes": 1_000_000_000u64,
-            "is_our_osd": is_our_osd,
-            "foreign_ceph": foreign_ceph,
-        })
+    fn disk(ownership: Ownership) -> Disk {
+        Disk {
+            device: "sdb".into(),
+            model: String::new(),
+            size_bytes: 1_000_000_000,
+            is_loop: false,
+            ownership,
+            has_partitions: false,
+            mounted: false,
+            osd_id: None,
+            progress: None,
+        }
     }
 
     #[test]
     fn a_blank_disk_may_be_turned_into_an_osd() {
-        assert_eq!(refuse_osd_creation(&disk(false, false)), None);
+        assert_eq!(refuse_osd_creation(&disk(Ownership::Blank)), None);
     }
 
-    /// The whole point. A healthy OSD of ours that Ceph momentarily fails to
-    /// report must never be re-created over — that is destroying live data in
-    /// response to a transient command failure.
+    /// A healthy OSD of ours that Ceph momentarily fails to report must never be
+    /// re-created over — that is destroying live data in response to a transient
+    /// command failure.
     #[test]
     fn our_own_osd_is_never_recreated_over() {
         assert!(
-            refuse_osd_creation(&disk(true, false)).is_some(),
+            refuse_osd_creation(&disk(Ownership::Ours)).is_some(),
             "a disk carrying our own BlueStore label must never be handed to ceph-volume create"
         );
     }
 
     #[test]
     fn another_clusters_disk_is_refused() {
-        assert!(refuse_osd_creation(&disk(false, true)).is_some());
+        assert!(refuse_osd_creation(&disk(Ownership::Foreign)).is_some());
     }
 
-    /// Both flags set is contradictory, but if it ever happens the answer is
-    /// still "do not wipe".
+    /// The state the boolean pair could not express: a label was read but the
+    /// cluster fsid was unknown, so we cannot tell whose it is. It must refuse.
     #[test]
-    fn a_contradictory_disk_is_refused() {
-        assert!(refuse_osd_creation(&disk(true, true)).is_some());
+    fn a_disk_of_unknown_ownership_is_refused() {
+        assert!(refuse_osd_creation(&disk(Ownership::Unknown)).is_some());
     }
 
-    /// Missing flags are the shape `meta` takes when the superblock could not be
-    /// read at all. `unwrap_or(false)` makes both default to "blank", so this
-    /// pins the one case that stays permissive — and proves the device check is
-    /// what catches a genuinely empty entry.
+    /// Blank is now the only ownership that permits a wipe, and it is reached
+    /// only when the superblock was read and carried no fsid at all. The old
+    /// `unwrap_or(false)` shape defaulted a missing key into this state; that is
+    /// no longer representable.
     #[test]
-    fn an_entry_with_no_flags_but_a_device_is_allowed() {
-        assert_eq!(refuse_osd_creation(&json!({"device": "sdb"})), None);
+    fn blank_is_the_only_ownership_that_permits_creation() {
+        for o in [Ownership::Ours, Ownership::Foreign, Ownership::Unknown] {
+            assert!(
+                refuse_osd_creation(&disk(o)).is_some(),
+                "{o:?} must never be handed to ceph-volume create"
+            );
+        }
+        assert_eq!(refuse_osd_creation(&disk(Ownership::Blank)), None);
     }
 
     #[test]
     fn an_entry_without_a_device_is_refused() {
-        assert!(refuse_osd_creation(&json!({"is_our_osd": false})).is_some());
-        assert!(refuse_osd_creation(&json!({"device": ""})).is_some());
+        let d = Disk {
+            device: String::new(),
+            ..disk(Ownership::Blank)
+        };
+        assert!(refuse_osd_creation(&d).is_some());
+    }
+
+    /// A label sniff that reads nothing is not evidence a disk is empty. Blank
+    /// only means "no fsid in the superblock", so mounted and has_partitions
+    /// stay load-bearing on top of it.
+    #[test]
+    fn a_blank_but_occupied_disk_is_still_refused() {
+        let mounted = Disk {
+            mounted: true,
+            ..disk(Ownership::Blank)
+        };
+        let partitioned = Disk {
+            has_partitions: true,
+            ..disk(Ownership::Blank)
+        };
+        assert!(refuse_osd_creation(&mounted).is_some());
+        assert!(refuse_osd_creation(&partitioned).is_some());
     }
 
     // ── mark_known_osds ───────────────────────────────────────────────────────
 
-    /// The live bug: ceph-volume wraps a raw disk in LVM, so /dev/sdb has no
-    /// BlueStore label at offset 0 and disk_meta reports is_our_osd:false — even
-    /// though Ceph knows it as osd.1. The UI renders ON + connected + !is_our_osd
-    /// as "Setting up…", so a fully-backfilled OSD pulsed forever.
+    /// ceph-volume wraps a raw disk in LVM, so /dev/sdb has no BlueStore label
+    /// at offset 0 and the sniff reads Blank — even though Ceph knows it as
+    /// osd.1. The UI renders ON + connected + !is_our_osd as "Setting up…", so a
+    /// fully-backfilled OSD pulsed forever.
     #[test]
     fn a_disk_ceph_knows_about_is_marked_as_ours() {
-        let mut meta = HashMap::new();
-        meta.insert(
-            "dev-sdb".to_string(),
-            json!({"device": "sdb", "is_our_osd": false, "foreign_ceph": false, "osd_id": null}),
-        );
-        let map = HashMap::from([("dev-sdb".to_string(), 1i64)]);
+        let mut meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
 
-        mark_known_osds(&mut meta, &map);
+        mark_known_osds(&mut meta, &HashMap::from([("dev-sdb".to_string(), 1i64)]));
 
-        assert_eq!(meta["dev-sdb"]["osd_id"], json!(1));
+        assert_eq!(meta["dev-sdb"].osd_id, Some(1));
         assert_eq!(
-            meta["dev-sdb"]["is_our_osd"],
-            json!(true),
+            meta["dev-sdb"].ownership,
+            Ownership::Ours,
             "an OSD id from ceph-volume is authoritative over a missing on-disk label"
         );
     }
 
-    /// A disk Ceph claims cannot also belong to a stranger. Leaving foreign_ceph
-    /// set would make the UI offer to erase an OSD holding live data.
+    /// A disk Ceph claims cannot also belong to a stranger. Leaving it Foreign
+    /// would make the UI offer to erase an OSD holding live data.
     #[test]
     fn a_known_osd_is_never_left_marked_foreign() {
-        let mut meta = HashMap::new();
-        meta.insert(
-            "dev-sdb".to_string(),
-            json!({"device": "sdb", "is_our_osd": false, "foreign_ceph": true}),
-        );
+        let mut meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Foreign))]);
         mark_known_osds(&mut meta, &HashMap::from([("dev-sdb".to_string(), 4i64)]));
-        assert_eq!(meta["dev-sdb"]["foreign_ceph"], json!(false));
-        assert_eq!(meta["dev-sdb"]["is_our_osd"], json!(true));
+        assert_eq!(meta["dev-sdb"].ownership, Ownership::Ours);
     }
 
     /// Disks Ceph does not know about keep whatever the label sniff decided —
     /// that is what still catches a genuine foreign disk.
     #[test]
     fn disks_ceph_does_not_know_are_left_alone() {
-        let mut meta = HashMap::new();
-        meta.insert(
-            "dev-sdc".to_string(),
-            json!({"device": "sdc", "is_our_osd": false, "foreign_ceph": true}),
-        );
+        let mut meta = HashMap::from([("dev-sdc".to_string(), disk(Ownership::Foreign))]);
         mark_known_osds(&mut meta, &HashMap::new());
-        assert_eq!(meta["dev-sdc"]["foreign_ceph"], json!(true));
-        assert_eq!(meta["dev-sdc"]["is_our_osd"], json!(false));
+        assert_eq!(meta["dev-sdc"].ownership, Ownership::Foreign);
+        assert_eq!(meta["dev-sdc"].osd_id, None);
     }
 
     /// An id for a disk no longer in the inventory must not resurrect an entry.
     #[test]
     fn an_id_for_an_absent_disk_adds_nothing() {
-        let mut meta: HashMap<String, Value> = HashMap::new();
+        let mut meta: HashMap<String, Disk> = HashMap::new();
         mark_known_osds(&mut meta, &HashMap::from([("dev-gone".to_string(), 9i64)]));
         assert!(meta.is_empty());
-    }
-
-    // ── is_user_disk ──────────────────────────────────────────────────────────
-
-    /// The one that bites. /dev/rbd0 is the container image store this very
-    /// module helps set up; lsblk calls it a partitionless "disk", so it was
-    /// offered on the Storage page as something to activate. Switching it on
-    /// runs ceph-volume over it. refuse_osd_creation does not save us here —
-    /// rbd0 holds an xfs filesystem, not a BlueStore label, so it looks blank.
-    #[test]
-    fn an_rbd_mapping_is_never_offered_as_a_user_disk() {
-        assert!(!is_user_disk("rbd0"));
-        assert!(!is_user_disk("rbd12"));
-    }
-
-    #[test]
-    fn other_virtual_devices_are_excluded_too() {
-        for n in ["loop0", "zram0", "zd16", "md0", "dm-1"] {
-            assert!(!is_user_disk(n), "{n} should not be offered as a user disk");
-        }
-    }
-
-    #[test]
-    fn real_disks_are_still_offered() {
-        for n in ["sda", "sdb", "nvme0n1", "vda", "hda"] {
-            assert!(
-                is_user_disk(n),
-                "{n} is a real disk and must stay selectable"
-            );
-        }
-    }
-
-    /// Guard against an over-broad prefix: "sd*" must not be caught by "zd",
-    /// and a real disk whose name merely contains a prefix is still a disk.
-    #[test]
-    fn the_prefixes_do_not_over_match() {
-        assert!(is_user_disk("sdz"));
-        assert!(is_user_disk("nvme1n1"));
-    }
-
-    // ── canonical_device ──────────────────────────────────────────────────────
-    //
-    // /dev holds several names for one LVM volume: /dev/mapper/pool-ceph,
-    // /dev/pool/ceph and /dev/dm-1 are the same disk. Our inventory records one
-    // spelling and ceph-volume reports another, so comparing the raw strings
-    // made an existing OSD look like a blank disk — the reconciler then tried to
-    // provision over it on every tick, and only refuse_osd_creation stopped that
-    // becoming a wipe. Observed live on the system disk.
-
-    #[test]
-    fn canonical_device_leaves_an_unresolvable_path_alone() {
-        // Must be lossless rather than empty: an empty key would collide with
-        // every other unresolvable device and mismatch OSDs onto wrong disks.
-        assert_eq!(
-            canonical_device("/dev/definitely-not-here"),
-            "/dev/definitely-not-here"
-        );
-    }
-
-    #[test]
-    fn canonical_device_expands_a_bare_kernel_name() {
-        // lsblk gives "sdb"; ceph-volume gives "/dev/sdb". They must agree.
-        assert_eq!(canonical_device("sdb"), canonical_device("/dev/sdb"));
-    }
-
-    /// The two spellings that actually collided in production.
-    #[test]
-    fn the_two_lvm_spellings_agree_via_a_symlink() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("dm-1");
-        std::fs::write(&real, b"x").unwrap();
-        let alias = dir.path().join("pool-ceph");
-        std::os::unix::fs::symlink(&real, &alias).unwrap();
-
-        assert_eq!(
-            canonical_device(alias.to_str().unwrap()),
-            canonical_device(real.to_str().unwrap()),
-            "a symlink and its target must resolve to the same key"
-        );
-    }
-
-    // ── parse_lvm_list ────────────────────────────────────────────────────────
-
-    /// The real shape of `ceph-volume lvm list --format json`: an object keyed
-    /// by OSD id, each holding a list of LV records naming their backing
-    /// devices.
-    #[test]
-    fn lvm_list_maps_devices_to_osd_ids() {
-        let raw = r#"{
-          "0": [{"devices": ["/dev/sdb"], "tags": {"ceph.osd_fsid": "abc"}}],
-          "1": [{"devices": ["/dev/pool/ceph"], "tags": {"ceph.osd_fsid": "def"}}]
-        }"#;
-        let mut got = parse_lvm_list(raw, OURS).unwrap();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                ("/dev/pool/ceph".to_string(), 1),
-                ("/dev/sdb".to_string(), 0),
-            ]
-        );
-    }
-
-    /// ceph-volume prints `-->` progress lines to stdout when it cannot write
-    /// its own logfile. A parse failure here returns an empty OSD map, which is
-    /// precisely the state `refuse_osd_creation` exists to survive — so the
-    /// preamble is stripped instead.
-    #[test]
-    fn lvm_list_tolerates_a_progress_preamble() {
-        let raw = "--> Falling back to /tmp/ for logging\n{\"0\": [{\"devices\": [\"/dev/sdb\"]}]}";
-        assert_eq!(
-            parse_lvm_list(raw, OURS).unwrap(),
-            vec![("/dev/sdb".to_string(), 0)]
-        );
-    }
-
-    /// The exact record ceph-volume produces for an OSD on an LVM logical
-    /// volume. `devices` names the PV underneath the VG, which no inventory of
-    /// ours ever holds — only `lv_path` identifies the volume we asked for.
-    #[test]
-    fn lvm_list_reports_the_lv_path_for_an_lvm_backed_osd() {
-        let raw = r#"{"0": [{"devices": ["/dev/sda2"], "lv_path": "/dev/pool/ceph"}]}"#;
-        let got = parse_lvm_list(raw, OURS).unwrap();
-        assert!(
-            got.contains(&("/dev/pool/ceph".to_string(), 0)),
-            "lv_path must be reported or the system OSD can never be matched: {got:?}"
-        );
-        // The PV is kept too — harmless, and some callers may hold that name.
-        assert!(got.contains(&("/dev/sda2".to_string(), 0)));
-    }
-
-    #[test]
-    fn lvm_list_still_reports_a_raw_disk_osd() {
-        let raw = r#"{"1": [{"devices": ["/dev/sdb"], "lv_path": "/dev/ceph-abc/osd-block-def"}]}"#;
-        let got = parse_lvm_list(raw, OURS).unwrap();
-        assert!(got.contains(&("/dev/sdb".to_string(), 1)), "{got:?}");
-    }
-
-    #[test]
-    fn lvm_list_handles_an_osd_spanning_several_devices() {
-        let raw = r#"{"3": [{"devices": ["/dev/sdc", "/dev/sdd"]}]}"#;
-        assert_eq!(
-            parse_lvm_list(raw, OURS).unwrap(),
-            vec![("/dev/sdc".to_string(), 3), ("/dev/sdd".to_string(), 3)]
-        );
-    }
-
-    #[test]
-    fn lvm_list_reports_no_osds_for_an_empty_object() {
-        assert!(parse_lvm_list("{}", OURS).unwrap().is_empty());
-    }
-
-    /// A disk carried over from an earlier install still has this host's LVM
-    /// tags, so ceph-volume lists it as a perfectly ordinary local OSD. Callers
-    /// treat an id from this list as proof the disk is ours: mark_known_osds
-    /// stamps is_our_osd, auto_register_all_disks then defaults it ON, and the
-    /// reconciler restarts its unit forever against a mon that refuses the key.
-    #[test]
-    fn lvm_list_ignores_an_osd_belonging_to_another_cluster() {
-        let raw = format!(
-            r#"{{"1": [{{"devices": ["/dev/sdb"], "tags": {{"ceph.cluster_fsid": "{THEIRS}"}}}}]}}"#
-        );
-        assert!(
-            parse_lvm_list(&raw, OURS).unwrap().is_empty(),
-            "a foreign cluster's OSD must not be reported as one of ours"
-        );
-    }
-
-    #[test]
-    fn lvm_list_keeps_an_osd_tagged_with_our_own_cluster() {
-        let raw = format!(
-            r#"{{"1": [{{"devices": ["/dev/sdb"], "tags": {{"ceph.cluster_fsid": "{OURS}"}}}}]}}"#
-        );
-        assert_eq!(
-            parse_lvm_list(&raw, OURS).unwrap(),
-            vec![("/dev/sdb".to_string(), 1)]
-        );
-    }
-
-    /// Older OSDs predate the tag, and an unreachable mon leaves our fsid
-    /// empty. Dropping those would empty the map, which is the exact state
-    /// refuse_osd_creation exists to survive — every healthy OSD would look
-    /// like a blank disk awaiting provisioning.
-    #[test]
-    fn lvm_list_keeps_an_untagged_osd_and_survives_an_unknown_fsid() {
-        let untagged = r#"{"1": [{"devices": ["/dev/sdb"]}]}"#;
-        assert_eq!(parse_lvm_list(untagged, OURS).unwrap().len(), 1);
-
-        let tagged = format!(
-            r#"{{"1": [{{"devices": ["/dev/sdb"], "tags": {{"ceph.cluster_fsid": "{THEIRS}"}}}}]}}"#
-        );
-        assert_eq!(
-            parse_lvm_list(&tagged, "").unwrap().len(),
-            1,
-            "an unknown cluster fsid must not be read as 'everything is foreign'"
-        );
-    }
-
-    #[test]
-    fn a_stale_bluestore_signature_is_recognised() {
-        assert!(is_stale_signature(
-            "RuntimeError: Device /dev/mapper/pool-ceph has bluestore signature."
-        ));
-        assert!(!is_stale_signature("RuntimeError: Unable to reach the mon"));
-    }
-
-    /// The shape ceph-volume reports for a disk it wrapped in LVM itself:
-    /// `devices` names the raw disk, `lv_path` the volume inside it. Both must
-    /// resolve to the same foreign OSD or the erase never fires.
-    fn foreign_disk_list(fsid: &str) -> String {
-        format!(
-            r#"{{"1": [{{"devices": ["/dev/sdb"],
-                        "lv_path": "/dev/ceph-e6462b10/osd-block-9f537fef",
-                        "tags": {{"ceph.cluster_fsid": "{fsid}"}}}}]}}"#
-        )
-    }
-
-    #[test]
-    fn a_disk_holding_another_clusters_osd_is_found_by_either_name() {
-        let raw = foreign_disk_list(THEIRS);
-        assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdb"), Some(1));
-        assert_eq!(
-            foreign_osd_in_list(&raw, OURS, "/dev/ceph-e6462b10/osd-block-9f537fef"),
-            Some(1)
-        );
-    }
-
-    /// The guard that stops this erasing a live OSD of ours.
-    #[test]
-    fn a_disk_holding_our_own_osd_is_never_reported_as_foreign() {
-        let raw = foreign_disk_list(OURS);
-        assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdb"), None);
-        assert!(foreign_osd_ids(&raw, OURS).is_empty());
-    }
-
-    #[test]
-    fn an_untagged_osd_is_not_treated_as_foreign() {
-        let raw = r#"{"1": [{"devices": ["/dev/sdb"]}]}"#;
-        assert_eq!(foreign_osd_in_list(raw, OURS, "/dev/sdb"), None);
-        assert!(foreign_osd_ids(raw, OURS).is_empty());
-    }
-
-    #[test]
-    fn a_disk_with_no_osd_on_it_is_not_reported() {
-        let raw = foreign_disk_list(THEIRS);
-        assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdc"), None);
-    }
-
-    #[test]
-    fn foreign_ids_are_listed_once_each_and_ours_excluded() {
-        let raw = format!(
-            r#"{{"0": [{{"devices": ["/dev/sda2"], "lv_path": "/dev/pool/ceph",
-                         "tags": {{"ceph.cluster_fsid": "{OURS}"}}}}],
-                 "1": [{{"devices": ["/dev/sdb"], "lv_path": "/dev/ceph-x/osd-block-y",
-                         "tags": {{"ceph.cluster_fsid": "{THEIRS}"}}}}]}}"#
-        );
-        assert_eq!(foreign_osd_ids(&raw, OURS), vec![1]);
-    }
-
-    /// --destroy removes the volume group. That is the point on a foreign
-    /// stack, and destructive on the system LV, which disko owns — only its
-    /// contents are ever stale.
-    #[test]
-    fn only_a_foreign_stack_is_zapped_with_destroy() {
-        assert_eq!(
-            zap_args("/dev/sdb", true, "anything"),
-            Some(vec!["lvm", "zap", "--destroy", "/dev/sdb"])
-        );
-        assert_eq!(
-            zap_args(
-                "/dev/mapper/pool-ceph",
-                false,
-                "Device /dev/mapper/pool-ceph has bluestore signature."
-            ),
-            Some(vec!["lvm", "zap", "/dev/mapper/pool-ceph"])
-        );
-    }
-
-    /// A create that failed for some other reason — an unreachable mon, a
-    /// busy device — must not lead to erasing the disk.
-    #[test]
-    fn an_unrelated_failure_erases_nothing() {
-        assert_eq!(zap_args("/dev/sdb", false, "Unable to reach the mon"), None);
-    }
-
-    /// Why the erase has to happen before the create rather than after a
-    /// failure: a disk carrying an earlier install's LVM stack does not make
-    /// ceph-volume fail. It exits 0 having done nothing, so there is no error
-    /// to react to — `zap_args` on a successful create sees an empty string
-    /// and correctly declines, which is exactly why gating on Err never fired.
-    #[test]
-    fn a_successful_create_offers_no_error_to_trigger_an_erase() {
-        assert_eq!(zap_args("/dev/sdb", false, ""), None);
-    }
-
-    /// Must be an error, never `Ok(vec![])`. An empty result reads as "this host
-    /// has no OSDs", which is the input that makes the reconciler start wiping.
-    #[test]
-    fn lvm_list_errors_on_output_with_no_json() {
-        assert!(parse_lvm_list("", OURS).is_err());
-        assert!(parse_lvm_list("--> something went wrong", OURS).is_err());
-    }
-
-    #[test]
-    fn lvm_list_errors_on_malformed_json() {
-        assert!(parse_lvm_list("{\"0\": [", OURS).is_err());
-    }
-
-    #[test]
-    fn lvm_list_skips_entries_that_are_not_osd_ids() {
-        let raw = r#"{"notanid": [{"devices": ["/dev/sdz"]}], "2": [{"devices": ["/dev/sde"]}]}"#;
-        assert_eq!(
-            parse_lvm_list(raw, OURS).unwrap(),
-            vec![("/dev/sde".to_string(), 2)]
-        );
-    }
-
-    #[test]
-    fn lvm_list_skips_records_with_no_devices() {
-        let raw = r#"{"0": [{"tags": {}}], "1": [{"devices": [""]}]}"#;
-        assert!(parse_lvm_list(raw, OURS).unwrap().is_empty());
-    }
-
-    // ── parse_disk_flags ──────────────────────────────────────────────────────
-    //
-    // Partitioned disks are listed now, so `mounted` is the only thing keeping
-    // the OS disk from being offered as storage. These pin that.
-
-    #[test]
-    fn a_blank_disk_is_neither_partitioned_nor_mounted() {
-        let v = json!({"name": "sdb", "type": "disk"});
-        assert_eq!(
-            parse_disk_flags(&v),
-            DiskFlags {
-                has_partitions: false,
-                mounted: false
-            }
-        );
-    }
-
-    #[test]
-    fn an_external_drive_with_one_exfat_partition_is_partitioned_but_free() {
-        // The case that used to vanish from the list entirely.
-        let v = json!({"name": "sdb", "type": "disk", "children": [
-            {"name": "sdb1", "type": "part", "mountpoints": [null]}
-        ]});
-        let f = parse_disk_flags(&v);
-        assert!(f.has_partitions);
-        assert!(!f.mounted, "an unmounted partition is not in use");
-    }
-
-    /// The one that must never regress: the OS disk. Root is two levels down —
-    /// disk -> partition -> LVM volume — so a direct-children check would miss
-    /// it and offer to wipe the running system.
-    #[test]
-    fn a_disk_whose_root_filesystem_is_nested_two_levels_down_reads_as_mounted() {
-        let v = json!({"name": "sda", "type": "disk", "mountpoints": [null], "children": [
-            {"name": "sda1", "type": "part", "mountpoints": [null], "children": [
-                {"name": "pool-root", "type": "lvm", "mountpoints": ["/"]}
-            ]}
-        ]});
-        assert!(parse_disk_flags(&v).mounted);
-    }
-
-    #[test]
-    fn a_directly_mounted_partition_counts() {
-        let v = json!({"name": "sda", "type": "disk", "children": [
-            {"name": "sda1", "type": "part", "mountpoints": ["/boot"]}
-        ]});
-        assert!(parse_disk_flags(&v).mounted);
-    }
-
-    /// Older util-linux emits a `mountpoint` string instead of a
-    /// `mountpoints` array. Missing that would silently unprotect the OS disk.
-    #[test]
-    fn the_older_singular_mountpoint_field_is_understood() {
-        let v = json!({"name": "sda", "type": "disk", "children": [
-            {"name": "sda1", "type": "part", "mountpoint": "/"}
-        ]});
-        assert!(parse_disk_flags(&v).mounted);
     }
 
     // ── refuse_osd_creation ───────────────────────────────────────────────────
 
     #[test]
-    fn a_mounted_disk_is_refused() {
-        let m = json!({"device": "sda", "mounted": true});
-        let msg = refuse_osd_creation(&m).expect("a mounted disk must be refused");
+    fn a_mounted_disk_is_refused_with_a_reason() {
+        let d = Disk {
+            device: "sda".into(),
+            mounted: true,
+            ..disk(Ownership::Blank)
+        };
+        let msg = refuse_osd_creation(&d).expect("a mounted disk must be refused");
         assert!(msg.contains("using this disk"), "{msg}");
     }
 
     #[test]
     fn a_partitioned_disk_is_refused_until_it_is_erased() {
-        let m = json!({"device": "sdb", "has_partitions": true});
-        let msg = refuse_osd_creation(&m).expect("a disk with data must be refused");
+        let d = Disk {
+            has_partitions: true,
+            ..disk(Ownership::Blank)
+        };
+        let msg = refuse_osd_creation(&d).expect("a disk with data must be refused");
         // It has to name the way out, not just the problem: erasing is the only
         // thing that moves this disk forward, and the page offers a button for it.
         assert!(msg.contains("Erase"), "{msg}");
@@ -3580,17 +3408,15 @@ mod tests {
 
     #[test]
     fn a_blank_unmounted_disk_is_accepted() {
-        let m = json!({"device": "sdb", "has_partitions": false, "mounted": false});
-        assert_eq!(refuse_osd_creation(&m), None);
+        assert_eq!(refuse_osd_creation(&disk(Ownership::Blank)), None);
     }
 
-    /// Missing keys must not read as "false". A meta blob from an older node
-    /// that predates these fields should still be refused on the evidence it
-    /// does carry, not waved through.
+    /// Ownership is checked before the shape checks, so a foreign disk is
+    /// refused for being foreign rather than for happening to be partitioned.
     #[test]
     fn foreign_ceph_still_wins_over_the_new_checks() {
-        let m = json!({"device": "sdb", "foreign_ceph": true, "mounted": false});
-        let msg = refuse_osd_creation(&m).expect("a foreign disk must be refused");
+        let msg =
+            refuse_osd_creation(&disk(Ownership::Foreign)).expect("a foreign disk must be refused");
         assert!(msg.contains("another storage system"), "{msg}");
     }
 
@@ -3616,11 +3442,21 @@ mod tests {
     #[test]
     fn refusal_reasons_carry_no_jargon() {
         let cases = [
-            json!({"device": "sdb", "foreign_ceph": true}),
-            json!({"device": "sdb", "is_our_osd": true}),
-            json!({"device": "sdb", "mounted": true}),
-            json!({"device": "sdb", "has_partitions": true}),
-            json!({}),
+            disk(Ownership::Foreign),
+            disk(Ownership::Unknown),
+            disk(Ownership::Ours),
+            Disk {
+                mounted: true,
+                ..disk(Ownership::Blank)
+            },
+            Disk {
+                has_partitions: true,
+                ..disk(Ownership::Blank)
+            },
+            Disk {
+                device: String::new(),
+                ..disk(Ownership::Blank)
+            },
         ];
         // Every internal term that used to appear in these messages.
         const JARGON: [&str; 8] = [
@@ -3831,13 +3667,18 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
-    fn blank_disk(device: &str) -> Value {
-        json!({
-            "device": device,
-            "size_bytes": 1_000_000_000u64,
-            "is_our_osd": false,
-            "foreign_ceph": false,
-        })
+    fn blank_disk(device: &str) -> Disk {
+        Disk {
+            device: device.into(),
+            model: String::new(),
+            size_bytes: 1_000_000_000,
+            is_loop: false,
+            ownership: Ownership::Blank,
+            has_partitions: false,
+            mounted: false,
+            osd_id: None,
+            progress: None,
+        }
     }
 
     #[test]
@@ -3955,7 +3796,10 @@ mod tests {
     /// reports Skip rather than flapping its phase to BLOCKED mid-create.
     #[test]
     fn an_in_flight_create_wins_over_a_refusal() {
-        let mounted = json!({"device": "sdb", "mounted": true});
+        let mounted = Disk {
+            mounted: true,
+            ..blank_disk("sdb")
+        };
         let plan = plan_create(
             "node1",
             "dev-sdb",
@@ -3975,7 +3819,10 @@ mod tests {
         let plan = plan_create(
             "node1",
             "dev-sda",
-            &json!({"device": "sda", "mounted": true}),
+            &Disk {
+                mounted: true,
+                ..blank_disk("sda")
+            },
             &recs(&[("node1--dev-sda", "ON")]),
             &osds(&[]),
             false,
@@ -3988,7 +3835,10 @@ mod tests {
         let plan = plan_create(
             "node1",
             "dev-sdb",
-            &json!({"device": "sdb", "has_partitions": true}),
+            &Disk {
+                has_partitions: true,
+                ..blank_disk("sdb")
+            },
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
@@ -4003,7 +3853,10 @@ mod tests {
         let plan = plan_create(
             "node1",
             "dev-sdb",
-            &json!({"device": "sdb", "foreign_ceph": true}),
+            &Disk {
+                ownership: Ownership::Foreign,
+                ..blank_disk("sdb")
+            },
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
@@ -4011,34 +3864,24 @@ mod tests {
         assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
     }
 
-    /// A device field that is missing or empty means the inventory did not
-    /// identify this disk. Guessing a path from a disk id would be a path to
-    /// somewhere, and ceph-volume would wipe whatever is at it.
+    /// An empty device means the inventory did not identify this disk. Guessing
+    /// a path from a disk id would be a path to somewhere, and ceph-volume would
+    /// wipe whatever is at it.
     ///
-    /// The requirement is only that it is never created. refuse_osd_creation
-    /// gets there first and says so in words, which is better than skipping
-    /// silently — the disk shows a reason on the page instead of nothing. The
-    /// `device` fallthrough in plan_create is the belt to that braces.
+    /// The missing-key and null variants this used to cover are no longer
+    /// representable: `Disk::device` is a String, so "" is the only way to say
+    /// "no device".
     #[test]
     fn a_disk_without_a_usable_device_name_is_never_created() {
-        for m in [
-            json!({"device": "", "is_our_osd": false, "foreign_ceph": false}),
-            json!({"size_bytes": 1u64, "is_our_osd": false, "foreign_ceph": false}),
-            json!({"device": null, "is_our_osd": false, "foreign_ceph": false}),
-        ] {
-            let plan = plan_create(
-                "node1",
-                "dev-sdb",
-                &m,
-                &recs(&[("node1--dev-sdb", "ON")]),
-                &osds(&[]),
-                false,
-            );
-            assert!(
-                !matches!(plan, CreatePlan::Create { .. }),
-                "{m:?} produced {plan:?}"
-            );
-        }
+        let plan = plan_create(
+            "node1",
+            "dev-sdb",
+            &blank_disk(""),
+            &recs(&[("node1--dev-sdb", "ON")]),
+            &osds(&[]),
+            false,
+        );
+        assert!(!matches!(plan, CreatePlan::Create { .. }), "{plan:?}");
     }
 
     /// And the reason reaches the page rather than being swallowed.
@@ -4047,7 +3890,7 @@ mod tests {
         let plan = plan_create(
             "node1",
             "dev-sdb",
-            &json!({"device": "", "is_our_osd": false, "foreign_ceph": false}),
+            &blank_disk(""),
             &recs(&[("node1--dev-sdb", "ON")]),
             &osds(&[]),
             false,
