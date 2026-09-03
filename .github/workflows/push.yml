@@ -17,14 +17,21 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
+      # No substituters/trusted-public-keys here, and no magic-nix-cache-action
+      # either: flake.nix's own nixConfig already advertises the yolab cache,
+      # and accept-flake-config=true is what makes Nix honor a flake's
+      # nixConfig non-interactively (without it Nix would prompt, and CI has
+      # nothing to answer that prompt with). The yolab Attic cache is a real,
+      # permanent, shared cache — the same one real customer nodes and this
+      # very job's "Push to the Nix cache" step below both already use — so a
+      # GH-scoped action cache would only be redundant with it.
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
-
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
+            accept-flake-config = true
 
       - name: Run all checks
         run: nix run .#ci --print-build-logs | tee /tmp/ci-output.txt
@@ -275,6 +282,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
+            accept-flake-config = true
 
       # --no-link throughout, and the ISO's store path captured as a step output.
       #
