@@ -112,25 +112,16 @@ pub struct InstallRequest {
 /// Overwrite a namespace annotation, logging (rather than swallowing) failures.
 /// A silently-failed annotate loses an app's persisted config or outputs.
 async fn annotate_ns(ns: &str, key: &str, value: &str) {
-    match tokio::process::Command::new("kubectl")
-        .args([
-            "annotate",
-            "namespace",
-            ns,
-            &format!("{key}={value}"),
-            "--overwrite=true",
-        ])
-        .output()
-        .await
+    if let Err(e) = crate::kubectl::run(&[
+        "annotate",
+        "namespace",
+        ns,
+        &format!("{key}={value}"),
+        "--overwrite=true",
+    ])
+    .await
     {
-        Ok(o) if !o.status.success() => {
-            tracing::warn!(
-                "annotate {ns} {key} failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-        }
-        Err(e) => tracing::warn!("annotate {ns} {key} spawn failed: {e}"),
-        _ => {}
+        tracing::warn!("annotate {ns} {key} failed: {e}");
     }
 }
 
@@ -710,29 +701,18 @@ pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
 
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let catalog_dir = state.config.catalog_dir();
+    let ns_selector = format!("{LABEL_MANAGED}=true");
+    let ns_args = ["get", "namespaces", "-l", &ns_selector, "-o", "json"];
+    let pod_args = ["get", "pods", "--all-namespaces", "-o", "json"];
     let (ns_out, pods_out) = tokio::join!(
-        tokio::process::Command::new("kubectl")
-            .args([
-                "get",
-                "namespaces",
-                "-l",
-                &format!("{LABEL_MANAGED}=true"),
-                "-o",
-                "json"
-            ])
-            .output(),
-        tokio::process::Command::new("kubectl")
-            .args(["get", "pods", "--all-namespaces", "-o", "json"])
-            .output(),
+        crate::kubectl::get_json(&ns_args),
+        crate::kubectl::get_json(&pod_args),
     );
-    let v: Value = serde_json::from_slice(&ns_out?.stdout)?;
+    let v: Value = ns_out?;
 
     // Build a pod-by-namespace index from the single bulk query so list_apps
     // requires only two kubectl calls regardless of app count.
-    let pods_v: Value = pods_out
-        .ok()
-        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
-        .unwrap_or_else(|| serde_json::json!({"items": []}));
+    let pods_v: Value = pods_out.unwrap_or_else(|_| serde_json::json!({"items": []}));
     let empty_pods: Vec<Value> = vec![];
     let all_pod_items = pods_v["items"].as_array().unwrap_or(&empty_pods);
     let mut pods_by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
@@ -940,14 +920,7 @@ pub async fn update_app(
     body: Option<Json<UpdateRequest>>,
 ) -> impl IntoResponse {
     let ns = format!("yolab-{instance_name}");
-    let Ok(ns_out) = tokio::process::Command::new("kubectl")
-        .args(["get", "namespace", &ns, "-o", "json"])
-        .output()
-        .await
-    else {
-        return (StatusCode::NOT_FOUND, "Instance not found").into_response();
-    };
-    let Ok(ns_v) = serde_json::from_slice::<Value>(&ns_out.stdout) else {
+    let Ok(ns_v) = crate::kubectl::get_json(&["get", "namespace", &ns, "-o", "json"]).await else {
         return (StatusCode::NOT_FOUND, "Instance not found").into_response();
     };
     let ann = ns_v["metadata"]["annotations"]
@@ -1043,11 +1016,7 @@ pub async fn scan_outputs(
     Path(instance_name): Path<String>,
 ) -> Result<Json<ScanOutputsResponse>> {
     let ns = format!("yolab-{instance_name}");
-    let ns_out = tokio::process::Command::new("kubectl")
-        .args(["get", "namespace", &ns, "-o", "json"])
-        .output()
-        .await?;
-    let ns_v: Value = serde_json::from_slice(&ns_out.stdout)?;
+    let ns_v = crate::kubectl::get_json(&["get", "namespace", &ns, "-o", "json"]).await?;
     let ann = ns_v["metadata"]["annotations"]
         .as_object()
         .cloned()
@@ -1095,11 +1064,7 @@ pub async fn scan_outputs(
         })
         .collect();
 
-    let pods_out = tokio::process::Command::new("kubectl")
-        .args(["get", "pods", "-n", &ns, "-o", "json"])
-        .output()
-        .await?;
-    let pods_v: Value = serde_json::from_slice(&pods_out.stdout)?;
+    let pods_v = crate::kubectl::get_json(&["get", "pods", "-n", &ns, "-o", "json"]).await?;
     let mut found: std::collections::HashMap<String, String> = Default::default();
 
     'outer: for pod in pods_v["items"].as_array().unwrap_or(&vec![]) {
@@ -1113,20 +1078,17 @@ pub async fn scan_outputs(
             .filter_map(|c| c["name"].as_str())
             .collect();
         for container in containers {
-            let logs = tokio::process::Command::new("kubectl")
-                .args([
-                    "logs",
-                    "-n",
-                    &ns,
-                    pod_name,
-                    "-c",
-                    container,
-                    &format!("--tail={LOGS_SCAN_TAIL}"),
-                ])
-                .output()
-                .await;
-            let Ok(logs) = logs else { continue };
-            let text = String::from_utf8_lossy(&logs.stdout);
+            let logs = crate::kubectl::run(&[
+                "logs",
+                "-n",
+                &ns,
+                pod_name,
+                "-c",
+                container,
+                &format!("--tail={LOGS_SCAN_TAIL}"),
+            ])
+            .await;
+            let Ok(text) = logs else { continue };
             for line in text.lines() {
                 for cs in &compiled {
                     if found.contains_key(&cs.key) {
@@ -1182,7 +1144,10 @@ pub async fn uninstall_app(
     // hand, applying it, and polling `kubectl wait job/uninstall --timeout=120s` — and
     // unlike that version, a hook that fails shows up in the output instead of being
     // silently skipped on its way to deleting the namespace anyway.
-    let out = tokio::process::Command::new("helm")
+    // Bounded: the pre-delete hook calls out to the platform to tear down the tunnel,
+    // which must not be allowed to hang this request forever if that call stalls.
+    const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+    let work = tokio::process::Command::new("helm")
         .args([
             "uninstall",
             &instance_name,
@@ -1191,10 +1156,11 @@ pub async fn uninstall_app(
             "--ignore-not-found",
             "--wait",
         ])
-        .output()
-        .await;
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(HELM_UNINSTALL_TIMEOUT, work).await;
     match out {
-        Ok(o) if !o.status.success() => {
+        Ok(Ok(o)) if !o.status.success() => {
             // Not fatal: the namespace delete below still tears the app down. But it
             // must be visible, because the thing that most commonly fails here is the
             // tunnel cleanup, which leaves an orphaned tunnel on the platform.
@@ -1203,37 +1169,36 @@ pub async fn uninstall_app(
                 String::from_utf8_lossy(&o.stderr).trim()
             );
         }
-        Err(e) => tracing::warn!("uninstall {instance_name}: could not run helm: {e}"),
+        Ok(Err(e)) => tracing::warn!("uninstall {instance_name}: could not run helm: {e}"),
+        Err(_) => tracing::warn!(
+            "uninstall {instance_name}: helm uninstall timed out after {}s — deleting the namespace anyway",
+            HELM_UNINSTALL_TIMEOUT.as_secs()
+        ),
         _ => {}
     }
 
-    tokio::process::Command::new("kubectl")
-        .args([
-            "delete",
-            "namespace",
-            &ns,
-            "--ignore-not-found=true",
-            "--wait=false",
-        ])
-        .output()
-        .await?;
+    crate::kubectl::run(&[
+        "delete",
+        "namespace",
+        &ns,
+        "--ignore-not-found=true",
+        "--wait=false",
+    ])
+    .await?;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
 pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<PodInfo>>> {
-    let out = tokio::process::Command::new("kubectl")
-        .args([
-            "get",
-            "pods",
-            "-n",
-            &format!("yolab-{instance_name}"),
-            "-o",
-            "json",
-        ])
-        .output()
-        .await?;
-    let v: Value = serde_json::from_slice(&out.stdout)?;
+    let v = crate::kubectl::get_json(&[
+        "get",
+        "pods",
+        "-n",
+        &format!("yolab-{instance_name}"),
+        "-o",
+        "json",
+    ])
+    .await?;
     Ok(Json(
         v["items"]
             .as_array()
@@ -1261,16 +1226,25 @@ pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<Pod
 pub async fn describe_pod(
     Path((instance_name, pod_name)): Path<(String, String)>,
 ) -> Result<Json<DescribeResponse>> {
-    let out = tokio::process::Command::new("kubectl")
-        .args([
-            "describe",
-            "pod",
-            &pod_name,
-            "-n",
-            &format!("yolab-{instance_name}"),
-        ])
-        .output()
-        .await?;
+    // Not routed through crate::kubectl::run: unlike every other caller, this handler
+    // wants kubectl's combined stdout+stderr verbatim even on a nonzero exit (e.g. "pod
+    // not found" is itself the useful description), not an error. Still bounded and
+    // kill_on_drop for the same reason every other call site is.
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new("kubectl")
+            .args([
+                "describe",
+                "pod",
+                &pod_name,
+                "-n",
+                &format!("yolab-{instance_name}"),
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("kubectl describe pod: timed out"))??;
     Ok(Json(DescribeResponse {
         output: format!(
             "{}{}",
