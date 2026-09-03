@@ -1,42 +1,24 @@
-# Every check the project has, as nix derivations, so CI runs nothing
-# GitHub-specific and "passes locally, red in CI" stops being possible.
-#
-#   nix run .#ci                                      # everything
-#   nix build .#checks.x86_64-linux.local-api-tests   # just one
-#
-# nix builds from the git index, so a brand new file is invisible until
-# `git add -N`. Prefer the bare `.` ref: `path:.` copies the entire working
-# directory into the store, which here is 8.6G against 4.8M, on every
-# invocation. It is only needed for `#yolab`, whose config.toml is gitignored.
 {
   pkgs,
   treefmtEval,
   rust,
   nixosSystems,
-}: let
-  builds = import ../homelab/builds.nix {inherit pkgs rust;};
+}:
+let
+  builds = import ../homelab/builds.nix { inherit pkgs rust; };
   inherit (rust) crates;
 
-  # target/ and node_modules are named as well as gitignored: the identical
-  # filter excluded target/ against the working directory but not against the
-  # flake source under `path:.`, and the failure mode was 7.5G copied into the
-  # store once per check until the disk filled.
-  treeSrc =
-    pkgs.nix-gitignore.gitignoreRecursiveSource [
-      ".git/"
-      "target/"
-      "node_modules/"
-      "result"
-      "result-*"
-    ]
-    ../.;
+  treeSrc = pkgs.nix-gitignore.gitignoreRecursiveSource [
+    ".git/"
+    "target/"
+    "node_modules/"
+    "result"
+    "result-*"
+  ] ../.;
 
   toplevel = name: nixosSystems.${name}.config.system.build.toplevel;
-in {
-  # The shipped bundle itself, not a re-implementation of its build, so the
-  # check and the deployed artifact cannot drift. `tsc --noEmit` is not a
-  # substitute: it reads tsconfig.app.json alone, while `npm run build` runs
-  # `tsc -b` across every project in the solution.
+in
+{
   client-ui = builds.clientUi;
 
   local-api-tests = crates.local-api.tests;
@@ -45,48 +27,43 @@ in {
   clippy-local-api = crates.local-api.clippy;
   clippy-installer = crates.installer.clippy;
 
-  # busybox sh, not bash-in-POSIX-mode, because busybox sh is what the Alpine
-  # image actually runs this under.
   wg-register-tests =
-    pkgs.runCommand "wg-register-tests" {
-      nativeBuildInputs = [pkgs.busybox pkgs.jq];
-      src = ../apps/wg-register;
-    } ''
-      cp -r "$src" ./wg-register
-      chmod -R +w ./wg-register
-      busybox sh ./wg-register/setup_test.sh
-      touch $out
-    '';
+    pkgs.runCommand "wg-register-tests"
+      {
+        nativeBuildInputs = [
+          pkgs.busybox
+          pkgs.jq
+        ];
+        src = ../apps/wg-register;
+      }
+      ''
+        cp -r "$src" ./wg-register
+        chmod -R +w ./wg-register
+        busybox sh ./wg-register/setup_test.sh
+        touch $out
+      '';
 
-  # `helm lint` accepts charts that cannot run — three shipped that way. This
-  # renders each against the yolab-common in this tree, so a library change is
-  # caught before release, and asserts the result can actually start.
-  charts =
-    pkgs.runCommand "chart-checks" {
-      nativeBuildInputs = [
-        pkgs.kubernetes-helm
-        (pkgs.python3.withPackages (ps: [ps.pyyaml]))
-      ];
-      src = ../apps/catalog;
-    } ''
-      cp -r "$src" ./catalog
-      chmod -R +w ./catalog
-      # helm needs a writable home, and the sandbox has none.
-      export HOME=$PWD/home
-      mkdir -p "$HOME"
-      python3 ./catalog/check_charts.py
-      touch $out
-    '';
+    pkgs.runCommand "chart-checks"
+      {
+        nativeBuildInputs = [
+          pkgs.kubernetes-helm
+          (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+        ];
+        src = ../apps/catalog;
+      }
+      ''
+        cp -r "$src" ./catalog
+        chmod -R +w ./catalog
+        # helm needs a writable home, and the sandbox has none.
+        export HOME=$PWD/home
+        mkdir -p "$HOME"
+        python3 ./catalog/check_charts.py
+        touch $out
+      '';
 
-  # `coverage-` prefixed so flake.nix keeps these out of `checks`: a coverage
-  # percentage CI can fail on invites tests that move the number rather than
-  # tests that catch bugs.
   coverage-local-api = crates.local-api.coverage;
   coverage-installer = crates.installer.coverage;
 
-  # Creating a cluster and joining one are different code paths in k3s and in
-  # Ceph. Built from the committed CI stubs, so no node's real config.toml is
-  # ever touched to run them.
   nixos-create = toplevel "yolab-ci";
   nixos-join = toplevel "yolab-ci-join";
   nixos-wsl = toplevel "yolab-wsl";
@@ -104,16 +81,18 @@ in {
   # instead of read from real config) — built from the REAL Nix values every
   # unit already uses, not a hand-maintained parallel list, so it can't drift
   # from what a node actually gets.
-  binary-contract = let
-    allBins = pkgs.symlinkJoin {
-      name = "yolab-all-unit-bins";
-      paths =
-        nixosSystems.yolab-ci.config.environment.systemPackages
-        ++ pkgs.lib.concatMap (u: u.path or [])
-        (builtins.attrValues nixosSystems.yolab-ci.config.systemd.services);
-    };
-  in
-    pkgs.runCommand "binary-contract" {nativeBuildInputs = [pkgs.gnugrep];} ''
+  binary-contract =
+    let
+      allBins = pkgs.symlinkJoin {
+        name = "yolab-all-unit-bins";
+        paths =
+          nixosSystems.yolab-ci.config.environment.systemPackages
+          ++ pkgs.lib.concatMap (u: u.path or [ ]) (
+            builtins.attrValues nixosSystems.yolab-ci.config.systemd.services
+          );
+      };
+    in
+    pkgs.runCommand "binary-contract" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
       grep -rhoE 'Command::new\("[^"]+"\)|\.run_cmd\(\s*"[^"]+"' \
         ${treeSrc}/homelab/local-api/src \
         | grep -oE '"[^"]+"' | tr -d '"' | sort -u > "$TMPDIR/needed.txt"
@@ -132,17 +111,8 @@ in {
       touch $out
     '';
 
-  # `system.build.toplevel` never forces `system.build.diskoScript` — disko is
-  # a separate install-time build target, not part of the normal system
-  # closure — so the code that partitions a disk had zero CI coverage until
-  # these two were added. Built, not just evaluated: a `disko.devices` typo
-  # that only fails when the generator actually runs (not at parse time) still
-  # gets caught here.
   disko-create = nixosSystems.yolab-ci.config.system.build.diskoScript;
   disko-join = nixosSystems.yolab-ci-join.config.system.build.diskoScript;
-
-  # Same treefmt module `nix fmt` uses, so a file this rejects is a file
-  # `nix fmt` fixes.
   formatting = treefmtEval.config.build.check treeSrc;
 
   # No `-s sh`: forcing one dialect made installer/macos/install.sh fail as
@@ -161,11 +131,8 @@ in {
   # `stops_and_restarts_k3s_around_an_active_migration` test asserts the
   # ordering directly; what is left to assert here is the Nix-level half:
   # that the ordering this property depends on is still in place.
-  containerd-store-after-order = pkgs.runCommand "containerd-store-after-order" {} ''
-    grep -qx 'yolab-containerd-store.service' ${
-      pkgs.writeText "k3s-after"
-      (builtins.concatStringsSep "\n" nixosSystems.yolab-ci.config.systemd.services.k3s.after)
-    } || {
+  containerd-store-after-order = pkgs.runCommand "containerd-store-after-order" { } ''
+    grep -qx 'yolab-containerd-store.service' ${pkgs.writeText "k3s-after" (builtins.concatStringsSep "\n" nixosSystems.yolab-ci.config.systemd.services.k3s.after)} || {
       echo "k3s.service is no longer After= the store unit — re-read why this check exists" >&2
       exit 1
     }
@@ -188,27 +155,27 @@ in {
   # `allowlist` is for units where "stop retrying after the first success" is
   # correct, not a bug — see each one's own comment (yolab-ceph-bootstrap: a
   # successful join has nothing left to retry).
-  self-healing-timers-use-oncalendar = let
-    allowlist = ["yolab-ceph-bootstrap"];
-    services = nixosSystems.yolab-ci.config.systemd.services;
-    timers = nixosSystems.yolab-ci.config.systemd.timers;
-    remainsAfterExit = name: (services.${name}.serviceConfig.RemainAfterExit or false) == true;
-    usesUnitRelativeTimer = name: let
-      tc = timers.${name}.timerConfig or {};
-    in
-      (tc ? OnUnitActiveSec) || (tc ? OnUnitInactiveSec);
-    offenders =
-      builtins.filter
-      (
+  self-healing-timers-use-oncalendar =
+    let
+      allowlist = [ "yolab-ceph-bootstrap" ];
+      services = nixosSystems.yolab-ci.config.systemd.services;
+      timers = nixosSystems.yolab-ci.config.systemd.timers;
+      remainsAfterExit = name: (services.${name}.serviceConfig.RemainAfterExit or false) == true;
+      usesUnitRelativeTimer =
         name:
-          services ? ${name}
-          && remainsAfterExit name
-          && usesUnitRelativeTimer name
-          && !(builtins.elem name allowlist)
-      )
-      (builtins.attrNames timers);
-  in
-    pkgs.runCommand "self-healing-timers-use-oncalendar" {} ''
+        let
+          tc = timers.${name}.timerConfig or { };
+        in
+        (tc ? OnUnitActiveSec) || (tc ? OnUnitInactiveSec);
+      offenders = builtins.filter (
+        name:
+        services ? ${name}
+        && remainsAfterExit name
+        && usesUnitRelativeTimer name
+        && !(builtins.elem name allowlist)
+      ) (builtins.attrNames timers);
+    in
+    pkgs.runCommand "self-healing-timers-use-oncalendar" { } ''
       offenders=${pkgs.writeText "offenders" (builtins.concatStringsSep "\n" offenders)}
       if [ -s "$offenders" ]; then
         echo "These timers pair OnUnitActiveSec/OnUnitInactiveSec with a" >&2
@@ -234,33 +201,39 @@ in {
   # POSIX for using the bash its own shebang asks for. shellcheck reads the
   # shebang. -x follows sourced files.
   shellcheck =
-    pkgs.runCommand "shellcheck" {
-      nativeBuildInputs = [pkgs.shellcheck];
-    } ''
-      find ${treeSrc} -name '*.sh' -print0 | xargs -0 shellcheck -x
-      touch $out
-    '';
+    pkgs.runCommand "shellcheck"
+      {
+        nativeBuildInputs = [ pkgs.shellcheck ];
+      }
+      ''
+        find ${treeSrc} -name '*.sh' -print0 | xargs -0 shellcheck -x
+        touch $out
+      '';
 
   # DL3018 wants every apk package pinned. These images track upstream Alpine
   # deliberately, and the wg-* tools must match the host kernel's WireGuard, so
   # pinning buys a stale userland rather than safety.
   hadolint =
-    pkgs.runCommand "hadolint" {
-      nativeBuildInputs = [pkgs.hadolint];
-    } ''
-      find ${treeSrc} -name 'Dockerfile' -print0 \
-        | xargs -0 hadolint --ignore DL3018
-      touch $out
-    '';
+    pkgs.runCommand "hadolint"
+      {
+        nativeBuildInputs = [ pkgs.hadolint ];
+      }
+      ''
+        find ${treeSrc} -name 'Dockerfile' -print0 \
+          | xargs -0 hadolint --ignore DL3018
+        touch $out
+      '';
 
   # statix is deliberately absent: its 39 findings are all "avoid repeated keys
   # in attribute sets", and flattening `boot.loader.grub.*` is not obviously an
   # improvement. `nix run nixpkgs#statix -- check` if you want it.
   deadnix =
-    pkgs.runCommand "deadnix" {
-      nativeBuildInputs = [pkgs.deadnix];
-    } ''
-      deadnix --fail ${treeSrc}
-      touch $out
-    '';
+    pkgs.runCommand "deadnix"
+      {
+        nativeBuildInputs = [ pkgs.deadnix ];
+      }
+      ''
+        deadnix --fail ${treeSrc}
+        touch $out
+      '';
 }

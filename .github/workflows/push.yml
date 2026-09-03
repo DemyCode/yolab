@@ -26,7 +26,7 @@ jobs:
             accept-flake-config = true
 
       - name: Run all checks
-        run: nix run .#ci --print-build-logs | tee /tmp/ci-output.txt
+        run: nix run path:.#ci --print-build-logs | tee /tmp/ci-output.txt
 
       - name: Push to the Nix cache
         env:
