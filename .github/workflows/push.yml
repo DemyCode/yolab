@@ -17,14 +17,6 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      # No substituters/trusted-public-keys here, and no magic-nix-cache-action
-      # either: flake.nix's own nixConfig already advertises the yolab cache,
-      # and accept-flake-config=true is what makes Nix honor a flake's
-      # nixConfig non-interactively (without it Nix would prompt, and CI has
-      # nothing to answer that prompt with). The yolab Attic cache is a real,
-      # permanent, shared cache — the same one real customer nodes and this
-      # very job's "Push to the Nix cache" step below both already use — so a
-      # GH-scoped action cache would only be redundant with it.
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
@@ -36,24 +28,6 @@ jobs:
       - name: Run all checks
         run: nix run .#ci --print-build-logs | tee /tmp/ci-output.txt
 
-      # `nix run .#ci`'s own output is `✓ <name>  (<store path>)` per check — see
-      # nix/checks.nix's `local-api-tests`/`clippy-local-api`/etc. and flake.nix's
-      # `ci` app, which builds that line by interpolating each check's already-built
-      # store path directly. Parsing it back out means every check this job already
-      # built gets pushed — including local-api-tests and clippy-local-api, which
-      # share almost their entire dependency closure with the local-api binary a
-      # real node's `nixos-rebuild switch` compiles — with no second list to keep in
-      # sync as checks are added or removed.
-      #
-      # Gated on the secret existing (not just non-empty — an absent repo secret and
-      # an empty one both evaluate to "" in Actions) so a fork or a PR from someone
-      # without cache-push access still gets a green check, just without populating
-      # the cache.
-      #
-      # `secrets` isn't a valid context inside `if:` at all (GitHub rejects it with
-      # "Unrecognized named-value: 'secrets'" at parse time, job- or step-level,
-      # unconditionally) — env: is the documented way to get a secret's value
-      # somewhere an `if:` can actually read it.
       - name: Push to the Nix cache
         env:
           ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
@@ -284,14 +258,6 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = true
 
-      # --no-link throughout, and the ISO's store path captured as a step output.
-      #
-      # `nix build` without --out-link creates a symlink named `result`, so each
-      # build here overwrote the last: `result` ended up pointing at
-      # homelab-api, and the "Get ISO info" step below then looked for
-      # result/iso/*.iso inside it and found nothing. That was latent for as
-      # long as the cache-push step failed ahead of it and aborted the job
-      # first — removing that step is what surfaced it.
       - name: Build ISO
         id: build_iso
         run: |
@@ -307,16 +273,6 @@ jobs:
           echo "ui_store_path=$UI_OUT" >> "$GITHUB_OUTPUT"
           echo "api_store_path=$API_OUT" >> "$GITHUB_OUTPUT"
 
-      # The consuming side has now landed — homelab/nixos/common.nix's
-      # nix.settings.substituters/trusted-public-keys — so this is no longer the
-      # dead push the comment it replaced described. homelab-api is the one that
-      # actually matters: it is the multi-minute Rust build every node repeats on
-      # every `nixos-rebuild switch`, and unlike the full system closure (which
-      # bakes in each node's own config.toml path) it is byte-identical across
-      # every node, so one push here serves all of them.
-      # `secrets` isn't a valid context inside `if:` at all (GitHub rejects it with
-      # "Unrecognized named-value: 'secrets'" at parse time) — env: is the
-      # documented way to get a secret's value somewhere an `if:` can read it.
       - name: Push to the Nix cache
         env:
           ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
