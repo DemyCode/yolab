@@ -197,12 +197,9 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
 
     // Build a (namespace, pvc_name) → (phase, deletionTimestamp) map from all PVCs.
     let pvc_health_map: HashMap<(String, String), (String, Option<String>)> =
-        Command::new("kubectl")
-            .args(["get", "pvc", "-A", "-o", "json"])
-            .output()
+        crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"])
             .await
             .ok()
-            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
             .and_then(|v| v["items"].as_array().cloned())
             .unwrap_or_default()
             .into_iter()
@@ -356,15 +353,12 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
 
-    let out = Command::new("restic")
-        .args(["snapshots", "--json", "--tag", "cluster-backup"])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("restic not available: {e}"))?;
+    let out = restic(
+        &repo,
+        &cfg,
+        &["snapshots", "--json", "--tag", "cluster-backup"],
+    )
+    .await?;
 
     if !out.status.success() {
         // Repo not initialised yet — no snapshots exist.
@@ -393,22 +387,19 @@ pub async fn snapshot_catalog(
     let repo = cfg.restic_repo("cluster-backup");
     let target = format!("/tmp/yolab-catalog-{}", random_hex(8));
 
-    let restore_out = Command::new("restic")
-        .args([
+    let restore_out = restic(
+        &repo,
+        &cfg,
+        &[
             "restore",
             &snapshot_id,
             "--target",
             &target,
             "--include",
             "**/catalog.json",
-        ])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("restic not available: {e}"))?;
+        ],
+    )
+    .await?;
 
     if !restore_out.status.success() {
         let _ = tokio::fs::remove_dir_all(&target).await;
@@ -489,24 +480,17 @@ pub async fn setup_namespace_backup(namespace: &str) {
 /// ReplicationSources that still carry the old `0 3 * * *` cron trigger.
 /// After this, RSes only fire when the backup job explicitly stamps a `manual` trigger.
 async fn strip_rs_schedules() {
-    let out = match Command::new("kubectl")
-        .args([
-            "get",
-            "replicationsource",
-            "-A",
-            "-l",
-            "app.kubernetes.io/managed-by=yolab",
-            "-o",
-            "json",
-        ])
-        .output()
-        .await
-    {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-    let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!({"items": []}));
+    let v = crate::kubectl::get_json(&[
+        "get",
+        "replicationsource",
+        "-A",
+        "-l",
+        "app.kubernetes.io/managed-by=yolab",
+        "-o",
+        "json",
+    ])
+    .await
+    .unwrap_or(serde_json::json!({"items": []}));
     for item in v["items"].as_array().cloned().unwrap_or_default() {
         let name = item["metadata"]["name"].as_str().unwrap_or("");
         let ns = item["metadata"]["namespace"].as_str().unwrap_or("");
@@ -517,18 +501,16 @@ async fn strip_rs_schedules() {
             continue;
         }
         tracing::info!("backup-reconciler: {ns}/{name} — removing legacy schedule trigger");
-        let _ = Command::new("kubectl")
-            .args([
-                "patch",
-                "replicationsource",
-                name,
-                "-n",
-                ns,
-                "--type=json",
-                r#"-p=[{"op":"remove","path":"/spec/trigger/schedule"}]"#,
-            ])
-            .output()
-            .await;
+        let _ = crate::kubectl::run(&[
+            "patch",
+            "replicationsource",
+            name,
+            "-n",
+            ns,
+            "--type=json",
+            r#"-p=[{"op":"remove","path":"/spec/trigger/schedule"}]"#,
+        ])
+        .await;
     }
 }
 

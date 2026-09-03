@@ -3,14 +3,38 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 
-pub async fn run(args: &[&str]) -> Result<String> {
-    let out = Command::new("kubectl")
-        .args(args)
-        .output()
+/// Every `kubectl` invocation in this file is bounded by this and
+/// `kill_on_drop(true)`. Every reconcile loop in the crate — disks, backups,
+/// restores, topology — eventually calls through here, on one shared
+/// non-concurrent path (`reconcile_tick`'s single await chain), so a `kubectl`
+/// that hangs against a briefly-unresponsive apiserver used to wedge all of
+/// them at once, forever, with nothing to recover it short of a restart —
+/// the same incident class `ceph_cli.rs`'s blanket 30s timeout exists to
+/// prevent for `ceph` calls, which this had no equivalent of.
+const KUBECTL_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn run_bounded<F>(what: &str, f: F) -> Result<std::process::Output>
+where
+    F: std::future::Future<Output = std::io::Result<std::process::Output>>,
+{
+    tokio::time::timeout(KUBECTL_TIMEOUT, f)
         .await
-        .with_context(|| format!("kubectl {}", args.join(" ")))?;
+        .map_err(|_| anyhow::anyhow!("{what} timed out after {}s", KUBECTL_TIMEOUT.as_secs()))?
+        .with_context(|| what.to_string())
+}
+
+pub async fn run(args: &[&str]) -> Result<String> {
+    let out = run_bounded(
+        &format!("kubectl {}", args.join(" ")),
+        Command::new("kubectl")
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -45,76 +69,62 @@ pub fn is_not_found(e: &anyhow::Error) -> bool {
 // apps.rs each carried their own copies (auth.rs even shelled out to `base64 -d`
 // on the load path); those all funnel here now.
 
-/// Pipe a manifest to `kubectl apply -f -`.
-pub async fn apply(manifest: &str) -> Result<()> {
+/// Spawn `kubectl <verb> -f -`, pipe `manifest` to its stdin, and wait —
+/// bounded by `KUBECTL_TIMEOUT`, with `kill_on_drop(true)` so a timeout
+/// actually kills the child instead of orphaning it still holding the
+/// connection open. `apply`/`create`/`replace` are this with one word swapped.
+async fn pipe_manifest(verb: &str, manifest: &str) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let mut child = Command::new("kubectl")
-        .args(["apply", "-f", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawn kubectl apply")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(manifest.as_bytes()).await?;
-    }
-    let out = child.wait_with_output().await?;
+    let work = async {
+        let mut child = Command::new("kubectl")
+            .args([verb, "-f", "-"])
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("spawn kubectl {verb}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(manifest.as_bytes()).await?;
+        }
+        child
+            .wait_with_output()
+            .await
+            .with_context(|| format!("kubectl {verb}"))
+    };
+    let out = tokio::time::timeout(KUBECTL_TIMEOUT, work)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "kubectl {verb} timed out after {}s",
+                KUBECTL_TIMEOUT.as_secs()
+            )
+        })??;
     if !out.status.success() {
         bail!(
-            "kubectl apply: {}",
+            "kubectl {verb}: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     Ok(())
 }
 
+/// Pipe a manifest to `kubectl apply -f -`.
+pub async fn apply(manifest: &str) -> Result<()> {
+    pipe_manifest("apply", manifest).await
+}
+
 /// Pipe a manifest to `kubectl create -f -`.
 /// Returns Err if the resource already exists (409) or any other failure.
 pub async fn create(manifest: &str) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let mut child = Command::new("kubectl")
-        .args(["create", "-f", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawn kubectl create")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(manifest.as_bytes()).await?;
-    }
-    let out = child.wait_with_output().await?;
-    if !out.status.success() {
-        bail!(
-            "kubectl create: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
+    pipe_manifest("create", manifest).await
 }
 
 /// Pipe a manifest to `kubectl replace -f -`.
 /// Requires `metadata.resourceVersion` in the manifest; fails with 409 if
 /// another writer has since modified the resource (optimistic concurrency CAS).
 pub async fn replace(manifest: &str) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let mut child = Command::new("kubectl")
-        .args(["replace", "-f", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawn kubectl replace")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(manifest.as_bytes()).await?;
-    }
-    let out = child.wait_with_output().await?;
-    if !out.status.success() {
-        bail!(
-            "kubectl replace: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
+    pipe_manifest("replace", manifest).await
 }
 
 /// Read a Secret and return its decoded string data. `None` if missing.

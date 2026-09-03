@@ -85,6 +85,14 @@ const KEEP_TERMINAL_RUNS: usize = 30;
 /// is caught in twenty minutes rather than never.
 const SYNC_STALL_SECS: i64 = 1200;
 
+/// Budgets for the two phases that shell out to restic. Each is both the phase's
+/// `phaseDeadline` (what the generic timeout sweep enforces between ticks) and the
+/// timeout on the restic call itself, so the call can never outlive the phase that
+/// declared it — the reason these are module-scope constants rather than the two
+/// separate local literals they used to be.
+const SNAPSHOTTING_BUDGET_SECS: i64 = 900;
+const PRUNING_BUDGET_SECS: i64 = 300;
+
 const PHASE_PENDING: &str = "Pending";
 const PHASE_SYNCING: &str = "SyncingVolumes";
 const PHASE_SNAPSHOTTING: &str = "SnapshottingCluster";
@@ -149,30 +157,22 @@ fn is_timed_out(run: &Value, now: DateTime<Utc>) -> bool {
 /// kubectl calls per tick, not one per PVC.
 async fn mover_progress(namespace: &str, rs_name: &str) -> Option<String> {
     let prefix = format!("volsync-src-{rs_name}-");
-    let pods = Command::new("kubectl")
-        .args([
-            "-n",
-            namespace,
-            "get",
-            "pods",
-            "-o",
-            r#"jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}"#,
-        ])
-        .output()
-        .await
-        .ok()?;
-    let pod = String::from_utf8_lossy(&pods.stdout)
-        .lines()
-        .find(|l| l.starts_with(&prefix))?
-        .to_string();
+    let pods = crate::kubectl::run(&[
+        "-n",
+        namespace,
+        "get",
+        "pods",
+        "-o",
+        r#"jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}"#,
+    ])
+    .await
+    .ok()?;
+    let pod = pods.lines().find(|l| l.starts_with(&prefix))?.to_string();
 
-    let logs = Command::new("kubectl")
-        .args(["-n", namespace, "logs", &pod, "--tail=20"])
-        .output()
+    let logs = crate::kubectl::run(&["-n", namespace, "logs", &pod, "--tail=20"])
         .await
         .ok()?;
-    String::from_utf8_lossy(&logs.stdout)
-        .lines()
+    logs.lines()
         .rev()
         .find(|l| l.trim_start().starts_with('[') && l.contains('%'))
         .map(|l| l.trim().to_string())
@@ -242,25 +242,19 @@ pub async fn is_active() -> bool {
 /// (e.g. an old mover still finishing) — kept as a belt-and-suspenders check so a
 /// stray mover pod can't overlap with an unrelated restic operation on the same repo.
 pub async fn volsync_mover_running() -> bool {
-    Command::new("kubectl")
-        .args([
-            "get",
-            "pods",
-            "-A",
-            "-l",
-            "app.kubernetes.io/created-by=volsync",
-            "--field-selector=status.phase=Running",
-            "-o",
-            "name",
-        ])
-        .output()
-        .await
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| l.contains("volsync-src-"))
-        })
-        .unwrap_or(false)
+    crate::kubectl::run(&[
+        "get",
+        "pods",
+        "-A",
+        "-l",
+        "app.kubernetes.io/created-by=volsync",
+        "--field-selector=status.phase=Running",
+        "-o",
+        "name",
+    ])
+    .await
+    .map(|s| s.lines().any(|l| l.contains("volsync-src-")))
+    .unwrap_or(false)
 }
 
 /// Creates a new BackupRun in Pending phase and returns immediately. There is no
@@ -448,7 +442,6 @@ async fn step_syncing(name: &str, run: &Value) {
     }
 
     if all_done || stalled {
-        const SNAPSHOTTING_BUDGET_SECS: i64 = 900;
         let _ = BACKUP_RUN
             .patch_status(
                 name,
@@ -501,7 +494,7 @@ async fn step_snapshotting(name: &str, run: &Value, cfg: &BackupConfig) {
                     name,
                     json!({
                         "phase": PHASE_PRUNING,
-                        "phaseDeadline": deadline_after(300),
+                        "phaseDeadline": deadline_after(PRUNING_BUDGET_SECS),
                         "snapshotId": outcome.date,
                         // Whether the etcd database made it into this snapshot. Reported to the
                         // user as the "cluster state" backup age; a run can otherwise succeed
@@ -539,8 +532,14 @@ async fn step_pruning(name: &str, run: &Value, cfg: &BackupConfig) {
     // --group-by tags (not the default host,paths): the staging dir is fixed across
     // runs now, but this still matters — every snapshot shares the "cluster-backup"
     // tag, which is what actually buckets them together for retention to apply across.
-    let forget = Command::new("restic")
-        .args([
+    // Bounded by this phase's own declared budget rather than backup_common's shorter
+    // default: `--prune` repacks the repo and is legitimately the slowest restic call
+    // here. Overrunning it is not fatal — retention is re-applied on every run, so
+    // whatever this one did not get to, the next one prunes.
+    let forget = restic_timeout(
+        &repo,
+        cfg,
+        &[
             "forget",
             "--tag",
             "cluster-backup",
@@ -553,20 +552,17 @@ async fn step_pruning(name: &str, run: &Value, cfg: &BackupConfig) {
             "--keep-monthly",
             "12",
             "--prune",
-        ])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await;
-    if let Ok(o) = &forget {
-        if !o.status.success() {
-            tracing::warn!(
-                "backup-run {name}: forget/prune failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-        }
+        ],
+        Duration::from_secs(PRUNING_BUDGET_SECS as u64),
+    )
+    .await;
+    match &forget {
+        Ok(o) if !o.status.success() => tracing::warn!(
+            "backup-run {name}: forget/prune failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => tracing::warn!("backup-run {name}: forget/prune failed: {e}"),
+        _ => {}
     }
 
     let stale: Vec<String> = run["status"]["stalePvcs"]
@@ -647,8 +643,12 @@ async fn snapshot_cluster_inner(
     //    external dr-restore.sh script, which runs before K3s/local-api are started
     //    and restores the etcd database directly.
     let snap_name = format!("yolab-cluster-{date}");
+    // kill_on_drop: this whole function runs under the caller's
+    // `tokio::time::timeout(budget, ...)` (see `step_snapshotting`); if that fires while
+    // this is still running, the k3s process must actually die rather than be orphaned.
     let snap_saved = Command::new("k3s")
         .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
+        .kill_on_drop(true)
         .output()
         .await;
 
@@ -668,15 +668,13 @@ async fn snapshot_cluster_inner(
                             etcd_included = true;
                             let _ = std::fs::remove_file(entry.path());
                         }
-                        let _ = Command::new("kubectl")
-                            .args([
-                                "delete",
-                                "etcdsnapshotfile",
-                                fname_str.as_ref(),
-                                "--ignore-not-found",
-                            ])
-                            .output()
-                            .await;
+                        let _ = crate::kubectl::run(&[
+                            "delete",
+                            "etcdsnapshotfile",
+                            fname_str.as_ref(),
+                            "--ignore-not-found",
+                        ])
+                        .await;
                         break;
                     }
                 }
@@ -710,34 +708,27 @@ async fn snapshot_cluster_inner(
         // in the UI, "App not found in catalog" on update, no uninstall hook, and every
         // setting the user chose — including app passwords — gone. That is a restore that
         // looks like it half-worked, which is worse than one that visibly failed.
-        let ns_obj: Option<Value> = Command::new("kubectl")
-            .args(["get", "namespace", ns, "-o", "json"])
-            .output()
-            .await
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
+        let ns_obj: Option<Value> =
+            crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
+                .await
+                .ok();
         if let Some(v) = &ns_obj {
             items.push(v.clone());
         }
 
-        let obj_out = Command::new("kubectl")
-            .args([
-                "get",
-                "deploy,svc,secret,configmap",
-                "-n",
-                ns,
-                "-o",
-                "json",
-                "--ignore-not-found",
-            ])
-            .output()
-            .await;
-        let workloads: Vec<Value> = obj_out
-            .ok()
-            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-            .and_then(|v| v["items"].as_array().cloned())
-            .unwrap_or_default();
+        let workloads: Vec<Value> = crate::kubectl::get_json(&[
+            "get",
+            "deploy,svc,secret,configmap",
+            "-n",
+            ns,
+            "-o",
+            "json",
+            "--ignore-not-found",
+        ])
+        .await
+        .ok()
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default();
         items.extend(workloads.iter().cloned());
 
         let sanitized = sanitize_k8s_items_for_backup(&items);
@@ -776,13 +767,9 @@ async fn snapshot_cluster_inner(
             .unwrap_or("")
             .to_string();
 
-        let pvc_out = Command::new("kubectl")
-            .args(["get", "pvc", "-n", ns, "-o", "json"])
-            .output()
-            .await;
-        let pvcs: Vec<Value> = pvc_out
+        let pvcs: Vec<Value> = crate::kubectl::get_json(&["get", "pvc", "-n", ns, "-o", "json"])
+            .await
             .ok()
-            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
             .and_then(|v| v["items"].as_array().cloned())
             .unwrap_or_default()
             .into_iter()
@@ -832,23 +819,9 @@ async fn snapshot_cluster_inner(
 
     // 4. Init restic repo if needed.
     cfg.unlock("cluster-backup").await;
-    let check = Command::new("restic")
-        .args(["snapshots"])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await;
+    let check = restic(&repo, cfg, &["snapshots"]).await;
     if check.map(|o| !o.status.success()).unwrap_or(true) {
-        let init = Command::new("restic")
-            .args(["init"])
-            .env("RESTIC_REPOSITORY", &repo)
-            .env("RESTIC_PASSWORD", &cfg.restic_password)
-            .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-            .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-            .output()
-            .await?;
+        let init = restic(&repo, cfg, &["init"]).await?;
         if !init.status.success() {
             anyhow::bail!(
                 "restic init failed: {}",
@@ -857,18 +830,19 @@ async fn snapshot_cluster_inner(
         }
     }
 
-    // 5. Backup. kill_on_drop: this is the one step that can genuinely run long (a full
-    // B2 upload); if the caller's tokio::time::timeout fires, dropping this future must
-    // actually kill the restic process rather than orphan it still holding the repo lock.
-    let backup = Command::new("restic")
-        .kill_on_drop(true)
-        .args(["backup", tmp_dir, "--tag", "cluster-backup"])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await?;
+    // 5. Backup. The one restic call that can genuinely run long (a full B2 upload), so
+    // it gets this phase's whole budget rather than the shorter default the
+    // administrative calls use. kill_on_drop (set by `restic_timeout`) matters twice
+    // over here: whether this inner timeout fires or the caller's outer
+    // `tokio::time::timeout` in `step_snapshotting` does, dropping the future has to
+    // actually kill restic rather than orphan it still holding the repo lock.
+    let backup = restic_timeout(
+        &repo,
+        cfg,
+        &["backup", tmp_dir, "--tag", "cluster-backup"],
+        Duration::from_secs(SNAPSHOTTING_BUDGET_SECS as u64),
+    )
+    .await?;
 
     if !backup.status.success() {
         anyhow::bail!(
