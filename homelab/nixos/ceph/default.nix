@@ -355,14 +355,23 @@ in {
     # The mon may not exist yet — on a joining node it does not until the
     # cluster hands over its credentials. Without this the mgr would stay down
     # until the next reboot, because a failed oneshot is never retried on its
-    # own. OnUnitInactiveSec as well, because a failed unit never reaches the
-    # active state that OnUnitActiveSec measures from.
+    # own.
+    #
+    # OnCalendar, not OnUnitActiveSec/OnUnitInactiveSec: this unit has
+    # RemainAfterExit=true, and once a RemainAfterExit oneshot succeeds it never
+    # goes inactive again, so neither of those directives ever re-arms after the
+    # first success — confirmed live via `systemctl show` on a real node
+    # (`next_elapse=0`, `NextElapseUSecMonotonic=infinity`, hours after the last
+    # run). That silently disables the retry this comment describes, and also
+    # means a key deleted or revoked out-of-band after the first success would
+    # never be recreated. OnCalendar fires on a wall-clock schedule regardless
+    # of the target unit's state. See the identical fix (with the fuller
+    # incident writeup) on yolab-containerd-store's timer.
     systemd.timers.yolab-ceph-mgr-key = {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "2min";
-        OnUnitActiveSec = "5min";
-        OnUnitInactiveSec = "2min";
+        OnCalendar = "*:0/5";
       };
     };
 
