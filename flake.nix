@@ -1,6 +1,26 @@
 {
   description = "Yolab";
 
+  # `extra-` prefix, not `substituters`/`trusted-public-keys`: those APPEND to
+  # whatever the building machine already trusts (cache.nixos.org included) —
+  # the bare names would REPLACE the whole list, silently dropping every
+  # ordinary nixpkgs package back to building from source.
+  #
+  # Only takes effect with `accept-flake-config = true` on the building side
+  # (Nix asks interactively otherwise, and CI has nothing to answer that
+  # prompt with) — see .github/workflows/push.yml's Install Nix step, and
+  # homelab/nixos/common.nix for real deployed nodes, which set
+  # nix.settings.substituters directly instead since that config is trusted
+  # by construction rather than needing this opt-in.
+  #
+  # The cache itself is public: pulling from it needs no token, only pushing
+  # does (see push.yml's "Push to the Nix cache" step) — so nothing sensitive
+  # lives here.
+  nixConfig = {
+    extra-substituters = ["https://cache.demycode.ovh/yolab"];
+    extra-trusted-public-keys = ["yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     # Ceph only. The pinned nixpkgs above carries ceph 20.2.2, whose
