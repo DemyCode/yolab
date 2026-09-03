@@ -326,3 +326,71 @@ jobs:
           name: nixos-homelab-installer-${{ steps.tag.outputs.value }}-${{ github.sha }}
           path: ${{ steps.iso_info.outputs.iso_path }}
           retention-days: 7
+
+  # Was its own format.yml, triggered on every branch (`push: branches: ["**"]`)
+  # plus workflow_dispatch. Folded in here to match how yolab-external's ci.yml
+  # holds every job in one file. The `on: push:` at the top of this file has no
+  # branch filter, so it already covers every branch the old file did — the one
+  # gap is tags, which that trigger fires on but a PR base cannot be, hence the
+  # `if:` below (the old file used `branches: ["**"]` specifically to exclude
+  # them). workflow_dispatch (manual re-run without a push) was dropped rather
+  # than added to every other job in this file for one job's sake.
+  format:
+    if: startsWith(github.ref, 'refs/heads/')
+    concurrency:
+      group: format-${{ github.ref_name }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Run nix fmt
+        id: fmt
+        run: |
+          nix fmt
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already formatted; nothing to open a PR for."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat
+          fi
+
+      - name: Open a pull request
+        if: steps.fmt.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          # Fixed name per source branch, so a later push updates the open PR
+          # rather than stacking a second one.
+          branch: fmt-${{ github.ref_name }}
+          base: ${{ github.ref_name }}
+          delete-branch: true
+          title: "style: nix fmt (${{ github.ref_name }})"
+          commit-message: |
+            style: nix fmt
+
+            Produced by `nix fmt`, the same treefmt wrapper that
+            `checks.formatting` gates on.
+          labels: formatting
+          body: |
+            `nix fmt` produced changes against `${{ github.ref_name }}`.
+
+            This is mechanical output — the same treefmt wrapper
+            `checks.formatting` builds, so merging it is what makes
+            `nix run .#ci` green on that branch.
+
+            If this appeared without anyone editing the affected files, a
+            formatter version moved: check the most recent bump to
+            `treefmt-nix`, `nixpkgs` (prettier, shfmt, alejandra) or the
+            pinned Rust toolchain (rustfmt).
