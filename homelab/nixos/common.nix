@@ -580,13 +580,20 @@ in {
     nix.settings.max-jobs = 1;
     nix.settings.cores = 2;
 
-    # Private Attic cache (B2-backed) — CI pushes local-api/client-ui/the ISO
+    # Attic cache (Cloudflare R2-backed) — CI pushes local-api/client-ui/the ISO
     # here after every build on main (see .github/workflows/push.yml), so a
     # node's rebuild substitutes them instead of recompiling. Listed after
     # cache.nixos.org: this only ever has yolab's own packages, never the
     # base nixpkgs closure, so trying it first would just be a guaranteed
     # miss on every ordinary package.
     #
+    # Deliberately public (unlike yolab-external's own cache, which stays
+    # private — that repo is the hosted platform, this one is the homelab
+    # distribution itself): every real node substituting from here is a
+    # customer's own machine, and there is no way to hand every one of them
+    # the same shared secret without it stopping being a secret. A public
+    # cache can still only be PUSHED to by whoever holds the push-scoped
+    # token — nothing about read access here weakens that.
     nix.settings.substituters = [
       "https://cache.nixos.org"
       "https://cache.demycode.ovh/yolab"
