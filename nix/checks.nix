@@ -172,6 +172,56 @@ in {
     touch $out
   '';
 
+  # Regression check for a live incident (2026-09-03): OnUnitActiveSec/
+  # OnUnitInactiveSec never re-arm against a `RemainAfterExit = true` oneshot once
+  # it has succeeded once — the service stays "active (exited)" forever, and
+  # neither directive ever gets the state transition it measures from. Confirmed
+  # live via `systemctl show <unit>.timer -p TimersMonotonic,NextElapseUSecMonotonic`
+  # on a real node: both showed `next_elapse=0` / `NextElapseUSecMonotonic=infinity`,
+  # 10+ hours after the unit's one successful run. yolab-containerd-store's own
+  # health check (rebuild the image store if it is mounted but unreadable — see
+  # homelab/local-api/src/storage/containerd_store.rs's header for the earlier
+  # 17-hour incident THAT was written for) never got a chance to run, because
+  # nothing was re-triggering the unit any more. Both cluster nodes sat with a
+  # dead containerd data-root, apiserver unreachable, for the better part of a day.
+  #
+  # `allowlist` is for units where "stop retrying after the first success" is
+  # correct, not a bug — see each one's own comment (yolab-ceph-bootstrap: a
+  # successful join has nothing left to retry).
+  self-healing-timers-use-oncalendar = let
+    allowlist = ["yolab-ceph-bootstrap"];
+    services = nixosSystems.yolab-ci.config.systemd.services;
+    timers = nixosSystems.yolab-ci.config.systemd.timers;
+    remainsAfterExit = name: (services.${name}.serviceConfig.RemainAfterExit or false) == true;
+    usesUnitRelativeTimer = name: let
+      tc = timers.${name}.timerConfig or {};
+    in
+      (tc ? OnUnitActiveSec) || (tc ? OnUnitInactiveSec);
+    offenders =
+      builtins.filter
+      (
+        name:
+          services ? ${name}
+          && remainsAfterExit name
+          && usesUnitRelativeTimer name
+          && !(builtins.elem name allowlist)
+      )
+      (builtins.attrNames timers);
+  in
+    pkgs.runCommand "self-healing-timers-use-oncalendar" {} ''
+      offenders=${pkgs.writeText "offenders" (builtins.concatStringsSep "\n" offenders)}
+      if [ -s "$offenders" ]; then
+        echo "These timers pair OnUnitActiveSec/OnUnitInactiveSec with a" >&2
+        echo "RemainAfterExit=true service. Neither re-arms once the service has" >&2
+        echo "succeeded once — use OnCalendar instead, or add the unit to this" >&2
+        echo "check's allowlist with a comment explaining why stopping after the" >&2
+        echo "first success is actually correct there:" >&2
+        cat "$offenders" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
   # The image RBD's sizing arithmetic used to be pinned here against a shell
   # fragment driven with stubbed `ceph` output. That fragment moved into
   # homelab/local-api/src/storage/images_sizing.rs (part of the Ceph
