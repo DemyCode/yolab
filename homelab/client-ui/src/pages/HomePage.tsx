@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Plus, Sparkles } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppTile, AppTileSkeleton } from "@/components/AppTile";
-import { Banner, EmptyState } from "@/components/ui/feedback";
+import { Banner, EmptyState, ServiceTrouble } from "@/components/ui/feedback";
 import { buttonClass } from "@/components/ui/button-variants";
 import { api } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
@@ -134,6 +134,11 @@ export function HomePage() {
             <AppTileSkeleton key={i} />
           ))}
         </div>
+      ) : apps.error && !apps.data ? (
+        // Not "nothing installed" — the list never loaded at all. Telling
+        // someone their apps are gone because of a moment's outage is worse
+        // than telling them nothing.
+        <ServiceTrouble onRetry={apps.refresh} />
       ) : installed.length === 0 ? (
         <EmptyState
           icon={<Sparkles className="h-6 w-6" />}
