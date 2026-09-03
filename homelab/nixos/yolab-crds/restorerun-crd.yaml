@@ -33,9 +33,136 @@ spec:
         openAPIV3Schema:
           type: object
           properties:
+            # Written once by restore_run.rs's `start()` and never changed again.
             spec:
               type: object
-              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                snapshotId:
+                  type: string
+                  nullable: true
+                  description: A specific restic snapshot id, or unset to use the latest cluster-backup snapshot.
+                all:
+                  type: boolean
+                  description: Restore every namespace the snapshot's catalog.json lists, ignoring `namespaces`.
+                namespaces:
+                  type: array
+                  items:
+                    type: string
+                  description: Explicit namespace list to restore. Ignored when `all` is true.
+                rebuildStorage:
+                  type: boolean
+                  description: >-
+                    Destroy and recreate CephFS before restoring — only when step_rebuilding_storage's
+                    own cluster-state check (not this flag alone) confirms the loss is unrecoverable.
+            # Field-for-field what restore_run.rs's reconcile steps actually write — see
+            # that file's step_validating/step_rebuilding_storage/step_waiting_storage/
+            # step_restoring/step_applying and terminate(). x-kubernetes-preserve-unknown-fields
+            # keeps this forward-compatible with a local-api build that adds a status field
+            # before this CRD is redeployed (the two are not applied atomically on upgrade)
+            # while still giving every field the reconciler is known to write real validation.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Validating
+                    - RebuildingStorage
+                    - WaitingForStorage
+                    - RestoringVolumes
+                    - Applying
+                    - Succeeded
+                    - Partial
+                    - Failed
+                phaseDeadline:
+                  type: string
+                  format: date-time
+                  description: Sweep deadline for the current phase — see reconcile_tick's timeout sweep.
+                startedAt:
+                  type: string
+                  format: date-time
+                finishedAt:
+                  type: string
+                  format: date-time
+                error:
+                  type: string
+                abortReason:
+                  type: string
+                  description: >-
+                    Set when the run reached Applying via terminate() rather than by completing
+                    normally — caps the best possible terminal phase at Partial even if every
+                    volume happened to succeed before the abort.
+                # ── Validating ────────────────────────────────────────────────────
+                snapshotId:
+                  type: string
+                  description: The resolved restic snapshot id — the request's own, or the latest found.
+                restoreAsOf:
+                  type: string
+                  description: The resolved snapshot's own timestamp, passed to VolSync as restic's restoreAsOf.
+                restoredFromVersion:
+                  type: string
+                  description: catalog.json's catalog_version — which build produced the data being restored.
+                resolvedNamespaces:
+                  type: array
+                  items:
+                    type: string
+                  description: The final namespace list this run acts on (from `spec.namespaces`, or every namespace in the catalog when `spec.all`).
+                catalog:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: >-
+                    catalog.json extracted from the chosen snapshot — the same structure
+                    backup_run.rs's snapshot_cluster writes. Left schemaless here: this
+                    reconciler only ever reads it back verbatim, so it need not own that shape.
+                # ── RebuildingStorage ────────────────────────────────────────────
+                rebuildStep:
+                  type: string
+                  enum: [check, purge, teardown, claims, recreate, done]
+                rebuildNote:
+                  type: string
+                  description: Human-readable explanation of why storage is being rebuilt, shown by the UI.
+                purgedOsds:
+                  type: array
+                  items:
+                    type: integer
+                  description: OSD ids purged during the "purge" rebuild step.
+                # ── RestoringVolumes / Applying ──────────────────────────────────
+                namespaces:
+                  type: array
+                  description: Per-namespace restore progress — the only place this state lives between reconcile ticks.
+                  items:
+                    type: object
+                    required: [namespace]
+                    properties:
+                      namespace:
+                        type: string
+                      setupComplete:
+                        type: boolean
+                        description: Whether one-time namespace setup (create, apply backed-up objects, record + zero replicas) has run.
+                      scaledDeployments:
+                        type: array
+                        description: Original replica counts, recorded before scale-to-zero so Applying can restore them exactly.
+                        items:
+                          type: object
+                          required: [name, replicas]
+                          properties:
+                            name:
+                              type: string
+                            replicas:
+                              type: integer
+                      volumes:
+                        type: array
+                        items:
+                          type: object
+                          required: [pvc, phase]
+                          properties:
+                            pvc:
+                              type: string
+                            phase:
+                              type: string
+                              enum: [Pending, Deleting, Restoring, Succeeded, Failed, Skipped]
+                            deletingSince:
+                              type: string
+                              format: date-time
+                              description: When the PVC delete was issued — bounds the Deleting sub-phase against PVC_DELETE_TIMEOUT_SECS.

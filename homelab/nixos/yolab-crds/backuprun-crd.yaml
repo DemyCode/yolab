@@ -33,9 +33,90 @@ spec:
         openAPIV3Schema:
           type: object
           properties:
+            # Written once by backup_run.rs's `start()` and never changed again — see
+            # that function for the only two callers ("manual", "schedule").
             spec:
               type: object
-              x-kubernetes-preserve-unknown-fields: true
+              required: [triggeredBy]
+              properties:
+                triggeredBy:
+                  type: string
+                  description: >-
+                    What started this run: "manual" (the run-now button) or "schedule"
+                    (the daily due-backup check).
+            # Field-for-field what backup_run.rs's reconcile steps actually write —
+            # see that file's step_pending/step_syncing/step_snapshotting/step_pruning.
+            # x-kubernetes-preserve-unknown-fields keeps this forward-compatible with a
+            # local-api build that adds a status field before this CRD is redeployed
+            # (the two are not applied atomically on upgrade) while still giving every
+            # field the reconciler is known to write real validation.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - SyncingVolumes
+                    - SnapshottingCluster
+                    - Pruning
+                    - Succeeded
+                    - Partial
+                    - Failed
+                phaseDeadline:
+                  type: string
+                  format: date-time
+                  description: Sweep deadline for the current phase — see reconcile_tick's timeout sweep.
+                startedAt:
+                  type: string
+                  format: date-time
+                finishedAt:
+                  type: string
+                  format: date-time
+                error:
+                  type: string
+                # ── SyncingVolumes bookkeeping ──────────────────────────────────
+                syncSince:
+                  type: string
+                  format: date-time
+                  description: When SyncingVolumes began — a ReplicationSource must sync after this to count as done for this run.
+                syncProgressAt:
+                  type: string
+                  format: date-time
+                  description: Last tick any volume's sync fingerprint changed — the watchdog clock, not a display timestamp.
+                syncFingerprint:
+                  type: string
+                  description: Opaque per-tick digest of every volume's sync state, used only to detect "nothing moved since last tick".
+                stalePvcs:
+                  type: array
+                  items:
+                    type: string
+                  description: "namespace/name of volumes still copying when SYNC_STALL_SECS was reached — the run proceeds without them."
+                pvcs:
+                  type: array
+                  description: Latest observed VolSync sync status for every PVC this run covers.
+                  items:
+                    type: object
+                    required: [namespace, name, phase]
+                    properties:
+                      namespace:
+                        type: string
+                      name:
+                        type: string
+                      phase:
+                        type: string
+                        enum: [Syncing, Synced, Stalled]
+                      percent:
+                        type: number
+                        description: restic's own progress percentage, when a mover log line was parseable.
+                      eta:
+                        type: string
+                        description: restic's own ETA string, when a mover log line was parseable.
+                # ── SnapshottingCluster / Pruning ────────────────────────────────
+                snapshotId:
+                  type: string
+                  description: The restic snapshot's date-based id (see backup_run.rs's snapshot_cluster).
+                etcdIncluded:
+                  type: boolean
+                  description: Whether the etcd snapshot made it into this run's restic snapshot (best-effort, reported rather than assumed).
