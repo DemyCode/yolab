@@ -121,6 +121,54 @@ impl BackupConfig {
     }
 }
 
+/// Every restic invocation in the crate goes through this (or [`restic_timeout`] for
+/// the one call — the cluster-backup upload in backup_run.rs — that legitimately needs
+/// longer than administrative commands do) and gets `kill_on_drop(true)`. Mirrors
+/// `kubectl.rs`'s `KUBECTL_TIMEOUT`/`run_bounded` for the identical reason: every one of
+/// these calls used to run unbounded inside a reconcile loop or an HTTP handler, so a
+/// restic process wedged on a stalled B2 connection hung its caller forever — for
+/// backup_run.rs/restore_run.rs that meant the entire backup+restore reconciler, since
+/// both are driven from the one serial `reconcile_tick` chain.
+const RESTIC_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Run a restic subcommand against `cfg`'s repo, bounded by [`RESTIC_TIMEOUT`].
+pub(crate) async fn restic(
+    repo: &str,
+    cfg: &BackupConfig,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    restic_timeout(repo, cfg, args, RESTIC_TIMEOUT).await
+}
+
+/// Same as [`restic`] with an explicit timeout — for the cluster-backup upload, which
+/// runs under its own much longer phase-deadline budget (see backup_run.rs's
+/// `step_snapshotting`) rather than this module's default.
+pub(crate) async fn restic_timeout(
+    repo: &str,
+    cfg: &BackupConfig,
+    args: &[&str],
+    timeout: Duration,
+) -> anyhow::Result<std::process::Output> {
+    let work = Command::new("restic")
+        .args(args)
+        .kill_on_drop(true)
+        .env("RESTIC_REPOSITORY", repo)
+        .env("RESTIC_PASSWORD", &cfg.restic_password)
+        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
+        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
+        .output();
+    tokio::time::timeout(timeout, work)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "restic {}: timed out after {}s",
+                args.join(" "),
+                timeout.as_secs()
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("restic {}: {e}", args.join(" ")))
+}
+
 /// Removes any restic lock that `restic` itself determines is stale (its owning
 /// process/host is no longer alive) from the given repo. Without this, a mover pod
 /// killed mid-sync or a local-api restart mid-backup leaves a lock that blocks every
@@ -128,26 +176,31 @@ impl BackupConfig {
 /// (not `--remove-all`) is what keeps this safe to call unconditionally before any
 /// operation, since it never touches a lock that's still actively held.
 pub(crate) async fn restic_unlock(repo: &str, password: &str, key_id: &str, secret_key: &str) {
-    let out = Command::new("restic")
+    let work = Command::new("restic")
         .args(["unlock"])
+        .kill_on_drop(true)
         .env("RESTIC_REPOSITORY", repo)
         .env("RESTIC_PASSWORD", password)
         .env("AWS_ACCESS_KEY_ID", key_id)
         .env("AWS_SECRET_ACCESS_KEY", secret_key)
-        .output()
-        .await;
+        .output();
+    let out = tokio::time::timeout(RESTIC_TIMEOUT, work).await;
     match out {
-        Ok(o) if o.status.success() => {
+        Ok(Ok(o)) if o.status.success() => {
             let msg = String::from_utf8_lossy(&o.stdout);
             if !msg.trim().is_empty() {
                 tracing::info!("restic unlock ({repo}): {}", msg.trim());
             }
         }
-        Ok(o) => tracing::debug!(
+        Ok(Ok(o)) => tracing::debug!(
             "restic unlock ({repo}): {}",
             String::from_utf8_lossy(&o.stderr).trim()
         ),
-        Err(e) => tracing::debug!("restic unlock ({repo}): {e}"),
+        Ok(Err(e)) => tracing::debug!("restic unlock ({repo}): {e}"),
+        Err(_) => tracing::debug!(
+            "restic unlock ({repo}): timed out after {}s",
+            RESTIC_TIMEOUT.as_secs()
+        ),
     }
 }
 
@@ -313,16 +366,14 @@ pub(crate) async fn refresh_master_config(url: &str, token: &str) -> anyhow::Res
 /// Annotate a namespace to allow VolSync movers to run with elevated privileges.
 /// Required so the restic mover can call lchown to restore original file ownership.
 pub(crate) async fn annotate_ns_privileged_movers(ns: &str) {
-    let _ = Command::new("kubectl")
-        .args([
-            "annotate",
-            "namespace",
-            ns,
-            "volsync.backube/privileged-movers=true",
-            "--overwrite",
-        ])
-        .output()
-        .await;
+    let _ = crate::kubectl::run(&[
+        "annotate",
+        "namespace",
+        ns,
+        "volsync.backube/privileged-movers=true",
+        "--overwrite",
+    ])
+    .await;
 }
 
 /// Create (or update) the per-PVC restic secret in its namespace.
@@ -370,17 +421,7 @@ pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
     let managed: std::collections::HashSet<String> =
         list_managed_namespaces().await.into_iter().collect();
 
-    let out = Command::new("kubectl")
-        .args(["get", "pvc", "-A", "-o", "json"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "kubectl get pvc: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let v = crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"]).await?;
     let items = v["items"].as_array().cloned().unwrap_or_default();
 
     Ok(items
@@ -413,24 +454,17 @@ pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 /// whether a PVC's namespace will actually be captured (see the doc comment on
 /// `list_user_pvcs`) can compare the two sets instead of assuming they match.
 pub(crate) async fn list_managed_namespaces() -> Vec<String> {
-    let out = Command::new("kubectl")
-        .args([
-            "get",
-            "namespaces",
-            "-l",
-            "yolab.io/managed=true",
-            "-o",
-            "jsonpath={.items[*].metadata.name}",
-        ])
-        .output()
-        .await;
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .split_whitespace()
-            .map(String::from)
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    crate::kubectl::run(&[
+        "get",
+        "namespaces",
+        "-l",
+        "yolab.io/managed=true",
+        "-o",
+        "jsonpath={.items[*].metadata.name}",
+    ])
+    .await
+    .map(|s| s.split_whitespace().map(String::from).collect())
+    .unwrap_or_default()
 }
 
 // ── VolSync ReplicationSource ─────────────────────────────────────────────────
@@ -522,14 +556,9 @@ pub(crate) async fn ensure_replication_source(
 /// themselves (see backup_run.rs's polling loop) rather than this module
 /// prescribing a single "is it synced" answer.
 pub(crate) async fn get_replication_sources() -> serde_json::Value {
-    let out = Command::new("kubectl")
-        .args(["get", "replicationsource", "-A", "-o", "json"])
-        .output()
-        .await;
-    match out {
-        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or(serde_json::json!({"items": []})),
-        Err(_) => serde_json::json!({"items": []}),
-    }
+    crate::kubectl::get_json(&["get", "replicationsource", "-A", "-o", "json"])
+        .await
+        .unwrap_or(serde_json::json!({"items": []}))
 }
 
 pub(crate) fn hours_since(timestamp: &str) -> Option<i64> {
@@ -630,13 +659,9 @@ pub(crate) fn parse_capacity_bytes(s: &str) -> u64 {
 pub(crate) async fn reclaimable_pvc_bytes(namespaces: &[String]) -> u64 {
     let mut total = 0u64;
     for ns in namespaces {
-        let out = Command::new("kubectl")
-            .args(["get", "pvc", "-n", ns, "-o", "json"])
-            .output()
-            .await;
-        let pvcs = out
+        let pvcs = crate::kubectl::get_json(&["get", "pvc", "-n", ns, "-o", "json"])
+            .await
             .ok()
-            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
             .and_then(|v| v["items"].as_array().cloned())
             .unwrap_or_default();
         for item in pvcs {
@@ -670,30 +695,26 @@ pub(crate) async fn delete_replication_destination_without_touching_pvc(
     name: &str,
     namespace: &str,
 ) {
-    let _ = Command::new("kubectl")
-        .args([
-            "patch",
-            "replicationdestination",
-            name,
-            "-n",
-            namespace,
-            "--type=merge",
-            "-p",
-            r#"{"metadata":{"finalizers":[]}}"#,
-        ])
-        .output()
-        .await;
-    let _ = Command::new("kubectl")
-        .args([
-            "delete",
-            "replicationdestination",
-            name,
-            "-n",
-            namespace,
-            "--ignore-not-found",
-        ])
-        .output()
-        .await;
+    let _ = crate::kubectl::run(&[
+        "patch",
+        "replicationdestination",
+        name,
+        "-n",
+        namespace,
+        "--type=merge",
+        "-p",
+        r#"{"metadata":{"finalizers":[]}}"#,
+    ])
+    .await;
+    let _ = crate::kubectl::run(&[
+        "delete",
+        "replicationdestination",
+        name,
+        "-n",
+        namespace,
+        "--ignore-not-found",
+    ])
+    .await;
 }
 
 pub(crate) async fn scale_deployment(
@@ -701,24 +722,15 @@ pub(crate) async fn scale_deployment(
     name: &str,
     replicas: u32,
 ) -> anyhow::Result<()> {
-    let out = Command::new("kubectl")
-        .args([
-            "scale",
-            "deployment",
-            name,
-            "-n",
-            namespace,
-            &format!("--replicas={replicas}"),
-        ])
-        .output()
-        .await?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "scale deployment {} failed: {}",
-            name,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    crate::kubectl::run(&[
+        "scale",
+        "deployment",
+        name,
+        "-n",
+        namespace,
+        &format!("--replicas={replicas}"),
+    ])
+    .await?;
     Ok(())
 }
 

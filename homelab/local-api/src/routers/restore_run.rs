@@ -361,14 +361,12 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     let snapshot_id = match requested_snapshot {
         Some(id) => id,
         None => {
-            let out = Command::new("restic")
-                .args(["snapshots", "--json", "--tag", "cluster-backup"])
-                .env("RESTIC_REPOSITORY", &repo)
-                .env("RESTIC_PASSWORD", &cfg.restic_password)
-                .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-                .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-                .output()
-                .await;
+            let out = restic(
+                &repo,
+                cfg,
+                &["snapshots", "--json", "--tag", "cluster-backup"],
+            )
+            .await;
             // A failed query is NOT "no snapshots" — conflating the two is how a restore
             // silently turns into a no-op that reports success.
             let parsed = match out {
@@ -406,21 +404,19 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
     };
 
     let cat_target = format!("/tmp/yolab-dr-catalog-{}", random_hex(8));
-    let restore_out = Command::new("restic")
-        .args([
+    let restore_out = restic(
+        &repo,
+        cfg,
+        &[
             "restore",
             &snapshot_id,
             "--target",
             &cat_target,
             "--include",
             "**/catalog.json",
-        ])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await;
+        ],
+    )
+    .await;
     let catalog: Value = match restore_out {
         Ok(o) if o.status.success() => {
             let find_out = Command::new("find")
@@ -521,13 +517,7 @@ async fn step_validating(name: &str, run: &Value, cfg: &BackupConfig) {
         }
     }
 
-    let restore_as_of: Option<String> = Command::new("restic")
-        .args(["snapshots", &snapshot_id, "--json"])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
+    let restore_as_of: Option<String> = restic(&repo, cfg, &["snapshots", &snapshot_id, "--json"])
         .await
         .ok()
         .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
@@ -940,12 +930,9 @@ async fn setup_namespace(
     let catalog = run["status"]["catalog"].clone();
     let repo = cfg.restic_repo("cluster-backup");
 
-    let ns_exists = Command::new("kubectl")
-        .args(["get", "namespace", &ns])
-        .output()
+    let ns_exists = crate::kubectl::run(&["get", "namespace", &ns])
         .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok();
     if !ns_exists {
         if let Err(e) = kubectl_apply(
             &json!({
@@ -964,21 +951,19 @@ async fn setup_namespace(
     // this is also what puts yolab.io/app-id, yolab.io/config and yolab.io/outputs back.
     let yaml_target = format!("/tmp/yolab-dr-yaml-{}", random_hex(8));
     let pattern = format!("**/{ns}.yaml");
-    let r = Command::new("restic")
-        .args([
+    let r = restic(
+        &repo,
+        cfg,
+        &[
             "restore",
             &snapshot_id,
             "--target",
             &yaml_target,
             "--include",
             &pattern,
-        ])
-        .env("RESTIC_REPOSITORY", &repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await;
+        ],
+    )
+    .await;
     if let Ok(o) = r {
         if o.status.success() {
             if let Ok(f) = Command::new("find")
@@ -1007,10 +992,7 @@ async fn setup_namespace(
         persist_namespaces(name, ns_state).await;
     }
 
-    let _ = Command::new("kubectl")
-        .args(["scale", "deployment", "--all", "-n", &ns, "--replicas=0"])
-        .output()
-        .await;
+    let _ = crate::kubectl::run(&["scale", "deployment", "--all", "-n", &ns, "--replicas=0"]).await;
 
     // Seed the volume list from the snapshot's catalog.
     if ns_state[idx].volumes.is_empty() {
@@ -1098,18 +1080,16 @@ async fn advance_volume(
             }
 
             // Non-blocking delete; the Deleting branch below waits it out across ticks.
-            let _ = Command::new("kubectl")
-                .args([
-                    "delete",
-                    "pvc",
-                    &pvc,
-                    "-n",
-                    &ns,
-                    "--wait=false",
-                    "--ignore-not-found",
-                ])
-                .output()
-                .await;
+            let _ = crate::kubectl::run(&[
+                "delete",
+                "pvc",
+                &pvc,
+                "-n",
+                &ns,
+                "--wait=false",
+                "--ignore-not-found",
+            ])
+            .await;
             ns_state[si].volumes[vi].phase = VOL_DELETING.to_string();
             ns_state[si].volumes[vi].deleting_since = Some(now.to_rfc3339());
         }
@@ -1242,12 +1222,9 @@ async fn step_applying(name: &str, run: &Value) {
 // ── Cluster observation helpers (dumb I/O, no decisions) ─────────────────────
 
 async fn list_replication_destinations() -> Vec<Value> {
-    Command::new("kubectl")
-        .args(["get", "replicationdestination", "-A", "-o", "json"])
-        .output()
+    crate::kubectl::get_json(&["get", "replicationdestination", "-A", "-o", "json"])
         .await
         .ok()
-        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
         .and_then(|v| v["items"].as_array().cloned())
         .unwrap_or_default()
 }
@@ -1255,12 +1232,9 @@ async fn list_replication_destinations() -> Vec<Value> {
 /// (namespace, name) of every PVC that currently exists — one call, so the Deleting
 /// branch can check every volume without a `kubectl get` each.
 async fn list_pvc_keys() -> std::collections::HashSet<(String, String)> {
-    Command::new("kubectl")
-        .args(["get", "pvc", "-A", "-o", "json"])
-        .output()
+    crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"])
         .await
         .ok()
-        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
         .and_then(|v| v["items"].as_array().cloned())
         .unwrap_or_default()
         .into_iter()
@@ -1274,12 +1248,9 @@ async fn list_pvc_keys() -> std::collections::HashSet<(String, String)> {
 }
 
 async fn read_deployment_scales(ns: &str) -> Vec<DeploymentScale> {
-    Command::new("kubectl")
-        .args(["get", "deployments", "-n", ns, "-o", "json"])
-        .output()
+    crate::kubectl::get_json(&["get", "deployments", "-n", ns, "-o", "json"])
         .await
         .ok()
-        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
         .and_then(|v| v["items"].as_array().cloned())
         .unwrap_or_default()
         .into_iter()
@@ -1297,14 +1268,7 @@ async fn read_deployment_scales(ns: &str) -> Vec<DeploymentScale> {
 /// NOT be collapsed into `false` — that is what turns a broken restore into a silent
 /// "Skipped, everything fine".
 async fn snapshots_exist(repo: &str, cfg: &BackupConfig) -> anyhow::Result<bool> {
-    let out = Command::new("restic")
-        .args(["snapshots", "--json"])
-        .env("RESTIC_REPOSITORY", repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output()
-        .await?;
+    let out = restic(repo, cfg, &["snapshots", "--json"]).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // A repo that was never initialised legitimately has no snapshots.
