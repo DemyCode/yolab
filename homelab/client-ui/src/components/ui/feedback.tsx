@@ -1,5 +1,12 @@
-import { AlertTriangle, Info, Loader2, OctagonAlert } from "lucide-react";
+import {
+  AlertTriangle,
+  Info,
+  Loader2,
+  OctagonAlert,
+  WifiOff,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { buttonClass } from "@/components/ui/button-variants";
 import type { ReactNode } from "react";
 
 /**
@@ -118,5 +125,38 @@ export function EmptyState({
       {body && <p className="mt-1.5 max-w-sm text-sm text-fg-muted">{body}</p>}
       {action && <div className="mt-6">{action}</div>}
     </div>
+  );
+}
+
+/**
+ * Shown in place of a page's real content when the data it needs never
+ * loaded at all — as opposed to loaded and turned out to be empty.
+ *
+ * Those two are easy to conflate and must not be: "Nothing installed yet" and
+ * "App not found" are both claims about what exists, and during a brief
+ * control-plane hiccup neither is true — the box is just unreachable for a
+ * moment. Telling someone their photo library "may have been removed"
+ * because of a transient blip is a worse bug than showing nothing.
+ *
+ * Deliberately not technical. Nobody using this page knows what "the API
+ * server" or "kube" means, and naming it explains nothing they can act on —
+ * only that it usually clears up on its own, and how to check again.
+ */
+export function ServiceTrouble({ onRetry }: { onRetry: () => void }) {
+  return (
+    <EmptyState
+      icon={<WifiOff className="h-6 w-6" />}
+      title="Having trouble reaching your services"
+      body="This is usually brief — the box may just be busy for a moment. Try again in a bit."
+      action={
+        <button
+          type="button"
+          onClick={onRetry}
+          className={buttonClass({ variant: "secondary" })}
+        >
+          Try again
+        </button>
+      }
+    />
   );
 }

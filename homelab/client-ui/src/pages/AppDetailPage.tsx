@@ -14,7 +14,12 @@ import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/sheet";
-import { Banner, Skeleton, Spinner } from "@/components/ui/feedback";
+import {
+  Banner,
+  ServiceTrouble,
+  Skeleton,
+  Spinner,
+} from "@/components/ui/feedback";
 import { Card } from "@/components/ui/card";
 import { api, streamEvents } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
@@ -327,6 +332,17 @@ export function AppDetailPage() {
     return (
       <Page>
         <Skeleton className="h-32 w-full" />
+      </Page>
+    );
+  }
+
+  // Checked before "not found": the list failing to load at all is not the
+  // same fact as this app genuinely being gone, and must not be reported as
+  // one — see ServiceTrouble's doc comment.
+  if (apps.error && !apps.data) {
+    return (
+      <Page>
+        <ServiceTrouble onRetry={apps.refresh} />
       </Page>
     );
   }
