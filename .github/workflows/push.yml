@@ -42,11 +42,18 @@ jobs:
       # an empty one both evaluate to "" in Actions) so a fork or a PR from someone
       # without cache-push access still gets a green check, just without populating
       # the cache.
+      #
+      # `secrets` isn't a valid context inside `if:` at all (GitHub rejects it with
+      # "Unrecognized named-value: 'secrets'" at parse time, job- or step-level,
+      # unconditionally) — env: is the documented way to get a secret's value
+      # somewhere an `if:` can actually read it.
       - name: Push to the Nix cache
-        if: ${{ secrets.ATTIC_AUTH_TOKEN != '' }}
+        env:
+          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
+        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "${{ secrets.ATTIC_AUTH_TOKEN }}"
+          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "$ATTIC_AUTH_TOKEN"
           mapfile -t paths < <(grep -oE '/nix/store/[^)]+' /tmp/ci-output.txt | sort -u)
           nix run nixpkgs#attic-client -- push yolab "${paths[@]}"
 
@@ -299,11 +306,16 @@ jobs:
       # every `nixos-rebuild switch`, and unlike the full system closure (which
       # bakes in each node's own config.toml path) it is byte-identical across
       # every node, so one push here serves all of them.
+      # `secrets` isn't a valid context inside `if:` at all (GitHub rejects it with
+      # "Unrecognized named-value: 'secrets'" at parse time) — env: is the
+      # documented way to get a secret's value somewhere an `if:` can read it.
       - name: Push to the Nix cache
-        if: ${{ secrets.ATTIC_AUTH_TOKEN != '' }}
+        env:
+          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
+        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "${{ secrets.ATTIC_AUTH_TOKEN }}"
+          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "$ATTIC_AUTH_TOKEN"
           nix run nixpkgs#attic-client -- push yolab \
             "${{ steps.build_iso.outputs.store_path }}" \
             "${{ steps.build_homelab.outputs.ui_store_path }}" \
