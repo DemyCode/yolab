@@ -607,11 +607,20 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
     Ok(())
 }
 
+/// Bounded and `kill_on_drop`: every one of this module's callers runs `helm`/`tar`
+/// against an admin-uploaded chart archive, so a malformed or adversarial upload that
+/// makes `helm template` hang (an infinite `range`, say) must not be able to wedge the
+/// request forever — see `kubectl.rs`'s identical reasoning for the same shape of bug.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 async fn run(cmd: &str, args: &[&str]) -> Result<String, Rejection> {
-    let out = tokio::process::Command::new(cmd)
+    let work = tokio::process::Command::new(cmd)
         .args(args)
-        .output()
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(RUN_TIMEOUT, work)
         .await
+        .map_err(|_| reject(format!("{cmd} timed out after {}s", RUN_TIMEOUT.as_secs())))?
         .map_err(|e| reject(format!("could not run {cmd}: {e}")))?;
     if !out.status.success() {
         return Err(reject(

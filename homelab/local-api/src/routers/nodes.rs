@@ -98,6 +98,7 @@ pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLi
     let resp = reqwest::Client::new()
         .get(format!("{platform_api_url}/tunnels"))
         .bearer_auth(&account_token)
+        .timeout(Duration::from_secs(10))
         .send()
         .await?
         .json::<serde_json::Value>()
