@@ -3,22 +3,22 @@
   treefmtEval,
   rust,
   nixosSystems,
-}:
-let
-  builds = import ../homelab/builds.nix { inherit pkgs rust; };
+}: let
+  builds = import ../homelab/builds.nix {inherit pkgs rust;};
   inherit (rust) crates;
 
-  treeSrc = pkgs.nix-gitignore.gitignoreRecursiveSource [
-    ".git/"
-    "target/"
-    "node_modules/"
-    "result"
-    "result-*"
-  ] ../.;
+  treeSrc =
+    pkgs.nix-gitignore.gitignoreRecursiveSource [
+      ".git/"
+      "target/"
+      "node_modules/"
+      "result"
+      "result-*"
+    ]
+    ../.;
 
   toplevel = name: nixosSystems.${name}.config.system.build.toplevel;
-in
-{
+in {
   client-ui = builds.clientUi;
 
   local-api-tests = crates.local-api.tests;
@@ -29,37 +29,38 @@ in
 
   wg-register-tests =
     pkgs.runCommand "wg-register-tests"
-      {
-        nativeBuildInputs = [
-          pkgs.busybox
-          pkgs.jq
-        ];
-        src = ../apps/wg-register;
-      }
-      ''
-        cp -r "$src" ./wg-register
-        chmod -R +w ./wg-register
-        busybox sh ./wg-register/setup_test.sh
-        touch $out
-      '';
+    {
+      nativeBuildInputs = [
+        pkgs.busybox
+        pkgs.jq
+      ];
+      src = ../apps/wg-register;
+    }
+    ''
+      cp -r "$src" ./wg-register
+      chmod -R +w ./wg-register
+      busybox sh ./wg-register/setup_test.sh
+      touch $out
+    '';
 
+  chart-checks =
     pkgs.runCommand "chart-checks"
-      {
-        nativeBuildInputs = [
-          pkgs.kubernetes-helm
-          (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
-        ];
-        src = ../apps/catalog;
-      }
-      ''
-        cp -r "$src" ./catalog
-        chmod -R +w ./catalog
-        # helm needs a writable home, and the sandbox has none.
-        export HOME=$PWD/home
-        mkdir -p "$HOME"
-        python3 ./catalog/check_charts.py
-        touch $out
-      '';
+    {
+      nativeBuildInputs = [
+        pkgs.kubernetes-helm
+        (pkgs.python3.withPackages (ps: [ps.pyyaml]))
+      ];
+      src = ../apps/catalog;
+    }
+    ''
+      cp -r "$src" ./catalog
+      chmod -R +w ./catalog
+      # helm needs a writable home, and the sandbox has none.
+      export HOME=$PWD/home
+      mkdir -p "$HOME"
+      python3 ./catalog/check_charts.py
+      touch $out
+    '';
 
   coverage-local-api = crates.local-api.coverage;
   coverage-installer = crates.installer.coverage;
@@ -81,18 +82,17 @@ in
   # instead of read from real config) — built from the REAL Nix values every
   # unit already uses, not a hand-maintained parallel list, so it can't drift
   # from what a node actually gets.
-  binary-contract =
-    let
-      allBins = pkgs.symlinkJoin {
-        name = "yolab-all-unit-bins";
-        paths =
-          nixosSystems.yolab-ci.config.environment.systemPackages
-          ++ pkgs.lib.concatMap (u: u.path or [ ]) (
-            builtins.attrValues nixosSystems.yolab-ci.config.systemd.services
-          );
-      };
-    in
-    pkgs.runCommand "binary-contract" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+  binary-contract = let
+    allBins = pkgs.symlinkJoin {
+      name = "yolab-all-unit-bins";
+      paths =
+        nixosSystems.yolab-ci.config.environment.systemPackages
+        ++ pkgs.lib.concatMap (u: u.path or []) (
+          builtins.attrValues nixosSystems.yolab-ci.config.systemd.services
+        );
+    };
+  in
+    pkgs.runCommand "binary-contract" {nativeBuildInputs = [pkgs.gnugrep];} ''
       grep -rhoE 'Command::new\("[^"]+"\)|\.run_cmd\(\s*"[^"]+"' \
         ${treeSrc}/homelab/local-api/src \
         | grep -oE '"[^"]+"' | tr -d '"' | sort -u > "$TMPDIR/needed.txt"
@@ -131,7 +131,7 @@ in
   # `stops_and_restarts_k3s_around_an_active_migration` test asserts the
   # ordering directly; what is left to assert here is the Nix-level half:
   # that the ordering this property depends on is still in place.
-  containerd-store-after-order = pkgs.runCommand "containerd-store-after-order" { } ''
+  containerd-store-after-order = pkgs.runCommand "containerd-store-after-order" {} ''
     grep -qx 'yolab-containerd-store.service' ${pkgs.writeText "k3s-after" (builtins.concatStringsSep "\n" nixosSystems.yolab-ci.config.systemd.services.k3s.after)} || {
       echo "k3s.service is no longer After= the store unit — re-read why this check exists" >&2
       exit 1
@@ -155,27 +155,24 @@ in
   # `allowlist` is for units where "stop retrying after the first success" is
   # correct, not a bug — see each one's own comment (yolab-ceph-bootstrap: a
   # successful join has nothing left to retry).
-  self-healing-timers-use-oncalendar =
-    let
-      allowlist = [ "yolab-ceph-bootstrap" ];
-      services = nixosSystems.yolab-ci.config.systemd.services;
-      timers = nixosSystems.yolab-ci.config.systemd.timers;
-      remainsAfterExit = name: (services.${name}.serviceConfig.RemainAfterExit or false) == true;
-      usesUnitRelativeTimer =
-        name:
-        let
-          tc = timers.${name}.timerConfig or { };
-        in
-        (tc ? OnUnitActiveSec) || (tc ? OnUnitInactiveSec);
-      offenders = builtins.filter (
-        name:
+  self-healing-timers-use-oncalendar = let
+    allowlist = ["yolab-ceph-bootstrap"];
+    services = nixosSystems.yolab-ci.config.systemd.services;
+    timers = nixosSystems.yolab-ci.config.systemd.timers;
+    remainsAfterExit = name: (services.${name}.serviceConfig.RemainAfterExit or false) == true;
+    usesUnitRelativeTimer = name: let
+      tc = timers.${name}.timerConfig or {};
+    in
+      (tc ? OnUnitActiveSec) || (tc ? OnUnitInactiveSec);
+    offenders = builtins.filter (
+      name:
         services ? ${name}
         && remainsAfterExit name
         && usesUnitRelativeTimer name
         && !(builtins.elem name allowlist)
-      ) (builtins.attrNames timers);
-    in
-    pkgs.runCommand "self-healing-timers-use-oncalendar" { } ''
+    ) (builtins.attrNames timers);
+  in
+    pkgs.runCommand "self-healing-timers-use-oncalendar" {} ''
       offenders=${pkgs.writeText "offenders" (builtins.concatStringsSep "\n" offenders)}
       if [ -s "$offenders" ]; then
         echo "These timers pair OnUnitActiveSec/OnUnitInactiveSec with a" >&2
@@ -202,38 +199,38 @@ in
   # shebang. -x follows sourced files.
   shellcheck =
     pkgs.runCommand "shellcheck"
-      {
-        nativeBuildInputs = [ pkgs.shellcheck ];
-      }
-      ''
-        find ${treeSrc} -name '*.sh' -print0 | xargs -0 shellcheck -x
-        touch $out
-      '';
+    {
+      nativeBuildInputs = [pkgs.shellcheck];
+    }
+    ''
+      find ${treeSrc} -name '*.sh' -print0 | xargs -0 shellcheck -x
+      touch $out
+    '';
 
   # DL3018 wants every apk package pinned. These images track upstream Alpine
   # deliberately, and the wg-* tools must match the host kernel's WireGuard, so
   # pinning buys a stale userland rather than safety.
   hadolint =
     pkgs.runCommand "hadolint"
-      {
-        nativeBuildInputs = [ pkgs.hadolint ];
-      }
-      ''
-        find ${treeSrc} -name 'Dockerfile' -print0 \
-          | xargs -0 hadolint --ignore DL3018
-        touch $out
-      '';
+    {
+      nativeBuildInputs = [pkgs.hadolint];
+    }
+    ''
+      find ${treeSrc} -name 'Dockerfile' -print0 \
+        | xargs -0 hadolint --ignore DL3018
+      touch $out
+    '';
 
   # statix is deliberately absent: its 39 findings are all "avoid repeated keys
   # in attribute sets", and flattening `boot.loader.grub.*` is not obviously an
   # improvement. `nix run nixpkgs#statix -- check` if you want it.
   deadnix =
     pkgs.runCommand "deadnix"
-      {
-        nativeBuildInputs = [ pkgs.deadnix ];
-      }
-      ''
-        deadnix --fail ${treeSrc}
-        touch $out
-      '';
+    {
+      nativeBuildInputs = [pkgs.deadnix];
+    }
+    ''
+      deadnix --fail ${treeSrc}
+      touch $out
+    '';
 }
