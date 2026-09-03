@@ -27,7 +27,28 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v8
 
       - name: Run all checks
-        run: nix run .#ci --print-build-logs
+        run: nix run .#ci --print-build-logs | tee /tmp/ci-output.txt
+
+      # `nix run .#ci`'s own output is `✓ <name>  (<store path>)` per check — see
+      # nix/checks.nix's `local-api-tests`/`clippy-local-api`/etc. and flake.nix's
+      # `ci` app, which builds that line by interpolating each check's already-built
+      # store path directly. Parsing it back out means every check this job already
+      # built gets pushed — including local-api-tests and clippy-local-api, which
+      # share almost their entire dependency closure with the local-api binary a
+      # real node's `nixos-rebuild switch` compiles — with no second list to keep in
+      # sync as checks are added or removed.
+      #
+      # Gated on the secret existing (not just non-empty — an absent repo secret and
+      # an empty one both evaluate to "" in Actions) so a fork or a PR from someone
+      # without cache-push access still gets a green check, just without populating
+      # the cache.
+      - name: Push to the Nix cache
+        if: ${{ secrets.ATTIC_AUTH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "${{ secrets.ATTIC_AUTH_TOKEN }}"
+          mapfile -t paths < <(grep -oE '/nix/store/[^)]+' /tmp/ci-output.txt | sort -u)
+          nix run nixpkgs#attic-client -- push yolab "${paths[@]}"
 
   build-images:
     runs-on: ubuntu-latest
@@ -264,19 +285,29 @@ jobs:
           echo "ISO store path: $ISO_OUT"
 
       - name: Build homelab packages
+        id: build_homelab
         run: |
-          nix build .#homelab-ui --no-link --print-build-logs --print-out-paths
-          nix build .#homelab-api --no-link --print-build-logs --print-out-paths
+          UI_OUT=$(nix build .#homelab-ui --no-link --print-build-logs --print-out-paths)
+          API_OUT=$(nix build .#homelab-api --no-link --print-build-logs --print-out-paths)
+          echo "ui_store_path=$UI_OUT" >> "$GITHUB_OUTPUT"
+          echo "api_store_path=$API_OUT" >> "$GITHUB_OUTPUT"
 
-      # No "Push to Nix cache" step. It pushed the ISO, UI and API to an Attic
-      # cache at cache.demycode.ovh that nothing ever read: no substituter in
-      # this repo or on a deployed node references it — nodes build against
-      # cache.nixos.org. So its only observable effect was failing and marking
-      # every push red, which trains people to ignore a red tree.
-      #
-      # If a private cache is wanted later, the consuming side has to land
-      # first — nix.settings.substituters plus the public key on the nodes —
-      # otherwise publishing to it is work that benefits nobody.
+      # The consuming side has now landed — homelab/nixos/common.nix's
+      # nix.settings.substituters/trusted-public-keys — so this is no longer the
+      # dead push the comment it replaced described. homelab-api is the one that
+      # actually matters: it is the multi-minute Rust build every node repeats on
+      # every `nixos-rebuild switch`, and unlike the full system closure (which
+      # bakes in each node's own config.toml path) it is byte-identical across
+      # every node, so one push here serves all of them.
+      - name: Push to the Nix cache
+        if: ${{ secrets.ATTIC_AUTH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "${{ secrets.ATTIC_AUTH_TOKEN }}"
+          nix run nixpkgs#attic-client -- push yolab \
+            "${{ steps.build_iso.outputs.store_path }}" \
+            "${{ steps.build_homelab.outputs.ui_store_path }}" \
+            "${{ steps.build_homelab.outputs.api_store_path }}"
 
       - name: Get ISO info
         id: iso_info
