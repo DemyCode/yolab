@@ -4,16 +4,14 @@
   inputs,
   rust,
   ...
-}:
-let
+}: let
   # The same derivation `installer-tests` runs its tests against. This used to
   # be a local `inputs.crane.mkLib pkgs` — nixpkgs' rustc rather than the one
   # rust-toolchain.toml pins, and missing the pkg-config the tests pass — so
   # the binary that shipped on the ISO was built by a different compiler than
   # the binary the tests exercised.
   yolabInstaller = rust.crates.installer.package;
-in
-{
+in {
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
   isoImage.squashfsCompression = "xz -Xdict-size 100%";
