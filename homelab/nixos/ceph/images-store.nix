@@ -160,11 +160,18 @@ in {
         SuccessExitStatus = "0 1";
         # Generous ON PURPOSE. The bounded checks that make FAILURE fast — an
         # unreachable cluster giving up in 20-30s rather than holding k3s —
-        # are inside storage::containerd_store now; this is only a last-resort
-        # backstop, and it has to be generous because the legitimate slow path
-        # (the first migration onto the RBD, possibly gigabytes across the
-        # network) must not be mistaken for a hang and killed mid-copy.
-        TimeoutStartSec = "900s";
+        # are inside storage::containerd_store now (RealHost::run_cmd bounds
+        # every individual rbd/mkfs/cp/mount call at 600s); this is only a
+        # last-resort backstop above that, and it has to clear the sum of a few
+        # of those before it can fire, because the legitimate slow path (the
+        # first migration onto the RBD, possibly gigabytes across the network)
+        # must not be mistaken for a hang and killed mid-copy — killing this
+        # unit only ever kills the *wrapping* process, never a subprocess
+        # already parked in uninterruptible sleep on a stuck read/write, so a
+        # kill here that lands mid-operation just adds another orphaned RBD
+        # mapping for the next run to clean up rather than actually recovering
+        # anything.
+        TimeoutStartSec = "3600s";
         ExecStart = "${localApiEnv}/bin/local-api storage containerd-store";
       };
       # The mount/readability check that replaced a bare `mountpoint` (see this
