@@ -64,12 +64,17 @@ in {
     # Without this a joining node's MDS stays down until the next reboot: a
     # failed oneshot is never retried on its own, and on a joining node the
     # first attempt necessarily runs before the cluster credentials arrive.
+    #
+    # OnCalendar, not OnUnitActiveSec/OnUnitInactiveSec: same reasoning as
+    # yolab-containerd-store's timer (see its fuller writeup) — this unit has
+    # RemainAfterExit=true, and neither directive re-arms once a RemainAfterExit
+    # oneshot has succeeded once, confirmed live via `systemctl show` on a real
+    # node.
     systemd.timers.yolab-ceph-mds-key = {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "2min";
-        OnUnitActiveSec = "5min";
-        OnUnitInactiveSec = "2min";
+        OnCalendar = "*:0/5";
       };
     };
 

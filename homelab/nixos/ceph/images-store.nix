@@ -221,16 +221,26 @@ in {
     # containerd on the root disk until somebody rebooted — indefinitely, and
     # invisibly. Runs behind the provisioning timer so the image exists by the
     # time it looks, and exits immediately once the mount is in place.
+    #
+    # OnCalendar, not OnUnitActiveSec/OnUnitInactiveSec — this unit has
+    # RemainAfterExit=true, and a `RemainAfterExit` oneshot that keeps succeeding
+    # never becomes inactive again, so BOTH of those stop re-arming after the
+    # first success: `systemctl show` on a live node showed
+    # `next_elapse=0`/`NextElapseUSecMonotonic=infinity` for this exact timer,
+    # 10+ hours after its last (successful) run. That is not a hypothetical: it is
+    # why a live outage went undetected — Ceph degraded, an RBD write timed out,
+    # XFS shut itself down (see this file's header), and the health check in
+    # storage::containerd_store::run() that exists specifically to catch that
+    # ("mounted but unreadable" -> rebuild) never got to run again, because
+    # nothing ever re-triggered this unit. OnCalendar fires on a wall-clock
+    # schedule regardless of the target unit's active/inactive state, so it does
+    # not have this failure mode. See the identical fix on yolab-ceph-mgr-key's
+    # and yolab-ceph-mds-key's timers.
     systemd.timers.yolab-containerd-store = {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "4min";
-        OnUnitActiveSec = "5min";
-        # SuccessExitStatus above covers the unit's own exit code, not a kill
-        # by TimeoutStartSec — that is a real failure this still needs to
-        # retry from, so OnUnitInactiveSec stays even though "failure" is rare
-        # here. See the note on yolab-ceph-mgr-key's timer.
-        OnUnitInactiveSec = "2min";
+        OnCalendar = "*:0/5";
       };
     };
 
