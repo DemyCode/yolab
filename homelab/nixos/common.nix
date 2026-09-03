@@ -587,19 +587,13 @@ in {
     # base nixpkgs closure, so trying it first would just be a guaranteed
     # miss on every ordinary package.
     #
-    # TODO: the key below is a placeholder. Once cache.demycode.ovh is live
-    # and `attic cache create yolab` has been run there, replace it with the
-    # real value from `attic cache info yolab` (format: "yolab:<base64>").
-    # Nix silently ignores a substituter whose key doesn't match — a stale or
-    # placeholder key fails closed (falls through to building locally), never
-    # by accepting an unsigned or wrongly-signed path.
     nix.settings.substituters = [
       "https://cache.nixos.org"
       "https://cache.demycode.ovh/yolab"
     ];
     nix.settings.trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-      "yolab:0000000000000000000000000000000000000000="
+      "yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="
     ];
     nix.gc.automatic = true;
     nix.gc.options = "--delete-older-than 14d";
