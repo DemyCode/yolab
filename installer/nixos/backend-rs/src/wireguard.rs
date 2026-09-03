@@ -251,6 +251,58 @@ pub async fn register_and_bring_up_tunnel(
     })
 }
 
+/// Undoes `register_and_bring_up_tunnel` after a later install step fails.
+///
+/// `next_node_name_from` picks the next hostname by scanning exactly the DNS
+/// records this function deletes — so without this, every failed install
+/// permanently burns a "nodeN" name and leaves a dead WireGuard peer
+/// registered on the platform forever, and the next attempt (or the next
+/// customer's first machine) gets a confusing, gapped name.
+///
+/// Best-effort: errors are logged, not propagated. The install has already
+/// failed for its own reason; losing that reason behind a cleanup failure
+/// would make debugging harder, not easier.
+pub async fn deregister(
+    account_token: &str,
+    tunnel: &TunnelResult,
+    tx: &tokio::sync::mpsc::UnboundedSender<crate::app::AppEvent>,
+) {
+    let log = |msg: String| {
+        let _ = tx.send(crate::app::AppEvent::Log(msg));
+    };
+    let client = reqwest::Client::new();
+    let auth = format!("Bearer {account_token}");
+
+    // Two independent resources (see register_and_bring_up_tunnel's steps 1
+    // and 3) — deleting one does not cascade to the other.
+    let node_result = client
+        .delete(format!("{PLATFORM_API}/nodes/{}", tunnel.node_id))
+        .header("Authorization", &auth)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status());
+    if let Err(e) = node_result {
+        log(format!(
+            "cleanup: failed to deregister node {}: {e}",
+            tunnel.node_id
+        ));
+    }
+
+    // Deletes the tunnel's dns_records too (the backend cascades this itself).
+    let tunnel_result = client
+        .delete(format!("{PLATFORM_API}/tunnels/{}", tunnel.tunnel_id))
+        .header("Authorization", &auth)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status());
+    if let Err(e) = tunnel_result {
+        log(format!(
+            "cleanup: failed to deregister tunnel {}: {e}",
+            tunnel.tunnel_id
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

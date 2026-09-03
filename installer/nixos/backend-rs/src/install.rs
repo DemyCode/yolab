@@ -348,6 +348,42 @@ async fn do_install(
         .context("register tunnel")?;
     log!("✓ Tunnel up — {}", tunnel.dns_url);
 
+    // From here through a successful `nixos-install`, a failure must not leave
+    // the tunnel/node peer just registered above stranded — see
+    // `wireguard::deregister`'s doc comment for why. Once `nixos-install`
+    // itself succeeds, the installed system's own config.toml depends on this
+    // registration existing, so a later failure (e.g. the final rsync below)
+    // must NOT roll it back — only errors from this call should.
+    if let Err(e) = partition_and_install(req, tx, &service_name, &tunnel).await {
+        log!("Install failed — deregistering the tunnel and node peer so the name and DNS record aren't stranded…");
+        crate::wireguard::deregister(&req.account_token, &tunnel, tx).await;
+        return Err(e);
+    }
+
+    // ── Copy repo to installed system ─────────────────────────────────────────
+    log!("Copying repository to installed system…");
+    let src = format!("{CODE_DIR}/");
+    stream_command("rsync", &["-a", &src, "/mnt/etc/nixos"], tx).await?;
+    log!("✓ Complete — remove the USB and reboot");
+
+    Ok(tunnel.dns_url)
+}
+
+/// Everything from password hashing through a completed `nixos-install`.
+///
+/// Split out of `do_install` so its errors can be told apart from the tunnel
+/// registration that must be undone on failure, and from the final rsync copy
+/// that must not be (see `do_install`'s comment).
+async fn partition_and_install(
+    req: &InstallParams,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    service_name: &str,
+    tunnel: &crate::wireguard::TunnelResult,
+) -> anyhow::Result<()> {
+    macro_rules! log {
+        ($($arg:tt)*) => { let _ = tx.send(AppEvent::Log(format!($($arg)*))); };
+    }
+
     // ── Hash password ─────────────────────────────────────────────────────────
     log!("Hashing password…");
     let password_hash = hash_password(&req.password)
@@ -367,7 +403,7 @@ async fn do_install(
     let ignored_dir = format!("{CODE_DIR}/homelab/ignored");
     tokio::fs::create_dir_all(&ignored_dir).await?;
 
-    let toml_str = render_config_toml(req, &tunnel, &service_name, &password_hash)
+    let toml_str = render_config_toml(req, tunnel, service_name, &password_hash)
         .context("serialize config")?;
     tokio::fs::write(format!("{ignored_dir}/config.toml"), toml_str).await?;
     log!("✓ Config written");
@@ -409,13 +445,7 @@ async fn do_install(
     .await?;
     log!("✓ NixOS installed");
 
-    // ── Copy repo to installed system ─────────────────────────────────────────
-    log!("Copying repository to installed system…");
-    let src = format!("{CODE_DIR}/");
-    stream_command("rsync", &["-a", &src, "/mnt/etc/nixos"], tx).await?;
-    log!("✓ Complete — remove the USB and reboot");
-
-    Ok(tunnel.dns_url)
+    Ok(())
 }
 
 #[cfg(test)]
