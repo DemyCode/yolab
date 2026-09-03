@@ -6,10 +6,25 @@
 //! canned answers, so the reconcile logic can be exercised without a cluster.
 
 use std::future::Future;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::process::Command;
+
+/// Every `RealHost` subprocess call is bounded by this. Generous — long enough for a
+/// real multi-GB `cp` of containerd's data-root over a modest link — rather than tight,
+/// because the failure this guards against is not "a slow command", it is a command
+/// that never returns at all: a `mkfs`/`cp`/`mount` against an RBD device blocked on
+/// Ceph parks the calling thread in uninterruptible sleep (state D), a state no signal
+/// — including the `kill_on_drop` below — can end. Before this, that meant the entire
+/// `local-api storage <cmd>` process (and the systemd unit `RemainAfterExit`ing on it)
+/// hung forever; systemd's own `TimeoutStartSec` was the only thing that ever
+/// intervened, and it could only SIGKILL the *wrapping* process, never the wedged child
+/// itself. Bounding the await here at least lets that wrapping process fail fast and
+/// exit cleanly instead of needing to be killed — the wedged child is orphaned either
+/// way, since nothing short of the kernel resolving the I/O (or a reboot) can end it.
+const RUN_CMD_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The observable result of running a process, without carrying the process
 /// handle. `std::process::Output` cannot be built by hand in tests, so a fake
@@ -149,11 +164,19 @@ impl Host for RealHost {
         args: &'a [&str],
     ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
         async move {
-            let out = Command::new("systemctl")
+            let work = Command::new("systemctl")
                 .args(args)
                 .kill_on_drop(true)
-                .output()
+                .output();
+            let out = tokio::time::timeout(RUN_CMD_TIMEOUT, work)
                 .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "systemctl {}: timed out after {}s",
+                        args.join(" "),
+                        RUN_CMD_TIMEOUT.as_secs()
+                    )
+                })?
                 .context("spawn systemctl")?;
             Ok(from_output(out))
         }
@@ -165,11 +188,16 @@ impl Host for RealHost {
         args: &'a [&'a str],
     ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
         async move {
-            let out = Command::new(bin)
-                .args(args)
-                .kill_on_drop(true)
-                .output()
+            let work = Command::new(bin).args(args).kill_on_drop(true).output();
+            let out = tokio::time::timeout(RUN_CMD_TIMEOUT, work)
                 .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "{bin} {}: timed out after {}s",
+                        args.join(" "),
+                        RUN_CMD_TIMEOUT.as_secs()
+                    )
+                })?
                 .with_context(|| format!("spawn {bin}"))?;
             Ok(from_output(out))
         }

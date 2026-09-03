@@ -92,25 +92,105 @@ fn dir_has_any_entries(path: &Path) -> bool {
 }
 
 /// `.[] | select(.pool==pool and .name==name) | .device` from `rbd showmapped
-/// --format json`. Pure and separate from the fetch so the shape of that JSON
-/// (an array, `pool`/`name`/`device` keys) is testable without a real rbd.
-fn find_mapped_device(showmapped: &Value, pool: &str, name: &str) -> Option<String> {
-    showmapped.as_array()?.iter().find_map(|e| {
-        (e["pool"] == pool && e["name"] == name)
-            .then(|| e["device"].as_str())
-            .flatten()
-            .map(str::to_string)
-    })
+/// --format json` — every match, not just the first, since the whole reason
+/// `all_mapped_devices` exists is that there can legitimately be more than one. Pure
+/// and separate from the fetch so the shape of that JSON (an array, `pool`/`name`/
+/// `device` keys) is testable without a real rbd.
+fn find_mapped_devices(showmapped: &Value, pool: &str, name: &str) -> Vec<String> {
+    showmapped
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|e| e["pool"] == pool && e["name"] == name)
+                .filter_map(|e| e["device"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// `rbd map` on an already-mapped image just reports it, so this is
-/// idempotent. `osd_request_timeout=30` is THE setting behind the worst
-/// failure this storage stack has had: krbd defaults to waiting forever, so
-/// when the pool cannot serve a read, anything touching the device parks in
-/// uninterruptible sleep — a state SIGKILL cannot end. With a timeout the
-/// same situation produces a recoverable I/O error instead.
+/// Every device currently mapped to `pool/name` — plural, because (see this function's
+/// history) that is not always just one. `rbd map`, on kernel RBD, does NOT dedupe
+/// against an already-mapped image the way this module used to assume: each call
+/// creates ANOTHER `/dev/rbdN` and registers ANOTHER watch on the image, on top of
+/// whatever is already there. A process killed mid-migration (systemd's
+/// `TimeoutStartSec`, or a `nixos-rebuild switch` restarting the unit) never reaches
+/// its own `rbd unmap`, so its mapping and watch outlive it — and the next run's
+/// `rbd map` piles a new one on rather than finding and reusing it.
+async fn all_mapped_devices<H: Host>(host: &H, pool: &str, name: &str) -> Vec<String> {
+    let Ok(out) = host
+        .run_cmd("rbd", &["showmapped", "--format", "json"])
+        .await
+    else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&out.stdout) else {
+        return Vec::new();
+    };
+    find_mapped_devices(&v, pool, name)
+}
+
+/// Clears every existing mapping of `pool/name` before this run creates its own.
+///
+/// By the time this is called, `run()` has already confirmed the real containerd
+/// mountpoint is NOT a healthy, in-use mount — its early return above would have taken
+/// effect otherwise — so nothing here depends on any mapping this finds: every one of
+/// them is leftover from an earlier, interrupted attempt. Unmounting first covers a
+/// mapping still bind-mounted at an abandoned staging directory (see
+/// `migrate_existing_store`'s `stage_dir`) — `rbd unmap` refuses a device that is
+/// still busy.
+///
+/// Best-effort, deliberately: a mapping stuck in the uninterruptible-sleep state this
+/// module's header describes cannot be cleared from here, or by anything short of the
+/// kernel resolving the I/O or a reboot. A failure here is logged and skipped rather
+/// than treated as fatal — that mapping stays leaked exactly as it would have anyway,
+/// but it no longer blocks this run from getting its own clean mapping and proceeding.
+async fn clear_stale_mappings<H: Host>(host: &H, pool: &str, name: &str) {
+    for dev in all_mapped_devices(host, pool, name).await {
+        let target = host
+            .run_cmd("findmnt", &["-no", "TARGET", "--source", &dev])
+            .await
+            .map(|o| o.stdout.trim().to_string())
+            .unwrap_or_default();
+        if !target.is_empty() {
+            tracing::warn!("unmounting stale {dev} at {target}, left behind by a previous attempt");
+            if !host
+                .run_cmd("umount", &[target.as_str()])
+                .await
+                .is_ok_and(|o| o.success)
+            {
+                let _ = host.run_cmd("umount", &["-l", target.as_str()]).await;
+            }
+        }
+        if !host
+            .run_cmd("rbd", &["unmap", &dev])
+            .await
+            .is_ok_and(|o| o.success)
+        {
+            tracing::warn!(
+                "could not unmap stale {dev} — a previous attempt may still be wedged; leaving it mapped"
+            );
+        }
+    }
+}
+
+/// `-o osd_request_timeout=30` is THE setting behind the worst failure this storage
+/// stack has had: krbd defaults to waiting forever, so when the pool cannot serve a
+/// read, anything touching the device parks in uninterruptible sleep — a state SIGKILL
+/// cannot end. With a timeout the same situation produces a recoverable I/O error
+/// instead. Checks for an existing mapping first — real idempotency, not just the
+/// hope of it — since `run()` already called `clear_stale_mappings` for this same
+/// pool/name; finding one here would mean this ran concurrently with another attempt,
+/// not that this ought to add yet another mapping on top.
 async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Option<String> {
-    if let Ok(out) = host
+    if let Some(dev) = all_mapped_devices(host, pool, name)
+        .await
+        .into_iter()
+        .next()
+    {
+        return Some(dev);
+    }
+    let out = host
         .run_cmd(
             "rbd",
             &[
@@ -121,18 +201,15 @@ async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Option<Stri
             ],
         )
         .await
-    {
-        let dev = out.stdout.trim();
-        if out.success && !dev.is_empty() {
-            return Some(dev.to_string());
-        }
-    }
-    let out = host
-        .run_cmd("rbd", &["showmapped", "--format", "json"])
-        .await
         .ok()?;
-    let v: Value = serde_json::from_str(&out.stdout).ok()?;
-    find_mapped_device(&v, pool, name)
+    let dev = out.stdout.trim();
+    if out.success && !dev.is_empty() {
+        return Some(dev.to_string());
+    }
+    all_mapped_devices(host, pool, name)
+        .await
+        .into_iter()
+        .next()
 }
 
 async fn has_filesystem<H: Host>(host: &H, dev: &str) -> bool {
@@ -240,6 +317,12 @@ async fn mount_the_store<H: Host>(
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
     let image = format!("{}/{node}", policy.pool_name);
+
+    // The caller (`run()`) only reaches here once it has confirmed `croot` is not
+    // already a healthy mount, so nothing depends on whatever `rbd showmapped` finds
+    // for this image below — every mapping there is leftover from an earlier,
+    // interrupted attempt. Clear them before minting a fresh one.
+    clear_stale_mappings(host, &policy.pool_name, node).await;
 
     let Some(dev) = mapped_device(host, &policy.pool_name, node).await else {
         tracing::warn!("could not map {image} — leaving containerd on the root disk");
@@ -387,16 +470,121 @@ mod tests {
     }
 
     #[test]
-    fn find_mapped_device_matches_pool_and_name() {
+    fn find_mapped_devices_matches_pool_and_name() {
         let v = serde_json::json!([
             {"pool": "images", "name": "yolab-n1", "device": "/dev/rbd0"},
             {"pool": "images", "name": "yolab-n2", "device": "/dev/rbd1"},
         ]);
+        assert_eq!(find_mapped_devices(&v, "images", "yolab-n1"), ["/dev/rbd0"]);
+        assert!(find_mapped_devices(&v, "images", "yolab-n9").is_empty());
+    }
+
+    /// The whole reason this returns a `Vec`: a process killed mid-migration leaves its
+    /// mapping behind, and the next run's `rbd map` piles a new one on top rather than
+    /// reusing it — so the real `rbd showmapped` output this guards against legitimately
+    /// has more than one entry for the same pool/name.
+    #[test]
+    fn find_mapped_devices_returns_every_duplicate() {
+        let v = serde_json::json!([
+            {"pool": "images", "name": "node2", "device": "/dev/rbd0"},
+            {"pool": "images", "name": "node2", "device": "/dev/rbd1"},
+            {"pool": "images", "name": "node1", "device": "/dev/rbd2"},
+        ]);
         assert_eq!(
-            find_mapped_device(&v, "images", "yolab-n1").as_deref(),
-            Some("/dev/rbd0")
+            find_mapped_devices(&v, "images", "node2"),
+            ["/dev/rbd0", "/dev/rbd1"]
         );
-        assert_eq!(find_mapped_device(&v, "images", "yolab-n9"), None);
+    }
+
+    // ── clear_stale_mappings ──────────────────────────────────────────────────
+    //
+    // The actual incident this guards against: a node killed mid-migration enough
+    // times leaves several `/dev/rbdN` mappings of the same image, at least one still
+    // bind-mounted at an abandoned staging directory from `migrate_existing_store`.
+
+    #[tokio::test]
+    async fn clears_every_stale_mapping_unmounting_the_ones_still_bind_mounted() {
+        let host = FakeHost::new()
+            .ok(
+                "rbd showmapped --format json",
+                r#"[
+                    {"pool": "images", "name": "node2", "device": "/dev/rbd0"},
+                    {"pool": "images", "name": "node2", "device": "/dev/rbd1"},
+                    {"pool": "images", "name": "node1", "device": "/dev/rbd2"}
+                ]"#,
+            )
+            .ok(
+                "findmnt -no TARGET --source /dev/rbd0",
+                "/tmp/yolab-containerd-migrate-abc",
+            )
+            .ok("findmnt -no TARGET --source /dev/rbd1", "")
+            .ok("umount", "")
+            .ok("rbd unmap", "");
+
+        clear_stale_mappings(&host, "images", "node2").await;
+
+        assert!(host.ran("umount /tmp/yolab-containerd-migrate-abc"));
+        assert!(host.ran("rbd unmap /dev/rbd0"));
+        assert!(host.ran("rbd unmap /dev/rbd1"));
+        // A different image's mapping is none of this call's business.
+        assert!(!host.ran("rbd unmap /dev/rbd2"));
+        // Nothing was mounted at rbd1 — unmounting it would be a bug in its own right.
+        assert!(!host.ran("umount /dev/rbd1"));
+    }
+
+    // ── mapped_device ─────────────────────────────────────────────────────────
+
+    /// The bug this whole fix is for: `rbd map` on kernel RBD does not dedupe against
+    /// an already-mapped image, so calling it when a mapping already exists just piles
+    /// another one on. `mapped_device` must never do that — it must find and reuse.
+    #[tokio::test]
+    async fn reuses_an_existing_mapping_instead_of_mapping_again() {
+        let host = FakeHost::new().ok(
+            "rbd showmapped --format json",
+            r#"[{"pool": "images", "name": "node2", "device": "/dev/rbd0"}]"#,
+        );
+
+        let dev = mapped_device(&host, "images", "node2").await;
+
+        assert_eq!(dev.as_deref(), Some("/dev/rbd0"));
+        assert!(!host.ran("rbd map"), "must reuse, never map again");
+    }
+
+    #[tokio::test]
+    async fn maps_fresh_when_nothing_is_currently_mapped() {
+        let host = FakeHost::new().ok("rbd showmapped --format json", "[]").ok(
+            "rbd map images/node2 -o osd_request_timeout=30",
+            "/dev/rbd0",
+        );
+
+        let dev = mapped_device(&host, "images", "node2").await;
+
+        assert_eq!(dev.as_deref(), Some("/dev/rbd0"));
+        assert!(host.ran("rbd map images/node2"));
+    }
+
+    /// A mapping wedged in the uninterruptible-sleep state this module's header
+    /// describes cannot be unmapped from here — `rbd unmap` on it just fails, same as
+    /// the real command would. That must not stop the loop from clearing every OTHER
+    /// mapping it can.
+    #[tokio::test]
+    async fn a_mapping_that_refuses_to_unmap_does_not_block_the_others() {
+        let host = FakeHost::new()
+            .ok(
+                "rbd showmapped --format json",
+                r#"[
+                    {"pool": "images", "name": "node2", "device": "/dev/rbd0"},
+                    {"pool": "images", "name": "node2", "device": "/dev/rbd1"}
+                ]"#,
+            )
+            .ok("findmnt", "")
+            .fail("rbd unmap /dev/rbd0", "rbd: sysfs write failed")
+            .ok("rbd unmap /dev/rbd1", "");
+
+        clear_stale_mappings(&host, "images", "node2").await;
+
+        assert!(host.ran("rbd unmap /dev/rbd0"));
+        assert!(host.ran("rbd unmap /dev/rbd1"));
     }
 
     #[test]
