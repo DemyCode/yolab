@@ -34,6 +34,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       # Written once and kept. Regenerating it on restart would silently break an
       # already-configured Nextcloud connector, which fails as "document server
       # unreachable" rather than as a changed secret.

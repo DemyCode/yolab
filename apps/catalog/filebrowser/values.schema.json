@@ -25,6 +25,12 @@
           "title": "Storage size",
           "default": "50Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
+        },
+        "file_explorer_enabled": {
+          "type": "boolean",
+          "title": "File explorer",
+          "default": true,
+          "description": "A lightweight, password-protected, read-only browser for this app's own data — handy for pulling a file out or checking what's actually stored, without needing a terminal. The password is generated for you and shown once the app finishes starting."
         }
       }
     },

@@ -36,6 +36,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       # Mastodon's secrets are generated here, once, and never again.
       #
       # This runs in the GATEWAY pod on purpose. wg-register writes /yolab/env in the

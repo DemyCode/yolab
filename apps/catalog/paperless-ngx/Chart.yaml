@@ -37,10 +37,7 @@ annotations:
   # Values scraped out of pod logs after install (regex, capture group 1).
   yolab.io/outputs: |
     [
-      {
-        "key": "url",
-        "label": "Web URL",
-        "type": "url",
-        "pattern": "YOLAB_OUTPUT url (\\S+)"
-      }
+      { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" },
+      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
+      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
     ]

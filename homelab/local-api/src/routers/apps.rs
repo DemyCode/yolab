@@ -216,50 +216,6 @@ impl ChartMeta {
     }
 }
 
-/// Whether `dir`'s templates compose the shared Caddy gateway
-/// (`yolab-common.caddyConfigMap`, apps/catalog/yolab-common/templates/_gateway.tpl).
-/// The file explorer only works for a chart that does — it's wired into that
-/// template (see _fileexplorer.tpl), not declared by individual charts. Two apps
-/// in the whole catalog don't compose it (minecraft, valheim: raw TCP tunnels, no
-/// Caddy at all); a chart providing its own full `gateway.caddyfile` override also
-/// bypasses it, the same existing limitation `auth_enabled` already has.
-fn chart_uses_gateway(dir: &std::path::Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir.join("templates")) else {
-        return false;
-    };
-    entries.flatten().any(|e| {
-        std::fs::read_to_string(e.path())
-            .map(|s| s.contains("yolab-common.caddyConfigMap"))
-            .unwrap_or(false)
-    })
-}
-
-/// Injects the platform-wide file-explorer toggle into a chart's config schema.
-/// Every chart that reaches the shared gateway gets this automatically; a chart
-/// never declares it itself (see _fileexplorer.tpl for why). A no-op if `schema`
-/// isn't a JSON object — `properties.config` was missing or unparsable, in which
-/// case there is no form to add a field to anyway.
-fn with_file_explorer_toggle(mut schema: Value) -> Value {
-    let Some(obj) = schema.as_object_mut() else {
-        return schema;
-    };
-    let props = obj
-        .entry("properties")
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    if let Some(props_obj) = props.as_object_mut() {
-        props_obj.insert(
-            "file_explorer_enabled".to_string(),
-            serde_json::json!({
-                "type": "boolean",
-                "title": "File explorer",
-                "description": "A lightweight, password-protected, read-only file browser for this app's own data — handy for pulling a file out or checking what's actually stored, without needing a terminal. The password is generated for you and shown once the app finishes starting.",
-                "default": true
-            }),
-        );
-    }
-    schema
-}
-
 fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
     let chart: ChartYaml =
         serde_norway::from_str(&std::fs::read_to_string(dir.join("Chart.yaml")).ok()?).ok()?;
@@ -267,74 +223,24 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
     if chart.type_ == "library" {
         return None;
     }
-    let mut schema = std::fs::read_to_string(dir.join("values.schema.json"))
+    let schema = std::fs::read_to_string(dir.join("values.schema.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .map(|v| v["properties"]["config"].clone())
         .unwrap_or(Value::Null);
-    if chart_uses_gateway(dir) {
-        schema = with_file_explorer_toggle(schema);
-    }
     Some(ChartMeta { chart, schema })
 }
 
-/// Mirrors `yolab-common.fileExplorer.enabled`: an absent key means "not
-/// answered", not "off", so only an explicit `false` disables it. Must stay in
-/// sync with that template — this is what decides whether to even look for the
-/// file explorer's two `YOLAB_OUTPUT` log lines, which the Caddy container only
-/// ever prints when its own copy of this same check says enabled.
-fn file_explorer_enabled(config: &serde_json::Map<String, Value>) -> bool {
-    config.get("file_explorer_enabled") != Some(&Value::Bool(false))
-}
-
-/// Output specs for the platform-injected file explorer, matching the two
-/// `YOLAB_OUTPUT` lines the Caddy container logs on startup when enabled (see
-/// yolab-common.fileExplorer.startupScript). Scanned by `scan_outputs` the same
-/// way as any chart-declared output; never declared by the chart itself.
-fn file_explorer_output_specs() -> Vec<Value> {
-    vec![
-        serde_json::json!({
-            "key": "file_explorer_url",
-            "label": "File explorer",
-            "type": "url",
-            "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)"
-        }),
-        serde_json::json!({
-            "key": "file_explorer_password",
-            "label": "File explorer password",
-            "type": "text",
-            "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)"
-        }),
-    ]
-}
-
-/// The chart's log-scraping output specs (`yolab.io/outputs`), plus the
-/// platform-injected file explorer entries when this instance's config leaves it
-/// enabled. Empty when the chart declares none and doesn't use the gateway, or
-/// when the app was installed from a chart no longer in the catalog.
-///
-/// `config` must be this specific instance's stored config, not the chart's
-/// schema defaults — otherwise an instance that disabled the toggle would still
-/// advertise an output that will never appear, which the UI renders as a
-/// permanent "waiting for the app to start" spinner rather than the absence it
-/// actually is.
-fn chart_outputs_spec(
-    catalog_dir: &std::path::Path,
-    id: &str,
-    config: &serde_json::Map<String, Value>,
-) -> Vec<Value> {
+/// The chart's log-scraping output specs (`yolab.io/outputs`). Empty when the chart
+/// declares none, or when the app was installed from a chart no longer in the catalog.
+fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
     if id.is_empty() {
         return Vec::new();
     }
-    let dir = catalog_dir.join(id);
-    let mut specs = read_chart(&dir)
+    read_chart(&catalog_dir.join(id))
         .map(|m| m.ann_json(ANN_CHART_OUTPUTS))
         .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-    if chart_uses_gateway(&dir) && file_explorer_enabled(config) {
-        specs.extend(file_explorer_output_specs());
-    }
-    specs
+        .unwrap_or_default()
 }
 
 /// The tunnel subdomain the user asked for: the value of whichever config field the
@@ -888,7 +794,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
 
-        let outputs_spec = chart_outputs_spec(&catalog_dir, &id, &config)
+        let outputs_spec = chart_outputs_spec(&catalog_dir, &id)
             .into_iter()
             .filter(|o| o["type"].as_str() != Some("hidden"))
             .filter_map(|o| {
@@ -1144,12 +1050,7 @@ pub async fn scan_outputs(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let config: serde_json::Map<String, Value> = ann
-        .get(ANN_CONFIG)
-        .and_then(|v| v.as_str())
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    let outputs_spec = chart_outputs_spec(&state.config.catalog_dir(), &id, &config);
+    let outputs_spec = chart_outputs_spec(&state.config.catalog_dir(), &id);
     if outputs_spec.is_empty() {
         return Ok(Json(ScanOutputsResponse {
             outputs: normalize_outputs(&ann),
@@ -1855,85 +1756,20 @@ mod tests {
     }
 
     // ── file explorer ────────────────────────────────────────────────────────
+    //
+    // Every piece of this is now chart-declared (values.schema.json, the
+    // yolab.io/outputs annotation, the explicit template includes) rather than
+    // injected here — see yolab-common/templates/_fileexplorer.tpl. This is the
+    // one regression test on the Rust side: that a real chart which claims to
+    // have the file explorer actually declares its two outputs.
 
     #[test]
-    fn the_toggle_is_added_to_an_existing_properties_object() {
-        let schema = with_file_explorer_toggle(serde_json::json!({
-            "type": "object",
-            "properties": { "subdomain": { "type": "string" } }
-        }));
-        assert_eq!(schema["properties"]["subdomain"]["type"], "string");
-        assert_eq!(
-            schema["properties"]["file_explorer_enabled"]["type"],
-            "boolean"
-        );
-        assert_eq!(
-            schema["properties"]["file_explorer_enabled"]["default"],
-            true
-        );
-    }
-
-    #[test]
-    fn the_toggle_creates_properties_when_the_schema_has_none() {
-        let schema = with_file_explorer_toggle(serde_json::json!({ "type": "object" }));
-        assert_eq!(
-            schema["properties"]["file_explorer_enabled"]["type"],
-            "boolean"
-        );
-    }
-
-    #[test]
-    fn a_non_object_schema_is_returned_unchanged() {
-        assert_eq!(with_file_explorer_toggle(Value::Null), Value::Null);
-    }
-
-    #[test]
-    fn file_explorer_enabled_defaults_to_on_when_unanswered() {
-        assert!(file_explorer_enabled(&serde_json::Map::new()));
-    }
-
-    #[test]
-    fn file_explorer_enabled_is_on_when_explicitly_true() {
-        assert!(file_explorer_enabled(&map(
-            serde_json::json!({ "file_explorer_enabled": true })
-        )));
-    }
-
-    #[test]
-    fn file_explorer_enabled_is_off_only_when_explicitly_false() {
-        assert!(!file_explorer_enabled(&map(
-            serde_json::json!({ "file_explorer_enabled": false })
-        )));
-    }
-
-    /// filebrowser composes the shared gateway and declares no outputs of its own in
-    /// its Chart.yaml, so it isolates exactly the platform-injected entries.
-    fn catalog_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog")
-    }
-
-    #[test]
-    fn chart_outputs_spec_adds_file_explorer_entries_when_enabled() {
-        let specs = chart_outputs_spec(&catalog_dir(), "filebrowser", &serde_json::Map::new());
+    fn a_chart_with_the_file_explorer_declares_its_outputs() {
+        let catalog_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog");
+        let specs = chart_outputs_spec(&catalog_dir, "filebrowser");
         let keys: Vec<&str> = specs.iter().filter_map(|s| s["key"].as_str()).collect();
         assert!(keys.contains(&"file_explorer_url"));
         assert!(keys.contains(&"file_explorer_password"));
-    }
-
-    #[test]
-    fn chart_outputs_spec_omits_file_explorer_entries_when_disabled_for_this_instance() {
-        let disabled = map(serde_json::json!({ "file_explorer_enabled": false }));
-        let specs = chart_outputs_spec(&catalog_dir(), "filebrowser", &disabled);
-        let keys: Vec<&str> = specs.iter().filter_map(|s| s["key"].as_str()).collect();
-        assert!(!keys.contains(&"file_explorer_url"));
-        assert!(!keys.contains(&"file_explorer_password"));
-    }
-
-    #[test]
-    fn chart_outputs_spec_omits_file_explorer_entries_for_a_chart_without_the_gateway() {
-        // minecraft is a raw TCP tunnel with no Caddy at all — see chart_uses_gateway.
-        let specs = chart_outputs_spec(&catalog_dir(), "minecraft", &serde_json::Map::new());
-        let keys: Vec<&str> = specs.iter().filter_map(|s| s["key"].as_str()).collect();
-        assert!(!keys.contains(&"file_explorer_url"));
     }
 }

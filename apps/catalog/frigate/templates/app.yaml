@@ -34,6 +34,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- /* No cameras are known at install time — there is nothing to ask for
              yet, since every household's cameras and RTSP credentials differ.
              Frigate's own web UI has a full config editor built in, so this

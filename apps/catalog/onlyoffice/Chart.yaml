@@ -17,4 +17,8 @@ annotations:
   # Nextcloud's ONLYOFFICE connector asks for this secret. It is generated here and
   # printed once so it can be copied across without anyone inventing their own.
   yolab.io/outputs: |
-    [{"key": "jwt_secret", "label": "Connector secret", "type": "text", "pattern": "YOLAB_OUTPUT jwt_secret (\\S+)"}]
+    [
+      { "key": "jwt_secret", "label": "Connector secret", "type": "text", "pattern": "YOLAB_OUTPUT jwt_secret (\\S+)" },
+      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
+      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
+    ]

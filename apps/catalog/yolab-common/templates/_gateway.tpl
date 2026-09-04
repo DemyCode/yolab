@@ -115,9 +115,7 @@ compose this plus wgRegisterInit and nothing else.
     - /bin/sh
     - -c
     - |
-      . /yolab/env
-      {{- include "yolab-common.fileExplorer.startupScript" . | nindent 6 }}
-      exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+      . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
   ports:
     - containerPort: 80
     - containerPort: 443

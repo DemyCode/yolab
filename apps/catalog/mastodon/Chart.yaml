@@ -30,5 +30,9 @@ annotations:
   # through the web form needs a confirmation email, which needs SMTP that a new
   # install may not have.
   yolab.io/outputs: |
-    [{"key": "owner_user", "label": "Owner username", "type": "text", "pattern": "YOLAB_OUTPUT owner_user (\\S+)"},
-     {"key": "owner_password", "label": "Owner password", "type": "text", "pattern": "YOLAB_OUTPUT owner_password (\\S+)"}]
+    [
+      { "key": "owner_user", "label": "Owner username", "type": "text", "pattern": "YOLAB_OUTPUT owner_user (\\S+)" },
+      { "key": "owner_password", "label": "Owner password", "type": "text", "pattern": "YOLAB_OUTPUT owner_password (\\S+)" },
+      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
+      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
+    ]
