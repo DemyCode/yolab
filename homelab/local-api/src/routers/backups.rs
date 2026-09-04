@@ -132,7 +132,9 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
     };
 
     let cfg = ensure_master_config(&url, &token).await?;
-    let pvcs = list_user_pvcs().await.unwrap_or_default();
+    // `?`, not a silent empty default: an API blip here would otherwise report
+    // "provisioned" with zero PVCs actually configured for backup.
+    let pvcs = list_user_pvcs().await?;
 
     let mut sources: Vec<String> = Vec::new();
     for pvc in &pvcs {
@@ -319,10 +321,13 @@ pub async fn dr_start(
     State(_state): State<AppState>,
     Json(body): Json<DrStartBody>,
 ) -> Result<Json<serde_json::Value>> {
-    ensure_no_operation_in_progress().await?;
     if !body.all && body.namespaces.is_empty() {
         return Err(anyhow::anyhow!("specify all:true or a non-empty namespaces[]").into());
     }
+    // Held across the check-then-act, same as the scheduler's own — see
+    // START_LOCK's doc comment for the race this closes.
+    let _start_guard = START_LOCK.lock().await;
+    ensure_no_operation_in_progress().await?;
     let name = restore_run::start(
         body.snapshot_id,
         body.all,
@@ -447,10 +452,13 @@ pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<s
 /// POST /api/backups/cluster/run-now — manual trigger. Creates a BackupRun; see
 /// backup_run.rs for the SyncingVolumes → SnapshottingCluster → Pruning state machine.
 pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    ensure_no_operation_in_progress().await?;
     if read_master_config().await.is_none() {
         return Err(anyhow::anyhow!("backup not configured").into());
     }
+    // Held across the check-then-act, same as the scheduler's own — see
+    // START_LOCK's doc comment for the race this closes.
+    let _start_guard = START_LOCK.lock().await;
+    ensure_no_operation_in_progress().await?;
     let name = backup_run::start("manual").await?;
     Ok(Json(
         serde_json::json!({ "ok": true, "started": true, "name": name }),
@@ -462,18 +470,22 @@ pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde
 /// Creates the restic secret and ReplicationSource for a single namespace at install
 /// time. Called by apps.rs immediately after the namespace is created.
 /// `namespace` is the raw app namespace (e.g. "yolab-gitea"), not the instance name.
-pub async fn setup_namespace_backup(namespace: &str) {
+///
+/// Returns `Err` on a `list_user_pvcs` failure instead of silently doing nothing, so
+/// the caller (an SSE install stream) can tell the person installing that backup
+/// wiring didn't happen yet — self-healed within the hour by
+/// `run_replication_source_reconciler`, but worth surfacing rather than staying quiet.
+pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     let Some(cfg) = read_master_config().await else {
-        return;
+        return Ok(()); // backups not enabled — nothing to wire up
     };
-    let Ok(pvcs) = list_user_pvcs().await else {
-        return;
-    };
+    let pvcs = list_user_pvcs().await?;
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
         let _ = ensure_replication_source(&pvc, false).await;
     }
+    Ok(())
 }
 
 /// One-time migration: patches the independent `schedule` out of any managed
@@ -524,22 +536,26 @@ pub async fn run_replication_source_reconciler() {
     strip_rs_schedules().await;
     loop {
         if let Some(cfg) = read_master_config().await {
-            if let Ok(pvcs) = list_user_pvcs().await {
-                for pvc in pvcs {
-                    annotate_ns_privileged_movers(&pvc.namespace).await;
-                    if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await {
-                        tracing::debug!(
-                            "backup-reconciler: restic secret {}/{}: {e}",
-                            pvc.namespace,
-                            pvc.name
-                        );
-                    }
-                    if let Err(e) = ensure_replication_source(&pvc, false).await {
-                        tracing::debug!(
-                            "backup-reconciler: RS {}/{}: {e}",
-                            pvc.namespace,
-                            pvc.name
-                        );
+            match list_user_pvcs().await {
+                Err(e) => tracing::warn!("backup-reconciler: could not list PVCs: {e}"),
+                Ok(pvcs) => {
+                    for pvc in pvcs {
+                        annotate_ns_privileged_movers(&pvc.namespace).await;
+                        if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await
+                        {
+                            tracing::debug!(
+                                "backup-reconciler: restic secret {}/{}: {e}",
+                                pvc.namespace,
+                                pvc.name
+                            );
+                        }
+                        if let Err(e) = ensure_replication_source(&pvc, false).await {
+                            tracing::debug!(
+                                "backup-reconciler: RS {}/{}: {e}",
+                                pvc.namespace,
+                                pvc.name
+                            );
+                        }
                     }
                 }
             }

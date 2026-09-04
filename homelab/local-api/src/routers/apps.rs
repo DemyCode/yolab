@@ -897,8 +897,14 @@ pub async fn install_app(
         while let Some(ev) = s.next().await { yield ev; }
         drop(tmp);
 
-        // Wire up VolSync ReplicationSource(s) for any PVCs this app created.
-        crate::routers::backups::setup_namespace_backup(&ns).await;
+        // Wire up VolSync ReplicationSource(s) for any PVCs this app created. Best-effort:
+        // the hourly replication-source reconciler self-heals a failure here within the
+        // hour, but the person installing should still be told it didn't happen yet.
+        if let Err(e) = crate::routers::backups::setup_namespace_backup(&ns).await {
+            yield Ok(Event::default().data(format!(
+                "[WARN] backup was not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
+            )));
+        }
         // Persisted on the namespace (not only in Helm's release Secret) because the
         // backup's identity export reads namespace annotations.
         let config_json = serde_json::to_string(&body.config).unwrap_or_default();

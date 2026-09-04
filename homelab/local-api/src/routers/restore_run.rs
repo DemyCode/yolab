@@ -214,6 +214,68 @@ pub async fn is_active() -> bool {
     })
 }
 
+/// Paths reachable even while a restore is active. Everything else that isn't a GET
+/// is refused with 423 — see `freeze_during_restore`.
+///
+/// - `/api/login`/`/api/logout`/`/api/auth/check`: auth has to keep working, or the
+///   page showing restore progress can't even be reached after a token expires.
+/// - `/api/terminal/exec`: left open deliberately — an operator's escape hatch to
+///   diagnose or intervene if the restore itself looks stuck or wrong. This is a
+///   trade-off (see the module's own header on why unsupervised interference is
+///   risky), not an oversight.
+/// - `/ceph-dashboard`: the proxied third-party Ceph dashboard UI, gated by its own
+///   separate login — freezing local-api's own mutating endpoints is this guard's
+///   job, not policing a different application's internal navigation.
+const FREEZE_EXEMPT_PREFIXES: &[&str] = &[
+    "/api/login",
+    "/api/logout",
+    "/api/auth/check",
+    "/api/terminal/exec",
+    "/ceph-dashboard",
+];
+
+/// Refuses every mutating request while a restore is in flight — see the module's
+/// own header on why: `RestoringVolumes` deletes and recreates PVCs, `Applying` scales
+/// deployments, and `RebuildingStorage` purges OSDs and tears down/recreates CephFS
+/// pools directly, none of which expects anything else to be changing the same
+/// resources underneath it at the same time. An app install/uninstall, a disk toggle,
+/// a Ceph replication change, or a self-update landing mid-restore is exactly the kind
+/// of interference this exists to rule out — not a hypothetical, several of those are
+/// resources a restore itself is actively rewriting.
+///
+/// GETs always pass through (reads can't corrupt an in-progress restore), and see
+/// `FREEZE_EXEMPT_PREFIXES` for the small deliberate exception list. Everything else
+/// pays one `RESTORE_RUN.list()` call per request — worth it here: correctness during
+/// a restore matters far more than shaving that round-trip off an app-install click,
+/// and every other backup/restore gate in this crate already re-checks `is_active()`
+/// fresh on every call rather than caching it.
+pub async fn freeze_during_restore(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !request_is_gated(req.method().as_str(), req.uri().path()) {
+        return next.run(req).await;
+    }
+    if is_active().await {
+        return (
+            axum::http::StatusCode::LOCKED,
+            axum::Json(serde_json::json!({
+                "error": "A restore is in progress — the cluster is frozen until it finishes. See /api/backups/dr/status."
+            })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// Whether a request should even be checked against `is_active()` at all — split out
+/// from `freeze_during_restore` so the exemption rules are unit-testable without a
+/// running kubectl/apiserver.
+fn request_is_gated(method: &str, path: &str) -> bool {
+    method != "GET" && !FREEZE_EXEMPT_PREFIXES.iter().any(|p| path.starts_with(p))
+}
+
 /// Extracts `.status` from a listed CRD item and folds in `metadata.name` — callers
 /// (the frontend) want the run's name + status fields flattened, not the full
 /// apiVersion/kind/metadata/spec/status envelope `Crd::list`/`get` return.
@@ -1460,6 +1522,52 @@ pub async fn reconcile_tick(holder: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── request_is_gated: what the cluster-freeze middleware blocks ───────────
+
+    #[test]
+    fn a_get_is_never_gated_regardless_of_path() {
+        assert!(!request_is_gated("GET", "/api/apps/gitea"));
+        assert!(!request_is_gated("GET", "/api/disks/node1/1"));
+        assert!(!request_is_gated("GET", "/api/backups/dr/start"));
+    }
+
+    #[test]
+    fn a_mutating_request_to_an_ordinary_route_is_gated() {
+        assert!(request_is_gated("POST", "/api/apps/gitea"));
+        assert!(request_is_gated("DELETE", "/api/apps/gitea"));
+        assert!(request_is_gated("PUT", "/api/disks/node1/1"));
+        assert!(request_is_gated("POST", "/api/update"));
+        assert!(request_is_gated("POST", "/api/backups/dr/start"));
+    }
+
+    #[test]
+    fn auth_routes_are_never_gated_so_the_progress_page_stays_reachable() {
+        assert!(!request_is_gated("POST", "/api/login"));
+        assert!(!request_is_gated("POST", "/api/logout"));
+        assert!(!request_is_gated("GET", "/api/auth/check"));
+    }
+
+    #[test]
+    fn terminal_exec_is_left_open_by_deliberate_choice() {
+        assert!(!request_is_gated("POST", "/api/terminal/exec"));
+    }
+
+    #[test]
+    fn the_proxied_ceph_dashboard_is_not_policed_by_this_guard() {
+        assert!(!request_is_gated("POST", "/ceph-dashboard/api/whatever"));
+        assert!(!request_is_gated("PUT", "/ceph-dashboard"));
+    }
+
+    /// A prefix match is deliberate (`/api/apps/custom` vs `/api/apps/custom/chart`
+    /// both need it) — but it must not swallow routes that merely start with the
+    /// same characters as an exempt one for the wrong reason. `/api/apps` is NOT
+    /// on the exempt list, so nothing under it should slip through by accident.
+    #[test]
+    fn prefix_matching_does_not_leak_into_unrelated_routes() {
+        assert!(request_is_gated("POST", "/api/apps/custom"));
+        assert!(request_is_gated("POST", "/api/apps"));
+    }
 
     fn ns(name: &str, scaled: &[(&str, u32)], vols: &[(&str, &str)]) -> NamespaceState {
         NamespaceState {

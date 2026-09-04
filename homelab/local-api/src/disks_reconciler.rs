@@ -424,6 +424,16 @@ pub async fn run() {
     tracing::info!("disk reconciler started on {node}");
     let host = RealHost;
     loop {
+        // A restore (specifically RebuildingStorage) purges OSDs and tears down/
+        // recreates CephFS pools directly — this reconciler creating/draining/purging
+        // OSDs of its own accord at the same time would race that teardown. Skip the
+        // whole tick rather than just the writes: the Storage page reading slightly
+        // stale inventory for a few seconds is a fine trade against acting on a disk
+        // state that a restore might be about to make obsolete anyway.
+        if crate::routers::restore_run::is_active().await {
+            sleep(Duration::from_secs(INTERVAL_SECS)).await;
+            continue;
+        }
         // Every node: publish its own disk inventory + run its own OSD lifecycle.
         if let Err(e) = publish_local(&host, &node).await {
             tracing::warn!("disk publish: {e}");

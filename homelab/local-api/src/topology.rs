@@ -367,6 +367,13 @@ async fn tick() -> anyhow::Result<()> {
     if !crate::disks_reconciler::is_reconcile_leader().await {
         return Ok(());
     }
+    // A restore's RebuildingStorage phase purges OSDs and destroys/recreates CephFS
+    // pools directly — reapplying pool size/failure-domain here at the same time
+    // would race that teardown (e.g. setting a crush rule on a pool this tick just
+    // watched get deleted out from under it).
+    if crate::routers::restore_run::is_active().await {
+        return Ok(());
+    }
     let Some(topo) = observe().await else {
         tracing::debug!("topology: cluster shape unknown this tick — not touching replication");
         return Ok(());

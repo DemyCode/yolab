@@ -11,6 +11,27 @@ use tokio::process::Command;
 
 const MANAGED_BY: (&str, &str) = ("app.kubernetes.io/managed-by", "yolab");
 
+/// Serializes every "decide whether to start a new backup or restore run" critical
+/// section in this process — the scheduler's own check in `backup_run::reconcile_tick`,
+/// and the manual `run-now`/`dr-start` HTTP handlers in `backups.rs`.
+///
+/// Without this, the check (`is_active()`/`volsync_mover_running()`) and the act
+/// (`BACKUP_RUN.create()`/`RESTORE_RUN.create()`) are two separate network round-trips
+/// with nothing between them — the reconcile tick can observe "nothing running", start
+/// awaiting the kubectl calls that create a scheduled run, and in that exact window a
+/// human's "run backup now" click observes the same "nothing running" and creates a
+/// second, differently-named run. Run names are timestamped to the second, so the
+/// obvious "second create fails as a duplicate" safety net does not exist.
+///
+/// Deliberately a plain in-process mutex, not the `yolab-backup-reconciler` Lease:
+/// that Lease exists to pick one reconciler among several *nodes*, is held by a single
+/// shared identity for the reconcile loop's entire lifetime, and does not provide
+/// mutual exclusion against a second acquisition using that same identity — sharing it
+/// here would either give this mutex no teeth (same identity) or stall the reconciler
+/// for a full lease duration every time a manual trigger won the race (different
+/// identity). This closes the actual race, which is a same-process one, directly.
+pub(crate) static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub(crate) async fn kubectl_apply(manifest: &str) -> anyhow::Result<()> {
     crate::kubectl::apply(manifest).await
 }
@@ -419,7 +440,7 @@ pub(crate) struct PvcInfo {
 /// function returns can ever be outside what the export captures.
 pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
     let managed: std::collections::HashSet<String> =
-        list_managed_namespaces().await.into_iter().collect();
+        list_managed_namespaces().await?.into_iter().collect();
 
     let v = crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"]).await?;
     let items = v["items"].as_array().cloned().unwrap_or_default();
@@ -453,8 +474,13 @@ pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
 /// export (k8s objects + catalog.json) walks. Exposed so callers that need to check
 /// whether a PVC's namespace will actually be captured (see the doc comment on
 /// `list_user_pvcs`) can compare the two sets instead of assuming they match.
-pub(crate) async fn list_managed_namespaces() -> Vec<String> {
-    crate::kubectl::run(&[
+///
+/// Returns `Err` rather than defaulting to empty on a kubectl failure — a caller that
+/// can't tell "the API is unreachable" apart from "there are genuinely no managed
+/// namespaces" would treat a transient outage as "nothing to back up", which is how a
+/// BackupRun used to report Succeeded having backed up nothing at all.
+pub(crate) async fn list_managed_namespaces() -> anyhow::Result<Vec<String>> {
+    let out = crate::kubectl::run(&[
         "get",
         "namespaces",
         "-l",
@@ -462,9 +488,8 @@ pub(crate) async fn list_managed_namespaces() -> Vec<String> {
         "-o",
         "jsonpath={.items[*].metadata.name}",
     ])
-    .await
-    .map(|s| s.split_whitespace().map(String::from).collect())
-    .unwrap_or_default()
+    .await?;
+    Ok(out.split_whitespace().map(String::from).collect())
 }
 
 // ── VolSync ReplicationSource ─────────────────────────────────────────────────

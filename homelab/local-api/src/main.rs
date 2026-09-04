@@ -252,6 +252,11 @@ async fn main() {
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))
+        // Runs after auth (added first, so it's the innermost of these three layers —
+        // see restore_run::freeze_during_restore's own doc for what it blocks and why.
+        .layer(middleware::from_fn(
+            routers::restore_run::freeze_during_restore,
+        ))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());

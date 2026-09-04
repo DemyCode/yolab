@@ -324,7 +324,26 @@ async fn step(name: &str) {
 /// operations, and re-stamping a manual trigger on a retry after a crash is harmless —
 /// worst case, one extra redundant VolSync sync, never lost or duplicated data.
 async fn step_pending(name: &str, cfg: &BackupConfig) {
-    let pvcs = list_user_pvcs().await.unwrap_or_default();
+    // Err, not defaulted to empty: a `kubectl` failure here used to silently become "no
+    // PVCs to back up", and a run that discovers zero PVCs sails through every later
+    // phase and reports Succeeded — a backup that stored nothing, indistinguishable from
+    // one that genuinely had nothing to store. Fail loudly instead; the schedule (or a
+    // retry of the manual trigger) tries again.
+    let pvcs = match list_user_pvcs().await {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = BACKUP_RUN
+                .patch_status(
+                    name,
+                    json!({
+                        "phase": PHASE_FAILED, "finishedAt": Utc::now().to_rfc3339(),
+                        "error": format!("could not list PVCs to back up: {e}"),
+                    }),
+                )
+                .await;
+            return;
+        }
+    };
     let since = Utc::now();
     // Watchdog, not budget: this is pushed forward on every tick that shows progress.
     let sync_deadline = since + chrono::Duration::seconds(SYNC_STALL_SECS);
@@ -692,8 +711,11 @@ async fn snapshot_cluster_inner(
         Err(e) => tracing::warn!("cluster-backup: k3s unavailable: {e}"),
     }
 
-    // 2. Export K8s objects for all yolab-managed namespaces.
-    let namespaces = list_managed_namespaces().await;
+    // 2. Export K8s objects for all yolab-managed namespaces. `?`, not a silent empty
+    // default: an empty list here would make catalog.json (and thus every restore
+    // picker) believe the cluster has no apps at all, while still reporting the run
+    // Succeeded.
+    let namespaces = list_managed_namespaces().await?;
     let mut services: Vec<Value> = Vec::new();
 
     for ns in &namespaces {
@@ -1016,6 +1038,11 @@ pub async fn reconcile_tick(holder: &str) {
         }
         step(&name).await;
     }
+
+    // Held across the check-then-act below — see START_LOCK's doc comment for why a
+    // manual "run now"/"dr start" click racing this exact window used to create a
+    // second, concurrent run.
+    let _start_guard = START_LOCK.lock().await;
 
     if is_active().await || volsync_mover_running().await {
         return;
