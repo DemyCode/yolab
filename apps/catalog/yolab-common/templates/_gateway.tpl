@@ -115,7 +115,9 @@ compose this plus wgRegisterInit and nothing else.
     - /bin/sh
     - -c
     - |
-      . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+      . /yolab/env
+      {{- include "yolab-common.fileExplorer.startupScript" . | nindent 6 }}
+      exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
   ports:
     - containerPort: 80
     - containerPort: 443
@@ -139,6 +141,7 @@ compose this plus wgRegisterInit and nothing else.
       subPath: Caddyfile
     - name: yolab
       mountPath: /yolab
+    {{- include "yolab-common.fileExplorer.volumeMounts" . | nindent 4 }}
 {{- end -}}
 
 {{/*
@@ -183,6 +186,7 @@ data:
     {{- .Values.yolab.gateway.caddyfile | nindent 4 }}
     {{- else if eq (include "yolab-common.auth.enabled" .) "true" }}
     {$YOLAB_FQDN} {
+      {{- include "yolab-common.fileExplorer.caddyHandle" . | nindent 6 }}
       # The portal, on this app's own domain. Must be matched BEFORE the
       # forward_auth below, or the login page would itself require a login.
       handle /authelia/* {
@@ -200,6 +204,7 @@ data:
     }
     {{- else }}
     {$YOLAB_FQDN} {
+      {{- include "yolab-common.fileExplorer.caddyHandle" . | nindent 6 }}
       reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
     }
     {{- end }}

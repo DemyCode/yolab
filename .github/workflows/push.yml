@@ -137,6 +137,12 @@ jobs:
             sed -i "/- name: yolab-common/{n;s|version: .*|version: \"${LIB_VERSION}\"|}" "$chart/Chart.yaml"
             helm dependency update "$chart" >/dev/null
 
+            # Every app must tear its tunnel down on uninstall — the shared pre-delete
+            # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
+            # chart missing this leaks an orphaned tunnel on the platform every time
+            # it's removed, silently, with nothing in the uninstall response to say so.
+            grep -rq "yolab-common.uninstallHook" "$chart" || { failed="$failed $name(no-uninstall-hook)"; continue; }
+
             # Charts whose schema marks fields required legitimately fail lint against
             # default values, so lint with a filled-in set — the point is catching
             # template errors, not re-testing the schema.
