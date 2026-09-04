@@ -277,11 +277,17 @@ async fn main() {
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    // No request is in flight yet at either of these — there is no frontend to report
+    // a failure to, so this deliberately still crashes the process (systemd restarts
+    // it), just with a message that says which of the two things failed rather than
+    // a bare "called `Result::unwrap()` on an `Err` value".
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| panic!("could not bind {addr}: {e}"));
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await
-    .unwrap();
+    .expect("axum server exited unexpectedly");
 }
