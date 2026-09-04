@@ -48,6 +48,26 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
+/**
+ * local-api returns errors as plain text on some routes and {"error": …} on
+ * others; surface whichever we got rather than a bare status code. Shared by
+ * `request` and `streamEvents` — the latter's SSE routes can also fail before
+ * the stream even starts (e.g. the cluster-freeze middleware's 423 while a
+ * restore is in flight), and that response is JSON like everything else.
+ */
+function errorMessageFrom(body: string, status: number): string {
+  let message = body || `Request failed (${status})`;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      message = String((parsed as { error: unknown }).error);
+    }
+  } catch {
+    /* body was not JSON; the raw text is the better message anyway */
+  }
+  return message;
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit & { raw?: boolean },
@@ -69,19 +89,8 @@ async function request<T>(
     throw new ApiError(401, "Your session expired. Please sign in again.");
   }
   if (!res.ok) {
-    // local-api returns errors as plain text on some routes and {"error": …}
-    // on others; surface whichever we got rather than a bare status code.
     const body = await res.text().catch(() => "");
-    let message = body || `Request failed (${res.status})`;
-    try {
-      const parsed: unknown = JSON.parse(body);
-      if (parsed && typeof parsed === "object" && "error" in parsed) {
-        message = String((parsed as { error: unknown }).error);
-      }
-    } catch {
-      /* body was not JSON; the raw text is the better message anyway */
-    }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, errorMessageFrom(body, res.status));
   }
 
   if (init?.raw) return (await res.text()) as T;
@@ -135,7 +144,7 @@ export async function streamEvents(
   }
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => "");
-    return { ok: false, error: body || `Request failed (${res.status})` };
+    return { ok: false, error: errorMessageFrom(body, res.status) };
   }
 
   const reader = res.body.getReader();
