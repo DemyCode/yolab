@@ -975,7 +975,9 @@ fn parse_gb(s: &str) -> u64 {
 async fn do_gen_ssh_key() -> anyhow::Result<(String, String)> {
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("installer_key");
-    let path_str = path.to_str().unwrap();
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("temp path is not valid UTF-8: {}", path.display()))?;
 
     tokio::process::Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-f", path_str, "-N", "", "-q"])
