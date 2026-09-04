@@ -1,12 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["config"],
+  "required": [
+    "config"
+  ],
   "properties": {
     "config": {
       "title": "Wallos",
       "type": "object",
-      "required": ["subdomain"],
+      "required": [
+        "subdomain"
+      ],
       "properties": {
         "subdomain": {
           "type": "string",
@@ -19,6 +23,12 @@
           "title": "Storage size",
           "default": "2Gi",
           "description": "How much CephFS storage to allocate (e.g. 2Gi, 10Gi)"
+        },
+        "file_explorer_enabled": {
+          "type": "boolean",
+          "title": "File explorer",
+          "default": true,
+          "description": "A lightweight, password-protected, read-only browser for this app's own data — handy for pulling a file out or checking what's actually stored, without needing a terminal. The password is generated for you and shown once the app finishes starting."
         }
       }
     },
@@ -26,16 +36,30 @@
       "type": "object",
       "description": "Injected by local-api at install time; not user-editable.",
       "properties": {
-        "platformApiUrl": { "type": "string" },
-        "accountToken": { "type": "string" },
-        "serviceName": { "type": "string" },
-        "images": { "type": "object" },
+        "platformApiUrl": {
+          "type": "string"
+        },
+        "accountToken": {
+          "type": "string"
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "images": {
+          "type": "object"
+        },
         "gateway": {
           "type": "object",
           "properties": {
-            "upstream": { "type": "string" },
-            "caddyfile": { "type": "string" },
-            "pvcName": { "type": "string" }
+            "upstream": {
+              "type": "string"
+            },
+            "caddyfile": {
+              "type": "string"
+            },
+            "pvcName": {
+              "type": "string"
+            }
           }
         }
       }

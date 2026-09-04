@@ -20,6 +20,7 @@ spec:
     spec:
       initContainers:
         {{- include "yolab-common.wgRegisterInit" . | nindent 8 }}
+        {{- include "yolab-common.fileExplorerInit" . | nindent 8 }}
       containers:
         {{- include "yolab-common.gatewayContainers" . | nindent 8 }}
       volumes:

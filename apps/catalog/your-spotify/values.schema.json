@@ -1,14 +1,25 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["config"],
+  "required": [
+    "config"
+  ],
   "properties": {
     "config": {
       "title": "Your Spotify",
       "type": "object",
-      "required": ["subdomain", "spotify_public", "spotify_secret"],
+      "required": [
+        "subdomain",
+        "spotify_public",
+        "spotify_secret"
+      ],
       "properties": {
-        "subdomain": { "type": "string", "title": "Subdomain", "format": "tunnel", "default": "spotify-stats" },
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "spotify-stats"
+        },
         "spotify_public": {
           "type": "string",
           "title": "Spotify Client ID",
@@ -21,18 +32,49 @@
           "default": "",
           "description": "From the same page as the Client ID."
         },
-        "storage_size": { "type": "string", "title": "Storage size", "default": "5Gi" }
+        "storage_size": {
+          "type": "string",
+          "title": "Storage size",
+          "default": "5Gi"
+        },
+        "file_explorer_enabled": {
+          "type": "boolean",
+          "title": "File explorer",
+          "default": true,
+          "description": "A lightweight, password-protected, read-only browser for this app's own data — handy for pulling a file out or checking what's actually stored, without needing a terminal. The password is generated for you and shown once the app finishes starting."
+        }
       }
     },
     "yolab": {
       "type": "object",
       "description": "Injected by local-api at install time; not user-editable.",
       "properties": {
-        "platformApiUrl": { "type": "string" },
-        "accountToken": { "type": "string" },
-        "serviceName": { "type": "string" },
-        "images": { "type": "object" },
-        "gateway": { "type": "object", "properties": { "upstream": { "type": "string" }, "caddyfile": { "type": "string" }, "pvcName": { "type": "string" } } }
+        "platformApiUrl": {
+          "type": "string"
+        },
+        "accountToken": {
+          "type": "string"
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "images": {
+          "type": "object"
+        },
+        "gateway": {
+          "type": "object",
+          "properties": {
+            "upstream": {
+              "type": "string"
+            },
+            "caddyfile": {
+              "type": "string"
+            },
+            "pvcName": {
+              "type": "string"
+            }
+          }
+        }
       }
     }
   }

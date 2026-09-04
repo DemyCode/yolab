@@ -34,6 +34,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- /* Home Assistant refuses any request whose Host header it does not
              recognise as coming from a trusted proxy — without this every
              request through the tunnel gets "400: Bad Request". Caddy reaches
