@@ -29,6 +29,24 @@ pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
+/// Marks a namespace as having an uninstall in flight.
+///
+/// A plain "is this namespace Terminating" check misses the window between a
+/// successful `helm uninstall` and the namespace actually entering
+/// `Terminating`: if the final `kubectl delete namespace` step itself fails
+/// (a control-plane blip is enough), the namespace sits `Active` looking
+/// exactly like "never uninstalled" — inviting a retry. That retry then
+/// races the first attempt's already-completed teardown: its pre-delete
+/// hook Job mounts a PVC the first run already deleted and hangs forever
+/// (observed live: `filebrowser-uninstall` stuck Pending, "persistentvolumeclaim
+/// \"filebrowser-data\" not found"). This annotation closes that window.
+const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
+/// How long an uninstall claim is honored before a fresh attempt may reclaim
+/// it. Comfortably longer than `HELM_UNINSTALL_TIMEOUT` plus the namespace
+/// delete retries below, so it only ever kicks in to recover from a
+/// crashed/restarted local-api — never to race an attempt still genuinely
+/// running.
+const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const LOGS_SCAN_TAIL: u32 = 500;
 const LOGS_FOLLOW_TAIL: u32 = 100;
 
@@ -735,7 +753,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .trim_start_matches("yolab-")
             .to_string();
         let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
-        let status = if phase == "Terminating" {
+        let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
             "uninstalling".to_string()
         } else {
             let ns_full = format!("yolab-{name}");
@@ -1139,11 +1157,121 @@ pub async fn scan_outputs(
     Ok(Json(ScanOutputsResponse { outputs }))
 }
 
+/// Whether `ns`'s `yolab.io/uninstalling` annotation, if any, represents a
+/// still-active claim — i.e. younger than [`UNINSTALL_LOCK_TTL`].
+fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> bool {
+    ann.get(ANN_UNINSTALLING)
+        .and_then(|v| v.as_str())
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|t| {
+            chrono::Utc::now().signed_duration_since(t).num_seconds()
+                <= UNINSTALL_LOCK_TTL.as_secs() as i64
+        })
+        .unwrap_or(false)
+}
+
+/// Atomically claims the uninstall lock on `ns` (see [`ANN_UNINSTALLING`]).
+///
+/// `--overwrite=false` is a real compare-and-swap at the API server: it
+/// fails if the annotation is already set, so two simultaneous first
+/// attempts cannot both win it. Returns `Ok(true)` once this call owns the
+/// lock — including when the namespace does not exist at all, since then
+/// there is nothing to race against and both the `helm uninstall
+/// --ignore-not-found` and the namespace delete below are no-ops. Returns
+/// `Ok(false)` when a fresh claim from another still-running uninstall is
+/// already in place; a stale one (past the TTL, e.g. left by a crashed
+/// local-api) is reclaimed instead.
+async fn claim_uninstall_lock(ns: &str) -> Result<bool> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let first_claim = crate::kubectl::run(&[
+        "annotate",
+        "namespace",
+        ns,
+        &format!("{ANN_UNINSTALLING}={now}"),
+        "--overwrite=false",
+    ])
+    .await;
+    match first_claim {
+        Ok(_) => return Ok(true),
+        Err(e) if crate::kubectl::is_not_found(&e) => return Ok(true),
+        Err(_) => {} // annotation already present — fall through to check staleness
+    }
+
+    let raw =
+        crate::kubectl::run(&["get", "namespace", ns, "-o", "json", "--ignore-not-found"]).await?;
+    if raw.trim().is_empty() {
+        return Ok(true);
+    }
+    let existing: Value = serde_json::from_str(&raw)?;
+    let ann = existing["metadata"]["annotations"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if uninstall_lock_is_fresh(&ann) {
+        return Ok(false);
+    }
+    tracing::warn!("uninstall {ns}: reclaiming a stale uninstall lock");
+    crate::kubectl::run(&[
+        "annotate",
+        "namespace",
+        ns,
+        &format!("{ANN_UNINSTALLING}={now}"),
+        "--overwrite=true",
+    ])
+    .await?;
+    Ok(true)
+}
+
+/// The step most exposed to a flaky control plane — and, before this retry
+/// existed, the step that on failure left nothing to show an uninstall had
+/// even started: no PVC, no pods, but the namespace (and its lock) still
+/// sitting there `Active`, indistinguishable from "never touched" and
+/// inviting exactly the retry that used to race the first attempt's
+/// teardown. A short retry absorbs the transient etcd/apiserver hiccup that
+/// caused that in practice; a caller that exhausts it just logs and leaves
+/// the namespace for a future attempt to pick up, same as a failed helm
+/// uninstall above — the client already treats neither as fatal to this
+/// request.
+async fn delete_namespace_with_retry(ns: &str) {
+    const ATTEMPTS: u32 = 4;
+    let mut delay = std::time::Duration::from_secs(2);
+    for attempt in 1..=ATTEMPTS {
+        match crate::kubectl::run(&[
+            "delete",
+            "namespace",
+            ns,
+            "--ignore-not-found=true",
+            "--wait=false",
+        ])
+        .await
+        {
+            Ok(_) => return,
+            Err(e) if attempt == ATTEMPTS => {
+                tracing::warn!(
+                    "uninstall {ns}: delete namespace failed after {ATTEMPTS} attempts, \
+                     leaving it for a future retry: {e}"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "uninstall {ns}: delete namespace attempt {attempt} failed, retrying: {e}"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 3;
+            }
+        }
+    }
+}
+
 pub async fn uninstall_app(
     State(_state): State<AppState>,
     Path(instance_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let ns = format!("yolab-{instance_name}");
+
+    if !claim_uninstall_lock(&ns).await? {
+        return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
+    }
 
     // `helm uninstall` runs the chart's pre-delete hook (tunnel cleanup) and waits for
     // it before removing anything. That replaces rendering an uninstall template by
@@ -1183,14 +1311,7 @@ pub async fn uninstall_app(
         _ => {}
     }
 
-    crate::kubectl::run(&[
-        "delete",
-        "namespace",
-        &ns,
-        "--ignore-not-found=true",
-        "--wait=false",
-    ])
-    .await?;
+    delete_namespace_with_retry(&ns).await;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -1593,5 +1714,44 @@ mod tests {
     #[test]
     fn normalize_outputs_empty() {
         assert!(normalize_outputs(&serde_json::Map::new()).is_empty());
+    }
+
+    // ── uninstall_lock_is_fresh ──────────────────────────────────────────────
+    //
+    // The exact bug this exists to prevent: a namespace whose lock is fresh must
+    // read as "uninstalling" even though its phase is still Active (the window
+    // between a successful `helm uninstall` and the namespace actually entering
+    // Terminating) — otherwise the UI shows the app as present and invites a
+    // second, colliding uninstall click.
+
+    #[test]
+    fn no_lock_annotation_is_not_fresh() {
+        assert!(!uninstall_lock_is_fresh(&serde_json::Map::new()));
+    }
+
+    #[test]
+    fn a_lock_claimed_moments_ago_is_fresh() {
+        let ts = chrono::Utc::now().to_rfc3339();
+        assert!(uninstall_lock_is_fresh(&map(
+            serde_json::json!({ ANN_UNINSTALLING: ts })
+        )));
+    }
+
+    #[test]
+    fn a_lock_past_the_ttl_is_not_fresh() {
+        let ts = (chrono::Utc::now()
+            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
+        .to_rfc3339();
+        assert!(!uninstall_lock_is_fresh(&map(
+            serde_json::json!({ ANN_UNINSTALLING: ts })
+        )));
+    }
+
+    #[test]
+    fn an_unparsable_lock_timestamp_is_not_fresh() {
+        // Can't prove it's still running, so don't wedge the app forever on it.
+        assert!(!uninstall_lock_is_fresh(&map(
+            serde_json::json!({ ANN_UNINSTALLING: "not-a-timestamp" })
+        )));
     }
 }
