@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import {
   ChevronRight,
   Cloud,
+  CreditCard,
   Database,
   ExternalLink,
   Server,
@@ -176,6 +177,17 @@ export function BoxPage() {
           label="Updates and system"
           detail={status.data?.platform}
         />
+        {/* Only when the backend worked out where the console is. Rendering it
+            unconditionally would mean a box whose config has no platform API
+            shows a link that goes nowhere. */}
+        {status.data?.console_url && (
+          <NavRow
+            href={status.data.console_url}
+            icon={CreditCard}
+            label="Account and billing"
+            detail="Your plan, invoices and payment details"
+          />
+        )}
       </Card>
 
       <Card className="mb-4 p-5">
