@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "A window pointed at your YoLab box"
 
+# Android loads the app as a shared library, so the crate needs a lib target as
+# well as the desktop binary. staticlib and cdylib are what the Android and iOS
+# hosts link against; rlib is what src/main.rs uses.
+[lib]
+name = "yolab_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
