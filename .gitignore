@@ -56,3 +56,6 @@ homelab/local-api/target/
 # committed Chart.lock (see the yolab-chart-deps unit). Build output, not source —
 # Chart.lock IS committed, since it pins an external artifact in the OCI registry.
 apps/catalog/*/charts/
+shells/desktop/target
+shells/desktop/target/
+shells/desktop/gen/

@@ -1,0 +1,19 @@
+[package]
+name = "yolab-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "A window pointed at your YoLab box"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+url = "2"
+
+[profile.release]
+# The shell is a few hundred lines around a webview; none of it is hot. Optimise
+# for the download instead, which is the only cost anyone experiences.
+opt-level = "z"
+lto = true
+strip = true

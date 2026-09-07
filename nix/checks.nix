@@ -23,9 +23,15 @@ in {
 
   local-api-tests = crates.local-api.tests;
   installer-tests = crates.installer.tests;
+  # Included from the day the crate landed, deliberately. An app nothing builds
+  # is an app that is broken the next time anyone touches it, and this repo
+  # already has one file sitting unverified because it was committed ahead of
+  # its check.
+  desktop-client-tests = crates.desktop-client.tests;
 
   clippy-local-api = crates.local-api.clippy;
   clippy-installer = crates.installer.clippy;
+  clippy-desktop-client = crates.desktop-client.clippy;
 
   wg-register-tests =
     pkgs.runCommand "wg-register-tests"

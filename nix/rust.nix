@@ -13,13 +13,23 @@
   mkCrate = {
     pname,
     path,
+    # Overrides the default `cleanCargoSource`, which keeps only Rust and Cargo
+    # files. That default is right for a crate whose source IS its .rs files and
+    # wrong for one that compiles other things in — see `desktop-client`, whose
+    # build script embeds an HTML page and an icon that cleanCargoSource would
+    # silently drop, failing the build inside a proc macro with a missing-file
+    # error a long way from the cause.
+    src ? null,
     nativeBuildInputs ? [],
     buildInputs ? [],
   }: let
     args = {
       inherit pname nativeBuildInputs buildInputs;
       version = "0.1.0";
-      src = craneLib.cleanCargoSource (craneLib.path path);
+      src =
+        if src != null
+        then src
+        else craneLib.cleanCargoSource (craneLib.path path);
       strictDeps = true;
       # Registry crates get --cap-lints allow from cargo, so this only binds
       # our own code.
@@ -83,6 +93,55 @@ in {
       pname = "yolab-installer";
       path = ../installer/nixos/backend-rs;
       nativeBuildInputs = [pkgs.pkg-config];
+    };
+
+    # The desktop window (shells/desktop). A webview pointed at the owner's box,
+    # so it carries no UI of its own beyond the address prompt.
+    desktop-client = mkCrate {
+      pname = "yolab-desktop";
+      path = ../shells/desktop;
+
+      # tauri-build embeds index.html, tauri.conf.json and icons/icon.png INTO
+      # the binary at compile time. cleanCargoSource keeps only Cargo and Rust
+      # files, so with the default source this fails inside
+      # `tauri::generate_context!` with "failed to open icon ... No such file",
+      # which reads like a packaging bug rather than a filter dropping inputs.
+      #
+      # `target` is excluded because a local `cargo build` leaves gigabytes
+      # there, and including it would both bust the derivation hash on every
+      # local build and copy the lot into the store.
+      src = pkgs.lib.cleanSourceWith {
+        name = "yolab-desktop-source";
+        src = ../shells/desktop;
+        # Matched on the name rather than a path prefix: under a flake the src
+        # is already a store path, so comparing against `toString ../…` depends
+        # on two different spellings agreeing. This crate has no legitimate
+        # directory called `target`, so the simpler rule is also the safer one.
+        filter = path: type: !(type == "directory" && baseNameOf path == "target");
+      };
+
+      # wrapGAppsHook3 is what makes the built binary actually run: a GTK app
+      # needs GIO modules, gdk-pixbuf loaders and GSettings schemas found
+      # through environment variables, and without the wrapper it starts and
+      # then fails to render anything.
+      nativeBuildInputs = [pkgs.pkg-config pkgs.wrapGAppsHook3];
+
+      # Tauri v2 links the 4.1 webkit ABI specifically. nixpkgs also ships
+      # webkitgtk_4_0, and picking it produces a pkg-config miss whose message
+      # names a package that is plainly installed.
+      buildInputs = with pkgs; [
+        webkitgtk_4_1
+        gtk3
+        libsoup_3
+        glib
+        cairo
+        pango
+        gdk-pixbuf
+        atk
+        librsvg
+        dbus
+        openssl
+      ];
     };
   };
 }

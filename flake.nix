@@ -211,6 +211,12 @@
       homelab-ui = builds.clientUi;
       homelab-api = builds.localApiEnv;
 
+      # `nix build .#desktop-client` produces the binary; `nix run` below opens
+      # the window. It asks for the box address once and from then on opens
+      # straight into it — see shells/desktop/README.md for why the UI is loaded
+      # from the box rather than bundled here.
+      desktop-client = rust.crates.desktop-client.package;
+
       # Every check is a build input, so nix has already run them all before the
       # first line executes: this prints a summary, it is not a test runner.
       ci = pkgs.writeShellApplication {
@@ -237,6 +243,15 @@
           type = "app";
           program = lib.getExe treefmtEval.config.build.wrapper;
           meta.description = "Format the whole tree";
+        };
+
+        # Spelled out rather than `lib.getExe`, which requires meta.mainProgram
+        # — crane does not set it, and getExe's failure is an eval error about a
+        # missing attribute rather than anything about this app.
+        desktop-client = {
+          type = "app";
+          program = "${self.packages.x86_64-linux.desktop-client}/bin/yolab-desktop";
+          meta.description = "Open the YoLab desktop window";
         };
       }
       # meta.description silences a "lacks attribute meta" warning per app.
@@ -282,6 +297,38 @@
 
       shellHook = ''
         echo "yolab devshell — 'nix run .#ci' runs every check exactly as CI does"
+      '';
+    };
+
+    # The desktop shell (shells/desktop) needs a webview and its GTK stack, none
+    # of which the default shell carries — and it is the whole toolchain cost of
+    # that app: the Rust in it is a few hundred lines, while `cargo check` there
+    # fails in the default shell on libdbus before it reaches a line of ours.
+    #
+    # Separate rather than merged into `default` so everyday work on local-api
+    # and the charts does not pull webkitgtk and its closure.
+    devShells.x86_64-linux.desktop = pkgs.mkShell {
+      packages =
+        (with pkgs; [
+          pkg-config
+          # Tauri v2 on Linux links against the 4.1 ABI specifically; 4.0 is
+          # present in nixpkgs too and produces a confusing pkg-config miss.
+          webkitgtk_4_1
+          gtk3
+          libsoup_3
+          glib
+          cairo
+          pango
+          gdk-pixbuf
+          atk
+          librsvg
+          dbus
+          openssl
+        ])
+        ++ [rust.rustToolchain];
+
+      shellHook = ''
+        echo "yolab desktop shell — cd shells/desktop && cargo check"
       '';
     };
   };
