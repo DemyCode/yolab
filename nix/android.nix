@@ -132,7 +132,12 @@ let
   cargoOffline = ''
     export CARGO_HOME=$TMPDIR/cargo
     mkdir -p "$CARGO_HOME"
-    cp -r ${cargoVendorDir} "$TMPDIR/vendor"
+    # -L DEREFERENCES. crane's vendor directory is nothing but symlinks into the
+    # store — one per crate — so a plain `cp -r` copies the links and every
+    # target is still read-only. The failure is then identical to having not
+    # copied at all, except the path in the error looks writable, which is a
+    # genuinely misleading place to end up.
+    cp -rL ${cargoVendorDir} "$TMPDIR/vendor"
     chmod -R u+w "$TMPDIR/vendor"
     sed "s|${cargoVendorDir}|$TMPDIR/vendor|g" \
       ${cargoVendorDir}/config.toml > "$CARGO_HOME/config.toml"
