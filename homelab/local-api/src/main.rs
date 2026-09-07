@@ -27,8 +27,8 @@ use tower_http::cors::{Any, CorsLayer};
 use auth::{auth_middleware, AuthState};
 use config::Config;
 use routers::{
-    apps, backup_schedule, backups, ceph, ceph_join, custom_app, disks, nodes, packs, rebuild,
-    status, terminal, update,
+    apps, backup_schedule, backups, ceph, ceph_join, custom_app, disks, logs, nodes, packs,
+    rebuild, status, terminal, update,
 };
 
 /// Single shared state threaded through all handlers.
@@ -183,6 +183,8 @@ async fn main() {
             "/api/backups/snapshots/:id/catalog",
             get(backups::snapshot_catalog),
         )
+        // Logs — see routers/logs.rs for why this is a first-class page
+        .route("/api/logs", get(logs::list_logs))
         // Disks
         .route("/api/disks", get(disks::list_disks))
         .route(

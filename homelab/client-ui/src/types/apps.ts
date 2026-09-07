@@ -15,6 +15,11 @@ export interface AppInfo {
   app_id: string;
   instance_name: string;
   status: "starting" | "running" | "uninstalling";
+  /** Plain-language explanation of `status`, empty when healthy. Written by the
+   *  backend (routers/apps.rs `explain_app_state`) rather than derived here: the
+   *  distinction between "downloading" and "crash looping" only exists in the pod
+   *  status, which the UI never sees. */
+  detail: string;
   outputs: AppOutput[];
   outputs_spec: OutputSpec[];
   config: Record<string, unknown>;
