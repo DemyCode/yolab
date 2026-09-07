@@ -33,6 +33,7 @@ import type { ClusterHealth } from "@/types/health";
 function NavRow({
   to,
   href,
+  onClick,
   icon: Icon,
   label,
   detail,
@@ -40,6 +41,9 @@ function NavRow({
 }: {
   to?: string;
   href?: string;
+  /** For destinations whose URL has to be fetched at the moment of the click
+   *  rather than rendered into the page — see the console row below. */
+  onClick?: () => void;
   icon: typeof Database;
   label: string;
   detail?: string;
@@ -65,7 +69,7 @@ function NavRow({
           <div className="mt-0.5 truncate text-sm text-fg-muted">{detail}</div>
         )}
       </div>
-      {href ? (
+      {href || onClick ? (
         <ExternalLink className="h-4 w-4 shrink-0 text-fg-subtle" />
       ) : (
         <ChevronRight className="h-5 w-5 shrink-0 text-fg-subtle" />
@@ -75,6 +79,14 @@ function NavRow({
 
   const className =
     "flex items-center gap-4 px-5 py-4 transition-colors hover:bg-surface-2 border-b border-border last:border-0";
+
+  if (onClick) {
+    return (
+      <button onClick={onClick} className={cn(className, "w-full text-left")}>
+        {inner}
+      </button>
+    );
+  }
 
   if (href) {
     return (
@@ -124,6 +136,29 @@ export function BoxPage() {
     : health.data?.starting
       ? "Starting up…"
       : undefined;
+
+  /**
+   * Opens the console signed in.
+   *
+   * The window is opened BEFORE the await, then pointed at the URL once it
+   * arrives. Opening it afterwards would be a popup triggered by a promise
+   * rather than by the click, which every browser blocks. Falls back to the
+   * plain console URL if the link cannot be built, so the row always goes
+   * somewhere.
+   */
+  async function openConsole() {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    try {
+      const { url } = await api.get<{ url: string }>("/api/console/link");
+      if (w) w.location.replace(url);
+      else window.location.assign(url);
+    } catch {
+      const fallback = status.data?.console_url;
+      if (!fallback) return;
+      if (w) w.location.replace(fallback);
+      else window.location.assign(fallback);
+    }
+  }
 
   const nodeCount = nodes.data?.length ?? 0;
   const nodesDetail =
@@ -179,10 +214,15 @@ export function BoxPage() {
         />
         {/* Only when the backend worked out where the console is. Rendering it
             unconditionally would mean a box whose config has no platform API
-            shows a link that goes nowhere. */}
+            shows a link that goes nowhere.
+
+            A click handler rather than an href, because the real URL carries
+            the account token in its fragment and is fetched at the moment of
+            the click. As an href it would sit in the DOM — and in the page
+            source, and in anything that scrapes it — from first paint. */}
         {status.data?.console_url && (
           <NavRow
-            href={status.data.console_url}
+            onClick={openConsole}
             icon={CreditCard}
             label="Account and billing"
             detail="Your plan, invoices and payment details"

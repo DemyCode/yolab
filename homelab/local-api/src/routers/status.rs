@@ -96,9 +96,115 @@ fn platform_api_url(config_path: &str) -> Option<String> {
     )
 }
 
+#[derive(Serialize)]
+pub struct ConsoleLink {
+    pub url: String,
+}
+
+/// Builds the console URL with the account token in the FRAGMENT.
+///
+/// The fragment is the entire point, and it is not interchangeable with a query
+/// parameter. A `?token=` is sent to the server on every request, so it lands in
+/// the console's access logs, in any proxy or CDN in between, and in the
+/// `Referer` header of the next link the reader clicks from that page. A `#`
+/// fragment is never transmitted: the browser keeps it client-side, the
+/// console's own script reads `location.hash`, uses it, and clears it.
+///
+/// This does not make the token harmless — it still reaches the browser and its
+/// session history — so the URL is built only when someone deliberately clicks
+/// through, never rendered into the page ahead of time.
+pub(crate) fn console_link_url(console: &str, token: &str) -> Option<String> {
+    let token = token.trim();
+    if token.is_empty() {
+        // No token is not an error: the console still exists, it will simply
+        // ask for a login. A link that goes to the right place unauthenticated
+        // beats no link at all.
+        return Some(console.to_string());
+    }
+    Some(format!("{console}/#token={}", percent_encode(token)))
+}
+
+/// Percent-encodes everything outside RFC 3986's unreserved set.
+///
+/// Written here rather than pulled in as a crate: this is the only caller in the
+/// tree, and a new dependency costs a lockfile change and a nix vendor hash for
+/// ten lines. Deliberately strict — a token is opaque, and a stray `#` in one
+/// would end the fragment early and silently truncate the credential the console
+/// receives.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Fetched on click, not included in `/api/status`.
+///
+/// `/api/status` is polled continuously by every open tab, and putting a
+/// credential in a response on that path would push it through the browser
+/// cache and any logging on the way, thousands of times a day, for a link
+/// almost nobody clicks. Here it leaves the box once per deliberate action.
+pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleLink>> {
+    let console = platform_api_url(&state.config.config_path)
+        .as_deref()
+        .and_then(console_url_from_api)
+        .ok_or_else(|| anyhow::anyhow!("no console URL for this box"))?;
+
+    let token = crate::config::read_account_token(&state.config.config_path);
+    let url = console_link_url(&console, &token)
+        .ok_or_else(|| anyhow::anyhow!("could not build the console link"))?;
+
+    Ok(Json(ConsoleLink { url }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::console_url_from_api;
+    use super::{console_link_url, console_url_from_api};
+
+    /// The token must land in the fragment. A query parameter would put an
+    /// account-wide credential into the console's access logs and into the
+    /// Referer of every outbound link on the page it lands on.
+    #[test]
+    fn the_token_goes_in_the_fragment_never_the_query() {
+        let url = console_link_url("https://console.example", "tok-123").unwrap();
+        assert!(url.contains("#token=tok-123"), "{url}");
+        assert!(
+            !url.contains("?token="),
+            "a query parameter is logged: {url}"
+        );
+        // Nothing before the '#' may carry it.
+        let (before, _) = url.split_once('#').unwrap();
+        assert!(!before.contains("tok-123"), "{url}");
+    }
+
+    /// Tokens are opaque and may contain characters that would otherwise end
+    /// the fragment or be misread as another parameter.
+    #[test]
+    fn a_token_with_awkward_characters_is_encoded() {
+        let url = console_link_url("https://console.example", "a b&c#d").unwrap();
+        assert!(!url.contains("a b"), "{url}");
+        assert!(
+            url.matches('#').count() == 1,
+            "a stray # splits the fragment: {url}"
+        );
+    }
+
+    /// No token still yields the plain console link. The reader gets sent to
+    /// the right place and signs in there, which is strictly better than the
+    /// row disappearing because a credential was missing.
+    #[test]
+    fn without_a_token_the_link_still_points_at_the_console() {
+        assert_eq!(
+            console_link_url("https://console.example", "   ").as_deref(),
+            Some("https://console.example")
+        );
+    }
 
     #[test]
     fn derives_the_console_host_from_the_api_host() {
