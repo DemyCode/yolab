@@ -41,6 +41,34 @@ spec:
           imagePullPolicy: IfNotPresent
           stdin: true
           tty: true
+          {{- /* A STARTUP PROBE, because this server is slow to boot and the
+                 liveness probe used to shoot it before it finished.
+
+                 Observed on a live cluster (2026-09-07): container start at
+                 14:21:24, the itzg image spent ~3 minutes on its own setup
+                 before Minecraft's ServerMain even appeared at 14:24:33, and
+                 the world was still loading off CephFS after that. Liveness
+                 (120s delay + 3 x 30s) fires at ~210s, so it sent SIGTERM at
+                 14:24:51 — mid-boot — and SIGKILL 30s later. Every restart
+                 began the same slow load again, so it never once opened
+                 :25565. Ten restarts, permanently 1/2 Running.
+
+                 Inflating initialDelaySeconds is the wrong fix: it weakens
+                 liveness for the entire life of the server to accommodate one
+                 slow minute at the start. A startupProbe suspends liveness
+                 until the port opens ONCE, then hands over to the tight
+                 liveness timing below.
+
+                 15 minutes of budget. Generous on purpose — world generation
+                 on network storage on a small machine is legitimately slow,
+                 and the cost of being wrong in this direction is a late
+                 restart, while the cost of being wrong in the other is a
+                 server that can never start at all. */}}
+          startupProbe:
+            tcpSocket:
+              port: 25565
+            periodSeconds: 10
+            failureThreshold: 90
           readinessProbe:
             tcpSocket:
               port: 25565
@@ -49,7 +77,6 @@ spec:
           livenessProbe:
             tcpSocket:
               port: 25565
-            initialDelaySeconds: 120
             periodSeconds: 30
             failureThreshold: 3
           env:
