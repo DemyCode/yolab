@@ -68,6 +68,33 @@ let
     NDK_HOME = ndkRoot;
   };
 
+  # Rust's dependencies, vendored into the store.
+  #
+  # Two ecosystems download things here, and caching only one of them is a trap
+  # worth naming: step 1 caches Gradle's jars, but `tauri android build` also
+  # runs `cargo build`, and cargo wants the crates.io index. With no network in
+  # step 2 that fails with
+  #
+  #   Updating crates.io index
+  #   Could not resolve host: index.crates.io
+  #
+  # which looks like the Gradle cache failing, and is not related to it at all.
+  #
+  # craneLib.vendorCargoDeps is the same mechanism the rest of this repo's Rust
+  # builds already use, so the crates come from the same source and the same
+  # Cargo.lock as `nix build .#desktop-client`.
+  cargoVendorDir = rust.craneLib.vendorCargoDeps { inherit src; };
+
+  # Points cargo at the vendored copy instead of the network. Needed in both
+  # derivations: step 1 could reach crates.io, but using the vendored source
+  # there too means the two steps resolve identical dependencies rather than
+  # merely similar ones.
+  cargoOffline = ''
+    export CARGO_HOME=$TMPDIR/cargo
+    mkdir -p "$CARGO_HOME"
+    cp ${cargoVendorDir}/config.toml "$CARGO_HOME/config.toml"
+  '';
+
   # Tauri assembles the APK by running `gen/android/gradlew`, the Gradle wrapper
   # script — and `tauri android init` does not produce one, so the build dies
   # with "`gradlew` not found. Make sure you have the Android SDK installed".
@@ -113,6 +140,7 @@ let
         # an env attribute, so it would arrive as the literal string and mkdir
         # would cheerfully create a directory named $TMPDIR.
         export GRADLE_USER_HOME=$TMPDIR/gradle
+        ${cargoOffline}
         mkdir -p "$GRADLE_USER_HOME"
 
         # Generates gen/android. Not committed to the repo: it is a template
@@ -188,6 +216,7 @@ pkgs.stdenv.mkDerivation (
       # an env attribute, so it would arrive as the literal string and mkdir
       # would cheerfully create a directory named $TMPDIR.
       export GRADLE_USER_HOME=$TMPDIR/gradle
+      ${cargoOffline}
       # Restored under caches/, which is where step 1 took it from. Step 1
       # stores only `modules-2` — see its installPhase for why the rest cannot
       # be kept — so the parent directory is recreated here.
