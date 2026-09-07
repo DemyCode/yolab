@@ -22,19 +22,26 @@
     src ? null,
     nativeBuildInputs ? [],
     buildInputs ? [],
+    # Merged into every derivation this produces. For anything that is a
+    # property of the crate itself rather than of one build of it — see
+    # `desktop-client`, which needs a runtime environment variable set on the
+    # wrapper regardless of whether it is being built, tested or linted.
+    extraArgs ? {},
   }: let
-    args = {
-      inherit pname nativeBuildInputs buildInputs;
-      version = "0.1.0";
-      src =
-        if src != null
-        then src
-        else craneLib.cleanCargoSource (craneLib.path path);
-      strictDeps = true;
-      # Registry crates get --cap-lints allow from cargo, so this only binds
-      # our own code.
-      RUSTFLAGS = "-D warnings";
-    };
+    args =
+      {
+        inherit pname nativeBuildInputs buildInputs;
+        version = "0.1.0";
+        src =
+          if src != null
+          then src
+          else craneLib.cleanCargoSource (craneLib.path path);
+        strictDeps = true;
+        # Registry crates get --cap-lints allow from cargo, so this only binds
+        # our own code.
+        RUSTFLAGS = "-D warnings";
+      }
+      // extraArgs;
 
     cargoArtifacts = craneLib.buildDepsOnly args;
 
@@ -142,6 +149,25 @@ in {
         dbus
         openssl
       ];
+
+      extraArgs = {
+        # WebKitGTK 2.42 renders through a DMABUF path that fails outright on a
+        # good number of compositor and driver combinations. When it does, the
+        # app builds, links, launches and then dies before drawing anything:
+        #
+        #   Gdk-Message: Error 71 (Protocol error) dispatching to Wayland display
+        #
+        # Observed on this very repo's first run. Turning the path off costs a
+        # rendering optimisation nobody would notice in a settings window, and
+        # several distributions ship exactly this as a default.
+        #
+        # Deliberately NOT GDK_BACKEND=x11, which also cures it: that forces the
+        # whole app through XWayland and gives up native Wayland, fractional
+        # scaling included, to fix a renderer bug.
+        preFixup = ''
+          gappsWrapperArgs+=(--set WEBKIT_DISABLE_DMABUF_RENDERER 1)
+        '';
+      };
     };
   };
 }
