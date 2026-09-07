@@ -121,7 +121,6 @@
       outputHash = lib.fakeHash;
     }
     // commonEnv);
-
   # ── Step 2: the APK itself ─────────────────────────────────────────────────
 in
   pkgs.stdenv.mkDerivation ({
@@ -144,7 +143,7 @@ in
         # No network in the sandbox, so a dependency step 1 failed to cache
         # fails here — which is the intended signal, not a surprise.
         cargo tauri android build --apk
-         
+
         runHook postBuild
       '';
 
