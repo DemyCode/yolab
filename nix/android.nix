@@ -112,10 +112,30 @@ let
   # derivations: step 1 could reach crates.io, but using the vendored source
   # there too means the two steps resolve identical dependencies rather than
   # merely similar ones.
+  # A WRITABLE COPY, not the store path directly.
+  #
+  # Tauri ships its Android Gradle module inside the tauri crate — the build
+  # includes a `:tauri-android` project rooted at
+  # <vendor>/tauri-2.11.5/mobile/android — so Gradle wants to create `build/`
+  # under a vendored crate. Pointed at the store that is read-only, and the
+  # build dies with
+  #
+  #   Execution failed for task ':tauri-android:mergeReleaseJniLibFolders'.
+  #   > Failed to create parent directory '/nix/store/…/tauri-2.11.5/mobile/android/build'
+  #
+  # which names a cargo path while being a Gradle problem, and looks like a
+  # permissions bug rather than a design constraint. Copying costs a few seconds
+  # and makes the whole vendored tree writable.
+  #
+  # The config.toml is rewritten as it is copied so its `directory =` entries
+  # point at the copy rather than back at the store.
   cargoOffline = ''
     export CARGO_HOME=$TMPDIR/cargo
     mkdir -p "$CARGO_HOME"
-    cp ${cargoVendorDir}/config.toml "$CARGO_HOME/config.toml"
+    cp -r ${cargoVendorDir} "$TMPDIR/vendor"
+    chmod -R u+w "$TMPDIR/vendor"
+    sed "s|${cargoVendorDir}|$TMPDIR/vendor|g" \
+      ${cargoVendorDir}/config.toml > "$CARGO_HOME/config.toml"
   '';
 
   # Tauri assembles the APK by running `gen/android/gradlew`, the Gradle wrapper
