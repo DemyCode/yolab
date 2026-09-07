@@ -10,11 +10,12 @@
 # declaring a hash of everything it produces up front. The real build then runs
 # offline against that cache.
 #
-# The consequence: `gradleDepsHash` below cannot be known before the first build.
-# Leave it as `lib.fakeHash`, build once, and nix prints the correct value in the
-# mismatch error. That is the intended workflow for a fixed-output derivation,
-# not a mistake — but it does mean the first `nix build .#android-apk` is
-# expected to fail, and to say exactly what to paste in.
+# The consequence: `outputHash` below cannot be known before the first build.
+# It is left as `lib.fakeHash`; nix prints the correct value in the mismatch
+# error and it goes in the file. That is the intended workflow for a
+# fixed-output derivation, not a mistake — but it does mean the first
+# `nix build .#android-apk` after any dependency change is expected to fail,
+# and to say exactly what to paste in.
 {
   pkgs,
   rust,
@@ -79,9 +80,11 @@ let
 
   # ── Step 1: the dependency cache ───────────────────────────────────────────
   #
-  # Runs `tauri android init` (which generates the Gradle project) and then a
-  # dependency-only Gradle invocation, and captures the resulting cache. This is
-  # the one derivation permitted network access.
+  # Generates the Gradle project, runs a full build WITH network, and keeps only
+  # the dependencies it downloaded. This is the one derivation allowed online.
+  #
+  # A full build rather than a cheaper dependency-resolution step, because the
+  # cheaper step does not work — see the buildPhase.
   gradleDeps = pkgs.stdenv.mkDerivation (
     {
       pname = "yolab-android-gradle-deps";
@@ -102,25 +105,54 @@ let
         # produced it.
         cargo tauri android init --ci
 
-        cd gen/android
-        # `dependencies` resolves the whole graph without compiling anything,
-        # which is all this derivation exists to cache.
-        gradle --no-daemon --console=plain dependencies || true
+        # The REAL build, not `gradle dependencies`, and not run from
+        # gen/android by hand. Tauri writes gen/android/tauri.settings.gradle as
+        # part of driving the build; settings.gradle line 3 applies that file, so
+        # invoking gradle directly after `init` fails with
+        #
+        #   Could not read script '.../tauri.settings.gradle' as it does not exist
+        #
+        # Only the CLI knows how to get the project into a buildable state, so
+        # the cheapest correct thing is to let it do the whole build here — with
+        # network — and keep nothing but the downloaded dependencies.
+        #
+        # `|| true` because this derivation's product is the cache, not the APK.
+        # A build that fails late still leaves the dependencies it resolved.
+        cargo tauri android build --apk || true
         runHook postBuild
       '';
 
       installPhase = ''
         runHook preInstall
         mkdir -p $out
-        cp -r "$GRADLE_USER_HOME"/caches $out/ || true
+
+        # ONLY the downloaded artifacts. Copying `caches` wholesale is what made
+        # this unreproducible: it also holds lock files, a journal and
+        # gc.properties, all of which differ between two identical runs — so the
+        # output hash changed every build and could never be pinned. Observed
+        # directly: two runs of the same input produced H/23kSjD… and sHv54rq6….
+        #
+        # modules-2/files-2.1 is the jars themselves, keyed by their own
+        # checksums, which is the one part that IS stable.
+        cp -r "$GRADLE_USER_HOME"/caches/modules-2 $out/ 2>/dev/null || true
+
+        # Belt and braces: these appear inside modules-2 as well.
+        find $out -name '*.lock' -delete
+        find $out -name 'gc.properties' -delete
+        find $out -type d -empty -delete
+
+        if [ -z "$(ls -A $out)" ]; then
+          echo "no Gradle dependencies were cached — the build resolved nothing" >&2
+          exit 1
+        fi
         runHook postInstall
       '';
 
       # Fixed-output: the three attributes below are what buy network access.
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      # REPLACE ME after the first build — see this file's header.
-      outputHash = "sha256-H/23kSjDk9YbjrQhIcME+cn3q04O3ZbTGeRPyv/h4U8=";
+      # Pinned from a build's mismatch error; see this file's header.
+      outputHash = lib.fakeHash;
     }
     // commonEnv
   );
@@ -140,16 +172,19 @@ pkgs.stdenv.mkDerivation (
       # an env attribute, so it would arrive as the literal string and mkdir
       # would cheerfully create a directory named $TMPDIR.
       export GRADLE_USER_HOME=$TMPDIR/gradle
-      mkdir -p "$GRADLE_USER_HOME"
-      cp -r ${gradleDeps}/caches "$GRADLE_USER_HOME"/
+      # Restored under caches/, which is where step 1 took it from. Step 1
+      # stores only `modules-2` — see its installPhase for why the rest cannot
+      # be kept — so the parent directory is recreated here.
+      mkdir -p "$GRADLE_USER_HOME/caches"
+      cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
       chmod -R u+w "$GRADLE_USER_HOME"
 
-        cargo tauri android init --ci
-        # No network in the sandbox, so a dependency step 1 failed to cache
-        # fails here — which is the intended signal, not a surprise.
-        cargo tauri android build --apk
+      cargo tauri android init --ci
+      # No network in the sandbox, so a dependency step 1 failed to cache fails
+      # here — which is the intended signal, not a surprise.
+      cargo tauri android build --apk
 
-        runHook postBuild
+      runHook postBuild
     '';
 
     installPhase = ''
