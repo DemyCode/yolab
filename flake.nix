@@ -217,6 +217,14 @@
       # from the box rather than bundled here.
       desktop-client = rust.crates.desktop-client.package;
 
+      # `nix build .#android-apk` -> ./result/*.apk, unsigned, for sideloading.
+      #
+      # NOT in `checks`, unlike desktop-client. It needs the Android SDK and NDK
+      # — several gigabytes — and a Gradle dependency cache whose hash has to be
+      # pinned by hand; putting that on every push would make CI slow and
+      # brittle for an artifact that is cut on release, not on commit.
+      android-apk = import ./nix/android.nix {inherit pkgs rust;};
+
       # Every check is a build input, so nix has already run them all before the
       # first line executes: this prints a summary, it is not a test runner.
       ci = pkgs.writeShellApplication {
