@@ -19,7 +19,8 @@
   pkgs,
   rust,
   lib ? pkgs.lib,
-}: let
+}:
+let
   # The Android SDK is unfree — Google's licence — and the repo's main `pkgs` is
   # plain `nixpkgs.legacyPackages`, with no allowUnfree. Evaluating it there
   # fails with a licence refusal naming a package nobody asked for by name,
@@ -43,11 +44,11 @@
   # what Tauri's Gradle plugin expects, or the failure is a linker error deep in
   # a Rust build rather than anything naming a version.
   androidSdk = androidPkgs.androidenv.composeAndroidPackages {
-    platformVersions = ["34"];
-    buildToolsVersions = ["34.0.0"];
+    platformVersions = [ "34" ];
+    buildToolsVersions = [ "34.0.0" ];
     includeNDK = true;
-    ndkVersions = ["26.1.10909125"];
-    cmakeVersions = ["3.22.1"];
+    ndkVersions = [ "26.1.10909125" ];
+    cmakeVersions = [ "3.22.1" ];
     includeEmulator = false;
     includeSystemImages = false;
   };
@@ -81,7 +82,8 @@
   # Runs `tauri android init` (which generates the Gradle project) and then a
   # dependency-only Gradle invocation, and captures the resulting cache. This is
   # the one derivation permitted network access.
-  gradleDeps = pkgs.stdenv.mkDerivation ({
+  gradleDeps = pkgs.stdenv.mkDerivation (
+    {
       pname = "yolab-android-gradle-deps";
       version = "0.1.0";
       inherit src nativeBuildInputs;
@@ -118,52 +120,55 @@
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
       # REPLACE ME after the first build — see this file's header.
-      outputHash = lib.fakeHash;
+      outputHash =  "sha256-H/23kSjDk9YbjrQhIcME+cn3q04O3ZbTGeRPyv/h4U8=";
     }
-    // commonEnv);
+    // commonEnv
+  );
 
   # ── Step 2: the APK itself ─────────────────────────────────────────────────
 in
-  pkgs.stdenv.mkDerivation ({
-      pname = "yolab-android-apk";
-      version = "0.1.0";
-      inherit src nativeBuildInputs;
+pkgs.stdenv.mkDerivation (
+  {
+    pname = "yolab-android-apk";
+    version = "0.1.0";
+    inherit src nativeBuildInputs;
 
-      buildPhase = ''
-        runHook preBuild
-        export HOME=$TMPDIR
-        # Set HERE, not as a derivation attribute: nix does not expand $TMPDIR in
-        # an env attribute, so it would arrive as the literal string and mkdir
-        # would cheerfully create a directory named $TMPDIR.
-        export GRADLE_USER_HOME=$TMPDIR/gradle
-        mkdir -p "$GRADLE_USER_HOME"
-        cp -r ${gradleDeps}/caches "$GRADLE_USER_HOME"/
-        chmod -R u+w "$GRADLE_USER_HOME"
+    buildPhase = ''
+      runHook preBuild
+      export HOME=$TMPDIR
+      # Set HERE, not as a derivation attribute: nix does not expand $TMPDIR in
+      # an env attribute, so it would arrive as the literal string and mkdir
+      # would cheerfully create a directory named $TMPDIR.
+      export GRADLE_USER_HOME=$TMPDIR/gradle
+      mkdir -p "$GRADLE_USER_HOME"
+      cp -r ${gradleDeps}/caches "$GRADLE_USER_HOME"/
+      chmod -R u+w "$GRADLE_USER_HOME"
 
-        cargo tauri android init --ci
-        # No network in the sandbox, so a dependency step 1 failed to cache
-        # fails here — which is the intended signal, not a surprise.
-        cargo tauri android build --apk
-         
-        runHook postBuild
-      '';
+      cargo tauri android init --ci
+      # No network in the sandbox, so a dependency step 1 failed to cache
+      # fails here — which is the intended signal, not a surprise.
+      cargo tauri android build --apk
+       
+      runHook postBuild
+    '';
 
-      installPhase = ''
-        runHook preInstall
-        mkdir -p $out
-        find gen/android -name '*.apk' -exec cp {} $out/ \;
-        # Fail loudly rather than producing an empty output that looks like a
-        # success until someone tries to install it.
-        if [ -z "$(ls -A $out)" ]; then
-          echo "no APK was produced — the Gradle assemble step did not run" >&2
-          exit 1
-        fi
-        runHook postInstall
-      '';
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out
+      find gen/android -name '*.apk' -exec cp {} $out/ \;
+      # Fail loudly rather than producing an empty output that looks like a
+      # success until someone tries to install it.
+      if [ -z "$(ls -A $out)" ]; then
+        echo "no APK was produced — the Gradle assemble step did not run" >&2
+        exit 1
+      fi
+      runHook postInstall
+    '';
 
-      meta = {
-        description = "YoLab as an Android APK (unsigned, for sideloading)";
-        platforms = ["x86_64-linux"];
-      };
-    }
-    // commonEnv)
+    meta = {
+      description = "YoLab as an Android APK (unsigned, for sideloading)";
+      platforms = [ "x86_64-linux" ];
+    };
+  }
+  // commonEnv
+)
