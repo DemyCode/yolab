@@ -3,3 +3,22 @@
 # Without it `nix run .#coverage` fails with a confusing "no profiler runtime".
 components = ["rustfmt", "clippy", "rust-analyzer", "llvm-tools"]
 channel = "stable"
+
+# Android, for shells/desktop built as an APK (see nix/android.nix).
+#
+# Declared here rather than in a toolchain of its own because nix/rust.nix reads
+# THIS file to build every crate in the repo, and a second toolchain would be a
+# second rustc — the exact drift the comment at the top of rust.nix exists to
+# prevent. Adding targets costs local-api and the installer nothing: a target is
+# only compiled for when something asks for it.
+#
+# All four ABIs Play requires for a universal APK. arm64 alone covers essentially
+# every phone sold since 2017, but an APK missing armeabi-v7a is rejected on
+# older devices at install time rather than at build time, which is a bad place
+# to discover it.
+targets = [
+  "aarch64-linux-android",
+  "armv7-linux-androideabi",
+  "i686-linux-android",
+  "x86_64-linux-android",
+]
