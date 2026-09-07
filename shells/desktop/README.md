@@ -18,3 +18,20 @@ system update ships the interface with it and no app release is needed.
 
 The one thing the shell owns is the address. On first launch it asks for it,
 stores it, and from then on opens straight into the box.
+
+## Layout
+
+    ui/index.html      the address prompt — the ONLY web asset
+    src/main.rs        window management and URL validation
+    tauri.conf.json    frontendDist points at ui/
+
+`ui/` exists as a directory of its own rather than `frontendDist: "."` because
+Tauri refuses a frontend directory that contains `target`:
+
+    Error The configured frontendDist includes the `["target"]` folder.
+
+Which is right: by the time an Android build runs, cargo has created `target/`
+in the crate root, and shipping a Rust build directory into an APK as web assets
+is exactly the mistake that check exists to catch. The desktop build did not
+complain only because its assets are embedded before `target` appears — the same
+misconfiguration, caught on one platform and not the other.

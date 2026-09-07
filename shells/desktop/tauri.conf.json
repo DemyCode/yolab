@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "ovh.demycode.yolab",
   "build": {
-    "frontendDist": "."
+    "frontendDist": "ui"
   },
   "app": {
     "withGlobalTauri": true,
