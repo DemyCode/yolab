@@ -18,6 +18,11 @@
 //! replica count — a partially-readable RBD is exactly as fatal at size 3 as
 //! it was at size 1 — so the check stays regardless of what topology.rs sets.
 //!
+//! That check then spent months unable to fire, because the `mountpoint -q`
+//! guarding it stat()s the path, and stat() on a shut-down filesystem returns
+//! EIO — so the guard answered "not mounted" for the exact state the check
+//! was written to catch. It reads the mount table now; see `is_mountpoint`.
+//!
 //! Nothing under containerd's data-root is the owner's data: every byte is a
 //! container layer a registry will send again. So the right response to any
 //! doubt here is to rebuild, never to try to preserve it.
@@ -68,8 +73,22 @@ async fn image_exists<H: Host>(host: &H, pool: &str, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Answers from the mount table, never by touching the mount.
+///
+/// This shelled out to `mountpoint -q` for most of its life, and `mountpoint`
+/// stat()s the path. stat() on a filesystem XFS has shut down returns EIO, so
+/// `mountpoint` exits non-zero and this reported "not mounted" about precisely
+/// the state the caller exists to recognise — silently disabling the
+/// mounted-but-unreadable branch in `run()` that this module's header calls THE
+/// fix. On a live node (2026-09-06) `mountpoint -q` answered "not a mountpoint"
+/// for a containerd data-root on which every read, `ls` included, returned EIO.
+///
+/// `findmnt` reads /proc/self/mountinfo, which the kernel keeps regardless of
+/// whether the filesystem behind the mount can still serve anything, so it goes
+/// on saying "mounted" about a mount that has stopped working. That is the
+/// answer this function is asked for.
 async fn is_mountpoint<H: Host>(host: &H, path: &str) -> bool {
-    host.run_cmd("mountpoint", &["-q", path])
+    host.run_cmd("findmnt", &["-rno", "TARGET", "--mountpoint", path])
         .await
         .map(|o| o.success)
         .unwrap_or(false)
@@ -83,6 +102,35 @@ fn is_readable_dir(path: &Path) -> bool {
         Ok(entries) => entries.into_iter().all(|e| e.is_ok()),
         Err(_) => false,
     }
+}
+
+/// How many mounts other than the store itself still reference the store's tree.
+///
+/// Every running container's rootfs is an overlay whose `lowerdir`/`upperdir`/
+/// `workdir` live under containerd's data-root, and each one keeps a reference to
+/// that filesystem's superblock. `umount -l` on the data-root detaches the *path*
+/// at once but cannot free the superblock while those references remain, so the
+/// block device stays busy and `mkfs` — which needs it exclusively — fails with
+/// EBUSY.
+///
+/// Which decides one question, and only in one situation: the store is mounted,
+/// unreadable, and containers still pin it. Nothing short of stopping every one of
+/// them — needing the very runtime that is down — or a reboot releases it. On a
+/// live node (2026-09-06) there were 40 such mounts against a shut-down XFS, and
+/// no process even in D state: the containers were fine, their filesystem was not.
+/// Retrying in place there cannot work, and each attempt costs a k3s stop/start,
+/// which on a two-node etcd cluster is not free.
+///
+/// Reads `/proc/self/mounts`: the store's own line is excluded by target, and the
+/// overlays are matched on their options, which is where the store path appears.
+fn overlays_pinning(mounts: &str, croot: &str) -> usize {
+    mounts
+        .lines()
+        .filter(|line| {
+            let target = line.split_whitespace().nth(1).unwrap_or("");
+            target != croot && line.contains(croot)
+        })
+        .count()
 }
 
 fn dir_has_any_entries(path: &Path) -> bool {
@@ -406,6 +454,22 @@ pub async fn run<H: Host>(
             tracing::info!("{croot_s} is already mounted and readable");
             return Ok(());
         }
+        // An in-place rebuild is only possible if nothing still holds the dead
+        // filesystem down. When containers do, say so and stop — retrying costs a
+        // k3s stop/start on every timer tick and cannot succeed. See
+        // `overlays_pinning`.
+        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+        let pinned = overlays_pinning(&mounts, &croot_s);
+        if pinned > 0 {
+            tracing::error!(
+                "{croot_s} is mounted but cannot be read, and {pinned} container overlay \
+                 mounts still reference it. The image store cannot be rebuilt while they \
+                 do — mkfs needs the block device exclusively, and only stopping every \
+                 container (which needs the container runtime that is down) or a reboot \
+                 will release it. THIS NODE NEEDS A REBOOT; nothing here can recover it."
+            );
+            return Ok(());
+        }
         tracing::warn!("{croot_s} is mounted but cannot be read — rebuilding the image store");
         // Lazy as a fallback: containerd may already hold descriptors on a
         // filesystem that has shut down, and a plain umount would refuse.
@@ -598,6 +662,51 @@ mod tests {
         assert!(!is_readable_dir(Path::new("/nonexistent/path/at/all")));
     }
 
+    // ── overlays_pinning ──────────────────────────────────────────────────────
+    //
+    // Lines trimmed from the real /proc/self/mounts of the node in the 2026-09-06
+    // incident, which is the shape this has to read correctly.
+
+    const CROOT: &str = "/var/lib/rancher/k3s/agent/containerd";
+
+    fn mounts_with_containers() -> String {
+        format!(
+            "/dev/rbd0 {CROOT} xfs rw,relatime,inode64 0 0\n\
+             overlay /run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io/abc/rootfs \
+             overlay rw,relatime,lowerdir={CROOT}/io.containerd.snapshotter.v1.overlayfs/\
+             snapshots/1/fs,upperdir={CROOT}/io.containerd.snapshotter.v1.overlayfs/\
+             snapshots/206/fs 0 0\n\
+             overlay /run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io/def/rootfs \
+             overlay rw,relatime,lowerdir={CROOT}/io.containerd.snapshotter.v1.overlayfs/\
+             snapshots/2/fs 0 0\n\
+             tmpfs /run tmpfs rw,nosuid 0 0\n"
+        )
+    }
+
+    #[test]
+    fn container_overlays_count_as_pinning_the_store() {
+        assert_eq!(overlays_pinning(&mounts_with_containers(), CROOT), 2);
+    }
+
+    /// The store's own mount must never count as pinning itself, or a healthy node
+    /// with no containers would look unrecoverable.
+    #[test]
+    fn the_stores_own_mount_does_not_pin_it() {
+        let only_the_store = format!("/dev/rbd0 {CROOT} xfs rw,relatime,inode64 0 0\n");
+        assert_eq!(overlays_pinning(&only_the_store, CROOT), 0);
+        assert_eq!(overlays_pinning("", CROOT), 0);
+    }
+
+    /// Mounts belonging to anything else — the CephFS volumes an app's PVC brings,
+    /// /run, the root filesystem — are not references to the image store.
+    #[test]
+    fn unrelated_mounts_do_not_pin_the_store() {
+        let unrelated = "[fd00:cafe::5]:6789:/volumes/csi/csi-vol-0eb /var/lib/kubelet/pods/\
+                         18f5/volumes/kubernetes.io~csi/pvc-9026/mount ceph rw,relatime 0 0\n\
+                         /dev/sda2 / ext4 rw,relatime 0 0\n";
+        assert_eq!(overlays_pinning(unrelated, CROOT), 0);
+    }
+
     #[test]
     fn dir_has_any_entries_distinguishes_empty_from_populated() {
         let dir = tempfile::tempdir().unwrap();
@@ -629,7 +738,7 @@ mod tests {
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok("rbd ls images", "yolab-n1\n")
-            .ok("mountpoint -q", "");
+            .ok("findmnt -rno TARGET --mountpoint", "");
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
 
@@ -650,12 +759,12 @@ mod tests {
         // is_readable_dir cannot distinguish "empty" from "EIO" without a
         // real corrupted mount, so this drives the unmount path via a
         // containerd root that does not exist at all (is_readable_dir ->
-        // false) while `mountpoint` still reports mounted — the same shape a
+        // false) while the mount table still reports mounted — the same shape a
         // dead XFS mount produces: mounted, but nothing can be read from it.
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok("rbd ls images", "yolab-n1\n")
-            .ok("mountpoint -q", "") // success = IS a mountpoint
+            .ok("findmnt -rno TARGET --mountpoint", "") // success = IS a mountpoint
             .ok("umount", "")
             .fail("systemctl is-active", "not active")
             .fail("rbd map", "no route to host"); // stop short of the real mount dance
@@ -665,6 +774,37 @@ mod tests {
         run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
 
         assert!(host.ran("umount"));
+    }
+
+    /// The regression that let the test above pass while the real thing could
+    /// never happen. `mountpoint`, `stat`, `test -d` — anything that has to
+    /// touch the filesystem to answer — returns EIO once XFS has shut the mount
+    /// down, which reads as "not a mountpoint" and skips the rebuild branch
+    /// entirely. Only the mount table can answer this question about a mount
+    /// that no longer works, so pin the tool, not just the branch.
+    #[tokio::test]
+    async fn is_mountpoint_never_touches_the_filesystem_it_asks_about() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("rbd ls images", "yolab-n1\n")
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .ok("umount", "")
+            .fail("systemctl is-active", "not active")
+            .fail("rbd map", "no route to host");
+        let dir = tempfile::tempdir().unwrap();
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(
+            host.ran("findmnt -rno TARGET --mountpoint"),
+            "the mounted-or-not question must be answered from /proc/self/mountinfo"
+        );
+        // `ran` is a substring match and `--mountpoint` contains "mountpoint",
+        // so this has to look at what was actually invoked.
+        assert!(
+            !host.calls().iter().any(|c| c.starts_with("mountpoint ")),
+            "a stat-based probe returns EIO on exactly the mount this must recognise"
+        );
     }
 
     /// Gives `mount`/`umount`/`cp -a` a persistent backing directory standing
@@ -772,6 +912,12 @@ mod tests {
                         copy_dir_all(Path::new(target), &me.device_backing);
                         ok_output("")
                     }
+                    // `findmnt --mountpoint` is the is-it-mounted question, and
+                    // each test answers that one for itself; the other forms are
+                    // device lookups, which always resolve to the simulated device.
+                    "findmnt" if args.contains(&"--mountpoint") => {
+                        me.inner.run_cmd(bin, args).await
+                    }
                     "findmnt" => ok_output("/dev/rbd0"),
                     _ => me.inner.run_cmd(bin, args).await,
                 }
@@ -786,7 +932,7 @@ mod tests {
             inner: FakeHost::new()
                 .ok("ceph -s", "")
                 .ok("rbd ls images", "yolab-n1\n")
-                .fail("mountpoint -q", "not a mountpoint")
+                .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
                 .fail("systemctl is-active", "not active"),
             device_backing: dir.path().join("simulated-rbd0"),
         };
@@ -814,7 +960,7 @@ mod tests {
             inner: FakeHost::new()
                 .ok("ceph -s", "")
                 .ok("rbd ls images", "yolab-n1\n")
-                .fail("mountpoint -q", "not a mountpoint")
+                .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
                 .ok("systemctl is-active", ""),
             device_backing: dir.path().join("simulated-rbd0"),
         };

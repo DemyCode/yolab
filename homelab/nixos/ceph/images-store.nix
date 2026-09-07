@@ -155,7 +155,11 @@ in {
       before = ["k3s.service"];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
+        # NOT RemainAfterExit, and that is the whole reason this unit's health
+        # check gets to run more than once — see the timer below. Nothing
+        # `requires` this unit (deliberately: see the note above), so leaving it
+        # active after it exits bought nothing and cost everything.
+        #
         # Never let this unit's failure propagate into k3s.
         SuccessExitStatus = "0 1";
         # Generous ON PURPOSE. The bounded checks that make FAILURE fast — an
@@ -229,20 +233,35 @@ in {
     # invisibly. Runs behind the provisioning timer so the image exists by the
     # time it looks, and exits immediately once the mount is in place.
     #
-    # OnCalendar, not OnUnitActiveSec/OnUnitInactiveSec — this unit has
-    # RemainAfterExit=true, and a `RemainAfterExit` oneshot that keeps succeeding
-    # never becomes inactive again, so BOTH of those stop re-arming after the
-    # first success: `systemctl show` on a live node showed
-    # `next_elapse=0`/`NextElapseUSecMonotonic=infinity` for this exact timer,
-    # 10+ hours after its last (successful) run. That is not a hypothetical: it is
-    # why a live outage went undetected — Ceph degraded, an RBD write timed out,
-    # XFS shut itself down (see this file's header), and the health check in
-    # storage::containerd_store::run() that exists specifically to catch that
-    # ("mounted but unreadable" -> rebuild) never got to run again, because
-    # nothing ever re-triggered this unit. OnCalendar fires on a wall-clock
-    # schedule regardless of the target unit's active/inactive state, so it does
-    # not have this failure mode. See the identical fix on yolab-ceph-mgr-key's
-    # and yolab-ceph-mds-key's timers.
+    # THE SERVICE MUST BE ABLE TO GO INACTIVE, OR NO TIMER BASE SAVES YOU.
+    #
+    # systemd re-arms a timer when the unit it triggers becomes inactive or
+    # failed, and at no other moment (timer.c, `timer_trigger_notify`: in state
+    # TIMER_RUNNING it only calls `timer_enter_waiting` once the triggered unit
+    # is inactive-or-failed). A `RemainAfterExit = true` oneshot that succeeds
+    # stays "active (exited)" forever, so that moment never comes and the timer
+    # sits in TIMER_RUNNING with `NextElapseUSecMonotonic=infinity` for the rest
+    # of the boot. The timer base is irrelevant to this: it decides what the
+    # next elapse is computed *from*, not whether the timer is ever re-armed.
+    #
+    # An earlier round of this fix moved these timers to OnCalendar in the
+    # belief that a wall-clock base escaped the trap. It does not, and the cost
+    # of believing it did was the 2026-09-06 outage: node1's NIC flapped for
+    # ~40s, the images RBD's writes hit their osd_request_timeout, XFS shut the
+    # containerd data-root down, and the "mounted but unreadable -> rebuild"
+    # check in storage::containerd_store::run() — written for exactly this —
+    # never ran again. `systemctl list-timers` on the live node showed
+    # `NEXT: -`, last trigger 2 days earlier. kubelet reported "container
+    # runtime is down", the node went NotReady, its pods hung in Terminating
+    # forever (kubelet cannot kill what the runtime will not answer for), and
+    # every app in the UI read "Starting up…" for 32 hours.
+    #
+    # So: no RemainAfterExit on the service (above), and OnCalendar here so a
+    # run that overshoots one slot does not shift the whole schedule. The
+    # `self-healing-timers-can-re-arm` check in nix/checks.nix fails the build
+    # if the pairing ever comes back. Same fix on yolab-ceph-mgr-key's and
+    # yolab-ceph-mds-key's timers, which were dead on that node for the same
+    # reason.
     systemd.timers.yolab-containerd-store = {
       wantedBy = ["timers.target"];
       timerConfig = {
