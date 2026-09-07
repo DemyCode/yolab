@@ -148,6 +148,18 @@ in {
         librsvg
         dbus
         openssl
+        # THE THING THAT MAKES HTTPS WORK.
+        #
+        # WebKitGTK does not do TLS itself; it asks GIO, and GIO's TLS backend
+        # is a loadable module that ships in glib-networking. Without it every
+        # https:// request fails with "TLS support is not available" — so the
+        # window opens perfectly and can never reach the box, which is the only
+        # thing this app does.
+        #
+        # Being in buildInputs is not sufficient on its own; the module has to
+        # be found at RUNTIME through GIO_EXTRA_MODULES, which is set on the
+        # wrapper below.
+        glib-networking
       ];
 
       extraArgs = {
@@ -164,8 +176,16 @@ in {
         # Deliberately NOT GDK_BACKEND=x11, which also cures it: that forces the
         # whole app through XWayland and gives up native Wayland, fractional
         # scaling included, to fix a renderer bug.
+        # GIO_EXTRA_MODULES is set explicitly rather than left to
+        # wrapGAppsHook3's own detection. The hook infers module paths from a
+        # derivation's inputs, and with crane's install phase that inference
+        # does not reliably fire — the symptom being a window that opens and
+        # then cannot make a single HTTPS request.
         preFixup = ''
-          gappsWrapperArgs+=(--set WEBKIT_DISABLE_DMABUF_RENDERER 1)
+          gappsWrapperArgs+=(
+            --set WEBKIT_DISABLE_DMABUF_RENDERER 1
+            --prefix GIO_EXTRA_MODULES : "${pkgs.glib-networking}/lib/gio/modules"
+          )
         '';
       };
     };
