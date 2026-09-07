@@ -68,6 +68,21 @@ let
     NDK_HOME = ndkRoot;
   };
 
+  # Tauri assembles the APK by running `gen/android/gradlew`, the Gradle wrapper
+  # script — and `tauri android init` does not produce one, so the build dies
+  # with "`gradlew` not found. Make sure you have the Android SDK installed".
+  # The message is misleading: the SDK is fine, the wrapper simply is not there.
+  #
+  # The fix is a shim rather than `gradle wrapper`, because the wrapper's whole
+  # purpose is to fetch a pinned Gradle distribution at run time — exactly the
+  # network dependency this file exists to eliminate, and pointless when
+  # nixpkgs already pins one. Two lines that hand the call to the Gradle on
+  # PATH, which is the version nix chose.
+  gradlewShim = ''
+    printf '#!/bin/sh\nexec gradle "$@"\n' > gen/android/gradlew
+    chmod +x gen/android/gradlew
+  '';
+
   nativeBuildInputs = [
     rust.rustToolchain
     pkgs.cargo-tauri
@@ -104,6 +119,7 @@ let
         # render, and a checked-in copy silently goes stale against the CLI that
         # produced it.
         cargo tauri android init --ci
+        ${gradlewShim}
 
         # The REAL build, not `gradle dependencies`, and not run from
         # gen/android by hand. Tauri writes gen/android/tauri.settings.gradle as
@@ -180,6 +196,8 @@ pkgs.stdenv.mkDerivation (
       chmod -R u+w "$GRADLE_USER_HOME"
 
       cargo tauri android init --ci
+      ${gradlewShim}
+
       # No network in the sandbox, so a dependency step 1 failed to cache fails
       # here — which is the intended signal, not a surprise.
       cargo tauri android build --apk
