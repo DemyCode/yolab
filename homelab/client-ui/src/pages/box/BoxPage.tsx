@@ -147,16 +147,38 @@ export function BoxPage() {
    * somewhere.
    */
   async function openConsole() {
-    const w = window.open("", "_blank", "noopener,noreferrer");
+    // NO "noopener" HERE, deliberately. `window.open` RETURNS NULL when that
+    // flag is set — withholding the handle is precisely what the flag does — so
+    // asking for it and then using the result was self-defeating: a blank tab
+    // opened, `w` was null, and the code fell through to navigating the CURRENT
+    // tab. Which also aborted every fetch this page had in flight, surfacing as
+    // "NetworkError when attempting to fetch resource" from the pollers.
+    //
+    // The opener reference is dropped explicitly below instead, which gets the
+    // same protection without giving up the handle.
+    const w = window.open("about:blank", "_blank");
+
+    const go = (url: string) => {
+      if (w) {
+        w.opener = null;
+        w.location.replace(url);
+      } else {
+        // Popup blocked. Navigating here is worse — it costs the settings page
+        // — but it is better than a click that does nothing at all.
+        window.location.assign(url);
+      }
+    };
+
     try {
       const { url } = await api.get<{ url: string }>("/api/console/link");
-      if (w) w.location.replace(url);
-      else window.location.assign(url);
+      go(url);
     } catch {
+      // Without the token the console asks for a login, which still beats a
+      // dead button. If there is nothing at all to open, close the tab rather
+      // than leaving a blank one behind.
       const fallback = status.data?.console_url;
-      if (!fallback) return;
-      if (w) w.location.replace(fallback);
-      else window.location.assign(fallback);
+      if (fallback) go(fallback);
+      else w?.close();
     }
   }
 
