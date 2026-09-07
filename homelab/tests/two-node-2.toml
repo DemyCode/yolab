@@ -1,0 +1,55 @@
+# The JOINING node of the two-node VM test (nix/tests/two-node.nix).
+#
+# Differs from boot-config.toml in exactly the four fields that make a node a
+# joiner rather than a founder: hostname, node_id, its own mesh address, and a
+# non-empty node.k3s.server_addr — which is what common.nix reads to decide
+# `isFirstNode`, and what it parses the Ceph seed address back out of. The fsid
+# is deliberately IDENTICAL to node1's: two nodes disagreeing on it is the one
+# bootstrap error that looks healthy on both machines.
+#
+# A throwaway cluster; nothing here is a production secret.
+
+[homelab]
+hostname = "yolab-n2"
+timezone = "UTC"
+locale = "en_US.UTF-8"
+ssh_port = 22
+root_ssh_key = ""
+allowed_ssh_keys = []
+homelab_password_hash = ""
+boot_mode = "bios"
+
+[tunnel]
+enabled = false
+platform_api_url = "https://api.example.invalid"
+account_token = "test-account-token"
+service_name = "homelab"
+service_id = 0
+wg_private_key = ""
+wg_public_key = ""
+sub_ipv6 = "fd00:1::"
+sub_ipv6_private = "fd00:cafe::2"
+wg_server_endpoint = "1.2.3.4:51820"
+wg_server_public_key = ""
+dns_url = "https://ci.example.com"
+
+[node]
+node_id = "n2"
+sub_ipv6_private = "fd00:cafe::2"
+sub_ipv6_private_subnet = "fd00:cafe::/112"
+wg_private_key = "+JtgPm7oPweytBAl26ktbNyOL/PEAiMwt2JSi+IhTlk="
+wg_server_endpoint = "[::1]:51820"
+wg_server_public_key = "8T84paectLWnh6lujhiE6WWJx9PLPOnEzRq6qeuHszk="
+
+[node.k3s]
+role = "server"
+token = "test-token"
+server_addr = "https://[fd00:cafe::1]:6443"
+
+[ceph]
+fsid = "11111111-2222-3333-4444-555555555555"
+
+[disk]
+device = "/dev/vda"
+esp_size = "512M"
+system_size = "8G"

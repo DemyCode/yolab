@@ -124,6 +124,10 @@
       inherit pkgs inputs rust disko;
     };
 
+    twoNodeTest = import ./nix/tests/two-node.nix {
+      inherit pkgs inputs rust disko;
+    };
+
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
@@ -150,8 +154,17 @@
     # not) and has not yet been verified to pass, so it must not be part of
     # `nix flake check`. Run it explicitly:
     #   nix build .#nixosTests.boot-test
+    #   nix build .#nixosTests.two-node-test
+    #
+    # two-node-test is the one to run before shipping anything that touches
+    # Ceph, k3s ordering or the image store: two machines is the topology most
+    # installs actually have, and it is the topology where a node taking itself
+    # offline to do maintenance costs the whole cluster its etcd quorum. Every
+    # storage bug this project has had was found on a live two-node cluster
+    # rather than here, which is the wrong order.
     nixosTests = {
       boot-test = bootTest;
+      two-node-test = twoNodeTest;
     };
 
     # Guarded like `yolab`: these import shared.nix too. No CI stub variant,

@@ -60,8 +60,8 @@ impl Filesystem {
     }
 }
 
-/// Budget for the filesystem operations whose runtime scales with the SIZE OF
-/// THE IMAGE, not with how quickly Ceph answers: `xfs_repair` and `mkfs`.
+/// Budget for `mkfs`, whose runtime scales with the SIZE OF THE IMAGE rather
+/// than with how quickly Ceph answers.
 ///
 /// The generic `host::RUN_CMD_TIMEOUT` of 600s is the right question to ask of an
 /// `rbd`, `mount` or `systemctl` call — past ten minutes those are hung, not
@@ -70,7 +70,7 @@ impl Filesystem {
 /// bounded at 600s, needed ~1000s, and was SIGKILLed on every attempt it ever
 /// made.
 ///
-/// Measured rather than guessed, which is the whole lesson: `xfs_repair -n` on
+/// Grounded in measurement, the standing lesson in this file: a full scan of
 /// node2's 163 GiB image took 134s. The image is sized as a share of the pool
 /// (see images_sizing.rs), so it grows as disks are added — a cluster several
 /// times larger would push that toward, and past, 600s. 1800s leaves room for
@@ -294,19 +294,46 @@ async fn has_filesystem<H: Host>(host: &H, dev: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn filesystem_is_healthy<H: Host>(host: &H, dev: &str, fs: Filesystem) -> bool {
-    match fs {
-        Filesystem::Xfs => host
-            .run_cmd_bounded("xfs_repair", &["-n", dev], FS_OP_TIMEOUT)
-            .await
-            .map(|o| o.success)
-            .unwrap_or(false),
-        Filesystem::Ext4 => host
-            .run_cmd_bounded("fsck.ext4", &["-n", "-f", dev], FS_OP_TIMEOUT)
-            .await
-            .map(|o| o.success)
-            .unwrap_or(false),
+/// "Can containerd use this?" — answered by mounting it, which is how containerd
+/// will find out.
+///
+/// This used to run `xfs_repair -n` (or `fsck.ext4 -n`) and read any non-zero
+/// exit as damage. That condemns a perfectly good filesystem after an ordinary
+/// unclean shutdown: XFS with an unreplayed log makes `xfs_repair` refuse
+/// outright, and a dirty log is not damage — a plain mount replays it in
+/// milliseconds. `xfs_repair -n` is also stricter than the question being asked;
+/// it exits non-zero for anything it *would* change, which is a much lower bar
+/// than "unusable".
+///
+/// Measured, on both nodes of a live cluster after a reboot on 2026-09-07:
+/// node1 refused in 12s, node2 after a full 109s scan, both were declared
+/// "damaged", both image stores were reformatted, and every image on both
+/// machines had to be pulled again — for a reboot, with nothing wrong.
+///
+/// A mount still catches what the old check was written for. The incident in
+/// this module's header was an RBD that came back with holes where its objects
+/// had been; that filesystem MOUNTED and then returned EIO on read, which is
+/// exactly what `is_readable_dir` detects here.
+async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool {
+    let probe = stage_dir(root);
+    if std::fs::create_dir_all(&probe).is_err() {
+        return false;
     }
+    let probe_s = probe.to_string_lossy().into_owned();
+
+    let mounted = host
+        .run_cmd("mount", &[dev, &probe_s])
+        .await
+        .is_ok_and(|o| o.success);
+    // A partial read, not a stat — see `is_readable_dir`. An empty store is
+    // usable; one whose first readdir() fails is not.
+    let usable = mounted && is_readable_dir(&probe);
+
+    if mounted {
+        let _ = host.run_cmd("umount", &[probe_s.as_str()]).await;
+    }
+    let _ = std::fs::remove_dir(&probe);
+    usable
 }
 
 async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
@@ -424,9 +451,9 @@ async fn mount_the_store<H: Host>(
     // which only reads the superblock — one object out of tens of thousands.
     if !needs_rebuild
         && has_filesystem(host, &dev).await
-        && !filesystem_is_healthy(host, &dev, policy.filesystem).await
+        && !filesystem_is_usable(host, root, &dev).await
     {
-        tracing::warn!("the image store on {dev} is damaged — rebuilding it");
+        tracing::warn!("the image store on {dev} will not mount and read — rebuilding it");
         needs_rebuild = true;
     }
 
@@ -749,7 +776,7 @@ mod tests {
 
     /// The image-sized filesystem operations must sit above the generic 600s
     /// command bound and below the unit's own 3600s `TimeoutStartSec`. Both ends
-    /// matter: `xfs_repair` measured 134s against a 163 GiB image and the image
+    /// matter: a full scan measured 134s against a 163 GiB image and the image
     /// grows with the pool, so 600s is a bound this will eventually cross the way
     /// the old copy did; and above 3600s systemd kills the wrapper first, which
     /// loses the reason entirely.

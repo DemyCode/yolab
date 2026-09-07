@@ -18,9 +18,32 @@ use tokio::sync::Mutex;
 ///
 /// This exists for failure, not throughput. Every caller is on a reconcile
 /// loop, so a wedged call means another starts next tick, and another, until
-/// the unit cannot be stopped. `try_lock` rather than `lock` because queueing
-/// behind a wedged call just moves the pile-up from processes into tasks.
+/// the unit cannot be stopped.
+///
+/// READERS SKIP, WRITERS QUEUE — see `is_read_only` below. It used to be
+/// `try_lock` for everything, on the reasoning that queueing behind a wedged
+/// call "just moves the pile-up from processes into tasks". That is true of a
+/// wedged call and exactly wrong for healthy ones: `lvm list` runs on several
+/// reconcile loops and is cheap, `lvm create` runs once when someone switches a
+/// disk on, and with try_lock the one operation that does work loses to the ones
+/// that merely look.
+///
+/// Not hypothetical. In the two-node VM test on 2026-09-07, `lvm create` was
+/// refused on 10 consecutive attempts across 15 minutes on both nodes — always
+/// "already running", never once a 600s timeout, so no call was ever wedged; it
+/// was simply starved by the listings. No OSD was created, so no pool, no RBD,
+/// and nothing downstream could happen at all.
 static CEPH_VOLUME_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// True for the `ceph-volume` invocations that only inspect state.
+///
+/// Skipping one of these costs nothing — the caller is a reconcile loop and will
+/// ask again next tick — so they keep the non-blocking behaviour that stops a
+/// wedged call piling up tasks. Anything else changes the disk and was asked for
+/// by a person, so it waits its turn instead of being dropped.
+fn is_read_only(args: &[&str]) -> bool {
+    matches!(args, ["lvm", "list", ..] | ["inventory", ..])
+}
 
 /// A wedged mon can hang a command forever. Bounding every call makes a storage
 /// hiccup degrade the UI instead of blocking the whole task pool.
@@ -72,11 +95,20 @@ pub async fn rbd(args: &[&str]) -> Result<String> {
 /// — it wipes labels, creates LVs and mkfs's BlueStore — so it gets its own
 /// generous limit rather than the shared 30s.
 pub async fn ceph_volume(args: &[&str]) -> Result<String> {
-    let Ok(_serialised) = CEPH_VOLUME_LOCK.try_lock() else {
-        bail!(
-            "ceph-volume is already running on this node — skipping `{}`",
-            args.join(" ")
-        );
+    let _serialised = if is_read_only(args) {
+        let Ok(guard) = CEPH_VOLUME_LOCK.try_lock() else {
+            bail!(
+                "ceph-volume is already running on this node — skipping `{}`",
+                args.join(" ")
+            );
+        };
+        guard
+    } else {
+        // Queue. Every call below is bounded at 600s, so the holder cannot block
+        // this indefinitely — which is what makes waiting safe here, and is the
+        // difference between "a disk you switched on eventually becomes an OSD"
+        // and "it might, depending on timing".
+        CEPH_VOLUME_LOCK.lock().await
     };
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(600),
@@ -142,4 +174,40 @@ pub async fn osd_safe_to_destroy(osd_id: i64) -> bool {
                 .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_read_only;
+
+    /// The split that decides whether a call may be dropped under contention.
+    /// Getting a mutating call classified as read-only would reintroduce the
+    /// starvation this exists to fix — `lvm create` refused 10/10 times while
+    /// listings held the lock — so the mapping is pinned rather than assumed.
+    #[test]
+    fn only_inspection_may_be_skipped() {
+        assert!(is_read_only(&["lvm", "list", "--format", "json"]));
+        assert!(is_read_only(&["inventory", "--format", "json"]));
+
+        for mutating in [
+            vec!["lvm", "create", "--bluestore", "--data", "/dev/vdb"],
+            vec!["lvm", "zap", "--destroy", "/dev/vdb"],
+            vec!["lvm", "prepare", "--data", "/dev/vdb"],
+            vec!["lvm", "activate", "--all"],
+        ] {
+            assert!(
+                !is_read_only(&mutating),
+                "{mutating:?} changes the disk and must queue, never be dropped"
+            );
+        }
+    }
+
+    /// An unrecognised subcommand must be treated as mutating. A future
+    /// ceph-volume verb that this list has not learned about should wait its
+    /// turn rather than be silently discarded under load.
+    #[test]
+    fn anything_unrecognised_is_treated_as_mutating() {
+        assert!(!is_read_only(&["something-new"]));
+        assert!(!is_read_only(&[]));
+    }
 }
