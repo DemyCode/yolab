@@ -274,15 +274,23 @@ in {
     # a machine sits permanently outside the storage cluster until someone
     # notices. The bootstrap node has nothing to retry: its work is local.
     #
-    # OnUnitInactiveSec as well as OnUnitActiveSec because a *failed* attempt
-    # never reaches the active state, and OnUnitActiveSec alone would therefore
-    # never fire again. Once the unit succeeds, RemainAfterExit leaves it active
-    # and further starts are no-ops.
+    # OnUnitInactiveSec, and deliberately not OnUnitActiveSec beside it. A failed
+    # attempt ends inactive just as a successful one does, so this single
+    # directive covers both — which is the whole reason the pair existed. And the
+    # removed one measured from when the run STARTED: with TimeoutStartSec at
+    # 300s against a 2min interval, a slow join left the next elapse already in
+    # the past when it finished, re-firing instantly (see yolab-containerd-store's
+    # timer for what that cost on a unit that stops k3s). It was also the larger
+    # of the two, so it never chose the schedule anyway.
+    #
+    # This unit keeps RemainAfterExit — see the allowlist in nix/checks.nix: a
+    # successful join genuinely has nothing left to retry, and ceph-mon requires
+    # it. That does mean this timer stops after the first success, which here is
+    # correct rather than the bug it is everywhere else.
     systemd.timers.yolab-ceph-bootstrap = mkIf (!isBootstrap) {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "1min";
-        OnUnitActiveSec = "2min";
         OnUnitInactiveSec = "2min";
       };
     };
@@ -322,9 +330,14 @@ in {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "3min";
-        OnUnitActiveSec = "5min";
-        # A failed attempt never reaches the active state OnUnitActiveSec
-        # measures from — see the note on yolab-ceph-mgr-key's timer, below.
+        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
+        # measures from when the run STARTED, so a run that outlives the interval
+        # leaves the next elapse already in the past and systemd re-fires it in the
+        # same second (see yolab-containerd-store's timer for the outage that
+        # caused). This one measures from when the run ENDED, which is both immune
+        # to that and already covers the failed-attempt case the removed directive
+        # was paired in for — a failed unit ends inactive too. It was also always
+        # the smaller of the two here, so this changes nothing in the healthy path.
         OnUnitInactiveSec = "2min";
       };
     };
@@ -368,13 +381,19 @@ in {
     # goes inactive or failed, whatever the timer base. Moving to OnCalendar
     # alone did not fix it: on the live node this timer showed `NEXT: -` with a
     # last trigger two days old, so a key deleted or revoked out-of-band would
-    # never have been recreated. Full writeup on yolab-containerd-store's timer,
-    # and nix/checks.nix fails the build if the pairing returns.
+    # never have been recreated.
+    #
+    # OnUnitInactiveSec rather than OnCalendar, for the reason written out in
+    # full on yolab-containerd-store's timer: a calendar timer counts from the
+    # last trigger, so a run that outlives its interval re-fires the instant it
+    # ends. This unit is bounded well under 5min so it would not hit that today,
+    # but there is no reason to keep the shape that can. nix/checks.nix fails the
+    # build if the RemainAfterExit pairing returns.
     systemd.timers.yolab-ceph-mgr-key = {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "2min";
-        OnCalendar = "*:0/5";
+        OnUnitInactiveSec = "5min";
       };
     };
 
@@ -503,9 +522,14 @@ in {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "3min";
-        OnUnitActiveSec = "5min";
-        # A failed attempt never reaches the active state OnUnitActiveSec
-        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
+        # measures from when the run STARTED, so a run that outlives the interval
+        # leaves the next elapse already in the past and systemd re-fires it in the
+        # same second (see yolab-containerd-store's timer for the outage that
+        # caused). This one measures from when the run ENDED, which is both immune
+        # to that and already covers the failed-attempt case the removed directive
+        # was paired in for — a failed unit ends inactive too. It was also always
+        # the smaller of the two here, so this changes nothing in the healthy path.
         OnUnitInactiveSec = "2min";
       };
     };

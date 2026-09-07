@@ -52,6 +52,20 @@ impl Filesystem {
     }
 }
 
+/// How long the one-time copy of the image store onto the RBD may take.
+///
+/// Deliberately far above `host::RUN_CMD_TIMEOUT` (600s), which is right for
+/// every other call here — an `rbd`, `mkfs` or `mount` still running after ten
+/// minutes is hung, not slow — and wrong for this one, whose duration is set by
+/// how many gigabytes the node has to move. At 600s the first migration could
+/// never finish on a node with a real image store: node2 needed ~1000s for 9.2G
+/// and was killed on every attempt.
+///
+/// Sits under the unit's own `TimeoutStartSec` of 3600s (see images-store.nix)
+/// so that if the copy really is wedged, this fires first and says so, rather
+/// than systemd killing the wrapper and leaving no explanation.
+const COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3000);
+
 pub struct ContainerdStorePolicy {
     pub pool_name: String,
     pub filesystem: Filesystem,
@@ -329,7 +343,7 @@ async fn migrate_existing_store<H: Host>(
     // -a preserves hardlinks, xattrs and sparseness, all of which
     // containerd's content store relies on.
     let copied = host
-        .run_cmd("cp", &["-a", &croot_glob, &stage_dest])
+        .run_cmd_bounded("cp", &["-a", &croot_glob, &stage_dest], COPY_TIMEOUT)
         .await
         .is_ok_and(|o| o.success);
 
@@ -340,10 +354,19 @@ async fn migrate_existing_store<H: Host>(
     let _ = std::fs::remove_dir(&stage);
 
     if !copied {
-        // Most likely the image is smaller than the existing store — roll
-        // back rather than mount a half-populated store, which containerd
+        // Roll back rather than mount a half-populated store, which containerd
         // would read as a corrupt content store.
-        bail!("copy failed (is the RBD large enough?) — staying on the root disk");
+        //
+        // The old wording here guessed at one cause — "is the RBD large
+        // enough?" — and that guess sent the 2026-09-07 investigation the wrong
+        // way: the RBD was 163G against a 9.2G store, and the real reason was
+        // this copy being killed by a timeout. Name both, and do not pretend to
+        // know which.
+        bail!(
+            "copy onto the RBD failed — staying on the root disk. Either it \
+             exceeded the {}s budget, or the image is too small for the store.",
+            COPY_TIMEOUT.as_secs()
+        );
     }
 
     // Remove and recreate rather than clearing the directory's contents in
@@ -705,6 +728,23 @@ mod tests {
                          18f5/volumes/kubernetes.io~csi/pvc-9026/mount ceph rw,relatime 0 0\n\
                          /dev/sda2 / ext4 rw,relatime 0 0\n";
         assert_eq!(overlays_pinning(unrelated, CROOT), 0);
+    }
+
+    /// The copy's budget must stay far above the generic 600s command bound and
+    /// below the unit's own 3600s `TimeoutStartSec`. Both ends matter: at 600s
+    /// the first migration cannot finish on any node with a real image store
+    /// (node2 needed ~1000s for 9.2G and was killed every time), and above 3600s
+    /// systemd kills the wrapper instead, losing the explanation.
+    #[test]
+    fn the_copy_budget_sits_between_the_command_bound_and_the_units_timeout() {
+        assert!(
+            COPY_TIMEOUT.as_secs() > 600,
+            "a store-sized copy is slow, not hung — 600s is the wrong question to ask of it"
+        );
+        assert!(
+            COPY_TIMEOUT.as_secs() < 3600,
+            "must fire before the unit's TimeoutStartSec so the reason gets logged"
+        );
     }
 
     #[test]
