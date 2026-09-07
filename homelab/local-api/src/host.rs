@@ -12,14 +12,25 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::process::Command;
 
-/// Every `RealHost` subprocess call is bounded by this. Generous — long enough for a
-/// real multi-GB `cp` of containerd's data-root over a modest link — rather than tight,
-/// because the failure this guards against is not "a slow command", it is a command
+/// The DEFAULT bound for a `RealHost` subprocess call. Not a universal one: work whose
+/// duration scales with data rather than with the cluster's responsiveness must ask for
+/// its own via `run_cmd_bounded`.
+///
+/// This comment used to claim 600s was "long enough for a real multi-GB `cp` of
+/// containerd's data-root over a modest link". That was never measured and it is false:
+/// node2's 9.2G store copies at ~9MB/s and needs ~1000s, so the migration was SIGKILLed
+/// here on every attempt it ever made — four times in 45 minutes on 2026-09-07, each
+/// run re-triggered by the timer, each one holding k3s down. The sentence is what kept
+/// anyone from looking: it asserted the exact property that was broken. Measure before
+/// writing a bound into prose.
+///
+/// 600s remains right for everything else here, because the failure it guards against is
+/// not "a slow command", it is a command
 /// that never returns at all: a `mkfs`/`cp`/`mount` against an RBD device blocked on
 /// Ceph parks the calling thread in uninterruptible sleep (state D), a state no signal
 /// — including the `kill_on_drop` below — can end. Before this, that meant the entire
-/// `local-api storage <cmd>` process (and the systemd unit `RemainAfterExit`ing on it)
-/// hung forever; systemd's own `TimeoutStartSec` was the only thing that ever
+/// `local-api storage <cmd>` process hung forever; systemd's own `TimeoutStartSec` was
+/// the only thing that ever
 /// intervened, and it could only SIGKILL the *wrapping* process, never the wedged child
 /// itself. Bounding the await here at least lets that wrapping process fail fast and
 /// exit cleanly instead of needing to be killed — the wedged child is orphaned either
@@ -68,6 +79,36 @@ pub trait Host: Send + Sync + Clone {
         bin: &'a str,
         args: &'a [&'a str],
     ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a;
+
+    /// `run_cmd` for the one kind of work whose duration scales with the data,
+    /// not with the cluster's responsiveness.
+    ///
+    /// `RUN_CMD_TIMEOUT` is 600s, which is the right bound for every `rbd`,
+    /// `mkfs`, `mount` or `systemctl` call here: past ten minutes those are hung,
+    /// not slow. Copying an image store is a different animal — it moves
+    /// gigabytes across the network, and how long that legitimately takes is a
+    /// property of how many containers the node runs.
+    ///
+    /// Applying the 600s bound to it made the first migration impossible on any
+    /// node with a real image store. On node2 (2026-09-07, 9.2G at ~9MB/s) the
+    /// `cp` needed ~1000s, was SIGKILLed at 600s on every attempt, and
+    /// `migrate_existing_store` reported "copy failed (is the RBD large enough?)"
+    /// — which was doubly unhelpful, since the RBD was 163G and size had nothing
+    /// to do with it. The unit's own `TimeoutStartSec` is 3600s precisely so this
+    /// copy would not be mistaken for a hang; this inner bound defeated it.
+    ///
+    /// Defaults to ignoring the bound and deferring to `run_cmd`, which is what
+    /// every scripted test host wants — they have no clock, and the seam exists
+    /// so that *production* can pick a real bound per call. `RealHost` overrides
+    /// it; nothing else needs to.
+    fn run_cmd_bounded<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        _timeout: Duration,
+    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        self.run_cmd(bin, args)
+    }
 
     fn reachable(&self) -> impl Future<Output = bool> + Send + '_ {
         async move { self.ceph(&["-s"]).await.is_ok() }
@@ -187,15 +228,24 @@ impl Host for RealHost {
         bin: &'a str,
         args: &'a [&'a str],
     ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        self.run_cmd_bounded(bin, args, RUN_CMD_TIMEOUT)
+    }
+
+    fn run_cmd_bounded<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        timeout: Duration,
+    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
         async move {
             let work = Command::new(bin).args(args).kill_on_drop(true).output();
-            let out = tokio::time::timeout(RUN_CMD_TIMEOUT, work)
+            let out = tokio::time::timeout(timeout, work)
                 .await
                 .map_err(|_| {
                     anyhow::anyhow!(
                         "{bin} {}: timed out after {}s",
                         args.join(" "),
-                        RUN_CMD_TIMEOUT.as_secs()
+                        timeout.as_secs()
                     )
                 })?
                 .with_context(|| format!("spawn {bin}"))?;

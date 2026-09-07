@@ -86,9 +86,14 @@ in {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "4min";
-        OnUnitActiveSec = "30min";
-        # A failed attempt never reaches the active state OnUnitActiveSec
-        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
+        # measures from when the run STARTED, so a run that outlives the interval
+        # leaves the next elapse already in the past and systemd re-fires it in the
+        # same second (see yolab-containerd-store's timer for the outage that
+        # caused). This one measures from when the run ENDED, which is both immune
+        # to that and already covers the failed-attempt case the removed directive
+        # was paired in for — a failed unit ends inactive too. It was also always
+        # the smaller of the two here, so this changes nothing in the healthy path.
         OnUnitInactiveSec = "2min";
       };
     };

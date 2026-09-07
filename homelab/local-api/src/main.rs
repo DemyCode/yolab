@@ -87,18 +87,35 @@ where
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // BEFORE the subcommand dispatch below, not after it.
+    //
+    // These two branches call `process::exit`, so for most of this binary's life
+    // every `storage` and `boot` subcommand ran with no subscriber installed at
+    // all — and `tracing` drops events on the floor when there is none. The
+    // storage units narrate every decision they make ("migrating the existing
+    // image store off the root disk", "mount failed — leaving containerd on the
+    // root disk", "copy failed (is the RBD large enough?)") and not one of those
+    // lines has ever reached a journal.
+    //
+    // What that cost: on 2026-09-07 node2's yolab-containerd-store ran for 18
+    // minutes, moved 8.3G, exited 0 and left the store unmounted — and the entire
+    // journal for that unit was systemd's own four lines. The reason it gave was
+    // written, formatted, and discarded. These units run before k3s and are the
+    // hardest thing in the system to debug after the fact; they are exactly the
+    // code that must be able to speak.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
     if args.get(1).map(String::as_str) == Some("storage") {
         std::process::exit(storage::run(&args[2..]).await);
     }
     if args.get(1).map(String::as_str) == Some("boot") {
         std::process::exit(boot::run(&args[2..]).await);
     }
-
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
 
     let cfg = Arc::new(Config::from_env());
     let sessions = auth::new_sessions();

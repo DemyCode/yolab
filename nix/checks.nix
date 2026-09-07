@@ -196,6 +196,63 @@ in {
       touch $out
     '';
 
+  # A RETRY TIMER MUST MEASURE FROM WHEN THE RUN ENDED.
+  #
+  # The sibling check above is about whether a timer re-arms at all. This one is
+  # about what happens once it does, and it exists because fixing the first bug
+  # exposed the second within hours.
+  #
+  # OnCalendar and OnUnitActiveSec both compute the next elapse from a moment at
+  # or before the run's START — the last trigger, and the last activation. So a
+  # run that outlives its own interval finishes with the next elapse already in
+  # the past, and systemd fires it again in the same second, forever. On
+  # 2026-09-07 yolab-containerd-store (TimeoutStartSec 3600s, interval 5min) ran
+  # 09:59:48 -> 10:17:41 moving 8.3G, and re-triggered at 10:17:41. Every run
+  # stops k3s to do its work, so node2 never came back up.
+  #
+  # OnUnitInactiveSec measures from the moment the unit went inactive, which is
+  # immune to that by construction and — since a failed unit also ends inactive —
+  # already covers the failed-attempt case OnUnitActiveSec used to be paired in
+  # for. For a timer that exists to retry or re-check something, it is simply the
+  # right directive, and there is no interval arithmetic to get wrong.
+  #
+  # Scoped to `yolab-` units on purpose. Upstream nixpkgs ships genuine
+  # wall-clock jobs (fstrim, logrotate, nix-gc) where OnCalendar is exactly
+  # right and the work is bounded well under the period; this invariant is about
+  # our own retry/reconcile timers, which are a different kind of thing.
+  #
+  # `allowlist` is for one of ours that genuinely wants a wall clock — a nightly
+  # job that must run at a fixed hour rather than N after the last one. There are
+  # none today. If you add one, make sure its service cannot outlive the gap.
+  retry-timers-measure-from-run-end = let
+    allowlist = [];
+    timers = nixosSystems.yolab-ci.config.systemd.timers;
+    fromStartBase = name: let
+      tc = timers.${name}.timerConfig or {};
+    in
+      (tc ? OnCalendar) || (tc ? OnUnitActiveSec);
+    offenders = builtins.filter (
+      name:
+        (builtins.match "yolab-.*" name != null)
+        && fromStartBase name
+        && !(builtins.elem name allowlist)
+    ) (builtins.attrNames timers);
+  in
+    pkgs.runCommand "retry-timers-measure-from-run-end" {} ''
+      offenders=${pkgs.writeText "offenders" (builtins.concatStringsSep "\n" offenders)}
+      if [ -s "$offenders" ]; then
+        echo "These timers use OnCalendar or OnUnitActiveSec. Both count from the" >&2
+        echo "START of the run, so a run that outlives its interval finishes with" >&2
+        echo "the next elapse already past and re-fires immediately — a hot loop," >&2
+        echo "forever. Use OnUnitInactiveSec, which counts from when the run ended" >&2
+        echo "and also covers failed attempts, or add the unit to this check's" >&2
+        echo "allowlist if it truly needs a wall-clock schedule:" >&2
+        cat "$offenders" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
   # The image RBD's sizing arithmetic used to be pinned here against a shell
   # fragment driven with stubbed `ceph` output. That fragment moved into
   # homelab/local-api/src/storage/images_sizing.rs (part of the Ceph

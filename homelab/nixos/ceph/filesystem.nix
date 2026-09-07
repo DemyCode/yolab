@@ -70,13 +70,15 @@ in {
     #
     # The service is deliberately not RemainAfterExit, because systemd re-arms
     # a timer only when the unit it triggers goes inactive or failed — no timer
-    # base changes that. Same reasoning, and the same live evidence, as
-    # yolab-containerd-store's timer; see its fuller writeup.
+    # base changes that. And OnUnitInactiveSec rather than OnCalendar, because a
+    # calendar timer counts from the last trigger and re-fires instantly after
+    # any run that outlived its interval. Same reasoning, and the same live
+    # evidence, as yolab-containerd-store's timer; see its fuller writeup.
     systemd.timers.yolab-ceph-mds-key = {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "2min";
-        OnCalendar = "*:0/5";
+        OnUnitInactiveSec = "5min";
       };
     };
 

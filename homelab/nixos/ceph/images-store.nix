@@ -220,9 +220,14 @@ in {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "2min";
-        OnUnitActiveSec = "5min";
-        # A failed attempt never reaches the active state OnUnitActiveSec
-        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
+        # measures from when the run STARTED, so a run that outlives the interval
+        # leaves the next elapse already in the past and systemd re-fires it in the
+        # same second (see yolab-containerd-store's timer for the outage that
+        # caused). This one measures from when the run ENDED, which is both immune
+        # to that and already covers the failed-attempt case the removed directive
+        # was paired in for — a failed unit ends inactive too. It was also always
+        # the smaller of the two here, so this changes nothing in the healthy path.
         OnUnitInactiveSec = "2min";
       };
     };
@@ -256,17 +261,34 @@ in {
     # forever (kubelet cannot kill what the runtime will not answer for), and
     # every app in the UI read "Starting up…" for 32 hours.
     #
-    # So: no RemainAfterExit on the service (above), and OnCalendar here so a
-    # run that overshoots one slot does not shift the whole schedule. The
-    # `self-healing-timers-can-re-arm` check in nix/checks.nix fails the build
-    # if the pairing ever comes back. Same fix on yolab-ceph-mgr-key's and
-    # yolab-ceph-mds-key's timers, which were dead on that node for the same
-    # reason.
+    # AND THE INTERVAL MUST BE MEASURED FROM WHEN THE RUN ENDS.
+    #
+    # OnCalendar was the first attempt at the line above, and it introduced a
+    # worse failure the same day. A calendar timer computes its next elapse from
+    # the LAST TRIGGER, so when a run outlives the interval the next slot is
+    # already in the past by the time the unit finishes, and systemd fires it
+    # again in the same second. This unit is bounded at 3600s and the interval
+    # was 5min, so any real migration — copying the whole image store across the
+    # network — re-triggered itself forever. On node2 (2026-09-07): started
+    # 09:59:48, finished 10:17:41 having moved 8.3G, and restarted at 10:17:41.
+    # Each run stops k3s to do its work, so the node never came back.
+    #
+    # OnUnitInactiveSec measures from the moment the unit went inactive, so the
+    # gap is always a real gap no matter how long the run took, and back-to-back
+    # runs are impossible by construction. It covers a failed attempt too, which
+    # also ends inactive. Do NOT add OnUnitActiveSec beside it: that one measures
+    # from activation *start* and brings the same overshoot problem straight back.
+    #
+    # Note this is the directive the earlier round moved AWAY from. It was never
+    # the problem — `RemainAfterExit` was, and with that gone it is simply
+    # correct. The `self-healing-timers-can-re-arm` check in nix/checks.nix fails
+    # the build if that pairing ever comes back. Same fix on yolab-ceph-mgr-key's
+    # and yolab-ceph-mds-key's timers.
     systemd.timers.yolab-containerd-store = {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "4min";
-        OnCalendar = "*:0/5";
+        OnUnitInactiveSec = "5min";
       };
     };
 
@@ -274,9 +296,14 @@ in {
       wantedBy = ["timers.target"];
       timerConfig = {
         OnBootSec = "10min";
-        OnUnitActiveSec = "1h";
-        # A failed attempt never reaches the active state OnUnitActiveSec
-        # measures from — see the note on yolab-ceph-mgr-key's timer.
+        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
+        # measures from when the run STARTED, so a run that outlives the interval
+        # leaves the next elapse already in the past and systemd re-fires it in the
+        # same second (see yolab-containerd-store's timer for the outage that
+        # caused). This one measures from when the run ENDED, which is both immune
+        # to that and already covers the failed-attempt case the removed directive
+        # was paired in for — a failed unit ends inactive too. It was also always
+        # the smaller of the two here, so this changes nothing in the healthy path.
         OnUnitInactiveSec = "2min";
       };
     };
