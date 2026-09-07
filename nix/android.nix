@@ -55,13 +55,20 @@ let
     # no network that produces pages of UnknownHostException stack traces that
     # bury the one line naming the actual missing revision. Carrying both costs
     # download size and removes a whole class of misleading failure.
+    # A RANGE, not a guess at the one right version. Tauri's template asked for
+    # build-tools 35.0.0 and then, once that was there, compileSdk 36 — two
+    # rebuilds to learn two numbers, each failing the same slow way. The set
+    # spans what the template plausibly wants so a Tauri upgrade does not cost
+    # another round trip.
     platformVersions = [
       "34"
       "35"
+      "36"
     ];
     buildToolsVersions = [
       "34.0.0"
       "35.0.0"
+      "36.0.0"
     ];
     includeNDK = true;
     ndkVersions = [ "26.1.10909125" ];
