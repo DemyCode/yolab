@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Connect to your box</title>
+    <style>
+      /* Self-contained on purpose. This page is the ONLY thing the shell
+         serves itself, and it has to render before any box is reachable —
+         so it cannot depend on the app's fonts, CSS or anything else that
+         lives on the box. */
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f3ed;
+        --fg: #14120f;
+        --muted: #6b6459;
+        --line: #ded7ca;
+        --accent: #3b6ea5;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14120f;
+          --fg: #f6f3ed;
+          --muted: #9a9184;
+          --line: #2e2a24;
+          --accent: #7aa7d9;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { width: min(380px, 88vw); }
+      h1 { font-size: 1.35rem; margin: 0 0 0.35rem; }
+      p { color: var(--muted); margin: 0 0 1.5rem; }
+      label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
+      input {
+        width: 100%;
+        padding: 0.7rem 0.85rem;
+        border: 1px solid var(--line);
+        border-radius: 0.65rem;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+      }
+      input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+      button {
+        width: 100%;
+        margin-top: 0.85rem;
+        padding: 0.7rem 0.85rem;
+        border: 0;
+        border-radius: 0.65rem;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button[disabled] { opacity: 0.6; cursor: default; }
+      .err { color: #c0392b; font-size: 0.85rem; min-height: 1.2rem; margin-top: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Connect to your box</h1>
+      <p>Enter the address YoLab printed when you set it up.</p>
+      <label for="url">Address</label>
+      <input
+        id="url"
+        type="url"
+        inputmode="url"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        placeholder="https://your-box.example"
+      />
+      <button id="go">Connect</button>
+      <div class="err" id="err"></div>
+    </main>
+    <script type="module">
+      const { invoke } = window.__TAURI__.core;
+      const input = document.getElementById("url");
+      const button = document.getElementById("go");
+      const err = document.getElementById("err");
+
+      // Prefill with whatever was stored, so "Change server" opens with the
+      // current address rather than an empty box someone has to retype.
+      invoke("stored_url").then((u) => {
+        if (u) input.value = u;
+      });
+
+      async function connect() {
+        err.textContent = "";
+        button.disabled = true;
+        try {
+          await invoke("connect", { url: input.value });
+        } catch (e) {
+          // The Rust side rejects anything it will not navigate to, and its
+          // message says which rule was broken. Showing it verbatim beats a
+          // generic "invalid address" that leaves someone guessing.
+          err.textContent = String(e);
+          button.disabled = false;
+        }
+      }
+
+      button.addEventListener("click", connect);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") connect();
+      });
+      input.focus();
+    </script>
+  </body>
+</html>
