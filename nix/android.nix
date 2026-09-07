@@ -120,7 +120,7 @@ let
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
       # REPLACE ME after the first build — see this file's header.
-      outputHash =  "sha256-H/23kSjDk9YbjrQhIcME+cn3q04O3ZbTGeRPyv/h4U8=";
+      outputHash = "sha256-H/23kSjDk9YbjrQhIcME+cn3q04O3ZbTGeRPyv/h4U8=";
     }
     // commonEnv
   );
@@ -144,12 +144,12 @@ pkgs.stdenv.mkDerivation (
       cp -r ${gradleDeps}/caches "$GRADLE_USER_HOME"/
       chmod -R u+w "$GRADLE_USER_HOME"
 
-      cargo tauri android init --ci
-      # No network in the sandbox, so a dependency step 1 failed to cache
-      # fails here — which is the intended signal, not a surprise.
-      cargo tauri android build --apk
-       
-      runHook postBuild
+        cargo tauri android init --ci
+        # No network in the sandbox, so a dependency step 1 failed to cache
+        # fails here — which is the intended signal, not a surprise.
+        cargo tauri android build --apk
+
+        runHook postBuild
     '';
 
     installPhase = ''
