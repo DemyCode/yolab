@@ -26,6 +26,14 @@
 //! Nothing under containerd's data-root is the owner's data: every byte is a
 //! container layer a registry will send again. So the right response to any
 //! doubt here is to rebuild, never to try to preserve it.
+//!
+//! That principle was written here long before the code obeyed it. This module
+//! spent its whole life copying the entire store onto the RBD before swapping,
+//! and that copy was the one operation forcing k3s to stay stopped — ~17 minutes
+//! per attempt, which on a two-node cluster is ~17 minutes with no etcd quorum
+//! and no API anywhere. It has been deleted; see `discard_and_swap`. Preserving
+//! disposable data was never worth an outage, and it was the source of nearly
+//! every bug this file has had.
 
 use std::path::{Path, PathBuf};
 
@@ -52,19 +60,24 @@ impl Filesystem {
     }
 }
 
-/// How long the one-time copy of the image store onto the RBD may take.
+/// Budget for the filesystem operations whose runtime scales with the SIZE OF
+/// THE IMAGE, not with how quickly Ceph answers: `xfs_repair` and `mkfs`.
 ///
-/// Deliberately far above `host::RUN_CMD_TIMEOUT` (600s), which is right for
-/// every other call here — an `rbd`, `mkfs` or `mount` still running after ten
-/// minutes is hung, not slow — and wrong for this one, whose duration is set by
-/// how many gigabytes the node has to move. At 600s the first migration could
-/// never finish on a node with a real image store: node2 needed ~1000s for 9.2G
-/// and was killed on every attempt.
+/// The generic `host::RUN_CMD_TIMEOUT` of 600s is the right question to ask of an
+/// `rbd`, `mount` or `systemctl` call — past ten minutes those are hung, not
+/// slow. It is the wrong question here, and getting that distinction wrong is the
+/// bug this file keeps having: the copy that used to live in this module was
+/// bounded at 600s, needed ~1000s, and was SIGKILLed on every attempt it ever
+/// made.
 ///
-/// Sits under the unit's own `TimeoutStartSec` of 3600s (see images-store.nix)
-/// so that if the copy really is wedged, this fires first and says so, rather
-/// than systemd killing the wrapper and leaving no explanation.
-const COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3000);
+/// Measured rather than guessed, which is the whole lesson: `xfs_repair -n` on
+/// node2's 163 GiB image took 134s. The image is sized as a share of the pool
+/// (see images_sizing.rs), so it grows as disks are added — a cluster several
+/// times larger would push that toward, and past, 600s. 1800s leaves room for
+/// that while still sitting well under the unit's own 3600s `TimeoutStartSec`,
+/// so a genuine wedge is reported here with a reason rather than by systemd
+/// killing the wrapper silently.
+const FS_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 pub struct ContainerdStorePolicy {
     pub pool_name: String,
@@ -284,12 +297,12 @@ async fn has_filesystem<H: Host>(host: &H, dev: &str) -> bool {
 async fn filesystem_is_healthy<H: Host>(host: &H, dev: &str, fs: Filesystem) -> bool {
     match fs {
         Filesystem::Xfs => host
-            .run_cmd("xfs_repair", &["-n", dev])
+            .run_cmd_bounded("xfs_repair", &["-n", dev], FS_OP_TIMEOUT)
             .await
             .map(|o| o.success)
             .unwrap_or(false),
         Filesystem::Ext4 => host
-            .run_cmd("fsck.ext4", &["-n", "-f", dev])
+            .run_cmd_bounded("fsck.ext4", &["-n", "-f", dev], FS_OP_TIMEOUT)
             .await
             .map(|o| o.success)
             .unwrap_or(false),
@@ -299,12 +312,12 @@ async fn filesystem_is_healthy<H: Host>(host: &H, dev: &str, fs: Filesystem) -> 
 async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
     let ok = match fs {
         Filesystem::Xfs => {
-            host.run_cmd("mkfs.xfs", &["-f", "-m", "crc=1", dev])
+            host.run_cmd_bounded("mkfs.xfs", &["-f", "-m", "crc=1", dev], FS_OP_TIMEOUT)
                 .await?
                 .success
         }
         Filesystem::Ext4 => {
-            host.run_cmd("mkfs.ext4", &["-q", "-m0", dev])
+            host.run_cmd_bounded("mkfs.ext4", &["-q", "-m0", dev], FS_OP_TIMEOUT)
                 .await?
                 .success
         }
@@ -315,66 +328,71 @@ async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
     Ok(())
 }
 
-/// Copies the existing (root-disk) image store onto the freshly mapped
-/// device via a staging mount, then clears the root copy. Every exit path —
-/// mount failure, copy failure, success — unmounts and removes the staging
-/// dir, matching the bash `trap`'s unconditional cleanup this replaces.
-async fn migrate_existing_store<H: Host>(
-    host: &H,
-    root: &Path,
-    croot: &Path,
-    dev: &str,
-) -> Result<()> {
-    let stage = stage_dir(root);
-    std::fs::create_dir_all(&stage)?;
-    let stage_s = stage.to_string_lossy().into_owned();
-
-    if !host
-        .run_cmd("mount", &[dev, &stage_s])
-        .await
-        .is_ok_and(|o| o.success)
-    {
-        let _ = std::fs::remove_dir(&stage);
-        bail!("could not mount {dev} for migration — staying on the root disk");
-    }
-
-    let croot_glob = format!("{}/.", croot.to_string_lossy());
-    let stage_dest = format!("{stage_s}/");
-    // -a preserves hardlinks, xattrs and sparseness, all of which
-    // containerd's content store relies on.
-    let copied = host
-        .run_cmd_bounded("cp", &["-a", &croot_glob, &stage_dest], COPY_TIMEOUT)
+/// Discards whatever image store is on the root disk and hands the empty RBD to
+/// containerd, which re-pulls what it needs.
+///
+/// THIS USED TO COPY, AND COPYING WAS THE MISTAKE.
+///
+/// It moved the whole data-root onto the RBD before swapping — and that copy was
+/// the single most expensive thing this module did, for no benefit this module's
+/// own header does not already dismiss: "every byte is a container layer a
+/// registry will send again."
+///
+/// What it cost, measured on a live two-node cluster on 2026-09-07:
+///
+///   - The copy is the ONLY reason k3s has to stay stopped. Everything else here
+///     takes seconds. Copying 9.2G at the ~9MB/s an RBD accepts over this link
+///     pinned the whole cluster's API down for ~17 minutes per attempt, because
+///     two-node etcd loses quorum the moment one server leaves.
+///   - It moved far more than it needed to. Of that 9.2G, 2.4G is the content
+///     store; the rest is snapshots and metadata that containerd rebuilds from
+///     the blobs. So it pushed ~7G of derived data across the network to avoid
+///     re-fetching 2.4G that registries generally serve faster than Ceph accepts.
+///   - It was the source of nearly every bug this module has had: a 600s command
+///     bound that silently killed it, partial copies, leaked staging directories
+///     and the orphaned RBD mappings behind them, and a failure message that
+///     guessed "is the RBD large enough?" when size was never the issue.
+///
+/// And the control plane never needed it: k3s runs apiserver, etcd, scheduler and
+/// controller-manager in-process rather than as containers, so an empty image
+/// store does not stop the cluster coming back. Only workload pods re-pull, and
+/// they do it *after* quorum is restored instead of while it is gone.
+///
+/// The one thing this genuinely gives up is working without a registry. That is
+/// already true of the platform as a whole — it registers tunnels with an external
+/// API and syncs charts from remote repos, and there is no local registry — so it
+/// is not a new dependency, and no image here is locally built.
+async fn discard_and_swap<H: Host>(host: &H, root: &Path, croot: &Path, dev: &str) -> Result<()> {
+    // Prove the device mounts BEFORE destroying anything. Wiping first and then
+    // failing to mount would leave the node with no image store at all — the one
+    // outcome worse than an empty one, since it is not even a state containerd
+    // can start from.
+    let probe = stage_dir(root);
+    std::fs::create_dir_all(&probe)?;
+    let probe_s = probe.to_string_lossy().into_owned();
+    let mountable = host
+        .run_cmd("mount", &[dev, &probe_s])
         .await
         .is_ok_and(|o| o.success);
-
-    // Unconditional, on both the success and failure branch below — this is
-    // the replacement for the bash `trap cleanup EXIT` that covered the
-    // staging mount regardless of how the script left this block.
-    let _ = host.run_cmd("umount", &[stage_s.as_str()]).await;
-    let _ = std::fs::remove_dir(&stage);
-
-    if !copied {
-        // Roll back rather than mount a half-populated store, which containerd
-        // would read as a corrupt content store.
-        //
-        // The old wording here guessed at one cause — "is the RBD large
-        // enough?" — and that guess sent the 2026-09-07 investigation the wrong
-        // way: the RBD was 163G against a 9.2G store, and the real reason was
-        // this copy being killed by a timeout. Name both, and do not pretend to
-        // know which.
-        bail!(
-            "copy onto the RBD failed — staying on the root disk. Either it \
-             exceeded the {}s budget, or the image is too small for the store.",
-            COPY_TIMEOUT.as_secs()
-        );
+    if mountable {
+        let _ = host.run_cmd("umount", &[probe_s.as_str()]).await;
+    }
+    let _ = std::fs::remove_dir(&probe);
+    if !mountable {
+        bail!("{dev} would not mount — staying on the root disk");
     }
 
-    // Remove and recreate rather than clearing the directory's contents in
-    // place: a glob misses dotfiles, which would leave stale state behind
-    // for containerd to trip over.
+    // Remove and recreate rather than clearing the contents in place: a glob
+    // misses dotfiles, which would leave stale state under the new mount for
+    // containerd to trip over. Doing it while unmounted is also what reclaims
+    // the space — mounting over a populated directory only hides it.
+    if dir_has_any_entries(croot) {
+        tracing::info!(
+            "discarding the root-disk image store; containerd will re-pull what it needs"
+        );
+    }
     std::fs::remove_dir_all(croot)?;
     std::fs::create_dir_all(croot)?;
-    tracing::info!("migration complete, freed the copy on root");
     Ok(())
 }
 
@@ -422,15 +440,14 @@ async fn mount_the_store<H: Host>(
 
     std::fs::create_dir_all(&croot)?;
 
-    // One-time migration off the root disk. Safe here because this unit runs
-    // Before=k3s (enforced by run()'s k3s-stop bracket below), so nothing
-    // holds these files open.
-    if dir_has_any_entries(&croot) {
-        tracing::info!("migrating the existing image store off the root disk");
-        if let Err(e) = migrate_existing_store(host, root, &croot, &dev).await {
-            tracing::warn!("{e}");
-            return Ok(());
-        }
+    // Hand over to the RBD. Safe here because this unit runs Before=k3s
+    // (enforced by run()'s k3s-stop bracket below), so nothing holds these
+    // files open. Seconds, not the ~17 minutes the copy this replaced took —
+    // and that duration is the cluster's whole API outage on a two-node
+    // install, so it is the number that matters.
+    if let Err(e) = discard_and_swap(host, root, &croot, &dev).await {
+        tracing::warn!("{e}");
+        return Ok(());
     }
 
     if !host
@@ -730,19 +747,20 @@ mod tests {
         assert_eq!(overlays_pinning(unrelated, CROOT), 0);
     }
 
-    /// The copy's budget must stay far above the generic 600s command bound and
-    /// below the unit's own 3600s `TimeoutStartSec`. Both ends matter: at 600s
-    /// the first migration cannot finish on any node with a real image store
-    /// (node2 needed ~1000s for 9.2G and was killed every time), and above 3600s
-    /// systemd kills the wrapper instead, losing the explanation.
+    /// The image-sized filesystem operations must sit above the generic 600s
+    /// command bound and below the unit's own 3600s `TimeoutStartSec`. Both ends
+    /// matter: `xfs_repair` measured 134s against a 163 GiB image and the image
+    /// grows with the pool, so 600s is a bound this will eventually cross the way
+    /// the old copy did; and above 3600s systemd kills the wrapper first, which
+    /// loses the reason entirely.
     #[test]
-    fn the_copy_budget_sits_between_the_command_bound_and_the_units_timeout() {
+    fn image_sized_operations_sit_between_the_command_bound_and_the_units_timeout() {
         assert!(
-            COPY_TIMEOUT.as_secs() > 600,
-            "a store-sized copy is slow, not hung — 600s is the wrong question to ask of it"
+            FS_OP_TIMEOUT.as_secs() > 600,
+            "mkfs/xfs_repair scale with the image, not with how fast Ceph answers"
         );
         assert!(
-            COPY_TIMEOUT.as_secs() < 3600,
+            FS_OP_TIMEOUT.as_secs() < 3600,
             "must fire before the unit's TimeoutStartSec so the reason gets logged"
         );
     }
@@ -965,8 +983,15 @@ mod tests {
         }
     }
 
+    /// The inversion of what this test used to assert.
+    ///
+    /// It required the pre-existing layer to SURVIVE onto the device, which is
+    /// what made the copy load-bearing and cost ~17 minutes of cluster-wide API
+    /// outage per attempt. The layer is a container layer: a registry will send
+    /// it again. What must be true now is the opposite — the root-disk copy is
+    /// gone, so its space is actually reclaimed rather than hidden under a mount.
     #[tokio::test]
-    async fn migrates_an_existing_root_disk_store_onto_the_rbd() {
+    async fn discards_the_root_disk_store_rather_than_copying_it() {
         let dir = tempfile::tempdir().unwrap();
         let host = SimulatedDisk {
             inner: FakeHost::new()
@@ -982,14 +1007,47 @@ mod tests {
 
         run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
 
-        assert_eq!(
-            std::fs::read(croot.join("existing-layer.tar")).unwrap(),
-            b"layer bytes",
-            "the pre-existing layer must survive the migration onto the device"
+        assert!(
+            !croot.join("existing-layer.tar").exists(),
+            "the root-disk store must be discarded, not preserved — leaving it \
+             costs the space it occupies and buys nothing a registry cannot resend"
+        );
+        assert!(
+            !host.inner.ran("cp -a"),
+            "copying the store is what forced k3s to stay stopped for ~17 minutes"
         );
         assert!(
             !host.inner.ran("systemctl stop"),
             "k3s was never active, so it must not be stopped"
+        );
+    }
+
+    /// The wipe must never happen unless the device has been shown to mount.
+    /// Destroying the old store and then failing to mount the new one leaves the
+    /// node with no image store at all, which is worse than an empty one — it is
+    /// not a state containerd can start from.
+    #[tokio::test]
+    async fn an_unmountable_device_leaves_the_root_disk_store_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("rbd ls images", "yolab-n1\n")
+            .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
+            .fail("systemctl is-active", "not active")
+            .ok("rbd showmapped", "[]")
+            .ok("rbd map", "/dev/rbd0")
+            .ok("blkid", "")
+            .ok("xfs_repair", "")
+            .fail("mount", "device is busy");
+        let croot = containerd_root(dir.path());
+        std::fs::create_dir_all(&croot).unwrap();
+        std::fs::write(croot.join("existing-layer.tar"), b"layer bytes").unwrap();
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(
+            croot.join("existing-layer.tar").exists(),
+            "nothing may be destroyed until the replacement is known to mount"
         );
     }
 
