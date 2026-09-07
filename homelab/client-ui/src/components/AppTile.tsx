@@ -3,7 +3,7 @@ import { AppIconTile } from "@/components/AppIcon";
 import { StatusDot } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/feedback";
 import { cn } from "@/lib/utils";
-import { appState, appStateLabel } from "@/lib/apps";
+import { appLabel, appState } from "@/lib/apps";
 import type { AppInfo } from "@/types/apps";
 
 /**
@@ -27,7 +27,7 @@ export function AppTile({
   icon: string;
 }) {
   const state = appState(app);
-  const label = appStateLabel(state);
+  const label = appLabel(app, state);
   const tone =
     state === "removing" ? "warn" : state === "starting" ? "busy" : "ok";
 
@@ -53,8 +53,12 @@ export function AppTile({
         />
       </div>
       <span className="line-clamp-1 text-sm font-medium text-fg">{name}</span>
+      {/* Two lines, not one: these are now sentences ("Keeps stopping
+          unexpectedly — restarted 335 times. Check the logs.") rather than the
+          two-word state they replaced, and a tile that clips the reason to
+          "Keeps stopping unexpec…" has given the reader nothing. */}
       {label && (
-        <span className="mt-0.5 line-clamp-1 text-xs text-fg-muted">
+        <span className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted">
           {label}
         </span>
       )}

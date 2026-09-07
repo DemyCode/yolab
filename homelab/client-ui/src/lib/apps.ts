@@ -136,6 +136,23 @@ export function appState(app: AppInfo): AppState {
   return "ready";
 }
 
+/**
+ * What the tile says under the name, preferring the backend's explanation.
+ *
+ * `appStateLabel` can only ever say "Starting up…", because the state is all the
+ * UI has. That one sentence covers a 2GB download, an init container waiting on
+ * a storage driver, and a process that has crashed 335 times — and it is useless
+ * in all three. Only the pod status distinguishes them, and only the backend
+ * sees it, so `detail` comes over the wire already written (see
+ * routers/apps.rs `explain_app_state`).
+ *
+ * Falls back to the generic label when `detail` is empty, which also keeps this
+ * working against an older backend that does not send the field.
+ */
+export function appLabel(app: AppInfo, state: AppState): string {
+  return app.detail?.trim() || appStateLabel(state);
+}
+
 /** What the tile says under the name. Empty for the healthy case. */
 export function appStateLabel(state: AppState): string {
   switch (state) {

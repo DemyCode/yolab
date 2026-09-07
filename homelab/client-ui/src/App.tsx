@@ -31,6 +31,9 @@ const SystemPage = lazy(() =>
 const TerminalPage = lazy(() =>
   import("@/pages/box/TerminalPage").then((m) => ({ default: m.TerminalPage })),
 );
+const LogsPage = lazy(() =>
+  import("@/pages/box/LogsPage").then((m) => ({ default: m.LogsPage })),
+);
 
 function Loading() {
   return (
@@ -130,6 +133,19 @@ export default function App() {
               >
                 <Suspense fallback={<Loading />}>
                   <SystemPage />
+                </Suspense>
+              </BoxSubPage>
+            }
+          />
+          <Route
+            path="/box/logs"
+            element={
+              <BoxSubPage
+                title="Logs"
+                subtitle="Everything the machine has been saying."
+              >
+                <Suspense fallback={<Loading />}>
+                  <LogsPage />
                 </Suspense>
               </BoxSubPage>
             }

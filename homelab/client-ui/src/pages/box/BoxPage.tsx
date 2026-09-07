@@ -5,6 +5,7 @@ import {
   Database,
   ExternalLink,
   Server,
+  ScrollText,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
@@ -205,6 +206,15 @@ export function BoxPage() {
         wrong and someone is helping you.
       </p>
       <Card className="overflow-hidden p-0">
+        {/* Above Terminal on purpose. Reading what the machine already said
+            should be the first thing reached for when something is wrong, and
+            it is the one entry here that is safe to open out of curiosity. */}
+        <NavRow
+          to="/box/logs"
+          icon={ScrollText}
+          label="Logs"
+          detail="What the machine has been saying"
+        />
         <NavRow
           to="/box/terminal"
           icon={TerminalSquare}

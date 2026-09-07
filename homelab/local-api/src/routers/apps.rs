@@ -72,6 +72,9 @@ pub struct AppInfo {
     pub app_id: String,
     pub instance_name: String,
     pub status: String,
+    /// Plain-language explanation of `status`, empty when the app is healthy.
+    /// See `explain_app_state` for why this is not left to the UI to guess.
+    pub detail: String,
     pub outputs: Vec<AppOutput>,
     pub outputs_spec: Vec<OutputSpec>,
     pub config: serde_json::Map<String, Value>,
@@ -739,6 +742,104 @@ pub(crate) fn is_terminating_pod(pod: &Value) -> bool {
     !pod["metadata"]["deletionTimestamp"].is_null()
 }
 
+/// What is actually happening to this app, in words its owner can act on.
+///
+/// "Starting up…" is true of a container downloading a 2GB image, an init
+/// container waiting on a storage driver, and a process that has crashed 300
+/// times — and it is useless in all three. Someone whose app has not come back
+/// needs to know whether to wait, check their internet, or look at the logs, and
+/// Kubernetes already knows which; it just says so in words like
+/// `ImagePullBackOff` and `CreateContainerConfigError`.
+///
+/// This is the translation. It reports the FIRST thing that is not fine, in
+/// roughly the order a person would care: something broken beats something slow,
+/// and a specific cause beats a generic one.
+///
+/// Only pod status is consulted, never events. Events would add detail (a failed
+/// mount names the volume) but they expire, they are per-namespace, and reading
+/// them means another API call per app on a page that already renders during an
+/// outage. Everything below survives the API being slow.
+pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
+    if pods.is_empty() {
+        return "Waiting to be given a machine to run on".into();
+    }
+
+    let mut restarts: i64 = 0;
+    let mut waiting: Vec<(String, bool)> = Vec::new(); // (reason, is_init)
+    let mut unschedulable = false;
+    let mut running_not_ready = false;
+
+    for pod in pods {
+        if pod["status"]["phase"].as_str() == Some("Pending") {
+            unschedulable |= pod["status"]["conditions"]
+                .as_array()
+                .map(|cs| {
+                    cs.iter()
+                        .any(|c| c["type"] == "PodScheduled" && c["reason"] == "Unschedulable")
+                })
+                .unwrap_or(false);
+        }
+
+        for (key, is_init) in [
+            ("initContainerStatuses", true),
+            ("containerStatuses", false),
+        ] {
+            for cs in pod["status"][key].as_array().into_iter().flatten() {
+                restarts += cs["restartCount"].as_i64().unwrap_or(0);
+                if let Some(reason) = cs["state"]["waiting"]["reason"].as_str() {
+                    waiting.push((reason.to_string(), is_init));
+                }
+                if cs["state"]["running"].is_object() && cs["ready"] == false {
+                    running_not_ready = true;
+                }
+            }
+        }
+    }
+
+    let has = |r: &str| waiting.iter().any(|(reason, _)| reason == r);
+
+    // Broken first. These do not resolve by waiting, and saying "starting up"
+    // about them is how an app sits dead for a day without anyone looking.
+    if has("CrashLoopBackOff") {
+        return if restarts > 1 {
+            format!("Keeps stopping unexpectedly — restarted {restarts} times. Check the logs.")
+        } else {
+            "Keeps stopping unexpectedly. Check the logs.".into()
+        };
+    }
+    if has("ImagePullBackOff") || has("ErrImagePull") {
+        return "Could not download this app. Check that the machine is online.".into();
+    }
+    if has("CreateContainerConfigError") || has("CreateContainerError") {
+        return "A setting is missing or wrong, so it cannot start.".into();
+    }
+    if has("InvalidImageName") {
+        return "This app's image name is not valid, so it cannot be downloaded.".into();
+    }
+    if unschedulable {
+        return "No machine has room for this app right now.".into();
+    }
+
+    // Then the slow-but-fine states, most specific first.
+    if has("ContainerCreating") {
+        return "Getting ready — downloading files and connecting storage.".into();
+    }
+    if has("PodInitializing") {
+        return "Running first-time setup.".into();
+    }
+    if running_not_ready {
+        return "Almost ready — waiting for the app to respond.".into();
+    }
+    if !waiting.is_empty() {
+        // An unrecognised reason is still worth showing verbatim: an honest
+        // Kubernetes word beats a reassuring invention.
+        let (reason, _) = &waiting[0];
+        return format!("Waiting: {reason}");
+    }
+
+    String::new()
+}
+
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let catalog_dir = state.config.catalog_dir();
     let ns_selector = format!("{LABEL_MANAGED}=true");
@@ -775,6 +876,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .trim_start_matches("yolab-")
             .to_string();
         let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
+        let mut detail = String::new();
         let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
             "uninstalling".to_string()
         } else {
@@ -791,10 +893,8 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p))
                 .copied()
                 .collect();
-            if items.is_empty() {
-                "starting".to_string()
-            } else {
-                let all_ready = items.iter().all(|p| {
+            let all_ready = !items.is_empty()
+                && items.iter().all(|p| {
                     p["status"]["conditions"]
                         .as_array()
                         .map(|cs| {
@@ -803,8 +903,12 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                         })
                         .unwrap_or(false)
                 });
-                if all_ready { "running" } else { "starting" }.to_string()
+            // Only asked for when something is not right, so a healthy app costs
+            // nothing and its tile stays quiet.
+            if !all_ready {
+                detail = explain_app_state(&items);
             }
+            if all_ready { "running" } else { "starting" }.to_string()
         };
 
         let id = ann
@@ -842,6 +946,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             app_id: id,
             instance_name: name,
             status,
+            detail,
             outputs: normalize_outputs(&ann),
             outputs_spec,
             config,
@@ -1574,6 +1679,119 @@ mod tests {
                     .any(|c| c["type"] == "Ready" && c["status"] == "True")
             })
         }));
+    }
+
+    // ── explain_app_state ─────────────────────────────────────────────────────
+    //
+    // The rule these pin: a reassuring sentence may only ever be shown when
+    // nothing is wrong. Saying "getting ready" about a crash loop is how an app
+    // sits dead for a day with nobody looking — the same mistake HomePage's
+    // storage banner made, for the same reason.
+
+    fn waiting_pod(kind: &str, reason: &str, restarts: i64) -> Value {
+        json!({"status": {"phase": "Pending", kind: [
+            {"restartCount": restarts, "state": {"waiting": {"reason": reason}}}
+        ]}})
+    }
+
+    #[test]
+    fn a_crash_loop_is_never_described_as_starting() {
+        let pod = waiting_pod("containerStatuses", "CrashLoopBackOff", 335);
+        let msg = explain_app_state(&[&pod]);
+        assert!(
+            msg.contains("335"),
+            "the restart count is the whole signal: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("logs"),
+            "must point somewhere: {msg}"
+        );
+        assert!(!msg.to_lowercase().contains("getting ready"));
+    }
+
+    /// A first crash should not read "restarted 1 times".
+    #[test]
+    fn a_single_restart_reads_naturally() {
+        let pod = waiting_pod("containerStatuses", "CrashLoopBackOff", 1);
+        assert!(!explain_app_state(&[&pod]).contains('1'));
+    }
+
+    #[test]
+    fn a_failed_download_says_so_and_names_the_likely_cause() {
+        for reason in ["ImagePullBackOff", "ErrImagePull"] {
+            let pod = waiting_pod("containerStatuses", reason, 0);
+            let msg = explain_app_state(&[&pod]).to_lowercase();
+            assert!(msg.contains("download"), "{reason}: {msg}");
+            assert!(msg.contains("online"), "{reason}: {msg}");
+        }
+    }
+
+    /// Broken beats slow. A pod that is both pulling an image for one container
+    /// and crash-looping in another must report the crash.
+    #[test]
+    fn something_broken_outranks_something_merely_slow() {
+        let pod = json!({"status": {"phase": "Pending", "containerStatuses": [
+            {"restartCount": 0, "state": {"waiting": {"reason": "ContainerCreating"}}},
+            {"restartCount": 9, "state": {"waiting": {"reason": "CrashLoopBackOff"}}}
+        ]}});
+        assert!(explain_app_state(&[&pod]).contains("stopping"));
+    }
+
+    /// The exact state every app was in after the 2026-09-07 reboot: init
+    /// containers running while images came back. It has to read as progress,
+    /// because it is.
+    #[test]
+    fn first_time_setup_and_downloading_are_distinguishable() {
+        let creating = waiting_pod("containerStatuses", "ContainerCreating", 0);
+        assert!(explain_app_state(&[&creating]).contains("downloading"));
+
+        let initing = waiting_pod("containerStatuses", "PodInitializing", 0);
+        let msg = explain_app_state(&[&initing]);
+        assert!(msg.contains("setup"), "{msg}");
+        assert!(
+            !msg.contains("downloading"),
+            "a different state, a different sentence"
+        );
+    }
+
+    #[test]
+    fn nowhere_to_run_is_reported_as_such() {
+        let pod = json!({"status": {"phase": "Pending", "conditions": [
+            {"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}
+        ]}});
+        assert!(explain_app_state(&[&pod]).to_lowercase().contains("room"));
+    }
+
+    /// Running but failing its readiness probe — the app is up and not yet
+    /// answering. Distinct from both "starting" and "broken".
+    #[test]
+    fn running_but_not_answering_is_its_own_state() {
+        let pod = json!({"status": {"phase": "Running", "containerStatuses": [
+            {"restartCount": 0, "ready": false, "state": {"running": {}}}
+        ]}});
+        assert!(explain_app_state(&[&pod]).contains("Almost ready"));
+    }
+
+    /// An unrecognised Kubernetes reason must be surfaced verbatim rather than
+    /// smoothed into a comforting generic sentence. An honest unfamiliar word
+    /// beats a reassuring invention.
+    #[test]
+    fn an_unknown_reason_is_shown_not_invented_over() {
+        let pod = waiting_pod("containerStatuses", "SomeFutureReason", 0);
+        assert!(explain_app_state(&[&pod]).contains("SomeFutureReason"));
+    }
+
+    #[test]
+    fn no_pods_at_all_says_it_is_waiting_for_a_machine() {
+        assert!(explain_app_state(&[]).to_lowercase().contains("machine"));
+    }
+
+    /// Init containers are where the gateway does its tunnel registration, so a
+    /// failure there must be reported as loudly as one in the app itself.
+    #[test]
+    fn a_stuck_init_container_is_not_hidden() {
+        let pod = waiting_pod("initContainerStatuses", "CrashLoopBackOff", 4);
+        assert!(explain_app_state(&[&pod]).contains("stopping"));
     }
 
     // ── resolve_service_name ──────────────────────────────────────────────────
