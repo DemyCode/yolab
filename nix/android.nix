@@ -45,8 +45,24 @@ let
   # what Tauri's Gradle plugin expects, or the failure is a linker error deep in
   # a Rust build rather than anything naming a version.
   androidSdk = androidPkgs.androidenv.composeAndroidPackages {
-    platformVersions = [ "34" ];
-    buildToolsVersions = [ "34.0.0" ];
+    # 35 because that is what Tauri's generated Gradle project asks for:
+    #
+    #   Could not determine the dependencies of task ':app:minifyUniversalReleaseWithR8'.
+    #   > Failed to find Build Tools revision 35.0.0
+    #
+    # 34 is kept alongside it because a missing SDK component does not fail
+    # cleanly — the SDK manager goes looking for it on dl.google.com, and with
+    # no network that produces pages of UnknownHostException stack traces that
+    # bury the one line naming the actual missing revision. Carrying both costs
+    # download size and removes a whole class of misleading failure.
+    platformVersions = [
+      "34"
+      "35"
+    ];
+    buildToolsVersions = [
+      "34.0.0"
+      "35.0.0"
+    ];
     includeNDK = true;
     ndkVersions = [ "26.1.10909125" ];
     cmakeVersions = [ "3.22.1" ];
