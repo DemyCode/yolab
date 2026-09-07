@@ -717,6 +717,28 @@ pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
         || pod["metadata"]["labels"]["app.kubernetes.io/created-by"].as_str() == Some("volsync")
 }
 
+/// True once Kubernetes has asked this pod to go away — `deletionTimestamp` is set.
+///
+/// A pod on its way out is not evidence about whether the app is up, and on a node
+/// whose kubelet cannot reach its container runtime it is not even on its way out:
+/// kubelet cannot kill what the runtime will not answer for, so the pod sits in
+/// Terminating with `Ready: False` until the node is fixed or forcibly removed.
+///
+/// That is not hypothetical. On 2026-09-06 a node's containerd data-root died (an
+/// RBD write timeout shut XFS down, see storage::containerd_store) and its pods hung
+/// in Terminating for 32 hours. Kubernetes did the right thing and started a healthy
+/// replacement for each of them on the other node — and the UI showed every app as
+/// "Starting up…" the entire time, because the readiness rollup below is an `all()`
+/// and each namespace still contained one unready ghost. Every app was reachable and
+/// serving; the only broken thing was the sentence under its name.
+///
+/// So a terminating pod is excluded from the *rollup*, not from sight: `list_pods`
+/// deliberately still shows it, because when a pod is wedged in Terminating that is
+/// exactly what someone opening the pod list needs to see.
+pub(crate) fn is_terminating_pod(pod: &Value) -> bool {
+    !pod["metadata"]["deletionTimestamp"].is_null()
+}
+
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let catalog_dir = state.config.catalog_dir();
     let ns_selector = format!("{LABEL_MANAGED}=true");
@@ -757,14 +779,16 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             "uninstalling".to_string()
         } else {
             let ns_full = format!("yolab-{name}");
-            // The app's own pods only — a backup running in this namespace must not
-            // make the app look like it is restarting.
+            // The app's own pods, and only the ones that still count as evidence: a
+            // backup running in this namespace must not make the app look like it is
+            // restarting, and a pod Kubernetes has already replaced must not hold the
+            // whole app at "Starting up…" while its replacement serves every request.
             let items: Vec<&Value> = pods_by_ns
                 .get(ns_full.as_str())
                 .map(|v| v.as_slice())
                 .unwrap_or(&[])
                 .iter()
-                .filter(|p| !is_backup_mover_pod(p))
+                .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p))
                 .copied()
                 .collect();
             if items.is_empty() {
@@ -1496,6 +1520,62 @@ mod tests {
         assert!(!is_backup_mover_pod(&json!({})));
     }
 
+    // ── is_terminating_pod ────────────────────────────────────────────────────
+    //
+    // The readiness rollup in list_apps is an all(), so one unready pod that will
+    // never become ready pins the whole app at "Starting up…". A node whose runtime
+    // has died produces exactly that and holds it indefinitely.
+
+    #[test]
+    fn a_pod_being_deleted_is_terminating() {
+        assert!(is_terminating_pod(&json!({
+            "metadata": {
+                "name": "gateway-85495df94-64kkw",
+                "deletionTimestamp": "2026-09-06T00:16:35Z"
+            }
+        })));
+    }
+
+    #[test]
+    fn a_live_pod_is_not_terminating() {
+        assert!(!is_terminating_pod(&pod("gateway-85495df94-74s4t")));
+        assert!(!is_terminating_pod(&json!({})));
+        // Explicit null is how kubectl renders an unset field in some outputs.
+        assert!(!is_terminating_pod(&json!({
+            "metadata": {"name": "app-1", "deletionTimestamp": null}
+        })));
+    }
+
+    /// The shape of the live incident: one node's pods wedged in Terminating and
+    /// unready, a healthy replacement Running on the other node. The app is up, and
+    /// the rollup has to say so.
+    #[test]
+    fn a_wedged_terminating_pod_does_not_hold_the_app_at_starting() {
+        let ready = |ready: bool| {
+            json!({"status": {"conditions": [
+                {"type": "Ready", "status": if ready {"True"} else {"False"}}
+            ]}})
+        };
+        let mut ghost = ready(false);
+        ghost["metadata"] =
+            json!({"name": "gateway-old", "deletionTimestamp": "2026-09-06T00:16:35Z"});
+        let mut live = ready(true);
+        live["metadata"] = json!({"name": "gateway-new"});
+
+        let counted: Vec<&Value> = [&ghost, &live]
+            .into_iter()
+            .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p))
+            .collect();
+
+        assert_eq!(counted.len(), 1, "only the replacement is evidence");
+        assert!(counted.iter().all(|p| {
+            p["status"]["conditions"].as_array().is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c["type"] == "Ready" && c["status"] == "True")
+            })
+        }));
+    }
+
     // ── resolve_service_name ──────────────────────────────────────────────────
     //
     // This decides whether an app gets a DNS record at all. When it returns "",
@@ -1755,21 +1835,56 @@ mod tests {
         )));
     }
 
-    // ── file explorer ────────────────────────────────────────────────────────
+    // ── chart_outputs_spec ───────────────────────────────────────────────────
     //
-    // Every piece of this is now chart-declared (values.schema.json, the
+    // Every piece of the file explorer is chart-declared (values.schema.json, the
     // yolab.io/outputs annotation, the explicit template includes) rather than
-    // injected here — see yolab-common/templates/_fileexplorer.tpl. This is the
-    // one regression test on the Rust side: that a real chart which claims to
-    // have the file explorer actually declares its two outputs.
+    // injected here — see yolab-common/templates/_fileexplorer.tpl.
+    //
+    // Which splits the regression into two halves that belong in two places. That
+    // a *real* chart rendering the file explorer declares its two outputs is a
+    // catalog invariant, and lives in apps/catalog/check_charts.py, which has the
+    // catalog. This half is the Rust side's own responsibility: that the
+    // annotation is found and parsed at all. It used to be one test reaching up
+    // out of the crate into ../../apps/catalog — a path crane's cleanCargoSource
+    // strips, so it failed in every `nix build`, which failed every
+    // `nixos-rebuild` on every node.
+
+    fn chart_dir_with(outputs: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let chart = dir.path().join("filebrowser");
+        std::fs::create_dir_all(&chart).unwrap();
+        std::fs::write(
+            chart.join("Chart.yaml"),
+            format!(
+                "apiVersion: v2\nname: filebrowser\nversion: 0.1.0\nannotations:\n  \
+                 {ANN_CHART_OUTPUTS}: |\n    {outputs}\n"
+            ),
+        )
+        .unwrap();
+        dir
+    }
 
     #[test]
-    fn a_chart_with_the_file_explorer_declares_its_outputs() {
-        let catalog_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog");
-        let specs = chart_outputs_spec(&catalog_dir, "filebrowser");
+    fn the_outputs_annotation_is_read_off_the_chart() {
+        let dir = chart_dir_with(
+            r#"[{"key":"file_explorer_url","label":"File explorer","type":"url"},
+             {"key":"file_explorer_password","label":"Password","type":"text"}]"#,
+        );
+        let specs = chart_outputs_spec(dir.path(), "filebrowser");
         let keys: Vec<&str> = specs.iter().filter_map(|s| s["key"].as_str()).collect();
         assert!(keys.contains(&"file_explorer_url"));
         assert!(keys.contains(&"file_explorer_password"));
+    }
+
+    /// A chart that declares nothing, and an id that is not in the catalog at all,
+    /// must both come back empty rather than panicking — an app installed from a
+    /// chart since removed still has to render.
+    #[test]
+    fn a_chart_without_outputs_yields_none() {
+        let dir = chart_dir_with("[]");
+        assert!(chart_outputs_spec(dir.path(), "filebrowser").is_empty());
+        assert!(chart_outputs_spec(dir.path(), "not-in-the-catalog").is_empty());
+        assert!(chart_outputs_spec(dir.path(), "").is_empty());
     }
 }

@@ -339,7 +339,13 @@ in {
       requiredBy = ["ceph-mgr-${host}.service"];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
+        # NOT RemainAfterExit: the retry timer below cannot re-arm while this
+        # unit stays active (see its comment). `requiredBy` on ceph-mgr still
+        # holds without it — a Requires= dependency is satisfied by the oneshot
+        # having *completed*, and a oneshot exiting on its own never enqueues
+        # the stop job that would propagate to the requirer. It also means each
+        # ceph-mgr start re-runs this, which is what you want from a unit whose
+        # whole job is "make sure the key exists".
         TimeoutStartSec = "180s";
         ExecStart = "${localApiEnv}/bin/local-api storage mgr-key";
       };
@@ -357,16 +363,13 @@ in {
     # until the next reboot, because a failed oneshot is never retried on its
     # own.
     #
-    # OnCalendar, not OnUnitActiveSec/OnUnitInactiveSec: this unit has
-    # RemainAfterExit=true, and once a RemainAfterExit oneshot succeeds it never
-    # goes inactive again, so neither of those directives ever re-arms after the
-    # first success — confirmed live via `systemctl show` on a real node
-    # (`next_elapse=0`, `NextElapseUSecMonotonic=infinity`, hours after the last
-    # run). That silently disables the retry this comment describes, and also
-    # means a key deleted or revoked out-of-band after the first success would
-    # never be recreated. OnCalendar fires on a wall-clock schedule regardless
-    # of the target unit's state. See the identical fix (with the fuller
-    # incident writeup) on yolab-containerd-store's timer.
+    # What makes this retry actually retry is that the service is no longer
+    # RemainAfterExit — systemd only re-arms a timer once the unit it triggers
+    # goes inactive or failed, whatever the timer base. Moving to OnCalendar
+    # alone did not fix it: on the live node this timer showed `NEXT: -` with a
+    # last trigger two days old, so a key deleted or revoked out-of-band would
+    # never have been recreated. Full writeup on yolab-containerd-store's timer,
+    # and nix/checks.nix fails the build if the pairing returns.
     systemd.timers.yolab-ceph-mgr-key = {
       wantedBy = ["timers.target"];
       timerConfig = {

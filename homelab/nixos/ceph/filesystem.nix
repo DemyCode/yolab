@@ -47,7 +47,10 @@ in {
       requiredBy = ["ceph-mds-${host}.service"];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
+        # NOT RemainAfterExit — see the same note on yolab-ceph-mgr-key: the
+        # retry timer below cannot re-arm while this unit stays active, and
+        # `requiredBy` on ceph-mds holds fine without it.
+        #
         # `Type=oneshot` disables the start timeout by default; see the note on
         # yolab-ceph-bootstrap in default.nix for what that cost.
         TimeoutStartSec = "180s";
@@ -65,11 +68,10 @@ in {
     # failed oneshot is never retried on its own, and on a joining node the
     # first attempt necessarily runs before the cluster credentials arrive.
     #
-    # OnCalendar, not OnUnitActiveSec/OnUnitInactiveSec: same reasoning as
-    # yolab-containerd-store's timer (see its fuller writeup) — this unit has
-    # RemainAfterExit=true, and neither directive re-arms once a RemainAfterExit
-    # oneshot has succeeded once, confirmed live via `systemctl show` on a real
-    # node.
+    # The service is deliberately not RemainAfterExit, because systemd re-arms
+    # a timer only when the unit it triggers goes inactive or failed — no timer
+    # base changes that. Same reasoning, and the same live evidence, as
+    # yolab-containerd-store's timer; see its fuller writeup.
     systemd.timers.yolab-ceph-mds-key = {
       wantedBy = ["timers.target"];
       timerConfig = {

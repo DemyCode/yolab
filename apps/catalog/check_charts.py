@@ -108,7 +108,7 @@ def render(chart_dir, library_tgz, workdir):
     return out.stdout, None
 
 
-def check(app, docs, fail):
+def check(app, docs, fail, chart_yaml=""):
     kinds = {}
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
@@ -324,6 +324,45 @@ def check(app, docs, fail):
             if v == "":
                 fail(app, f"Secret key {k} rendered empty")
 
+    # The file explorer prints its URL and its generated password as YOLAB_OUTPUT
+    # lines, and nothing scrapes those unless the chart's own `yolab.io/outputs`
+    # names them — the whole point of making the feature chart-declared rather
+    # than platform-injected. A chart that renders it without declaring them
+    # hands the user a Basic Auth prompt and no password.
+    #
+    # This assertion used to live in local-api's Rust tests, where it read the
+    # catalog off disk via CARGO_MANIFEST_DIR/../../apps/catalog. crane builds
+    # local-api from the crate alone, so that path does not exist in the sandbox
+    # and the test failed every `nix build` — which meant `nixos-rebuild` failed
+    # on every node, with no way to ship a fix for anything. It belongs here,
+    # where the catalog is what is actually being checked.
+    renders_file_explorer = any(
+        c.get("name") == "file-explorer-init"
+        for d in docs
+        for c in (
+            d.get("spec", {}).get("template", {}).get("spec", {}).get("initContainers")
+            or []
+        )
+    )
+    if renders_file_explorer:
+        declared = set()
+        try:
+            ann = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
+            declared = {
+                o.get("key") for o in json.loads(ann.get("yolab.io/outputs") or "[]")
+            }
+        except (yaml.YAMLError, json.JSONDecodeError, AttributeError, TypeError):
+            fail(
+                app, "renders the file explorer but its yolab.io/outputs is unreadable"
+            )
+        for key in ("file_explorer_url", "file_explorer_password"):
+            if key not in declared:
+                fail(
+                    app,
+                    f"renders the file explorer but yolab.io/outputs "
+                    f"does not declare {key}",
+                )
+
 
 def main(argv):
     chart_dirs = argv[1:] or sorted(
@@ -385,7 +424,7 @@ def main(argv):
             except yaml.YAMLError as e:
                 fail(app, f"rendered invalid YAML: {e}")
                 continue
-            check(app, docs, fail)
+            check(app, docs, fail, text)
 
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:
