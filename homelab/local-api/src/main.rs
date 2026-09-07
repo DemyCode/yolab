@@ -141,6 +141,9 @@ async fn main() {
         .route("/api/auth/check", get(auth::check))
         // Status
         .route("/api/status", get(status::handler))
+        // Fetched on click, never polled: it carries the account token in a
+        // fragment. See routers/status.rs `console_link_url`.
+        .route("/api/console/link", get(status::console_link))
         // Update / channel
         .route("/api/update", post(update::update))
         .route("/api/update/all", post(update::update_all))
