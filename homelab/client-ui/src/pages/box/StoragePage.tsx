@@ -698,9 +698,14 @@ function CapacityCard({
 
   // Never promise more than physically exists right now. Ceph derives MAX AVAIL
   // from CRUSH weight, which still counts disks that are DOWN — so a cluster
-  // with one live 178 GiB disk and two dead ones advertised "1.3 TB free" on the
-  // same page that said "Raw total 178.5 GiB" one card below. avail_bytes comes
+  // with one live 178 GiB disk and two dead ones advertised "1.3 TB free" while
+  // the raw capacity readout on the same page said 178.5 GiB. avail_bytes comes
   // from `ceph df` and counts only OSDs that are actually up.
+  //
+  // Those raw cards have since been removed, so the contradiction is no longer
+  // visible to anyone — which is exactly why this stays a comment: the guard
+  // below is still load-bearing, and nothing on screen would reveal its absence
+  // now.
   const rawFree = detail?.avail_bytes ?? poolFree;
   const free = Math.min(poolFree, rawFree);
   const total = used + free;
@@ -1349,14 +1354,13 @@ function AdvancedPanel({
 
       {open && (
         <div className="mt-4 space-y-6">
-          <div className="flex items-center justify-between">
+          {/* justify-end, not justify-between: the raw-capacity cards that used
+              to sit opposite this button are gone, and with one child
+              justify-between would park Refresh on the left. */}
+          <div className="flex items-center justify-end">
             {/* The one refresh control on the page. Everything above refreshes
                 itself; this exists for the moment after plugging a disk in,
                 when twenty seconds feels long. */}
-            <p className="text-sm text-fg-muted">
-              Raw totals count every copy, so they are larger than the space
-              above.
-            </p>
             <Button
               size="sm"
               variant="ghost"
@@ -1370,23 +1374,14 @@ function AdvancedPanel({
             </Button>
           </div>
 
-          {detail && (
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: "Raw total", value: fmtBytes(detail.total_bytes) },
-                { label: "Raw used", value: fmtBytes(detail.used_bytes) },
-                { label: "Raw free", value: fmtBytes(detail.avail_bytes) },
-              ].map(({ label, value }) => (
-                <Card key={label} className="p-4">
-                  <p className="text-xs text-fg-muted">{label}</p>
-                  <p className="mt-0.5 text-lg font-medium tabular-nums text-fg">
-                    {value}
-                  </p>
-                </Card>
-              ))}
-            </div>
-          )}
-
+          {/* Raw total / used / free used to be three cards here, and they were
+              actively misleading: raw counts every replica, so on a healthy
+              cluster they never match the usable figures shown above and the
+              page appeared to contradict itself. The sentence explaining that
+              went with them — a caption apologising for a number is a sign the
+              number should not be there. What a person can actually store is
+              already on this page; the OSD table below covers the per-disk
+              detail an operator needs. */}
           {osds.length > 0 && <OsdTable osds={osds} onRefresh={onRefresh} />}
 
           {creds && (
