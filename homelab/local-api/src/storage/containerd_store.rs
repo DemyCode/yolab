@@ -707,58 +707,60 @@ pub async fn run<H: Host>(
             tracing::info!("{croot_s} is already mounted and readable");
             return Ok(());
         } else {
-        // MOUNTED BUT UNREADABLE MEANS XFS LATCHED A SHUTDOWN, NOT THAT THE DATA
-        // IS GONE.
-        //
-        // Ceph blips (a node reboot, an OSD restart, a network hiccup), the RBD's
-        // writes hit osd_request_timeout, XFS takes `log I/O error -110` and shuts
-        // the filesystem down to protect itself. That shutdown is LATCHED: the
-        // block device recovers when Ceph does, but the mount stays poisoned
-        // until something unmounts and mounts it again. Everything above it —
-        // containerd, then k3s, then this node's half of etcd quorum — stays
-        // wedged behind an `Input/output error` that never clears on its own.
-        //
-        // This used to declare the node unrecoverable whenever containers still
-        // referenced the store, on the reasoning that repair meant `mkfs` and
-        // `mkfs` needs the device exclusively. Both halves of that were wrong:
-        //
-        //   - Repair does NOT need mkfs. A shutdown filesystem mounts cleanly
-        //     once remounted, replaying its log; the images survive. Rebuilding
-        //     threw away the entire image cache to fix something a remount fixes,
-        //     and `mount_the_store` already escalates to a rebuild by itself if
-        //     the filesystem genuinely will not mount and read.
-        //   - Those references are NOT load-bearing. They are the rootfs mounts
-        //     of containers whose runtime is already dead — which is guaranteed
-        //     here, because the store they were built on is unreadable. Nothing
-        //     is running to break.
-        //
-        // Observed 2026-09-08: 41 overlay mounts pinned node2's store, this
-        // branch logged "THIS NODE NEEDS A REBOOT" every 5 minutes for over an
-        // hour, node2's etcd never started, and node1 looped elections at term 28
-        // getting Connection refused on :2380 because nothing was listening.
-        // A reboot was never actually required — releasing stale mounts is.
-        tracing::warn!("{croot_s} is mounted but cannot be read — XFS has shut down, recovering");
+            // MOUNTED BUT UNREADABLE MEANS XFS LATCHED A SHUTDOWN, NOT THAT THE DATA
+            // IS GONE.
+            //
+            // Ceph blips (a node reboot, an OSD restart, a network hiccup), the RBD's
+            // writes hit osd_request_timeout, XFS takes `log I/O error -110` and shuts
+            // the filesystem down to protect itself. That shutdown is LATCHED: the
+            // block device recovers when Ceph does, but the mount stays poisoned
+            // until something unmounts and mounts it again. Everything above it —
+            // containerd, then k3s, then this node's half of etcd quorum — stays
+            // wedged behind an `Input/output error` that never clears on its own.
+            //
+            // This used to declare the node unrecoverable whenever containers still
+            // referenced the store, on the reasoning that repair meant `mkfs` and
+            // `mkfs` needs the device exclusively. Both halves of that were wrong:
+            //
+            //   - Repair does NOT need mkfs. A shutdown filesystem mounts cleanly
+            //     once remounted, replaying its log; the images survive. Rebuilding
+            //     threw away the entire image cache to fix something a remount fixes,
+            //     and `mount_the_store` already escalates to a rebuild by itself if
+            //     the filesystem genuinely will not mount and read.
+            //   - Those references are NOT load-bearing. They are the rootfs mounts
+            //     of containers whose runtime is already dead — which is guaranteed
+            //     here, because the store they were built on is unreadable. Nothing
+            //     is running to break.
+            //
+            // Observed 2026-09-08: 41 overlay mounts pinned node2's store, this
+            // branch logged "THIS NODE NEEDS A REBOOT" every 5 minutes for over an
+            // hour, node2's etcd never started, and node1 looped elections at term 28
+            // getting Connection refused on :2380 because nothing was listening.
+            // A reboot was never actually required — releasing stale mounts is.
+            tracing::warn!(
+                "{croot_s} is mounted but cannot be read — XFS has shut down, recovering"
+            );
 
-        // k3s FIRST, and before touching any mount: it is the thing that would
-        // otherwise be recreating the mounts being torn down. The restart is the
-        // shared one at the bottom, driven by `was_active` captured above.
-        if was_active {
-            tracing::info!("stopping k3s to release the dead image store");
-            let _ = host.systemctl(&["stop", "k3s.service"]).await;
-        }
+            // k3s FIRST, and before touching any mount: it is the thing that would
+            // otherwise be recreating the mounts being torn down. The restart is the
+            // shared one at the bottom, driven by `was_active` captured above.
+            if was_active {
+                tracing::info!("stopping k3s to release the dead image store");
+                let _ = host.systemctl(&["stop", "k3s.service"]).await;
+            }
 
-        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-        release_pinning_overlays(host, &mounts, &croot_s).await;
+            let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+            release_pinning_overlays(host, &mounts, &croot_s).await;
 
-        // Lazy as a fallback: containerd may already hold descriptors on a
-        // filesystem that has shut down, and a plain umount would refuse.
-        if !host
-            .run_cmd("umount", &[&croot_s])
-            .await
-            .is_ok_and(|o| o.success)
-        {
-            let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
-        }
+            // Lazy as a fallback: containerd may already hold descriptors on a
+            // filesystem that has shut down, and a plain umount would refuse.
+            if !host
+                .run_cmd("umount", &[&croot_s])
+                .await
+                .is_ok_and(|o| o.success)
+            {
+                let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
+            }
 
             // Deliberately NOT `needs_rebuild = true`. For a LATCHED SHUTDOWN a
             // plain remount is the right, non-destructive repair, and
@@ -957,8 +959,7 @@ mod tests {
     /// Lays out the overlayfs snapshotter under a temp root.
     /// `db_bytes = 0` means no metadata.db at all.
     fn snapshotter_at(dir: &Path, db_bytes: usize, snapshot_dirs: usize) {
-        let overlay =
-            containerd_root(dir).join("io.containerd.snapshotter.v1.overlayfs");
+        let overlay = containerd_root(dir).join("io.containerd.snapshotter.v1.overlayfs");
         let snaps = overlay.join("snapshots");
         std::fs::create_dir_all(&snaps).unwrap();
         if db_bytes > 0 {
@@ -999,8 +1000,7 @@ mod tests {
     fn an_empty_db_file_is_coherent() {
         let dir = tempfile::tempdir().unwrap();
         snapshotter_at(dir.path(), 0, 0);
-        let overlay = containerd_root(dir.path())
-            .join("io.containerd.snapshotter.v1.overlayfs");
+        let overlay = containerd_root(dir.path()).join("io.containerd.snapshotter.v1.overlayfs");
         std::fs::write(overlay.join("metadata.db"), b"").unwrap();
         assert!(snapshotter_is_coherent(&containerd_root(dir.path())));
     }
@@ -1314,7 +1314,11 @@ mod tests {
         run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
 
         assert!(!host.ran("umount"), "calls were: {:?}", host.calls());
-        assert!(!host.ran("systemctl stop"), "calls were: {:?}", host.calls());
+        assert!(
+            !host.ran("systemctl stop"),
+            "calls were: {:?}",
+            host.calls()
+        );
         assert!(!host.ran("rbd map"), "calls were: {:?}", host.calls());
     }
 
