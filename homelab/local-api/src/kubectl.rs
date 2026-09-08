@@ -191,6 +191,36 @@ pub async fn get_nodes() -> Result<Vec<Value>> {
     Ok(v["items"].as_array().cloned().unwrap_or_default())
 }
 
+/// Every OTHER node's IPv6 cluster address.
+///
+/// One copy, because this had grown three: `routers::update::update_all`,
+/// `mesh::parse_peer_addresses`, and the reboot fan-out would have been a
+/// fourth. Each spelled the same filter slightly differently, and "which nodes
+/// are my peers" is not a question that benefits from several opinions.
+///
+/// IPv6 only: the mesh is v6, so an IPv4 InternalIP here would yield an address
+/// nothing in this cluster can actually be reached on.
+///
+/// Pure, taking the node list rather than fetching it, so the filtering is
+/// testable without a cluster.
+pub fn peer_ipv6(nodes: &[Value], self_ip: &str) -> Vec<String> {
+    nodes
+        .iter()
+        .filter_map(|n| {
+            n["status"]["addresses"]
+                .as_array()?
+                .iter()
+                .find(|a| {
+                    a["type"] == "InternalIP"
+                        && a["address"].as_str().is_some_and(|s| s.contains(':'))
+                })
+                .and_then(|a| a["address"].as_str())
+                .map(String::from)
+        })
+        .filter(|a| a != self_ip)
+        .collect()
+}
+
 // ── Ceph helpers ─────────────────────────────────────────────────────────────
 
 /// Run a `ceph` command.
@@ -296,6 +326,63 @@ impl Crd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── peer_ipv6 ────────────────────────────────────────────────────────────
+
+    fn node(ips: &[(&str, &str)]) -> Value {
+        serde_json::json!({
+            "status": { "addresses": ips.iter()
+                .map(|(t, a)| serde_json::json!({"type": t, "address": a}))
+                .collect::<Vec<_>>() }
+        })
+    }
+
+    #[test]
+    fn this_node_is_never_its_own_peer() {
+        // Fanning out to yourself is at best a wasted request; for the reboot
+        // path it would mean this machine rebooting before it told the others.
+        let nodes = [
+            node(&[("InternalIP", "fd00:cafe::5")]),
+            node(&[("InternalIP", "fd00:cafe::6")]),
+        ];
+        assert_eq!(peer_ipv6(&nodes, "fd00:cafe::5"), vec!["fd00:cafe::6"]);
+    }
+
+    #[test]
+    fn an_ipv4_internal_ip_is_ignored() {
+        // The cluster is reachable over the v6 mesh only, so a v4 address here
+        // yields something nothing can actually be reached on.
+        let nodes = [node(&[("InternalIP", "10.0.0.7")])];
+        assert!(peer_ipv6(&nodes, "fd00:cafe::5").is_empty());
+    }
+
+    #[test]
+    fn the_hostname_entry_is_not_mistaken_for_an_address() {
+        let nodes = [node(&[
+            ("Hostname", "node2"),
+            ("InternalIP", "fd00:cafe::6"),
+        ])];
+        assert_eq!(peer_ipv6(&nodes, "fd00:cafe::5"), vec!["fd00:cafe::6"]);
+    }
+
+    #[test]
+    fn a_single_node_cluster_has_no_peers() {
+        let nodes = [node(&[("InternalIP", "fd00:cafe::5")])];
+        assert!(peer_ipv6(&nodes, "fd00:cafe::5").is_empty());
+    }
+
+    #[test]
+    fn every_peer_is_listed_once_and_in_order() {
+        let nodes = [
+            node(&[("InternalIP", "fd00:cafe::5")]),
+            node(&[("InternalIP", "fd00:cafe::6")]),
+            node(&[("InternalIP", "fd00:cafe::7")]),
+        ];
+        assert_eq!(
+            peer_ipv6(&nodes, "fd00:cafe::5"),
+            vec!["fd00:cafe::6", "fd00:cafe::7"]
+        );
+    }
 
     // ── is_not_found ─────────────────────────────────────────────────────────
     //

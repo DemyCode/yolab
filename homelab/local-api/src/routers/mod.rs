@@ -10,6 +10,7 @@ pub mod disks;
 pub mod logs;
 pub mod nodes;
 pub mod packs;
+pub mod reboot;
 pub mod rebuild;
 pub mod restore_run;
 pub mod status;

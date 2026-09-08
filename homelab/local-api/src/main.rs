@@ -28,7 +28,7 @@ use tower_http::cors::{Any, CorsLayer};
 use auth::{auth_middleware, AuthState};
 use config::Config;
 use routers::{
-    apps, backup_schedule, backups, ceph, ceph_join, custom_app, disks, logs, nodes, packs,
+    apps, backup_schedule, backups, ceph, ceph_join, custom_app, disks, logs, nodes, packs, reboot,
     rebuild, status, terminal, update,
 };
 
@@ -148,6 +148,10 @@ async fn main() {
         // Update / channel
         .route("/api/update", post(update::update))
         .route("/api/update/all", post(update::update_all))
+        // Reboot. Separate from update on purpose: an update leaves k3s and Ceph
+        // running, a reboot takes the whole machine away. See routers/reboot.rs.
+        .route("/api/system/reboot", post(reboot::reboot))
+        .route("/api/system/reboot/all", post(reboot::reboot_all))
         .route("/api/update/trigger", post(update::trigger_update))
         .route(
             "/api/update/channel",

@@ -9,6 +9,7 @@ import {
   Plus,
   Trash2,
   GitBranch,
+  Power,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -59,6 +60,10 @@ export function SystemPage() {
   const [newRemoteUrl, setNewRemoteUrl] = useState("");
   const [addingRemote, setAddingRemote] = useState(false);
   const [channelSaving, setChannelSaving] = useState(false);
+
+  // Reboot. Two-step on purpose — see the button.
+  const [rebootConfirm, setRebootConfirm] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -167,6 +172,24 @@ export function SystemPage() {
 
   const runUpdate = () => streamUpdate("/api/update");
   const runUpdateAll = () => streamUpdate("/api/update/all");
+
+  /**
+   * Reboot every machine.
+   *
+   * The request is expected NOT to come back cleanly: this node reboots a few
+   * seconds after answering, so the connection dies mid-flight. A catch that
+   * treated that as failure would show an error for the one case that worked,
+   * so the outcome is simply "asked", never "succeeded".
+   */
+  async function rebootAll() {
+    setRebooting(true);
+    setRebootConfirm(false);
+    try {
+      await fetch("/api/system/reboot/all", { method: "POST" });
+    } catch {
+      // Expected: the machine answering this request is going down too.
+    }
+  }
 
   async function saveChannelAndUpdate() {
     if (!editRemote.trim() || !editRef.trim()) return;
@@ -309,6 +332,39 @@ export function SystemPage() {
               />
               {updating ? "Updating…" : "Update all machines"}
             </Button>
+
+            {/* TWO-STEP, and not because rebooting is exotic — because this one
+                button takes the entire cluster down at once. Every machine goes
+                at the same time, so nothing is served until they are back. It
+                sits next to Update, which does the opposite (k3s and Ceph keep
+                running throughout), and one misread click should not be the
+                difference. */}
+            {rebootConfirm ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="danger"
+                  onClick={() => void rebootAll()}
+                  disabled={rebooting}
+                  className="gap-2"
+                >
+                  <Power className="h-4 w-4" strokeWidth={2} />
+                  Reboot everything now
+                </Button>
+                <Button variant="ghost" onClick={() => setRebootConfirm(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="ghost"
+                onClick={() => setRebootConfirm(true)}
+                disabled={updating || rebooting}
+                className="gap-2"
+              >
+                <Power className="h-4 w-4" strokeWidth={2} />
+                {rebooting ? "Rebooting…" : "Reboot all machines"}
+              </Button>
+            )}
             <button
               onClick={() => setChannelOpen((o) => !o)}
               className="flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg-muted transition-colors"
