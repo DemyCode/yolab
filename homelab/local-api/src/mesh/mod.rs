@@ -353,7 +353,7 @@ pub async fn run() {
             tracing::warn!("mesh: reconcile: {e:#}");
         }
         // Discovery is the expensive, network-dependent half, so it stays slow.
-        if ticks % (TICK.as_secs() / FAST_TICK.as_secs()) == 0 {
+        if ticks.is_multiple_of(TICK.as_secs() / FAST_TICK.as_secs()) {
             if let Err(e) = tick(&mut last_probe).await {
                 tracing::warn!("mesh: {e:#}");
             }
