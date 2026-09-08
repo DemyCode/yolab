@@ -131,38 +131,32 @@ fn is_readable_dir(path: &Path) -> bool {
     }
 }
 
-/// How many mounts other than the store itself still reference the store's tree.
+/// The mounts other than the store itself that still reference the store's tree.
 ///
-/// Every running container's rootfs is an overlay whose `lowerdir`/`upperdir`/
-/// `workdir` live under containerd's data-root, and each one keeps a reference to
-/// that filesystem's superblock. `umount -l` on the data-root detaches the *path*
-/// at once but cannot free the superblock while those references remain, so the
+/// Every container's rootfs is an overlay whose `lowerdir`/`upperdir`/`workdir`
+/// live under containerd's data-root, and each keeps a reference to that
+/// filesystem's superblock. `umount -l` on the data-root detaches the *path* at
+/// once but cannot free the superblock while those references remain, so the
 /// block device stays busy and `mkfs` — which needs it exclusively — fails with
 /// EBUSY.
 ///
-/// Which decides one question, and only in one situation: the store is mounted,
-/// unreadable, and containers still pin it. Nothing short of stopping every one of
-/// them — needing the very runtime that is down — or a reboot releases it. On a
-/// live node (2026-09-06) there were 40 such mounts against a shut-down XFS, and
-/// no process even in D state: the containers were fine, their filesystem was not.
-/// Retrying in place there cannot work, and each attempt costs a k3s stop/start,
-/// which on a two-node etcd cluster is not free.
+/// THIS USED TO RETURN A COUNT, AND THE COUNT WAS ONLY EVER USED TO GIVE UP.
+/// The reasoning was that releasing these needs the container runtime, the
+/// runtime is down, therefore only a reboot can help. That is wrong twice over:
+/// the containers behind these mounts are already dead (their filesystem is
+/// unreadable — that is the branch we are in), and the repair does not need
+/// `mkfs` at all, only a remount. So the targets are what matters now, because
+/// unmounting them is what makes the store recoverable in place. On a live node
+/// (2026-09-08) 41 of these held node2 down for over an hour while the repair
+/// ran every five minutes and correctly concluded, by that old logic, that it
+/// could do nothing.
+///
+/// Deepest first: a container's rootfs and the shm mount inside its sandbox can
+/// nest, and unmounting a parent before its child leaves the child pinned by a
+/// path that no longer resolves.
 ///
 /// Reads `/proc/self/mounts`: the store's own line is excluded by target, and the
 /// overlays are matched on their options, which is where the store path appears.
-fn overlays_pinning(mounts: &str, croot: &str) -> usize {
-    overlay_targets_pinning(mounts, croot).len()
-}
-
-/// The mount points that hold the image store down, deepest first.
-///
-/// The count alone was enough to give up; recovering needs the targets, because
-/// releasing them is what makes the store unmountable-and-remountable again
-/// without a reboot.
-///
-/// Deepest first because a container's rootfs and the shm mount inside its
-/// sandbox can nest, and unmounting a parent before its child leaves the child
-/// pinned by a path that no longer resolves.
 fn overlay_targets_pinning(mounts: &str, croot: &str) -> Vec<String> {
     let mut targets: Vec<String> = mounts
         .lines()
@@ -840,7 +834,7 @@ mod tests {
         assert!(!is_readable_dir(Path::new("/nonexistent/path/at/all")));
     }
 
-    // ── overlays_pinning ──────────────────────────────────────────────────────
+    // ── overlay_targets_pinning ───────────────────────────────────────────────
     //
     // Lines trimmed from the real /proc/self/mounts of the node in the 2026-09-06
     // incident, which is the shape this has to read correctly.
@@ -863,7 +857,7 @@ mod tests {
 
     #[test]
     fn container_overlays_count_as_pinning_the_store() {
-        assert_eq!(overlays_pinning(&mounts_with_containers(), CROOT), 2);
+        assert_eq!(overlay_targets_pinning(&mounts_with_containers(), CROOT).len(), 2);
     }
 
     /// The store's own mount must never count as pinning itself, or a healthy node
@@ -871,8 +865,8 @@ mod tests {
     #[test]
     fn the_stores_own_mount_does_not_pin_it() {
         let only_the_store = format!("/dev/rbd0 {CROOT} xfs rw,relatime,inode64 0 0\n");
-        assert_eq!(overlays_pinning(&only_the_store, CROOT), 0);
-        assert_eq!(overlays_pinning("", CROOT), 0);
+        assert_eq!(overlay_targets_pinning(&only_the_store, CROOT).len(), 0);
+        assert_eq!(overlay_targets_pinning("", CROOT).len(), 0);
     }
 
     /// The targets are what recovery needs: giving up required only a count,
@@ -913,7 +907,7 @@ mod tests {
         let unrelated = "[fd00:cafe::5]:6789:/volumes/csi/csi-vol-0eb /var/lib/kubelet/pods/\
                          18f5/volumes/kubernetes.io~csi/pvc-9026/mount ceph rw,relatime 0 0\n\
                          /dev/sda2 / ext4 rw,relatime 0 0\n";
-        assert_eq!(overlays_pinning(unrelated, CROOT), 0);
+        assert_eq!(overlay_targets_pinning(unrelated, CROOT).len(), 0);
     }
 
     /// The image-sized filesystem operations must sit above the generic 600s
