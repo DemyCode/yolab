@@ -171,12 +171,6 @@ spec:
           # Generous on purpose: the first start runs `rails db:prepare`, which
           # migrates an empty database from nothing. Restarting it halfway leaves a
           # partially migrated schema, which is far worse than waiting.
-          livenessProbe:
-            tcpSocket:
-              port: 80
-            initialDelaySeconds: 600
-            periodSeconds: 30
-            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /config
@@ -369,12 +363,6 @@ spec:
               command: ["pg_isready", "-U", "{{ $db }}"]
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["pg_isready", "-U", "{{ $db }}"]
-            initialDelaySeconds: 30
-            periodSeconds: 20
-            failureThreshold: 3
           env:
             - name: POSTGRES_USER
               value: {{ $db }}
@@ -431,12 +419,6 @@ spec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 5
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
-            initialDelaySeconds: 15
-            periodSeconds: 20
-            failureThreshold: 3
           command: ["redis-server"]
           volumeMounts:
             - name: data

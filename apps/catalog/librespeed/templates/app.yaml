@@ -67,13 +67,6 @@ spec:
             port: 80
           initialDelaySeconds: 5
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: PUID
           value: '1000'
@@ -147,15 +140,6 @@ spec:
             - librespeed
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - librespeed
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: POSTGRES_USER
           value: librespeed

@@ -45,12 +45,6 @@ spec:
             port: 11434
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 11434
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         volumeMounts:
         - name: data
           mountPath: /root/.ollama
@@ -64,13 +58,6 @@ spec:
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: OLLAMA_BASE_URL
           value: http://localhost:11434

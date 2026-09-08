@@ -46,13 +46,6 @@ spec:
             port: 2586
           initialDelaySeconds: 5
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /v1/health
-            port: 2586
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          failureThreshold: 3
         command:
         - /bin/sh
         - -c

@@ -106,12 +106,6 @@ spec:
             port: 80
           initialDelaySeconds: 15
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 80
-          initialDelaySeconds: 120
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /var/www/monica/storage
@@ -168,12 +162,6 @@ spec:
               command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql

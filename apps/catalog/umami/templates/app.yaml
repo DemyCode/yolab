@@ -64,12 +64,6 @@ spec:
             port: 3000
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 3000
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          failureThreshold: 6
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
 ---
@@ -108,12 +102,6 @@ spec:
               command: ["pg_isready", "-U", "umami"]
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["pg_isready", "-U", "umami"]
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data

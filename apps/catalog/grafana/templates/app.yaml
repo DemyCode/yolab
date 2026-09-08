@@ -62,12 +62,6 @@ spec:
             port: 3000
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 3000
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /var/lib/grafana

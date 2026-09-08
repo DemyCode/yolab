@@ -46,13 +46,6 @@ spec:
             port: 8384
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /rest/noauth/health
-            port: 8384
-          initialDelaySeconds: 20
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: STNOUPGRADE
           value: '1'

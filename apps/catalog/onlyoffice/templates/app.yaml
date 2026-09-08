@@ -84,12 +84,6 @@ spec:
           initialDelaySeconds: 30
           periodSeconds: 10
           failureThreshold: 30
-        livenessProbe:
-          tcpSocket:
-            port: 3000
-          initialDelaySeconds: 300
-          periodSeconds: 30
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /config

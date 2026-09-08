@@ -45,12 +45,6 @@ spec:
             port: 7777
           initialDelaySeconds: 5
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 7777
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          failureThreshold: 3
         volumeMounts:
         - name: data
           mountPath: /app/strfry-db

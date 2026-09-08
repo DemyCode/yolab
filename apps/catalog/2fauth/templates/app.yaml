@@ -59,13 +59,6 @@ spec:
             port: 8000
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: APP_ENV
           value: production
@@ -135,15 +128,6 @@ spec:
             - 2fauth
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - 2fauth
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: POSTGRES_USER
           value: 2fauth
