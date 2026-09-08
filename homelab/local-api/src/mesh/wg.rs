@@ -1,41 +1,39 @@
 //! The `wg` CLI, bounded and parsed.
 //!
-//! Every call goes through `wg()` with a timeout and `kill_on_drop`, matching
-//! ceph_cli.rs: this runs on a reconcile loop, so a wedged invocation must stop
-//! being waited on AND stop running, or the next tick starts another.
+//! Every call goes through `Host::run_cmd`, which bounds and `kill_on_drop`s it:
+//! this runs on a reconcile loop, so a wedged invocation must stop being waited
+//! on AND stop running, or the next tick starts another.
+//!
+//! GOING THROUGH `Host` IS WHAT MAKES THE MESH TESTABLE. It used to spawn
+//! `Command::new("wg")` directly, which meant `reconcile_local` — the function
+//! that decides whether a peer carries production traffic — could not be tested
+//! at all, only reasoned about. That is precisely the code that took the cluster
+//! down on 2026-09-08.
 //!
 //! NOTHING HERE EVER LOGS RAW `wg show dump` OUTPUT. Its first line contains the
 //! interface's PRIVATE KEY, and a debug log that seemed harmless would put the
 //! cluster's mesh key in the journal.
 
 use anyhow::{bail, Context, Result};
-use tokio::process::Command;
+
+use crate::host::Host;
 
 /// The private mesh interface. wg0 is the public tunnel and is never touched
 /// here — a direct path between nodes is a cluster concern, and wg0 carries
 /// visitor traffic to Caddy.
 pub const IFACE: &str = "wg1";
 
-const TIMEOUT_SECS: u64 = 10;
+async fn wg<H: Host>(host: &H, args: &[&str]) -> Result<String> {
+    let out = host
+        .run_cmd("wg", args)
+        .await
+        .with_context(|| format!("run wg {}", args.join(" ")))?;
 
-async fn wg(args: &[&str]) -> Result<String> {
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(TIMEOUT_SECS),
-        Command::new("wg").args(args).kill_on_drop(true).output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("wg {} timed out after {TIMEOUT_SECS}s", args.join(" ")))?
-    .with_context(|| format!("run wg {}", args.join(" ")))?;
-
-    if !out.status.success() {
+    if !out.success {
         // stderr only. stdout may carry key material depending on the subcommand.
-        bail!(
-            "wg {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        bail!("wg {} failed: {}", args.join(" "), out.stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(out.stdout)
 }
 
 /// One peer, as `wg show <iface> dump` reports it.
@@ -46,6 +44,11 @@ pub struct Peer {
     pub allowed_ips: Vec<String>,
     /// Unix seconds of the last completed handshake. 0 means never.
     pub last_handshake: u64,
+    /// Bytes RECEIVED from this peer. The blackhole detector reads this and
+    /// nothing else, because it is the one counter the kernel only increments
+    /// for packets that PASSED the allowed-ips check — see `mod.rs`.
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
 }
 
 impl Peer {
@@ -90,13 +93,15 @@ pub fn parse_dump(dump: &str) -> Vec<Peer> {
                 endpoint,
                 allowed_ips,
                 last_handshake: f[4].parse().unwrap_or(0),
+                rx_bytes: f.get(5).and_then(|v| v.parse().ok()).unwrap_or(0),
+                tx_bytes: f.get(6).and_then(|v| v.parse().ok()).unwrap_or(0),
             })
         })
         .collect()
 }
 
-pub async fn peers() -> Result<Vec<Peer>> {
-    Ok(parse_dump(&wg(&["show", IFACE, "dump"]).await?))
+pub async fn peers<H: Host>(host: &H) -> Result<Vec<Peer>> {
+    Ok(parse_dump(&wg(host, &["show", IFACE, "dump"]).await?))
 }
 
 /// This node's own wg1 public key, for peers to authenticate us by.
@@ -105,12 +110,15 @@ pub async fn peers() -> Result<Vec<Peer>> {
 /// private key: if the two ever disagree, the running one is the truth, and a
 /// key that does not match the live interface produces a handshake that simply
 /// never completes with nothing to say why.
-pub async fn self_public_key() -> Result<String> {
-    Ok(wg(&["show", IFACE, "public-key"]).await?.trim().to_string())
+pub async fn self_public_key<H: Host>(host: &H) -> Result<String> {
+    Ok(wg(host, &["show", IFACE, "public-key"])
+        .await?
+        .trim()
+        .to_string())
 }
 
-pub async fn listen_port() -> Result<u16> {
-    wg(&["show", IFACE, "listen-port"])
+pub async fn listen_port<H: Host>(host: &H) -> Result<u16> {
+    wg(host, &["show", IFACE, "listen-port"])
         .await?
         .trim()
         .parse()
@@ -126,7 +134,8 @@ pub async fn listen_port() -> Result<u16> {
 /// but it has no reason to dial the caller itself, and omitting `endpoint`
 /// is exactly the standard listen-only WireGuard peer: WireGuard learns the
 /// real source address itself from the first valid packet it receives.
-pub async fn set_peer(
+pub async fn set_peer<H: Host>(
+    host: &H,
     public_key: &str,
     endpoint: Option<&str>,
     allowed_ips: &str,
@@ -142,7 +151,7 @@ pub async fn set_peer(
     args.push(allowed_ips);
     args.push("persistent-keepalive");
     args.push(&ka);
-    wg(&args).await?;
+    wg(host, &args).await?;
     Ok(())
 }
 
@@ -151,8 +160,8 @@ pub async fn set_peer(
 /// This is the demotion path, and it is why demotion is safe: removing the
 /// specific route leaves the hub's broader allowed-ips as the only match, so the
 /// very next packet goes back through the relay with no other change.
-pub async fn remove_peer(public_key: &str) -> Result<()> {
-    wg(&["set", IFACE, "peer", public_key, "remove"]).await?;
+pub async fn remove_peer<H: Host>(host: &H, public_key: &str) -> Result<()> {
+    wg(host, &["set", IFACE, "peer", public_key, "remove"]).await?;
     Ok(())
 }
 
@@ -196,6 +205,8 @@ mod tests {
             endpoint: None,
             allowed_ips: vec![],
             last_handshake: 0,
+            rx_bytes: 0,
+            tx_bytes: 0,
         };
         assert!(!p.is_alive(1_757_000_000, u64::MAX));
     }
@@ -207,6 +218,8 @@ mod tests {
             endpoint: None,
             allowed_ips: vec![],
             last_handshake: 1_000,
+            rx_bytes: 0,
+            tx_bytes: 0,
         };
         assert!(p.is_alive(1_100, 180));
         assert!(!p.is_alive(1_300, 180));
@@ -219,8 +232,31 @@ mod tests {
             endpoint: None,
             allowed_ips: vec![],
             last_handshake: 2_000,
+            rx_bytes: 0,
+            tx_bytes: 0,
         };
         // saturating_sub, so this is 0 elapsed rather than a huge wrap-around.
         assert!(p.is_alive(1_000, 180));
+    }
+
+    #[test]
+    fn byte_counters_are_read_from_the_dump() {
+        // rx_bytes is what the blackhole detector keys off, and it is field 5.
+        // Reading the wrong column would make every peer look permanently
+        // silent and demote healthy direct paths on a timer.
+        let peers = parse_dump(DUMP);
+        assert_eq!(peers[0].rx_bytes, 100);
+        assert_eq!(peers[0].tx_bytes, 200);
+        assert_eq!(peers[1].rx_bytes, 5);
+        assert_eq!(peers[1].tx_bytes, 6);
+    }
+
+    #[test]
+    fn a_truncated_dump_line_yields_zero_counters_rather_than_panicking() {
+        // Five fields is the minimum parse_dump accepts; rx/tx absent must not
+        // be fatal, since a zero there is simply "no traffic seen yet".
+        let peers = parse_dump("iface\nK=\t(none)\t(none)\tfd00::1/128\t42\n");
+        assert_eq!(peers[0].rx_bytes, 0);
+        assert_eq!(peers[0].tx_bytes, 0);
     }
 }
