@@ -167,6 +167,17 @@ impl Ownership {
     fn is_foreign(self) -> bool {
         matches!(self, Ownership::Foreign | Ownership::Unknown)
     }
+
+    /// The wire name, so the UI can say something true about each state rather
+    /// than sharing one sentence between two of them.
+    fn as_str(self) -> &'static str {
+        match self {
+            Ownership::Ours => "ours",
+            Ownership::Foreign => "foreign",
+            Ownership::Blank => "blank",
+            Ownership::Unknown => "unknown",
+        }
+    }
 }
 
 /// One device as this node sees it.
@@ -195,6 +206,16 @@ impl Disk {
             "size_bytes": self.size_bytes,
             "is_our_osd": self.ownership.is_ours(),
             "foreign_ceph": self.ownership.is_foreign(),
+            // The VARIANT, not just the boolean above.
+            //
+            // `foreign_ceph` collapses Foreign and Unknown, which have the same
+            // consequence (refuse to create an OSD — correct and safe for both)
+            // and very different meanings. With only the boolean, the UI had to
+            // pick one sentence for both and picked the alarming one: node2's
+            // healthy osd.2 was reported to its owner as "has data from another
+            // system". `foreign_ceph` stays for compatibility; this is what the
+            // UI should read.
+            "ownership": self.ownership.as_str(),
             "has_partitions": self.has_partitions,
             "mounted": self.mounted,
             "osd_id": self.osd_id,
@@ -278,7 +299,7 @@ fn system_osd_meta(our_fsid: &str) -> Disk {
         model: "System disk".to_string(),
         size_bytes: system_osd_size_bytes(),
         is_loop: true,
-        ownership: Ownership::read(bluestore_fsid(SYSTEM_OSD_DEV).as_deref(), our_fsid),
+        ownership: Ownership::read(device_cluster_fsid(SYSTEM_OSD_DEV).as_deref(), our_fsid),
         // Never looked up: a dedicated LVM volume disko carves out for Ceph at
         // install. It has no partition table of its own and is never mounted —
         // the OS lives on a sibling volume. Reporting either would make
@@ -2509,6 +2530,55 @@ fn read_bluestore_header(device: &str) -> Option<[u8; 4096]> {
     Some(buf)
 }
 
+/// The cluster fsid recorded in LVM tags on a device's Ceph logical volume.
+///
+/// THE RAW-OFFSET READ CANNOT SEE AN LVM-BACKED OSD, and this cluster's OSDs are
+/// LVM-backed. `bluestore_fsid` looks for the BlueStore magic at offset 0 of the
+/// whole device; on a machine whose OSD lives in a logical volume, offset 0 is a
+/// boot sector. Observed on node2 (2026-09-08): sda holds sda1 (BIOS boot) and
+/// sda2 (LVM), with the OSD inside `pool-ceph` — so the raw read found nothing,
+/// ownership came out `Unknown`, and the UI told the owner their working disk
+/// "has data from another system" while it was serving as osd.2 of this very
+/// cluster.
+///
+/// ceph-volume writes the answer straight onto the LV as tags, so this asks the
+/// question directly rather than inferring it from bytes:
+///
+///   ceph.cluster_fsid=89e31d5d-…  ceph.osd_id=2  ceph.osd_fsid=…
+///
+/// Matched against the device name so one disk's tags cannot be read as
+/// another's: `lvs` reports the physical volume each LV sits on, and only LVs on
+/// THIS device count.
+fn lvm_cluster_fsid(device: &str) -> Option<String> {
+    // A bare name so `/dev/sda` matches the `/dev/sda2` that `lvs` reports as
+    // the PV: the OSD lives in a volume group on a PARTITION of the disk, never
+    // on the whole disk, so an equality test here would never match.
+    let dev = device.trim_start_matches("/dev/");
+    let out = std::process::Command::new("lvs")
+        .args(["-o", "lv_tags,devices", "--noheadings"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.contains(dev))
+        .find_map(|line| {
+            line.split(',')
+                .find_map(|t| t.trim().strip_prefix("ceph.cluster_fsid="))
+                .map(|f| f.trim().to_string())
+        })
+        .filter(|f| is_uuid(f))
+}
+
+/// This cluster's fsid as recorded on the device, by either mechanism.
+///
+/// The raw label first because it is the cheaper read and the one that answers
+/// for a whole-disk OSD; LVM tags second because they are the only thing that
+/// answers for an LVM-backed one.
+fn device_cluster_fsid(device: &str) -> Option<String> {
+    bluestore_fsid(device).or_else(|| lvm_cluster_fsid(device))
+}
+
 fn bluestore_fsid(device: &str) -> Option<String> {
     let buf = read_bluestore_header(device)?;
     if !buf.starts_with(BLUESTORE_MAGIC) {
@@ -2657,7 +2727,7 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
         model,
         size_bytes,
         is_loop: false,
-        ownership: Ownership::read(bluestore_fsid(device).as_deref(), our_fsid),
+        ownership: Ownership::read(device_cluster_fsid(device).as_deref(), our_fsid),
         has_partitions: flags.has_partitions,
         mounted: flags.mounted,
         osd_id: None,
@@ -3349,6 +3419,54 @@ mod tests {
         assert!(!is_uuid("----")); // five empty groups
     }
 
+    // ── ownership on the wire ─────────────────────────────────────────────────
+
+    /// Foreign and Unknown share `foreign_ceph`, so `ownership` is the only
+    /// thing that can tell them apart — and telling them apart is the whole
+    /// point: one is "another cluster owns this", the other is "I could not
+    /// tell", and only the first deserves an alarming sentence.
+    #[test]
+    fn foreign_and_unknown_are_distinguishable_on_the_wire() {
+        let disk = |o| Disk {
+            device: "sdb".into(),
+            model: "easystore".into(),
+            size_bytes: 1000,
+            is_loop: false,
+            ownership: o,
+            has_partitions: false,
+            mounted: false,
+            osd_id: None,
+            progress: None,
+        };
+
+        let foreign = disk(Ownership::Foreign).to_value();
+        let unknown = disk(Ownership::Unknown).to_value();
+
+        // Same consequence — both refuse creation, and that must not change.
+        assert_eq!(foreign["foreign_ceph"], json!(true));
+        assert_eq!(unknown["foreign_ceph"], json!(true));
+        // Different meaning, and now the UI can see it.
+        assert_eq!(foreign["ownership"], json!("foreign"));
+        assert_eq!(unknown["ownership"], json!("unknown"));
+    }
+
+    #[test]
+    fn every_ownership_state_has_a_distinct_wire_name() {
+        let names: Vec<&str> = [
+            Ownership::Ours,
+            Ownership::Foreign,
+            Ownership::Blank,
+            Ownership::Unknown,
+        ]
+        .iter()
+        .map(|o| o.as_str())
+        .collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "names collide: {names:?}");
+    }
+
     // ── bluestore_fsid ────────────────────────────────────────────────────────
 
     #[test]
@@ -3471,6 +3589,7 @@ mod tests {
         assert_eq!(v["size_bytes"], json!(1000));
         assert_eq!(v["is_our_osd"], json!(false));
         assert_eq!(v["foreign_ceph"], json!(false));
+        assert_eq!(v["ownership"], json!("blank"));
         assert_eq!(v["has_partitions"], json!(false));
         assert_eq!(v["mounted"], json!(false));
         assert_eq!(v["osd_id"], json!(null));
