@@ -1,13 +1,13 @@
 //! Direct node-to-node paths, with the relay as the fallback.
 //!
-//! Every byte between nodes — Ceph replication, etcd raft, mon paxos — goes
-//! node → external WireGuard server → node, because wg1's only peer is that
+//! Every byte between nodes â Ceph replication, etcd raft, mon paxos â goes
+//! node â external WireGuard server â node, because wg1's only peer is that
 //! server, holding `allowedIPs = fd00:cafe::/112`. Two laptops on the same sofa
 //! pay metered relay rates to reach each other.
 //!
 //! THE MECHANISM IS WIREGUARD'S LONGEST-PREFIX MATCH. Adding a second peer for
 //! one node with `allowed-ips fd00:cafe::6/128` beats the hub's /112, so traffic
-//! to that node goes direct — no routes, no policy rules, nothing else touched.
+//! to that node goes direct â no routes, no policy rules, nothing else touched.
 //! Removing it falls straight back to the relay on the next packet. Promotion
 //! and demotion are therefore single atomic operations, which is what makes this
 //! safe enough to do automatically.
@@ -16,21 +16,21 @@
 //!
 //! Discovery needs no new infrastructure: the nodes can already reach each other
 //! over the tunnel, so they simply ask each other where they can be found
-//! directly. No mDNS, no broadcast, no coordination server — which also means
+//! directly. No mDNS, no broadcast, no coordination server â which also means
 //! none of the home-router hostility around multicast applies.
 //!
 //! ## Why a probe address
 //!
 //! A candidate endpoint cannot be tested by installing it as the real /128:
 //! that diverts production traffic onto an unproven path. But WireGuard keys
-//! handshakes by PUBLIC KEY, not by allowed-ips — so the peer is added with a
+//! handshakes by PUBLIC KEY, not by allowed-ips â so the peer is added with a
 //! junk allowed-ips first, and only a completed handshake promotes it to the
 //! real address. An unreachable candidate costs nothing.
 //!
 //! ## The failure mode this exists to prevent
 //!
 //! A promoted peer whose endpoint stops answering still wins longest-prefix
-//! match, so packets go into a hole instead of falling back — worse than never
+//! match, so packets go into a hole instead of falling back â worse than never
 //! having tried. A laptop moving from home Wi-Fi to a hotspot does exactly this.
 //! The liveness check below is not a refinement; it is the thing that makes the
 //! feature safe.
@@ -53,7 +53,7 @@ pub use candidates::Candidates;
 ///
 /// WireGuard rehandshakes about every 2 minutes under traffic, and persistent
 /// keepalive is 25s, so 180s is several missed opportunities rather than one
-/// unlucky moment — demoting on a single blip would flap the path under Ceph.
+/// unlucky moment â demoting on a single blip would flap the path under Ceph.
 const HANDSHAKE_MAX_AGE_SECS: u64 = 180;
 
 /// How long to wait for a probe handshake before calling a candidate dead.
@@ -75,9 +75,9 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-// ── What this node offers peers ───────────────────────────────────────────────
+// ââ What this node offers peers âââââââââââââââââââââââââââââââââââââââââââââââ
 
-/// `GET /api/cluster/mesh-candidates` — cluster-authed, node→node.
+/// `GET /api/cluster/mesh-candidates` â cluster-authed, nodeânode.
 pub async fn mesh_candidates() -> Result<Json<Candidates>> {
     Ok(Json(Candidates {
         public_key: wg::self_public_key().await?,
@@ -86,7 +86,7 @@ pub async fn mesh_candidates() -> Result<Json<Candidates>> {
     }))
 }
 
-// ── What this node reports about itself ───────────────────────────────────────
+// ââ What this node reports about itself âââââââââââââââââââââââââââââââââââââââ
 
 #[derive(Serialize)]
 pub struct PathStatus {
@@ -99,7 +99,7 @@ pub struct PathStatus {
     pub handshake_age_secs: Option<u64>,
 }
 
-/// `GET /api/mesh/paths` — is this actually saving anything, or do we merely
+/// `GET /api/mesh/paths` â is this actually saving anything, or do we merely
 /// believe it is? The whole feature exists to cut a bill, so the answer has to
 /// be observable rather than assumed.
 pub async fn paths(State(state): State<AppState>) -> Result<Json<Vec<PathStatus>>> {
@@ -129,13 +129,76 @@ pub async fn paths(State(state): State<AppState>) -> Result<Json<Vec<PathStatus>
     Ok(Json(out))
 }
 
-// ── Peer enumeration ──────────────────────────────────────────────────────────
+// ââ Peer enumeration ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-/// Every other node's cluster address, from the same source `update_all` uses.
+/// Where the last known peer list is kept.
+///
+/// THE CIRCULAR DEPENDENCY THIS BREAKS: peers come from the Kubernetes API,
+/// which is served by k3s, whose embedded etcd commits every write across the
+/// very relay this module exists to bypass. On a two-node cluster that etcd has
+/// no fault tolerance, so when the mesh is slow the API is slow â and the code
+/// that would fix the latency cannot enumerate anyone to fix it for. Observed
+/// directly: `kubectl get nodes` timing out on node1 while wg1 was perfectly
+/// healthy.
+///
+/// So the API stays the source of truth, and its answer is remembered. Peers
+/// change when someone deliberately adds a machine, which is rare; a cache that
+/// is a few hours stale is still right, and being right while the cluster is
+/// unhappy is exactly when this matters.
+const PEER_CACHE: &str = "/var/lib/yolab/mesh-peers.json";
+
+/// Every other node's cluster address.
+///
+/// Prefers a live answer and falls back to the last one. A live answer is also
+/// written back, so the cache warms itself with no separate bootstrap.
 async fn peer_addresses(self_ip: &str) -> Vec<String> {
-    kubectl::get_nodes()
-        .await
-        .unwrap_or_default()
+    match live_peer_addresses(self_ip).await {
+        Some(peers) => {
+            if let Ok(json) = serde_json::to_string(&peers) {
+                if let Some(dir) = std::path::Path::new(PEER_CACHE).parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(PEER_CACHE, json);
+            }
+            peers
+        }
+        None => {
+            let cached: Vec<String> = std::fs::read_to_string(PEER_CACHE)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+            if !cached.is_empty() {
+                tracing::debug!(
+                    "mesh: cluster API unavailable, using {} cached peers",
+                    cached.len()
+                );
+            }
+            // Defensive: self must never appear, even if the cache was written
+            // before this node's address changed.
+            cached.into_iter().filter(|a| a != self_ip).collect()
+        }
+    }
+}
+
+/// `None` when the cluster could not be asked, which is different from "asked,
+/// and there are no other nodes" â the second is a legitimate single-node
+/// answer and must NOT clear a cache that has real peers in it.
+async fn live_peer_addresses(self_ip: &str) -> Option<Vec<String>> {
+    Some(parse_peer_addresses(
+        &kubectl::get_nodes().await.ok()?,
+        self_ip,
+    ))
+}
+
+/// Pulls every other node's IPv6 InternalIP out of a `kubectl get nodes` list.
+///
+/// Split out so the two things that actually matter here are testable without a
+/// cluster: that this node is excluded (probing yourself wastes a cycle and
+/// would promote a peer to your own address), and that IPv4 InternalIPs are
+/// ignored — the mesh is v6-only and a v4 address here would produce an
+/// allowed-ips that never matches anything.
+fn parse_peer_addresses(nodes: &[serde_json::Value], self_ip: &str) -> Vec<String> {
+    nodes
         .iter()
         .filter_map(|n| {
             n["status"]["addresses"]
@@ -155,7 +218,7 @@ async fn peer_addresses(self_ip: &str) -> Vec<String> {
 /// A junk address to hang a probe peer on, unique per peer.
 ///
 /// Derived by stamping 0xdead into the seventh hextet of the peer's cluster
-/// address, which lands it OUTSIDE fd00:cafe::/112 — inside, and it would steal
+/// address, which lands it OUTSIDE fd00:cafe::/112 â inside, and it would steal
 /// a real cluster address from the hub peer, breaking the very path being
 /// probed. Unique per peer so two probes cannot fight over one address, since
 /// WireGuard gives any address to exactly one peer.
@@ -193,7 +256,7 @@ async fn routes_via_tunnel(addr: &str) -> bool {
     String::from_utf8_lossy(&out.stdout).contains(&format!("dev {}", wg::IFACE))
 }
 
-// ── The loop ──────────────────────────────────────────────────────────────────
+// ââ The loop ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 pub async fn run() {
     let mut last_probe: HashMap<String, Instant> = HashMap::new();
@@ -217,7 +280,7 @@ async fn tick(last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
         };
         let real_addr = format!("{peer_addr}/128");
 
-        // Ask the peer who it is and where it can be reached — over the relay,
+        // Ask the peer who it is and where it can be reached â over the relay,
         // which is working, to build the path that replaces it.
         let cand = match fetch_candidates(&peer_addr, cfg.port, &token).await {
             Ok(c) => c,
@@ -243,7 +306,7 @@ async fn tick(last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
             if alive {
                 continue;
             }
-            tracing::info!("mesh: {peer_addr} direct path went stale — falling back to relay");
+            tracing::info!("mesh: {peer_addr} direct path went stale â falling back to relay");
             wg::remove_peer(&cand.public_key).await?;
             last_probe.insert(peer_addr.clone(), Instant::now());
             continue;
@@ -259,7 +322,7 @@ async fn tick(last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
         last_probe.insert(peer_addr.clone(), Instant::now());
 
         if let Some(endpoint) = probe(&cand, &probe_addr).await {
-            tracing::info!("mesh: {peer_addr} reachable directly at {endpoint} — promoting");
+            tracing::info!("mesh: {peer_addr} reachable directly at {endpoint} â promoting");
             wg::set_peer(&cand.public_key, &endpoint, &real_addr, 25).await?;
         } else {
             // Leave nothing behind: a peer with a junk allowed-ips is harmless
@@ -350,5 +413,32 @@ mod tests {
     fn a_non_address_yields_no_probe_rather_than_a_malformed_one() {
         assert_eq!(probe_address("not-an-ip"), None);
         assert_eq!(probe_address("192.168.1.1"), None);
+    }
+
+    fn node(ip: &str) -> serde_json::Value {
+        serde_json::json!({"status":{"addresses":[
+            {"type":"Hostname","address":"whatever"},
+            {"type":"InternalIP","address":ip}]}})
+    }
+
+    #[test]
+    fn this_node_is_never_its_own_peer() {
+        let nodes = vec![node("fd00:cafe::5"), node("fd00:cafe::6")];
+        assert_eq!(
+            parse_peer_addresses(&nodes, "fd00:cafe::5"),
+            vec!["fd00:cafe::6"]
+        );
+    }
+
+    #[test]
+    fn an_ipv4_internal_ip_is_ignored_rather_than_promoted_to_a_dead_allowed_ips() {
+        let nodes = vec![node("10.0.0.7")];
+        assert!(parse_peer_addresses(&nodes, "fd00:cafe::5").is_empty());
+    }
+
+    #[test]
+    fn a_single_node_cluster_yields_no_peers_without_erroring() {
+        let nodes = vec![node("fd00:cafe::5")];
+        assert!(parse_peer_addresses(&nodes, "fd00:cafe::5").is_empty());
     }
 }
