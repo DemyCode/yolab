@@ -68,6 +68,17 @@ const PROBE_RETRY: Duration = Duration::from_secs(300);
 
 const TICK: Duration = Duration::from_secs(60);
 
+/// How often the purely-local reconcile runs.
+///
+/// This is the width of the window in which a pair can be half-promoted, and a
+/// half-promoted pair passes NO traffic at all (see `reconcile_local`). At 60s
+/// that window took etcd and Ceph down with it; at 5s it is a blip, and the
+/// check costs one `wg show`.
+const FAST_TICK: Duration = Duration::from_secs(5);
+
+/// Marks the hub peer, which owns the entire cluster subnet.
+const SUBNET_SUFFIX: &str = "/112";
+
 /// Carries the caller's OWN wg1 public key on a mesh-candidates request.
 ///
 /// Without this, direct paths never come up at all — not flakily, but every
@@ -283,6 +294,26 @@ pub fn probe_address(peer: &str) -> Option<String> {
     Some(format!("{}/128", Ipv6Addr::from(seg)))
 }
 
+/// The inverse of `probe_address`: recovers the peer's real cluster address
+/// from the junk one, or `None` if this was never a probe address.
+///
+/// This is what lets promotion be a purely local decision. The junk address
+/// already encodes which node it stands for, so a node can promote a peer it
+/// only ever learned about by being called — no candidate exchange, and so no
+/// dependence on a control channel that half-promotion has already broken.
+///
+/// Only the seventh hextet is stamped, and every address in `fd00:cafe::/112`
+/// has that hextet zero, so the mapping is exact in both directions.
+pub fn real_address(probe: &str) -> Option<String> {
+    let ip: Ipv6Addr = probe.trim_end_matches("/128").parse().ok()?;
+    let mut seg = ip.segments();
+    if seg[6] != 0xdead {
+        return None;
+    }
+    seg[6] = 0;
+    Some(format!("{}/128", Ipv6Addr::from(seg)))
+}
+
 /// True when the kernel would send this address down the tunnel.
 ///
 /// The quiet failure this prevents: a candidate that is only reachable VIA wg1
@@ -314,12 +345,109 @@ async fn routes_via_tunnel(addr: &str) -> bool {
 
 pub async fn run() {
     let mut last_probe: HashMap<String, Instant> = HashMap::new();
+    let mut ticks: u64 = 0;
     loop {
-        if let Err(e) = tick(&mut last_probe).await {
-            tracing::warn!("mesh: {e:#}");
+        // Local reconcile FIRST and often. It needs nothing but `wg show`, which
+        // is what lets a half-promoted cluster heal itself — see reconcile_local.
+        if let Err(e) = reconcile_local().await {
+            tracing::warn!("mesh: reconcile: {e:#}");
         }
-        tokio::time::sleep(TICK).await;
+        // Discovery is the expensive, network-dependent half, so it stays slow.
+        if ticks % (TICK.as_secs() / FAST_TICK.as_secs()) == 0 {
+            if let Err(e) = tick(&mut last_probe).await {
+                tracing::warn!("mesh: {e:#}");
+            }
+        }
+        ticks = ticks.wrapping_add(1);
+        tokio::time::sleep(FAST_TICK).await;
     }
+}
+
+/// Promotes proven peers and demotes dead ones, using ONLY local WireGuard
+/// state. This function must never make a network call, and that constraint is
+/// the entire point of it.
+///
+/// ## The outage this exists to prevent
+///
+/// WireGuard's allowed-ips is one trie: an address belongs to exactly ONE peer,
+/// and that governs INBOUND validation as much as outbound routing. Promoting
+/// therefore does not add a preferred route alongside a working relay path — it
+/// TRANSFERS ownership of that address away from the hub, both directions at
+/// once. "Longest-prefix match gives fallback for free" was simply wrong.
+///
+/// The consequence is that a half-promoted pair is a total blackhole, not a
+/// degraded path:
+///
+///   - node2 promoted, node1 not: node2 sends direct; node1 sees source ::6 from
+///     a peer whose allowed-ips is only the junk probe address, and drops it.
+///   - node1 sends via the hub; node2 sees source ::5 arriving from the HUB peer,
+///     but ::5 now belongs to its direct node1 peer, so it drops that too.
+///
+/// Handshakes keep succeeding throughout, because they are authenticated per-key
+/// and never consult allowed-ips — so a liveness check that only watches
+/// handshake age cannot see any of this. Observed on the live cluster: node2 had
+/// sent 302 KiB to node1 while node1 counted 900 B received, because rx_bytes is
+/// only incremented for packets that PASS the allowed-ips check.
+///
+/// And it is self-sealing: the cluster addresses are exactly what
+/// `fetch_candidates` talks over, so once asymmetric, the HTTP call that would
+/// let the other side catch up can no longer complete. etcd lost quorum, Ceph
+/// mons could not form one, and k3s hung behind the RBD mount that depends on
+/// them — three different-looking failures, one cause.
+///
+/// So promotion is decided here, locally, from evidence both sides observe
+/// independently at nearly the same instant: a completed handshake at an
+/// endpoint that is not the relay. Both nodes converge within one FAST_TICK
+/// without ever needing to talk to each other about it.
+async fn reconcile_local() -> anyhow::Result<()> {
+    let now = now_secs();
+
+    for p in wg::peers().await? {
+        // The hub owns the whole subnet and is never ours to touch.
+        if p.allowed_ips.iter().any(|a| a.ends_with(SUBNET_SUFFIX)) {
+            continue;
+        }
+
+        // A primed or probing peer: still parked on a junk address.
+        if let Some(real) = p.allowed_ips.iter().find_map(|a| real_address(a)) {
+            if !p.is_alive(now, HANDSHAKE_MAX_AGE_SECS) {
+                continue;
+            }
+            let Some(endpoint) = p.endpoint.as_deref() else {
+                continue;
+            };
+            // A handshake proves the key; this proves the PATH. Without it a
+            // peer that handshaked over the relay would be promoted as
+            // "direct", relaying every byte while reporting that it does not.
+            if endpoint_via_tunnel(endpoint).await {
+                continue;
+            }
+            tracing::info!("mesh: promoting {real} — handshake at {endpoint}");
+            wg::set_peer(&p.public_key, None, &real, 25).await?;
+            continue;
+        }
+
+        // Already promoted. Demote once the direct path stops answering, which
+        // hands the address back to the hub on the very next packet.
+        if !p.is_alive(now, HANDSHAKE_MAX_AGE_SECS) {
+            tracing::info!(
+                "mesh: {} went stale — falling back to the relay",
+                p.allowed_ips.join(",")
+            );
+            wg::remove_peer(&p.public_key).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Strips the host:port off a WireGuard endpoint and asks whether that address
+/// routes through the tunnel. `[v6]:port` and `v4:port` both appear here.
+async fn endpoint_via_tunnel(endpoint: &str) -> bool {
+    let host = match endpoint.rsplit_once(':') {
+        Some((h, _)) => h.trim_start_matches('[').trim_end_matches(']'),
+        None => endpoint,
+    };
+    routes_via_tunnel(host).await
 }
 
 async fn tick(last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
@@ -483,6 +611,40 @@ mod tests {
     fn a_non_address_yields_no_probe_rather_than_a_malformed_one() {
         assert_eq!(probe_address("not-an-ip"), None);
         assert_eq!(probe_address("192.168.1.1"), None);
+    }
+
+    #[test]
+    fn a_probe_address_round_trips_back_to_the_node_it_stands_for() {
+        // The property promotion depends on: a node that only ever learned of a
+        // peer by being CALLED can still work out which address to promote,
+        // without asking anyone. Half-promotion breaks the asking.
+        for node in ["fd00:cafe::5", "fd00:cafe::6", "fd00:cafe::ffff"] {
+            let probe = probe_address(node).unwrap();
+            assert_eq!(real_address(&probe), Some(format!("{node}/128")));
+        }
+    }
+
+    #[test]
+    fn a_real_address_is_not_mistaken_for_a_probe_one() {
+        // Guards the branch in reconcile_local: treating an already-promoted
+        // peer as still-probing would rewrite its allowed-ips every 5 seconds.
+        assert_eq!(real_address("fd00:cafe::6/128"), None);
+        assert_eq!(real_address("fd00:cafe::/112"), None);
+        assert_eq!(real_address("not-an-ip"), None);
+    }
+
+    #[test]
+    fn real_address_accepts_the_form_wg_actually_prints() {
+        // `wg show` reports allowed-ips with the prefix attached, so the
+        // suffix has to be tolerated rather than assumed away.
+        assert_eq!(
+            real_address("fd00:cafe::dead:6/128"),
+            Some("fd00:cafe::6/128".into())
+        );
+        assert_eq!(
+            real_address("fd00:cafe::dead:6"),
+            Some("fd00:cafe::6/128".into())
+        );
     }
 
     fn node(ip: &str) -> serde_json::Value {
