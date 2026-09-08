@@ -300,9 +300,17 @@ pub(crate) struct PgLoss {
     /// PGs that cannot be read right now.
     pub stuck: u32,
     pub total: u32,
-    /// True when at least one affected PG belongs to a pool keeping a single copy, so
-    /// no amount of waiting brings it back.
+    /// True when at least one stuck PG has permanently lost its data — either its pool
+    /// keeps a single copy (so a stuck PG has no second copy to rebuild from), or the
+    /// PG is `incomplete` (every copy is gone and Ceph has marked the holding OSDs out).
+    /// This is the machine-readable answer to "can this come back on its own", and it
+    /// is correct at any replica count.
     pub unrecoverable: bool,
+    /// Pool names (e.g. `yolab-fs-metadata`, `yolab-fs-data0`, `images`) that hold at
+    /// least one unrecoverable PG. Empty unless `unrecoverable` is true. Callers that
+    /// care about app DATA filter on the CephFS pools rather than treating the
+    /// re-pullable `images` pool as data loss.
+    pub unrecoverable_pools: Vec<String>,
 }
 
 /// PG states that mean "the OSD holding this is not answering", as opposed to
@@ -312,6 +320,34 @@ fn is_stuck_state(state: &str) -> bool {
     state
         .split('+')
         .any(|s| matches!(s, "stale" | "down" | "incomplete" | "unknown"))
+}
+
+/// `incomplete` is the one stuck state that is permanent regardless of the pool's
+/// replica count: unlike `down`/`stale` — which mean "the holder is not answering
+/// right now" and may return — it means every copy is gone and the OSDs have been
+/// marked out, so nothing is left to rebuild from.
+fn is_incomplete_state(state: &str) -> bool {
+    state.split('+').any(|s| s == "incomplete")
+}
+
+/// Number of OSDs Ceph has given up on: down AND weighted out (`reweight == 0`). A
+/// disk that is merely `down` may be seconds from returning; `out` is Ceph's own
+/// conclusion, ten minutes in, that it is not. Mirrors `restore_run::osd_is_lost`.
+pub(crate) async fn lost_osd_count() -> u32 {
+    let Ok(tree) = crate::ceph_cli::ceph_json(&["osd", "tree"]).await else {
+        return 0;
+    };
+    tree["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| {
+            n["type"].as_str() == Some("osd")
+                && n["status"].as_str() == Some("down")
+                && n["reweight"].as_f64().unwrap_or(1.0) == 0.0
+        })
+        .count() as u32
 }
 
 /// Reads pool replica counts and PG placement to decide which case this is.
@@ -348,10 +384,20 @@ pub(crate) async fn assess_pg_loss_via<H: crate::host::Host>(host: &H) -> Option
 /// process spawned at all — pure logic first, effects as a thin shell around
 /// it, same shape as `zap_args`/`Ownership::read` elsewhere in this codebase.
 fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
-    let sizes: std::collections::HashMap<i64, u64> = dump["pools"]
+    // pool id → (name, size). `size` is the pool's configured replica count, needed to
+    // tell "single copy, gone" from "a copy is missing but another serves".
+    let pools: std::collections::HashMap<i64, (String, u64)> = dump["pools"]
         .as_array()?
         .iter()
-        .filter_map(|p| Some((p["pool"].as_i64()?, p["size"].as_u64()?)))
+        .filter_map(|p| {
+            Some((
+                p["pool"].as_i64()?,
+                (
+                    p["pool_name"].as_str().unwrap_or("").to_string(),
+                    p["size"].as_u64()?,
+                ),
+            ))
+        })
         .collect();
 
     // `ceph pg dump pgs_brief -f json` returns the array directly on some versions and
@@ -367,6 +413,7 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
 
     let mut stuck = 0u32;
     let mut unrecoverable = false;
+    let mut unrecoverable_pools: Vec<String> = Vec::new();
     for pg in &items {
         let state = pg["state"].as_str().unwrap_or("");
         if !is_stuck_state(state) {
@@ -377,9 +424,17 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
             .as_str()
             .and_then(|id| id.split('.').next())
             .and_then(|p| p.parse::<i64>().ok());
-        if let Some(size) = pool_id.and_then(|id| sizes.get(&id)) {
-            if *size <= 1 {
-                unrecoverable = true;
+        let pool = pool_id.and_then(|id| pools.get(&id));
+        // Permanent when there is only one copy (and it is gone) or the PG is
+        // `incomplete` (every copy gone). An unknown pool id reads as "not single
+        // copy" — do not claim loss on a pool we could not identify.
+        let single_copy = pool.is_some_and(|(_, size)| *size <= 1);
+        if single_copy || is_incomplete_state(state) {
+            unrecoverable = true;
+            if let Some((name, _)) = pool {
+                if !name.is_empty() && !unrecoverable_pools.iter().any(|p| p == name) {
+                    unrecoverable_pools.push(name.clone());
+                }
             }
         }
     }
@@ -388,6 +443,7 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
         stuck,
         total: items.len() as u32,
         unrecoverable,
+        unrecoverable_pools,
     })
 }
 
@@ -1222,6 +1278,11 @@ mod tests {
             stuck,
             total,
             unrecoverable,
+            unrecoverable_pools: if unrecoverable {
+                vec!["yolab-fs-metadata".into()]
+            } else {
+                vec![]
+            },
         }
     }
 
@@ -1281,6 +1342,76 @@ mod tests {
         ] {
             assert!(!is_stuck_state(fine), "{fine} is not data loss");
         }
+    }
+
+    // ── compute_pg_loss: which losses are permanent, and on which pool ─────────
+    //
+    // With pools raised to size=2, "a disk went down" no longer means "data is gone" —
+    // the other copy serves and Ceph rebuilds. Only `incomplete` (every copy gone, OSDs
+    // marked out) is permanent. These pin that, plus the pool-name attribution the
+    // damaged-apps screen keys on.
+
+    fn pg_dump(pgid: &str, state: &str) -> Value {
+        json!({ "pg_stats": [{ "pgid": pgid, "state": state }] })
+    }
+
+    fn osd_dump(pools: Value) -> Value {
+        json!({ "pools": pools })
+    }
+
+    fn pool(id: i64, name: &str, size: u64) -> Value {
+        json!({ "pool": id, "pool_name": name, "size": size })
+    }
+
+    #[test]
+    fn a_down_pg_on_a_replicated_pool_is_not_permanent() {
+        let dump = osd_dump(json!([
+            pool(2, "yolab-fs-metadata", 2),
+            pool(3, "yolab-fs-data0", 2),
+        ]));
+        let loss = compute_pg_loss(&dump, &pg_dump("3.f", "down+peering")).unwrap();
+        assert_eq!(loss.stuck, 1);
+        assert!(!loss.unrecoverable, "a second copy still exists");
+        assert!(loss.unrecoverable_pools.is_empty());
+    }
+
+    #[test]
+    fn an_incomplete_pg_is_permanent_whatever_the_replica_count() {
+        let dump = osd_dump(json!([
+            pool(2, "yolab-fs-metadata", 2),
+            pool(3, "yolab-fs-data0", 2),
+        ]));
+        let loss = compute_pg_loss(&dump, &pg_dump("3.f", "incomplete")).unwrap();
+        assert!(loss.unrecoverable);
+        assert_eq!(loss.unrecoverable_pools, vec!["yolab-fs-data0".to_string()]);
+    }
+
+    #[test]
+    fn a_down_pg_on_a_single_copy_pool_is_permanent() {
+        let dump = osd_dump(json!([
+            pool(2, "yolab-fs-metadata", 1),
+            pool(3, "yolab-fs-data0", 1),
+        ]));
+        let loss = compute_pg_loss(&dump, &pg_dump("2.c", "down+peering")).unwrap();
+        assert!(loss.unrecoverable);
+        assert_eq!(
+            loss.unrecoverable_pools,
+            vec!["yolab-fs-metadata".to_string()]
+        );
+    }
+
+    #[test]
+    fn lost_image_pool_does_not_read_as_app_data_loss() {
+        // The RBD-backed `images` pool is re-pullable, not owner data. The damage
+        // screen must be able to tell "images gone" (nothing to do) from "files gone".
+        let dump = osd_dump(json!([
+            pool(2, "yolab-fs-metadata", 2),
+            pool(3, "yolab-fs-data0", 2),
+            pool(4, "images", 2),
+        ]));
+        let loss = compute_pg_loss(&dump, &pg_dump("4.9", "incomplete")).unwrap();
+        assert!(loss.unrecoverable);
+        assert_eq!(loss.unrecoverable_pools, vec!["images".to_string()]);
     }
 
     /// The whole issue, as the page receives it: level is Error even though every Ceph

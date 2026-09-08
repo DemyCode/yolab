@@ -586,3 +586,241 @@ mod tests {
 pub async fn list_runs(State(_state): State<AppState>) -> Json<serde_json::Value> {
     Json(backup_run::list_runs().await)
 }
+
+// ── "Apps with lost data" triage ───────────────────────────────────────────────
+//
+// The home page keys a "corrupted apps" section off `GET /api/backups/damage`. When
+// CephFS app-data pools have suffered *unrecoverable* PG loss (see ceph.rs), every app
+// whose data predates that loss is at risk, and each is given exactly one of the two
+// verdicts the owner can act on: restorable (has a backup → restore) or not (delete).
+//
+// This is deliberately NOT "every app", and the two exclusions are the load-bearing
+// part of the design:
+//
+//   - Stateless apps (no PVC) keep nothing on CephFS — they are never casualties.
+//   - Apps installed *after* the loss wrote their data only to surviving OSDs, because
+//     CRUSH never places a new object on a disk that is already out. Comparing the
+//     PVC creation time against the loss time is what keeps a fresh install — which
+//     would otherwise be offered a restore that overwrites its good data, or a delete
+//     that removes it — off the list.
+//
+// The remaining, genuinely unknowable-without-reading case (a pre-loss app whose files
+// happened to land only on surviving disks) is treated as at-risk rather than fine, on
+// purpose: the danger of telling a lost app it is fine far outweighs the cost of
+// offering a restore for one that wasn't.
+
+/// ConfigMap (etcd-backed, so every node agrees) recording when the cluster first showed
+/// unrecoverable data loss. Read to decide which PVCs are "pre-loss"; written idempotently
+/// on first sight.
+const DATA_LOSS_CM: &str = "yolab-data-loss";
+const DATA_LOSS_NS: &str = "kube-system";
+
+async fn data_loss_since() -> chrono::DateTime<chrono::Utc> {
+    if let Some(cm) = crate::kubectl::get_json(&[
+        "get",
+        "configmap",
+        DATA_LOSS_CM,
+        "-n",
+        DATA_LOSS_NS,
+        "-o",
+        "json",
+    ])
+    .await
+    .ok()
+    {
+        if let Some(t) = cm["data"]["detectedAt"].as_str() {
+            if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(t) {
+                return parsed.with_timezone(&chrono::Utc);
+            }
+        }
+    }
+    let now = chrono::Utc::now();
+    let manifest = serde_json::json!({
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": { "name": DATA_LOSS_CM, "namespace": DATA_LOSS_NS },
+        "data": { "detectedAt": now.to_rfc3339() },
+    });
+    let _ = crate::kubectl::apply(&manifest.to_string()).await;
+    now
+}
+
+/// `GET /api/backups/damage` — the damaged-apps triage the home page renders.
+pub async fn app_damage(State(_state): State<AppState>) -> Json<serde_json::Value> {
+    Json(assess_app_damage().await)
+}
+
+async fn assess_app_damage() -> serde_json::Value {
+    use chrono::{DateTime, Utc};
+
+    let empty = serde_json::json!({
+        "unrecoverable": false, "lost_disks": 0,
+        "restorable_count": 0, "delete_count": 0, "apps": [],
+    });
+
+    // 1. Permanent loss touching the app-data (CephFS) pools? `images` is the RBD-backed
+    //    image store — re-pullable, not owner data — so it must not read as app loss.
+    let loss = crate::routers::ceph::assess_pg_loss().await;
+    let cephfs_lost = match &loss {
+        Some(l) => {
+            l.unrecoverable
+                && l.unrecoverable_pools
+                    .iter()
+                    .any(|p| p == "yolab-fs-metadata" || p == "yolab-fs-data0")
+        }
+        None => false,
+    };
+    if !cephfs_lost {
+        return empty;
+    }
+
+    let lost_disks = crate::routers::ceph::lost_osd_count().await;
+    let loss_since = data_loss_since().await;
+
+    // 2. Managed namespaces (identity) and their PVCs (name + creation time), in two bulk
+    //    queries so the endpoint costs a constant number of kubectl calls.
+    let ns_items = crate::kubectl::get_json(&[
+        "get",
+        "namespaces",
+        "-l",
+        "yolab.io/managed=true",
+        "-o",
+        "json",
+    ])
+    .await
+    .ok()
+    .and_then(|v| v["items"].as_array().cloned())
+    .unwrap_or_default();
+
+    let mut ns_app_id: HashMap<String, String> = HashMap::new();
+    let mut managed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for ns in &ns_items {
+        let Some(name) = ns["metadata"]["name"].as_str() else {
+            continue;
+        };
+        managed.insert(name.to_string());
+        let app_id = ns["metadata"]["annotations"]["yolab.io/app-id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        ns_app_id.insert(name.to_string(), app_id);
+    }
+
+    let pvc_items = crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"])
+        .await
+        .ok()
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default();
+
+    // namespace → (pvc name, creation time, pre-loss?)
+    let mut pvcs_by_ns: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    for pvc in &pvc_items {
+        let (Some(ns), Some(name)) = (
+            pvc["metadata"]["namespace"].as_str(),
+            pvc["metadata"]["name"].as_str(),
+        ) else {
+            continue;
+        };
+        if !managed.contains(ns) || name.starts_with("volsync-") {
+            continue;
+        }
+        let created = pvc["metadata"]["creationTimestamp"]
+            .as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc));
+        // Unparseable creation time → assume pre-loss: err toward flagging, never
+        // toward silently declaring a lost app fine.
+        let pre_loss = created.map(|t| t < loss_since).unwrap_or(true);
+        pvcs_by_ns
+            .entry(ns.to_string())
+            .or_default()
+            .push((name.to_string(), pre_loss));
+    }
+
+    // 3. Affected apps: at least one pre-loss PVC. For each, does a backup exist?
+    let cfg = read_master_config().await;
+    let mut checks: Vec<(String, String, String)> = Vec::new(); // (ns, pvc, repo)
+    let mut affected: Vec<(&String, &Vec<(String, bool)>)> = Vec::new();
+    for (ns, pvcs) in &pvcs_by_ns {
+        if !pvcs.iter().any(|(_, pre_loss)| *pre_loss) {
+            continue; // stateless, or installed after the loss — not a casualty
+        }
+        affected.push((ns, pvcs));
+        if let Some(cfg) = &cfg {
+            for (name, _) in pvcs {
+                let repo = cfg.restic_repo(&format!("volsync/{ns}/{}", canonical_pvc_id(name)));
+                checks.push((ns.clone(), name.clone(), repo));
+            }
+        }
+    }
+
+    // Concurrent snapshot probes against B2 — the endpoint is disaster-only, but N apps
+    // still means N round-trips, so do them in parallel rather than serially.
+    let mut results: HashMap<(String, String), Option<DateTime<Utc>>> = HashMap::new();
+    if let Some(cfg) = &cfg {
+        let probes: Vec<_> = checks
+            .iter()
+            .map(|(ns, name, repo)| {
+                let ns = ns.clone();
+                let name = name.clone();
+                let repo = repo.clone();
+                let cfg = cfg.clone();
+                async move {
+                    (
+                        (ns, name),
+                        latest_snapshot_time(&repo, &cfg).await.ok().flatten(),
+                    )
+                }
+            })
+            .collect();
+        for ((ns, name), latest) in futures::future::join_all(probes).await {
+            results.insert((ns, name), latest);
+        }
+    }
+
+    let mut apps: Vec<serde_json::Value> = Vec::new();
+    let mut restorable_count = 0u32;
+    let mut delete_count = 0u32;
+    for (ns, pvcs) in &affected {
+        // Newest snapshot across the app's PVCs is its "backup age".
+        let mut newest: Option<DateTime<Utc>> = None;
+        for (name, _) in pvcs.iter() {
+            if let Some(t) = results
+                .get(&((*ns).clone(), name.clone()))
+                .and_then(|x| x.as_ref())
+            {
+                newest = Some(match newest {
+                    None => *t,
+                    Some(cur) => cur.max(*t),
+                });
+            }
+        }
+        let restorable = newest.is_some();
+        if restorable {
+            restorable_count += 1;
+        } else {
+            delete_count += 1;
+        }
+        let backup_age_hours =
+            newest.map(|t| (chrono::Utc::now() - t).num_seconds() as f64 / 3600.0);
+        apps.push(serde_json::json!({
+            "namespace": ns,
+            "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
+            "app_id": ns_app_id.get(ns.as_str()).cloned().unwrap_or_default(),
+            "restorable": restorable,
+            "backup_age_hours": backup_age_hours,
+        }));
+    }
+    apps.sort_by(|a, b| {
+        a["instance_name"]
+            .as_str()
+            .cmp(&b["instance_name"].as_str())
+    });
+
+    serde_json::json!({
+        "unrecoverable": true,
+        "lost_disks": lost_disks,
+        "restorable_count": restorable_count,
+        "delete_count": delete_count,
+        "apps": apps,
+    })
+}

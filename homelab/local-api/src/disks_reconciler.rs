@@ -4926,6 +4926,7 @@ mod tests {
             stuck,
             total,
             unrecoverable,
+            unrecoverable_pools: vec![],
         }
     }
 
