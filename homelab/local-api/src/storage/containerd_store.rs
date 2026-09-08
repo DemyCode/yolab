@@ -131,6 +131,50 @@ fn is_readable_dir(path: &Path) -> bool {
     }
 }
 
+/// Whether containerd can actually USE this store, as opposed to merely read it.
+///
+/// NOTHING TO DO WITH RESTIC SNAPSHOTS. containerd calls an image's layer
+/// filesystems "snapshots" too, and this is entirely about those: the layers a
+/// container image is assembled from. The owner's backups are a different thing
+/// with the same word.
+///
+/// READABLE IS THE WRONG QUESTION, and asking only that cost a day. containerd
+/// keeps two things here: a snapshotter metadata.db listing layers, and the
+/// directories holding them. An XFS shutdown mid-write can leave the list intact
+/// and the directories gone. The filesystem is then perfectly healthy, every
+/// read succeeds, `is_readable_dir` is satisfied — and containerd cannot start a
+/// single pod, because it looks up a layer's parent and finds nothing:
+///
+///   failed to create snapshot: missing parent "k8s.io/2/sha256:1021ef…"
+///   bucket: not found
+///
+/// Observed on node1 (2026-09-08): metadata.db dated 12:50 beside an EMPTY
+/// snapshots directory, and it survived a reboot — because rebooting restores
+/// ACCESS to a filesystem, never CONSISTENCY of what is inside it. Every pod on
+/// the node failed to start, the CephFS CSI driver among them, so no volume
+/// could mount and a backup sat in SyncingVolumes indefinitely. The repair loop
+/// logged "already mounted and readable" every five minutes throughout.
+///
+/// Deliberately narrow: a metadata.db WITH CONTENT beside an EMPTY snapshots
+/// directory. Both halves matter. A fresh store has neither and is fine — that
+/// is a new node, not a broken one. A working store has both. Only the mismatch
+/// is corruption, and only the mismatch is worth discarding a node's image cache
+/// over.
+fn snapshotter_is_coherent(root: &Path) -> bool {
+    let overlay = containerd_root(root).join("io.containerd.snapshotter.v1.overlayfs");
+    let db = overlay.join("metadata.db");
+
+    // No db yet: nothing has claimed a layer exists, so nothing can disagree.
+    let db_has_content = std::fs::metadata(&db).map(|m| m.len() > 0).unwrap_or(false);
+    if !db_has_content {
+        return true;
+    }
+    // The db claims layers. If the directory that should hold them is missing or
+    // empty, the two contradict each other and containerd will refuse to create
+    // sandboxes against this store.
+    dir_has_any_entries(&overlay.join("snapshots"))
+}
+
 /// The mounts other than the store itself that still reference the store's tree.
 ///
 /// Every container's rootfs is an overlay whose `lowerdir`/`upperdir`/`workdir`
@@ -613,10 +657,41 @@ pub async fn run<H: Host>(
         .unwrap_or(false);
 
     if is_mountpoint(host, &croot_s).await {
-        if is_readable_dir(&croot) {
+        // READABLE AND INCOHERENT is a third state, and it is the one that took
+        // node1 out. The filesystem is fine; its CONTENTS contradict themselves,
+        // so a remount returns the identical broken store — which is exactly why
+        // rebooting the machine did not fix it either. The only repair is to
+        // discard it and let containerd pull the layers again, and this is the
+        // one directory in the system where that is unambiguously safe: every
+        // byte of it is a container layer a registry will send back.
+        if is_readable_dir(&croot) && !snapshotter_is_coherent(root) {
+            tracing::warn!(
+                "{croot_s} is readable, but its snapshotter metadata references layers \
+                 that are not on disk — containerd cannot start any pod against it. \
+                 Rebuilding the image store."
+            );
+            if was_active {
+                tracing::info!("stopping k3s to rebuild the incoherent image store");
+                let _ = host.systemctl(&["stop", "k3s.service"]).await;
+            }
+            let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+            release_pinning_overlays(host, &mounts, &croot_s).await;
+            if !host
+                .run_cmd("umount", &[&croot_s])
+                .await
+                .is_ok_and(|o| o.success)
+            {
+                let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
+            }
+            // The one place that forces a rebuild rather than letting
+            // mount_the_store decide: the filesystem WILL mount and read
+            // perfectly, so every check below it would pass this store as
+            // healthy and hand it back exactly as broken.
+            needs_rebuild = true;
+        } else if is_readable_dir(&croot) {
             tracing::info!("{croot_s} is already mounted and readable");
             return Ok(());
-        }
+        } else {
         // MOUNTED BUT UNREADABLE MEANS XFS LATCHED A SHUTDOWN, NOT THAT THE DATA
         // IS GONE.
         //
@@ -670,10 +745,14 @@ pub async fn run<H: Host>(
             let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
         }
 
-        // Deliberately NOT `needs_rebuild = true`. A plain remount is the
-        // non-destructive repair and the common case; mount_the_store falls back
-        // to a rebuild on its own when the filesystem really is unusable.
-        needs_rebuild = false;
+            // Deliberately NOT `needs_rebuild = true`. For a LATCHED SHUTDOWN a
+            // plain remount is the right, non-destructive repair, and
+            // mount_the_store still falls back to a rebuild on its own if the
+            // filesystem turns out to be unusable. The incoherent-store branch
+            // above is the case that genuinely must rebuild, and it says so
+            // there rather than forcing it on every path through here.
+            needs_rebuild = false;
+        }
     }
 
     // From here on this may stop k3s, and every exit path has to put it back
@@ -852,6 +931,71 @@ mod tests {
     #[test]
     fn is_readable_dir_is_false_for_a_missing_path() {
         assert!(!is_readable_dir(Path::new("/nonexistent/path/at/all")));
+    }
+
+    // ── snapshotter_is_coherent ───────────────────────────────────────────────
+    //
+    // The state this exists for reads perfectly and cannot run a pod, so every
+    // one of these is about telling "broken" apart from "empty" — getting that
+    // wrong either wipes a healthy node's image cache or leaves a dead one dead.
+
+    /// Lays out the overlayfs snapshotter under a temp root.
+    /// `db_bytes = 0` means no metadata.db at all.
+    fn snapshotter_at(dir: &Path, db_bytes: usize, snapshot_dirs: usize) {
+        let overlay =
+            containerd_root(dir).join("io.containerd.snapshotter.v1.overlayfs");
+        let snaps = overlay.join("snapshots");
+        std::fs::create_dir_all(&snaps).unwrap();
+        if db_bytes > 0 {
+            std::fs::write(overlay.join("metadata.db"), vec![0u8; db_bytes]).unwrap();
+        }
+        for i in 0..snapshot_dirs {
+            std::fs::create_dir_all(snaps.join(i.to_string())).unwrap();
+        }
+    }
+
+    /// The node1 state: the db lists layers, the directory holding them is empty.
+    #[test]
+    fn a_db_with_layers_and_no_snapshot_dirs_is_incoherent() {
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 262_144, 0);
+        assert!(!snapshotter_is_coherent(dir.path()));
+    }
+
+    /// A NEW node has neither, and must never be mistaken for a broken one —
+    /// wiping here would discard nothing but would stop k3s to do it.
+    #[test]
+    fn a_fresh_store_with_no_db_is_coherent() {
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 0, 0);
+        assert!(snapshotter_is_coherent(dir.path()));
+    }
+
+    #[test]
+    fn a_store_with_both_is_coherent() {
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 262_144, 3);
+        assert!(snapshotter_is_coherent(dir.path()));
+    }
+
+    /// An empty db file is not a claim that layers exist, so it is not a
+    /// contradiction with an empty directory.
+    #[test]
+    fn an_empty_db_file_is_coherent() {
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 0, 0);
+        let overlay = containerd_root(dir.path())
+            .join("io.containerd.snapshotter.v1.overlayfs");
+        std::fs::write(overlay.join("metadata.db"), b"").unwrap();
+        assert!(snapshotter_is_coherent(dir.path()));
+    }
+
+    /// Nothing laid out at all — a store that has never been used. Absent is not
+    /// broken.
+    #[test]
+    fn a_store_that_does_not_exist_yet_is_coherent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(snapshotter_is_coherent(dir.path()));
     }
 
     // ── overlay_targets_pinning ───────────────────────────────────────────────
