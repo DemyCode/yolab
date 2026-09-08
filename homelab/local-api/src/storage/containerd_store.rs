@@ -160,8 +160,13 @@ fn is_readable_dir(path: &Path) -> bool {
 /// is a new node, not a broken one. A working store has both. Only the mismatch
 /// is corruption, and only the mismatch is worth discarding a node's image cache
 /// over.
-fn snapshotter_is_coherent(root: &Path) -> bool {
-    let overlay = containerd_root(root).join("io.containerd.snapshotter.v1.overlayfs");
+/// Takes the STORE directory itself, not a root to derive it from — because the
+/// two callers meet the store in different shapes. `run()` looks at the mounted
+/// data-root; `filesystem_is_usable` looks at a probe mount, where the store IS
+/// the mount point. Deriving the path internally worked for one and silently
+/// examined a non-existent directory for the other, which reads as coherent.
+fn snapshotter_is_coherent(store: &Path) -> bool {
+    let overlay = store.join("io.containerd.snapshotter.v1.overlayfs");
     let db = overlay.join("metadata.db");
 
     // No db yet: nothing has claimed a layer exists, so nothing can disagree.
@@ -445,7 +450,17 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
         .is_ok_and(|o| o.success);
     // A partial read, not a stat — see `is_readable_dir`. An empty store is
     // usable; one whose first readdir() fails is not.
-    let usable = mounted && is_readable_dir(&probe);
+    //
+    // AND COHERENT, which is a separate question and the one this got wrong.
+    // `run()` only reaches its coherence branch for a store that is ALREADY
+    // mounted; this is the path that mounts one fresh, and it was still asking
+    // nothing but "does it read". So on node1 (2026-09-08) the incoherent RBD
+    // was rejected while mounted, fell back to the root disk, and then five
+    // minutes later this function probe-mounted the very same RBD, read it
+    // happily, called it usable and mounted it straight back — restoring the
+    // exact corruption that had just been diagnosed. The store must be judged
+    // by the same standard wherever it is met.
+    let usable = mounted && is_readable_dir(&probe) && snapshotter_is_coherent(&probe);
 
     if mounted {
         let _ = host.run_cmd("umount", &[probe_s.as_str()]).await;
@@ -664,7 +679,7 @@ pub async fn run<H: Host>(
         // discard it and let containerd pull the layers again, and this is the
         // one directory in the system where that is unambiguously safe: every
         // byte of it is a container layer a registry will send back.
-        if is_readable_dir(&croot) && !snapshotter_is_coherent(root) {
+        if is_readable_dir(&croot) && !snapshotter_is_coherent(&croot) {
             tracing::warn!(
                 "{croot_s} is readable, but its snapshotter metadata references layers \
                  that are not on disk — containerd cannot start any pod against it. \
@@ -959,7 +974,7 @@ mod tests {
     fn a_db_with_layers_and_no_snapshot_dirs_is_incoherent() {
         let dir = tempfile::tempdir().unwrap();
         snapshotter_at(dir.path(), 262_144, 0);
-        assert!(!snapshotter_is_coherent(dir.path()));
+        assert!(!snapshotter_is_coherent(&containerd_root(dir.path())));
     }
 
     /// A NEW node has neither, and must never be mistaken for a broken one —
@@ -968,14 +983,14 @@ mod tests {
     fn a_fresh_store_with_no_db_is_coherent() {
         let dir = tempfile::tempdir().unwrap();
         snapshotter_at(dir.path(), 0, 0);
-        assert!(snapshotter_is_coherent(dir.path()));
+        assert!(snapshotter_is_coherent(&containerd_root(dir.path())));
     }
 
     #[test]
     fn a_store_with_both_is_coherent() {
         let dir = tempfile::tempdir().unwrap();
         snapshotter_at(dir.path(), 262_144, 3);
-        assert!(snapshotter_is_coherent(dir.path()));
+        assert!(snapshotter_is_coherent(&containerd_root(dir.path())));
     }
 
     /// An empty db file is not a claim that layers exist, so it is not a
@@ -987,7 +1002,7 @@ mod tests {
         let overlay = containerd_root(dir.path())
             .join("io.containerd.snapshotter.v1.overlayfs");
         std::fs::write(overlay.join("metadata.db"), b"").unwrap();
-        assert!(snapshotter_is_coherent(dir.path()));
+        assert!(snapshotter_is_coherent(&containerd_root(dir.path())));
     }
 
     /// Nothing laid out at all — a store that has never been used. Absent is not
@@ -995,7 +1010,31 @@ mod tests {
     #[test]
     fn a_store_that_does_not_exist_yet_is_coherent() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(snapshotter_is_coherent(dir.path()));
+        assert!(snapshotter_is_coherent(&containerd_root(dir.path())));
+    }
+
+    /// THE GAP THAT LET THE CORRUPTION COME BACK. The check takes the STORE
+    /// directory, and its two callers meet the store in different shapes:
+    /// `run()` has the mounted data-root, `filesystem_is_usable` has a probe
+    /// mount where the store IS the mount point. Deriving `var/lib/rancher/...`
+    /// internally answered correctly for the first and examined a directory
+    /// that does not exist for the second — which reads as coherent, so the
+    /// broken RBD was rejected while mounted and then remounted five minutes
+    /// later by the path that could not see the problem.
+    #[test]
+    fn the_check_reads_the_store_it_is_given_not_a_path_derived_from_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // Laid out as a probe mount would be: the store AT the given path,
+        // with no var/lib/rancher prefix beneath it.
+        let overlay = dir.path().join("io.containerd.snapshotter.v1.overlayfs");
+        std::fs::create_dir_all(overlay.join("snapshots")).unwrap();
+        std::fs::write(overlay.join("metadata.db"), vec![0u8; 262_144]).unwrap();
+
+        assert!(
+            !snapshotter_is_coherent(dir.path()),
+            "a probe mount's incoherence must be visible, not hidden behind a \
+             path that only exists on the real root"
+        );
     }
 
     // ── overlay_targets_pinning ───────────────────────────────────────────────
