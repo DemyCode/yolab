@@ -243,7 +243,7 @@
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
       # Pinned from a build's mismatch error; see this file's header.
-      outputHash = "sha256-fJc8lCr2qFIAZB+i303t5MIOfzFOkQZDJKPeBTE/PEk=";
+      outputHash = lib.fakeHash;
     }
     // commonEnv
   );

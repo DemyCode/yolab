@@ -9,6 +9,7 @@ mod error;
 mod host;
 mod kubectl;
 mod lease;
+mod mesh;
 mod proc;
 mod routers;
 mod storage;
@@ -39,7 +40,7 @@ pub struct AppState {
 }
 
 /// Process-lifetime identity for the BackupRun/RestoreRun reconcile Lease. Doesn't need
-/// to be stable across restarts — if this process dies, the lease it held simply expires
+/// to be stable across restarts â if this process dies, the lease it held simply expires
 /// and whichever process (this one restarted, or another node) next acquires it takes
 /// over with a fresh identity; see lease.rs.
 fn random_holder_id() -> String {
@@ -52,7 +53,7 @@ fn random_holder_id() -> String {
 /// Keeps a reconcile loop running for the life of the process.
 ///
 /// Every loop passed here is written as `loop { ... sleep ... }` and never
-/// returns on its own — its own internal errors are already caught and logged
+/// returns on its own â its own internal errors are already caught and logged
 /// a level down. So a `tokio::spawn`ed copy ending, for any reason (a panic,
 /// or the one loop that can return early: disks_reconciler::run() bails out if
 /// it cannot read this node's hostname), means the reconciler behind it is
@@ -60,7 +61,7 @@ fn random_holder_id() -> String {
 /// HTTP 200 on every other route while, say, the disk reconciler has been
 /// dead for a week. `f` is called again to get a fresh future every restart
 /// (this is why it takes a factory rather than one future), so a `catch_unwind`
-/// per attempt is enough — there is no state inside the loop to lose, since a
+/// per attempt is enough â there is no state inside the loop to lose, since a
 /// reconcile tick recomputes everything from cluster/Kubernetes state anyway.
 fn supervise<F, Fut>(name: &'static str, mut f: F)
 where
@@ -72,11 +73,11 @@ where
             match tokio::spawn(f()).await {
                 Ok(()) => {
                     tracing::error!(
-                        "{name}: reconcile loop exited unexpectedly — restarting in 30s"
+                        "{name}: reconcile loop exited unexpectedly â restarting in 30s"
                     );
                 }
                 Err(e) => {
-                    tracing::error!("{name}: reconcile loop panicked ({e}) — restarting in 30s");
+                    tracing::error!("{name}: reconcile loop panicked ({e}) â restarting in 30s");
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -92,14 +93,14 @@ async fn main() {
     //
     // These two branches call `process::exit`, so for most of this binary's life
     // every `storage` and `boot` subcommand ran with no subscriber installed at
-    // all — and `tracing` drops events on the floor when there is none. The
+    // all â and `tracing` drops events on the floor when there is none. The
     // storage units narrate every decision they make ("migrating the existing
-    // image store off the root disk", "mount failed — leaving containerd on the
+    // image store off the root disk", "mount failed â leaving containerd on the
     // root disk", "copy failed (is the RBD large enough?)") and not one of those
     // lines has ever reached a journal.
     //
     // What that cost: on 2026-09-07 node2's yolab-containerd-store ran for 18
-    // minutes, moved 8.3G, exited 0 and left the store unmounted — and the entire
+    // minutes, moved 8.3G, exited 0 and left the store unmounted â and the entire
     // journal for that unit was systemd's own four lines. The reason it gave was
     // written, formatted, and discarded. These units run before k3s and are the
     // hardest thing in the system to debug after the fact; they are exactly the
@@ -186,7 +187,7 @@ async fn main() {
             "/api/backups/snapshots/:id/catalog",
             get(backups::snapshot_catalog),
         )
-        // Logs — see routers/logs.rs for why this is a first-class page
+        // Logs â see routers/logs.rs for why this is a first-class page
         .route("/api/logs", get(logs::list_logs))
         // Disks
         .route("/api/disks", get(disks::list_disks))
@@ -210,7 +211,7 @@ async fn main() {
         // active mgr moves and a fixed address is right only by luck.
         // THREE spellings, and all three are needed. matchit's `/*rest` requires
         // at least one character after the slash, so it does not match a bare
-        // "/ceph-dashboard/" — which is exactly what the Storage page links to
+        // "/ceph-dashboard/" â which is exactly what the Storage page links to
         // and what a browser sends for a directory-style URL. Registering only
         // the wildcard and the bare prefix produced a 404 from the router,
         // before the proxy ran at all. See dashboard_route_tests.
@@ -225,8 +226,12 @@ async fn main() {
         .route("/api/nodes/links", get(nodes::node_links))
         .route("/api/nodes/traffic", get(nodes::traffic))
         .route("/api/cluster/join-info", get(nodes::join_info))
+        // Node→node: where this node can be dialed directly. Cluster-authed and
+        // never a user route — it is how the relay bootstraps its own replacement.
+        .route("/api/cluster/mesh-candidates", get(mesh::mesh_candidates))
+        .route("/api/mesh/paths", get(mesh::paths))
         // Ceph credentials for a machine that is joining. Authorized by the shared
-        // account_token, like every other node-to-node call — the same secret that
+        // account_token, like every other node-to-node call â the same secret that
         // already authorizes joining k3s.
         .route("/api/cluster/ceph-join", get(ceph_join::ceph_join_bundle))
         // Apps
@@ -262,7 +267,7 @@ async fn main() {
             post(apps::refresh_catalog_app),
         )
         .route("/api/apps", get(apps::list_apps))
-        // POST installs (uses app_id), DELETE uninstalls (uses instance_name) — same slot
+        // POST installs (uses app_id), DELETE uninstalls (uses instance_name) â same slot
         .route(
             "/api/apps/:id",
             post(apps::install_app).delete(apps::uninstall_app),
@@ -274,7 +279,7 @@ async fn main() {
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))
-        // Runs after auth (added first, so it's the innermost of these three layers —
+        // Runs after auth (added first, so it's the innermost of these three layers â
         // see restore_run::freeze_during_restore's own doc for what it blocks and why.
         .layer(middleware::from_fn(
             routers::restore_run::freeze_during_restore,
@@ -295,16 +300,17 @@ async fn main() {
         backups::run_replication_source_reconciler,
     );
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
-    // the single actuator for the DISK→ON/OFF config — no separate watcher.
+    // the single actuator for the DISKâON/OFF config â no separate watcher.
     supervise("disks", disks_reconciler::run);
     supervise("cephfs", cephfs::run);
     supervise("topology", topology::run_topology_controller);
-    // Keeps the app catalog current without a nixos-rebuild — see charts.rs.
+    supervise("mesh", mesh::run);
+    // Keeps the app catalog current without a nixos-rebuild â see charts.rs.
     supervise("chart-sync", charts::run_chart_sync);
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");
-    // No request is in flight yet at either of these — there is no frontend to report
+    // No request is in flight yet at either of these â there is no frontend to report
     // a failure to, so this deliberately still crashes the process (systemd restarts
     // it), just with a message that says which of the two things failed rather than
     // a bare "called `Result::unwrap()` on an `Err` value".
