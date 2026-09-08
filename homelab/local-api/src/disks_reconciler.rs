@@ -299,7 +299,7 @@ fn system_osd_meta(our_fsid: &str) -> Disk {
         model: "System disk".to_string(),
         size_bytes: system_osd_size_bytes(),
         is_loop: true,
-        ownership: Ownership::read(device_cluster_fsid(SYSTEM_OSD_DEV).as_deref(), our_fsid),
+        ownership: Ownership::read(bluestore_fsid(SYSTEM_OSD_DEV).as_deref(), our_fsid),
         // Never looked up: a dedicated LVM volume disko carves out for Ceph at
         // install. It has no partition table of its own and is never mounted —
         // the OS lives on a sibling volume. Reporting either would make
@@ -2530,55 +2530,27 @@ fn read_bluestore_header(device: &str) -> Option<[u8; 4096]> {
     Some(buf)
 }
 
-/// The cluster fsid recorded in LVM tags on a device's Ceph logical volume.
+/// The cluster fsid in the BlueStore label at offset 0 of the raw device.
 ///
-/// THE RAW-OFFSET READ CANNOT SEE AN LVM-BACKED OSD, and this cluster's OSDs are
-/// LVM-backed. `bluestore_fsid` looks for the BlueStore magic at offset 0 of the
-/// whole device; on a machine whose OSD lives in a logical volume, offset 0 is a
-/// boot sector. Observed on node2 (2026-09-08): sda holds sda1 (BIOS boot) and
-/// sda2 (LVM), with the OSD inside `pool-ceph` — so the raw read found nothing,
-/// ownership came out `Unknown`, and the UI told the owner their working disk
-/// "has data from another system" while it was serving as osd.2 of this very
-/// cluster.
+/// THIS CANNOT SEE AN LVM-BACKED OSD, and that is not a defect to fix here.
+/// When the OSD lives in a logical volume, offset 0 of the whole disk is a
+/// partition table or a boot sector, so this correctly finds nothing. The
+/// authoritative answer for those comes from `ceph-volume lvm list` via
+/// `mark_known_osds`, which overrides whatever this returns.
 ///
-/// ceph-volume writes the answer straight onto the LV as tags, so this asks the
-/// question directly rather than inferring it from bytes:
+/// The consequence is that this is a FALLBACK, and only accurate while the
+/// authoritative source is available. When `ceph-volume lvm list` fails — Ceph
+/// unreachable, mon quorum lost — its map is empty, nothing overrides, and an
+/// LVM-backed OSD lands on `Ownership::Unknown` purely because nothing could
+/// attribute it. That is why node2's healthy osd.2 showed as unattributed
+/// intermittently (2026-09-08) rather than consistently: it tracked whether
+/// Ceph was answering, not anything about the disk.
 ///
-///   ceph.cluster_fsid=89e31d5d-…  ceph.osd_id=2  ceph.osd_fsid=…
-///
-/// Matched against the device name so one disk's tags cannot be read as
-/// another's: `lvs` reports the physical volume each LV sits on, and only LVs on
-/// THIS device count.
-fn lvm_cluster_fsid(device: &str) -> Option<String> {
-    // A bare name so `/dev/sda` matches the `/dev/sda2` that `lvs` reports as
-    // the PV: the OSD lives in a volume group on a PARTITION of the disk, never
-    // on the whole disk, so an equality test here would never match.
-    let dev = device.trim_start_matches("/dev/");
-    let out = std::process::Command::new("lvs")
-        .args(["-o", "lv_tags,devices", "--noheadings"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|line| line.contains(dev))
-        .find_map(|line| {
-            line.split(',')
-                .find_map(|t| t.trim().strip_prefix("ceph.cluster_fsid="))
-                .map(|f| f.trim().to_string())
-        })
-        .filter(|f| is_uuid(f))
-}
-
-/// This cluster's fsid as recorded on the device, by either mechanism.
-///
-/// The raw label first because it is the cheaper read and the one that answers
-/// for a whole-disk OSD; LVM tags second because they are the only thing that
-/// answers for an LVM-backed one.
-fn device_cluster_fsid(device: &str) -> Option<String> {
-    bluestore_fsid(device).or_else(|| lvm_cluster_fsid(device))
-}
-
+/// Resist adding an `lvs` call here to close the gap. Running LVM from
+/// local-api is what left eight `lvs` processes in uninterruptible sleep and
+/// made the unit unstoppable for 17 minutes — see the header of
+/// homelab/nixos/ceph/images-store.nix. The gap is closed by reporting
+/// `Unknown` honestly instead, which is what `Ownership::as_str` is for.
 fn bluestore_fsid(device: &str) -> Option<String> {
     let buf = read_bluestore_header(device)?;
     if !buf.starts_with(BLUESTORE_MAGIC) {
@@ -2727,7 +2699,7 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
         model,
         size_bytes,
         is_loop: false,
-        ownership: Ownership::read(device_cluster_fsid(device).as_deref(), our_fsid),
+        ownership: Ownership::read(bluestore_fsid(device).as_deref(), our_fsid),
         has_partitions: flags.has_partitions,
         mounted: flags.mounted,
         osd_id: None,
