@@ -176,29 +176,48 @@ pub struct PathStatus {
 pub async fn paths(State(state): State<AppState>) -> Result<Json<Vec<PathStatus>>> {
     let host = &RealHost;
     let peers = wg::peers(host).await.unwrap_or_default();
-    let now = now_secs();
-    let mut out = Vec::new();
+    let addrs = peer_addresses(&state.config.node_ipv6).await;
+    Ok(Json(path_statuses(&peers, &addrs, now_secs())))
+}
 
-    for addr in peer_addresses(&state.config.node_ipv6).await {
-        let direct = peers
-            .iter()
-            .find(|p| p.allowed_ips.iter().any(|a| a == &format!("{addr}/128")));
-        out.push(match direct {
-            Some(p) if p.is_alive(now, HANDSHAKE_MAX_AGE_SECS) => PathStatus {
-                node: addr,
-                path: "direct".into(),
-                endpoint: p.endpoint.clone(),
-                handshake_age_secs: Some(now.saturating_sub(p.last_handshake)),
-            },
-            _ => PathStatus {
-                node: addr,
-                path: "relayed".into(),
-                endpoint: None,
-                handshake_age_secs: None,
-            },
-        });
-    }
-    Ok(Json(out))
+/// Decides direct-vs-relayed for each peer address.
+///
+/// Split from the handler so the judgement is testable without a WireGuard
+/// interface or a cluster. It reports a number that is meant to justify a
+/// change in a bill, so getting it wrong in the optimistic direction — claiming
+/// "direct" for a path that is actually relayed — is the expensive mistake, and
+/// the one the tests below are pointed at.
+fn path_statuses(peers: &[wg::Peer], addrs: &[String], now: u64) -> Vec<PathStatus> {
+    addrs
+        .iter()
+        .map(|addr| {
+            let want = format!("{addr}/128");
+            // A peer only counts as direct when it owns the node's REAL address.
+            // A probe peer parked on the junk `dead:` address must never read as
+            // direct: it carries no production traffic at all.
+            let direct = peers
+                .iter()
+                .find(|p| p.allowed_ips.iter().any(|a| a == &want));
+            match direct {
+                // Alive as well as promoted. A promoted peer whose handshake has
+                // gone stale is a blackhole, not a working direct path, and
+                // reporting it as "direct" would advertise a saving that is
+                // actually an outage.
+                Some(p) if p.is_alive(now, HANDSHAKE_MAX_AGE_SECS) => PathStatus {
+                    node: addr.clone(),
+                    path: "direct".into(),
+                    endpoint: p.endpoint.clone(),
+                    handshake_age_secs: Some(now.saturating_sub(p.last_handshake)),
+                },
+                _ => PathStatus {
+                    node: addr.clone(),
+                    path: "relayed".into(),
+                    endpoint: None,
+                    handshake_age_secs: None,
+                },
+            }
+        })
+        .collect()
 }
 
 // ── Peer enumeration ──────────────────────────────────────────────────────────
@@ -818,6 +837,137 @@ mod tests {
             !host.calls().iter().any(|c| c.starts_with("wg set")),
             "a working direct path must not be disturbed, calls were: {:?}",
             host.calls()
+        );
+    }
+
+    // ── prime_caller ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn an_unknown_caller_is_primed_as_a_listen_only_peer() {
+        // No endpoint, and a junk allowed-ips derived from the caller's own
+        // address — enough for WireGuard to accept the handshake it is about to
+        // send, and not enough to divert any production traffic.
+        let host = host_with(&dump_of(&[hub_line()]));
+        prime_caller(&host, PEER, "fd00:cafe::6".parse().unwrap()).await;
+
+        assert!(
+            host.ran("wg set wg1 peer PEERKEY= allowed-ips fd00:cafe::dead:6/128"),
+            "calls were: {:?}",
+            host.calls()
+        );
+        assert!(
+            !host.calls().iter().any(|c| c.contains("endpoint")),
+            "priming must not set an endpoint — WireGuard learns it from the \
+             first valid packet: {:?}",
+            host.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caller_we_already_know_is_left_completely_alone() {
+        // THE REGRESSION THIS GUARDS. mesh_candidates is called on every tick
+        // regardless of promotion state, so re-priming an already-promoted peer
+        // would overwrite its real allowed-ips with the junk one once a minute,
+        // silently breaking a working direct path forever.
+        let promoted = peer_line(
+            PEER,
+            "192.168.1.141:51821",
+            "fd00:cafe::6/128",
+            now_secs(),
+            10,
+            10,
+        );
+        let host = host_with(&dump_of(&[hub_line(), promoted]));
+        prime_caller(&host, PEER, "fd00:cafe::6".parse().unwrap()).await;
+
+        assert!(
+            !host.calls().iter().any(|c| c.starts_with("wg set")),
+            "calls were: {:?}",
+            host.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caller_from_an_ipv4_address_is_not_primed() {
+        // probe_address only makes sense for the v6 cluster subnet; a v4 source
+        // yields no probe address, and inventing one would produce an
+        // allowed-ips that never matches anything.
+        let host = host_with(&dump_of(&[hub_line()]));
+        prime_caller(&host, PEER, "192.168.1.141".parse().unwrap()).await;
+
+        assert!(!host.calls().iter().any(|c| c.starts_with("wg set")));
+    }
+
+    // ── path_statuses ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_promoted_and_live_peer_reports_direct_with_its_endpoint() {
+        let peers = vec![wg::Peer {
+            public_key: PEER.into(),
+            endpoint: Some("192.168.1.141:51821".into()),
+            allowed_ips: vec!["fd00:cafe::6/128".into()],
+            last_handshake: 1_000,
+            rx_bytes: 10,
+            tx_bytes: 10,
+        }];
+        let out = path_statuses(&peers, &["fd00:cafe::6".to_string()], 1_030);
+        assert_eq!(out[0].path, "direct");
+        assert_eq!(out[0].endpoint.as_deref(), Some("192.168.1.141:51821"));
+        assert_eq!(out[0].handshake_age_secs, Some(30));
+    }
+
+    #[test]
+    fn a_peer_still_on_the_probe_address_reports_relayed() {
+        // It carries no production traffic — the real address still belongs to
+        // the hub — so reporting "direct" would claim a saving that is not real.
+        let peers = vec![wg::Peer {
+            public_key: PEER.into(),
+            endpoint: Some("192.168.1.141:51821".into()),
+            allowed_ips: vec!["fd00:cafe::dead:6/128".into()],
+            last_handshake: 1_000,
+            rx_bytes: 10,
+            tx_bytes: 10,
+        }];
+        let out = path_statuses(&peers, &["fd00:cafe::6".to_string()], 1_030);
+        assert_eq!(out[0].path, "relayed");
+        assert_eq!(out[0].endpoint, None);
+    }
+
+    #[test]
+    fn a_promoted_peer_with_a_stale_handshake_reports_relayed_not_direct() {
+        // It is promoted but blackholing. Calling that "direct" would advertise
+        // a saving that is in fact an outage.
+        let peers = vec![wg::Peer {
+            public_key: PEER.into(),
+            endpoint: Some("192.168.1.141:51821".into()),
+            allowed_ips: vec!["fd00:cafe::6/128".into()],
+            last_handshake: 1_000,
+            rx_bytes: 10,
+            tx_bytes: 10,
+        }];
+        let out = path_statuses(
+            &peers,
+            &["fd00:cafe::6".to_string()],
+            1_000 + HANDSHAKE_MAX_AGE_SECS + 1,
+        );
+        assert_eq!(out[0].path, "relayed");
+    }
+
+    #[test]
+    fn a_node_with_no_peer_entry_at_all_reports_relayed() {
+        let out = path_statuses(&[], &["fd00:cafe::6".to_string()], 1_000);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].node, "fd00:cafe::6");
+        assert_eq!(out[0].path, "relayed");
+    }
+
+    #[test]
+    fn every_address_gets_exactly_one_row_in_order() {
+        let addrs = vec!["fd00:cafe::6".to_string(), "fd00:cafe::7".to_string()];
+        let out = path_statuses(&[], &addrs, 1_000);
+        assert_eq!(
+            out.iter().map(|p| p.node.as_str()).collect::<Vec<_>>(),
+            vec!["fd00:cafe::6", "fd00:cafe::7"]
         );
     }
 
