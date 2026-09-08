@@ -924,6 +924,21 @@ fn flatten_status(item: &Value) -> Value {
     status
 }
 
+/// Every recorded run, newest first — the history behind the snapshot list.
+///
+/// `current_status` answers "what is happening now"; this answers "how did each
+/// of these snapshots turn out". The UI needs both: a Partial run and a
+/// Succeeded one produce an equally real snapshot, and only the run knows which
+/// volumes were left on stale data. Without this the page could only ever mark
+/// the most recent snapshot, because `last_backup` is singular.
+///
+/// Flattened like `current_status` so the shape the UI parses is the same one it
+/// already knows, and bounded by whatever retention `prune` leaves behind rather
+/// than by anything here.
+pub async fn list_runs() -> Value {
+    Value::Array(BACKUP_RUN.list().await.iter().map(flatten_status).collect())
+}
+
 /// GET /api/backups/state consumes this: the active run's live phase/progress if one
 /// exists, plus the most recently finished run's terminal summary either way.
 pub async fn current_status() -> Value {
