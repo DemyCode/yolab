@@ -16,6 +16,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::host::Host;
+
 /// Interface name prefixes that are never a direct path to this node.
 ///
 /// wg: the tunnels themselves. flannel/cni/veth/docker/br-/kube/virbr: container
@@ -90,18 +92,15 @@ pub fn parse_addrs(json: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-pub async fn local_addresses() -> Result<Vec<String>> {
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::process::Command::new("ip")
-            .args(["-j", "addr", "show"])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("ip -j addr timed out"))?
-    .context("run ip -j addr")?;
-    parse_addrs(&String::from_utf8_lossy(&out.stdout))
+/// Through `Host` like everything else in this module, so a caller can be tested
+/// without a machine that happens to have the right interfaces — and so the
+/// bound comes from one place rather than a second hand-rolled timeout here.
+pub async fn local_addresses<H: Host>(host: &H) -> Result<Vec<String>> {
+    let out = host
+        .run_cmd("ip", &["-j", "addr", "show"])
+        .await
+        .context("run ip -j addr")?;
+    parse_addrs(&out.stdout)
 }
 
 #[cfg(test)]

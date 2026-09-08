@@ -126,7 +126,7 @@ pub async fn mesh_candidates(
     Ok(Json(Candidates {
         public_key: wg::self_public_key(host).await?,
         listen_port: wg::listen_port(host).await?,
-        addresses: candidates::local_addresses().await?,
+        addresses: candidates::local_addresses(host).await?,
     }))
 }
 
@@ -345,26 +345,18 @@ pub fn real_address(probe: &str) -> Option<String> {
 /// The quiet failure this prevents: a candidate that is only reachable VIA wg1
 /// still completes a handshake, so the peer is promoted, the UI reports
 /// "direct", and every byte is still relayed and still billed.
-async fn routes_via_tunnel(addr: &str) -> bool {
+async fn routes_via_tunnel<H: Host>(host: &H, addr: &str) -> bool {
     let args: Vec<&str> = if addr.contains(':') {
         vec!["-6", "route", "get", addr]
     } else {
         vec!["route", "get", addr]
     };
-    let Ok(Ok(out)) = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::process::Command::new("ip")
-            .args(&args)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    else {
+    let Ok(out) = host.run_cmd("ip", &args).await else {
         // Unknown means treat as unusable: a wrong "direct" costs money
         // silently, a wrong "relayed" costs nothing but a relayed connection.
         return true;
     };
-    String::from_utf8_lossy(&out.stdout).contains(&format!("dev {}", wg::IFACE))
+    out.stdout.contains(&format!("dev {}", wg::IFACE))
 }
 
 // ── The loop ──────────────────────────────────────────────────────────────────
@@ -452,7 +444,7 @@ async fn reconcile_local<H: Host>(
             // A handshake proves the key; this proves the PATH. Without it a
             // peer that handshaked over the relay would be promoted as
             // "direct", relaying every byte while reporting that it does not.
-            if endpoint_via_tunnel(endpoint).await {
+            if endpoint_via_tunnel(host, endpoint).await {
                 continue;
             }
             tracing::info!("mesh: promoting {real} — handshake at {endpoint}");
@@ -561,8 +553,8 @@ fn endpoint_host(endpoint: &str) -> &str {
 }
 
 /// Whether a WireGuard endpoint's address routes through the tunnel.
-async fn endpoint_via_tunnel(endpoint: &str) -> bool {
-    routes_via_tunnel(endpoint_host(endpoint)).await
+async fn endpoint_via_tunnel<H: Host>(host: &H, endpoint: &str) -> bool {
+    routes_via_tunnel(host, endpoint_host(endpoint)).await
 }
 
 async fn tick<H: Host>(host: &H, last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
@@ -642,7 +634,7 @@ async fn tick<H: Host>(host: &H, last_probe: &mut HashMap<String, Instant>) -> a
 /// Tries each candidate; returns the first endpoint that completes a handshake.
 async fn probe<H: Host>(host: &H, cand: &Candidates, probe_addr: &str) -> Option<String> {
     for addr in &cand.addresses {
-        if routes_via_tunnel(addr).await {
+        if routes_via_tunnel(host, addr).await {
             tracing::debug!("mesh: skipping {addr}, it routes through the tunnel");
             continue;
         }
