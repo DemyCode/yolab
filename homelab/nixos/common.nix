@@ -328,10 +328,15 @@ in {
       ];
       serviceConfig.TimeoutStopSec = "30";
 
-      # FINITE, and that is the entire point. k3s is Type=notify, and the
-      # upstream module leaves TimeoutStartSec unset, which for notify means
-      # infinity: systemd waits forever for a readiness signal that a broken
-      # node will never send.
+      # FINITE, and that is the entire point.
+      #
+      # mkForce because nixpkgs' own k3s module sets `TimeoutStartSec = 0`, and
+      # in systemd 0 does not mean "instant" — it means DISABLE THE TIMEOUT.
+      # That is where the `TimeoutStartUSec=infinity` on the running unit comes
+      # from, and without mkForce the two definitions simply collide and the
+      # evaluation fails. Overriding upstream is deliberate here, not
+      # incidental: k3s is Type=notify, so an unbounded start means systemd
+      # waits forever for a readiness signal a broken node will never send.
       #
       # THE DEADLOCK THAT CAUSED (2026-09-08). node2's containerd data-root
       # returned EIO after XFS shut down, so k3s could never finish starting.
@@ -352,7 +357,7 @@ in {
       # paths in this repo are minutes, not tens of minutes. This is a deadlock
       # breaker, not a health check — if it ever fires on a working machine it
       # is too short, not too long.
-      serviceConfig.TimeoutStartSec = "1800";
+      serviceConfig.TimeoutStartSec = lib.mkForce "1800";
     };
 
     # ── Caddy ─────────────────────────────────────────────────────────────
