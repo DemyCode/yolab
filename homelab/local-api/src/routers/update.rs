@@ -264,12 +264,7 @@ async fn run_git(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>, args: &[
             emit(out, l).await;
         }
     }
-    guard
-        .0
-        .wait()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    guard.0.wait().await.map(|s| s.success()).unwrap_or(false)
 }
 
 /// Which ref to reset to.
