@@ -20,8 +20,7 @@
   pkgs,
   rust,
   lib ? pkgs.lib,
-}:
-let
+}: let
   # The Android SDK is unfree — Google's licence — and the repo's main `pkgs` is
   # plain `nixpkgs.legacyPackages`, with no allowUnfree. Evaluating it there
   # fails with a licence refusal naming a package nobody asked for by name,
@@ -71,8 +70,8 @@ let
       "36.0.0"
     ];
     includeNDK = true;
-    ndkVersions = [ "26.1.10909125" ];
-    cmakeVersions = [ "3.22.1" ];
+    ndkVersions = ["26.1.10909125"];
+    cmakeVersions = ["3.22.1"];
     includeEmulator = false;
     includeSystemImages = false;
   };
@@ -106,7 +105,7 @@ let
   # craneLib.vendorCargoDeps is the same mechanism the rest of this repo's Rust
   # builds already use, so the crates come from the same source and the same
   # Cargo.lock as `nix build .#desktop-client`.
-  cargoVendorDir = rust.craneLib.vendorCargoDeps { inherit src; };
+  cargoVendorDir = rust.craneLib.vendorCargoDeps {inherit src;};
 
   # Points cargo at the vendored copy instead of the network. Needed in both
   # derivations: step 1 could reach crates.io, but using the vendored source
@@ -248,57 +247,56 @@ let
     }
     // commonEnv
   );
-
   # ── Step 2: the APK itself ─────────────────────────────────────────────────
 in
-pkgs.stdenv.mkDerivation (
-  {
-    pname = "yolab-android-apk";
-    version = "0.1.0";
-    inherit src nativeBuildInputs;
+  pkgs.stdenv.mkDerivation (
+    {
+      pname = "yolab-android-apk";
+      version = "0.1.0";
+      inherit src nativeBuildInputs;
 
-    buildPhase = ''
-      runHook preBuild
-      export HOME=$TMPDIR
-      # Set HERE, not as a derivation attribute: nix does not expand $TMPDIR in
-      # an env attribute, so it would arrive as the literal string and mkdir
-      # would cheerfully create a directory named $TMPDIR.
-      export GRADLE_USER_HOME=$TMPDIR/gradle
-      ${cargoOffline}
-      # Restored under caches/, which is where step 1 took it from. Step 1
-      # stores only `modules-2` — see its installPhase for why the rest cannot
-      # be kept — so the parent directory is recreated here.
-      mkdir -p "$GRADLE_USER_HOME/caches"
-      cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
-      chmod -R u+w "$GRADLE_USER_HOME"
+      buildPhase = ''
+        runHook preBuild
+        export HOME=$TMPDIR
+        # Set HERE, not as a derivation attribute: nix does not expand $TMPDIR in
+        # an env attribute, so it would arrive as the literal string and mkdir
+        # would cheerfully create a directory named $TMPDIR.
+        export GRADLE_USER_HOME=$TMPDIR/gradle
+        ${cargoOffline}
+        # Restored under caches/, which is where step 1 took it from. Step 1
+        # stores only `modules-2` — see its installPhase for why the rest cannot
+        # be kept — so the parent directory is recreated here.
+        mkdir -p "$GRADLE_USER_HOME/caches"
+        cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
+        chmod -R u+w "$GRADLE_USER_HOME"
 
-      cargo tauri android init --ci
-      ${gradlewShim}
+        cargo tauri android init --ci
+        ${gradlewShim}
 
-      # No network in the sandbox, so a dependency step 1 failed to cache fails
-      # here — which is the intended signal, not a surprise.
-      cargo tauri android build --apk
+        # No network in the sandbox, so a dependency step 1 failed to cache fails
+        # here — which is the intended signal, not a surprise.
+        cargo tauri android build --apk
 
-      runHook postBuild
-    '';
+        runHook postBuild
+      '';
 
-    installPhase = ''
-      runHook preInstall
-      mkdir -p $out
-      find gen/android -name '*.apk' -exec cp {} $out/ \;
-      # Fail loudly rather than producing an empty output that looks like a
-      # success until someone tries to install it.
-      if [ -z "$(ls -A $out)" ]; then
-        echo "no APK was produced — the Gradle assemble step did not run" >&2
-        exit 1
-      fi
-      runHook postInstall
-    '';
+      installPhase = ''
+        runHook preInstall
+        mkdir -p $out
+        find gen/android -name '*.apk' -exec cp {} $out/ \;
+        # Fail loudly rather than producing an empty output that looks like a
+        # success until someone tries to install it.
+        if [ -z "$(ls -A $out)" ]; then
+          echo "no APK was produced — the Gradle assemble step did not run" >&2
+          exit 1
+        fi
+        runHook postInstall
+      '';
 
-    meta = {
-      description = "YoLab as an Android APK (unsigned, for sideloading)";
-      platforms = [ "x86_64-linux" ];
-    };
-  }
-  // commonEnv
-)
+      meta = {
+        description = "YoLab as an Android APK (unsigned, for sideloading)";
+        platforms = ["x86_64-linux"];
+      };
+    }
+    // commonEnv
+  )
