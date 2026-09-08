@@ -50,6 +50,13 @@ export interface DiskInfo {
   is_loop: boolean;
   is_our_osd: boolean;
   foreign_ceph: boolean;
+  /**
+   * Which of the foreign_ceph states this actually is. `foreign_ceph` collapses
+   * "another cluster owns this" and "I could not tell", which have the same
+   * consequence and very different meanings; this distinguishes them.
+   * Optional because a node running an older local-api does not send it.
+   */
+  ownership?: "ours" | "foreign" | "blank" | "unknown";
   osd_id: number | null;
   /** "ON" = user wants in cluster, "OFF" = excluded. Legacy "USING" treated as ON. */
   desired: "ON" | "OFF" | "USING";

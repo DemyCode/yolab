@@ -182,6 +182,12 @@ type DiskState =
   | "excluded"
   | "historical"
   | "foreign"
+  /**
+   * Carries a Ceph label this node could not attribute. NOT known to belong to
+   * another cluster — most often it is this cluster's own LVM-backed OSD, seen
+   * while Ceph was unreachable.
+   */
+  | "unidentified"
   /** ON, but the last attempt failed. Another is coming; `message` says why. */
   | "failing"
   /** ON, but it needs a decision first — it already has data on it. */
@@ -204,6 +210,11 @@ type DiskState =
  * started five seconds ago or has failed fourteen times.
  */
 function diskState(disk: DiskInfo): DiskState {
+  // `unknown` means the label could not be attributed, which is NOT the same as
+  // belonging to another cluster — most often it is this cluster's own
+  // LVM-backed OSD seen while Ceph was unreachable. Saying "another system"
+  // about a healthy disk is alarming and wrong, so it gets its own state.
+  if (disk.ownership === "unknown") return "unidentified";
   if (disk.foreign_ceph) return "foreign";
 
   const on = disk.desired === "ON" || disk.desired === "USING";
@@ -303,6 +314,16 @@ const STATE_META: Record<
     label: "Has data from another system",
     color: "text-warning",
     dot: "bg-warning",
+  },
+  // Deliberately not alarming and deliberately not a claim. The node found a
+  // Ceph label it could not attribute, which is usually its OWN disk seen while
+  // the cluster was unreachable — node2's healthy osd.2 spent this session being
+  // described to its owner as belonging to another system.
+  unidentified: {
+    label: "Can't identify this disk yet",
+    color: "text-fg-muted",
+    dot: "bg-fg-subtle",
+    pulse: true,
   },
 };
 
@@ -483,7 +504,13 @@ function DiskRow({
         </div>
       )}
 
-      {state !== "foreign" && !confirm && (
+      {/* `unidentified` is excluded alongside `foreign` because the reconciler
+          refuses to create an OSD for BOTH (Ownership::is_foreign covers
+          Unknown too) — so the toggle would be a control that silently does
+          nothing. It is deliberately NOT given the Erase button above either:
+          we do not know what the disk is, and the likeliest answer is that it
+          is one of ours. */}
+      {state !== "foreign" && state !== "unidentified" && !confirm && (
         <button
           onClick={() => void toggle()}
           disabled={busy}
