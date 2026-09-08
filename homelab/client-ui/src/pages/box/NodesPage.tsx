@@ -9,11 +9,13 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import type { NodeInfo, NodeLink } from "@/types/nodes";
+import type { PathStatus } from "@/types/mesh";
 import { fetchList } from "@/lib/api";
 
 export function NodesPage() {
   const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
+  const [paths, setPaths] = useState<PathStatus[]>([]);
   const [stale, setStale] = useState(false);
 
   useEffect(() => {
@@ -34,10 +36,22 @@ export function NodesPage() {
       .then((r) => r.json())
       .then((l: NodeLink[]) => setLinks((prev) => (l.length > 0 ? l : prev)))
       .catch(() => {});
+
+    // Best-effort, like links above: the whole point of the direct-path work
+    // is that the saving is checkable rather than assumed, so this is shown
+    // when available and silently omitted — via the same fallback-to-“—”
+    // the table already uses — when it is not, rather than blocking the page
+    // on a feature a node may not have deployed yet.
+    fetch("/api/mesh/paths")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((p: PathStatus[]) => setPaths(p))
+      .catch(() => {});
   }, []);
 
   const urlFor = (name: string) =>
     links.find((l) => l.name === name)?.url ?? null;
+
+  const pathFor = (ip: string) => paths.find((p) => p.node === ip) ?? null;
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -79,6 +93,9 @@ export function NodesPage() {
                     <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
                       Joined
                     </th>
+                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
+                      Path
+                    </th>
                     <th className="py-2.5 text-left text-xs font-medium text-fg-muted">
                       Link
                     </th>
@@ -87,6 +104,7 @@ export function NodesPage() {
                 <tbody className="divide-y divide-border/50">
                   {nodes.map((n) => {
                     const url = urlFor(n.name);
+                    const path = pathFor(n.ip);
                     return (
                       <tr
                         key={n.name}
@@ -115,6 +133,22 @@ export function NodesPage() {
                                 },
                               )
                             : "—"}
+                        </td>
+                        <td className="py-3 pr-4">
+                          {path ? (
+                            <div className="flex flex-col gap-0.5">
+                              <Badge variant={path.path === "direct" ? "success" : "neutral"}>
+                                {path.path === "direct" ? "Direct" : "Relayed"}
+                              </Badge>
+                              {path.path === "direct" && path.endpoint && (
+                                <span className="text-xs text-fg-muted">
+                                  {path.endpoint}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-border-strong">—</span>
+                          )}
                         </td>
                         <td className="py-3">
                           {url ? (
