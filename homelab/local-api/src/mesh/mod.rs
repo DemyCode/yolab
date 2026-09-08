@@ -719,7 +719,10 @@ mod tests {
             .ok("wg show wg1 dump", dump)
             // A LAN address: `ip route get` shows a physical device, so
             // endpoint_via_tunnel says false and promotion is allowed.
-            .ok("ip -6 route get", "fd00:cafe::6 dev enp5s0 src fd00:cafe::5")
+            .ok(
+                "ip -6 route get",
+                "fd00:cafe::6 dev enp5s0 src fd00:cafe::5",
+            )
             .ok("ip route get", "192.168.1.141 dev enp5s0 src 192.168.1.132")
             .ok("wg set", "")
     }
@@ -772,7 +775,14 @@ mod tests {
         // would point production traffic at an unproven endpoint.
         let dump = dump_of(&[
             hub_line(),
-            peer_line(PEER, "192.168.1.141:51821", "fd00:cafe::dead:6/128", 0, 0, 0),
+            peer_line(
+                PEER,
+                "192.168.1.141:51821",
+                "fd00:cafe::dead:6/128",
+                0,
+                0,
+                0,
+            ),
         ]);
         let host = host_with(&dump);
         let mut bh = HashMap::new();
