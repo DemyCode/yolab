@@ -137,7 +137,11 @@ export function NodesPage() {
                         <td className="py-3 pr-4">
                           {path ? (
                             <div className="flex flex-col gap-0.5">
-                              <Badge variant={path.path === "direct" ? "success" : "neutral"}>
+                              <Badge
+                                variant={
+                                  path.path === "direct" ? "success" : "neutral"
+                                }
+                              >
                                 {path.path === "direct" ? "Direct" : "Relayed"}
                               </Badge>
                               {path.path === "direct" && path.endpoint && (
@@ -147,7 +151,9 @@ export function NodesPage() {
                               )}
                             </div>
                           ) : (
-                            <span className="text-xs text-border-strong">—</span>
+                            <span className="text-xs text-border-strong">
+                              —
+                            </span>
                           )}
                         </td>
                         <td className="py-3">
