@@ -41,44 +41,37 @@ spec:
           imagePullPolicy: IfNotPresent
           stdin: true
           tty: true
-          {{- /* A STARTUP PROBE, because this server is slow to boot and the
-                 liveness probe used to shoot it before it finished.
+          {{- /* NO LIVENESS PROBE, DELIBERATELY — and this server is why.
 
-                 Observed on a live cluster (2026-09-07): container start at
-                 14:21:24, the itzg image spent ~3 minutes on its own setup
-                 before Minecraft's ServerMain even appeared at 14:24:33, and
-                 the world was still loading off CephFS after that. Liveness
-                 (120s delay + 3 x 30s) fires at ~210s, so it sent SIGTERM at
-                 14:24:51 — mid-boot — and SIGKILL 30s later. Every restart
-                 began the same slow load again, so it never once opened
-                 :25565. Ten restarts, permanently 1/2 Running.
+                 A liveness probe cannot tell "hung" from "busy": both look like
+                 a port that will not answer. This one guessed wrong twice.
 
-                 Inflating initialDelaySeconds is the wrong fix: it weakens
-                 liveness for the entire life of the server to accommodate one
-                 slow minute at the start. A startupProbe suspends liveness
-                 until the port opens ONCE, then hands over to the tight
-                 liveness timing below.
+                 2026-09-07: container start 14:21:24, the itzg image spent ~3
+                 minutes on its own setup before Minecraft's ServerMain appeared
+                 at 14:24:33, and the world was still loading off CephFS after
+                 that. Liveness (120s delay + 3 x 30s) fired at ~210s, SIGTERM
+                 at 14:24:51 mid-boot, SIGKILL 30s later. Every restart began
+                 the same slow load, so it never once opened :25565.
 
-                 15 minutes of budget. Generous on purpose — world generation
-                 on network storage on a small machine is legitimately slow,
-                 and the cost of being wrong in this direction is a late
-                 restart, while the cost of being wrong in the other is a
-                 server that can never start at all. */}}
-          startupProbe:
-            tcpSocket:
-              port: 25565
-            periodSeconds: 10
-            failureThreshold: 90
+                 2026-09-08: the same thing, 55 restarts, permanently 1/2
+                 Running, while the world sat on a CephFS that was itself
+                 recovering.
+
+                 A startupProbe was tried as the fix and is also gone. It worked,
+                 but it only existed to defer liveness — and once you accept that
+                 you cannot time this server's start, the honest conclusion is
+                 that nothing should be killing it on a timer at all.
+
+                 The trade is asymmetric. Restarting a genuinely hung server
+                 saves an owner one manual restart of something they can already
+                 see is down. Killing a healthy slow one means it can NEVER
+                 start. Readiness below still reports the difference between
+                 starting and running; it just does not shoot anything. */}}
           readinessProbe:
             tcpSocket:
               port: 25565
             initialDelaySeconds: 60
             periodSeconds: 15
-          livenessProbe:
-            tcpSocket:
-              port: 25565
-            periodSeconds: 30
-            failureThreshold: 3
           env:
             - name: EULA
               value: "TRUE"

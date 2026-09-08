@@ -89,13 +89,6 @@ spec:
             port: 3000
           initialDelaySeconds: 15
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /api/healthz
-            port: 3000
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          failureThreshold: 3
         command:
         - /bin/sh
         - -c
@@ -187,15 +180,6 @@ spec:
             - gitea
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - gitea
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: POSTGRES_USER
           value: gitea

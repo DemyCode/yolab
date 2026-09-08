@@ -75,12 +75,6 @@ spec:
             port: 8123
           initialDelaySeconds: 20
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 8123
-          initialDelaySeconds: 90
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /config

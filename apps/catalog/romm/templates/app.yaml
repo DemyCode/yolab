@@ -70,12 +70,6 @@ spec:
             port: 8080
           initialDelaySeconds: 20
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 8080
-          initialDelaySeconds: 90
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /romm/library
@@ -130,12 +124,6 @@ spec:
               command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql

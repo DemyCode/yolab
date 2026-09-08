@@ -43,10 +43,9 @@ spec:
         env:
           # MeTube defaults to HOST=0.0.0.0, the IPv4 wildcard, which does not
           # accept IPv6 connections. This cluster is IPv6-primary
-          # (cluster-cidr fd00:42::/56), so pod IPs are IPv6 and both probes
-          # dial one — they got "connection refused", the liveness probe kept
-          # killing a perfectly healthy process, and the app crash-looped
-          # forever while its own log said it had started fine.
+          # (cluster-cidr fd00:42::/56), so pod IPs are IPv6 and the readiness
+          # probe dials one — it got "connection refused" and the app reported
+          # "Starting up…" forever while its own log said it had started fine.
           #
           # "::" is the IPv6 wildcard and, with the default
           # net.ipv6.bindv6only=0, still accepts IPv4-mapped connections, so
@@ -60,12 +59,6 @@ spec:
             port: 8081
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 8081
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /downloads

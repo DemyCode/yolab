@@ -324,71 +324,34 @@ def check(app, docs, fail, chart_yaml=""):
             if v == "":
                 fail(app, f"Secret key {k} rendered empty")
 
-    # A SLOW START IS A startupProbe'S JOB, NOT A LONGER initialDelaySeconds.
+    # NO LIVENESS OR STARTUP PROBES, DELIBERATELY.
     #
-    # A liveness probe that has to wait out the worst-case boot is weakened for
-    # the entire life of the container: once past the delay, a wedged app is
-    # only noticed `periodSeconds * failureThreshold` later — and some charts
-    # here had pushed the delay to 600s to survive their own startup.
+    # A liveness probe cannot tell "hung" from "busy": both look like a port
+    # that will not answer. The two ways of being wrong are wildly asymmetric:
     #
-    # It also does not actually work, which is how this was found. Minecraft on
-    # a live cluster (2026-09-07) needed longer to open its port than its 120s
-    # delay plus 3x30s allowed: SIGTERM landed mid-boot at ~210s, SIGKILL 30s
-    # after that, and the next attempt began the same slow load again. Ten
-    # restarts, permanently 1/2 Running, never once listening.
+    #   - false positive (kills a healthy-but-slow app) → the app can NEVER
+    #     start, because each restart begins the same slow load again
+    #   - false negative (misses a genuinely hung app) → it stays down until
+    #     the owner notices, which on a homelab is "you, looking at the UI"
     #
-    # A startupProbe is the mechanism Kubernetes provides for exactly this: it
-    # suspends liveness until the app answers ONCE, with its own generous
-    # budget, then hands over to tight liveness timing. It costs a fast app
-    # nothing — the first check succeeds and liveness takes over immediately.
+    # Minecraft on a live cluster (2026-09-07, and again 2026-09-08 with 55
+    # restarts) needed longer to open :25565 than its 120s delay plus 3x30s
+    # allowed: SIGTERM landed mid-boot, and the next attempt began the same
+    # slow load. A startupProbe was tried as the fix and worked, but it only
+    # existed to defer liveness — once you accept that a start cannot be timed,
+    # the honest conclusion is that nothing should be killing a container on a
+    # timer at all.
     #
-    # SLOW_START_DEBT is the charts that still paper over it with a long delay.
-    # They are not newly broken, so they do not fail the build; the point of the
-    # list is that it must only ever shrink. Do not add to it.
-    SLOW_START_DEBT = {
-        "babybuddy",
-        "bookstack",
-        "docmost",
-        "emulatorjs",
-        "firefly-iii",
-        "frigate",
-        "ghost",
-        "healthchecks",
-        "home-assistant",
-        "karakeep",
-        "kimai",
-        "linkwarden",
-        "mastodon",
-        "monica",
-        "nextcloud",
-        "onlyoffice",
-        "pairdrop",
-        "paperless-ngx",
-        "planka",
-        "prowlarr",
-        "radarr",
-        "romm",
-        "shlink",
-        "sonarr",
-        "speedtest-tracker",
-        "unifi",
-        "valheim",
-        "vikunja",
-        "wallabag",
-        "your-spotify",
-    }
+    # Readiness is the right tool and stays: it reports "starting" vs "running"
+    # without ever shooting anything. This assertion keeps it that way — a
+    # chart that reintroduces a liveness or startup probe fails here.
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
         for c in spec.get("containers") or []:
-            live = c.get("livenessProbe") or {}
-            delay = live.get("initialDelaySeconds", 0)
-            if delay > 60 and not c.get("startupProbe") and app not in SLOW_START_DEBT:
-                fail(
-                    app,
-                    f"container {c['name']} waits {delay}s before its first "
-                    "liveness check instead of using a startupProbe — a slow "
-                    "boot must not cost liveness its teeth for the whole run",
-                )
+            if "livenessProbe" in c:
+                fail(app, f"container {c['name']} has a livenessProbe — none by design")
+            if "startupProbe" in c:
+                fail(app, f"container {c['name']} has a startupProbe — none by design")
 
     # The file explorer prints its URL and its generated password as YOLAB_OUTPUT
     # lines, and nothing scrapes those unless the chart's own `yolab.io/outputs`

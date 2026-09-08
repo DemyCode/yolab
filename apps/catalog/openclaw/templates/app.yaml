@@ -73,12 +73,6 @@ spec:
             port: 18789
           initialDelaySeconds: 15
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 18789
-          initialDelaySeconds: 45
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /home/node

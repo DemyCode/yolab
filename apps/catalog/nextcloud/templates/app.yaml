@@ -108,12 +108,6 @@ spec:
             port: 80
           initialDelaySeconds: 15
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 80
-          initialDelaySeconds: 120
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /var/www/html
@@ -170,12 +164,6 @@ spec:
               command: ["pg_isready", "-U", "nextcloud"]
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["pg_isready", "-U", "nextcloud"]
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data

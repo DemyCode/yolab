@@ -67,13 +67,6 @@ spec:
             port: 80
           initialDelaySeconds: 10
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          failureThreshold: 3
         env:
         - name: ROCKET_ADDRESS
           value: '::'

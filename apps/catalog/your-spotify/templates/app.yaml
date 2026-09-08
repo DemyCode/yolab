@@ -97,12 +97,6 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
             failureThreshold: 18
-          livenessProbe:
-            tcpSocket:
-              port: 80
-            initialDelaySeconds: 180
-            periodSeconds: 20
-            failureThreshold: 6
           volumeMounts:
             - name: yolab
               mountPath: /yolab
@@ -147,12 +141,6 @@ spec:
               port: 27017
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            tcpSocket:
-              port: 27017
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 3
           volumeMounts:
             - name: data
               mountPath: /data/db

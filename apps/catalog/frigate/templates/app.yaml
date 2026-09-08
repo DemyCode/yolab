@@ -77,12 +77,6 @@ spec:
             port: 8971
           initialDelaySeconds: 30
           periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 8971
-          initialDelaySeconds: 90
-          periodSeconds: 20
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /config

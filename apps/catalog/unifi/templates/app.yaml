@@ -88,12 +88,6 @@ spec:
           initialDelaySeconds: 60
           periodSeconds: 15
           failureThreshold: 30
-        livenessProbe:
-          tcpSocket:
-            port: 8443
-          initialDelaySeconds: 600
-          periodSeconds: 30
-          failureThreshold: 6
         volumeMounts:
           - name: data
             mountPath: /config
@@ -127,12 +121,6 @@ spec:
               port: 27017
             initialDelaySeconds: 10
             periodSeconds: 10
-          livenessProbe:
-            tcpSocket:
-              port: 27017
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 3
           volumeMounts:
             - name: data
               mountPath: /data/db

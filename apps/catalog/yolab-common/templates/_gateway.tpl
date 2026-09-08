@@ -124,12 +124,6 @@ compose this plus wgRegisterInit and nothing else.
       port: 80
     initialDelaySeconds: 5
     periodSeconds: 10
-  livenessProbe:
-    tcpSocket:
-      port: 80
-    initialDelaySeconds: 15
-    periodSeconds: 20
-    failureThreshold: 3
   volumeMounts:
     - name: data
       mountPath: /data

@@ -115,12 +115,6 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 30
-          livenessProbe:
-            tcpSocket:
-              port: 80
-            initialDelaySeconds: 300
-            periodSeconds: 20
-            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /config
@@ -180,12 +174,6 @@ spec:
               command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
             initialDelaySeconds: 20
             periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            failureThreshold: 3
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql

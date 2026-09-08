@@ -46,13 +46,6 @@ spec:
             port: 8096
           initialDelaySeconds: 20
           periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8096
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          failureThreshold: 3
         command:
         - /bin/sh
         - -c
