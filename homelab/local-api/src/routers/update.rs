@@ -11,6 +11,8 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+// StreamExt for `.map` over the progress receiver — see `update`.
+use tokio_stream::StreamExt;
 
 use crate::{config::Config, kubectl, proc::KillOnDrop, AppState};
 
@@ -194,6 +196,204 @@ pub async fn remove_remote(State(state): State<AppState>, Path(name): Path<Strin
     }
 }
 
+// ── The update sequence, written once ─────────────────────────────────────────
+//
+// There are two ways to ask this node to update itself, and they differ ONLY in
+// where the progress lines go:
+//
+//   update()         — a person clicked Update; stream it back over SSE
+//   trigger_update() — another node told us to; append to the rebuild log
+//
+// The work in between — fetch, resolve the ref, reset, launch nixos-rebuild — is
+// identical, and used to be written twice. That is not a style complaint: the
+// two copies had already drifted into `has_remote_ref`/`reset_target` in one and
+// `has_remote`/`target` in the other, so a fix to the ref-resolution logic in
+// one would silently not reach the other.
+//
+// It was duplicated for a real reason, though, and the reason is worth stating
+// so nobody "simplifies" it back: `update()` is built on `async_stream`, and
+// `yield` only works lexically inside the `stream!` macro. You cannot extract a
+// helper that yields. The way out is to invert it — the shared code SENDS lines
+// down a channel, and each caller decides what to do with them.
+
+/// One line of progress.
+async fn emit(out: &tokio::sync::mpsc::Sender<String>, msg: impl Into<String>) {
+    // Ignored on purpose: a closed receiver means the person navigated away
+    // mid-update. The rebuild must carry on regardless — it is already changing
+    // the system, and abandoning it half-done is far worse than talking to
+    // nobody.
+    let _ = out.send(msg.into()).await;
+}
+
+/// Runs a git subcommand, streaming both its streams line by line.
+///
+/// stderr as well as stdout, and interleaved: git writes progress ("Receiving
+/// objects…") to stderr, so a version that forwarded only stdout showed a blank
+/// screen for the entire clone and then a result.
+async fn run_git(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>, args: &[&str]) -> bool {
+    let mut full = vec!["-C", cfg.repo_path.as_str()];
+    full.extend_from_slice(args);
+    emit(out, format!("$ git {}", full.join(" "))).await;
+
+    let child = tokio::process::Command::new("git")
+        .args(&full)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut guard = match child {
+        Ok(c) => KillOnDrop(c),
+        Err(e) => {
+            emit(out, format!("[ERROR] could not launch git: {e}")).await;
+            return false;
+        }
+    };
+
+    use tokio::io::AsyncBufReadExt;
+    let stdout = guard.0.stdout.take();
+    let stderr = guard.0.stderr.take();
+    if let Some(s) = stdout {
+        let mut lines = tokio::io::BufReader::new(s).lines();
+        while let Ok(Some(l)) = lines.next_line().await {
+            emit(out, l).await;
+        }
+    }
+    if let Some(s) = stderr {
+        let mut lines = tokio::io::BufReader::new(s).lines();
+        while let Ok(Some(l)) = lines.next_line().await {
+            emit(out, l).await;
+        }
+    }
+    guard
+        .0
+        .wait()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Which ref to reset to.
+///
+/// Prefers `<remote>/<ref>` when git can resolve it, and falls back to the bare
+/// ref otherwise — which is what makes a tag or a local branch work as a channel
+/// alongside a remote branch. Pure, so the choice is testable without a repo;
+/// the resolution itself is the caller's `rev-parse`.
+fn reset_target(ch: &Channel, remote_ref_exists: bool) -> String {
+    if remote_ref_exists {
+        format!("{}/{}", ch.remote, ch.ref_)
+    } else {
+        ch.ref_.clone()
+    }
+}
+
+/// Whether git can resolve `<remote>/<ref>`.
+fn remote_ref_exists(cfg: &Config, ch: &Channel) -> bool {
+    std::process::Command::new("git")
+        .args([
+            "-C",
+            &cfg.repo_path,
+            "rev-parse",
+            "--verify",
+            &format!("{}/{}", ch.remote, ch.ref_),
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Fetch, reset, and launch the rebuild. Returns false if it stopped early.
+///
+/// The rebuild itself is deliberately NOT awaited: it is spawned detached with
+/// its output going to `cfg.rebuild_log`, so it survives this service being
+/// restarted by the very switch it just started. That is the normal case, not an
+/// edge one — a nixos-rebuild restarts local-api.
+async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bool {
+    let ch = read_channel(cfg);
+
+    if !run_git(cfg, out, &["fetch", &ch.remote, "--tags"]).await {
+        emit(out, "[ERROR] git fetch failed").await;
+        return false;
+    }
+
+    let target = reset_target(&ch, remote_ref_exists(cfg, &ch));
+    if !run_git(cfg, out, &["reset", "--hard", &target]).await {
+        emit(out, "[ERROR] git reset failed").await;
+        return false;
+    }
+
+    // A previous rebuild that was interrupted leaves its transient unit behind,
+    // and systemd refuses to start a unit that is still loaded-and-failed.
+    clear_stale_rebuild_unit();
+
+    let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
+    emit(
+        out,
+        format!("$ nixos-rebuild switch --flake {flake} --print-build-logs"),
+    )
+    .await;
+    emit(
+        out,
+        "[INFO] nixos-rebuild launched — this service will restart shortly",
+    )
+    .await;
+
+    let (Ok(log_file), Ok(log2)) = (
+        std::fs::File::create(&cfg.rebuild_log),
+        std::fs::File::create(&cfg.rebuild_log),
+    ) else {
+        emit(out, "[ERROR] could not open the rebuild log").await;
+        return false;
+    };
+
+    // --cores 1 --max-jobs 1: a homelab node is also serving the UI that is
+    // watching this, and an unrestricted build starves it.
+    let child = std::process::Command::new("nixos-rebuild")
+        .args([
+            "switch",
+            "--flake",
+            &flake,
+            "--no-update-lock-file",
+            "--print-build-logs",
+            "--accept-flake-config",
+            "--cores",
+            "1",
+            "--max-jobs",
+            "1",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(log_file)
+        .stderr(log2)
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            emit(out, format!("[ERROR] could not launch nixos-rebuild: {e}")).await;
+            return false;
+        }
+    };
+
+    let pid = child.id();
+    let _ = std::fs::write(&cfg.rebuild_pid, pid.to_string());
+    let pid_file = cfg.rebuild_pid.clone();
+    // Reap the child so it does not linger as a zombie once nixos-rebuild
+    // exits. If this service is restarted by the rebuild itself the thread
+    // dies, the child is adopted by init which reaps it, and the fallback
+    // zombie check in rebuild.rs covers that race.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            == Some(pid)
+        {
+            let _ = std::fs::remove_file(&pid_file);
+        }
+    });
+    true
+}
+
+/// `GET /api/update` — a person clicked Update; stream the progress back.
 pub async fn update(State(state): State<AppState>) -> Response {
     if IS_UPDATING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -205,183 +405,27 @@ pub async fn update(State(state): State<AppState>) -> Response {
         )
             .into_response();
     }
-    let cfg = state.config;
-    let stream = async_stream::stream! {
+
+    let cfg = state.config.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(256);
+
+    tokio::spawn(async move {
         let _guard = UpdateGuard;
-        let ch = read_channel(&cfg);
+        run_update(&cfg, &tx).await;
+    });
 
-        // Fetch
-        let fetch_args = ["-C".to_string(), cfg.repo_path.clone(),
-            "fetch".to_string(), ch.remote.clone(), "--tags".to_string()];
-        yield Ok::<Event, Infallible>(Event::default().data(format!("$ git {}", fetch_args.join(" "))));
-
-        let fetch_rc = {
-            let args: Vec<&str> = fetch_args.iter().map(|s| s.as_str()).collect();
-            let child = tokio::process::Command::new("git")
-                .args(&args)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn();
-            match child {
-                Err(e) => {
-                    yield Ok(Event::default().data(format!("[ERROR] {e}")));
-                    return;
-                }
-                Ok(c) => {
-                    let mut guard = KillOnDrop(c);
-                    use tokio::io::AsyncBufReadExt;
-                    if let Some(stdout) = guard.0.stdout.take() {
-                        let mut lines = tokio::io::BufReader::new(stdout).lines();
-                        while let Ok(Some(l)) = lines.next_line().await {
-                            yield Ok(Event::default().data(l));
-                        }
-                    }
-                    guard.0.wait().await.map(|s| s.code().unwrap_or(1)).unwrap_or(1)
-                }
-            }
-        };
-
-        if fetch_rc != 0 {
-            yield Ok(Event::default().data(format!("[ERROR] fetch failed (exit {fetch_rc})")));
-            return;
-        }
-
-        // Resolve ref: try remote/ref first (branch), fall back to bare ref (tag/commit)
-        let remote_ref = format!("{}/{}", ch.remote, ch.ref_);
-        let has_remote_ref = std::process::Command::new("git")
-            .args(["-C", &cfg.repo_path, "rev-parse", "--verify", &remote_ref])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        let reset_target = if has_remote_ref { remote_ref } else { ch.ref_.clone() };
-
-        // Reset
-        yield Ok(Event::default().data(format!("$ git -C {} reset --hard {reset_target}", cfg.repo_path)));
-        let reset_rc = {
-            let child = tokio::process::Command::new("git")
-                .args(["-C", &cfg.repo_path, "reset", "--hard", &reset_target])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn();
-            match child {
-                Err(e) => { yield Ok(Event::default().data(format!("[ERROR] {e}"))); return; }
-                Ok(c) => {
-                    let mut guard = KillOnDrop(c);
-                    use tokio::io::AsyncBufReadExt;
-                    if let Some(stdout) = guard.0.stdout.take() {
-                        let mut lines = tokio::io::BufReader::new(stdout).lines();
-                        while let Ok(Some(l)) = lines.next_line().await { yield Ok(Event::default().data(l)); }
-                    }
-                    guard.0.wait().await.map(|s| s.code().unwrap_or(1)).unwrap_or(1)
-                }
-            }
-        };
-        if reset_rc != 0 {
-            yield Ok(Event::default().data(format!("[ERROR] reset failed (exit {reset_rc})")));
-            return;
-        }
-
-        // No Ceph health gate here any more.
-        //
-        // There was one: it ran `yolab-ceph-wait-healthy`, which waited up to five
-        // minutes for backfill to finish before rebuilding. It never refused. Every
-        // path out of it — recovery still running, ceph unreachable, the script itself
-        // wedging — ended in "[WARN] … continuing", deliberately, because a cluster can
-        // sit degraded for reasons an update would FIX, and refusing to update an
-        // unhealthy cluster makes the platform unrepairable from the UI exactly when
-        // repairing it matters most.
-        //
-        // Which left a wait that changed nothing except how long an update took. It
-        // also had to be wrapped in an outer timeout after it deadlocked for real: the
-        // blocking call parked a runtime worker inside this SSE handler, local-api kept
-        // listening on :3001 and answered nothing, and the whole UI went blank behind a
-        // 502. A step that cannot refuse is not worth the ways it can fail.
-        //
-        // The risk it was written for is real but narrower than it looked: a rebuild
-        // only restarts OSDs when it bumps the Ceph package or changes their unit, and
-        // the damage needs several nodes restarting while one is still backfilling. If
-        // that becomes a problem, the fix is a gate that actually refuses on a Ceph
-        // version change — not a pause that always gives way.
-
-        // nixos-rebuild
-        clear_stale_rebuild_unit();
-        let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
-        yield Ok(Event::default().data(format!("$ nixos-rebuild switch --flake {flake} --print-build-logs")));
-        yield Ok(Event::default().data("[INFO] nixos-rebuild launched — service will restart shortly"));
-
-        let _ = std::fs::create_dir_all(cfg.rebuild_log.parent().unwrap_or(std::path::Path::new("/")));
-
-        // Every failure below used to be swallowed silently — the stream would just end
-        // after the "launched" message above with no explanation, which reads as a
-        // successful update that never actually started. Each one now yields an
-        // [ERROR] event before returning, same convention the reset-failure path above
-        // already uses.
-        let log_file = match std::fs::File::create(&cfg.rebuild_log) {
-            Ok(f) => f,
-            Err(e) => {
-                yield Ok(Event::default().data(format!(
-                    "[ERROR] could not create rebuild log {}: {e}",
-                    cfg.rebuild_log.display()
-                )));
-                return;
-            }
-        };
-        let log2 = match log_file.try_clone() {
-            Ok(f) => f,
-            Err(e) => {
-                yield Ok(Event::default().data(format!(
-                    "[ERROR] could not duplicate the rebuild log handle: {e}"
-                )));
-                return;
-            }
-        };
-        // Run under idle I/O class + nice 19 so the entire build tree
-        // (nix, rustc, linker) yields to k3s and Ceph on disk and CPU.
-        // ionice/nice exec into the next command, keeping the same PID.
-        let mut child = match std::process::Command::new("nixos-rebuild")
-            .args(["switch", "--flake", &flake,
-                   "--no-update-lock-file", "--print-build-logs", "--accept-flake-config",
-                   "--cores", "1", "--max-jobs", "1"])
-            .stdin(std::process::Stdio::null())
-            .stdout(log_file)
-            .stderr(log2)
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                yield Ok(Event::default().data(format!("[ERROR] could not launch nixos-rebuild: {e}")));
-                return;
-            }
-        };
-
-        let pid = child.id();
-        let _ = std::fs::write(&cfg.rebuild_pid, pid.to_string());
-        let pid_file = cfg.rebuild_pid.clone();
-        // Reap the child so it doesn't stay as a zombie in /proc/{pid}
-        // after nixos-rebuild exits. If this service is restarted by the
-        // rebuild itself, the thread dies but the child is adopted by init
-        // which will reap it — the fallback zombie check in rebuild.rs
-        // covers that race.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-            if std::fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                == Some(pid)
-            {
-                let _ = std::fs::remove_file(&pid_file);
-            }
-        });
-    };
-
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
+        .map(|line| Ok::<Event, Infallible>(Event::default().data(line)));
     Sse::new(stream).into_response()
 }
 
 // ── Background (fire-and-forget) update ───────────────────────────────────────
 
-/// Called by other nodes via update_all. Starts the full update cycle in a
-/// background task and returns 200 immediately so the caller can drop the
-/// connection without cancelling the work.
+/// `POST /api/update/trigger` — another node told us to update.
+///
+/// Returns 200 immediately so the caller can drop the connection without
+/// cancelling the work, and the same progress lines go to the rebuild log
+/// instead of to a browser.
 pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::Value> {
     if IS_UPDATING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -389,128 +433,32 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
     {
         return Json(serde_json::json!({"error": "already updating"}));
     }
+
     let cfg = state.config.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+
+    let log_path = cfg.rebuild_log.clone();
     tokio::spawn(async move {
-        let _guard = UpdateGuard;
-        let ch = read_channel(&cfg);
-
-        let _ = std::fs::create_dir_all(
-            cfg.rebuild_log
-                .parent()
-                .unwrap_or(std::path::Path::new("/")),
-        );
-
-        // Helper: append a line to the rebuild log so background git ops are visible.
-        let log_path = cfg.rebuild_log.clone();
-        let append_log = |msg: String| {
+        let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new("/")));
+        while let Some(line) = rx.recv().await {
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&log_path)
             {
                 use std::io::Write;
-                let _ = writeln!(f, "{msg}");
-            }
-        };
-
-        // git fetch
-        let fetch_out = tokio::process::Command::new("git")
-            .args(["-C", &cfg.repo_path, "fetch", &ch.remote, "--tags"])
-            .output()
-            .await;
-        let fetch_ok = fetch_out
-            .as_ref()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !fetch_ok {
-            let stderr = fetch_out
-                .as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-                .unwrap_or_default();
-            append_log(format!("[trigger] git fetch failed: {stderr}"));
-            return;
-        }
-
-        // git reset --hard
-        let remote_ref = format!("{}/{}", ch.remote, ch.ref_);
-        let has_remote = std::process::Command::new("git")
-            .args(["-C", &cfg.repo_path, "rev-parse", "--verify", &remote_ref])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        let target = if has_remote {
-            remote_ref
-        } else {
-            ch.ref_.clone()
-        };
-        let reset_out = tokio::process::Command::new("git")
-            .args(["-C", &cfg.repo_path, "reset", "--hard", &target])
-            .output()
-            .await;
-        let reset_ok = reset_out
-            .as_ref()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !reset_ok {
-            let stderr = reset_out
-                .as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-                .unwrap_or_default();
-            append_log(format!("[trigger] git reset failed: {stderr}"));
-            return;
-        }
-        if let Ok(ref o) = reset_out {
-            append_log(format!(
-                "[trigger] git reset: {}",
-                String::from_utf8_lossy(&o.stdout).trim()
-            ));
-        }
-
-        // nixos-rebuild (detached — survives local-api restart)
-        clear_stale_rebuild_unit();
-        let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
-        if let (Ok(log_file), Ok(log2)) = (
-            std::fs::File::create(&cfg.rebuild_log),
-            std::fs::File::create(&cfg.rebuild_log),
-        ) {
-            if let Ok(mut child) = std::process::Command::new("nixos-rebuild")
-                .args([
-                    "switch",
-                    "--flake",
-                    &flake,
-                    "--no-update-lock-file",
-                    "--print-build-logs",
-                    "--accept-flake-config",
-                    "--cores",
-                    "1",
-                    "--max-jobs",
-                    "1",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(log_file)
-                .stderr(log2)
-                .spawn()
-            {
-                let pid = child.id();
-                let _ = std::fs::write(&cfg.rebuild_pid, pid.to_string());
-                let pid_file = cfg.rebuild_pid.clone();
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                    if std::fs::read_to_string(&pid_file)
-                        .ok()
-                        .and_then(|s| s.trim().parse::<u32>().ok())
-                        == Some(pid)
-                    {
-                        let _ = std::fs::remove_file(&pid_file);
-                    }
-                });
+                let _ = writeln!(f, "[trigger] {line}");
             }
         }
     });
-    Json(serde_json::json!({"ok": true}))
-}
 
-// ── Update all nodes ──────────────────────────────────────────────────────────
+    tokio::spawn(async move {
+        let _guard = UpdateGuard;
+        run_update(&cfg, &tx).await;
+    });
+
+    Json(serde_json::json!({"status": "started"}))
+}
 
 /// Clear the leftover of an interrupted `nixos-rebuild`.
 ///
@@ -613,6 +561,42 @@ mod tests {
         cfg.built_dir = dir.path().join("built");
         cfg.channel_file = cfg.built_dir.join("channel.json");
         cfg
+    }
+
+    // ── reset_target ──────────────────────────────────────────────────────────
+    //
+    // This logic existed in two copies before the rewrite — `has_remote_ref`/
+    // `reset_target` in the streaming path and `has_remote`/`target` in the
+    // background one — so a fix to either would silently not reach the other.
+    // Now there is one, and these pin its behaviour.
+
+    #[test]
+    fn a_resolvable_remote_ref_wins() {
+        let ch = Channel {
+            remote: "origin".into(),
+            ref_: "main".into(),
+        };
+        assert_eq!(reset_target(&ch, true), "origin/main");
+    }
+
+    /// The fallback is what lets a TAG or a purely local branch work as a
+    /// channel: `origin/v2.1.0` does not resolve, but `v2.1.0` does.
+    #[test]
+    fn an_unresolvable_remote_ref_falls_back_to_the_bare_ref() {
+        let ch = Channel {
+            remote: "origin".into(),
+            ref_: "v2.1.0".into(),
+        };
+        assert_eq!(reset_target(&ch, false), "v2.1.0");
+    }
+
+    #[test]
+    fn a_non_origin_remote_is_honoured() {
+        let ch = Channel {
+            remote: "upstream".into(),
+            ref_: "release".into(),
+        };
+        assert_eq!(reset_target(&ch, true), "upstream/release");
     }
 
     // ── read_channel / write_channel ──────────────────────────────────────────
