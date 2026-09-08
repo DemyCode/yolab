@@ -900,6 +900,60 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn releasing_overlays_unmounts_every_one_of_them() {
+        let host = FakeHost::new().ok("umount", "");
+        let released =
+            release_pinning_overlays(&host, &mounts_with_containers(), CROOT).await;
+
+        assert_eq!(released, 2);
+        let calls = host.calls();
+        // The store itself is NOT unmounted here — that is the caller's job, and
+        // doing it first would strand the overlays on a path that no longer
+        // resolves.
+        assert!(
+            !calls.iter().any(|c| c == &format!("umount {CROOT}")),
+            "must not unmount the store itself, calls were: {calls:?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.starts_with("umount /run/k3s/"))
+                .count(),
+            2
+        );
+    }
+
+    /// A mount that refuses a plain umount must still be tried lazily before
+    /// being counted as stuck — containerd holds descriptors on a filesystem
+    /// that has shut down, which is exactly when a plain umount refuses.
+    #[tokio::test]
+    async fn a_busy_overlay_falls_back_to_a_lazy_unmount() {
+        let host = FakeHost::new()
+            .fail("umount /run", "target is busy")
+            .ok("umount -l /run", "");
+        let released =
+            release_pinning_overlays(&host, &mounts_with_containers(), CROOT).await;
+
+        assert_eq!(released, 2, "the lazy fallback should have carried both");
+        assert!(
+            host.calls().iter().any(|c| c.starts_with("umount -l /run")),
+            "calls were: {:?}",
+            host.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_pinning_means_nothing_unmounted() {
+        let host = FakeHost::new().ok("umount", "");
+        let only_the_store = format!("/dev/rbd0 {CROOT} xfs rw 0 0\n");
+        assert_eq!(
+            release_pinning_overlays(&host, &only_the_store, CROOT).await,
+            0
+        );
+        assert!(host.calls().is_empty(), "should not have run any command");
+    }
+
     /// Mounts belonging to anything else — the CephFS volumes an app's PVC brings,
     /// /run, the root filesystem — are not references to the image store.
     #[test]

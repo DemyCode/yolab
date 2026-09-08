@@ -440,14 +440,27 @@ async fn reconcile_local() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Strips the host:port off a WireGuard endpoint and asks whether that address
-/// routes through the tunnel. `[v6]:port` and `v4:port` both appear here.
-async fn endpoint_via_tunnel(endpoint: &str) -> bool {
-    let host = match endpoint.rsplit_once(':') {
+/// The address out of a WireGuard `host:port` endpoint.
+///
+/// Split out from the routing question purely so it can be tested: an IPv6
+/// endpoint is `[fd00::1]:51821`, which is full of colons, and getting this
+/// wrong would hand `routes_via_tunnel` a malformed address. That fails closed
+/// — an unparseable address is treated as tunnelled and the peer is never
+/// promoted — so the bug would present as "direct paths silently never happen"
+/// rather than as anything pointing here.
+///
+/// `rsplit_once` because the port is after the LAST colon; splitting on the
+/// first would return `[fd00` for every v6 endpoint.
+fn endpoint_host(endpoint: &str) -> &str {
+    match endpoint.rsplit_once(':') {
         Some((h, _)) => h.trim_start_matches('[').trim_end_matches(']'),
         None => endpoint,
-    };
-    routes_via_tunnel(host).await
+    }
+}
+
+/// Whether a WireGuard endpoint's address routes through the tunnel.
+async fn endpoint_via_tunnel(endpoint: &str) -> bool {
+    routes_via_tunnel(endpoint_host(endpoint)).await
 }
 
 async fn tick(last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
@@ -611,6 +624,32 @@ mod tests {
     fn a_non_address_yields_no_probe_rather_than_a_malformed_one() {
         assert_eq!(probe_address("not-an-ip"), None);
         assert_eq!(probe_address("192.168.1.1"), None);
+    }
+
+    #[test]
+    fn an_ipv6_endpoint_keeps_its_colons_and_loses_its_brackets() {
+        // The case that motivated splitting this out: splitting on the FIRST
+        // colon would return "[fd00" for every v6 endpoint, and the resulting
+        // unparseable address fails closed — so the symptom would be "direct
+        // paths silently never happen", pointing nowhere near here.
+        assert_eq!(endpoint_host("[fd00:cafe::6]:51821"), "fd00:cafe::6");
+        assert_eq!(
+            endpoint_host("[2a01:e0a:80a:ba90::1]:51820"),
+            "2a01:e0a:80a:ba90::1"
+        );
+    }
+
+    #[test]
+    fn an_ipv4_endpoint_loses_only_its_port() {
+        assert_eq!(endpoint_host("192.168.1.141:51821"), "192.168.1.141");
+        assert_eq!(endpoint_host("78.47.104.10:51820"), "78.47.104.10");
+    }
+
+    #[test]
+    fn an_endpoint_with_no_port_is_returned_whole() {
+        // Not a shape wg emits, but returning something malformed here would
+        // fail closed and silently stop promotion, so it is pinned.
+        assert_eq!(endpoint_host("192.168.1.141"), "192.168.1.141");
     }
 
     #[test]
