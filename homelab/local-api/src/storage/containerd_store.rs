@@ -300,14 +300,37 @@ async fn clear_stale_mappings<H: Host>(host: &H, pool: &str, name: &str) {
     }
 }
 
-/// `-o osd_request_timeout=30` is THE setting behind the worst failure this storage
+/// `-o osd_request_timeout` is THE setting behind the worst failure this storage
 /// stack has had: krbd defaults to waiting forever, so when the pool cannot serve a
 /// read, anything touching the device parks in uninterruptible sleep — a state SIGKILL
 /// cannot end. With a timeout the same situation produces a recoverable I/O error
-/// instead. Checks for an existing mapping first — real idempotency, not just the
-/// hope of it — since `run()` already called `clear_stale_mappings` for this same
-/// pool/name; finding one here would mean this ran concurrently with another attempt,
-/// not that this ought to add yet another mapping on top.
+/// instead.
+///
+/// THE VALUE IS A TRADE-OFF BETWEEN TWO REAL OUTAGES, and 30s was the wrong side
+/// of it. Too long and a genuinely dead cluster wedges the node unkillably; too
+/// short and an OSD that is merely RESTARTING takes the filesystem down with it.
+///
+/// 30s lost that second bet on every deploy. `nixos-rebuild` restarts the OSD
+/// activation chain, which runs `lvchange -an` and takes the LV down —
+/// 15:42:39 to 15:44:12 on node1 (2026-09-08), 93 seconds. Ceph also has to
+/// notice the OSD is gone (osd_heartbeat_grace, ~20s) and re-peer its PGs before
+/// anything can be served again, so requests to those PGs simply block for the
+/// whole window. At 30s they instead failed, XFS took `log I/O error -110`,
+/// shut the containerd data-root down, and k3s could not start. Every rebuild
+/// destabilised the storage the rebuild depends on.
+///
+/// 300s clears an OSD restart, a mon election and a peer node's reboot with room
+/// to spare, and is still finite: a cluster that is actually gone produces an
+/// error in five minutes rather than an unkillable process forever. The point
+/// was never a short timeout — it was HAVING one.
+const OSD_REQUEST_TIMEOUT_SECS: u32 = 300;
+
+/// Maps the image, or returns the mapping that already exists.
+///
+/// Checks for an existing mapping first — real idempotency, not just the hope of
+/// it — since `run()` already called `clear_stale_mappings` for this same
+/// pool/name; finding one here would mean this ran concurrently with another
+/// attempt, not that this ought to add yet another mapping on top.
 async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Option<String> {
     if let Some(dev) = all_mapped_devices(host, pool, name)
         .await
@@ -323,7 +346,7 @@ async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Option<Stri
                 "map",
                 &format!("{pool}/{name}"),
                 "-o",
-                "osd_request_timeout=30",
+                &format!("osd_request_timeout={OSD_REQUEST_TIMEOUT_SECS}"),
             ],
         )
         .await
@@ -786,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn maps_fresh_when_nothing_is_currently_mapped() {
         let host = FakeHost::new().ok("rbd showmapped --format json", "[]").ok(
-            "rbd map images/node2 -o osd_request_timeout=30",
+            "rbd map images/node2 -o osd_request_timeout=300",
             "/dev/rbd0",
         );
 
