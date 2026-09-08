@@ -192,10 +192,7 @@ async fn release_pinning_overlays<H: Host>(host: &H, mounts: &str, croot: &str) 
     );
     let mut released = 0;
     for t in &targets {
-        let ok = host
-            .run_cmd("umount", &[t])
-            .await
-            .is_ok_and(|o| o.success)
+        let ok = host.run_cmd("umount", &[t]).await.is_ok_and(|o| o.success)
             || host
                 .run_cmd("umount", &["-l", t])
                 .await
@@ -857,7 +854,10 @@ mod tests {
 
     #[test]
     fn container_overlays_count_as_pinning_the_store() {
-        assert_eq!(overlay_targets_pinning(&mounts_with_containers(), CROOT).len(), 2);
+        assert_eq!(
+            overlay_targets_pinning(&mounts_with_containers(), CROOT).len(),
+            2
+        );
     }
 
     /// The store's own mount must never count as pinning itself, or a healthy node
@@ -903,8 +903,7 @@ mod tests {
     #[tokio::test]
     async fn releasing_overlays_unmounts_every_one_of_them() {
         let host = FakeHost::new().ok("umount", "");
-        let released =
-            release_pinning_overlays(&host, &mounts_with_containers(), CROOT).await;
+        let released = release_pinning_overlays(&host, &mounts_with_containers(), CROOT).await;
 
         assert_eq!(released, 2);
         let calls = host.calls();
@@ -932,8 +931,7 @@ mod tests {
         let host = FakeHost::new()
             .fail("umount /run", "target is busy")
             .ok("umount -l /run", "");
-        let released =
-            release_pinning_overlays(&host, &mounts_with_containers(), CROOT).await;
+        let released = release_pinning_overlays(&host, &mounts_with_containers(), CROOT).await;
 
         assert_eq!(released, 2, "the lazy fallback should have carried both");
         assert!(
