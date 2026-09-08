@@ -176,6 +176,7 @@ async fn main() {
         .route("/api/backups/dr/status", get(backups::dr_status))
         .route("/api/backups/snapshots", get(backups::list_snapshots))
         .route("/api/backups/runs", get(backups::list_runs))
+        .route("/api/backups/damage", get(backups::app_damage))
         .route(
             "/api/backups/cluster/run-now",
             post(backups::run_backup_now),
