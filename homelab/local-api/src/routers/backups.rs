@@ -576,3 +576,13 @@ mod tests {
         );
     }
 }
+
+/// `GET /api/backups/runs` — every recorded run, newest first.
+///
+/// The snapshot list needs this to mark which snapshots came from a run that did
+/// not fully succeed. `/api/backups/state` cannot answer that: it carries one
+/// `last_backup`, so without this the page could mark only the newest snapshot
+/// and would silently show every older Partial run as if it had been clean.
+pub async fn list_runs(State(_state): State<AppState>) -> Json<serde_json::Value> {
+    Json(backup_run::list_runs().await)
+}

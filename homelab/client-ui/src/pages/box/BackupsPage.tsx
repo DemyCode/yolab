@@ -954,8 +954,107 @@ function RestoreFlow({
 
 // ── Snapshot card ─────────────────────────────────────────────────────────────
 
+/**
+ * The run that is happening right now, as the newest row of the snapshot list.
+ *
+ * Shaped like a SnapshotCard on purpose — same card, same left icon slot, same
+ * first line — so that when it finishes it is REPLACED by the real snapshot in
+ * the same position rather than disappearing from one place and appearing in
+ * another. A backup in progress is the newest entry in this timeline; putting it
+ * anywhere else made the list look static while work was happening.
+ *
+ * Not expandable and offers no Restore: there is nothing to restore from yet.
+ */
+function RunningSnapshotCard({ run }: { run: BackupRunStatus | null }) {
+  const vols = run?.pvcs ?? [];
+  const done = vols.filter((v) => v.phase === "Synced").length;
+
+  return (
+    <Card className="border-primary/30 bg-primary-soft/20">
+      <CardContent className="pt-4 pb-4">
+        <div className="flex items-center gap-3">
+          <RefreshCw
+            className="h-4 w-4 text-primary flex-shrink-0 animate-spin"
+            strokeWidth={2}
+          />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-fg">Backing up now</span>
+            <span className="ml-2 text-xs text-fg-muted">
+              {run ? backupPhaseLabel(run) : "Starting…"}
+            </span>
+          </div>
+          {vols.length > 0 && (
+            <span className="text-xs tabular-nums text-fg-muted flex-shrink-0">
+              {done}/{vols.length}
+            </span>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * How a finished run turned out, as a tag on its snapshot row.
+ *
+ * `null` for a clean run: a list where every row carries a badge teaches people
+ * to ignore badges, so the ordinary case says nothing and the exceptions stand
+ * out. A snapshot with no run recorded also says nothing rather than guessing —
+ * pruned history is not evidence of a problem.
+ *
+ * Partial is deliberately NOT styled as an error. The snapshot is real and
+ * restorable; some volumes simply kept their previous data, which is worth
+ * flagging and not worth alarming about. Failed runs usually produce no snapshot
+ * at all, but if one exists it is genuinely suspect and is coloured accordingly.
+ */
+function RunOutcomeTag({ run }: { run: BackupRunStatus | null }) {
+  if (!run) return null;
+
+  const stale = run.stalePvcs?.length ?? 0;
+  const etcdMissing = run.etcdIncluded === false;
+
+  if (run.phase === "Failed") {
+    return (
+      <span className="flex-shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium bg-danger-soft text-danger">
+        <AlertTriangle className="h-3 w-3" />
+        Failed
+      </span>
+    );
+  }
+
+  // Cluster state missing is its own fault and a worse one than a stale volume:
+  // the files are there but the apps that read them are not described anywhere.
+  if (etcdMissing) {
+    return (
+      <span className="flex-shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium bg-warning-soft text-warning">
+        <AlertTriangle className="h-3 w-3" />
+        No app settings
+      </span>
+    );
+  }
+
+  if (run.phase === "Partial" || stale > 0) {
+    return (
+      <span
+        className="flex-shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium bg-warning-soft text-warning"
+        title={
+          stale > 0
+            ? `Kept previous data: ${(run.stalePvcs ?? []).join(", ")}`
+            : undefined
+        }
+      >
+        <AlertTriangle className="h-3 w-3" />
+        Incomplete{stale > 0 ? ` · ${stale}` : ""}
+      </span>
+    );
+  }
+
+  return null;
+}
+
 function SnapshotCard({
   snapshot,
+  run,
   runningNamespaces,
   isRestoring,
   disabled,
@@ -964,6 +1063,8 @@ function SnapshotCard({
   onRestoreStarted,
 }: {
   snapshot: ResticSnapshot;
+  /** The run that produced this snapshot, when one is still recorded. */
+  run: BackupRunStatus | null;
   runningNamespaces: Set<string>;
   isRestoring: boolean;
   disabled: boolean;
@@ -1054,6 +1155,10 @@ function SnapshotCard({
               )}
             </div>
           </button>
+          {/* Between the label and Restore: visible without expanding, because
+              "is this snapshot whole" is exactly what someone needs to know
+              BEFORE choosing to restore from it. */}
+          <RunOutcomeTag run={run} />
           {!restoring && !isRestoring && (
             <Button
               onClick={handleRestoreClick}
@@ -1131,30 +1236,60 @@ function SnapshotExplorer({
   onBackupDone,
   disabled,
   backupInProgress,
+  activeRun,
   onRestoreStarted,
 }: {
   runningNamespaces: Set<string>;
   onBackupDone: () => void;
   disabled: boolean;
   backupInProgress: boolean;
+  /** The live run, for the spinning row at the top of the list. */
+  activeRun: BackupRunStatus | null;
   onRestoreStarted: () => void;
 }) {
   const [snapshots, setSnapshots] = useState<ResticSnapshot[] | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [backupError, setBackupError] = useState<string | null>(null);
   const [activeRestore, setActiveRestore] = useState<string | null>(null);
+  /**
+   * Every recorded run, keyed by the snapshot it produced.
+   *
+   * This is what lets a row say it is incomplete. The RUN knows which volumes
+   * kept last week's data; the snapshot is only an id and a timestamp, so
+   * restic cannot tell you anything about it. `snapshotId` is the sole field
+   * linking the two.
+   */
+  const [runsBySnapshot, setRunsBySnapshot] = useState<
+    Map<string, BackupRunStatus>
+  >(new Map());
 
   const load = useCallback(async () => {
-    try {
-      const res = (await fetch("/api/backups/snapshots").then((r) =>
-        r.json(),
-      )) as { snapshots: ResticSnapshot[] };
-      const sorted = (res.snapshots ?? []).sort(
-        (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
+    // Both together: a snapshot list with no runs beside it cannot say which
+    // rows are incomplete, and marking them is half the point of this list.
+    // Runs are best-effort — an older node without /api/backups/runs simply
+    // shows an unmarked list rather than an error.
+    const [snapsRes, runsRes] = await Promise.allSettled([
+      fetch("/api/backups/snapshots").then((r) => r.json()),
+      fetch("/api/backups/runs").then((r) => r.json()),
+    ]);
+
+    if (snapsRes.status === "fulfilled") {
+      const res = snapsRes.value as { snapshots: ResticSnapshot[] };
+      setSnapshots(
+        (res.snapshots ?? []).sort(
+          (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
+        ),
       );
-      setSnapshots(sorted);
-    } catch {
+    } else {
       setSnapshots([]);
+    }
+
+    if (runsRes.status === "fulfilled" && Array.isArray(runsRes.value)) {
+      const byId = new Map<string, BackupRunStatus>();
+      for (const run of runsRes.value as BackupRunStatus[]) {
+        if (run.snapshotId) byId.set(run.snapshotId, run);
+      }
+      setRunsBySnapshot(byId);
     }
   }, []);
 
@@ -1239,7 +1374,7 @@ function SnapshotExplorer({
             </CardContent>
           </Card>
         </div>
-      ) : snapshots.length === 0 ? (
+      ) : snapshots.length === 0 && !backupInProgress ? (
         <Card className="border-border">
           <CardContent className="pt-5 pb-5">
             <p className="text-sm text-fg-subtle">
@@ -1250,21 +1385,30 @@ function SnapshotExplorer({
           </CardContent>
         </Card>
       ) : (
-        snapshots.map((snap) => (
-          <SnapshotCard
-            key={snap.id}
-            snapshot={snap}
-            runningNamespaces={runningNamespaces}
-            isRestoring={activeRestore !== null && activeRestore !== snap.id}
-            disabled={disabled}
-            onRestoreStart={() => setActiveRestore(snap.id)}
-            onRestoreEnd={() => {
-              setActiveRestore(null);
-              void load();
-            }}
-            onRestoreStarted={onRestoreStarted}
-          />
-        ))
+        <>
+          {/* A run in progress is the newest entry in this timeline, so it
+              belongs at the top of it rather than in a banner somewhere else.
+              It becomes a real row the moment it finishes — same position,
+              same shape — instead of a separate thing vanishing and a list
+              silently gaining an item. */}
+          {backupInProgress && <RunningSnapshotCard run={activeRun} />}
+          {snapshots.map((snap) => (
+            <SnapshotCard
+              key={snap.id}
+              snapshot={snap}
+              run={runsBySnapshot.get(snap.id) ?? null}
+              runningNamespaces={runningNamespaces}
+              isRestoring={activeRestore !== null && activeRestore !== snap.id}
+              disabled={disabled}
+              onRestoreStart={() => setActiveRestore(snap.id)}
+              onRestoreEnd={() => {
+                setActiveRestore(null);
+                void load();
+              }}
+              onRestoreStarted={onRestoreStarted}
+            />
+          ))}
+        </>
       )}
     </div>
   );
@@ -1647,15 +1791,20 @@ export function BackupsPage() {
                 </p>
               ) : (
                 <>
+                  {/* Deliberately shorter than it was. The snapshot list below
+                      now carries an "Incomplete" tag on the row this describes,
+                      so naming every volume here as well said the same thing
+                      twice and pushed the list — the thing you act on — off
+                      screen. The list is where the detail lives; this says only
+                      that something needs attention and what to do. */}
                   <p className="font-medium">
-                    The last backup completed, but some volumes could not be
-                    backed up in time and kept their previous snapshot:
+                    The last backup finished, but{" "}
+                    {(opState.last_backup.stalePvcs ?? []).length} volume
+                    {(opState.last_backup.stalePvcs ?? []).length === 1
+                      ? ""
+                      : "s"}{" "}
+                    kept their previous data — see the tagged snapshot below.
                   </p>
-                  <ul className="mt-1 list-disc list-inside text-danger">
-                    {(opState.last_backup.stalePvcs ?? []).map((p) => (
-                      <li key={p}>{p}</li>
-                    ))}
-                  </ul>
                   <p className="mt-1 text-danger">
                     Run another backup once the cluster is idle to capture their
                     latest data.
@@ -1691,6 +1840,7 @@ export function BackupsPage() {
             onBackupDone={load}
             disabled={opBusy}
             backupInProgress={opState.backing_up}
+            activeRun={opState.backup_run}
             onRestoreStarted={() => void pollOpState()}
           />
         </div>
