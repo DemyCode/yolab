@@ -504,47 +504,32 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
     let channel_body = serde_json::json!({ "remote": ch.remote, "ref": ch.ref_ });
     let cluster_token = cfg.cluster_token();
 
-    for node in kubectl::get_nodes().await.unwrap_or_default() {
-        if let Some(addr) = node["status"]["addresses"]
-            .as_array()
-            .and_then(|a| {
-                a.iter().find(|a| {
-                    a["type"] == "InternalIP"
-                        && a["address"]
-                            .as_str()
-                            .map(|s| s.contains(':'))
-                            .unwrap_or(false)
-                })
-            })
-            .and_then(|a| a["address"].as_str())
-        {
-            if addr == self_ip {
-                continue;
-            }
-            let base = format!("http://[{}]:{}", addr, cfg.port);
-            let body = channel_body.clone();
-            let token = cluster_token.clone();
-            tokio::spawn(async move {
-                let client = reqwest::Client::new();
-                // Sync channel, then fire trigger (returns 200 immediately —
-                // the actual work runs in a background task on the remote node).
-                // Both carry the shared cluster token so the peer's auth
-                // middleware accepts them without a user session.
-                let _ = client
-                    .put(format!("{base}/api/update/channel"))
-                    .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
-                    .json(&body)
-                    .timeout(Duration::from_secs(10))
-                    .send()
-                    .await;
-                let _ = client
-                    .post(format!("{base}/api/update/trigger"))
-                    .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
-                    .timeout(Duration::from_secs(10))
-                    .send()
-                    .await;
-            });
-        }
+    // kubectl::peer_ipv6 rather than a fourth hand-rolled copy of this filter.
+    let nodes = kubectl::get_nodes().await.unwrap_or_default();
+    for addr in kubectl::peer_ipv6(&nodes, &self_ip) {
+        let base = format!("http://[{}]:{}", addr, cfg.port);
+        let body = channel_body.clone();
+        let token = cluster_token.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            // Sync channel, then fire trigger (returns 200 immediately —
+            // the actual work runs in a background task on the remote node).
+            // Both carry the shared cluster token so the peer's auth
+            // middleware accepts them without a user session.
+            let _ = client
+                .put(format!("{base}/api/update/channel"))
+                .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
+                .json(&body)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await;
+            let _ = client
+                .post(format!("{base}/api/update/trigger"))
+                .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await;
+        });
     }
 
     // Stream self update exactly like the single-node handler.
