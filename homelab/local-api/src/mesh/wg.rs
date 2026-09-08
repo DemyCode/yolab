@@ -118,26 +118,31 @@ pub async fn listen_port() -> Result<u16> {
 }
 
 /// Adds or updates a peer. `allowed_ips` empty removes all routes to it.
+///
+/// `endpoint` is `None` for the RESPONDER side of the bootstrap handshake: see
+/// mod.rs's mesh_candidates handler. WireGuard silently drops an initiation
+/// packet from a public key it does not already have configured, so before
+/// this node can accept a handshake it must recognise the caller at all —
+/// but it has no reason to dial the caller itself, and omitting `endpoint`
+/// is exactly the standard listen-only WireGuard peer: WireGuard learns the
+/// real source address itself from the first valid packet it receives.
 pub async fn set_peer(
     public_key: &str,
-    endpoint: &str,
+    endpoint: Option<&str>,
     allowed_ips: &str,
     keepalive_secs: u32,
 ) -> Result<()> {
     let ka = keepalive_secs.to_string();
-    wg(&[
-        "set",
-        IFACE,
-        "peer",
-        public_key,
-        "endpoint",
-        endpoint,
-        "allowed-ips",
-        allowed_ips,
-        "persistent-keepalive",
-        &ka,
-    ])
-    .await?;
+    let mut args = vec!["set", IFACE, "peer", public_key];
+    if let Some(ep) = endpoint {
+        args.push("endpoint");
+        args.push(ep);
+    }
+    args.push("allowed-ips");
+    args.push(allowed_ips);
+    args.push("persistent-keepalive");
+    args.push(&ka);
+    wg(&args).await?;
     Ok(())
 }
 
