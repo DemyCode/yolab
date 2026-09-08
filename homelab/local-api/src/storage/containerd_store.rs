@@ -151,13 +151,73 @@ fn is_readable_dir(path: &Path) -> bool {
 /// Reads `/proc/self/mounts`: the store's own line is excluded by target, and the
 /// overlays are matched on their options, which is where the store path appears.
 fn overlays_pinning(mounts: &str, croot: &str) -> usize {
-    mounts
+    overlay_targets_pinning(mounts, croot).len()
+}
+
+/// The mount points that hold the image store down, deepest first.
+///
+/// The count alone was enough to give up; recovering needs the targets, because
+/// releasing them is what makes the store unmountable-and-remountable again
+/// without a reboot.
+///
+/// Deepest first because a container's rootfs and the shm mount inside its
+/// sandbox can nest, and unmounting a parent before its child leaves the child
+/// pinned by a path that no longer resolves.
+fn overlay_targets_pinning(mounts: &str, croot: &str) -> Vec<String> {
+    let mut targets: Vec<String> = mounts
         .lines()
-        .filter(|line| {
-            let target = line.split_whitespace().nth(1).unwrap_or("");
-            target != croot && line.contains(croot)
+        .filter_map(|line| {
+            let target = line.split_whitespace().nth(1)?;
+            // The store's own mount is not a reference TO the store.
+            (target != croot && line.contains(croot)).then(|| target.to_string())
         })
-        .count()
+        .collect();
+    targets.sort_by_key(|t| std::cmp::Reverse(t.matches('/').count()));
+    targets
+}
+
+/// Unmounts everything still referencing a dead image store.
+///
+/// Safe precisely because the caller has already established the store is
+/// unreadable: every one of these is the rootfs of a container whose filesystem
+/// has vanished underneath it, so there is nothing running left to disturb.
+/// Calling this against a HEALTHY store would tear down live containers, which
+/// is why it lives behind that check and not on its own.
+///
+/// Lazy fallback per mount, and failures are not fatal — a mount that refuses
+/// both is left for the umount of the store itself to deal with lazily, and the
+/// next timer tick reassesses from scratch either way.
+async fn release_pinning_overlays<H: Host>(host: &H, mounts: &str, croot: &str) -> usize {
+    let targets = overlay_targets_pinning(mounts, croot);
+    if targets.is_empty() {
+        return 0;
+    }
+    tracing::info!(
+        "releasing {} stale mounts still referencing the dead image store",
+        targets.len()
+    );
+    let mut released = 0;
+    for t in &targets {
+        let ok = host
+            .run_cmd("umount", &[t])
+            .await
+            .is_ok_and(|o| o.success)
+            || host
+                .run_cmd("umount", &["-l", t])
+                .await
+                .is_ok_and(|o| o.success);
+        if ok {
+            released += 1;
+        }
+    }
+    if released < targets.len() {
+        tracing::warn!(
+            "released {released} of {} stale mounts; the rest are left to the lazy \
+             unmount of the store itself",
+            targets.len()
+        );
+    }
+    released
 }
 
 fn dir_has_any_entries(path: &Path) -> bool {
@@ -516,28 +576,76 @@ pub async fn run<H: Host>(
     let croot_s = croot.to_string_lossy().into_owned();
     let mut needs_rebuild = false;
 
+    // Captured HERE, before anything below can stop k3s, because the recovery
+    // path further down stops it too. Reading it after that point would see the
+    // service already down, conclude it was never running, and skip the restart
+    // — leaving a node that repaired its image store perfectly and then never
+    // came back.
+    //
+    // The STATE TEXT, not the exit status. `is-active --quiet` exits non-zero
+    // for "activating", and activating is exactly the state a k3s sitting on a
+    // dead image store is in — it never finishes starting, because the
+    // snapshotter it is retrying cannot open its data-root. Keying off the exit
+    // status would therefore read the one node that needs this repair as "k3s
+    // was not running", tear its mounts out from under a live process, and
+    // never start it again.
+    let was_active = host
+        .systemctl(&["is-active", "k3s.service"])
+        .await
+        .map(|o| {
+            let s = o.stdout.trim();
+            s == "active" || s == "activating"
+        })
+        .unwrap_or(false);
+
     if is_mountpoint(host, &croot_s).await {
         if is_readable_dir(&croot) {
             tracing::info!("{croot_s} is already mounted and readable");
             return Ok(());
         }
-        // An in-place rebuild is only possible if nothing still holds the dead
-        // filesystem down. When containers do, say so and stop — retrying costs a
-        // k3s stop/start on every timer tick and cannot succeed. See
-        // `overlays_pinning`.
-        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-        let pinned = overlays_pinning(&mounts, &croot_s);
-        if pinned > 0 {
-            tracing::error!(
-                "{croot_s} is mounted but cannot be read, and {pinned} container overlay \
-                 mounts still reference it. The image store cannot be rebuilt while they \
-                 do — mkfs needs the block device exclusively, and only stopping every \
-                 container (which needs the container runtime that is down) or a reboot \
-                 will release it. THIS NODE NEEDS A REBOOT; nothing here can recover it."
-            );
-            return Ok(());
+        // MOUNTED BUT UNREADABLE MEANS XFS LATCHED A SHUTDOWN, NOT THAT THE DATA
+        // IS GONE.
+        //
+        // Ceph blips (a node reboot, an OSD restart, a network hiccup), the RBD's
+        // writes hit osd_request_timeout, XFS takes `log I/O error -110` and shuts
+        // the filesystem down to protect itself. That shutdown is LATCHED: the
+        // block device recovers when Ceph does, but the mount stays poisoned
+        // until something unmounts and mounts it again. Everything above it —
+        // containerd, then k3s, then this node's half of etcd quorum — stays
+        // wedged behind an `Input/output error` that never clears on its own.
+        //
+        // This used to declare the node unrecoverable whenever containers still
+        // referenced the store, on the reasoning that repair meant `mkfs` and
+        // `mkfs` needs the device exclusively. Both halves of that were wrong:
+        //
+        //   - Repair does NOT need mkfs. A shutdown filesystem mounts cleanly
+        //     once remounted, replaying its log; the images survive. Rebuilding
+        //     threw away the entire image cache to fix something a remount fixes,
+        //     and `mount_the_store` already escalates to a rebuild by itself if
+        //     the filesystem genuinely will not mount and read.
+        //   - Those references are NOT load-bearing. They are the rootfs mounts
+        //     of containers whose runtime is already dead — which is guaranteed
+        //     here, because the store they were built on is unreadable. Nothing
+        //     is running to break.
+        //
+        // Observed 2026-09-08: 41 overlay mounts pinned node2's store, this
+        // branch logged "THIS NODE NEEDS A REBOOT" every 5 minutes for over an
+        // hour, node2's etcd never started, and node1 looped elections at term 28
+        // getting Connection refused on :2380 because nothing was listening.
+        // A reboot was never actually required — releasing stale mounts is.
+        tracing::warn!("{croot_s} is mounted but cannot be read — XFS has shut down, recovering");
+
+        // k3s FIRST, and before touching any mount: it is the thing that would
+        // otherwise be recreating the mounts being torn down. The restart is the
+        // shared one at the bottom, driven by `was_active` captured above.
+        if was_active {
+            tracing::info!("stopping k3s to release the dead image store");
+            let _ = host.systemctl(&["stop", "k3s.service"]).await;
         }
-        tracing::warn!("{croot_s} is mounted but cannot be read — rebuilding the image store");
+
+        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+        release_pinning_overlays(host, &mounts, &croot_s).await;
+
         // Lazy as a fallback: containerd may already hold descriptors on a
         // filesystem that has shut down, and a plain umount would refuse.
         if !host
@@ -547,17 +655,20 @@ pub async fn run<H: Host>(
         {
             let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
         }
-        needs_rebuild = true;
+
+        // Deliberately NOT `needs_rebuild = true`. A plain remount is the
+        // non-destructive repair and the common case; mount_the_store falls back
+        // to a rebuild on its own when the filesystem really is unusable.
+        needs_rebuild = false;
     }
 
     // From here on this may stop k3s, and every exit path has to put it back
-    // — captured explicitly (not a `trap`) so the restart runs whether
-    // `mount_the_store` returns Ok or Err.
-    let was_active = host
-        .systemctl(&["is-active", "--quiet", "k3s.service"])
-        .await
-        .map(|o| o.success)
-        .unwrap_or(false);
+    // — the flag is captured at the top of this function (not with a `trap`) so
+    // the restart runs whether `mount_the_store` returns Ok or Err, and whether
+    // or not the recovery branch above already stopped it.
+    //
+    // Idempotent by design: `stop` on an already-stopped unit is a no-op, so the
+    // recovery branch having stopped it costs nothing here.
     if was_active {
         tracing::info!("stopping k3s to move its image store onto Ceph");
         let _ = host.systemctl(&["stop", "k3s.service"]).await;
@@ -762,6 +873,37 @@ mod tests {
         let only_the_store = format!("/dev/rbd0 {CROOT} xfs rw,relatime,inode64 0 0\n");
         assert_eq!(overlays_pinning(&only_the_store, CROOT), 0);
         assert_eq!(overlays_pinning("", CROOT), 0);
+    }
+
+    /// The targets are what recovery needs: giving up required only a count,
+    /// releasing them requires knowing which mounts to unmount.
+    #[test]
+    fn pinning_overlays_are_reported_as_unmountable_targets() {
+        let targets = overlay_targets_pinning(&mounts_with_containers(), CROOT);
+        assert_eq!(targets.len(), 2);
+        assert!(targets
+            .iter()
+            .all(|t| t.starts_with("/run/k3s/containerd/")));
+        // The store's own mount must never be handed to umount here — that is
+        // done separately and afterwards, and doing it first would leave the
+        // overlays pinned by a path that no longer resolves.
+        assert!(!targets.iter().any(|t| t == CROOT));
+    }
+
+    /// Nested mounts must come off child-first, or unmounting the parent strands
+    /// the child on a path that no longer resolves.
+    #[test]
+    fn deeper_mounts_are_released_before_their_parents() {
+        let nested = format!(
+            "/dev/rbd0 {CROOT} xfs rw 0 0\n\
+             overlay /run/k3s/a/rootfs overlay rw,lowerdir={CROOT}/snapshots/1/fs 0 0\n\
+             shm /run/k3s/a/rootfs/deeper/shm tmpfs rw,lowerdir={CROOT}/snapshots/2/fs 0 0\n"
+        );
+        let targets = overlay_targets_pinning(&nested, CROOT);
+        assert_eq!(
+            targets,
+            vec!["/run/k3s/a/rootfs/deeper/shm", "/run/k3s/a/rootfs"]
+        );
     }
 
     /// Mounts belonging to anything else — the CephFS volumes an app's PVC brings,
@@ -1078,6 +1220,44 @@ mod tests {
         );
     }
 
+    /// A k3s that is stuck ACTIVATING still has to be stopped and restarted.
+    ///
+    /// That is the state a node sits in when its image store has shut down: k3s
+    /// never finishes starting because the snapshotter cannot open its
+    /// data-root. `is-active --quiet` exits non-zero there, so keying off the
+    /// exit status read the one node needing repair as "k3s was not running" —
+    /// tearing its mounts out from under a live process and never starting it
+    /// again.
+    #[tokio::test]
+    async fn a_k3s_stuck_activating_is_still_stopped_and_restarted() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = SimulatedDisk {
+            inner: FakeHost::new()
+                .ok("ceph -s", "")
+                .ok("rbd ls images", "yolab-n1\n")
+                .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
+                .ok("systemctl is-active", "activating"),
+            device_backing: dir.path().join("simulated-rbd0"),
+        };
+        std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        let calls = host.inner.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("systemctl stop k3s.service")),
+            "an activating k3s must still be stopped, calls were: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("systemctl start --no-block k3s.service")),
+            "and it must be started again, calls were: {calls:?}"
+        );
+    }
+
     #[tokio::test]
     async fn stops_and_restarts_k3s_around_an_active_migration() {
         let dir = tempfile::tempdir().unwrap();
@@ -1086,7 +1266,10 @@ mod tests {
                 .ok("ceph -s", "")
                 .ok("rbd ls images", "yolab-n1\n")
                 .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
-                .ok("systemctl is-active", ""),
+                // The literal word systemctl prints, not just a zero exit: the
+                // decision keys off the state text now, because "activating" is
+                // the state a k3s stuck on a dead image store actually reports.
+                .ok("systemctl is-active", "active"),
             device_backing: dir.path().join("simulated-rbd0"),
         };
         std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
