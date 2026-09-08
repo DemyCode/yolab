@@ -1194,6 +1194,111 @@ mod tests {
         );
     }
 
+    /// THE NODE1 STATE, END TO END. Readable, mounted, and unusable: the
+    /// snapshotter db lists layers whose directories are gone. Nothing in the
+    /// old check could see it, so the loop reported the store healthy every five
+    /// minutes while no pod on the machine could start.
+    #[tokio::test]
+    async fn a_readable_but_incoherent_store_is_torn_down_and_rebuilt() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("rbd ls images", "yolab-n1\n")
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .ok("umount", "")
+            .ok("systemctl is-active", "active")
+            .ok("systemctl", "")
+            .fail("rbd map", "no route to host"); // stop before the real mount dance
+        let dir = tempfile::tempdir().unwrap();
+        // db claims layers, snapshots directory empty — the contradiction.
+        snapshotter_at(dir.path(), 262_144, 0);
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(
+            host.ran("umount"),
+            "an incoherent store must be torn down, calls were: {:?}",
+            host.calls()
+        );
+        assert!(
+            host.ran("systemctl stop k3s.service"),
+            "k3s holds the store open; it has to stop before the rebuild"
+        );
+    }
+
+    /// THE FALLTHROUGH THIS GUARDS. The first version of the fix let the
+    /// incoherent branch fall into the unreadable one, which sets
+    /// needs_rebuild=false — so the store was torn down and then handed back
+    /// exactly as broken, with the whole repair silently undone. The three
+    /// states must be exclusive branches.
+    #[tokio::test]
+    async fn an_incoherent_store_does_not_fall_through_to_the_remount_path() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("rbd ls images", "yolab-n1\n")
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .ok("umount", "")
+            .ok("systemctl is-active", "active")
+            .ok("systemctl", "")
+            .fail("rbd map", "no route to host");
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 262_144, 0);
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        // The remount path logs about a latched XFS shutdown and unmounts once.
+        // Landing in it as well would mean unmounting a store already unmounted
+        // and, worse, resetting the rebuild decision.
+        let umounts = host
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("umount"))
+            .count();
+        assert!(
+            umounts <= 2,
+            "one teardown (plain, with a lazy fallback), not two passes: {:?}",
+            host.calls()
+        );
+    }
+
+    /// A HEALTHY node must never be wiped by this. Both halves present is the
+    /// normal state of every working machine, and stopping k3s to rebuild there
+    /// would turn the repair into the outage.
+    #[tokio::test]
+    async fn a_coherent_store_is_still_left_completely_alone() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("rbd ls images", "yolab-n1\n")
+            .ok("findmnt -rno TARGET --mountpoint", "");
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 262_144, 4);
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(!host.ran("umount"), "calls were: {:?}", host.calls());
+        assert!(!host.ran("systemctl stop"), "calls were: {:?}", host.calls());
+        assert!(!host.ran("rbd map"), "calls were: {:?}", host.calls());
+    }
+
+    /// A FRESH node has no db and no snapshots. That is a new machine, not a
+    /// broken one, and it must take the ordinary path rather than a rebuild.
+    #[tokio::test]
+    async fn a_fresh_store_is_not_mistaken_for_a_corrupt_one() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("rbd ls images", "yolab-n1\n")
+            .ok("findmnt -rno TARGET --mountpoint", "");
+        let dir = tempfile::tempdir().unwrap();
+        snapshotter_at(dir.path(), 0, 0);
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(
+            !host.ran("systemctl stop"),
+            "a new node must not have k3s stopped: {:?}",
+            host.calls()
+        );
+    }
+
     #[tokio::test]
     async fn a_mounted_but_unreadable_store_is_unmounted_and_rebuilt() {
         // is_readable_dir cannot distinguish "empty" from "EIO" without a
