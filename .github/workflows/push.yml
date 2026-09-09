@@ -38,8 +38,16 @@ jobs:
         run: |
           set -euo pipefail
           nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "$ATTIC_AUTH_TOKEN"
-          mapfile -t paths < <(grep -oE '/nix/store/[^)]+' /tmp/ci-output.txt | sort -u)
-          nix run nixpkgs#attic-client -- push yolab "${paths[@]}"
+          # Push the FULL closure of every toplevel — ceph and every one of its
+          # build dependencies included. The previous step grepped store paths out
+          # of the build log and pushed those, which captured the .drv files but
+          # not their realizable outputs, so ceph's output never reached the cache
+          # and every node recompiled it from source on every update.
+          nix path-info --recursive \
+            .#nixosConfigurations.yolab-ci.config.system.build.toplevel \
+            .#nixosConfigurations.yolab-ci-join.config.system.build.toplevel \
+            .#nixosConfigurations.yolab-wsl.config.system.build.toplevel \
+            | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
 
   build-images:
     runs-on: ubuntu-latest
