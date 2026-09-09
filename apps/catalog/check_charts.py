@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import yaml
 
@@ -101,7 +102,7 @@ def render(chart_dir, library_tgz, workdir):
     cmd = ["helm", "template", "release", staged]
     for k, v in LINT_VALUES.items():
         cmd += ["--set", f"{k}={v}"]
-    out = subprocess.run(cmd, capture_output=True, text=True)
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
     shutil.rmtree(staged, ignore_errors=True)
     if out.returncode != 0:
         return None, out.stderr.strip()
@@ -210,7 +211,11 @@ def check(app, docs, fail, chart_yaml=""):
                 and cmd[1] == "-c"
             ):
                 syntax = subprocess.run(
-                    ["sh", "-n"], input=cmd[2], capture_output=True, text=True
+                    ["sh", "-n"],
+                    input=cmd[2],
+                    capture_output=True,
+                    text=True,
+                    check=False,
                 )
                 if syntax.returncode != 0:
                     fail(
@@ -398,15 +403,13 @@ def main(argv):
         d
         for d in glob.glob(os.path.join(HERE, "*/"))
         if os.path.isfile(os.path.join(d, "Chart.yaml"))
-        and "type: library" not in open(os.path.join(d, "Chart.yaml")).read()
+        and "type: library" not in Path(d, "Chart.yaml").read_text()
     )
     if not chart_dirs:
         print("no charts found", file=sys.stderr)
         return 1
 
-    lib_version = chart_field(
-        open(os.path.join(LIBRARY, "Chart.yaml")).read(), "version"
-    )
+    lib_version = chart_field(Path(LIBRARY, "Chart.yaml").read_text(), "version")
     fail = Failures()
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -427,7 +430,7 @@ def main(argv):
 
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
-            text = open(os.path.join(chart_dir, "Chart.yaml")).read()
+            text = Path(chart_dir, "Chart.yaml").read_text()
 
             # A chart pinned to a library version other than the one in this tree
             # is rendered against something that is not what would ship with it.

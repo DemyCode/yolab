@@ -44,7 +44,9 @@ PNG_MAX_PX = 128
 
 
 def fetch(url: str) -> bytes | None:
-    r = subprocess.run(["curl", "-sfL", "--max-time", "20", url], capture_output=True)
+    r = subprocess.run(
+        ["curl", "-sfL", "--max-time", "20", url], capture_output=True, check=False
+    )
     return r.stdout if r.returncode == 0 and r.stdout else None
 
 

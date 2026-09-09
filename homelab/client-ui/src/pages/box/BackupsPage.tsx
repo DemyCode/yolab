@@ -102,12 +102,7 @@ interface VolumeStatus {
   /// reconcile ticks (nothing blocks server-side), after which the restore target is
   /// recreated and the data pulled back.
   phase:
-    | "Pending"
-    | "Deleting"
-    | "Restoring"
-    | "Succeeded"
-    | "Failed"
-    | "Skipped";
+    "Pending" | "Deleting" | "Restoring" | "Succeeded" | "Failed" | "Skipped";
 }
 
 interface DeploymentScale {
