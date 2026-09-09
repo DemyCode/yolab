@@ -95,11 +95,11 @@ in {
     nixpkgs.overlays = [
       (final: prev: {
         python3 = prev.python3.override {
-          packageOverrides = (pyfinal: pyprev: {
+          packageOverrides = pyfinal: pyprev: {
             "inline-snapshot" = pyprev."inline-snapshot".overridePythonAttrs (_: {
               doCheck = false;
             });
-          });
+          };
         };
       })
     ];
