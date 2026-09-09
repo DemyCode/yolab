@@ -43,9 +43,18 @@ jobs:
           # of the build log and pushed those, which captured the .drv files but
           # not their realizable outputs, so ceph's output never reached the cache
           # and every node recompiled it from source on every update.
+          #
+          # `path:.#` MUST match the `nix run path:.#ci` step above: the bare
+          # `.#` resolves to the git flake, whose source hash differs from the
+          # path flake, so it points at toplevels that were never built and
+          # `nix path-info` fails with "path is not valid". Build them first so
+          # the recursive closure can be enumerated, then push it explicitly.
+          nix build --no-link \
+            path:.#nixosConfigurations.yolab-ci.config.system.build.toplevel \
+            path:.#nixosConfigurations.yolab-ci-join.config.system.build.toplevel
           nix path-info --recursive \
-            .#nixosConfigurations.yolab-ci.config.system.build.toplevel \
-            .#nixosConfigurations.yolab-ci-join.config.system.build.toplevel \
+            path:.#nixosConfigurations.yolab-ci.config.system.build.toplevel \
+            path:.#nixosConfigurations.yolab-ci-join.config.system.build.toplevel \
             | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
 
   build-images:
