@@ -82,11 +82,11 @@ in {
   };
 
   config = {
-    nixpkgs.overlays = [
-      (_final: prev: {
-        inherit (inputs.nixpkgs-ceph.legacyPackages.${prev.stdenv.hostPlatform.system}) ceph ceph-client;
-      })
-    ];
+    # Ceph comes straight from the single nixpkgs pin. A separate `nixpkgs-ceph`
+    # input used to override it to a newer ceph, but it was a second moving pin
+    # that broke on its own (a transitive python test dependency), so it bought
+    # nothing over the main pin and was removed.
+    nixpkgs.overlays = [];
 
     # Ceph runs as host daemons, outside k3s — the only arrangement in which
     # containerd's image store can live on an RBD. See homelab/nixos/ceph/.
