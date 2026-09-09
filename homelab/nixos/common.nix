@@ -86,7 +86,23 @@ in {
     # input used to override it to a newer ceph, but it was a second moving pin
     # that broke on its own (a transitive python test dependency), so it bought
     # nothing over the main pin and was removed.
-    nixpkgs.overlays = [];
+    #
+    # `inline-snapshot` is a *test framework* pulled in as a check dependency of
+    # openai/sqlframe/narwhals, which sit in ceph's python3 environment. Its own
+    # test suite (1405 tests) fails 3 in the sandbox, so Hydra never caches it
+    # and every node compiles it from source only to fail. Testing the test
+    # framework is the one thing nobody in this closure needs — disable it.
+    nixpkgs.overlays = [
+      (final: prev: {
+        python3 = prev.python3.override {
+          packageOverrides = (pyfinal: pyprev: {
+            "inline-snapshot" = pyprev."inline-snapshot".overridePythonAttrs (_: {
+              doCheck = false;
+            });
+          });
+        };
+      })
+    ];
 
     # Ceph runs as host daemons, outside k3s — the only arrangement in which
     # containerd's image store can live on an RBD. See homelab/nixos/ceph/.
