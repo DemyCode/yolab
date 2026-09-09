@@ -9,7 +9,6 @@ import sys
 import uuid
 from pathlib import Path
 
-
 # ─── TOML writer (simple, only handles our config shape) ──────────────────────
 
 
@@ -173,7 +172,7 @@ def main():
                     "wg_server_endpoint": tunnel_data["wg_server_endpoint"],
                     "wg_server_public_key": tunnel_data["wg_server_public_key"],
                 }
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort: any failure leaves the machine usable
                 print(f"WARNING: Tunnel registration failed: {e}")
                 print("Continuing without tunnel. You can configure it later.")
 
