@@ -88,13 +88,16 @@ in {
     # nothing over the main pin and was removed.
     #
     # `inline-snapshot` is a *test framework* pulled in as a check dependency of
-    # openai/sqlframe/narwhals, which sit in ceph's python3 environment. Its own
+    # openai/sqlframe/narwhals, which sit in ceph's python environment. Its own
     # test suite (1405 tests) fails 3 in the sandbox, so Hydra never caches it
     # and every node compiles it from source only to fail. Testing the test
     # framework is the one thing nobody in this closure needs — disable it.
+    #
+    # ceph is pinned to python312 (not the default python3, which is 3.14), so
+    # the override must land on python312 — overriding python3 alone did nothing.
     nixpkgs.overlays = [
       (final: prev: {
-        python3 = prev.python3.override {
+        python312 = prev.python312.override {
           packageOverrides = pyfinal: pyprev: {
             "inline-snapshot" = pyprev."inline-snapshot".overridePythonAttrs (_: {
               doCheck = false;
