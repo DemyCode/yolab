@@ -46,7 +46,6 @@ jobs:
           nix path-info --recursive \
             .#nixosConfigurations.yolab-ci.config.system.build.toplevel \
             .#nixosConfigurations.yolab-ci-join.config.system.build.toplevel \
-            .#nixosConfigurations.yolab-wsl.config.system.build.toplevel \
             | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
 
   build-images:
