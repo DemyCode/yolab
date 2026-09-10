@@ -1,8 +1,8 @@
-// Shared primitives used by backup_run.rs (BackupRun reconciler), restore_run.rs
-// (RestoreRun reconciler), backups.rs (S3 enable/status/snapshot browsing), and
-// apps.rs (setup_namespace_backup at install time). Pulled out of backups.rs so
-// the run-level orchestration (backup_run.rs/restore_run.rs) doesn't have to
-// depend on the HTTP-handler module, and vice versa.
+// Shared primitives used by backup.rs (the backup operation + scheduler),
+// restore_run.rs (the RestoreRun reconciler), backups.rs (S3 enable/status/snapshot
+// browsing), and apps.rs (setup_namespace_backup at install time). Pulled out of
+// backups.rs so the run-level orchestration (backup.rs/restore_run.rs) doesn't
+// have to depend on the HTTP-handler module, and vice versa.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,27 +10,6 @@ use std::time::Duration;
 use tokio::process::Command;
 
 const MANAGED_BY: (&str, &str) = ("app.kubernetes.io/managed-by", "yolab");
-
-/// Serializes every "decide whether to start a new backup or restore run" critical
-/// section in this process — the scheduler's own check in `backup_run::reconcile_tick`,
-/// and the manual `run-now`/`dr-start` HTTP handlers in `backups.rs`.
-///
-/// Without this, the check (`is_active()`/`volsync_mover_running()`) and the act
-/// (`BACKUP_RUN.create()`/`RESTORE_RUN.create()`) are two separate network round-trips
-/// with nothing between them — the reconcile tick can observe "nothing running", start
-/// awaiting the kubectl calls that create a scheduled run, and in that exact window a
-/// human's "run backup now" click observes the same "nothing running" and creates a
-/// second, differently-named run. Run names are timestamped to the second, so the
-/// obvious "second create fails as a duplicate" safety net does not exist.
-///
-/// Deliberately a plain in-process mutex, not the `yolab-backup-reconciler` Lease:
-/// that Lease exists to pick one reconciler among several *nodes*, is held by a single
-/// shared identity for the reconcile loop's entire lifetime, and does not provide
-/// mutual exclusion against a second acquisition using that same identity — sharing it
-/// here would either give this mutex no teeth (same identity) or stall the reconciler
-/// for a full lease duration every time a manual trigger won the race (different
-/// identity). This closes the actual race, which is a same-process one, directly.
-pub(crate) static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(crate) async fn kubectl_apply(manifest: &str) -> anyhow::Result<()> {
     crate::kubectl::apply(manifest).await

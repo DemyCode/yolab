@@ -28,8 +28,8 @@ use tower_http::cors::{Any, CorsLayer};
 use auth::{auth_middleware, AuthState};
 use config::Config;
 use routers::{
-    apps, backup_schedule, backups, ceph, ceph_join, custom_app, disks, logs, nodes, packs, reboot,
-    rebuild, status, terminal, update,
+    apps, backups, ceph, ceph_join, custom_app, disks, logs, nodes, packs, reboot, rebuild,
+    status, terminal, update,
 };
 
 /// Single shared state threaded through all handlers.
@@ -182,14 +182,6 @@ async fn main() {
             post(backups::run_backup_now),
         )
         .route(
-            "/api/backups/schedule",
-            get(backup_schedule::get_schedule).put(backup_schedule::set_schedule),
-        )
-        .route(
-            "/api/backups/schedule/preview",
-            get(backup_schedule::preview_schedule),
-        )
-        .route(
             "/api/backups/snapshots/:id/catalog",
             get(backups::snapshot_catalog),
         )
@@ -294,17 +286,14 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
-    // Single reconcile loop drives both BackupRun and RestoreRun objects (see
-    // routers/backup_run.rs's module doc for why this replaced three separate
-    // ConfigMap-lock-guarded timers).
+    // A single reconcile loop drives RestoreRun objects (see routers/restore_run.rs),
+    // and a separate loop starts scheduled backups when the newest restorable one is
+    // stale (routers/backup.rs).
     supervise(
-        "backup-run",
-        || routers::backup_run::run(random_holder_id()),
+        "restore",
+        || routers::restore_run::run(random_holder_id()),
     );
-    supervise(
-        "replication-source",
-        backups::run_replication_source_reconciler,
-    );
+    supervise("backup-scheduler", routers::backup::run_scheduler);
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISKâON/OFF config â no separate watcher.
     supervise("disks", disks_reconciler::run);
