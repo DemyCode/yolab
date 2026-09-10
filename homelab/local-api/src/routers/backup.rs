@@ -401,7 +401,11 @@ async fn snapshot_cluster_inner(
             .as_ref()
             .and_then(|v| v["metadata"]["annotations"].as_object().cloned())
             .unwrap_or_default();
-        let app_id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let app_id = ann
+            .get(ANN_APP_ID)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let chart_repo = ann
             .get(ANN_CHART_REPO)
             .and_then(|v| v.as_str())
@@ -495,7 +499,9 @@ async fn snapshot_cluster_inner(
 
 /// The newest restic snapshot id carrying `tag`, if any.
 async fn newest_snapshot_id(repo: &str, cfg: &BackupConfig, tag: &str) -> Option<String> {
-    let out = restic(repo, cfg, &["snapshots", "--json", "--tag", tag]).await.ok()?;
+    let out = restic(repo, cfg, &["snapshots", "--json", "--tag", tag])
+        .await
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -633,7 +639,10 @@ mod tests {
     #[test]
     fn a_succeeded_set_is_restorable_regardless_of_in_flight() {
         assert_eq!(classify(&set("a", "succeeded"), true), SetState::Restorable);
-        assert_eq!(classify(&set("a", "succeeded"), false), SetState::Restorable);
+        assert_eq!(
+            classify(&set("a", "succeeded"), false),
+            SetState::Restorable
+        );
     }
 
     #[test]
@@ -664,7 +673,9 @@ mod tests {
 
     #[test]
     fn upsert_caps_the_list() {
-        let mut sets: Vec<BackupSet> = (0..100).map(|i| set(&format!("bk-{i}"), "succeeded")).collect();
+        let mut sets: Vec<BackupSet> = (0..100)
+            .map(|i| set(&format!("bk-{i}"), "succeeded"))
+            .collect();
         upsert(&mut sets, set("bk-new", "running"));
         assert_eq!(sets.len(), MAX_SETS);
         assert_eq!(sets[0].id, "bk-new");
@@ -695,7 +706,9 @@ mod tests {
     // ── should_schedule ────────────────────────────────────────────────────────
 
     fn at(iso: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(iso).unwrap().with_timezone(&Utc)
+        DateTime::parse_from_rfc3339(iso)
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     #[test]

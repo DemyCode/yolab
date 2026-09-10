@@ -85,7 +85,9 @@ pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::
 /// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     if restore::is_running().await {
-        return Err(anyhow::anyhow!("A restore is in progress — try again once it finishes.").into());
+        return Err(
+            anyhow::anyhow!("A restore is in progress — try again once it finishes.").into(),
+        );
     }
     let Some((url, token)) = ye_creds(&state.config) else {
         return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
@@ -375,7 +377,9 @@ pub async fn snapshot_catalog(
 /// yolab-external after a key rotation.
 pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     if restore::is_running().await {
-        return Err(anyhow::anyhow!("A restore is in progress — try again once it finishes.").into());
+        return Err(
+            anyhow::anyhow!("A restore is in progress — try again once it finishes.").into(),
+        );
     }
     let Some((url, token)) = ye_creds(&state.config) else {
         return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
