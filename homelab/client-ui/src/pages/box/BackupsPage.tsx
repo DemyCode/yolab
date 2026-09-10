@@ -23,6 +23,7 @@ interface BackupSet {
   snapshot_id?: string | null;
   error?: string | null;
   state: BackupSetState;
+  services?: { instance_name: string; pvc_count: number }[];
 }
 
 interface OperationState {
@@ -81,9 +82,14 @@ function setStateLabel(state: BackupSetState): string {
   }
 }
 
+function serviceName(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 function BackupSetCard({ set: backupSet }: { set: BackupSet }) {
   const isRunning = backupSet.state === "running";
   const isRestorable = backupSet.state === "restorable";
+  const services = backupSet.services ?? [];
 
   return (
     <Card
@@ -118,8 +124,34 @@ function BackupSetCard({ set: backupSet }: { set: BackupSet }) {
           </div>
         </div>
 
+        {isRunning && (
+          <p className="mt-3 text-xs text-fg-muted">
+            Your files stay available the whole time. A large folder can take a
+            while the first time it is copied — nothing is wrong, and it will
+            not be cut short for taking long.
+          </p>
+        )}
+
         {!isRunning && backupSet.error && (
           <p className="mt-2 text-xs text-danger">{backupSet.error}</p>
+        )}
+
+        {isRestorable && services.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {services.map((s) => (
+              <span
+                key={s.instance_name}
+                className="inline-flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2 py-1 text-xs text-fg-muted"
+              >
+                {serviceName(s.instance_name)}
+                {s.pvc_count > 0 && (
+                  <span className="text-fg-subtle">
+                    · {s.pvc_count} volume{s.pvc_count === 1 ? "" : "s"}
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -333,6 +365,18 @@ export function BackupsPage() {
     void load();
   }, [load]);
 
+  // The list is polled separately from the one-shot `load`, so a backup that is
+  // running appears as a row the moment it starts and flips to Restorable (with
+  // its services) the moment it finishes — without re-fetching the s3 status.
+  const loadRuns = useCallback(async () => {
+    try {
+      const runsRes = await fetch("/api/backups/runs").then((r) => r.json());
+      if (Array.isArray(runsRes)) setSets(runsRes as BackupSet[]);
+    } catch {
+      /* network blip */
+    }
+  }, []);
+
   const pollOpState = useCallback(async () => {
     try {
       const s = (await fetch("/api/backups/state").then((r) =>
@@ -347,14 +391,17 @@ export function BackupsPage() {
   useEffect(() => {
     let cancelled = false;
     const id = window.setInterval(() => {
-      if (!cancelled) void pollOpState();
+      if (cancelled) return;
+      void pollOpState();
+      void loadRuns();
     }, 5000);
     void pollOpState();
+    void loadRuns();
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [pollOpState]);
+  }, [pollOpState, loadRuns]);
 
   async function handleEnable() {
     const res = await fetch("/api/backups/s3/enable", { method: "POST" });
@@ -435,22 +482,6 @@ export function BackupsPage() {
       </div>
 
       {backupError && <p className="text-xs text-danger">{backupError}</p>}
-
-      {opState.backing_up && (
-        <div className="rounded-lg border border-warning-soft bg-warning-soft px-4 py-3">
-          <div className="flex items-center gap-2">
-            <RefreshCw className="h-4 w-4 text-warning animate-spin flex-shrink-0" />
-            <p className="text-sm text-warning font-medium">
-              Backup in progress
-            </p>
-          </div>
-          <p className="mt-3 text-xs text-warning">
-            Your files stay available the whole time. A large folder can take a
-            while the first time it is copied — nothing is wrong, and it will
-            not be cut short for taking long.
-          </p>
-        </div>
-      )}
 
       {!opState.backing_up &&
         opState.last_ok_age_hours !== null &&

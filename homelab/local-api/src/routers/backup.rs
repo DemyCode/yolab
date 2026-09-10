@@ -45,6 +45,12 @@ const PRUNE_TIMEOUT_SECS: u64 = 600;
 static IN_FLIGHT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct ServiceSummary {
+    instance_name: String,
+    pvc_count: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct BackupSet {
     pub id: String,
     #[serde(default)]
@@ -57,6 +63,8 @@ pub(crate) struct BackupSet {
     pub snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceSummary>,
 }
 
 /// The three states the page shows. `Crashed` covers both "failed" and "was running
@@ -136,16 +144,17 @@ async fn record_running(id: &str, triggered_by: &str) {
             finished_at: None,
             snapshot_id: None,
             error: None,
+            services: vec![],
         },
     );
     write_sets(&sets).await;
 }
 
-async fn record_done(id: &str, result: &anyhow::Result<String>) {
+async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSummary>)>) {
     let mut sets = read_sets().await;
     let finished_at = Utc::now().to_rfc3339();
     let set = match result {
-        Ok(snapshot_id) => BackupSet {
+        Ok((snapshot_id, services)) => BackupSet {
             id: id.to_string(),
             triggered_by: sets
                 .iter()
@@ -161,6 +170,7 @@ async fn record_done(id: &str, result: &anyhow::Result<String>) {
             finished_at: Some(finished_at),
             snapshot_id: Some(snapshot_id.clone()),
             error: None,
+            services: services.clone(),
         },
         Err(e) => BackupSet {
             id: id.to_string(),
@@ -178,6 +188,7 @@ async fn record_done(id: &str, result: &anyhow::Result<String>) {
             finished_at: Some(finished_at),
             snapshot_id: None,
             error: Some(e.to_string()),
+            services: vec![],
         },
     };
     upsert(&mut sets, set);
@@ -247,7 +258,7 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
 /// The two halves of one backup, in order. Everything here is safe to redo and bounded
 /// by the restic timeouts, so a crash simply leaves a "running" record that the next
 /// tick classifies as crashed.
-async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<String> {
+async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     // 1. Volumes: trigger every managed PVC. Fire-and-forget by design — VolSync's
     //    mover runs in the background and its status is read separately.
     let pvcs = list_user_pvcs().await?;
@@ -258,7 +269,7 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<String> {
     }
 
     // 2. Cluster state, tagged with the set id.
-    let snapshot_id = snapshot_cluster(cfg, id).await?;
+    let (snapshot_id, services) = snapshot_cluster(cfg, id).await?;
 
     // 3. Retention. Best-effort: if it fails or is skipped this run, the next one
     //    prunes whatever it left behind.
@@ -285,15 +296,18 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<String> {
     )
     .await;
 
-    Ok(snapshot_id)
+    Ok((snapshot_id, services))
 }
 
 // ── Cluster-state snapshot (etcd + K8s objects + catalog) ──────────────────────
 
 /// Snapshots etcd, exports every managed namespace's objects, and pushes the staging
 /// directory to restic tagged with `tag` (and `cluster-backup`, so restore can find it).
-/// Returns the restic snapshot id.
-async fn snapshot_cluster(cfg: &BackupConfig, tag: &str) -> anyhow::Result<String> {
+/// Returns the restic snapshot id and a summary of the services captured.
+async fn snapshot_cluster(
+    cfg: &BackupConfig,
+    tag: &str,
+) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -313,7 +327,7 @@ async fn snapshot_cluster_inner(
     cfg: &BackupConfig,
     tag: &str,
     tmp_dir: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
 
@@ -495,6 +509,17 @@ async fn snapshot_cluster_inner(
     newest_snapshot_id(&repo, cfg, tag)
         .await
         .ok_or_else(|| anyhow::anyhow!("backup completed but no snapshot id could be read"))
+        .map(|snapshot_id| (snapshot_id, summarize_services(&services)))
+}
+
+fn summarize_services(services: &[Value]) -> Vec<ServiceSummary> {
+    services
+        .iter()
+        .map(|s| ServiceSummary {
+            instance_name: s["instance_name"].as_str().unwrap_or("").to_string(),
+            pvc_count: s["pvcs"].as_array().map(|a| a.len()).unwrap_or(0),
+        })
+        .collect()
 }
 
 /// The newest restic snapshot id carrying `tag`, if any.
@@ -557,6 +582,7 @@ pub(crate) async fn list() -> Vec<Value> {
                 "finished_at": s.finished_at,
                 "snapshot_id": s.snapshot_id,
                 "error": s.error,
+                "services": s.services,
                 "state": state_str(state),
             })
         })
@@ -633,6 +659,7 @@ mod tests {
             },
             snapshot_id: None,
             error: None,
+            services: vec![],
         }
     }
 
@@ -762,5 +789,21 @@ mod tests {
     fn collect_images_handles_empty() {
         assert!(collect_images(&[]).is_empty());
         assert!(collect_images(&[json!({})]).is_empty());
+    }
+
+    // ── summarize_services ─────────────────────────────────────────────────────
+
+    #[test]
+    fn summarize_services_maps_names_to_names_and_counts() {
+        let services = vec![
+            json!({"instance_name": "gitea", "pvcs": [{"name": "a"}, {"name": "b"}]}),
+            json!({"instance_name": "filebrowser", "pvcs": []}),
+        ];
+        let summary = summarize_services(&services);
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].instance_name, "gitea");
+        assert_eq!(summary[0].pvc_count, 2);
+        assert_eq!(summary[1].instance_name, "filebrowser");
+        assert_eq!(summary[1].pvc_count, 0);
     }
 }
