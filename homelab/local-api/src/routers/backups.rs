@@ -2,38 +2,13 @@ use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::Duration;
 use tokio::process::Command;
 
 use crate::routers::backup_common::*;
-use crate::routers::{backup_run, restore_run};
+use crate::routers::{backup, restore_run};
 use crate::{config::Config, error::Result, AppState};
 
-// ── Backup/restore operation state ──────────────────────────────────────────
-//
-// GET /api/backups/state is the frontend's single source of truth — a page refresh,
-// a second tab, or a lost connection should never desync from what's actually
-// happening on the backend. Unlike the old ConfigMap-lock design, "is a backup/restore
-// running" is now just "does a non-terminal BackupRun/RestoreRun object exist" — see
-// backup_run.rs / restore_run.rs for why that can never get stuck the way a flag could.
-
-/// GET /api/backups/state
-pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let backup = backup_run::current_status().await;
-    let restore = restore_run::current_status().await;
-    Ok(Json(serde_json::json!({
-        "backing_up": !backup["active"].is_null(),
-        "restoring": !restore["active"].is_null(),
-        "backup_run": backup["active"],
-        "restore_run": restore["active"],
-        "last_backup": backup["last"],
-        // Staleness, not duration: how long since a restorable backup existed.
-        "last_ok_age_hours": backup["last_ok_age_hours"],
-        "stale_after_hours": backup["stale_after_hours"],
-    })))
-}
-
-// ── Config reader ─────────────────────────────────────────────────────────────
+// ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
 
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
     let text = std::fs::read_to_string(&cfg.config_path).ok()?;
@@ -56,8 +31,6 @@ pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
     }
     None
 }
-
-// ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
 
 pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some((url, token)) = ye_creds(&state.config) else {
@@ -109,31 +82,16 @@ pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::
     ))
 }
 
-/// True while any backup/restore activity holds a stake in the restic repos — gates
-/// enable/run-now/dr-start so two operations never contend for the same repo lock.
-async fn any_operation_in_progress() -> bool {
-    backup_run::is_active().await
-        || restore_run::is_active().await
-        || backup_run::volsync_mover_running().await
-}
-
-async fn ensure_no_operation_in_progress() -> anyhow::Result<()> {
-    if any_operation_in_progress().await {
-        anyhow::bail!("A backup or restore is already in progress — try again once it finishes.");
-    }
-    Ok(())
-}
-
 /// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    ensure_no_operation_in_progress().await?;
+    if restore_run::is_active().await {
+        return Err(anyhow::anyhow!("A restore is in progress — try again once it finishes.").into());
+    }
     let Some((url, token)) = ye_creds(&state.config) else {
         return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
     };
 
     let cfg = ensure_master_config(&url, &token).await?;
-    // `?`, not a silent empty default: an API blip here would otherwise report
-    // "provisioned" with zero PVCs actually configured for backup.
     let pvcs = list_user_pvcs().await?;
 
     let mut sources: Vec<String> = Vec::new();
@@ -151,10 +109,6 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
     })))
 }
 
-/// Formats a hex secret as a human-copyable recovery key: uppercase, hyphenated in
-/// groups of 5 (e.g. "A1B2C-3D4E5-..."). This is the restic encryption password itself,
-/// not a derivation of it — anyone who has this key can decrypt the B2 backups directly
-/// with `restic`, so it must be treated with the same care as the password itself.
 fn format_recovery_key(hex: &str) -> String {
     hex.to_uppercase()
         .as_bytes()
@@ -164,21 +118,6 @@ fn format_recovery_key(hex: &str) -> String {
         .join("-")
 }
 
-/// GET /api/backups/recovery-key
-///
-/// Surfaces the restic encryption password as a one-time-displayable recovery key.
-/// This is the ONLY copy of the key that exists outside of etcd (which is itself
-/// backed up encrypted with this same password) — on total machine loss, this is
-/// the sole way to decrypt the B2 backups. The frontend is expected to show this
-/// once at backup-enable time with an explicit "I've saved this" acknowledgment,
-/// and to offer it again on request (e.g. a "View recovery key" action) since a
-/// user may need to re-copy it later (new password manager, printed copy lost, etc).
-///
-/// Deliberately NOT escrowed with yolab-external by default: the whole point of
-/// generating this password locally (see `ensure_master_config`) is that yolab-
-/// external cannot decrypt the user's backups even with full account access.
-/// Escrowing it would be a real product/security tradeoff that needs an explicit,
-/// opt-in decision — not something to silently wire up as a side effect of a bug-fix pass.
 pub async fn get_recovery_key(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let Some(cfg) = read_master_config().await else {
         return Ok(Json(serde_json::json!({ "configured": false })));
@@ -189,15 +128,40 @@ pub async fn get_recovery_key(State(_state): State<AppState>) -> Result<Json<ser
     })))
 }
 
+/// GET /api/backups/state — the frontend's single source of truth for what is running.
+pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let restore = restore_run::current_status().await;
+    let sets = backup::list().await;
+    let active: Vec<serde_json::Value> = sets
+        .iter()
+        .filter(|s| s["state"] == "running")
+        .cloned()
+        .collect();
+    let last = sets.iter().find(|s| s["state"] != "running").cloned();
+    Ok(Json(serde_json::json!({
+        "backing_up": !active.is_empty() || backup::volsync_mover_running().await,
+        "restoring": !restore["active"].is_null(),
+        "backup_run": active.first().cloned(),
+        "restore_run": restore["active"],
+        "last_backup": last,
+        "last_ok_age_hours": backup::last_ok_age_hours().await,
+        "stale_after_hours": 24,
+    })))
+}
+
+/// GET /api/backups/runs — every recorded backup set, newest first, in three states
+/// (`running`, `restorable`, `crashed`).
+pub async fn list_runs(State(_state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::Value::Array(backup::list().await))
+}
+
 /// A PVC hasn't synced in this long → flag it as stale rather than silently "Pending" forever.
-/// 36 h comfortably exceeds the daily backup cadence plus retry slack.
 const STALE_AFTER_HOURS: i64 = 36;
 
-/// GET /api/backups/status — per-PVC VolSync ReplicationSource status + etcd snapshot.
+/// GET /api/backups/status — per-PVC VolSync ReplicationSource status.
 pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let v = get_replication_sources().await;
 
-    // Build a (namespace, pvc_name) → (phase, deletionTimestamp) map from all PVCs.
     let pvc_health_map: HashMap<(String, String), (String, Option<String>)> =
         crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"])
             .await
@@ -250,10 +214,6 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
                 .cloned()
                 .unwrap_or(("NotFound".to_string(), None));
 
-            // Stale: never synced and this RS has existed longer than the grace window, or
-            // its last successful sync is older than the grace window. Either way, a backup
-            // that looks "Pending" forever with no visible alert is exactly how a dead backup
-            // goes unnoticed until the day it's needed.
             let stale = match &last_sync_time {
                 Some(t) => hours_since(t).is_none_or(|h| h > STALE_AFTER_HOURS),
                 None => created
@@ -261,8 +221,6 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
                     .and_then(hours_since)
                     .is_some_and(|h| h > STALE_AFTER_HOURS),
             };
-            // The PVC has a pending deletion but is still present (finalizer blocking) —
-            // the exact state that makes every future backup job permanently unschedulable.
             let stuck_terminating = pvc_deletion_ts.is_some();
 
             serde_json::json!({
@@ -283,10 +241,12 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
         p["stale"].as_bool().unwrap_or(false) || p["stuck_terminating"].as_bool().unwrap_or(false)
     });
 
-    // When cluster state (etcd) was last captured — sourced from the BackupRun that
-    // actually included it, not from the transient etcdsnapshotfile CRD (see
-    // backup_run::last_etcd_snapshot for why that never worked).
-    let etcd_last = backup_run::last_etcd_snapshot().await;
+    // When cluster state (etcd) was last captured, from the newest restorable set.
+    let etcd_last = backup::list()
+        .await
+        .into_iter()
+        .find(|s| s["state"] == "restorable")
+        .and_then(|s| s["finished_at"].as_str().map(String::from));
 
     Ok(Json(serde_json::json!({
         "pvcs": pvcs,
@@ -299,24 +259,17 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
 
 #[derive(Deserialize, Default)]
 pub struct DrStartBody {
-    /// Omit to restore from the latest cluster-backup snapshot.
     #[serde(default)]
     pub snapshot_id: Option<String>,
     #[serde(default)]
     pub all: bool,
     #[serde(default)]
     pub namespaces: Vec<String>,
-    /// Recreate the storage layer before restoring, because it is damaged beyond
-    /// repair. Defaults to false and is never inferred: it deletes pools, so it has to
-    /// be asked for. The phase itself re-checks against the cluster and refuses if the
-    /// data could still come back — this flag grants permission, it does not assert a
-    /// fact.
     #[serde(default)]
     pub rebuild_storage: bool,
 }
 
-/// POST /api/backups/dr/start — creates a RestoreRun; see restore_run.rs for the
-/// Validating → WaitingForStorage → RestoringVolumes → Applying state machine.
+/// POST /api/backups/dr/start — creates a RestoreRun; see restore_run.rs.
 pub async fn dr_start(
     State(_state): State<AppState>,
     Json(body): Json<DrStartBody>,
@@ -324,10 +277,9 @@ pub async fn dr_start(
     if !body.all && body.namespaces.is_empty() {
         return Err(anyhow::anyhow!("specify all:true or a non-empty namespaces[]").into());
     }
-    // Held across the check-then-act, same as the scheduler's own — see
-    // START_LOCK's doc comment for the race this closes.
-    let _start_guard = START_LOCK.lock().await;
-    ensure_no_operation_in_progress().await?;
+    if restore_run::is_active().await {
+        return Err(anyhow::anyhow!("A restore is already in progress.").into());
+    }
     let name = restore_run::start(
         body.snapshot_id,
         body.all,
@@ -340,13 +292,11 @@ pub async fn dr_start(
     ))
 }
 
-/// GET /api/backups/dr/status — the active RestoreRun's full status (phase, per-namespace/
-/// per-volume progress), or the most recently finished one.
 pub async fn dr_status(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(restore_run::current_status().await))
 }
 
-// ── Cluster backup (thin HTTP layer over backup_run.rs) ──────────────────────
+// ── Cluster backup ─────────────────────────────────────────────────────────────
 
 /// GET /api/backups/snapshots — list available cluster-backup restic snapshots.
 pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
@@ -366,7 +316,6 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
     .await?;
 
     if !out.status.success() {
-        // Repo not initialised yet — no snapshots exist.
         return Ok(Json(
             serde_json::json!({ "snapshots": [], "configured": true }),
         ));
@@ -381,7 +330,6 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
 }
 
 /// GET /api/backups/snapshots/:id/catalog
-/// Extracts catalog.json from a specific restic cluster-backup snapshot.
 pub async fn snapshot_catalog(
     State(_state): State<AppState>,
     Path(snapshot_id): Path<String>,
@@ -437,11 +385,11 @@ pub async fn snapshot_catalog(
 }
 
 /// POST /api/backups/credentials/refresh — re-fetches B2 credentials from
-/// yolab-external. Use when backups start failing after a key rotation on the
-/// platform side; `ensure_master_config` otherwise caches the original credentials
-/// forever once they're first provisioned.
+/// yolab-external after a key rotation.
 pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    ensure_no_operation_in_progress().await?;
+    if restore_run::is_active().await {
+        return Err(anyhow::anyhow!("A restore is in progress — try again once it finishes.").into());
+    }
     let Some((url, token)) = ye_creds(&state.config) else {
         return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
     };
@@ -449,32 +397,23 @@ pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<s
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// POST /api/backups/cluster/run-now — manual trigger. Creates a BackupRun; see
-/// backup_run.rs for the SyncingVolumes → SnapshottingCluster → Pruning state machine.
+/// POST /api/backups/cluster/run-now — manual trigger. Starts one backup set: every
+/// VolSync ReplicationSource is triggered and the cluster state is snapshotted, both
+/// tagged with the same id.
 pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     if read_master_config().await.is_none() {
         return Err(anyhow::anyhow!("backup not configured").into());
     }
-    // Held across the check-then-act, same as the scheduler's own — see
-    // START_LOCK's doc comment for the race this closes.
-    let _start_guard = START_LOCK.lock().await;
-    ensure_no_operation_in_progress().await?;
-    let name = backup_run::start("manual").await?;
+    let name = backup::start("manual").await?;
     Ok(Json(
         serde_json::json!({ "ok": true, "started": true, "name": name }),
     ))
 }
 
-// ── Per-namespace install-time / self-healing hooks ───────────────────────────
+// ── Per-namespace install-time hook ───────────────────────────────────────────
 
 /// Creates the restic secret and ReplicationSource for a single namespace at install
 /// time. Called by apps.rs immediately after the namespace is created.
-/// `namespace` is the raw app namespace (e.g. "yolab-gitea"), not the instance name.
-///
-/// Returns `Err` on a `list_user_pvcs` failure instead of silently doing nothing, so
-/// the caller (an SSE install stream) can tell the person installing that backup
-/// wiring didn't happen yet — self-healed within the hour by
-/// `run_replication_source_reconciler`, but worth surfacing rather than staying quiet.
 pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     let Some(cfg) = read_master_config().await else {
         return Ok(()); // backups not enabled — nothing to wire up
@@ -488,135 +427,13 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One-time migration: patches the independent `schedule` out of any managed
-/// ReplicationSources that still carry the old `0 3 * * *` cron trigger.
-/// After this, RSes only fire when the backup job explicitly stamps a `manual` trigger.
-async fn strip_rs_schedules() {
-    let v = crate::kubectl::get_json(&[
-        "get",
-        "replicationsource",
-        "-A",
-        "-l",
-        "app.kubernetes.io/managed-by=yolab",
-        "-o",
-        "json",
-    ])
-    .await
-    .unwrap_or(serde_json::json!({"items": []}));
-    for item in v["items"].as_array().cloned().unwrap_or_default() {
-        let name = item["metadata"]["name"].as_str().unwrap_or("");
-        let ns = item["metadata"]["namespace"].as_str().unwrap_or("");
-        if name.is_empty() || ns.is_empty() {
-            continue;
-        }
-        if item["spec"]["trigger"]["schedule"].as_str().is_none() {
-            continue;
-        }
-        tracing::info!("backup-reconciler: {ns}/{name} — removing legacy schedule trigger");
-        let _ = crate::kubectl::run(&[
-            "patch",
-            "replicationsource",
-            name,
-            "-n",
-            ns,
-            "--type=json",
-            r#"-p=[{"op":"remove","path":"/spec/trigger/schedule"}]"#,
-        ])
-        .await;
-    }
-}
-
-/// Self-healing reconciler — runs hourly to catch any PVCs whose RS/secret was
-/// missed at install time (e.g. race between app deploy and local-api restart).
-/// Never overwrites a live manual trigger set by the backup job (ensure_replication_source
-/// skips PVCs where an RS already exists when trigger_now=false).
-pub async fn run_replication_source_reconciler() {
-    tokio::time::sleep(Duration::from_secs(120)).await;
-    // Migrate any pre-existing RSes that still carry an independent schedule.
-    strip_rs_schedules().await;
-    loop {
-        if let Some(cfg) = read_master_config().await {
-            match list_user_pvcs().await {
-                Err(e) => tracing::warn!("backup-reconciler: could not list PVCs: {e}"),
-                Ok(pvcs) => {
-                    for pvc in pvcs {
-                        annotate_ns_privileged_movers(&pvc.namespace).await;
-                        if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await
-                        {
-                            tracing::debug!(
-                                "backup-reconciler: restic secret {}/{}: {e}",
-                                pvc.namespace,
-                                pvc.name
-                            );
-                        }
-                        if let Err(e) = ensure_replication_source(&pvc, false).await {
-                            tracing::debug!(
-                                "backup-reconciler: RS {}/{}: {e}",
-                                pvc.namespace,
-                                pvc.name
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(3600)).await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_recovery_key_groups_and_uppercases() {
-        assert_eq!(
-            format_recovery_key("abcdef0123456789"),
-            "ABCDE-F0123-45678-9"
-        );
-    }
-}
-
-/// `GET /api/backups/runs` — every recorded run, newest first.
-///
-/// The snapshot list needs this to mark which snapshots came from a run that did
-/// not fully succeed. `/api/backups/state` cannot answer that: it carries one
-/// `last_backup`, so without this the page could mark only the newest snapshot
-/// and would silently show every older Partial run as if it had been clean.
-pub async fn list_runs(State(_state): State<AppState>) -> Json<serde_json::Value> {
-    Json(backup_run::list_runs().await)
-}
-
 // ── "Apps with lost data" triage ───────────────────────────────────────────────
-//
-// The home page keys a "corrupted apps" section off `GET /api/backups/damage`. When
-// CephFS app-data pools have suffered *unrecoverable* PG loss (see ceph.rs), every app
-// whose data predates that loss is at risk, and each is given exactly one of the two
-// verdicts the owner can act on: restorable (has a backup → restore) or not (delete).
-//
-// This is deliberately NOT "every app", and the two exclusions are the load-bearing
-// part of the design:
-//
-//   - Stateless apps (no PVC) keep nothing on CephFS — they are never casualties.
-//   - Apps installed *after* the loss wrote their data only to surviving OSDs, because
-//     CRUSH never places a new object on a disk that is already out. Comparing the
-//     PVC creation time against the loss time is what keeps a fresh install — which
-//     would otherwise be offered a restore that overwrites its good data, or a delete
-//     that removes it — off the list.
-//
-// The remaining, genuinely unknowable-without-reading case (a pre-loss app whose files
-// happened to land only on surviving disks) is treated as at-risk rather than fine, on
-// purpose: the danger of telling a lost app it is fine far outweighs the cost of
-// offering a restore for one that wasn't.
 
-/// ConfigMap (etcd-backed, so every node agrees) recording when the cluster first showed
-/// unrecoverable data loss. Read to decide which PVCs are "pre-loss"; written idempotently
-/// on first sight.
 const DATA_LOSS_CM: &str = "yolab-data-loss";
 const DATA_LOSS_NS: &str = "kube-system";
 
 async fn data_loss_since() -> chrono::DateTime<chrono::Utc> {
-    if let Some(cm) = crate::kubectl::get_json(&[
+    if let Ok(cm) = crate::kubectl::get_json(&[
         "get",
         "configmap",
         DATA_LOSS_CM,
@@ -626,7 +443,6 @@ async fn data_loss_since() -> chrono::DateTime<chrono::Utc> {
         "json",
     ])
     .await
-    .ok()
     {
         if let Some(t) = cm["data"]["detectedAt"].as_str() {
             if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(t) {
@@ -657,8 +473,6 @@ async fn assess_app_damage() -> serde_json::Value {
         "restorable_count": 0, "delete_count": 0, "apps": [],
     });
 
-    // 1. Permanent loss touching the app-data (CephFS) pools? `images` is the RBD-backed
-    //    image store — re-pullable, not owner data — so it must not read as app loss.
     let loss = crate::routers::ceph::assess_pg_loss().await;
     let cephfs_lost = match &loss {
         Some(l) => {
@@ -676,8 +490,6 @@ async fn assess_app_damage() -> serde_json::Value {
     let lost_disks = crate::routers::ceph::lost_osd_count().await;
     let loss_since = data_loss_since().await;
 
-    // 2. Managed namespaces (identity) and their PVCs (name + creation time), in two bulk
-    //    queries so the endpoint costs a constant number of kubectl calls.
     let ns_items = crate::kubectl::get_json(&[
         "get",
         "namespaces",
@@ -711,7 +523,6 @@ async fn assess_app_damage() -> serde_json::Value {
         .and_then(|v| v["items"].as_array().cloned())
         .unwrap_or_default();
 
-    // namespace → (pvc name, creation time, pre-loss?)
     let mut pvcs_by_ns: HashMap<String, Vec<(String, bool)>> = HashMap::new();
     for pvc in &pvc_items {
         let (Some(ns), Some(name)) = (
@@ -727,8 +538,6 @@ async fn assess_app_damage() -> serde_json::Value {
             .as_str()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&Utc));
-        // Unparseable creation time → assume pre-loss: err toward flagging, never
-        // toward silently declaring a lost app fine.
         let pre_loss = created.map(|t| t < loss_since).unwrap_or(true);
         pvcs_by_ns
             .entry(ns.to_string())
@@ -736,13 +545,12 @@ async fn assess_app_damage() -> serde_json::Value {
             .push((name.to_string(), pre_loss));
     }
 
-    // 3. Affected apps: at least one pre-loss PVC. For each, does a backup exist?
     let cfg = read_master_config().await;
-    let mut checks: Vec<(String, String, String)> = Vec::new(); // (ns, pvc, repo)
+    let mut checks: Vec<(String, String, String)> = Vec::new();
     let mut affected: Vec<(&String, &Vec<(String, bool)>)> = Vec::new();
     for (ns, pvcs) in &pvcs_by_ns {
         if !pvcs.iter().any(|(_, pre_loss)| *pre_loss) {
-            continue; // stateless, or installed after the loss — not a casualty
+            continue;
         }
         affected.push((ns, pvcs));
         if let Some(cfg) = &cfg {
@@ -753,8 +561,6 @@ async fn assess_app_damage() -> serde_json::Value {
         }
     }
 
-    // Concurrent snapshot probes against B2 — the endpoint is disaster-only, but N apps
-    // still means N round-trips, so do them in parallel rather than serially.
     let mut results: HashMap<(String, String), Option<DateTime<Utc>>> = HashMap::new();
     if let Some(cfg) = &cfg {
         let probes: Vec<_> = checks
@@ -781,7 +587,6 @@ async fn assess_app_damage() -> serde_json::Value {
     let mut restorable_count = 0u32;
     let mut delete_count = 0u32;
     for (ns, pvcs) in &affected {
-        // Newest snapshot across the app's PVCs is its "backup age".
         let mut newest: Option<DateTime<Utc>> = None;
         for (name, _) in pvcs.iter() {
             if let Some(t) = results
@@ -823,4 +628,17 @@ async fn assess_app_damage() -> serde_json::Value {
         "delete_count": delete_count,
         "apps": apps,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_recovery_key_groups_and_uppercases() {
+        assert_eq!(
+            format_recovery_key("abcdef0123456789"),
+            "ABCDE-F0123-45678-9"
+        );
+    }
 }

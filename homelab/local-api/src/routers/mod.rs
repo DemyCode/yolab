@@ -1,7 +1,6 @@
 pub mod apps;
+pub mod backup;
 pub mod backup_common;
-pub mod backup_run;
-pub mod backup_schedule;
 pub mod backups;
 pub mod ceph;
 pub mod ceph_join;

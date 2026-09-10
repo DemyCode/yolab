@@ -1519,6 +1519,16 @@ pub async fn reconcile_tick(holder: &str) {
     }
 }
 
+/// Background loop driving RestoreRun reconciliation. Used to live in backup_run.rs's
+/// shared tick; with that module gone this is its own small loop.
+pub async fn run(holder: String) {
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    loop {
+        reconcile_tick(&holder).await;
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
