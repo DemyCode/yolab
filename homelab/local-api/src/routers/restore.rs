@@ -113,10 +113,7 @@ async fn patch_set(id: &str, update: impl FnOnce(&mut RestoreSet)) {
 
 /// Starts restoring one app and returns immediately. The work runs detached; the
 /// watchdog catches a crash and scales the app back up.
-pub(crate) async fn start(
-    namespace: &str,
-    snapshot_id: Option<String>,
-) -> anyhow::Result<String> {
+pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
@@ -307,7 +304,9 @@ async fn wait_for_pvc_deleted(namespace: &str, pvc: &str) -> anyhow::Result<()> 
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
-    anyhow::bail!("PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it")
+    anyhow::bail!(
+        "PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
+    )
 }
 
 async fn wait_for_rd(namespace: &str, dest_name: &str) -> anyhow::Result<()> {
@@ -384,7 +383,12 @@ async fn resolve_snapshot(
     }
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
-    let out = restic(&repo, cfg, &["snapshots", "--json", "--tag", "cluster-backup"]).await?;
+    let out = restic(
+        &repo,
+        cfg,
+        &["snapshots", "--json", "--tag", "cluster-backup"],
+    )
+    .await?;
     if !out.status.success() {
         anyhow::bail!(
             "could not list snapshots: {}",
@@ -424,7 +428,14 @@ async fn extract_file(
     let out = restic(
         repo,
         cfg,
-        &["restore", snapshot_id, "--target", &target, "--include", pattern],
+        &[
+            "restore",
+            snapshot_id,
+            "--target",
+            &target,
+            "--include",
+            pattern,
+        ],
     )
     .await?;
     if !out.status.success() {
@@ -469,7 +480,10 @@ async fn extract_json_file(
 fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<(String, String)> {
     catalog["services"]
         .as_array()
-        .and_then(|svcs| svcs.iter().find(|s| s["namespace"].as_str() == Some(namespace)))
+        .and_then(|svcs| {
+            svcs.iter()
+                .find(|s| s["namespace"].as_str() == Some(namespace))
+        })
         .and_then(|s| s["pvcs"].as_array())
         .map(|pvcs| {
             pvcs.iter()
