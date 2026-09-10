@@ -451,7 +451,7 @@ pub async fn run() {
         // whole tick rather than just the writes: the Storage page reading slightly
         // stale inventory for a few seconds is a fine trade against acting on a disk
         // state that a restore might be about to make obsolete anyway.
-        if crate::routers::restore_run::is_active().await {
+        if crate::routers::restore::is_running().await {
             sleep(Duration::from_secs(INTERVAL_SECS)).await;
             continue;
         }

@@ -684,32 +684,6 @@ pub(crate) fn parse_capacity_bytes(s: &str) -> u64 {
     s.parse::<u64>().unwrap_or(0)
 }
 
-/// Sums the requested capacity of existing app PVCs in the given namespaces — the
-/// space an in-place restore will free (each PVC is deleted before being recreated)
-/// and can therefore reuse. VolSync's own `volsync-*` cache PVCs are excluded, same
-/// as everywhere else, since they aren't part of the restored app data.
-pub(crate) async fn reclaimable_pvc_bytes(namespaces: &[String]) -> u64 {
-    let mut total = 0u64;
-    for ns in namespaces {
-        let pvcs = crate::kubectl::get_json(&["get", "pvc", "-n", ns, "-o", "json"])
-            .await
-            .ok()
-            .and_then(|v| v["items"].as_array().cloned())
-            .unwrap_or_default();
-        for item in pvcs {
-            let name = item["metadata"]["name"].as_str().unwrap_or("");
-            if name.starts_with("volsync-") {
-                continue;
-            }
-            let cap = item["spec"]["resources"]["requests"]["storage"]
-                .as_str()
-                .unwrap_or("0");
-            total = total.saturating_add(parse_capacity_bytes(cap));
-        }
-    }
-    total
-}
-
 // ── Restore primitives ────────────────────────────────────────────────────────
 
 /// Deletes a ReplicationDestination once its data has been applied, without letting

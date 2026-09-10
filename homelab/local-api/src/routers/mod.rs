@@ -11,7 +11,7 @@ pub mod nodes;
 pub mod packs;
 pub mod reboot;
 pub mod rebuild;
-pub mod restore_run;
+pub mod restore;
 pub mod status;
 pub mod terminal;
 pub mod update;
