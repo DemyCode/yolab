@@ -138,7 +138,7 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
         state: "running".to_string(),
         finished_at: None,
         error: None,
-        scaled_deployments,
+        scaled_deployments: scaled_deployments.clone(),
     };
     let mut sets = read_sets().await;
     upsert(&mut sets, set);
@@ -148,8 +148,9 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
 
     let task_id = id.clone();
     let ns = namespace.to_string();
+    let original = scaled_deployments;
     tokio::spawn(async move {
-        let result = run_restore(&ns, &snapshot_id, &cfg).await;
+        let result = run_restore(&ns, &snapshot_id, &cfg, &original).await;
         record_done(&task_id, &result).await;
         {
             let mut guard = RESTORE_IN_FLIGHT.lock().unwrap();
@@ -181,9 +182,25 @@ async fn record_done(id: &str, result: &anyhow::Result<()>) {
     }
 }
 
-/// The actual restore. Everything here is safe to redo and bounded by per-volume
-/// timeouts; the watchdog is what turns an interrupted run into "app back up".
-async fn run_restore(namespace: &str, snapshot_id: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
+/// The actual restore, guarded so a failure always brings the app back up. The
+/// inner work scales the app to zero and re-applies its config at the end; if any
+/// step before that fails, the app must not be left dark.
+async fn run_restore(
+    namespace: &str,
+    snapshot_id: &str,
+    cfg: &BackupConfig,
+    original: &[DeploymentScale],
+) -> anyhow::Result<()> {
+    let result = restore_inner(namespace, snapshot_id, cfg).await;
+    if result.is_err() {
+        for d in original {
+            let _ = scale_deployment(namespace, &d.name, d.replicas).await;
+        }
+    }
+    result
+}
+
+async fn restore_inner(namespace: &str, snapshot_id: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
     // 1. Scale the app down so its pods release the PVCs being replaced.
     let _ = crate::kubectl::run(&[
         "scale",
