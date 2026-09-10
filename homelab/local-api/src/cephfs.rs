@@ -32,7 +32,7 @@ pub async fn run() {
         // definition while it's running) and deadlock the rebuild it's trying to finish.
         // This loop's own periodic background calls are what would race a rebuild in
         // progress, so only they are skipped.
-        if crate::routers::restore_run::is_active().await {
+        if crate::routers::restore::is_running().await {
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
             continue;
         }

@@ -7,13 +7,14 @@ import {
   Copy,
   ExternalLink,
   RefreshCw,
+  RotateCcw,
   Trash2,
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ConfirmDialog } from "@/components/ui/sheet";
+import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import {
   Banner,
   ServiceTrouble,
@@ -273,6 +274,126 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   );
 }
 
+interface RestoreSnapshot {
+  id: string;
+  time: string;
+}
+
+function RestoreDialog({
+  instanceName,
+  open,
+  onClose,
+}: {
+  instanceName: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [snapshots, setSnapshots] = useState<RestoreSnapshot[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelected(null);
+    setError(null);
+    setSnapshots(null);
+    fetch("/api/backups/snapshots")
+      .then((r) => r.json())
+      .then((d: { snapshots?: RestoreSnapshot[] }) => {
+        const snaps = (d.snapshots ?? []).sort(
+          (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
+        );
+        setSnapshots(snaps);
+        if (snaps.length > 0) setSelected(snaps[0].id);
+      })
+      .catch(() => setSnapshots([]));
+  }, [open]);
+
+  async function confirm() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/backups/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          namespace: `yolab-${instanceName}`,
+          snapshot_id: selected,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Restore failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={`Restore ${instanceName}`}
+      subtitle="Pick the backup to restore from. The app's data and settings will be rolled back to that point."
+    >
+      {snapshots === null ? (
+        <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          Loading backups…
+        </div>
+      ) : snapshots.length === 0 ? (
+        <p className="py-4 text-sm text-fg-muted">
+          No backups exist for this app yet. Take a backup first.
+        </p>
+      ) : (
+        <div className="space-y-1">
+          {snapshots.map((s) => (
+            <label
+              key={s.id}
+              className="flex cursor-pointer items-center gap-3 rounded-card border border-border px-4 py-3 hover:bg-surface-2"
+            >
+              <input
+                type="radio"
+                name="restore-snapshot"
+                checked={selected === s.id}
+                onChange={() => setSelected(s.id)}
+                className="accent-primary"
+              />
+              <span className="text-sm text-fg">
+                {new Date(s.time).toLocaleString(undefined, {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+
+      <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="danger"
+          onClick={() => void confirm()}
+          loading={busy}
+          disabled={!selected}
+        >
+          Restore
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
 export function AppDetailPage() {
   const { instanceName } = useParams<{ instanceName: string }>();
   const navigate = useNavigate();
@@ -291,6 +412,7 @@ export function AppDetailPage() {
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
 
   const app = apps.data?.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
@@ -558,6 +680,14 @@ export function AppDetailPage() {
           Check for updates
         </Button>
         <Button
+          variant="secondary"
+          onClick={() => setRestoreOpen(true)}
+          className="flex-1"
+        >
+          <RotateCcw className="h-4 w-4" />
+          Restore
+        </Button>
+        <Button
           variant="quiet"
           onClick={() => setConfirmRemove(true)}
           className="flex-1"
@@ -566,6 +696,12 @@ export function AppDetailPage() {
           Remove
         </Button>
       </div>
+
+      <RestoreDialog
+        instanceName={app.instance_name}
+        open={restoreOpen}
+        onClose={() => setRestoreOpen(false)}
+      />
 
       <TechnicalDetails app={app} />
 

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use tokio::process::Command;
 
 use crate::routers::backup_common::*;
-use crate::routers::{backup, restore_run};
+use crate::routers::{backup, restore};
 use crate::{config::Config, error::Result, AppState};
 
 // ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
@@ -84,7 +84,7 @@ pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::
 
 /// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    if restore_run::is_active().await {
+    if restore::is_running().await {
         return Err(anyhow::anyhow!("A restore is in progress — try again once it finishes.").into());
     }
     let Some((url, token)) = ye_creds(&state.config) else {
@@ -130,7 +130,7 @@ pub async fn get_recovery_key(State(_state): State<AppState>) -> Result<Json<ser
 
 /// GET /api/backups/state — the frontend's single source of truth for what is running.
 pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let restore = restore_run::current_status().await;
+    let restores = restore::list().await;
     let sets = backup::list().await;
     let active: Vec<serde_json::Value> = sets
         .iter()
@@ -138,11 +138,12 @@ pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serd
         .cloned()
         .collect();
     let last = sets.iter().find(|s| s["state"] != "running").cloned();
+    let active_restore = restores.iter().find(|s| s["state"] == "running").cloned();
     Ok(Json(serde_json::json!({
         "backing_up": !active.is_empty() || backup::volsync_mover_running().await,
-        "restoring": !restore["active"].is_null(),
+        "restoring": active_restore.is_some(),
         "backup_run": active.first().cloned(),
-        "restore_run": restore["active"],
+        "restore_run": active_restore,
         "last_backup": last,
         "last_ok_age_hours": backup::last_ok_age_hours().await,
         "stale_after_hours": 24,
@@ -255,45 +256,31 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
     })))
 }
 
-// ── Disaster recovery (thin HTTP layer over restore_run.rs) ──────────────────
+// ── Per-app restore (thin HTTP layer over restore.rs) ─────────────────────────
 
-#[derive(Deserialize, Default)]
-pub struct DrStartBody {
+#[derive(Deserialize)]
+pub struct RestoreRequest {
+    /// The app's namespace, e.g. "yolab-gitea".
+    pub namespace: String,
+    /// A specific restic `cluster-backup` snapshot id, or omit to restore latest.
     #[serde(default)]
     pub snapshot_id: Option<String>,
-    #[serde(default)]
-    pub all: bool,
-    #[serde(default)]
-    pub namespaces: Vec<String>,
-    #[serde(default)]
-    pub rebuild_storage: bool,
 }
 
-/// POST /api/backups/dr/start — creates a RestoreRun; see restore_run.rs.
-pub async fn dr_start(
+/// POST /api/backups/restore — restores one app's data and config from a backup.
+pub async fn restore_app(
     State(_state): State<AppState>,
-    Json(body): Json<DrStartBody>,
+    Json(body): Json<RestoreRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    if !body.all && body.namespaces.is_empty() {
-        return Err(anyhow::anyhow!("specify all:true or a non-empty namespaces[]").into());
-    }
-    if restore_run::is_active().await {
-        return Err(anyhow::anyhow!("A restore is already in progress.").into());
-    }
-    let name = restore_run::start(
-        body.snapshot_id,
-        body.all,
-        body.namespaces,
-        body.rebuild_storage,
-    )
-    .await?;
+    let name = restore::start(&body.namespace, body.snapshot_id).await?;
     Ok(Json(
         serde_json::json!({ "ok": true, "started": true, "name": name }),
     ))
 }
 
-pub async fn dr_status(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    Ok(Json(restore_run::current_status().await))
+/// GET /api/backups/restores — every recorded app restore, newest first.
+pub async fn list_restores(State(_state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::Value::Array(restore::list().await))
 }
 
 // ── Cluster backup ─────────────────────────────────────────────────────────────
@@ -387,7 +374,7 @@ pub async fn snapshot_catalog(
 /// POST /api/backups/credentials/refresh — re-fetches B2 credentials from
 /// yolab-external after a key rotation.
 pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    if restore_run::is_active().await {
+    if restore::is_running().await {
         return Err(anyhow::anyhow!("A restore is in progress — try again once it finishes.").into());
     }
     let Some((url, token)) = ye_creds(&state.config) else {

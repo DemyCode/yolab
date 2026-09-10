@@ -8,7 +8,6 @@ mod disks_reconciler;
 mod error;
 mod host;
 mod kubectl;
-mod lease;
 mod mesh;
 mod proc;
 mod routers;
@@ -37,17 +36,6 @@ use routers::{
 pub struct AppState {
     pub config: Arc<Config>,
     pub auth: AuthState,
-}
-
-/// Process-lifetime identity for the BackupRun/RestoreRun reconcile Lease. Doesn't need
-/// to be stable across restarts â if this process dies, the lease it held simply expires
-/// and whichever process (this one restarted, or another node) next acquires it takes
-/// over with a fresh identity; see lease.rs.
-fn random_holder_id() -> String {
-    use rand::RngCore as _;
-    let mut buf = [0u8; 4];
-    rand::thread_rng().fill_bytes(&mut buf);
-    format!("local-api-{}", hex::encode(buf))
 }
 
 /// Keeps a reconcile loop running for the life of the process.
@@ -172,10 +160,10 @@ async fn main() {
         .route("/api/backups/sftp", get(backups::get_sftp))
         .route("/api/backups/status", get(backups::backup_status))
         .route("/api/backups/state", get(backups::operation_state))
-        .route("/api/backups/dr/start", post(backups::dr_start))
-        .route("/api/backups/dr/status", get(backups::dr_status))
         .route("/api/backups/snapshots", get(backups::list_snapshots))
         .route("/api/backups/runs", get(backups::list_runs))
+        .route("/api/backups/restore", post(backups::restore_app))
+        .route("/api/backups/restores", get(backups::list_restores))
         .route("/api/backups/damage", get(backups::app_damage))
         .route(
             "/api/backups/cluster/run-now",
@@ -277,23 +265,14 @@ async fn main() {
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))
-        // Runs after auth (added first, so it's the innermost of these three layers â
-        // see restore_run::freeze_during_restore's own doc for what it blocks and why.
-        .layer(middleware::from_fn(
-            routers::restore_run::freeze_during_restore,
-        ))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());
 
-    // A single reconcile loop drives RestoreRun objects (see routers/restore_run.rs),
-    // and a separate loop starts scheduled backups when the newest restorable one is
-    // stale (routers/backup.rs).
-    supervise(
-        "restore",
-        || routers::restore_run::run(random_holder_id()),
-    );
+    // Scheduled backups (routers/backup.rs) and the per-app restore watchdog
+    // (routers/restore.rs), which scales a crashed restore back up.
     supervise("backup-scheduler", routers::backup::run_scheduler);
+    supervise("restore-watchdog", routers::restore::run_watchdog);
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISKâON/OFF config â no separate watcher.
     supervise("disks", disks_reconciler::run);

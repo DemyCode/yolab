@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { AlertTriangle, Plus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppIconTile } from "@/components/AppIcon";
@@ -122,7 +122,6 @@ function LostAppsSection({
   catalogApps: CatalogApp[];
   onChanged: () => void;
 }) {
-  const navigate = useNavigate();
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -132,12 +131,10 @@ function LostAppsSection({
   async function restore(namespaces: string[]) {
     setError(null);
     try {
-      await api.post("/api/backups/dr/start", {
-        namespaces,
-        rebuild_storage: true,
-      });
-      // The restore takes over the Backups page; go watch it there.
-      navigate("/box/backups");
+      for (const namespace of namespaces) {
+        await api.post("/api/backups/restore", { namespace });
+      }
+      onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start the restore");
     }

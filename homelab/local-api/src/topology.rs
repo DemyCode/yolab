@@ -371,7 +371,7 @@ async fn tick() -> anyhow::Result<()> {
     // pools directly — reapplying pool size/failure-domain here at the same time
     // would race that teardown (e.g. setting a crush rule on a pool this tick just
     // watched get deleted out from under it).
-    if crate::routers::restore_run::is_active().await {
+    if crate::routers::restore::is_running().await {
         return Ok(());
     }
     let Some(topo) = observe().await else {
