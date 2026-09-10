@@ -1360,6 +1360,23 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
         }
     }
 
+    // A factory-formatted disk carries a partition table (and a filesystem
+    // signature) that ceph-volume refuses to build over. Wiping signatures first
+    // means switching a disk on just makes it join, whatever used to be on it.
+    // Device-mapper paths are LVs owned by something else (the system LV) and are
+    // left to the stale-signature retry below rather than wiped here.
+    let is_dm = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
+    if !is_dm {
+        if let Ok(out) = host.run_cmd("wipefs", &["--all", dev_path]).await {
+            if !out.success {
+                tracing::warn!(
+                    "{disk_id}: wipefs failed on {dev_path}: {} — ceph-volume may retry it",
+                    out.stderr.trim()
+                );
+            }
+        }
+    }
+
     let mut result = host
         .ceph_volume(&[
             "lvm",
@@ -1736,43 +1753,36 @@ fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
     // log, so they say what is true and what to do — no Ceph vocabulary, no
     // internal state names. The detail that used to live here is in the log line
     // at the call site instead.
-    //
-    // Matched exhaustively on purpose: a new Ownership variant has to be given
-    // an answer here rather than defaulting into "safe to wipe", which is what
-    // the boolean pair this replaced did whenever a key was missing.
     match d.ownership {
-        Ownership::Foreign | Ownership::Unknown => {
-            return Some(
-                "This disk holds files from another storage system. Erase it first if you \
-                 no longer need them.",
-            )
-        }
+        // Definitely our own data — never wipe, whatever the map says.
         Ownership::Ours => {
             return Some(
                 "This disk already holds your files, but YoLab has lost track of it. It is \
                  being left alone rather than risk erasing it.",
             )
         }
-        Ownership::Blank => {}
+        // A label was read but our own fsid could not be, so we cannot tell whose
+        // disk this is — most often our own OSD seen while the cluster was
+        // unreachable. Never wipe on a guess.
+        Ownership::Unknown => {
+            return Some(
+                "YoLab can't tell whether this disk holds your files right now, so it is \
+                 being left alone. It will be rechecked shortly.",
+            )
+        }
+        // Foreign data and plain partitions are wiped automatically when the disk
+        // is switched on — switching it on IS the decision to use it.
+        Ownership::Foreign | Ownership::Blank => {}
     }
     if d.dev_path().is_none() {
         return Some("This disk disappeared before it could be set up.");
     }
-    // Both of these became load-bearing when partitioned disks started being
-    // listed. Before that, `get_devices` dropped any disk with a partition
-    // table, which hid every external drive that ships formatted — and hid the
-    // OS disk as a side effect. Listing them is right; wiping them silently is
-    // not.
-    //
-    // `mounted` first, and it is the important one: it is what now keeps the
-    // disk this machine is running from out of reach. It is also stronger
-    // evidence than "has a partition table" ever was, because it describes use
-    // rather than shape.
+    // `mounted` is the one thing that still refuses: it is what keeps the disk
+    // this machine is running from out of reach, and it describes use rather than
+    // shape. A disk that is merely formatted (has a partition table) no longer
+    // blocks — `create_osd` wipes it first.
     if d.mounted {
         return Some("This machine is using this disk for something else.");
-    }
-    if d.has_partitions {
-        return Some("There is already something on this disk. Erase it to use it for storage.");
     }
     None
 }
@@ -3090,6 +3100,7 @@ mod tests {
             .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#)
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm list", "{}")
+            .ok("wipefs --all /dev/sdb", "")
             .ok("ceph-volume lvm create", "")
             .ok(
                 "ceph-volume lvm list",
@@ -3123,6 +3134,7 @@ mod tests {
                 r#"{"1":[{"devices":["/dev/sdc"],"tags":{"ceph.cluster_fsid":"99999999-8888-7777-6666-555555555555"}}]}"#,
             )
             .ok("ceph-volume lvm zap", "")
+            .ok("wipefs --all /dev/sdc", "")
             .ok("ceph-volume lvm create", "");
 
         create_osd(&host, "disk-foreign", "/dev/sdc").await;
@@ -4201,9 +4213,11 @@ mod tests {
         );
     }
 
+    /// Another cluster's data is wiped automatically when the disk is switched on —
+    /// switching it on is the decision to use it.
     #[test]
-    fn another_clusters_disk_is_refused() {
-        assert!(refuse_osd_creation(&disk(Ownership::Foreign)).is_some());
+    fn another_clusters_disk_is_auto_wiped() {
+        assert_eq!(refuse_osd_creation(&disk(Ownership::Foreign)), None);
     }
 
     /// The state the boolean pair could not express: a label was read but the
@@ -4213,19 +4227,19 @@ mod tests {
         assert!(refuse_osd_creation(&disk(Ownership::Unknown)).is_some());
     }
 
-    /// Blank is now the only ownership that permits a wipe, and it is reached
-    /// only when the superblock was read and carried no fsid at all. The old
-    /// `unwrap_or(false)` shape defaulted a missing key into this state; that is
-    /// no longer representable.
+    /// Blank and Foreign permit a wipe (both are provably not our data); Ours and
+    /// Unknown never do. Unknown is the "a label was read but our fsid was not"
+    /// case — could be our own OSD, so it is left alone rather than wiped.
     #[test]
-    fn blank_is_the_only_ownership_that_permits_creation() {
-        for o in [Ownership::Ours, Ownership::Foreign, Ownership::Unknown] {
+    fn only_provably_foreign_disks_are_auto_wiped() {
+        for o in [Ownership::Ours, Ownership::Unknown] {
             assert!(
                 refuse_osd_creation(&disk(o)).is_some(),
                 "{o:?} must never be handed to ceph-volume create"
             );
         }
         assert_eq!(refuse_osd_creation(&disk(Ownership::Blank)), None);
+        assert_eq!(refuse_osd_creation(&disk(Ownership::Foreign)), None);
     }
 
     #[test]
@@ -4237,11 +4251,11 @@ mod tests {
         assert!(refuse_osd_creation(&d).is_some());
     }
 
-    /// A label sniff that reads nothing is not evidence a disk is empty. Blank
-    /// only means "no fsid in the superblock", so mounted and has_partitions
-    /// stay load-bearing on top of it.
+    /// A blank but mounted disk is still refused — "mounted" means this machine is
+    /// actively using it. A partition table alone no longer blocks: it is wiped
+    /// automatically when the disk is switched on.
     #[test]
-    fn a_blank_but_occupied_disk_is_still_refused() {
+    fn a_blank_but_mounted_disk_is_still_refused() {
         let mounted = Disk {
             mounted: true,
             ..disk(Ownership::Blank)
@@ -4251,7 +4265,7 @@ mod tests {
             ..disk(Ownership::Blank)
         };
         assert!(refuse_osd_creation(&mounted).is_some());
-        assert!(refuse_osd_creation(&partitioned).is_some());
+        assert_eq!(refuse_osd_creation(&partitioned), None);
     }
 
     // ── mark_known_osds ───────────────────────────────────────────────────────
@@ -4315,15 +4329,12 @@ mod tests {
     }
 
     #[test]
-    fn a_partitioned_disk_is_refused_until_it_is_erased() {
+    fn a_partitioned_disk_is_wiped_not_refused() {
         let d = Disk {
             has_partitions: true,
             ..disk(Ownership::Blank)
         };
-        let msg = refuse_osd_creation(&d).expect("a disk with data must be refused");
-        // It has to name the way out, not just the problem: erasing is the only
-        // thing that moves this disk forward, and the page offers a button for it.
-        assert!(msg.contains("Erase"), "{msg}");
+        assert_eq!(refuse_osd_creation(&d), None);
     }
 
     #[test]
@@ -4331,13 +4342,14 @@ mod tests {
         assert_eq!(refuse_osd_creation(&disk(Ownership::Blank)), None);
     }
 
-    /// Ownership is checked before the shape checks, so a foreign disk is
-    /// refused for being foreign rather than for happening to be partitioned.
+    /// Ownership is checked before the shape checks, but a foreign disk no longer
+    /// blocks — it is wiped automatically. The refusal that remains for a
+    /// labelled disk is `Ours` (our data) or `Unknown` (can't tell).
     #[test]
-    fn foreign_ceph_still_wins_over_the_new_checks() {
-        let msg =
-            refuse_osd_creation(&disk(Ownership::Foreign)).expect("a foreign disk must be refused");
-        assert!(msg.contains("another storage system"), "{msg}");
+    fn foreign_ceph_no_longer_blocks() {
+        assert_eq!(refuse_osd_creation(&disk(Ownership::Foreign)), None);
+        assert!(refuse_osd_creation(&disk(Ownership::Ours)).is_some());
+        assert!(refuse_osd_creation(&disk(Ownership::Unknown)).is_some());
     }
 
     // ── scan_devices filtering ────────────────────────────────────────────────
@@ -4362,15 +4374,10 @@ mod tests {
     #[test]
     fn refusal_reasons_carry_no_jargon() {
         let cases = [
-            disk(Ownership::Foreign),
             disk(Ownership::Unknown),
             disk(Ownership::Ours),
             Disk {
                 mounted: true,
-                ..disk(Ownership::Blank)
-            },
-            Disk {
-                has_partitions: true,
                 ..disk(Ownership::Blank)
             },
             Disk {
@@ -4747,8 +4754,9 @@ mod tests {
         assert_eq!(plan, CreatePlan::Skip);
     }
 
-    // Everything refuse_osd_creation rejects must come back as Blocked, never
-    // as Create. These are the disks with something on them.
+    // Everything refuse_osd_creation still rejects must come back as Blocked,
+    // never as Create. What remains refused is only what is genuinely unsafe to
+    // wipe: a mounted disk, an unidentifiable device, or our own data.
 
     #[test]
     fn a_mounted_disk_switched_on_is_blocked_not_created() {
@@ -4769,7 +4777,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partitioned_disk_switched_on_is_blocked_not_created() {
+    fn a_partitioned_disk_switched_on_is_created_not_blocked() {
         let plan = plan_create(
             "node1",
             "dev-sdb",
@@ -4783,13 +4791,13 @@ mod tests {
             0,    // attempts
             None, // since_last_attempt
         );
-        assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
+        assert!(matches!(plan, CreatePlan::Create { .. }), "{plan:?}");
     }
 
-    /// A disk carrying another cluster's BlueStore label. Wiping it is somebody
-    /// else's data loss.
+    /// A disk carrying another cluster's BlueStore label. It is wiped when the
+    /// disk is switched on — switching it on is the decision to use it.
     #[test]
-    fn a_foreign_cluster_disk_switched_on_is_blocked_not_created() {
+    fn a_foreign_cluster_disk_switched_on_is_created_not_blocked() {
         let plan = plan_create(
             "node1",
             "dev-sdb",
@@ -4803,7 +4811,7 @@ mod tests {
             0,    // attempts
             None, // since_last_attempt
         );
-        assert!(matches!(plan, CreatePlan::Blocked(_)), "{plan:?}");
+        assert!(matches!(plan, CreatePlan::Create { .. }), "{plan:?}");
     }
 
     /// An empty device means the inventory did not identify this disk. Guessing

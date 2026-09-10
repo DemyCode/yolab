@@ -340,7 +340,6 @@ function DiskRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
-  const [eraseConfirm, setEraseConfirm] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const state = diskState(disk);
@@ -364,23 +363,6 @@ function DiskRow({
         { desired: next },
       );
       if (!d.ok) setErr(d.error ?? "Unknown error");
-      else onChanged();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function erase() {
-    setBusy(true);
-    setErr(null);
-    setEraseConfirm(false);
-    try {
-      const d = await api.post<{ ok?: boolean; error?: string }>(
-        `/api/disks/${node}/${disk.id}/erase`,
-      );
-      if (!d.ok) setErr(d.error ?? "Erase failed");
       else onChanged();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -452,38 +434,6 @@ function DiskRow({
           <FillBar pct={osd.utilization} />
         </div>
       )}
-
-      {(state === "foreign" ||
-        (state === "blocked" && disk.has_partitions && !disk.mounted)) &&
-        (eraseConfirm ? (
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={busy}
-              onClick={() => void erase()}
-            >
-              {busy ? "…" : "Erase it"}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setEraseConfirm(false)}
-            >
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="shrink-0"
-            disabled={busy}
-            onClick={() => setEraseConfirm(true)}
-          >
-            Erase and use
-          </Button>
-        ))}
 
       {confirm && (
         <div className="flex shrink-0 items-center gap-2">
