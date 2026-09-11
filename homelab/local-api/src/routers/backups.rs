@@ -467,8 +467,12 @@ async fn assess_app_damage() -> serde_json::Value {
     let loss = crate::routers::ceph::assess_pg_loss().await;
     let cephfs_lost = match &loss {
         Some(l) => {
-            l.unrecoverable
-                && l.unrecoverable_pools
+            // `confirmed_lost`, NOT `unrecoverable`: this screen offers to restore
+            // from backup, and restoring over data that was only unreadable for a
+            // minute overwrites it with something hours older. It must not fire
+            // while an OSD is merely down with its disk still in the cluster.
+            l.confirmed_lost
+                && l.confirmed_lost_pools
                     .iter()
                     .any(|p| p == "yolab-fs-metadata" || p == "yolab-fs-data0")
         }

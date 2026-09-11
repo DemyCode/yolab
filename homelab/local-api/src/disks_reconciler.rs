@@ -4935,6 +4935,10 @@ mod tests {
             total,
             unrecoverable,
             unrecoverable_pools: vec![],
+            // Irrelevant here: plan_purge reads `unrecoverable`, deliberately, so
+            // that it keeps refusing while a daemon is merely down.
+            confirmed_lost: false,
+            confirmed_lost_pools: vec![],
         }
     }
 

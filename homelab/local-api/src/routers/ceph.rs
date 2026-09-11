@@ -311,6 +311,30 @@ pub(crate) struct PgLoss {
     /// care about app DATA filter on the CephFS pools rather than treating the
     /// re-pullable `images` pool as data loss.
     pub unrecoverable_pools: Vec<String>,
+    /// True only when Ceph has GIVEN UP on the OSDs holding a stuck PG — they are
+    /// `out`, or the PG is `incomplete`, or nothing is acting for it at all.
+    ///
+    /// SEPARATE FROM `unrecoverable` BECAUSE THE TWO ANSWER OPPOSITE QUESTIONS,
+    /// and conflating them told an owner their intact files were gone.
+    ///
+    /// `unrecoverable` is the pessimistic one, and it must stay that way: it
+    /// guards `plan_purge`, where the cost of being wrong is destroying the last
+    /// copy of something. "This disk might hold data nothing else can serve" is
+    /// exactly the right thing to refuse a purge on.
+    ///
+    /// This one is the confident one, and the UI uses it, because there the cost
+    /// of being wrong runs the other way: the damaged-apps screen offers to
+    /// restore from backup, and restoring over data that was merely unreadable
+    /// for a minute overwrites it with something hours older. On 2026-09-11 that
+    /// screen offered to restore five apps whose placement groups were reported
+    /// `stale+active+clean` — active and CLEAN, simply unreported because their
+    /// OSD daemons were wedged — with every OSD still `in` and every disk still
+    /// plugged in. Nothing was lost; the offer would have destroyed a day of
+    /// data.
+    pub confirmed_lost: bool,
+    /// Pools holding at least one confirmed-lost PG. Empty unless
+    /// `confirmed_lost`.
+    pub confirmed_lost_pools: Vec<String>,
 }
 
 /// PG states that mean "the OSD holding this is not answering", as opposed to
@@ -328,6 +352,53 @@ fn is_stuck_state(state: &str) -> bool {
 /// marked out, so nothing is left to rebuild from.
 fn is_incomplete_state(state: &str) -> bool {
     state.split('+').any(|s| s == "incomplete")
+}
+
+/// OSD ids Ceph has NOT given up on: still `in` the cluster.
+///
+/// `in` is Ceph's own verdict, not ours. An OSD that is merely `down` may be a
+/// daemon that will start again in a second — the disk is still a member and its
+/// data still counts. `out` is the conclusion Ceph reaches on its own, by
+/// default ten minutes later, that the data is not coming back and must be
+/// rebuilt elsewhere. `lost_osd_count` above draws the same line for the same
+/// reason.
+fn osds_still_in(dump: &Value) -> std::collections::HashSet<i64> {
+    dump["osds"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|o| o["in"].as_i64().unwrap_or(0) == 1)
+                .filter_map(|o| o["osd"].as_i64())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a stuck PG's data is confirmed gone rather than merely unreadable.
+///
+/// The question is only ever "is anything still holding this". If any OSD in the
+/// PG's acting set is still `in`, the answer is yes — the daemon is down, the
+/// disk is a member, the data is on it, and starting the daemon brings it back.
+///
+/// An EMPTY acting set is the opposite: nothing is holding the PG at all.
+fn pg_is_confirmed_lost(pg: &Value, still_in: &std::collections::HashSet<i64>) -> bool {
+    let state = pg["state"].as_str().unwrap_or("");
+    if is_incomplete_state(state) {
+        return true;
+    }
+    // `acting` is who is serving it; fall back to `up` for dumps that omit it.
+    let acting = pg["acting"]
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .or_else(|| pg["up"].as_array().filter(|a| !a.is_empty()));
+    match acting {
+        Some(ids) => !ids
+            .iter()
+            .filter_map(|v| v.as_i64())
+            .any(|id| still_in.contains(&id)),
+        // Nothing acting and nothing up: no OSD claims this PG.
+        None => true,
+    }
 }
 
 /// Number of OSDs Ceph has given up on: down AND weighted out (`reweight == 0`). A
@@ -411,9 +482,12 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
         return None;
     }
 
+    let still_in = osds_still_in(dump);
     let mut stuck = 0u32;
     let mut unrecoverable = false;
     let mut unrecoverable_pools: Vec<String> = Vec::new();
+    let mut confirmed_lost = false;
+    let mut confirmed_lost_pools: Vec<String> = Vec::new();
     for pg in &items {
         let state = pg["state"].as_str().unwrap_or("");
         if !is_stuck_state(state) {
@@ -436,6 +510,15 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
                     unrecoverable_pools.push(name.clone());
                 }
             }
+            // Stricter: only when nothing is still holding it. See `confirmed_lost`.
+            if pg_is_confirmed_lost(pg, &still_in) {
+                confirmed_lost = true;
+                if let Some((name, _)) = pool {
+                    if !name.is_empty() && !confirmed_lost_pools.iter().any(|p| p == name) {
+                        confirmed_lost_pools.push(name.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -444,29 +527,59 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
         total: items.len() as u32,
         unrecoverable,
         unrecoverable_pools,
+        confirmed_lost,
+        confirmed_lost_pools,
     })
 }
 
 /// What to say about data that cannot be read.
+///
+/// THREE CASES, NOT TWO. There used to be "permanently lost" and "a copy is
+/// missing, this repairs itself", and the second was told to everyone who was
+/// not the first — including the owner of a single-copy cluster, where nothing
+/// repairs itself because there is no other copy to repair from. Both sentences
+/// were wrong on 2026-09-11: the screen said files "cannot be rebuilt" about
+/// placement groups that were `stale+active+clean`, and the alternative would
+/// have promised a self-repair that could not happen.
+///
+/// The middle case is the common one and the one worth getting right: the data
+/// is fine, its disk is still part of the cluster, and something on that machine
+/// needs to start again.
 pub(crate) fn unavailable_message(loss: Option<&PgLoss>) -> (String, String) {
-    match loss {
-        Some(l) if l.unrecoverable => {
-            let share = if l.total > 0 {
-                format!("{} of {} groups of your files", l.stuck, l.total)
-            } else {
-                "Some of your files".to_string()
-            };
-            (
-                "Your files are unreachable and cannot be rebuilt".into(),
-                format!(
-                    "{share} were stored in one place only, on a disk that is no longer \
-                     responding — so there is no second copy to rebuild them from and \
-                     nothing is being repaired. If that disk still works, reconnecting it \
-                     brings everything back. If it does not, only a backup can. Apps that \
-                     use these files will not start or will hang."
-                ),
-            )
+    let share = |l: &PgLoss| {
+        if l.total > 0 {
+            format!("{} of {} groups of your files", l.stuck, l.total)
+        } else {
+            "Some of your files".to_string()
         }
+    };
+    match loss {
+        Some(l) if l.confirmed_lost => (
+            "Your files are unreachable and cannot be rebuilt".into(),
+            format!(
+                "{} were stored in one place only, on a disk Ceph has now given up on \
+                 — so there is no second copy to rebuild them from and nothing is being \
+                 repaired. If that disk still works, reconnecting it brings everything \
+                 back. If it does not, only a backup can. Apps that use these files will \
+                 not start or will hang.",
+                share(l)
+            ),
+        ),
+        // Unreadable, single copy, but the disk is still a cluster member: the
+        // storage service on it is down, not the disk. Nothing is lost and
+        // nothing needs restoring — which is exactly what the owner needs to be
+        // told before they reach for a backup.
+        Some(l) if l.unrecoverable => (
+            "Some files are unreachable right now".into(),
+            format!(
+                "{} are on a disk whose storage service is not running. The disk is still \
+                 part of the cluster and the data on it is intact, so this is not lost — \
+                 it comes back when that service starts again. Apps that use these files \
+                 may hang until then. There is no second copy, so nothing can serve them \
+                 in the meantime.",
+                share(l)
+            ),
+        ),
         _ => (
             "Some files are unreachable right now".into(),
             "A disk is not responding. Other copies exist, so this repairs itself — apps \
@@ -1283,6 +1396,14 @@ mod tests {
             } else {
                 vec![]
             },
+            // These tests predate the split and mean "permanently lost", which is
+            // what `confirmed_lost` says now.
+            confirmed_lost: unrecoverable,
+            confirmed_lost_pools: if unrecoverable {
+                vec!["yolab-fs-metadata".into()]
+            } else {
+                vec![]
+            },
         }
     }
 
@@ -1361,6 +1482,135 @@ mod tests {
 
     fn pool(id: i64, name: &str, size: u64) -> Value {
         json!({ "pool": id, "pool_name": name, "size": size })
+    }
+
+    // ── confirmed_lost: "gone" vs "nobody is answering right now" ──────────────
+
+    fn osd(id: i64, is_in: i64) -> Value {
+        json!({ "osd": id, "in": is_in, "up": 0, "weight": 1.0 })
+    }
+
+    fn dump_with_osds(pools: Value, osds: Value) -> Value {
+        json!({ "pools": pools, "osds": osds })
+    }
+
+    fn pg_acting(pgid: &str, state: &str, acting: Value) -> Value {
+        json!({ "pg_stats": [{ "pgid": pgid, "state": state, "acting": acting, "up": acting }] })
+    }
+
+    /// THE 2026-09-11 FALSE ALARM, exactly as the cluster reported it.
+    ///
+    /// Three OSD daemons wedged, every OSD still `in`, every disk still plugged
+    /// in, and the placement groups reported `stale+active+clean` — active and
+    /// CLEAN, merely unreported. The home page said "Your files are unreachable
+    /// and cannot be rebuilt" and offered to restore five apps from 24-hour-old
+    /// backups, over data that was completely intact.
+    #[test]
+    fn a_stale_pg_whose_osd_is_still_in_is_not_confirmed_lost() {
+        let dump = dump_with_osds(
+            json!([pool(2, "yolab-fs-metadata", 1)]),
+            json!([osd(0, 1), osd(1, 1), osd(2, 1)]),
+        );
+        let loss =
+            compute_pg_loss(&dump, &pg_acting("2.f", "stale+active+clean", json!([1]))).unwrap();
+
+        assert_eq!(loss.stuck, 1);
+        assert!(
+            loss.unrecoverable,
+            "single copy and unreadable: the purge gate must still refuse"
+        );
+        assert!(
+            !loss.confirmed_lost,
+            "osd.1 is still in — the daemon is down, the data is not gone"
+        );
+        assert!(loss.confirmed_lost_pools.is_empty());
+    }
+
+    /// The same PG once Ceph has actually given up on the disk holding it.
+    #[test]
+    fn a_stale_pg_whose_osd_is_out_is_confirmed_lost() {
+        let dump = dump_with_osds(
+            json!([pool(2, "yolab-fs-metadata", 1)]),
+            json!([osd(0, 1), osd(1, 0)]),
+        );
+        let loss =
+            compute_pg_loss(&dump, &pg_acting("2.f", "stale+active+clean", json!([1]))).unwrap();
+
+        assert!(loss.confirmed_lost, "osd.1 is out: Ceph has written it off");
+        assert_eq!(
+            loss.confirmed_lost_pools,
+            vec!["yolab-fs-metadata".to_string()]
+        );
+    }
+
+    /// `incomplete` is permanent whatever the OSD map says — every copy is gone.
+    #[test]
+    fn an_incomplete_pg_is_confirmed_lost_even_with_osds_still_in() {
+        let dump = dump_with_osds(
+            json!([pool(3, "yolab-fs-data0", 2)]),
+            json!([osd(0, 1), osd(1, 1)]),
+        );
+        let loss = compute_pg_loss(&dump, &pg_acting("3.f", "incomplete", json!([0, 1]))).unwrap();
+        assert!(loss.confirmed_lost);
+    }
+
+    /// Nothing acting and nothing up: no OSD claims the PG at all.
+    #[test]
+    fn a_pg_with_no_acting_osds_is_confirmed_lost() {
+        let dump = dump_with_osds(json!([pool(2, "yolab-fs-metadata", 1)]), json!([osd(0, 1)]));
+        let loss = compute_pg_loss(&dump, &pg_acting("2.f", "stale", json!([]))).unwrap();
+        assert!(loss.confirmed_lost);
+    }
+
+    /// The purge gate must keep its pessimism. `plan_purge` reads
+    /// `unrecoverable`, and weakening that would let a disk holding the only
+    /// copy of something be destroyed while its daemon was merely restarting.
+    #[test]
+    fn the_purge_gate_still_refuses_while_a_daemon_is_only_down() {
+        let dump = dump_with_osds(
+            json!([pool(2, "yolab-fs-metadata", 1)]),
+            json!([osd(0, 1), osd(1, 1)]),
+        );
+        let loss =
+            compute_pg_loss(&dump, &pg_acting("2.f", "stale+active+clean", json!([1]))).unwrap();
+        assert!(
+            loss.unrecoverable && loss.stuck > 0,
+            "this is the pair plan_purge keys on to refuse"
+        );
+    }
+
+    /// The three messages, and which one each state gets.
+    #[test]
+    fn the_message_distinguishes_gone_from_not_answering() {
+        let gone = PgLoss {
+            stuck: 74,
+            total: 81,
+            unrecoverable: true,
+            unrecoverable_pools: vec!["yolab-fs-data0".into()],
+            confirmed_lost: true,
+            confirmed_lost_pools: vec!["yolab-fs-data0".into()],
+        };
+        let (title, _) = unavailable_message(Some(&gone));
+        assert!(title.contains("cannot be rebuilt"));
+
+        let waiting = PgLoss {
+            confirmed_lost: false,
+            confirmed_lost_pools: vec![],
+            ..gone.clone()
+        };
+        let (title, body) = unavailable_message(Some(&waiting));
+        assert!(
+            !title.contains("cannot be rebuilt"),
+            "intact data must never be described as unrebuildable"
+        );
+        assert!(
+            body.contains("intact"),
+            "and the owner must be told not to reach for a backup: {body}"
+        );
+        assert!(
+            !body.contains("repairs itself"),
+            "there is no second copy to repair from at size 1: {body}"
+        );
     }
 
     #[test]
