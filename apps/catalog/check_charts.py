@@ -109,6 +109,80 @@ def render(chart_dir, library_tgz, workdir):
     return out.stdout, None
 
 
+def check_db_init_is_idempotent(app, script, container, fail):
+    """Run a database-setup init script against a stub and prove it converges.
+
+    `sh -n` proves a script parses. It says nothing about the trap this exists
+    for: an init that CREATES a database and then configures it, branching on
+    whether the file is already there. If the create succeeds and the configure
+    does not, every later run sees the file, takes the other branch, and tries to
+    modify something that was never set up. The container then crash-loops
+    forever and the only way out is deleting the volume. filebrowser shipped
+    exactly that and wedged an app through nine restarts.
+
+    So the three states are driven for real, with a stub standing in for the
+    binary: a fresh volume, a fully set-up one, and the half-finished one in
+    between. All three must exit 0, because an init container is re-run on every
+    restart and cannot assume which one it woke up in.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        stub_dir = os.path.join(tmp, "bin")
+        os.makedirs(stub_dir)
+        # The stub reports what the simulated database already contains:
+        #   STATE=fresh    nothing exists yet
+        #   STATE=ready    database and admin both exist
+        #   STATE=halfway  database exists, admin does not  <- the trap
+        stub = os.path.join(stub_dir, "filebrowser")
+        with open(stub, "w") as fh:
+            fh.write(
+                "#!/bin/sh\n"
+                'case "$1 $2" in\n'
+                '  "config init") [ "$STATE" = fresh ] && touch "$DBPATH"; exit 0 ;;\n'
+                '  "users add")   [ "$STATE" = ready ] && exit 1; exit 0 ;;\n'
+                '  "users update") [ "$STATE" = ready ] && exit 0; exit 1 ;;\n'
+                "esac\n"
+                "exit 0\n"
+            )
+        os.chmod(stub, 0o755)
+
+        db_dir = os.path.join(tmp, "db")
+        os.makedirs(db_dir)
+        db_path = os.path.join(db_dir, "filebrowser.db")
+        # The script hardcodes an absolute mount path; point it at the temp dir
+        # so the `[ -f ]` test observes the state each case is meant to set up.
+        local = script.replace("/db/filebrowser.db", db_path)
+
+        for state in ("fresh", "ready", "halfway"):
+            if state == "fresh":
+                if os.path.exists(db_path):
+                    os.remove(db_path)
+            else:
+                open(db_path, "w").close()
+            env = dict(
+                os.environ,
+                PATH=stub_dir + os.pathsep + os.environ["PATH"],
+                STATE=state,
+                DBPATH=db_path,
+                FB_ADMIN_PASSWORD="x",
+            )
+            run = subprocess.run(
+                ["sh", "-c", local],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            if run.returncode != 0:
+                fail(
+                    app,
+                    f"container {container}: database init is not re-runnable — "
+                    f"with an existing database in the '{state}' state it exits "
+                    f"{run.returncode}, so the pod crash-loops and cannot recover "
+                    f"without deleting the volume: {run.stdout.strip()} "
+                    f"{run.stderr.strip()}",
+                )
+
+
 def check(app, docs, fail, chart_yaml=""):
     kinds = {}
     for d in docs:
@@ -223,6 +297,11 @@ def check(app, docs, fail, chart_yaml=""):
                         f"pod {dname}: container {c['name']} command is not valid "
                         f"shell: {syntax.stderr.strip()}",
                     )
+                    continue
+                # A script that sets a database up has to survive being re-run,
+                # including from the half-finished state a failed run leaves.
+                if "users add" in cmd[2] or "users update" in cmd[2]:
+                    check_db_init_is_idempotent(app, cmd[2], c["name"], fail)
 
         # Containers in a pod share one network namespace, so two claiming the
         # same port means whichever starts second fails to bind — silently.

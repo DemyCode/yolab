@@ -1587,7 +1587,34 @@ pub async fn uninstall_app(
 /// non-fatal and logs it, because the namespace delete that follows tears the
 /// app down regardless; returning an error here would only give callers
 /// something to ignore.
+/// Whether the namespace is already being deleted.
+///
+/// Once it is, `helm uninstall` cannot succeed: its pre-delete hook has to CREATE
+/// a Job, and the API server refuses new objects in a terminating namespace —
+/// "unable to create new content in namespace X because it is being terminated".
+/// So retrying helm there is guaranteed noise. Observed after the watchdog's
+/// first pass on 2026-09-11: minecraft logged that same refusal at 13:55 and
+/// again at 14:01, once per tick, until the namespace finished going away.
+async fn namespace_is_terminating(ns: &str) -> bool {
+    crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
+        .await
+        .map(|v| v["status"]["phase"] == "Terminating")
+        .unwrap_or(false)
+}
+
 async fn run_teardown(instance_name: &str, ns: &str) {
+    // Already on its way out: skip straight to the delete, which is idempotent
+    // and simply confirms. Running helm here would fail every time and say
+    // nothing useful about it.
+    if namespace_is_terminating(ns).await {
+        tracing::info!(
+            "uninstall {instance_name}: namespace is already terminating — waiting for it \
+             to finish rather than re-running helm"
+        );
+        delete_namespace_with_retry(ns).await;
+        return;
+    }
+
     // `helm uninstall` runs the chart's pre-delete hook (tunnel cleanup) and waits for
     // it before removing anything. That replaces rendering an uninstall template by
     // hand, applying it, and polling `kubectl wait job/uninstall --timeout=120s` — and
