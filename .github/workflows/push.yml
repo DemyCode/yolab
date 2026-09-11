@@ -204,7 +204,11 @@ jobs:
             # Untouched in this push: nothing to say about it.
             git diff --quiet "$before" HEAD -- "$chart" && continue
             new=$(grep '^version:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
-            old=$(git show "$before:$chart/Chart.yaml" 2>/dev/null \
+            # ${chart%/} strips the trailing slash: git's rev:path syntax rejects
+            # the doubled separator that "$chart/Chart.yaml" would produce, and it
+            # fails quietly — which made an earlier version of this check treat
+            # every chart as brand-new and pass unconditionally.
+            old=$(git show "$before:${chart%/}/Chart.yaml" 2>/dev/null \
                   | grep '^version:' | head -1 | awk '{print $2}')
             # A brand-new chart has no old version, and needs no bump.
             [ -z "$old" ] && continue
