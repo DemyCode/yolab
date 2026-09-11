@@ -381,7 +381,7 @@ async fn read_deployment_scales(ns: &str) -> Vec<DeploymentScale> {
 }
 
 async fn snapshots_exist(repo: &str, cfg: &BackupConfig) -> anyhow::Result<bool> {
-    let out = restic(repo, cfg, &["snapshots", "--json"]).await?;
+    let out = restic(repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
@@ -407,7 +407,13 @@ async fn resolve_snapshot(
     let out = restic(
         &repo,
         cfg,
-        &["snapshots", "--json", "--tag", "cluster-backup"],
+        &[
+            "snapshots",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+        ],
     )
     .await?;
     if !out.status.success() {
@@ -430,7 +436,9 @@ fn newest_snapshot_id(snapshots: &Value) -> Option<String> {
 }
 
 async fn snapshot_time(repo: &str, cfg: &BackupConfig, id: &str) -> Option<String> {
-    let out = restic(repo, cfg, &["snapshots", id, "--json"]).await.ok()?;
+    let out = restic(repo, cfg, &["snapshots", "--no-lock", id, "--json"])
+        .await
+        .ok()?;
     if !out.status.success() {
         return None;
     }

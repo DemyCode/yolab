@@ -300,7 +300,13 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
     let out = restic(
         &repo,
         &cfg,
-        &["snapshots", "--json", "--tag", "cluster-backup"],
+        &[
+            "snapshots",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+        ],
     )
     .await?;
 
@@ -416,6 +422,63 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
         let _ = ensure_replication_source(&pvc, false).await;
     }
     Ok(())
+}
+
+/// Background loop: clear restic locks nothing is holding any more.
+///
+/// A LOCK OUTLIVES THE PROCESS THAT TOOK IT, AND NOTHING CLEANED UP AFTER ONE.
+///
+/// Every app's PVC has its own restic repository, and a leftover lock on one
+/// blocks that app's retention forever: VolSync's mover still uploads the
+/// snapshot, then fails at `forget`, and the pod retries in a loop. Observed on
+/// 2026-09-11 across babybuddy, code-server and vaultwarden:
+///
+///   === Starting forget ===
+///   unable to create lock in backend: repository is already locked by
+///     PID 530299 on node1 by root
+///   lock was created at 2026-09-11 13:51:50
+///
+/// PID 530299 was long dead and no restic process was running anywhere.
+///
+/// Where those locks came from is the reason `--no-lock` now appears on every
+/// read-only `restic snapshots` call in this crate: `app_damage` lists snapshots
+/// for EVERY app repo, the home page polls it every 15s while storage looks
+/// unhealthy, and each of those listings took a lock. Restart local-api
+/// mid-listing — 21 restarts in 30 hours during a day of deploys — and the lock
+/// is orphaned. That fix stops new ones; this clears the ones already out there,
+/// and covers any future interruption of a lock-taking command.
+///
+/// `restic unlock` WITHOUT `--remove-all`, deliberately. Plain `unlock` removes
+/// only locks restic itself judges stale — the creating process is gone, or the
+/// lock has aged out. `--remove-all` would rip out a lock a backup is actively
+/// holding, turning a tidy-up into corruption of the run it interrupted. This
+/// loop must be safe to run at any moment, including mid-backup, because it
+/// does.
+pub(crate) async fn run_lock_sweeper() {
+    const TICK: std::time::Duration = std::time::Duration::from_secs(1800);
+    // After the boot rush, and after the scheduler has had its first look.
+    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+    loop {
+        if let Some(cfg) = read_master_config().await {
+            // The cluster repo plus one per app PVC — the same set
+            // `setup_namespace_backup` wires up, so a new app is covered the
+            // moment it has a ReplicationSource.
+            cfg.unlock("cluster-backup").await;
+            match list_user_pvcs().await {
+                Ok(pvcs) => {
+                    for pvc in pvcs {
+                        let path =
+                            format!("volsync/{}/{}", pvc.namespace, canonical_pvc_id(&pvc.name));
+                        cfg.unlock(&path).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("lock sweep: could not list PVCs: {e}");
+                }
+            }
+        }
+        tokio::time::sleep(TICK).await;
+    }
 }
 
 // ── "Apps with lost data" triage ───────────────────────────────────────────────
