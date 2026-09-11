@@ -230,16 +230,28 @@ fn single(body: &Value, state: &str, age: Duration, policy: Policy) -> Response 
     res
 }
 
-/// Run the handler and, if the result is a plain 200 JSON body small enough to
-/// hold, return it as a `Value` so it can be cached and framed.
+/// What came back from the handler: something worth caching, or something to
+/// send on untouched.
 ///
-/// Anything else — an error status, a stream, something enormous — comes back as
-/// the untouched `Response`, which the caller passes straight through. A cache
-/// that stored error bodies would turn a one-second blip into a TTL-long lie.
-async fn run_handler(req: Request, next: Next) -> Result<Value, Response> {
+/// AN ENUM RATHER THAN `Result<Value, Response>`, which is what this was. The
+/// `Err` side never meant an error — a 204, a stream, an ordinary 500 are all
+/// perfectly good answers that simply cannot be cached — so `Result` was telling
+/// the reader the wrong thing about every one of them. clippy objected for its
+/// own reason (`result_large_err`: an axum Response is 128 bytes, and paying
+/// that on every success path is waste), and both complaints have the same fix.
+enum Handled {
+    /// A plain 200 JSON body, small enough to hold: cacheable.
+    Cacheable(Value),
+    /// Anything else. Passed through exactly as the handler produced it — a
+    /// cache that stored error bodies would turn a one-second blip into a
+    /// TTL-long lie.
+    PassThrough(Box<Response>),
+}
+
+async fn run_handler(req: Request, next: Next) -> Handled {
     let res = next.run(req).await;
     if res.status() != StatusCode::OK {
-        return Err(res);
+        return Handled::PassThrough(Box::new(res));
     }
     let is_json = res
         .headers()
@@ -247,7 +259,7 @@ async fn run_handler(req: Request, next: Next) -> Result<Value, Response> {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("application/json"));
     if !is_json {
-        return Err(res);
+        return Handled::PassThrough(Box::new(res));
     }
     let (parts, body) = res.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_CACHEABLE_BYTES).await {
@@ -255,16 +267,18 @@ async fn run_handler(req: Request, next: Next) -> Result<Value, Response> {
         // Too large to buffer, and the body is gone with it — there is nothing
         // left to pass through, so say so rather than return an empty 200.
         Err(_) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response too large to cache",
-            )
-                .into_response())
+            return Handled::PassThrough(Box::new(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "response too large to cache",
+                )
+                    .into_response(),
+            ))
         }
     };
     match serde_json::from_slice::<Value>(&bytes) {
-        Ok(v) => Ok(v),
-        Err(_) => Err(Response::from_parts(parts, Body::from(bytes))),
+        Ok(v) => Handled::Cacheable(v),
+        Err(_) => Handled::PassThrough(Box::new(Response::from_parts(parts, Body::from(bytes)))),
     }
 }
 
@@ -328,11 +342,11 @@ pub async fn middleware(req: Request, next: Next) -> Response {
             let stream = async_stream::stream! {
                 yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(first));
                 match run_handler(req, next).await {
-                    Ok(fresh) => {
+                    Handled::Cacheable(fresh) => {
                         store(&key, fresh.clone()).await;
                         yield Ok(axum::body::Bytes::from(frame(&fresh, "fresh", Duration::ZERO, policy)));
                     }
-                    Err(res) => {
+                    Handled::PassThrough(res) => {
                         // The handler failed AFTER we already promised a 200 and
                         // sent a frame. The status line is long gone, so the only
                         // honest thing left is to say so in a frame the client
@@ -355,13 +369,10 @@ pub async fn middleware(req: Request, next: Next) -> Response {
         }
         // Nothing cached at all. There is no first frame to send, so this is an
         // ordinary miss — still ndjson, so the client has one shape to parse.
-        let (body, res) = match compute_once(&key, policy, req, next).await {
-            Ok(v) => v,
-            Err(res) => return res,
+        let body = match compute_once(&key, policy, req, next).await {
+            Computed::Fresh(body) => body,
+            Computed::Ready(res) => return *res,
         };
-        if let Some(res) = res {
-            return res;
-        }
         let mut res = Response::new(Body::from(frame(&body, "miss", Duration::ZERO, policy)));
         res.headers_mut()
             .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
@@ -372,36 +383,41 @@ pub async fn middleware(req: Request, next: Next) -> Response {
 
     // Plain client, nothing fresh: compute and answer once, as always.
     match compute_once(&key, policy, req, next).await {
-        Ok((body, None)) => single(&body, "miss", Duration::ZERO, policy),
-        Ok((_, Some(res))) => res,
-        Err(res) => res,
+        Computed::Fresh(body) => single(&body, "miss", Duration::ZERO, policy),
+        Computed::Ready(res) => *res,
     }
 }
 
-/// Compute under the key's flight lock, so simultaneous misses become one run.
+/// The outcome of trying to produce a value for this key.
 ///
-/// Returns `Ok((body, None))` when this call produced the value, and
-/// `Ok((body, Some(response)))` when another request filled the cache while we
-/// waited — in which case the caller should send that response as-is.
-#[allow(clippy::type_complexity)]
-async fn compute_once(
-    key: &str,
-    policy: Policy,
-    req: Request,
-    next: Next,
-) -> Result<(Value, Option<Response>), Response> {
+/// Like `Handled`, an enum rather than a `Result` whose `Err` is not an error:
+/// both "another request filled the cache while we queued" and "the handler
+/// returned something uncacheable" end the same way — there is a finished
+/// Response, send it. Only `Fresh` leaves the caller anything to decide, which
+/// is how it should frame the body it just computed.
+enum Computed {
+    Fresh(Value),
+    Ready(Box<Response>),
+}
+
+/// Compute under the key's flight lock, so simultaneous misses become one run.
+async fn compute_once(key: &str, policy: Policy, req: Request, next: Next) -> Computed {
     let flight = flight(key);
     let _guard = flight.lock().await;
     // Whoever held this lock before us has just filled the cache. Use their
     // result rather than spawning an identical subprocess a millisecond later.
     if let Some((body, age)) = look_up(key, policy).await {
         if age < policy.ttl {
-            return Ok(((*body).clone(), Some(single(&body, "hit", age, policy))));
+            return Computed::Ready(Box::new(single(&body, "hit", age, policy)));
         }
     }
-    let body = run_handler(req, next).await?;
-    store(key, body.clone()).await;
-    Ok((body, None))
+    match run_handler(req, next).await {
+        Handled::Cacheable(body) => {
+            store(key, body.clone()).await;
+            Computed::Fresh(body)
+        }
+        Handled::PassThrough(res) => Computed::Ready(res),
+    }
 }
 
 #[cfg(test)]
