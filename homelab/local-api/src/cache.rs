@@ -181,22 +181,19 @@ async fn store(key: &str, body: Value) {
     );
 }
 
-/// Drop cached values so the next read recomputes.
+/// Drop everything the cache holds.
 ///
-/// EVERY MUTATION MUST DO THIS. A cache that outlives the action that
-/// invalidated it is worse than no cache: the operator marks an OSD out, the
-/// page keeps showing it in for the rest of the TTL, and the only reasonable
-/// conclusion is that the button did not work. The risk here is not staleness in
-/// the abstract, it is contradicting something the user just did.
-pub async fn invalidate(paths: &[&str]) {
-    let mut map = entries().lock().await;
-    for path in paths {
-        map.remove(*path);
-    }
-}
-
-/// Drop everything. Called by `middleware` after any successful write — see the
-/// note there for why the blast radius is deliberately the whole cache.
+/// EVERY MUTATION MUST DO THIS, which is why `middleware` calls it for any
+/// successful non-GET rather than leaving it to each handler. A cache that
+/// outlives the action that invalidated it is worse than no cache: the operator
+/// marks an OSD out, the page keeps showing it in for the rest of the TTL, and
+/// the only reasonable conclusion is that the button did not work. The risk is
+/// not staleness in the abstract, it is contradicting something the user just
+/// did.
+///
+/// There is deliberately no per-path variant. One existed, was used only by a
+/// test, and `-D warnings` correctly called it dead code — see the note on the
+/// blast radius in `middleware` for why nothing needs it.
 pub async fn invalidate_all() {
     entries().lock().await.clear();
 }
@@ -575,7 +572,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
 
         app(calls.clone()).oneshot(req(false)).await.unwrap();
-        invalidate(&["/api/ceph/detail"]).await;
+        invalidate_all().await;
 
         let res = app(calls.clone()).oneshot(req(false)).await.unwrap();
         assert_eq!(res.headers()[HEADER_STATE], "miss");
