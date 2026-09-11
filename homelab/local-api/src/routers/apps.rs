@@ -146,6 +146,136 @@ async fn annotate_ns(ns: &str, key: &str, value: &str) {
     }
 }
 
+/// Where an app's install config actually lives.
+///
+/// IT USED TO LIVE IN A NAMESPACE ANNOTATION, IN PLAINTEXT.
+///
+/// `yolab.io/config` is the whole config object serialised as JSON, credentials
+/// included, and a namespace annotation is about the most readable place in a
+/// cluster: it comes out of `kubectl get ns -o yaml`, it is copied verbatim into
+/// `kubectl.kubernetes.io/last-applied-configuration` beside it, and it is
+/// returned by any request that lists namespaces. On 2026-09-11 a filebrowser
+/// admin password was read straight out of a routine diagnostic dump of
+/// `kubectl get ns yolab-filebrowser -o jsonpath={.metadata.annotations}`.
+///
+/// A Secret is not encryption — it is base64 in etcd unless the cluster enables
+/// encryption at rest — but it is the conventional place, it is a separate
+/// resource for RBAC to grant or withhold, and it does not turn up in the output
+/// of every command that touches namespaces.
+const CONFIG_SECRET: &str = "yolab-config";
+const CONFIG_SECRET_KEY: &str = "config.json";
+/// What a credential field reads as in the annotation that remains.
+const REDACTED: &str = "__redacted__";
+
+/// Config field names the chart marks as credentials.
+///
+/// Read from the chart's uiSchema — the same `ui:widget: PasswordWidget` the
+/// install form uses to decide what to mask and what to offer to regenerate —
+/// and NOT from guessing at names. The install page already made that choice
+/// deliberately ("Which fields those are comes from the chart's uiSchema, not
+/// from guessing at names"); a second, name-sniffing rule here would disagree
+/// with it the first time a chart calls something `api_key`.
+fn credential_fields(uischema: &Value) -> std::collections::HashSet<String> {
+    uischema
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter(|(_, spec)| spec["ui:widget"] == "PasswordWidget")
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The config with every credential replaced by a marker, for the annotation.
+///
+/// The keys are kept rather than dropped so the annotation still describes the
+/// shape of the config, and so anything reading it can tell "this app has a
+/// password, stored elsewhere" from "this app has no password".
+fn redact_credentials(
+    config: &serde_json::Map<String, Value>,
+    credentials: &std::collections::HashSet<String>,
+) -> serde_json::Map<String, Value> {
+    config
+        .iter()
+        .map(|(k, v)| {
+            if credentials.contains(k) {
+                (k.clone(), Value::String(REDACTED.to_string()))
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect()
+}
+
+/// Persist an app's config: the real thing in a Secret, a redacted copy in the
+/// annotation.
+///
+/// Both, not one: the annotation is what `list_apps` reads for every app at once
+/// without a Secret fetch per namespace, and it is the migration path for apps
+/// installed before the Secret existed.
+async fn write_config(ns: &str, config: &serde_json::Map<String, Value>, uischema: &Value) {
+    let full = serde_json::to_string(config).unwrap_or_default();
+    if let Err(e) = crate::kubectl::apply_secret(
+        CONFIG_SECRET,
+        ns,
+        &[(CONFIG_SECRET_KEY, full.as_str())],
+        &[("yolab.io/managed", "true")],
+    )
+    .await
+    {
+        // Not fatal on its own — the annotation below still carries everything
+        // that is not a credential — but it means a reconfigure will not find
+        // the password, so it has to be visible.
+        tracing::warn!("config secret for {ns} could not be written: {e}");
+    }
+    let redacted = redact_credentials(config, &credential_fields(uischema));
+    let json = serde_json::to_string(&redacted).unwrap_or_default();
+    annotate_ns(ns, ANN_CONFIG, &json).await;
+}
+
+/// An app's config, credentials included.
+///
+/// Prefers the Secret and falls back to the annotation, which is what apps
+/// installed before this existed still have. When it does fall back it writes
+/// the Secret and redacts the annotation on the way past, so every app migrates
+/// itself the first time anything reads its config — there is no separate
+/// migration to run and no window where an old app cannot be reconfigured.
+async fn read_config(
+    ns: &str,
+    ann: &serde_json::Map<String, Value>,
+    uischema: &Value,
+) -> serde_json::Map<String, Value> {
+    let from_annotation: serde_json::Map<String, Value> = ann
+        .get(ANN_CONFIG)
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+
+    if let Some(data) = crate::kubectl::get_secret(CONFIG_SECRET, ns).await {
+        if let Some(raw) = data.get(CONFIG_SECRET_KEY) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Map<String, Value>>(raw) {
+                return v;
+            }
+        }
+    }
+
+    // No Secret yet. If the annotation still holds real credentials, this is a
+    // pre-migration app: move them now.
+    let credentials = credential_fields(uischema);
+    let holds_plaintext = credentials.iter().any(|k| {
+        from_annotation
+            .get(k)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s != REDACTED)
+    });
+    if holds_plaintext {
+        tracing::info!("{ns}: moving app config out of the namespace annotation into a Secret");
+        write_config(ns, &from_annotation, uischema).await;
+    }
+    from_annotation
+}
+
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
     let text = std::fs::read_to_string(&cfg.config_path)?;
     let table: toml::Table = toml::from_str(&text)?;
@@ -236,6 +366,19 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
 
 /// The chart's log-scraping output specs (`yolab.io/outputs`). Empty when the chart
 /// declares none, or when the app was installed from a chart no longer in the catalog.
+/// The chart's uiSchema, which is what marks a config field as a credential.
+///
+/// Read from the chart rather than from the namespace so it is available on the
+/// install path, before anything has been annotated.
+fn chart_uischema(catalog_dir: &std::path::Path, id: &str) -> Value {
+    if id.is_empty() {
+        return Value::Null;
+    }
+    read_chart(&catalog_dir.join(id))
+        .map(|m| m.ann_json(ANN_UISCHEMA))
+        .unwrap_or(Value::Null)
+}
+
 fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
     if id.is_empty() {
         return Vec::new();
@@ -1052,10 +1195,10 @@ pub async fn install_app(
                 "[WARN] backup was not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
             )));
         }
-        // Persisted on the namespace (not only in Helm's release Secret) because the
-        // backup's identity export reads namespace annotations.
-        let config_json = serde_json::to_string(&body.config).unwrap_or_default();
-        annotate_ns(&ns, ANN_CONFIG, &config_json).await;
+        // The real config goes in a Secret; a copy with credentials redacted stays
+        // on the namespace, where list_apps can read every app's at once. See
+        // write_config for why it is no longer all in the annotation.
+        write_config(&ns, &body.config, &chart_uischema(&state.config.catalog_dir(), &id)).await;
         yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));
     };
 
@@ -1085,14 +1228,41 @@ pub async fn update_app(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let stored_config: serde_json::Map<String, Value> = ann
-        .get(ANN_CONFIG)
-        .and_then(|v| v.as_str())
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
+    let uischema = chart_uischema(&state.config.catalog_dir(), &id);
+    // From the Secret, not the annotation: the annotation only carries redacted
+    // credentials now, and an update that fell back to it would hand helm the
+    // literal string "__redacted__" as the app's password.
+    let stored_config = read_config(&ns, &ann, &uischema).await;
 
     // Caller may supply a new config; fall back to the stored one.
-    let config = body.and_then(|b| b.0.config).unwrap_or(stored_config);
+    let config = match body.and_then(|b| b.0.config) {
+        Some(mut incoming) => {
+            // THE FORM PRE-FILLS FROM THE REDACTED COPY. `list_apps` deliberately
+            // no longer hands the browser real credentials, so a password the
+            // user did not touch comes back here as the marker. Writing that
+            // through would silently set the app's password to the literal
+            // string "__redacted__" — locking them out of their own app on a
+            // reconfigure that changed something else entirely.
+            for field in credential_fields(&uischema) {
+                let untouched =
+                    incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
+                if untouched {
+                    match stored_config.get(&field) {
+                        Some(kept) => {
+                            incoming.insert(field, kept.clone());
+                        }
+                        // Nothing stored to restore: drop the marker rather than
+                        // pass it on, and let the chart's default apply.
+                        None => {
+                            incoming.remove(&field);
+                        }
+                    }
+                }
+            }
+            incoming
+        }
+        None => stored_config,
+    };
 
     if let Err(e) = validate_config_values(&config) {
         return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
@@ -1156,8 +1326,7 @@ pub async fn update_app(
         // manifests and restarts only what actually changed — and charts that need a
         // restart on a config-only change (e.g. a password held in a Secret) carry a
         // checksum annotation on the pod template, which is the idiomatic way to say so.
-        let config_json = serde_json::to_string(&config).unwrap_or_default();
-        annotate_ns(&ns, ANN_CONFIG, &config_json).await;
+        write_config(&ns, &config, &uischema).await;
         yield Ok(Event::default().data(format!("[DONE] {id} updated")));
     };
 

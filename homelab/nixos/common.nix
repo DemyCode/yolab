@@ -100,7 +100,7 @@ in
     # ceph is pinned to python312 (not the default python3, which is 3.14), so
     # the override must land on python312 — overriding python3 alone did nothing.
     nixpkgs.overlays = [
-      (final: prev: {
+      (_: prev: {
         python312 = prev.python312.override {
           packageOverrides = _: pyprev: {
             "inline-snapshot" = pyprev."inline-snapshot".overridePythonAttrs (_: {
