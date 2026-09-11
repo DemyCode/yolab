@@ -93,11 +93,63 @@ fn stage_dir(root: &Path) -> PathBuf {
     root.join(format!("tmp/yolab-containerd-migrate-{uniq:016x}"))
 }
 
-async fn image_exists<H: Host>(host: &H, pool: &str, name: &str) -> bool {
-    host.run_cmd("rbd", &["ls", pool])
+/// How long the images pool gets to prove it can still serve a read.
+///
+/// DELIBERATELY FAR SHORTER THAN `RUN_CMD_TIMEOUT`, and the gap is the point.
+///
+/// `rbd ls` reads one small directory object out of the pool. Against a pool
+/// that works it answers in well under a second. Against a pool whose PGs are
+/// `down` it does not answer at all, ever: Ceph blocks rather than fails a read
+/// it cannot serve, and the client retries for as long as it is allowed to. So
+/// "can this pool serve reads right now?" is fully answered, either way, within
+/// seconds — and every additional second of budget past that buys nothing but a
+/// longer outage.
+///
+/// The 600s default turned that distinction into 23 hours of downtime on
+/// 2026-09-10. node3 was lost, the pool was size 1, and this probe blocked for
+/// the full ten minutes on every run. The journal records it exactly, once per
+/// timer tick all night: `Consumed 663ms CPU time over 10min 520ms wall clock`.
+const POOL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether this node's image is there — and, KEPT SEPARATE, whether the pool was
+/// able to answer the question at all.
+///
+/// This used to be a `bool` that collapsed the third case into "absent" with an
+/// `.unwrap_or(false)`, and that conflation is what made the outage silent: a
+/// pool that cannot serve a read is not a pool with no image in it. The image
+/// was right there, mapped at /dev/rbd0 and mounted, while this reported it
+/// missing and `run()` announced it was "leaving containerd on the root disk".
+///
+/// The two answers also want opposite handling, which a bool cannot express:
+/// `Absent` is a fresh node awaiting provisioning, and doing nothing is correct.
+/// `Unavailable` is a node that must get OFF Ceph and stay off it until the
+/// cluster can serve again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageState {
+    Present,
+    Absent,
+    Unavailable,
+}
+
+async fn image_state<H: Host>(host: &H, pool: &str, name: &str) -> ImageState {
+    match host
+        .run_cmd_bounded("rbd", &["ls", pool], POOL_PROBE_TIMEOUT)
         .await
-        .map(|o| o.stdout.lines().any(|l| l.trim() == name))
-        .unwrap_or(false)
+    {
+        Ok(o) if o.success => {
+            if o.stdout.lines().any(|l| l.trim() == name) {
+                ImageState::Present
+            } else {
+                ImageState::Absent
+            }
+        }
+        // Covers the pool not existing yet, which `rbd ls` reports as a plain
+        // failure. Calling that `Unavailable` rather than `Absent` costs one
+        // timer tick on a fresh cluster — images_rbd creates the pool, the next
+        // run finds it — and never risks acting on an answer the pool did not
+        // actually give.
+        _ => ImageState::Unavailable,
+    }
 }
 
 /// Answers from the mount table, never by touching the mount.
@@ -627,24 +679,58 @@ async fn mount_the_store<H: Host>(
     Ok(())
 }
 
+/// Put k3s back if this run stopped it, and report the run as successful.
+///
+/// `--no-block`, and not optional: k3s.service is `After=` this unit, so a
+/// blocking start would deadlock against systemd's own ordering.
+///
+/// The result is deliberately `Ok(())` — none of this function's callers are
+/// failures. "Ceph cannot serve the image store" is a state this unit is
+/// designed to survive by staying on the root disk, and reporting it as a unit
+/// failure would only add a red service to a node that is, by then, working.
+async fn resume_k3s<H: Host>(host: &H, was_active: bool) -> Result<()> {
+    if was_active {
+        tracing::info!("starting k3s again");
+        let _ = host
+            .systemctl(&["start", "--no-block", "k3s.service"])
+            .await;
+    }
+    Ok(())
+}
+
 pub async fn run<H: Host>(
     host: &H,
     root: &Path,
     node: &str,
     policy: &ContainerdStorePolicy,
 ) -> Result<()> {
-    if !host.reachable().await {
-        tracing::info!("ceph not reachable — leaving containerd on the root disk for this boot");
-        return Ok(());
-    }
-    if !image_exists(host, &policy.pool_name, node).await {
-        tracing::info!(
-            "no {}/{node} image yet — leaving containerd on the root disk for this boot",
-            policy.pool_name
-        );
-        return Ok(());
-    }
-
+    // THE MOUNT IN FRONT OF US IS TRIAGED FIRST, BEFORE ANY QUESTION ABOUT CEPH.
+    //
+    // The two preflight guards that used to stand here — "is Ceph reachable" and
+    // "does this node's image exist" — both returned `Ok(())` claiming to be
+    // "leaving containerd on the root disk". That sentence is true exactly once:
+    // on a fresh boot, where nothing is mounted yet. On a node whose data-root is
+    // ALREADY a dead RBD mount it is precisely backwards — it leaves containerd
+    // on a poisoned mount and calls that the safe fallback.
+    //
+    // Which means the recovery below, the one this module's header calls THE fix,
+    // sat behind the two checks guaranteed to fail in the exact situation it
+    // exists to repair. A pool that cannot serve reads is a pool `rbd ls` cannot
+    // answer for, so the image reads as missing, so `run()` returned before ever
+    // looking at the mount. The branch never executed once.
+    //
+    // Cost, on 2026-09-10: node3 was lost with the pools at size 1, XFS shut the
+    // containerd data-root down on node1 and node2, and all three nodes sat
+    // NotReady for 23 hours with kubelet repeating `Container runtime sanity
+    // check failed ... /io.containerd.grpc.v1.introspection/uuid: input/output
+    // error` while this unit reported success every five minutes.
+    //
+    // RELEASING A DEAD MOUNT NEEDS NOTHING FROM CEPH. It is a `umount` of a
+    // filesystem that has already stopped answering, and it is what lets
+    // containerd fall back to the root disk and the node come back Ready. So it
+    // must not be gated on the health of the cluster that broke it — that
+    // ordering makes the repair unreachable in exactly the cases that need it.
+    // Ceph is asked about further down, once the node is safe either way.
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
     let mut needs_rebuild = false;
@@ -772,6 +858,45 @@ pub async fn run<H: Host>(
         }
     }
 
+    // ── Only now, with the node safe either way, ask about Ceph ─────────────
+    //
+    // Both of these return without putting containerd on the RBD, and BOTH MUST
+    // RESTART k3s, because the triage above may have stopped it to release a
+    // dead store. Returning a bare `Ok(())` here — which is what the old
+    // placement of these checks did — would strand a node that had just been
+    // repaired perfectly, with its runtime never started again.
+    if !host.reachable().await {
+        tracing::info!("ceph not reachable — containerd stays on the root disk");
+        return resume_k3s(host, was_active).await;
+    }
+    match image_state(host, &policy.pool_name, node).await {
+        ImageState::Present => {}
+        ImageState::Absent => {
+            tracing::info!(
+                "no {}/{node} image yet — containerd stays on the root disk",
+                policy.pool_name
+            );
+            return resume_k3s(host, was_active).await;
+        }
+        // The case that used to masquerade as `Absent`. Staying on the root disk
+        // is not a degraded outcome here, it is the whole recovery: every byte
+        // under containerd's data-root is a layer a registry will send again, and
+        // k3s runs etcd and the apiserver in-process rather than as containers,
+        // so the control plane comes back with an empty image store. The cluster
+        // is reachable again while the pool is still down, and workload pods
+        // re-pull once it is fixed.
+        ImageState::Unavailable => {
+            tracing::warn!(
+                "the {} pool did not answer within {}s — it cannot serve reads right now. \
+                 Leaving containerd on the root disk so this node can run without it; \
+                 the image store will move back onto Ceph once the pool recovers.",
+                policy.pool_name,
+                POOL_PROBE_TIMEOUT.as_secs()
+            );
+            return resume_k3s(host, was_active).await;
+        }
+    }
+
     // From here on this may stop k3s, and every exit path has to put it back
     // — the flag is captured at the top of this function (not with a `trap`) so
     // the restart runs whether `mount_the_store` returns Ok or Err, and whether
@@ -786,14 +911,10 @@ pub async fn run<H: Host>(
 
     let result = mount_the_store(host, root, node, policy, needs_rebuild).await;
 
-    if was_active {
-        tracing::info!("starting k3s again");
-        // --no-block, and not optional: k3s.service is After= this unit, so
-        // a blocking start would deadlock against systemd's own ordering.
-        let _ = host
-            .systemctl(&["start", "--no-block", "k3s.service"])
-            .await;
-    }
+    // Not `?` on either: the restart has to happen even when mounting failed —
+    // that is the case where the node most needs its runtime back — so the
+    // start is issued first and `mount_the_store`'s result reported after.
+    let _ = resume_k3s(host, was_active).await;
 
     result
 }
@@ -1210,6 +1331,74 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
         assert!(!host.ran("rbd map"));
+    }
+
+    /// THE 23-HOUR OUTAGE, 2026-09-10.
+    ///
+    /// Every other test in this file mocks `rbd ls images` as SUCCEEDING, and
+    /// that is precisely why none of them caught this. The incident's shape is
+    /// the opposite: node3 was lost, the pools were size 1, two of the images
+    /// pool's PGs went `down`, and a pool with down PGs does not fail a read —
+    /// it never answers one. `rbd ls` blocked for the full 600s command bound,
+    /// `image_exists` swallowed the timeout as "no such image", and `run()`
+    /// returned announcing it was "leaving containerd on the root disk".
+    ///
+    /// It was not. The data-root was a mounted RBD whose XFS had shut down, and
+    /// that mount was still there — so kubelet went on failing its runtime
+    /// sanity check with EIO and all three nodes stayed NotReady all night,
+    /// while this unit reported success every five minutes.
+    ///
+    /// The repair needs NOTHING from Ceph: unmounting a filesystem that has
+    /// already stopped answering is what lets containerd fall back to the root
+    /// disk and the node come back. So it must happen even when — especially
+    /// when — the pool cannot be reached at all.
+    #[tokio::test]
+    async fn a_pool_that_cannot_answer_still_releases_a_dead_store() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            // The pool is up enough to talk to a mon, but cannot serve reads.
+            .fail("rbd ls images", "timed out")
+            .ok("findmnt -rno TARGET --mountpoint", "") // success = IS a mountpoint
+            .ok("umount", "")
+            .ok("systemctl is-active", "active")
+            .ok("systemctl", "");
+        let dir = tempfile::tempdir().unwrap();
+        // containerd_root deliberately NOT created: is_readable_dir -> false,
+        // the same shape a dead XFS mount produces — mounted, nothing readable.
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        let calls = host.calls();
+        assert!(
+            host.ran("umount"),
+            "the dead mount must be released without waiting on Ceph, calls were: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("systemctl start --no-block k3s.service")),
+            "and k3s must be started again, or the repair strands the node it just fixed, \
+             calls were: {calls:?}"
+        );
+        assert!(
+            !host.ran("rbd map"),
+            "nothing should be mapped from a pool that cannot serve reads"
+        );
+    }
+
+    /// The other half of the same incident: the probe's BOUND.
+    ///
+    /// Reverting `image_state` to a plain `run_cmd` would reintroduce the ten
+    /// minutes of dead time per timer tick even with the ordering fixed, since
+    /// the triage above only runs once per invocation and every invocation
+    /// would again spend most of its life blocked here.
+    #[test]
+    fn the_pool_probe_gives_up_long_before_the_generic_command_bound() {
+        assert!(
+            POOL_PROBE_TIMEOUT.as_secs() < 600,
+            "a pool that has not answered a one-object read in seconds is not slow, \
+             it is unable — waiting out the 600s run_cmd bound buys only downtime"
+        );
     }
 
     #[tokio::test]
