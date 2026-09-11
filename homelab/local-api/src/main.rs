@@ -1,5 +1,6 @@
 mod auth;
 mod boot;
+mod cache;
 mod ceph_cli;
 mod cephfs;
 mod charts;
@@ -265,6 +266,11 @@ async fn main() {
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))
+        // INSIDE the auth layer, deliberately. `.layer` wraps what is already
+        // there, so this runs after auth_middleware has accepted the request —
+        // an unauthenticated caller can never reach the cache, and a 401 is
+        // never what gets stored under a key.
+        .layer(middleware::from_fn(cache::middleware))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state.clone());

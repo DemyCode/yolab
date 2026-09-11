@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError } from "./api";
+import { ApiError, isCached } from "./api";
+import type { CacheMeta } from "./api";
 
 /**
  * Fetch-on-mount, poll-while-visible data fetching.
@@ -22,12 +23,32 @@ export interface Resource<T> {
   refresh: () => Promise<void>;
   /** Apply a local change now; the next refresh confirms it. */
   mutate: (updater: T | ((prev: T | undefined) => T)) => void;
+  /**
+   * What the server said about the body currently in `data`, or null for a
+   * resource that is not cached server-side.
+   *
+   * THE UI IS EXPECTED TO SHOW THIS. Rendering a remembered value as though it
+   * were live is precisely the bug that got localStorage caching deleted from
+   * this file; the server-side cache is only safe while the page keeps saying
+   * which one it is holding.
+   */
+  cache: CacheMeta | null;
+  /** Shorthand: the body on screen was remembered, not just computed. */
+  cached: boolean;
 }
 
 export function useResource<T>(
   /** Stable cache key. Pass `null` to disable the fetch entirely. */
   key: string | null,
-  fetcher: () => Promise<T>,
+  /**
+   * Receives an `onPartial` callback. A plain fetcher ignores it and resolves
+   * once, exactly as before; a progressive one (`api.getProgressive`) calls it
+   * for the remembered value and then resolves with the freshly computed one,
+   * so the page paints twice from a single request.
+   */
+  fetcher: (
+    onPartial: (value: T, meta: CacheMeta | null) => void,
+  ) => Promise<T>,
   opts: { pollMs?: number } = {},
 ): Resource<T> {
   const { pollMs } = opts;
@@ -35,6 +56,7 @@ export function useResource<T>(
   const [loading, setLoading] = useState(() => Boolean(key));
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cache, setCache] = useState<CacheMeta | null>(null);
 
   // Keeping the fetcher in a ref lets callers pass an inline closure without
   // restarting the poll on every render.
@@ -51,10 +73,24 @@ export function useResource<T>(
 
   const refresh = useCallback(async () => {
     if (!key) return;
+    // A plain fetcher never calls onPartial, so without this the meta from a
+    // previous progressive cycle would stick to a body it does not describe.
+    let sawFrame = false;
     try {
-      const next = await fetcherRef.current();
+      // Frame one lands here: show it at once, labelled, rather than holding a
+      // spinner until the box has finished shelling out for the real value.
+      const next = await fetcherRef.current((partial, meta) => {
+        if (!alive.current) return;
+        sawFrame = true;
+        setData(partial);
+        setCache(meta);
+        setStale(false);
+        setError(null);
+        setLoading(false);
+      });
       if (!alive.current) return;
       setData(next);
+      if (!sawFrame) setCache(null);
       setStale(false);
       setError(null);
     } catch (e) {
@@ -96,5 +132,14 @@ export function useResource<T>(
     );
   }, []);
 
-  return { data, loading, stale, error, refresh, mutate };
+  return {
+    data,
+    loading,
+    stale,
+    error,
+    refresh,
+    mutate,
+    cache,
+    cached: isCached(cache),
+  };
 }
