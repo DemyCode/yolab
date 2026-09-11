@@ -5,8 +5,7 @@ import { Page } from "@/components/AppShell";
 import { Input } from "@/components/ui/input";
 import { AppCard } from "@/components/AppCard";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
-import { api } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 import { GROUPS, groupFor, groupLabel } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
 import { cn } from "@/lib/utils";
@@ -36,10 +35,8 @@ export function DiscoverPage() {
   const [query, setQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
 
-  const catalog = useResource<CatalogApp[]>("catalog", () =>
-    api.get("/api/apps/catalog"),
-  );
-  const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"));
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const apps = useApi<AppInfo[]>("apps", "/api/apps");
 
   /** chart id → how many copies are installed. */
   const installedCounts = useMemo(() => {

@@ -4,8 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Banner, Skeleton } from "@/components/ui/feedback";
-import { api } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
 
 interface LogEntry {
@@ -98,9 +97,7 @@ export function LogsPage() {
     return p.toString();
   }, [level, range, unit, search]);
 
-  const logs = useResource<LogsResponse>(`logs?${query}`, () =>
-    api.get(`/api/logs?${query}`),
-  );
+  const logs = useApi<LogsResponse>(`logs?${query}`, `/api/logs?${query}`);
 
   const entries = logs.data?.entries ?? [];
   // Offered from what the journal actually contains, so the filter can never

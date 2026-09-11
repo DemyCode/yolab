@@ -17,9 +17,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Sheet } from "@/components/ui/sheet";
 import { Banner, Skeleton } from "@/components/ui/feedback";
-import { api, getProgressive } from "@/lib/api";
-import { CacheBadge } from "@/components/CacheBadge";
-import { useResource } from "@/lib/useResource";
+import { api } from "@/lib/api";
+import { CacheDot } from "@/components/CacheDot";
+import { useApi } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
@@ -1418,21 +1418,11 @@ export function StoragePage() {
   // on screen doing almost the same thing.
   // Progressive: this endpoint measured 5.5s on a healthy cluster and does not
   // return at all on a sick one, so the page paints from the remembered value
-  // first and corrects itself when the real one lands. CacheBadge says which is
+  // first and corrects itself when the real one lands. CacheDot says which is
   // on screen.
-  const detailRes = useResource<StorageDetailResponse>(
-    "storage-detail",
-    (onPartial) => getProgressive("/api/ceph/detail", onPartial),
-    { pollMs: 20_000 },
-  );
-  const policyRes = useResource<StoragePolicyData>("storage-policy", () =>
-    api.get("/api/storage/policy"),
-  );
-  const disksRes = useResource<Record<string, DiskInfo[]>>(
-    "storage-disks",
-    (onPartial) => getProgressive("/api/disks", onPartial),
-    { pollMs: 20_000 },
-  );
+  const detailRes = useApi<StorageDetailResponse>("storage-detail", "/api/ceph/detail", { pollMs: 20_000 });
+  const policyRes = useApi<StoragePolicyData>("storage-policy", "/api/storage/policy");
+  const disksRes = useApi<Record<string, DiskInfo[]>>("storage-disks", "/api/disks", { pollMs: 20_000 });
 
   const detail = detailRes.data?.ok ? detailRes.data.data : undefined;
   const cephError =
@@ -1468,7 +1458,7 @@ export function StoragePage() {
           showing freshly computed figures, which is within a few seconds of
           opening. */}
       <div className="flex items-center justify-end -mb-3">
-        <CacheBadge cache={detailRes.cache} />
+        <CacheDot cache={detailRes.cache} withAge />
       </div>
       <CapacityCard
         detail={detail}
@@ -1477,7 +1467,10 @@ export function StoragePage() {
       />
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold text-fg-muted">Disks</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg-muted">
+          Disks
+          <CacheDot cache={disksRes.cache} />
+        </h2>
         <DiskList
           disks={disksRes.data}
           osds={detail?.osds ?? []}

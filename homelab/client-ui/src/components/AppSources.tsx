@@ -11,7 +11,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 
 interface ChartRepo {
   name: string;
@@ -40,9 +40,7 @@ type SyncResult = Record<
  * list it is missing from.
  */
 export function AppSources({ onChanged }: { onChanged?: () => void }) {
-  const repos = useResource<ChartRepo[]>("app-repos", () =>
-    api.get<ChartRepo[]>("/api/apps/repos"),
-  );
+  const repos = useApi<ChartRepo[]>("app-repos", "/api/apps/repos");
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
