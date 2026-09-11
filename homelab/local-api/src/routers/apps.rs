@@ -1244,8 +1244,7 @@ pub async fn update_app(
             // string "__redacted__" — locking them out of their own app on a
             // reconfigure that changed something else entirely.
             for field in credential_fields(&uischema) {
-                let untouched =
-                    incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
+                let untouched = incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
                 if untouched {
                     match stored_config.get(&field) {
                         Some(kept) => {
