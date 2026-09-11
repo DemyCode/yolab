@@ -1458,7 +1458,7 @@ export function StoragePage() {
           showing freshly computed figures, which is within a few seconds of
           opening. */}
       <div className="flex items-center justify-end -mb-3">
-        <CacheDot cache={detailRes.cache} withAge />
+        <CacheDot cache={detailRes.cache} />
       </div>
       <CapacityCard
         detail={detail}
