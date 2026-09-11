@@ -46,13 +46,49 @@ spec:
             - /bin/sh
             - -c
             - |
+              # IDEMPOTENT, AND RETRIED. Both matter.
+              #
+              # This was `if [ ! -f "$DB" ]` then init+add, else update. That
+              # branch is a one-way trap: `config init` creates the file, so if
+              # `users add` then fails for any reason, every later run sees the
+              # DB exists, takes the `else` branch, and tries to UPDATE an admin
+              # that was never added. The app crash-loops for good, and the only
+              # way out is deleting the volume.
+              #
+              # Trying add and falling back to update covers both states without
+              # asking which one we are in: a fresh DB gets the user added, an
+              # existing one gets the password updated.
+              #
+              # The retry is for the bolt lock. filebrowser keeps its database in
+              # bolt, which takes an exclusive flock on open and gives up with
+              # "Error: timeout" rather than waiting — observed on this chart
+              # against CephFS, nine restarts deep with no other writer in sight.
+              # A few seconds apart is enough for a contended open to succeed,
+              # and failing after five tries still surfaces the problem instead
+              # of hanging the pod forever.
+              set -u
               DB=/db/filebrowser.db
-              if [ ! -f "$DB" ]; then
-                filebrowser config init --database "$DB"
-                filebrowser users add admin "$FB_ADMIN_PASSWORD" --perm.admin --database "$DB"
-              else
-                filebrowser users update admin --password "$FB_ADMIN_PASSWORD" --database "$DB"
-              fi
+              attempt=1
+              while [ "$attempt" -le 5 ]; do
+                if [ ! -f "$DB" ]; then
+                  filebrowser config init --database "$DB" || true
+                fi
+                if filebrowser users add admin "$FB_ADMIN_PASSWORD" \
+                     --perm.admin --database "$DB"; then
+                  echo "admin created"
+                  exit 0
+                fi
+                if filebrowser users update admin --password "$FB_ADMIN_PASSWORD" \
+                     --database "$DB"; then
+                  echo "admin password updated"
+                  exit 0
+                fi
+                echo "database not ready (attempt $attempt) — retrying"
+                attempt=$((attempt + 1))
+                sleep 5
+              done
+              echo "could not initialise $DB after 5 attempts" >&2
+              exit 1
           volumeMounts:
             - name: data
               mountPath: /db
