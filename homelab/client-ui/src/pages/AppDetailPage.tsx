@@ -590,14 +590,22 @@ export function AppDetailPage() {
         </Banner>
       )}
       {restore?.state === "running" && (
-        <Banner tone="warning" title={`Restoring ${name} from backup`} className="mb-5">
+        <Banner
+          tone="warning"
+          title={`Restoring ${name} from backup`}
+          className="mb-5"
+        >
           This app is being restored — it is offline while its data and settings
           are brought back. It will come back on its own when the restore
           finishes.
         </Banner>
       )}
       {restore?.state === "failed" && (
-        <Banner tone="error" title="The restore did not finish" className="mb-5">
+        <Banner
+          tone="error"
+          title="The restore did not finish"
+          className="mb-5"
+        >
           {restore.error ?? "Something went wrong while restoring this app."}
         </Banner>
       )}
