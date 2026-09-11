@@ -14,7 +14,30 @@
 in {
   isoImage.makeEfiBootable = true;
   isoImage.makeUsbBootable = true;
-  isoImage.squashfsCompression = "xz -Xdict-size 100%";
+  # THE ISO JOB'S LONG POLE IS THIS LINE, not the packages it ships.
+  #
+  # `xz -Xdict-size 100%` is the nixpkgs default and the slowest setting on
+  # offer: xz at a full-image dictionary is effectively single-threaded through
+  # the final block and runs at single-digit MB/s, so most of the ISO job's wall
+  # clock is one `mksquashfs` compressing a multi-gigabyte filesystem — work no
+  # amount of CI parallelism can divide, because it is one process in one
+  # derivation.
+  #
+  # zstd at a high level is the trade this wants: dramatically faster to produce
+  # and to decompress, for an image somewhere in the region of 15-30% larger.
+  # That is a good deal here — the ISO is written to a USB stick once, while this
+  # is rebuilt on every push to main.
+  #
+  # If ISO SIZE ever matters more than build time (metered hosting, slow
+  # downloads for the people installing it), put the old value back — it is a
+  # one-line revert and changes nothing else:
+  #
+  #   isoImage.squashfsCompression = "xz -Xdict-size 100%";
+  #
+  # Kernel support is not a risk: CONFIG_SQUASHFS_ZSTD is on in the NixOS kernels
+  # this ISO builds against, and `squashfsCompression` is passed through to
+  # mksquashfs verbatim by the upstream iso-image module.
+  isoImage.squashfsCompression = "zstd -Xcompression-level 19";
 
   documentation.enable = false;
   documentation.man.enable = false;
