@@ -93,23 +93,7 @@ fn stage_dir(root: &Path) -> PathBuf {
     root.join(format!("tmp/yolab-containerd-migrate-{uniq:016x}"))
 }
 
-/// How long the images pool gets to prove it can still serve a read.
-///
-/// DELIBERATELY FAR SHORTER THAN `RUN_CMD_TIMEOUT`, and the gap is the point.
-///
-/// `rbd ls` reads one small directory object out of the pool. Against a pool
-/// that works it answers in well under a second. Against a pool whose PGs are
-/// `down` it does not answer at all, ever: Ceph blocks rather than fails a read
-/// it cannot serve, and the client retries for as long as it is allowed to. So
-/// "can this pool serve reads right now?" is fully answered, either way, within
-/// seconds — and every additional second of budget past that buys nothing but a
-/// longer outage.
-///
-/// The 600s default turned that distinction into 23 hours of downtime on
-/// 2026-09-10. node3 was lost, the pool was size 1, and this probe blocked for
-/// the full ten minutes on every run. The journal records it exactly, once per
-/// timer tick all night: `Consumed 663ms CPU time over 10min 520ms wall clock`.
-const POOL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+use super::ceph_shared::POOL_PROBE_TIMEOUT;
 
 /// Whether this node's image is there — and, KEPT SEPARATE, whether the pool was
 /// able to answer the question at all.
@@ -396,6 +380,55 @@ async fn clear_stale_mappings<H: Host>(host: &H, pool: &str, name: &str) {
         {
             tracing::warn!(
                 "could not unmap stale {dev} — a previous attempt may still be wedged; leaving it mapped"
+            );
+        }
+    }
+}
+
+/// Hand the device back to the kernel once we have decided not to use this store.
+///
+/// UNMOUNTING IS NOT ENOUGH, and believing it was cost a reboot of all three
+/// machines on 2026-09-11.
+///
+/// Releasing the mount gets containerd running again, so the node goes Ready and
+/// the repair looks complete. But the RBD stays MAPPED, and a mapped device with
+/// requests it can never complete poisons everything that enumerates block
+/// devices — which on this platform is the OSD start path:
+///
+///   ceph-volume runs `lvs` -> `lvs` opens /dev/rbd0 -> parks in uninterruptible
+///   sleep -> systemd SIGKILLs it and is ignored ("Processes still around after
+///   SIGKILL") -> `yolab-ceph-osd@N` stops at `deactivating/stop-sigterm` forever
+///   -> `switch-to-configuration` waits on that job -> the deploy never finishes
+///   -> the node that still needs this fix never receives it.
+///
+/// That is circular: the OSD is what would let the pool serve again, and the pool
+/// not serving is what wedges the `lvs` the OSD start needs. Observed on node1 and
+/// node3 simultaneously, load average 38 and climbing as each retry leaked another
+/// unkillable `lvs`. Only a reboot cleared it.
+///
+/// `-o force` because a plain `rbd unmap` refuses while requests are outstanding,
+/// and outstanding-forever requests are precisely the case this exists for. Bounded
+/// for the same reason every other call here is: the unmap itself must not become
+/// the new thing that hangs.
+///
+/// The LVM `global_filter` in images-store.nix is supposed to make this
+/// unnecessary by keeping LVM away from `/dev/rbd*`. On the live nodes it was
+/// present in /etc/lvm/lvm.conf, with no devices-file overriding it, and `lvs`
+/// wedged on rbd0 anyway. Until that is understood, do not rely on it: the only
+/// dependable way to keep something from tripping over this device is for the
+/// device not to be there.
+async fn abandon_mapping<H: Host>(host: &H, pool: &str, name: &str) {
+    for dev in all_mapped_devices(host, pool, name).await {
+        tracing::info!(
+            "unmapping {dev} — nothing should be able to scan a device this pool cannot serve"
+        );
+        if !host
+            .run_cmd_bounded("rbd", &["unmap", "-o", "force", &dev], POOL_PROBE_TIMEOUT)
+            .await
+            .is_ok_and(|o| o.success)
+        {
+            tracing::warn!(
+                "could not unmap {dev}; it may still wedge anything that enumerates block devices"
             );
         }
     }
@@ -893,6 +926,10 @@ pub async fn run<H: Host>(
                 policy.pool_name,
                 POOL_PROBE_TIMEOUT.as_secs()
             );
+            // Staying on the root disk is only half of getting off this pool. The
+            // mapping has to go too, or it wedges the OSD start path and with it
+            // every deploy on this node — see `abandon_mapping`.
+            abandon_mapping(host, &policy.pool_name, node).await;
             return resume_k3s(host, was_active).await;
         }
     }
@@ -1383,6 +1420,40 @@ mod tests {
         assert!(
             !host.ran("rbd map"),
             "nothing should be mapped from a pool that cannot serve reads"
+        );
+    }
+
+    /// 2026-09-11: RELEASING THE MOUNT IS ONLY HALF OF GETTING OFF A DEAD POOL.
+    ///
+    /// The node came back Ready with containerd on the root disk, which looked like
+    /// a complete repair — and the RBD stayed mapped. `lvs` opened it, wedged
+    /// unkillably, and took the OSD start path with it, which blocked
+    /// switch-to-configuration, which stopped the fix from ever reaching the third
+    /// node. All three machines had to be rebooted.
+    #[tokio::test]
+    async fn abandoning_a_dead_pool_also_unmaps_the_device() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .fail("rbd ls images", "timed out")
+            .ok(
+                "rbd showmapped",
+                r#"[{"pool":"images","name":"yolab-n1","device":"/dev/rbd0"}]"#,
+            )
+            .ok("rbd unmap", "")
+            .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
+            .fail("systemctl is-active", "not active");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        let calls = host.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("rbd unmap -o force /dev/rbd0")),
+            "a device the pool cannot serve must not be left mapped — it wedges \
+             anything that enumerates block devices, calls were: {calls:?}"
         );
     }
 
