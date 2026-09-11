@@ -200,7 +200,11 @@ async fn run_restore(
     result
 }
 
-async fn restore_inner(namespace: &str, snapshot_id: &str, cfg: &BackupConfig) -> anyhow::Result<()> {
+async fn restore_inner(
+    namespace: &str,
+    snapshot_id: &str,
+    cfg: &BackupConfig,
+) -> anyhow::Result<()> {
     // 1. Scale the app down so its pods release the PVCs being replaced.
     let _ = crate::kubectl::run(&[
         "scale",
