@@ -11,6 +11,7 @@ use anyhow::{bail, Result};
 
 use crate::host::Host;
 
+use super::ceph_shared::POOL_PROBE_TIMEOUT;
 use super::images_sizing::{self, SizingPolicy};
 
 pub struct ImagesRbdPolicy {
@@ -119,7 +120,39 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &ImagesRbdPolicy) -> Res
         return Ok(());
     };
 
-    let existing = host.run_cmd("rbd", &["ls", &policy.pool_name]).await?;
+    // BOUNDED, AND THE BOUND IS LOAD-BEARING — this unit gates k3s.
+    //
+    // `yolab-images-rbd` is ordered before `yolab-containerd-store`, which k3s is
+    // ordered behind. So an unbounded probe here does not merely make THIS unit
+    // slow, it holds the node out of the cluster: on node2 (2026-09-11, started
+    // 10:08:50) this call sat in `start` while `yolab-containerd-store`, `k3s` and
+    // `yolab-local-api` were all listed `waiting` behind it, with no failed units
+    // anywhere. Bounding the probe in containerd_store alone fixed nothing on a
+    // cold boot, because this one runs first.
+    //
+    // A failure here is the right outcome and needs no special handling: `?`
+    // propagates, the unit fails, the timer re-runs it in two minutes, and the
+    // units queued behind it are released to do the best they can without Ceph —
+    // which, for the image store, is to stay on the root disk and re-pull. See
+    // POOL_PROBE_TIMEOUT for why 30s is the whole of the useful budget.
+    //
+    // `.success` IS CHECKED SEPARATELY FROM `?`, and the distinction is not
+    // pedantry. `?` only fires when the command could not be run or timed out; a
+    // pool that answers with an ERROR comes back `Ok` with `success == false` and
+    // an empty stdout — which reads as "this node's image is not in the list" and
+    // sends us straight into `rbd create` against a pool that just said no. Same
+    // conflation of "could not answer" with "absent" that cost 23 hours in
+    // containerd_store.rs, one file over.
+    let existing = host
+        .run_cmd_bounded("rbd", &["ls", &policy.pool_name], POOL_PROBE_TIMEOUT)
+        .await?;
+    if !existing.success {
+        bail!(
+            "images-rbd: cannot list {}: {}",
+            policy.pool_name,
+            existing.stderr.trim()
+        );
+    }
     if !existing.stdout.lines().any(|l| l.trim() == node) {
         // krbd cannot map object-map/fast-diff/deep-flatten, so create with
         // only the features the kernel client supports — getting this wrong
@@ -216,6 +249,48 @@ mod tests {
 
         assert!(host.ran("ceph osd pool create images 32 32"));
         assert!(host.ran("rbd create images/yolab-n1 --size 250000"));
+    }
+
+    /// 2026-09-11: this unit gates k3s, so an unanswerable pool must FAIL here
+    /// rather than be waited out — and must never be mistaken for "no image yet".
+    ///
+    /// On node2 this call blocked while `yolab-containerd-store`, `k3s` and
+    /// `yolab-local-api` all sat `waiting` behind it in the job queue. Failing
+    /// releases them; creating an image on a pool that cannot answer would just
+    /// hang again on the write.
+    #[tokio::test]
+    async fn a_pool_that_cannot_answer_fails_instead_of_creating_an_image() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd stat", r#"{"num_up_osds":1}"#)
+            .ok("ceph osd pool ls", "images\n")
+            .ok(
+                "ceph osd tree",
+                r#"{"nodes":[{"type":"host","children":[1]}]}"#,
+            )
+            .ok("ceph df", r#"{"stats":{"total_bytes":1048576000000}}"#)
+            .ok("ceph osd pool get images size", r#"{"size":1}"#)
+            .fail("rbd ls images", "timed out");
+
+        let result = run(&host, "yolab-n1", &policy()).await;
+
+        assert!(
+            result.is_err(),
+            "a pool that cannot serve a read must fail the unit, not stall it"
+        );
+        assert!(
+            !host.ran("rbd create"),
+            "an unanswerable probe is not evidence the image is missing"
+        );
+    }
+
+    #[test]
+    fn the_pool_probe_gives_up_long_before_the_generic_command_bound() {
+        assert!(
+            POOL_PROBE_TIMEOUT.as_secs() < 600,
+            "this unit is ordered ahead of k3s; waiting out the 600s run_cmd bound \
+             holds the whole node out of the cluster"
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,34 @@
 //! `boot::*` (not just `storage::*`) needed it.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// How long a pool gets to prove it can still serve a read.
+///
+/// DELIBERATELY FAR SHORTER THAN `host::RUN_CMD_TIMEOUT`, and the gap is the point.
+///
+/// `rbd ls` reads one small directory object out of the pool. Against a pool that
+/// works it answers in well under a second. Against a pool whose PGs are `down` it
+/// does not answer at all, ever: Ceph blocks rather than fails a read it cannot
+/// serve, and the client retries for as long as it is allowed to. So "can this pool
+/// serve reads right now?" is fully answered, either way, within seconds — and every
+/// additional second of budget past that buys nothing but a longer outage.
+///
+/// The 600s default turned that distinction into 23 hours of downtime on 2026-09-10,
+/// and then into a second outage the next morning. Both units that probe the images
+/// pool have to share this bound, which is why it lives here rather than in either
+/// one:
+///
+///   - `containerd_store` blocked the full ten minutes per tick while the data-root
+///     sat unreadable. Journal, once per timer tick all night: `Consumed 663ms CPU
+///     time over 10min 520ms wall clock`.
+///   - `images_rbd` is ordered BEFORE `containerd_store`, so bounding only the
+///     latter fixed nothing on a cold boot: on node2 (2026-09-11, 10:08:50) this
+///     unit held `start` while `yolab-containerd-store`, `k3s` and
+///     `yolab-local-api` all sat in `waiting` behind it, with zero failed units.
+///     A node cannot rejoin the cluster while its k3s is queued behind a pool that
+///     will never answer.
+pub const POOL_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Ceph's address form: one bracketed group per mon, v2 and v1 inside it.
 /// Mirrors `addrvec` in homelab/nixos/ceph/default.nix — the two must never
