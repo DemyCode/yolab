@@ -419,6 +419,32 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
+        // ADOPTING A REPOSITORY IS THE MOMENT TO CLEAR A LOCK NOBODY OWNS.
+        //
+        // A repo is keyed by namespace and PVC name, so REINSTALLING an app lands
+        // on the same one its predecessor used — deliberately, since that keeps
+        // the backup history. It also inherits whatever that predecessor left
+        // behind. A fresh yolab-filebrowser install on 2026-09-11 picked up a
+        // lock held by a mover pod that had died the previous day:
+        //
+        //   repository is already locked by PID 46 on
+        //     volsync-src-volsync-filebrowser-data-jbz7g
+        //   lock was created at 2026-09-10 14:08:42 (25h12m ago)
+        //
+        // Every backup then uploaded its snapshot and failed at `forget`. The
+        // periodic sweeper would clear it, but only on its next half-hourly pass,
+        // and its previous one ran before this app existed — so a newly installed
+        // app reports failing backups for up to thirty minutes for no reason the
+        // owner can see.
+        //
+        // Stale locks only (plain `unlock`, never `--remove-all`), so this cannot
+        // disturb a backup that is genuinely running.
+        cfg.unlock(&format!(
+            "volsync/{}/{}",
+            pvc.namespace,
+            canonical_pvc_id(&pvc.name)
+        ))
+        .await;
         let _ = ensure_replication_source(&pvc, false).await;
     }
     Ok(())
