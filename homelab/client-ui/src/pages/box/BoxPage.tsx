@@ -13,7 +13,9 @@ import {
 import { Page } from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
+import { CacheDot } from "@/components/CacheDot";
+import type { CacheMeta } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { useTheme, type ThemeChoice } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -38,6 +40,7 @@ function NavRow({
   label,
   detail,
   tone,
+  cache,
 }: {
   to?: string;
   href?: string;
@@ -48,6 +51,9 @@ function NavRow({
   label: string;
   detail?: string;
   tone?: "warn" | "error";
+  /** Cache state of whatever produced `detail`, so the row can mark a
+   *  remembered value while the real one is still being computed. */
+  cache?: CacheMeta | null;
 }) {
   const inner = (
     <>
@@ -66,7 +72,10 @@ function NavRow({
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-fg">{label}</div>
         {detail && (
-          <div className="mt-0.5 truncate text-sm text-fg-muted">{detail}</div>
+          <div className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-fg-muted">
+            <span className="truncate">{detail}</span>
+            <CacheDot cache={cache ?? null} />
+          </div>
         )}
       </div>
       {href || onClick ? (
@@ -116,19 +125,11 @@ const THEMES: { id: ThemeChoice; label: string }[] = [
 export function BoxPage() {
   const { choice, setTheme } = useTheme();
 
-  const health = useResource<ClusterHealth>("health", () =>
-    api.get("/api/cluster/health"),
-  );
-  const storage = useResource<StorageDetailResponse>("storage-detail", () =>
-    api.get("/api/ceph/detail"),
-  );
-  const nodes = useResource<NodeInfo[]>("nodes", () => api.get("/api/nodes"));
-  const status = useResource<StatusInfo>("status", () =>
-    api.get("/api/status"),
-  );
-  const backups = useResource<{ configured: boolean }>("backups-s3", () =>
-    api.get("/api/backups/s3"),
-  );
+  const health = useApi<ClusterHealth>("health", "/api/cluster/health");
+  const storage = useApi<StorageDetailResponse>("storage-detail", "/api/ceph/detail");
+  const nodes = useApi<NodeInfo[]>("nodes", "/api/nodes");
+  const status = useApi<StatusInfo>("status", "/api/status");
+  const backups = useApi<{ configured: boolean }>("backups-s3", "/api/backups/s3");
 
   const detail = storage.data?.data;
   const storageDetail = detail
@@ -201,6 +202,7 @@ export function BoxPage() {
           icon={Database}
           label="Storage"
           detail={storageDetail}
+          cache={storage.cache}
           tone={
             health.data?.level === "error"
               ? "error"
@@ -213,6 +215,7 @@ export function BoxPage() {
           to="/box/backups"
           icon={Cloud}
           label="Backups"
+          cache={backups.cache}
           detail={
             backups.data === undefined
               ? undefined
@@ -227,6 +230,7 @@ export function BoxPage() {
           icon={Server}
           label="Machines"
           detail={nodesDetail}
+          cache={nodes.cache}
         />
         <NavRow
           to="/box/system"

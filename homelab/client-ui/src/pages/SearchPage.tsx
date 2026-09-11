@@ -5,8 +5,7 @@ import { Page } from "@/components/AppShell";
 import { AppCard } from "@/components/AppCard";
 import { Input } from "@/components/ui/input";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
-import { api } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
@@ -30,10 +29,8 @@ export default function SearchPage() {
   const [source, setSource] = useState<string>("any");
   const [installed, setInstalled] = useState<Installed>("any");
 
-  const catalog = useResource<CatalogApp[]>("catalog", () =>
-    api.get("/api/apps/catalog"),
-  );
-  const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"));
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const apps = useApi<AppInfo[]>("apps", "/api/apps");
 
   // Debounced so the address bar does not gain one entry per keystroke.
   useEffect(() => {

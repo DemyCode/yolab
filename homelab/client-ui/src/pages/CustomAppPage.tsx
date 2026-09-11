@@ -12,7 +12,7 @@ import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 
 interface CustomApp {
   id: string;
@@ -62,9 +62,7 @@ spec:
  */
 export default function CustomAppPage() {
   const navigate = useNavigate();
-  const apps = useResource<CustomApp[]>("custom-apps", () =>
-    api.get<CustomApp[]>("/api/apps/custom"),
-  );
+  const apps = useApi<CustomApp[]>("custom-apps", "/api/apps/custom");
 
   const [id, setId] = useState("");
   const [displayName, setDisplayName] = useState("");

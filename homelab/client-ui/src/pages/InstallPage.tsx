@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Field, Input } from "@/components/ui/input";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 import { generateSecret } from "@/lib/format";
 import Form from "@rjsf/core";
 import type { RJSFSchema } from "@rjsf/utils";
@@ -100,13 +100,9 @@ export function InstallPage() {
   const { appId } = useParams<{ appId: string }>();
   const navigate = useNavigate();
 
-  const catalog = useResource<CatalogApp[]>("catalog", () =>
-    api.get("/api/apps/catalog"),
-  );
-  const domain = useResource<DomainResponse>("domain", () =>
-    api.get("/api/tunnel/domain"),
-  );
-  const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"));
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
+  const apps = useApi<AppInfo[]>("apps", "/api/apps");
 
   const cached = catalog.data?.find((a) => a.id === appId);
 

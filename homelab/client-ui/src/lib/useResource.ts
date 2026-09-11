@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, isCached } from "./api";
+import { ApiError, getProgressive, isCached } from "./api";
 import type { CacheMeta } from "./api";
 
 /**
@@ -142,4 +142,30 @@ export function useResource<T>(
     cache,
     cached: isCached(cache),
   };
+}
+
+/**
+ * `useResource` for a plain GET, fetched progressively.
+ *
+ * The one-line form of what every call site was writing by hand:
+ *
+ *   useResource<T>("key", () => api.get("/api/x"))          becomes
+ *   useApi<T>("key", "/api/x")
+ *
+ * and it comes back two-phase — the remembered value paints immediately, the
+ * real one replaces it when the box has finished computing it. Routes the
+ * server does not cache answer with ordinary JSON and `cache` stays null, so
+ * call sites need no knowledge of which routes those are.
+ *
+ * Use `useResource` directly only when the fetch is not a plain GET of one path
+ * — a derived or composed request, or one that has to post something first.
+ */
+export function useApi<T>(
+  key: string | null,
+  path: string,
+  opts: { pollMs?: number } = {},
+): Resource<T> {
+  // `path` is in the dependency list via the key the caller passes; a changing
+  // path with a fixed key would be a bug at the call site, not here.
+  return useResource<T>(key, (onPartial) => getProgressive<T>(path, onPartial), opts);
 }

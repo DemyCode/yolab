@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/feedback";
 import { Card } from "@/components/ui/card";
 import { api, streamEvents } from "@/lib/api";
-import { useResource } from "@/lib/useResource";
+import { useApi } from "@/lib/useResource";
 import {
   appDisplayName,
   appFactRows,
@@ -408,15 +408,11 @@ export function AppDetailPage() {
   const { instanceName } = useParams<{ instanceName: string }>();
   const navigate = useNavigate();
 
-  const apps = useResource<AppInfo[]>("apps", () => api.get("/api/apps"), {
+  const apps = useApi<AppInfo[]>("apps", "/api/apps", {
     pollMs: 10_000,
   });
-  const catalog = useResource<CatalogApp[]>("catalog", () =>
-    api.get("/api/apps/catalog"),
-  );
-  const domain = useResource<DomainResponse>("domain", () =>
-    api.get("/api/tunnel/domain"),
-  );
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
