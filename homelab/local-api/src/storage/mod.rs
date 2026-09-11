@@ -11,6 +11,7 @@ pub mod csi_secrets;
 pub mod dashboard;
 pub mod images_grow;
 pub mod images_rbd;
+pub mod images_recover;
 mod images_sizing;
 pub mod keys;
 pub mod mon_member;
@@ -63,6 +64,16 @@ pub async fn run(args: &[String]) -> i32 {
     };
     let images_min_gb = || env("YOLAB_CEPH_IMAGES_MIN_GB").parse::<u64>().unwrap_or(40);
     let images_fs = || containerd_store::Filesystem::parse(&env("YOLAB_CEPH_IMAGES_FS"));
+    // How long the images pool must stay unable to serve before its lost
+    // placement groups are rebuilt empty. Long enough that an OSD restart during
+    // a deploy (~90s) or a node reboot (a few minutes) never reaches it.
+    let images_recover_grace = || {
+        std::time::Duration::from_secs(
+            env("YOLAB_CEPH_IMAGES_RECOVER_GRACE_SECS")
+                .parse::<u64>()
+                .unwrap_or(900),
+        )
+    };
 
     let result: Result<()> = match sub {
         "mgr-key" => keys::mint(&host, "mgr").await,
@@ -92,6 +103,13 @@ pub async fn run(args: &[String]) -> i32 {
                 min_size_gb: images_min_gb(),
             };
             images_rbd::run(&host, &node, &policy).await
+        }
+        "images-recover" => {
+            let policy = images_recover::RecoverPolicy {
+                pool_name: images_pool(),
+                grace: images_recover_grace(),
+            };
+            images_recover::run(&host, root(), &policy).await
         }
         "containerd-store" => {
             let policy = containerd_store::ContainerdStorePolicy {
