@@ -308,7 +308,12 @@ function RestoreDialog({
     setSelected(null);
     setError(null);
     setSnapshots(null);
-    fetch("/api/backups/snapshots")
+    // Scoped to this app: it can only be restored to a point in time it existed
+    // at, and offering the rest invites picking one that cannot work.
+    fetch(
+      "/api/backups/snapshots?namespace=" +
+        encodeURIComponent(`yolab-${instanceName}`),
+    )
       .then((r) => r.json())
       .then((d: { snapshots?: RestoreSnapshot[] }) => {
         const snaps = (d.snapshots ?? []).sort(
@@ -318,7 +323,10 @@ function RestoreDialog({
         if (snaps.length > 0) setSelected(snaps[0].id);
       })
       .catch(() => setSnapshots([]));
-  }, [open]);
+    // `instanceName` is in here because the request is now scoped to it: without
+    // it, a dialog reopened for a different app would show the first one's
+    // restore points.
+  }, [open, instanceName]);
 
   async function confirm() {
     setBusy(true);
@@ -355,7 +363,8 @@ function RestoreDialog({
         </div>
       ) : snapshots.length === 0 ? (
         <p className="py-4 text-sm text-fg-muted">
-          No backups exist for this app yet. Take a backup first.
+          No backup covers this app yet. Backups taken before it was installed
+          cannot restore it, so there is nothing to roll back to.
         </p>
       ) : (
         <div className="space-y-1">

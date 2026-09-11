@@ -2,6 +2,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use tokio::process::Command;
 
 use crate::routers::backup_common::*;
@@ -287,8 +288,75 @@ pub async fn list_restores(State(_state): State<AppState>) -> Json<serde_json::V
 
 // ── Cluster backup ─────────────────────────────────────────────────────────────
 
-/// GET /api/backups/snapshots — list available cluster-backup restic snapshots.
-pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+/// Cluster snapshot ids that actually contain `namespace`.
+///
+/// A RESTORE IS ONLY MEANINGFUL FOR A POINT IN TIME THE APP EXISTED AT.
+///
+/// `restore_inner` drives an app restore off a CLUSTER snapshot: it extracts
+/// that snapshot's `<namespace>.yaml` to rebuild the app's objects, then rolls
+/// each PVC back to the snapshot's timestamp. A snapshot taken before the app
+/// was installed has no such file, so restoring from it fails — and offering it
+/// is worse than useless, because the person picking it has been told it is a
+/// point they can go back to.
+///
+/// The restore dialog listed every cluster backup regardless, including ones
+/// from before the app existed.
+///
+/// One `restic find` across the whole repository rather than a per-snapshot
+/// probe: the alternative is one process per snapshot, and this runs while
+/// somebody waits for a dialog to open.
+///
+/// `None` means the question could not be answered — the caller then shows
+/// everything rather than pretending an app has no restore points, since a
+/// wrong "no backups exist" reads as data loss.
+async fn snapshots_containing(cfg: &BackupConfig, namespace: &str) -> Option<HashSet<String>> {
+    let repo = cfg.restic_repo("cluster-backup");
+    let pattern = format!("{namespace}.yaml");
+    let out = restic(
+        &repo,
+        cfg,
+        &[
+            "find",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+            &pattern,
+        ],
+    )
+    .await
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let found: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(
+        found
+            .as_array()?
+            .iter()
+            .filter(|e| {
+                // An entry with no matches is reported for some restic versions;
+                // treat only a real hit as the app being present.
+                e["matches"].as_array().is_some_and(|m| !m.is_empty())
+            })
+            .filter_map(|e| e["snapshot"].as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// GET /api/backups/snapshots — cluster-backup restic snapshots.
+///
+/// `?namespace=yolab-foo` narrows the list to the points in time that app can
+/// actually be restored to; see `snapshots_containing`.
+#[derive(Deserialize)]
+pub struct SnapshotQuery {
+    pub namespace: Option<String>,
+}
+
+pub async fn list_snapshots(
+    State(_state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<SnapshotQuery>,
+) -> Result<Json<serde_json::Value>> {
     let Some(cfg) = read_master_config().await else {
         return Ok(Json(
             serde_json::json!({ "snapshots": [], "configured": false }),
@@ -316,8 +384,33 @@ pub async fn list_snapshots(State(_state): State<AppState>) -> Result<Json<serde
         ));
     }
 
-    let snapshots: serde_json::Value =
+    let mut snapshots: serde_json::Value =
         serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!([]));
+
+    if let Some(ns) = q.namespace.as_deref().filter(|s| !s.is_empty()) {
+        // Only when the question could be answered. On failure every snapshot is
+        // still offered: a wrong "no backups exist" reads as data loss.
+        if let Some(ids) = snapshots_containing(&cfg, ns).await {
+            if let Some(arr) = snapshots.as_array() {
+                let kept: Vec<serde_json::Value> = arr
+                    .iter()
+                    .filter(|s| {
+                        s["short_id"]
+                            .as_str()
+                            .or_else(|| s["id"].as_str())
+                            .is_some_and(|id| {
+                                // restic reports short ids in `find`, full ids in
+                                // `snapshots`; match either way round.
+                                ids.iter()
+                                    .any(|f| id.starts_with(f.as_str()) || f.starts_with(id))
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                snapshots = serde_json::Value::Array(kept);
+            }
+        }
+    }
 
     Ok(Json(
         serde_json::json!({ "snapshots": snapshots, "configured": true }),
