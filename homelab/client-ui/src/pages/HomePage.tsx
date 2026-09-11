@@ -278,7 +278,9 @@ export function HomePage() {
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   // Progressive: 2s on a healthy cluster, so the home page would otherwise hold
   // a spinner for two seconds on every open.
-  const health = useApi<ClusterHealth>("health", "/api/cluster/health", { pollMs: 20_000 });
+  const health = useApi<ClusterHealth>("health", "/api/cluster/health", {
+    pollMs: 20_000,
+  });
 
   const concern = topConcern(health.data);
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
@@ -286,7 +288,11 @@ export function HomePage() {
 
   // Only asked for while storage is unrecoverable — otherwise the endpoint is a
   // no-op and fetching it on every visit is noise. `key=null` disables the fetch.
-  const damage = useApi<DamageResponse>(health.data?.storage_unrecoverable ? "backups-damage" : null, "/api/backups/damage", { pollMs: 15_000 });
+  const damage = useApi<DamageResponse>(
+    health.data?.storage_unrecoverable ? "backups-damage" : null,
+    "/api/backups/damage",
+    { pollMs: 15_000 },
+  );
 
   // Lost apps come out of the working grid and move into the section below, so a
   // casualty is never shown twice, once as healthy and once as lost.

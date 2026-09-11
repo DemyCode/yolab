@@ -167,5 +167,9 @@ export function useApi<T>(
 ): Resource<T> {
   // `path` is in the dependency list via the key the caller passes; a changing
   // path with a fixed key would be a bug at the call site, not here.
-  return useResource<T>(key, (onPartial) => getProgressive<T>(path, onPartial), opts);
+  return useResource<T>(
+    key,
+    (onPartial) => getProgressive<T>(path, onPartial),
+    opts,
+  );
 }
