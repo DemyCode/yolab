@@ -179,6 +179,44 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: A changed chart must change its version
+        run: |
+          set -uo pipefail
+          # PUBLISHING AN EXISTING name:version IS A NO-OP (see the push step
+          # below), so a chart edited without a version bump is silently
+          # discarded: the registry keeps serving the old templates and the fix
+          # never reaches a cluster, with nothing anywhere reporting it.
+          #
+          # That had happened to the whole catalog. On 2026-09-11 every chart
+          # still read 0.1.0 while their templates had moved on repeatedly —
+          # qbittorrent's liveness probe was removed on 09-08 and clusters were
+          # still running the version with it, crash-looping, because 0.1.0 had
+          # been published back in August and never changed again.
+          before='${{ github.event.before }}'
+          if [ -z "$before" ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            echo "no usable base commit — skipping"
+            exit 0
+          fi
+          bad=""
+          for chart in apps/catalog/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue
+            name=$(grep '^name:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
+            # Untouched in this push: nothing to say about it.
+            git diff --quiet "$before" HEAD -- "$chart" && continue
+            new=$(grep '^version:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
+            old=$(git show "$before:$chart/Chart.yaml" 2>/dev/null \
+                  | grep '^version:' | head -1 | awk '{print $2}')
+            # A brand-new chart has no old version, and needs no bump.
+            [ -z "$old" ] && continue
+            [ "$old" != "$new" ] || bad="$bad $name($new)"
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::These charts changed but kept their version, so the" \
+                 "registry will ignore them and clusters keep the old templates:$bad"
+            exit 1
+          fi
+          echo "every changed chart bumped its version"
+
       - name: Publish the library chart
         run: |
           set -euo pipefail
