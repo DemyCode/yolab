@@ -279,6 +279,16 @@ interface RestoreSnapshot {
   time: string;
 }
 
+interface RestoreRecord {
+  id: string;
+  namespace: string;
+  snapshot_id?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  error?: string | null;
+  state: "running" | "succeeded" | "failed";
+}
+
 function RestoreDialog({
   instanceName,
   open,
@@ -413,9 +423,35 @@ export function AppDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restore, setRestore] = useState<RestoreRecord | null>(null);
 
   const app = apps.data?.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
+
+  // Poll this app's restore record so the page can say "restoring this app" the
+  // moment one starts (from this tab or another), and clear it when it finishes.
+  useEffect(() => {
+    if (!instanceName) return;
+    let cancelled = false;
+    async function pollRestore() {
+      try {
+        const list = (await fetch("/api/backups/restores").then((r) =>
+          r.json(),
+        )) as RestoreRecord[];
+        if (cancelled) return;
+        const mine = list.find((r) => r.namespace === `yolab-${instanceName}`);
+        setRestore(mine ?? null);
+      } catch {
+        /* network blip */
+      }
+    }
+    void pollRestore();
+    const id = window.setInterval(pollRestore, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [instanceName]);
 
   // Depends on `refresh` rather than the whole resource: the resource object is
   // a new identity every render, which would make `scan` — and the effect below
@@ -551,6 +587,18 @@ export function AppDetailPage() {
       {state === "removing" && (
         <Banner tone="warning" title="Being removed" className="mb-5">
           This app and its data are being deleted.
+        </Banner>
+      )}
+      {restore?.state === "running" && (
+        <Banner tone="warning" title={`Restoring ${name} from backup`} className="mb-5">
+          This app is being restored — it is offline while its data and settings
+          are brought back. It will come back on its own when the restore
+          finishes.
+        </Banner>
+      )}
+      {restore?.state === "failed" && (
+        <Banner tone="error" title="The restore did not finish" className="mb-5">
+          {restore.error ?? "Something went wrong while restoring this app."}
         </Banner>
       )}
       {error && (
