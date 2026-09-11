@@ -1098,6 +1098,78 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     Ok(Json(apps))
 }
 
+/// Longest name Kubernetes will accept for a namespace (RFC 1123 label).
+const MAX_NS_LEN: usize = 63;
+/// `yolab-` prefix plus the `-xxxx` suffix this adds.
+const NS_OVERHEAD: usize = "yolab-".len() + 1 + INSTANCE_SUFFIX_LEN;
+const INSTANCE_SUFFIX_LEN: usize = 4;
+
+/// A short random suffix that makes one install distinguishable from the next.
+///
+/// No `l`, `o` or `0/1` — these end up in namespaces, URLs and support
+/// conversations, and a suffix somebody cannot read back correctly is worse than
+/// a slightly shorter one. 32 characters over 4 places is about a million
+/// combinations, which for a homelab is far past the point where collisions
+/// matter; `unique_instance_name` re-rolls on the off chance anyway.
+fn instance_suffix() -> String {
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
+    (0..INSTANCE_SUFFIX_LEN)
+        .map(|_| ALPHABET[rand::random::<usize>() % ALPHABET.len()] as char)
+        .collect()
+}
+
+/// The part of the requested name that survives into the namespace.
+///
+/// Truncated so `yolab-<stem>-<suffix>` still fits Kubernetes' 63-character
+/// limit, rather than letting the API server reject the namespace after the
+/// owner has filled in a whole install form. Trailing hyphens are trimmed so a
+/// name cut mid-word cannot produce `something--ab3d`, and a name that is
+/// nothing but hyphens yields `None` rather than a namespace starting with one.
+fn instance_stem(requested: &str) -> Option<String> {
+    let stem: String = requested
+        .chars()
+        .take(MAX_NS_LEN.saturating_sub(NS_OVERHEAD))
+        .collect();
+    let stem = stem.trim_end_matches('-');
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+/// The name an install actually gets: what the owner asked for, plus a suffix.
+///
+/// EVERY INSTALL IS A NEW APP, EVEN WHEN IT REUSES A NAME.
+///
+/// The namespace is `yolab-<instance>` and an app's backup repository is keyed
+/// by namespace and PVC name, so a name reused after a deletion landed on the
+/// previous app's repository. Not a theory: a fresh filebrowser installed on
+/// 2026-09-11 at 15:17 — new namespace, new PVC — wrote its first backup into
+/// the repo of the one deleted minutes earlier, chaining onto its history
+/// (`using parent snapshot 537a9ebc`) and inheriting a 25-hour-old stale lock.
+/// A restore on the new app would have offered the old app's snapshots, and the
+/// deleted app's files became reachable by whoever now owned the name.
+///
+/// Names are unique among LIVE apps already; the collision is across time. A
+/// suffix closes that without asking the owner to invent unique names forever.
+///
+/// The candidate is checked against the cluster rather than assumed, because a
+/// collision with a live app would not fail — `ensure_app_namespace` applies,
+/// so it would quietly install into the running app's namespace.
+async fn unique_instance_name(requested: &str) -> Option<String> {
+    let stem = instance_stem(requested)?;
+    for _ in 0..8 {
+        let candidate = format!("{stem}-{}", instance_suffix());
+        if !namespace_exists(&format!("yolab-{candidate}")).await {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+async fn namespace_exists(ns: &str) -> bool {
+    crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
+        .await
+        .is_ok()
+}
+
 pub async fn install_app(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1121,6 +1193,16 @@ pub async fn install_app(
         return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
     }
 
+    // Server-side, so a client cannot pick a name that collides with a deleted
+    // app's leftovers — see `unique_instance_name`.
+    let Some(instance_name) = unique_instance_name(&body.instance_name).await else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "could not derive a unique name for this app",
+        )
+            .into_response();
+    };
+
     let stream = async_stream::stream! {
         let Ok(tunnel_cfg) = tunnel_config(&state.config) else {
             yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
@@ -1135,7 +1217,7 @@ pub async fn install_app(
             return;
         };
 
-        let ns = format!("yolab-{}", body.instance_name);
+        let ns = format!("yolab-{instance_name}");
         // Namespace first: the chart's resources are namespaced, and the labels/
         // annotations set here are what the backup layer selects on.
         yield Ok(Event::default().data("Preparing namespace..."));
@@ -1177,7 +1259,7 @@ pub async fn install_app(
         // dependencies at all — only rendering does.
         let args: Vec<String> = vec![
             "upgrade".into(), "--install".into(), "--dependency-update".into(),
-            body.instance_name.clone(), chart_dir.to_string_lossy().to_string(),
+            instance_name.clone(), chart_dir.to_string_lossy().to_string(),
             "-n".into(), ns.clone(),
             "--values".into(), tmp.path().to_string_lossy().to_string(),
         ];
@@ -2259,6 +2341,76 @@ mod tests {
 
     fn map(v: Value) -> serde_json::Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    // ── unique instance names ─────────────────────────────────────────────────
+
+    /// The whole point: `yolab-<stem>-<suffix>` must be a namespace Kubernetes
+    /// will accept, however long a name the owner typed. Rejecting it at the API
+    /// server means rejecting it AFTER the install form was filled in.
+    #[test]
+    fn a_long_name_still_fits_a_namespace() {
+        let long = "a".repeat(200);
+        let stem = instance_stem(&long).unwrap();
+        let ns = format!("yolab-{stem}-{}", instance_suffix());
+        assert!(
+            ns.len() <= MAX_NS_LEN,
+            "namespace {} chars, limit {MAX_NS_LEN}: {ns}",
+            ns.len()
+        );
+    }
+
+    #[test]
+    fn an_ordinary_name_is_left_alone() {
+        assert_eq!(instance_stem("filebrowser").as_deref(), Some("filebrowser"));
+    }
+
+    /// A name cut mid-word must not leave a trailing hyphen, or the result reads
+    /// `something--ab3d`.
+    #[test]
+    fn a_trailing_hyphen_is_trimmed() {
+        assert_eq!(instance_stem("my-app-").as_deref(), Some("my-app"));
+        assert_eq!(instance_stem("my-app---").as_deref(), Some("my-app"));
+    }
+
+    /// Nothing but hyphens would make a namespace that starts with one.
+    #[test]
+    fn a_name_with_nothing_left_is_rejected() {
+        assert!(instance_stem("---").is_none());
+        assert!(instance_stem("").is_none());
+    }
+
+    /// These end up in namespaces, URLs and support conversations. A suffix
+    /// somebody reads back wrong is worse than a shorter one, so the ambiguous
+    /// characters are deliberately absent.
+    #[test]
+    fn the_suffix_avoids_characters_that_are_misread() {
+        for _ in 0..200 {
+            let s = instance_suffix();
+            assert_eq!(s.len(), INSTANCE_SUFFIX_LEN);
+            for c in s.chars() {
+                assert!(
+                    c.is_ascii_lowercase() || c.is_ascii_digit(),
+                    "suffix must survive the instance_name validation: {s}"
+                );
+                assert!(
+                    !"lo01".contains(c),
+                    "{c} is easily misread, and these get typed back: {s}"
+                );
+            }
+        }
+    }
+
+    /// Two installs of the same app must not land on the same namespace — that
+    /// is the entire reason the suffix exists.
+    #[test]
+    fn two_installs_of_one_name_differ() {
+        let names: std::collections::HashSet<String> = (0..50).map(|_| instance_suffix()).collect();
+        assert!(
+            names.len() > 40,
+            "suffixes are barely varying, which defeats the point: {} distinct of 50",
+            names.len()
+        );
     }
 
     #[test]
