@@ -40,7 +40,9 @@ export function CacheDot({
   if (cache.state !== "hit" && cache.state !== "stale") return null;
 
   const seconds = Math.max(1, Math.round(cache.ageMs / 1000));
-  const title = `Showing a value from ${seconds}s ago while the box recalculates it.`;
+  const title =
+    `Cached: showing a value from ${seconds}s ago while the box recalculates it. ` +
+    `It will update on its own in a moment.`;
 
   return (
     <span
@@ -57,7 +59,11 @@ export function CacheDot({
         aria-label={title}
         className="size-1.5 rounded-full bg-amber-500 animate-pulse"
       />
-      {withAge && <span aria-hidden>{seconds}s ago</span>}
+      {/* "cached", not just the age. A bare "2s ago" in a corner tells the
+          reader a number is two seconds old without saying which number or why
+          that is worth mentioning — the first person to see it asked what it
+          was, which is the whole answer on whether it was clear. */}
+      {withAge && <span aria-hidden>cached {seconds}s ago</span>}
     </span>
   );
 }
