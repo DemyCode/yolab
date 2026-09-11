@@ -1402,6 +1402,24 @@ pub async fn uninstall_app(
         return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
     }
 
+    run_teardown(&instance_name, &ns).await;
+
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+/// The teardown itself: run the chart's pre-delete hook via helm, then remove
+/// the namespace.
+///
+/// Split out of `uninstall_app` so the watchdog below can finish a teardown the
+/// request that started it never got to complete. Both callers must do exactly
+/// the same thing — a second, parallel implementation of "how to remove an app"
+/// is how the two paths drift until one of them leaves something behind.
+///
+/// Deliberately infallible. Every step already treats its own failure as
+/// non-fatal and logs it, because the namespace delete that follows tears the
+/// app down regardless; returning an error here would only give callers
+/// something to ignore.
+async fn run_teardown(instance_name: &str, ns: &str) {
     // `helm uninstall` runs the chart's pre-delete hook (tunnel cleanup) and waits for
     // it before removing anything. That replaces rendering an uninstall template by
     // hand, applying it, and polling `kubectl wait job/uninstall --timeout=120s` — and
@@ -1413,9 +1431,9 @@ pub async fn uninstall_app(
     let work = tokio::process::Command::new("helm")
         .args([
             "uninstall",
-            &instance_name,
+            instance_name,
             "-n",
-            &ns,
+            ns,
             "--ignore-not-found",
             "--wait",
         ])
@@ -1440,9 +1458,92 @@ pub async fn uninstall_app(
         _ => {}
     }
 
-    delete_namespace_with_retry(&ns).await;
+    delete_namespace_with_retry(ns).await;
+}
 
-    Ok(Json(serde_json::json!({"ok": true})))
+/// Namespaces whose uninstall was claimed and then abandoned.
+///
+/// Only STALE claims, so this can never race an attempt that is still genuinely
+/// running — `uninstall_lock_is_fresh` is the same check the request path uses
+/// to decide whether it may reclaim.
+///
+/// Split from the kubectl call so the selection can be tested: which namespaces
+/// this picks up is the part that decides whether a watchdog quietly deletes
+/// something someone is still working on.
+fn abandoned_in(v: &Value) -> Vec<(String, String)> {
+    v["items"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|ns| {
+            let name = ns["metadata"]["name"].as_str()?;
+            let ann = ns["metadata"]["annotations"].as_object()?;
+            ann.get(ANN_UNINSTALLING)?;
+            if uninstall_lock_is_fresh(ann) {
+                return None;
+            }
+            let instance = name.strip_prefix("yolab-")?.to_string();
+            Some((name.to_string(), instance))
+        })
+        .collect()
+}
+
+async fn abandoned_uninstalls() -> Vec<(String, String)> {
+    match crate::kubectl::get_json(&[
+        "get",
+        "namespaces",
+        "-l",
+        "yolab.io/managed=true",
+        "-o",
+        "json",
+    ])
+    .await
+    {
+        Ok(v) => abandoned_in(&v),
+        Err(e) => {
+            tracing::warn!("uninstall watchdog: could not list namespaces: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Background loop: finish uninstalls whose driving request died.
+///
+/// AN UNINSTALL IS A LONG OPERATION DRIVEN BY ONE HTTP REQUEST, and nothing was
+/// resuming it. If local-api restarts while `helm uninstall --wait` is running —
+/// a deploy, a `nixos-rebuild`, a node reboot — the request dies and the app is
+/// left half-removed: the helm release stuck in `uninstalling`, the namespace
+/// still Active, and, because helm had already got partway, some of the app's
+/// resources gone. Pressing Remove again is the only thing that could finish it,
+/// and nothing tells the owner that is what is needed. The app simply sits there
+/// broken.
+///
+/// Observed on the live cluster 2026-09-11: minecraft claimed at 11:54:48 and
+/// filebrowser at 12:30:48, both abandoned by a local-api restart minutes later
+/// (21 restarts in 30 hours, during a day of deploys). filebrowser had already
+/// lost its data PVC, so its pods sat Pending on "persistentvolumeclaim
+/// \"filebrowser-data\" not found" for 23 hours; minecraft's world was left with
+/// a stale `session.lock` and crash-looped 28 times.
+///
+/// Both `UNINSTALL_LOCK_TTL` and `delete_namespace_with_retry` already described
+/// this case — "recover from a crashed/restarted local-api", "leaving it for a
+/// future retry" — and neither had anything that would actually do it. This is
+/// that future retry.
+pub(crate) async fn run_uninstall_watchdog() {
+    const TICK: std::time::Duration = std::time::Duration::from_secs(120);
+    // Long enough after boot that a legitimate in-flight uninstall from before a
+    // restart has had its chance to be re-driven by the client first.
+    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+    loop {
+        for (ns, instance) in abandoned_uninstalls().await {
+            tracing::warn!(
+                "uninstall {instance}: claim is stale and nothing is driving it — \
+                 finishing the teardown"
+            );
+            run_teardown(&instance, &ns).await;
+        }
+        tokio::time::sleep(TICK).await;
+    }
 }
 
 pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<PodInfo>>> {
@@ -2043,6 +2144,56 @@ mod tests {
         assert!(!uninstall_lock_is_fresh(&map(
             serde_json::json!({ ANN_UNINSTALLING: ts })
         )));
+    }
+
+    /// Which namespaces the watchdog picks up is the part that decides whether
+    /// it quietly finishes removing something somebody is still working on.
+    #[test]
+    fn the_watchdog_only_picks_up_abandoned_uninstalls() {
+        let stale = (chrono::Utc::now()
+            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
+        .to_rfc3339();
+        let fresh = chrono::Utc::now().to_rfc3339();
+
+        let list = serde_json::json!({ "items": [
+            // Abandoned: claimed long ago, nothing driving it.
+            { "metadata": { "name": "yolab-minecraft",
+                            "annotations": { ANN_UNINSTALLING: stale } } },
+            // Still running: a request is mid-teardown right now.
+            { "metadata": { "name": "yolab-filebrowser",
+                            "annotations": { ANN_UNINSTALLING: fresh } } },
+            // A perfectly healthy installed app.
+            { "metadata": { "name": "yolab-vaultwarden",
+                            "annotations": { "yolab.io/app-id": "vaultwarden" } } },
+            // No annotations at all.
+            { "metadata": { "name": "yolab-babybuddy" } },
+        ]});
+
+        assert_eq!(
+            abandoned_in(&list),
+            vec![("yolab-minecraft".to_string(), "minecraft".to_string())],
+            "only the stale claim, and the instance name comes off the prefix"
+        );
+    }
+
+    /// A namespace that is not one of ours must never be torn down, however its
+    /// annotations happen to read.
+    #[test]
+    fn the_watchdog_ignores_namespaces_outside_the_yolab_prefix() {
+        let stale = (chrono::Utc::now()
+            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
+        .to_rfc3339();
+        let list = serde_json::json!({ "items": [
+            { "metadata": { "name": "kube-system",
+                            "annotations": { ANN_UNINSTALLING: stale } } },
+        ]});
+        assert!(abandoned_in(&list).is_empty());
+    }
+
+    #[test]
+    fn an_empty_or_missing_list_is_handled() {
+        assert!(abandoned_in(&serde_json::json!({})).is_empty());
+        assert!(abandoned_in(&serde_json::json!({ "items": [] })).is_empty());
     }
 
     #[test]
