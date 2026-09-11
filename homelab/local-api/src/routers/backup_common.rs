@@ -212,7 +212,7 @@ pub(crate) async fn latest_snapshot_time(
     repo: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let out = restic(repo, cfg, &["snapshots", "--json"]).await?;
+    let out = restic(repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // A repo that was never initialised legitimately has no snapshots.
@@ -784,6 +784,61 @@ pub(crate) async fn ensure_destination_pvc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// EVERY READ-ONLY `restic snapshots` MUST PASS `--no-lock`.
+    ///
+    /// A listing has no business taking a lock, and when local-api is killed
+    /// mid-listing the lock outlives it and blocks that repository's `forget`
+    /// forever. `app_damage` lists snapshots for every app repo and the home page
+    /// polls it every 15s while storage looks unhealthy, so this was not a rare
+    /// race: on 2026-09-11 it left three apps unable to run retention, behind a
+    /// lock held by a PID that no longer existed.
+    ///
+    /// Grepping the source is the only way to pin this. The alternative is a
+    /// seam around every restic invocation, which would be a large change to
+    /// assert one flag — and this catches a new call site added anywhere in the
+    /// crate, which a seam on today's callers would not.
+    #[test]
+    fn every_snapshots_listing_passes_no_lock() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+
+        fn walk(dir: &std::path::Path, offenders: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, offenders);
+                    continue;
+                }
+                if path.extension().is_some_and(|e| e == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    for (n, line) in text.lines().enumerate() {
+                        // Comments are not calls — including this test's own
+                        // description of what it looks for.
+                        if line.trim_start().starts_with("//") {
+                            continue;
+                        }
+                        if line.contains("&[\"snapshots\"") && !line.contains("--no-lock") {
+                            offenders.push(format!("{}:{}", path.display(), n + 1));
+                        }
+                    }
+                }
+            }
+        }
+        walk(&root, &mut offenders);
+
+        assert!(
+            offenders.is_empty(),
+            "these `restic snapshots` calls take a lock they do not need, and an \
+             interrupted one blocks that repository's retention forever — add \
+             \"--no-lock\": {offenders:?}"
+        );
+    }
 
     #[test]
     fn canonical_pvc_id_passes_through_plain_names() {

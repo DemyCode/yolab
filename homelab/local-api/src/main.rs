@@ -283,6 +283,9 @@ async fn main() {
     // see the note on run_uninstall_watchdog for the two apps this was written
     // for, both left half-removed for the better part of a day.
     supervise("uninstall-watchdog", routers::apps::run_uninstall_watchdog);
+    // Clears restic locks left behind when a lock-taking command was interrupted —
+    // see run_lock_sweeper for the three apps whose retention this had blocked.
+    supervise("backup-lock-sweeper", routers::backups::run_lock_sweeper);
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISKâON/OFF config â no separate watcher.
     supervise("disks", disks_reconciler::run);

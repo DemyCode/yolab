@@ -479,7 +479,7 @@ async fn snapshot_cluster_inner(
 
     // 3. Init restic repo if needed.
     cfg.unlock("cluster-backup").await;
-    let check = restic(&repo, cfg, &["snapshots"]).await;
+    let check = restic(&repo, cfg, &["snapshots", "--no-lock"]).await;
     if check.map(|o| !o.status.success()).unwrap_or(true) {
         let init = restic(&repo, cfg, &["init"]).await?;
         if !init.status.success() {
@@ -524,9 +524,13 @@ fn summarize_services(services: &[Value]) -> Vec<ServiceSummary> {
 
 /// The newest restic snapshot id carrying `tag`, if any.
 async fn newest_snapshot_id(repo: &str, cfg: &BackupConfig, tag: &str) -> Option<String> {
-    let out = restic(repo, cfg, &["snapshots", "--json", "--tag", tag])
-        .await
-        .ok()?;
+    let out = restic(
+        repo,
+        cfg,
+        &["snapshots", "--no-lock", "--json", "--tag", tag],
+    )
+    .await
+    .ok()?;
     if !out.status.success() {
         return None;
     }
