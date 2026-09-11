@@ -279,6 +279,10 @@ async fn main() {
     // (routers/restore.rs), which scales a crashed restore back up.
     supervise("backup-scheduler", routers::backup::run_scheduler);
     supervise("restore-watchdog", routers::restore::run_watchdog);
+    // Finishes uninstalls whose driving request died with a local-api restart —
+    // see the note on run_uninstall_watchdog for the two apps this was written
+    // for, both left half-removed for the better part of a day.
+    supervise("uninstall-watchdog", routers::apps::run_uninstall_watchdog);
     // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
     // the single actuator for the DISKâON/OFF config â no separate watcher.
     supervise("disks", disks_reconciler::run);
