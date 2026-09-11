@@ -126,10 +126,16 @@ export function BoxPage() {
   const { choice, setTheme } = useTheme();
 
   const health = useApi<ClusterHealth>("health", "/api/cluster/health");
-  const storage = useApi<StorageDetailResponse>("storage-detail", "/api/ceph/detail");
+  const storage = useApi<StorageDetailResponse>(
+    "storage-detail",
+    "/api/ceph/detail",
+  );
   const nodes = useApi<NodeInfo[]>("nodes", "/api/nodes");
   const status = useApi<StatusInfo>("status", "/api/status");
-  const backups = useApi<{ configured: boolean }>("backups-s3", "/api/backups/s3");
+  const backups = useApi<{ configured: boolean }>(
+    "backups-s3",
+    "/api/backups/s3",
+  );
 
   const detail = storage.data?.data;
   const storageDetail = detail

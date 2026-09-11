@@ -1420,9 +1420,20 @@ export function StoragePage() {
   // return at all on a sick one, so the page paints from the remembered value
   // first and corrects itself when the real one lands. CacheDot says which is
   // on screen.
-  const detailRes = useApi<StorageDetailResponse>("storage-detail", "/api/ceph/detail", { pollMs: 20_000 });
-  const policyRes = useApi<StoragePolicyData>("storage-policy", "/api/storage/policy");
-  const disksRes = useApi<Record<string, DiskInfo[]>>("storage-disks", "/api/disks", { pollMs: 20_000 });
+  const detailRes = useApi<StorageDetailResponse>(
+    "storage-detail",
+    "/api/ceph/detail",
+    { pollMs: 20_000 },
+  );
+  const policyRes = useApi<StoragePolicyData>(
+    "storage-policy",
+    "/api/storage/policy",
+  );
+  const disksRes = useApi<Record<string, DiskInfo[]>>(
+    "storage-disks",
+    "/api/disks",
+    { pollMs: 20_000 },
+  );
 
   const detail = detailRes.data?.ok ? detailRes.data.data : undefined;
   const cephError =
