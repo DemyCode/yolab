@@ -201,3 +201,142 @@ export async function fetchList<T>(url: string): Promise<ListResult<T>> {
     return { ok: false, reason: "unreachable" };
   }
 }
+
+/**
+ * What the server says about the body it just gave us.
+ *
+ * `hit` and `miss` come from a single JSON response's headers; `stale` and
+ * `fresh` are the two frames of a progressive one. The distinction the UI cares
+ * about is only ever "is this the value the box just computed, or one it
+ * remembered" — plus how old the remembered one is.
+ */
+export interface CacheMeta {
+  state: "hit" | "miss" | "stale" | "fresh";
+  ageMs: number;
+  ttlMs: number;
+}
+
+/** True when the body was remembered rather than computed for this request. */
+export function isCached(meta: CacheMeta | null): boolean {
+  return meta !== null && (meta.state === "hit" || meta.state === "stale");
+}
+
+function metaFromHeaders(res: Response): CacheMeta | null {
+  const state = res.headers.get("x-yolab-cache");
+  if (!state) return null;
+  return {
+    state: state as CacheMeta["state"],
+    ageMs: Number(res.headers.get("x-yolab-cache-age-ms") ?? 0),
+    ttlMs: Number(res.headers.get("x-yolab-cache-ttl-ms") ?? 0),
+  };
+}
+
+/**
+ * Ask for the cached answer AND the real one, on a single request.
+ *
+ * The server replies with ndjson: frame one is whatever it already had, frame
+ * two is what the handler actually produced. `onFrame` fires for each, so the
+ * page can paint from the remembered value in milliseconds and correct itself a
+ * few seconds later when the box has finished shelling out to `ceph`. Endpoints
+ * measured between 0.9s and 5.5s on a healthy cluster, and unbounded on a sick
+ * one, which is the whole reason this exists.
+ *
+ * Degrades in both directions. A route the server does not cache answers with
+ * ordinary JSON and no cache headers, and this returns it with `meta` null — so
+ * callers need no knowledge of which routes are cached. And a cold cache has no
+ * first frame to send, so only one arrives.
+ *
+ * EVERY FRAME CARRIES ITS OWN META and the caller is expected to show it. A
+ * remembered value rendered as though it were live is the exact bug that got
+ * localStorage caching removed from `useResource`; this is only safe while the
+ * UI keeps saying which one it is holding.
+ */
+export async function getProgressive<T>(
+  path: string,
+  onFrame?: (data: T, meta: CacheMeta | null) => void,
+): Promise<T> {
+  const headers = new Headers({ "x-yolab-progressive": "1" });
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+
+  const res = await fetch(`${baseUrl}${path}`, {
+    headers,
+    credentials: "include",
+  });
+
+  if (res.status === 401) {
+    onUnauthorized?.();
+    throw new ApiError(401, "Your session expired. Please sign in again.");
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, errorMessageFrom(body, res.status));
+  }
+
+  const isNdjson = (res.headers.get("content-type") ?? "").includes(
+    "application/x-ndjson",
+  );
+  if (!isNdjson || !res.body) {
+    const data = (await res.json()) as T;
+    onFrame?.(data, metaFromHeaders(res));
+    return data;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let last: T | undefined;
+  let seen = false;
+  // Raised by an `error` frame, but only after the loop: the handler failing
+  // does not invalidate frame one, which the page is already showing.
+  let failure: ApiError | null = null;
+
+  const handleLine = (line: string) => {
+    if (!line.trim()) return;
+    const frame = JSON.parse(line) as {
+      cache: string;
+      ageMs?: number;
+      ttlMs?: number;
+      status?: number;
+      data?: T;
+    };
+    if (frame.cache === "error") {
+      // The status line was sent long before this, so the server could not use
+      // it to report the failure — this frame is the only signal there is.
+      failure = new ApiError(
+        frame.status ?? 500,
+        "The server could not refresh this value.",
+      );
+      return;
+    }
+    last = frame.data as T;
+    seen = true;
+    onFrame?.(frame.data as T, {
+      state: frame.cache as CacheMeta["state"],
+      ageMs: frame.ageMs ?? 0,
+      ttlMs: frame.ttlMs ?? 0,
+    });
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // A frame is only complete at a newline; anything after the last one is a
+    // partial line that the next chunk finishes.
+    let nl = buffer.indexOf("\n");
+    while (nl !== -1) {
+      handleLine(buffer.slice(0, nl));
+      buffer = buffer.slice(nl + 1);
+      nl = buffer.indexOf("\n");
+    }
+  }
+  handleLine(buffer);
+
+  // Thrown even when frame one arrived: the caller already has that value via
+  // `onFrame`, and useResource keeps showing it while marking the resource
+  // stale — which is exactly the right outcome for "we showed you what we had
+  // and the refresh behind it failed".
+  if (failure) throw failure;
+  if (!seen) throw new ApiError(502, "The server sent no data.");
+  return last as T;
+}

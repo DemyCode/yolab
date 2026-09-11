@@ -7,7 +7,7 @@ import { AppTile, AppTileSkeleton } from "@/components/AppTile";
 import { Banner, EmptyState, ServiceTrouble } from "@/components/ui/feedback";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
-import { api } from "@/lib/api";
+import { api, getProgressive } from "@/lib/api";
 import { useResource } from "@/lib/useResource";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
@@ -277,9 +277,11 @@ export function HomePage() {
   const catalog = useResource<CatalogApp[]>("catalog", () =>
     api.get("/api/apps/catalog"),
   );
+  // Progressive: 2s on a healthy cluster, so the home page would otherwise hold
+  // a spinner for two seconds on every open.
   const health = useResource<ClusterHealth>(
     "health",
-    () => api.get("/api/cluster/health"),
+    (onPartial) => getProgressive("/api/cluster/health", onPartial),
     { pollMs: 20_000 },
   );
 

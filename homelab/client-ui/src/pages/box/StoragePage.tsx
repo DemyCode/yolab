@@ -17,7 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Sheet } from "@/components/ui/sheet";
 import { Banner, Skeleton } from "@/components/ui/feedback";
-import { api } from "@/lib/api";
+import { api, getProgressive } from "@/lib/api";
+import { CacheBadge } from "@/components/CacheBadge";
 import { useResource } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -1415,9 +1416,13 @@ export function StoragePage() {
   // Previously the disk list fetched independently and carried its own reload
   // icon next to the page's own Refresh button, which is why two of them were
   // on screen doing almost the same thing.
+  // Progressive: this endpoint measured 5.5s on a healthy cluster and does not
+  // return at all on a sick one, so the page paints from the remembered value
+  // first and corrects itself when the real one lands. CacheBadge says which is
+  // on screen.
   const detailRes = useResource<StorageDetailResponse>(
     "storage-detail",
-    () => api.get("/api/ceph/detail"),
+    (onPartial) => getProgressive("/api/ceph/detail", onPartial),
     { pollMs: 20_000 },
   );
   const policyRes = useResource<StoragePolicyData>("storage-policy", () =>
@@ -1425,7 +1430,7 @@ export function StoragePage() {
   );
   const disksRes = useResource<Record<string, DiskInfo[]>>(
     "storage-disks",
-    () => api.get("/api/disks"),
+    (onPartial) => getProgressive("/api/disks", onPartial),
     { pollMs: 20_000 },
   );
 
@@ -1458,6 +1463,13 @@ export function StoragePage() {
         </Banner>
       )}
 
+      {/* Sits with the capacity numbers because those are the ones a remembered
+          value could mislead someone about. Renders nothing once the page is
+          showing freshly computed figures, which is within a few seconds of
+          opening. */}
+      <div className="flex items-center justify-end -mb-3">
+        <CacheBadge cache={detailRes.cache} />
+      </div>
       <CapacityCard
         detail={detail}
         policy={policy}
