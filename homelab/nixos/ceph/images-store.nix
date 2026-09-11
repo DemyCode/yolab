@@ -48,6 +48,7 @@ with lib; let
     YOLAB_CEPH_IMAGES_SHARE = toString cfg.shareOfPool;
     YOLAB_CEPH_IMAGES_MIN_GB = toString cfg.minSizeGb;
     YOLAB_CEPH_IMAGES_FS = cfg.filesystem;
+    YOLAB_CEPH_IMAGES_RECOVER_GRACE_SECS = toString cfg.recoverGraceSeconds;
   };
 in {
   options.yolab.ceph.imagesStore = {
@@ -80,6 +81,24 @@ in {
       type = types.enum ["xfs" "ext4"];
       default = "xfs";
       description = "xfs matches what containerd expects and what most k8s distros use.";
+    };
+
+    # The guard against mistaking a blip for a lost disk. `down` means no copy is
+    # available RIGHT NOW, not that one is gone: a nixos-rebuild takes an OSD's LV
+    # down for ~90s and a node reboot for a few minutes, and both recover on their
+    # own. Rebuilding on those would cost every node its image cache and force a
+    # simultaneous re-pull across the uplink — worse than the outage being fixed.
+    # 15 minutes clears both with room to spare while still being far short of the
+    # 23 hours the cluster sat waiting on 2026-09-10.
+    recoverGraceSeconds = mkOption {
+      type = types.int;
+      default = 900;
+      description = ''
+        How long the images pool must stay unable to serve reads before its
+        unrecoverable placement groups are rebuilt empty. Only ever applies to the
+        images pool, whose every object is a container layer a registry will send
+        again — never to the pools holding the owner's data.
+      '';
     };
   };
 
@@ -138,6 +157,49 @@ in {
       # against the shell version.
       path = with pkgs; [ceph ceph-client];
       environment = imagesStoreEnv;
+    };
+
+    # ── Rebuild the pool's lost placement groups ─────────────────────────────
+    #
+    # The layer of self-healing that was missing. Everything else here rebuilds
+    # the filesystem ON the RBD, or the contents of the data-root; nothing ever
+    # rebuilt the RBD's own storage, so a pool whose placement groups had no
+    # surviving copy left every node parked on its root disk forever, waiting on
+    # a disk that was never coming back. See storage/images_recover.rs.
+    #
+    # NOT ordered before k3s, and that is deliberate. This is a repair for a
+    # condition that has already persisted for a quarter of an hour — there is
+    # nothing urgent about it, and putting it in the boot path would add another
+    # unit that can hold the node out of the cluster. It runs on its timer only.
+    systemd.services.yolab-images-recover = {
+      description = "Rebuild the Ceph images pool's unrecoverable placement groups";
+      after = ["ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
+      requires = ["ceph-mon-${host}.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        # Bounded like everything else here: Type=oneshot disables the start
+        # timeout by default, which is how units in this directory used to hang
+        # forever.
+        TimeoutStartSec = "300s";
+        ExecStart = "${localApiEnv}/bin/local-api storage images-recover";
+      };
+      path = with pkgs; [ceph ceph-client];
+      environment = imagesStoreEnv;
+    };
+
+    systemd.timers.yolab-images-recover = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        # Well after the boot-time units have had their chance. A pool that is
+        # merely slow to come up must not be judged before it has finished
+        # peering.
+        OnBootSec = "15min";
+        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it — see the long
+        # note on yolab-containerd-store's timer for the outage that pairing
+        # caused. The grace period, not this interval, is what decides when a
+        # rebuild happens; this only sets how often the question is asked.
+        OnUnitInactiveSec = "5min";
+      };
     };
 
     # ── Map + mount it, before containerd can start ──────────────────────────
