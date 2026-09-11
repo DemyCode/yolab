@@ -1570,7 +1570,31 @@ pub async fn uninstall_app(
         return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
     }
 
-    run_teardown(&instance_name, &ns).await;
+    // DETACHED, so a browser that goes away cannot kill a half-finished teardown.
+    //
+    // `helm uninstall` runs with `kill_on_drop(true)`. This handler used to await
+    // it directly, so when the client disconnected — a reload, a navigation, or
+    // just several Removes fired at once while the UI was struggling — axum
+    // dropped the handler future and SIGKILLed helm partway through. What that
+    // leaves is the worst of both states: the release marked `uninstalling`, the
+    // namespace still Active, and some of the app already torn down.
+    //
+    // Seen on 2026-09-11 with five apps at once, every one of them stranded that
+    // way at 14:59 with local-api itself running fine throughout. The watchdog
+    // does recover them, but not until the claim goes stale ten minutes later,
+    // and in the meantime the owner has pressed Remove and watched nothing
+    // happen.
+    //
+    // A spawned task outlives the handle: tokio detaches on drop rather than
+    // cancelling, so awaiting it here reports the result to a client that is
+    // still listening while letting the teardown run to completion for one that
+    // is not.
+    let ns_owned = ns.clone();
+    let instance_owned = instance_name.clone();
+    let task = tokio::spawn(async move {
+        run_teardown(&instance_owned, &ns_owned).await;
+    });
+    let _ = task.await;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }

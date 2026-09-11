@@ -5,7 +5,7 @@ home: https://filebrowser.org
 type: application
 # Chart version — bump on any packaging change. This is what a backup records and a
 # restore pins to, so "which version wrote this data" stops being a guess.
-version: 0.1.0
+version: 0.1.1
 # Upstream application version this chart tracks.
 appVersion: "2"
 
