@@ -106,31 +106,70 @@ impl Policy {
     }
 }
 
-/// The cached routes, with the TTL each one's cost and volatility justify.
+/// Whether this GET is cached, and how stale a first frame may be.
 ///
-/// Deliberately a short, explicit list. These are the measured-expensive reads
-/// the UI polls; everything else goes straight through. Paths are matched
-/// exactly — no prefixes — so adding a route here is always a decision someone
-/// made on purpose.
+/// A DENYLIST, NOT AN ALLOWLIST, because the answer is "yes" for nearly
+/// everything once the real value always follows. This started as a list of
+/// seven measured-slow routes and that was the wrong shape: it made caching
+/// something you had to remember to opt a route into, so `/api/nodes/traffic` —
+/// ten full seconds, the slowest endpoint in the whole API — sat uncached simply
+/// because nobody had noticed it.
 ///
-/// 15s against the UI's 20s poll is chosen so a poll normally finds the entry
-/// just past its TTL: the page paints instantly from frame one and still gets a
-/// freshly computed frame two every cycle. A TTL longer than the poll would mean
-/// whole cycles that never recompute at all.
+/// What is excluded, and why each one is a real exclusion rather than caution:
+///
+///   Session-scoped. The map is global and keyed by path, NOT by caller, so any
+///   response that differs per caller would be served to the wrong one. Today
+///   there is a single operator and the desktop and web shells authenticate
+///   differently; that is exactly the kind of thing that is theoretical until it
+///   is a login bug. `/api/auth/check` is 18ms anyway.
+///
+///   Secrets. Tokens, recovery keys, dashboard credentials and join bundles are
+///   cheap to produce, are sometimes generated per request, and can be rotated —
+///   serving a remembered password is a real failure, and there is nothing to
+///   gain. Keeping them in a long-lived global map for no benefit is gratuitous.
+///
+///   Logs. A tail is large, is watched live while something is happening, and
+///   retaining copies of them is the one thing here that could actually grow
+///   memory. They are also the routes most likely to exceed
+///   MAX_CACHEABLE_BYTES and be passed through uncached regardless.
+///
+/// Everything else is cached, including routes with path parameters — those key
+/// off the full path so `/api/apps/immich/pods` and `/api/apps/plex/pods` are
+/// separate entries.
 fn policy_for(path: &str) -> Option<Policy> {
-    const POLICIES: &[(&str, Policy)] = &[
-        ("/api/ceph/detail", Policy::secs(15, 60)),
-        ("/api/cluster/health", Policy::secs(15, 60)),
-        ("/api/ceph/status", Policy::secs(15, 60)),
-        ("/api/disks", Policy::secs(15, 60)),
-        ("/api/backups/status", Policy::secs(15, 60)),
-        ("/api/nodes", Policy::secs(15, 60)),
-        ("/api/nodes/links", Policy::secs(15, 60)),
-    ];
-    POLICIES
-        .iter()
-        .find(|(p, _)| *p == path)
-        .map(|(_, policy)| *policy)
+    if !path.starts_with("/api/") {
+        return None;
+    }
+
+    // Differs per caller: the cache cannot tell them apart.
+    if path == "/api/auth/check" {
+        return None;
+    }
+    // Credentials and key material.
+    if matches!(
+        path,
+        "/api/account/token"
+            | "/api/backups/recovery-key"
+            | "/api/ceph/dashboard"
+            | "/api/cluster/ceph-join"
+    ) {
+        return None;
+    }
+    // Log bodies, live and large. Covers /api/logs, /api/rebuild-log and
+    // /api/apps/:id/logs/:pod_name.
+    if path == "/api/logs" || path == "/api/rebuild-log" || path.contains("/logs/") {
+        return None;
+    }
+
+    // One policy for everything else. The TTL only decides whether a remembered
+    // value is worth showing ahead of the real one; it never decides whether the
+    // real one is fetched, because in progressive mode it always is.
+    //
+    // 60s hard limit: past that the remembered value is dropped rather than
+    // flashed on screen. An operator watching a cluster come apart should not
+    // see a minute-old picture of it for even the second before the truth
+    // arrives — that second is long enough to read a number and act on it.
+    Some(Policy::secs(15, 60))
 }
 
 struct Entry {
@@ -171,8 +210,32 @@ async fn look_up(key: &str, policy: Policy) -> Option<(Arc<Value>, Duration)> {
     Some((entry.body.clone(), age))
 }
 
+/// Upper bound on distinct keys held at once.
+///
+/// The allowlist this replaced was self-limiting: seven fixed paths, seven
+/// entries. A denylist is not. Keys are path plus query, routes carry parameters
+/// (`/api/apps/:id/pods`), and a query string is whatever the caller sends — so
+/// without a cap a client looping over `?x=1`, `?x=2`, ... would grow this map
+/// until the process died. 256 is far above what the UI can produce (a few dozen
+/// apps, a handful of routes each) and far below anything that matters for
+/// memory, since each body is small JSON.
+const MAX_ENTRIES: usize = 256;
+
 async fn store(key: &str, body: Value) {
-    entries().lock().await.insert(
+    let mut map = entries().lock().await;
+    if map.len() >= MAX_ENTRIES && !map.contains_key(key) {
+        // Drop the oldest rather than refusing to insert: the value just
+        // computed is the one someone is waiting on, and an entry nobody has
+        // asked for in a while is the one worth losing.
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, e)| e.fetched_at)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(
         key.to_string(),
         Entry {
             body: Arc::new(body),
@@ -323,12 +386,21 @@ pub async fn middleware(req: Request, next: Next) -> Response {
 
     let cached = look_up(&key, policy).await;
 
-    // Fresh and nobody is waiting on anything better: this is the case that
-    // actually removes load, and it is why several tabs inside one TTL cost one
-    // subprocess between them rather than one each.
-    if let Some((body, age)) = &cached {
-        if *age < policy.ttl {
-            return single(body, "hit", *age, policy);
+    // A PROGRESSIVE CLIENT ALWAYS GETS THE REAL VALUE, however fresh the
+    // remembered one is. That is the contract: the remembered value buys the
+    // page something to draw immediately, it never replaces the answer.
+    //
+    // This branch used to return a fresh cached body and skip the handler
+    // entirely, which did cut load but meant a client polling faster than the
+    // TTL could go whole cycles without anything recomputing — it would be told
+    // "hit" and never learn the disk had been pulled. Skipping work is now only
+    // something a PLAIN client gets, where there is no second frame to correct
+    // the first with.
+    if !progressive {
+        if let Some((body, age)) = &cached {
+            if *age < policy.ttl {
+                return single(body, "hit", *age, policy);
+            }
         }
     }
 
@@ -337,7 +409,12 @@ pub async fn middleware(req: Request, next: Next) -> Response {
             // The two-frame answer. Frame one goes out before the handler is even
             // started, so the page paints from it while the box is still shelling
             // out for frame two.
-            let first = frame(&body, "stale", age, policy);
+            // Labelled by real age, not a fixed "stale": with a denylist this
+            // frame is often only a second or two old, and calling that stale
+            // would train the operator to ignore the badge that exists to warn
+            // them when it is genuinely old.
+            let label = if age < policy.ttl { "hit" } else { "stale" };
+            let first = frame(&body, label, age, policy);
             let key = key.clone();
             let stream = async_stream::stream! {
                 yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(first));
@@ -363,8 +440,10 @@ pub async fn middleware(req: Request, next: Next) -> Response {
             let mut res = Response::new(Body::from_stream(stream));
             res.headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
+            // The header describes frame ONE; frame two carries its own state
+            // inline, because a header cannot change halfway through a response.
             res.headers_mut()
-                .insert(HEADER_STATE, HeaderValue::from_static("stale"));
+                .insert(HEADER_STATE, HeaderValue::from_static(label));
             return res;
         }
         // Nothing cached at all. There is no first frame to send, so this is an
@@ -549,15 +628,52 @@ mod tests {
     /// run — this is the case that actually removes load from the box when
     /// several tabs are open.
     #[tokio::test(start_paused = true)]
-    async fn a_fresh_value_is_served_without_running_the_handler() {
+    async fn a_plain_client_inside_the_ttl_skips_the_handler() {
         let _g = begin().await;
         let calls = Arc::new(AtomicUsize::new(0));
 
         app(calls.clone()).oneshot(req(false)).await.unwrap();
-        let res = app(calls.clone()).oneshot(req(true)).await.unwrap();
+        let res = app(calls.clone()).oneshot(req(false)).await.unwrap();
 
         assert_eq!(res.headers()[HEADER_STATE], "hit");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a plain client has no second frame to correct a stale body with, so \
+             inside the TTL the cached one is the whole answer"
+        );
+    }
+
+    /// THE CONTRACT: a progressive client always gets the real value, however
+    /// fresh the remembered one is.
+    ///
+    /// The test this replaced asserted the opposite and PASSED FOR THE WRONG
+    /// REASON. `Body::from_stream` is lazy, so a test that never reads the body
+    /// never drives the stream, and the handler it claimed had been skipped had
+    /// simply not run yet. Reading the body to completion is what makes the
+    /// assertion mean anything.
+    #[tokio::test(start_paused = true)]
+    async fn a_progressive_client_recomputes_even_when_the_cache_is_fresh() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        app(calls.clone()).oneshot(req(false)).await.unwrap();
+        // No time advanced: the entry is brand new, well inside the TTL.
+        let res = app(calls.clone()).oneshot(req(true)).await.unwrap();
+        assert_eq!(res.headers()[HEADER_STATE], "hit", "frame one is recent");
+
+        let lines: Vec<Value> = body_string(res)
+            .await
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+
+        assert_eq!(lines.len(), 2, "the real value must still follow");
+        assert_eq!(lines[0]["cache"], "hit");
+        assert_eq!(lines[0]["data"]["n"], 1);
+        assert_eq!(lines[1]["cache"], "fresh");
+        assert_eq!(lines[1]["data"]["n"], 2, "the handler ran anyway");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// Past the hard limit the old body is not sent at all, in either mode. An
@@ -598,10 +714,11 @@ mod tests {
     /// An uncached path must be untouched — same body, and none of the cache
     /// headers, so nothing downstream can mistake it for a cached answer.
     #[tokio::test(start_paused = true)]
-    async fn an_unlisted_path_passes_straight_through() {
+    async fn a_denied_path_passes_straight_through() {
         let app = Router::new()
             .route(
-                "/api/status",
+                // Session-scoped, so it must never come back from a shared map.
+                "/api/auth/check",
                 get(|| async { axum::Json(serde_json::json!({"live": true})) }),
             )
             .layer(axum::middleware::from_fn(middleware));
@@ -609,7 +726,7 @@ mod tests {
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/status")
+                    .uri("/api/auth/check")
                     .header(HEADER_PROGRESSIVE, "1")
                     .body(Body::empty())
                     .unwrap(),
@@ -644,12 +761,46 @@ mod tests {
     }
 
     #[test]
-    fn only_the_listed_paths_are_cached() {
-        assert!(policy_for("/api/ceph/detail").is_some());
-        assert!(policy_for("/api/status").is_none());
-        // Exact matches only: a prefix rule would quietly catch future routes
-        // nobody decided to cache.
-        assert!(policy_for("/api/ceph/detail/extra").is_none());
+    fn everything_is_cached_except_the_denylist() {
+        // The default is yes. An allowlist left /api/nodes/traffic — ten seconds,
+        // the slowest route in the API — uncached simply because nobody had
+        // thought to add it.
+        for path in [
+            "/api/ceph/detail",
+            "/api/nodes/traffic",
+            "/api/status",
+            "/api/apps",
+            "/api/apps/immich/pods",
+            "/api/backups/snapshots",
+        ] {
+            assert!(policy_for(path).is_some(), "{path} should be cached");
+        }
+
+        // Differs per caller, and the map is not keyed by caller.
+        assert!(policy_for("/api/auth/check").is_none());
+
+        // Credentials and key material.
+        for path in [
+            "/api/account/token",
+            "/api/backups/recovery-key",
+            "/api/ceph/dashboard",
+            "/api/cluster/ceph-join",
+        ] {
+            assert!(policy_for(path).is_none(), "{path} is a secret");
+        }
+
+        // Log bodies: live, large, and watched while something is happening.
+        for path in [
+            "/api/logs",
+            "/api/rebuild-log",
+            "/api/apps/immich/logs/immich-abc123",
+        ] {
+            assert!(policy_for(path).is_none(), "{path} is a log");
+        }
+
+        // Nothing outside the API surface.
+        assert!(policy_for("/index.html").is_none());
+        assert!(policy_for("/ceph-dashboard/").is_none());
     }
 
     /// The TTL has to be shorter than the UI's poll, or whole cycles go by that
