@@ -111,11 +111,18 @@ impl BackupConfig {
     }
 
     pub async fn unlock(&self, path: &str) {
-        restic_unlock(
+        self.unlock_reporting(path, false).await
+    }
+
+    /// `unlock`, but reporting its own failures — for the lock sweeper, whose
+    /// whole job is this call and which nothing else would report for.
+    pub async fn unlock_reporting(&self, path: &str, loud: bool) {
+        restic_unlock_reporting(
             &self.restic_repo(path),
             &self.restic_password,
             &self.access_key_id,
             &self.secret_access_key,
+            loud,
         )
         .await;
     }
@@ -176,6 +183,25 @@ pub(crate) async fn restic_timeout(
 /// (not `--remove-all`) is what keeps this safe to call unconditionally before any
 /// operation, since it never touches a lock that's still actively held.
 pub(crate) async fn restic_unlock(repo: &str, password: &str, key_id: &str, secret_key: &str) {
+    restic_unlock_reporting(repo, password, key_id, secret_key, false).await
+}
+
+/// `restic_unlock`, but able to say when it FAILED.
+///
+/// Every failure path below logs at `debug`, which is invisible at the level
+/// this runs at. That is fine for the callers that unlock opportunistically
+/// before doing something else — they will fail visibly at the next step
+/// anyway. It is wrong for the lock sweeper, whose entire job is this call: if
+/// its unlocks are failing, nothing else reports it and an app silently stops
+/// running retention, which is the failure the sweeper exists to end. `loud`
+/// raises those paths to `warn` for that caller.
+pub(crate) async fn restic_unlock_reporting(
+    repo: &str,
+    password: &str,
+    key_id: &str,
+    secret_key: &str,
+    loud: bool,
+) {
     let work = Command::new("restic")
         .args(["unlock"])
         .kill_on_drop(true)
@@ -192,11 +218,20 @@ pub(crate) async fn restic_unlock(repo: &str, password: &str, key_id: &str, secr
                 tracing::info!("restic unlock ({repo}): {}", msg.trim());
             }
         }
-        Ok(Ok(o)) => tracing::debug!(
-            "restic unlock ({repo}): {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
+        Ok(Ok(o)) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if loud {
+                tracing::warn!("restic unlock ({repo}) failed: {err}");
+            } else {
+                tracing::debug!("restic unlock ({repo}): {err}");
+            }
+        }
+        Ok(Err(e)) if loud => tracing::warn!("restic unlock ({repo}) could not run: {e}"),
         Ok(Err(e)) => tracing::debug!("restic unlock ({repo}): {e}"),
+        Err(_) if loud => tracing::warn!(
+            "restic unlock ({repo}) timed out after {}s",
+            RESTIC_TIMEOUT.as_secs()
+        ),
         Err(_) => tracing::debug!(
             "restic unlock ({repo}): timed out after {}s",
             RESTIC_TIMEOUT.as_secs()
