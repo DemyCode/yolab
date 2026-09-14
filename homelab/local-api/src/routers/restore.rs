@@ -229,12 +229,31 @@ async fn restore_inner(
     let ns_yaml = extract_file(&repo, cfg, snapshot_id, &format!("**/{namespace}.yaml")).await?;
     let restore_as_of = snapshot_time(&repo, cfg, snapshot_id).await;
 
-    // 3. Recreate each PVC from its own VolSync restic repo.
-    for (pvc, capacity) in catalog_pvcs(&catalog, namespace) {
-        restore_volume(namespace, &pvc, &capacity, cfg, restore_as_of.as_deref()).await?;
+    // 3. Check every volume BEFORE replacing any. VolSync restores the newest snapshot
+    //    no newer than `restoreAsOf`, and when none qualifies it logs "No eligible
+    //    snapshots found" and exits successfully — so an unchecked restore deleted the
+    //    live volume and reported success over an empty one.
+    let pvcs = catalog_pvcs(&catalog, namespace);
+    let mut backed_up = Vec::new();
+    for (pvc, capacity) in &pvcs {
+        let times = volume_snapshot_times(namespace, pvc, cfg).await?;
+        match volume_backup(&times, restore_as_of.as_deref()) {
+            VolumeBackup::None => {
+                tracing::warn!("restore: {namespace}/{pvc}: no backup snapshot — keeping as-is")
+            }
+            VolumeBackup::OnlyNewer => anyhow::bail!(
+                "{pvc} has no backup taken before this restore point — pick a later backup"
+            ),
+            VolumeBackup::Eligible => backed_up.push((pvc.clone(), capacity.clone())),
+        }
     }
 
-    // 4. Re-apply the app's backed-up objects (deploy/secret/configmap/etc.), which
+    // 4. Recreate each PVC from its own VolSync restic repo.
+    for (pvc, capacity) in &backed_up {
+        restore_volume(namespace, pvc, capacity, cfg, restore_as_of.as_deref()).await?;
+    }
+
+    // 5. Re-apply the app's backed-up objects (deploy/secret/configmap/etc.), which
     //    restores its config and brings it back up at its recorded replica counts.
     if let Some(path) = ns_yaml {
         if let Ok(bytes) = tokio::fs::read(&path).await {
@@ -244,9 +263,63 @@ async fn restore_inner(
         }
     }
 
-    crate::storage_heal::clear_corrupted(namespace).await;
+    // Only a restore that brought every volume back makes a corrupted app whole.
+    if !pvcs.is_empty() && backed_up.len() == pvcs.len() {
+        crate::storage_heal::clear_corrupted(namespace).await;
+    }
     tracing::info!("restore: {namespace} restored from {snapshot_id}");
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+enum VolumeBackup {
+    None,
+    /// Snapshots exist, but every one is newer than the restore point.
+    OnlyNewer,
+    Eligible,
+}
+
+fn volume_backup(times: &[chrono::DateTime<Utc>], restore_as_of: Option<&str>) -> VolumeBackup {
+    if times.is_empty() {
+        return VolumeBackup::None;
+    }
+    let Some(as_of) = restore_as_of
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&Utc))
+    else {
+        return VolumeBackup::Eligible;
+    };
+    if times.iter().any(|t| *t <= as_of) {
+        VolumeBackup::Eligible
+    } else {
+        VolumeBackup::OnlyNewer
+    }
+}
+
+async fn volume_snapshot_times(
+    namespace: &str,
+    pvc: &str,
+    cfg: &BackupConfig,
+) -> anyhow::Result<Vec<chrono::DateTime<Utc>>> {
+    let repo = cfg.restic_repo(&format!("volsync/{namespace}/{}", canonical_pvc_id(pvc)));
+    let out = restic(&repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
+            return Ok(Vec::new());
+        }
+        anyhow::bail!("{}", stderr.trim());
+    }
+    Ok(parse_snapshot_times(&serde_json::from_slice(&out.stdout)?))
+}
+
+fn parse_snapshot_times(v: &Value) -> Vec<chrono::DateTime<Utc>> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| chrono::DateTime::parse_from_rfc3339(s["time"].as_str()?).ok())
+        .map(|t| t.with_timezone(&Utc))
+        .collect()
 }
 
 async fn restore_volume(
@@ -265,12 +338,6 @@ async fn restore_volume(
         &cfg.secret_access_key,
     )
     .await;
-
-    // No backup for this PVC — leave it untouched rather than destroy it for nothing.
-    if !snapshots_exist(&pvc_repo, cfg).await? {
-        tracing::warn!("restore: {namespace}/{pvc}: no backup snapshot — keeping as-is");
-        return Ok(());
-    }
 
     // Delete the live PVC and wait for it to actually go away.
     let _ = crate::kubectl::run(&[
@@ -384,19 +451,6 @@ async fn read_deployment_scales(ns: &str) -> Vec<DeploymentScale> {
             })
         })
         .collect()
-}
-
-async fn snapshots_exist(repo: &str, cfg: &BackupConfig) -> anyhow::Result<bool> {
-    let out = restic(repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
-            return Ok(false);
-        }
-        anyhow::bail!("{}", stderr.trim());
-    }
-    let v: Value = serde_json::from_slice(&out.stdout)?;
-    Ok(v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
 }
 
 /// Resolves the snapshot id to restore from: the caller's explicit choice, or the
@@ -701,6 +755,67 @@ mod tests {
             catalog_pvcs(&catalog, "yolab-gitea"),
             vec![("gitea-data".to_string(), "10Gi".to_string())]
         );
+    }
+
+    fn t(s: &str) -> chrono::DateTime<Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// The live case this exists for: cluster snapshot 12:10:02, the only volume
+    /// snapshot 12:10:05. VolSync would restore nothing and call it success.
+    #[test]
+    fn a_volume_whose_only_snapshot_is_newer_than_the_restore_point_is_refused() {
+        let times = [t("2026-09-14T12:10:05Z")];
+        assert_eq!(
+            volume_backup(&times, Some("2026-09-14T12:10:02.123456+00:00")),
+            VolumeBackup::OnlyNewer
+        );
+    }
+
+    #[test]
+    fn any_snapshot_at_or_before_the_restore_point_is_eligible() {
+        let times = [t("2026-09-14T12:10:05Z"), t("2026-09-13T08:00:00Z")];
+        assert_eq!(
+            volume_backup(&times, Some("2026-09-14T12:10:02Z")),
+            VolumeBackup::Eligible
+        );
+        assert_eq!(
+            volume_backup(&[t("2026-09-14T12:10:02Z")], Some("2026-09-14T12:10:02Z")),
+            VolumeBackup::Eligible,
+            "exactly at the restore point counts"
+        );
+    }
+
+    #[test]
+    fn no_snapshots_means_no_backup_and_no_restore_point_means_any_will_do() {
+        assert_eq!(
+            volume_backup(&[], Some("2026-09-14T12:10:02Z")),
+            VolumeBackup::None
+        );
+        assert_eq!(
+            volume_backup(&[t("2030-01-01T00:00:00Z")], None),
+            VolumeBackup::Eligible
+        );
+        assert_eq!(
+            volume_backup(&[t("2030-01-01T00:00:00Z")], Some("not a time")),
+            VolumeBackup::Eligible
+        );
+    }
+
+    #[test]
+    fn snapshot_times_are_read_from_restic_json_and_bad_entries_skipped() {
+        let v = json!([
+            {"id": "a", "time": "2026-09-14T12:10:05.417+00:00"},
+            {"id": "b"},
+            {"id": "c", "time": "yesterday"},
+        ]);
+        assert_eq!(
+            parse_snapshot_times(&v),
+            vec![t("2026-09-14T12:10:05.417Z")]
+        );
+        assert!(parse_snapshot_times(&json!({})).is_empty());
     }
 
     #[test]

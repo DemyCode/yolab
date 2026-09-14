@@ -121,6 +121,10 @@
       inherit pkgs inputs rust disko;
     };
 
+    diskLossTest = import ./nix/tests/disk-loss.nix {
+      inherit pkgs inputs rust disko;
+    };
+
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
@@ -158,6 +162,8 @@
     nixosTests = {
       boot-test = bootTest;
       two-node-test = twoNodeTest;
+      # Unplugs a disk from a one-copy cluster and asserts storage_heal restores it.
+      disk-loss-test = diskLossTest;
     };
 
     # Guarded like `yolab`: these import shared.nix too. No CI stub variant,
