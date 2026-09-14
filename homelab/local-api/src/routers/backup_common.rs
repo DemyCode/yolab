@@ -239,34 +239,6 @@ pub(crate) async fn restic_unlock_reporting(
     }
 }
 
-/// Newest snapshot time in a restic repo, or `None` when the repo has no snapshots
-/// (or was never initialised). `Err` means "could not tell" — callers must NOT
-/// collapse that into "no backup", which is exactly how a broken restore turns into
-/// a silent skip, or a damaged app gets deleted because the check could not run.
-pub(crate) async fn latest_snapshot_time(
-    repo: &str,
-    cfg: &BackupConfig,
-) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let out = restic(repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        // A repo that was never initialised legitimately has no snapshots.
-        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
-            return Ok(None);
-        }
-        anyhow::bail!("{}", stderr.trim());
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    Ok(v.as_array()
-        .and_then(|a| {
-            a.iter()
-                .max_by_key(|s| s["time"].as_str().unwrap_or("").to_string())
-        })
-        .and_then(|s| s["time"].as_str())
-        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.with_timezone(&chrono::Utc)))
-}
-
 /// Reads the existing master backup config secret. Returns `None` if backups
 /// have never been enabled — unlike `ensure_master_config`, never provisions
 /// anything or calls yolab-external; safe to call from the reconcile loop on
@@ -837,8 +809,8 @@ mod tests {
     ///
     /// A listing has no business taking a lock, and when local-api is killed
     /// mid-listing the lock outlives it and blocks that repository's `forget`
-    /// forever. `app_damage` lists snapshots for every app repo and the home page
-    /// polls it every 15s while storage looks unhealthy, so this was not a rare
+    /// forever. `app_damage` (since removed) listed snapshots for every app repo and the home page
+    /// polled it every 15s while storage looked unhealthy, so this was not a rare
     /// race: on 2026-09-11 it left three apps unable to run retention, behind a
     /// lock held by a PID that no longer existed.
     ///

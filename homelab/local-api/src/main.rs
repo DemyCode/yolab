@@ -13,9 +13,6 @@ mod mesh;
 mod proc;
 mod routers;
 mod storage;
-// Not started from main (see the note at the supervise calls); kept for the
-// recover-from-backup action, which reuses its rebuild steps.
-#[allow(dead_code)]
 mod storage_heal;
 mod system;
 mod topology;
@@ -169,7 +166,6 @@ async fn main() {
         .route("/api/backups/runs", get(backups::list_runs))
         .route("/api/backups/restore", post(backups::restore_app))
         .route("/api/backups/restores", get(backups::list_restores))
-        .route("/api/backups/damage", get(backups::app_damage))
         .route(
             "/api/backups/cluster/run-now",
             post(backups::run_backup_now),
@@ -187,6 +183,15 @@ async fn main() {
             axum::routing::put(disks::set_disk_state),
         )
         .route("/api/disks/:node/:id/erase", post(disks::erase_disk))
+        // Lost disks and recovering from backup — see storage_heal.rs.
+        .route(
+            "/api/storage/recovery",
+            get(storage_heal::get_status).post(storage_heal::post_recover),
+        )
+        .route(
+            "/api/storage/recovery/preview",
+            get(storage_heal::get_preview),
+        )
         // Storage topology policy (auto/manual)
         .route(
             "/api/storage/policy",
@@ -295,10 +300,9 @@ async fn main() {
     supervise("disks", disks_reconciler::run);
     supervise("cephfs", cephfs::run);
     supervise("topology", topology::run_topology_controller);
-    // storage_heal::run is deliberately NOT started. nix/tests/disk-loss.nix showed
-    // that after `ceph osd lost` Ceph brings a lost placement group back as
-    // active+clean and EMPTY, so the loop saw no loss, purged the OSD and left
-    // CephFS dead. Loss has to be judged before the OSD is declared lost.
+    // Records lost disks, rebuilds the image store and mgr pool, and runs a
+    // recovery from backup once the owner asks for one.
+    supervise("storage-heal", storage_heal::run);
     supervise("mesh", mesh::run);
     // Keeps the app catalog current without a nixos-rebuild â see charts.rs.
     supervise("chart-sync", charts::run_chart_sync);

@@ -21,24 +21,15 @@ export function AppTile({
   app,
   name,
   icon,
-  corrupted = false,
 }: {
   app: AppInfo;
   name: string;
   icon: string;
-  /** Its files are gone. Comes from the backup layer, not the app's own status. */
-  corrupted?: boolean;
 }) {
-  const state = appState(app, corrupted);
+  const state = appState(app);
   const label = appLabel(app, state);
   const tone =
-    state === "corrupted"
-      ? "error"
-      : state === "removing"
-        ? "warn"
-        : state === "starting"
-          ? "busy"
-          : "ok";
+    state === "removing" ? "warn" : state === "starting" ? "busy" : "ok";
 
   return (
     <Link
@@ -67,14 +58,7 @@ export function AppTile({
           two-word state they replaced, and a tile that clips the reason to
           "Keeps stopping unexpec…" has given the reader nothing. */}
       {label && (
-        <span
-          className={cn(
-            "mt-0.5 line-clamp-2 text-balance text-center text-xs",
-            // The one state worth colouring: everything else is transient and
-            // resolves itself, while this one needs a decision from the owner.
-            state === "corrupted" ? "font-medium text-danger" : "text-fg-muted",
-          )}
-        >
+        <span className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted">
           {label}
         </span>
       )}

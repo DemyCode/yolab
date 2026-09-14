@@ -128,19 +128,9 @@ export function nextInstanceName(appId: string, installed: AppInfo[]): string {
   return `${appId}-${Date.now()}`;
 }
 
-export type AppState = "ready" | "starting" | "removing" | "corrupted";
+export type AppState = "ready" | "starting" | "removing";
 
-/**
- * `corrupted` comes from the backup layer, not from the app's own status.
- *
- * An app whose files are gone still reports a perfectly ordinary pod state —
- * often "starting", because it is stuck retrying something it can never read.
- * Only `/api/backups/damage` knows, so the caller passes it in. It outranks
- * every other state: an app that cannot read its data is not "starting up", and
- * saying so sends the reader off to wait for something that will never happen.
- */
-export function appState(app: AppInfo, corrupted = false): AppState {
-  if (corrupted) return "corrupted";
+export function appState(app: AppInfo): AppState {
   if (app.status === "uninstalling") return "removing";
   if (app.status === "starting") return "starting";
   return "ready";
@@ -160,18 +150,12 @@ export function appState(app: AppInfo, corrupted = false): AppState {
  * working against an older backend that does not send the field.
  */
 export function appLabel(app: AppInfo, state: AppState): string {
-  // `corrupted` ignores `detail`: the backend's explanation describes the pod
-  // ("Starting up…", a restart count), which is a symptom of the missing data
-  // and misleads about the cause.
-  if (state === "corrupted") return appStateLabel(state);
   return app.detail?.trim() || appStateLabel(state);
 }
 
 /** What the tile says under the name. Empty for the healthy case. */
 export function appStateLabel(state: AppState): string {
   switch (state) {
-    case "corrupted":
-      return "Corrupted Data";
     case "starting":
       return "Starting up…";
     case "removing":

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { StorageRecoveryCard } from "@/components/StorageRecovery";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -482,6 +483,8 @@ export function BackupsPage() {
       </div>
 
       {backupError && <p className="text-xs text-danger">{backupError}</p>}
+
+      <StorageRecoveryCard />
 
       {!opState.backing_up &&
         opState.last_ok_age_hours !== null &&

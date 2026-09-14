@@ -401,26 +401,6 @@ fn pg_is_confirmed_lost(pg: &Value, still_in: &std::collections::HashSet<i64>) -
     }
 }
 
-/// Number of OSDs Ceph has given up on: down AND weighted out (`reweight == 0`). A
-/// disk that is merely `down` may be seconds from returning; `out` is Ceph's own
-/// conclusion, ten minutes in, that it is not. Mirrors `restore_run::osd_is_lost`.
-pub(crate) async fn lost_osd_count() -> u32 {
-    let Ok(tree) = crate::ceph_cli::ceph_json(&["osd", "tree"]).await else {
-        return 0;
-    };
-    tree["nodes"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| {
-            n["type"].as_str() == Some("osd")
-                && n["status"].as_str() == Some("down")
-                && n["reweight"].as_f64().unwrap_or(1.0) == 0.0
-        })
-        .count() as u32
-}
-
 /// Reads pool replica counts and PG placement to decide which case this is.
 ///
 /// Only called when Ceph has actually raised PG_AVAILABILITY or PG_DOWN — it is two
