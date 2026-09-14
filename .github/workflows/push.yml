@@ -531,6 +531,15 @@ jobs:
         if: steps.fmt.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
+          # Opened AS THE REPO OWNER, not github-actions[bot]: a PR is authored by
+          # whoever owns the token, and the default GITHUB_TOKEN is the bot.
+          # FORMAT_PR_TOKEN is a fine-grained PAT of the owner with Contents and
+          # Pull requests: read/write on this repo. It also makes the PR's own
+          # checks run — pushes made with GITHUB_TOKEN deliberately trigger no
+          # workflows. Falls back to the bot until the secret exists.
+          token: ${{ secrets.FORMAT_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          author: DemyCode <18736443+DemyCode@users.noreply.github.com>
+          committer: DemyCode <18736443+DemyCode@users.noreply.github.com>
           # Fixed name per source branch, so a later push updates the open PR
           # rather than stacking a second one.
           branch: fmt-${{ github.ref_name }}
