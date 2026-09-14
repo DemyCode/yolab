@@ -17,7 +17,7 @@
   # does (see push.yml's "Push to the Nix cache" step) — so nothing sensitive
   # lives here.
   nixConfig = {
-    extra-substituters = ["https://cache.demycode.ovh/yolab"];
+    extra-substituters = ["https://cache.yolab.io/yolab"];
     extra-trusted-public-keys = ["yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="];
   };
 

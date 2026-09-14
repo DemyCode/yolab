@@ -456,13 +456,13 @@ mod tests {
     fn tunnel() -> TunnelResult {
         TunnelResult {
             enabled: true,
-            platform_api_url: "https://api.demycode.ovh".into(),
+            platform_api_url: "https://api.yolab.io".into(),
             account_token: "acct-tok-123".into(),
             tunnel_id: "42".into(),
             wg_private_key: "tunnel-priv".into(),
             wg_public_key: "tunnel-pub".into(),
             sub_ipv6: "2001:db8::1".into(),
-            dns_url: "https://node1.demycode.ovh".into(),
+            dns_url: "https://node1.yolab.io".into(),
             wg_server_endpoint: "1.2.3.4:51820".into(),
             wg_server_public_key: "server-pub".into(),
             node_id: "7".into(),

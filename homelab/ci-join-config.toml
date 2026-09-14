@@ -19,7 +19,7 @@ homelab_password_hash = ""
 
 [tunnel]
 enabled = false
-platform_api_url = "https://api.yolab.dev"
+platform_api_url = "https://api.yolab.io"
 account_token = ""
 service_name = "homelab"
 service_id = 0
