@@ -124,13 +124,15 @@ pub async fn safe_to_destroy<H: Host>(
     osd: i64,
 ) -> Result<Option<SafeToDestroy>, CmdError> {
     let id = format!("osd.{osd}");
-    let raw = match host.ceph(&["osd", "safe-to-destroy", &id, "-f", "json"]).await {
+    let raw = match host
+        .ceph(&["osd", "safe-to-destroy", &id, "-f", "json"])
+        .await
+    {
         Ok(raw) => raw,
         Err(e) if e.failure() == Some(Failure::Busy) => return Ok(None),
         Err(e) => return Err(e),
     };
-    let report: SafeToDestroyReport =
-        crate::exec::parse_json("ceph osd safe-to-destroy", &raw)?;
+    let report: SafeToDestroyReport = crate::exec::parse_json("ceph osd safe-to-destroy", &raw)?;
     Ok(report
         .safe_to_destroy
         .contains(&osd)
@@ -216,7 +218,10 @@ pub async fn delete_app_filesystem<H: Host>(
     existing_pools: &[String],
 ) -> Result<(), CmdError> {
     let door = Door(());
-    tracing::warn!("recovery started at {}: deleting the app filesystem", mandate.started_at);
+    tracing::warn!(
+        "recovery started at {}: deleting the app filesystem",
+        mandate.started_at
+    );
     if fs_exists {
         host.ceph_destructive(&door, &["fs", "fail", RECOVERABLE_FS])
             .await?;
@@ -367,7 +372,14 @@ mod tests {
             vec!["osd", "lost", "3"],
             vec!["osd", "rm", "3"],
             vec!["osd", "force-create-pg", "2.1", "--yes-i-really-mean-it"],
-            vec!["osd", "pool", "delete", "p", "p", "--yes-i-really-really-mean-it"],
+            vec![
+                "osd",
+                "pool",
+                "delete",
+                "p",
+                "p",
+                "--yes-i-really-really-mean-it",
+            ],
             vec!["fs", "rm", "yolab-fs", "--yes-i-really-mean-it"],
             vec!["fs", "fail", "yolab-fs"],
             vec!["mon", "remove", "n2"],
@@ -402,8 +414,14 @@ mod tests {
         ] {
             assert!(!is_destructive("ceph", &args), "{args:?}");
         }
-        assert!(!is_destructive("ceph-volume", &["lvm", "list", "--format", "json"]));
-        assert!(!is_destructive("ceph-volume", &["lvm", "create", "--data", "/dev/sdb"]));
+        assert!(!is_destructive(
+            "ceph-volume",
+            &["lvm", "list", "--format", "json"]
+        ));
+        assert!(!is_destructive(
+            "ceph-volume",
+            &["lvm", "create", "--data", "/dev/sdb"]
+        ));
         assert!(!is_destructive("kubectl", &["delete", "namespace", "x"]));
     }
 
@@ -431,7 +449,10 @@ mod tests {
     #[tokio::test]
     async fn a_confirmed_purge_yields_a_receipt_only_when_the_osd_is_gone() {
         let gone = FakeHost::new()
-            .ok("ceph osd safe-to-destroy osd.3", r#"{"safe_to_destroy":[3]}"#)
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
             .ok("ceph osd purge osd.3", "")
             .ok("ceph osd ls", "[1,2]");
         let proof = safe_to_destroy(&gone, 3).await.unwrap().unwrap();
@@ -439,7 +460,10 @@ mod tests {
         assert_eq!(receipt.map(|p| p.osd), Some(3));
 
         let lingering = FakeHost::new()
-            .ok("ceph osd safe-to-destroy osd.3", r#"{"safe_to_destroy":[3]}"#)
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
             .ok("ceph osd purge osd.3", "")
             .ok("ceph osd ls", "[1,2,3]");
         let proof = safe_to_destroy(&lingering, 3).await.unwrap().unwrap();
@@ -456,8 +480,10 @@ mod tests {
         assert!(purge_lost(&up, &mandate, 3).await.is_err());
         assert!(!up.ran("osd purge"));
 
-        let down = FakeHost::new()
-            .ok("ceph osd dump", r#"{"osds":[{"osd":4,"up":0,"in":0}],"pools":[]}"#);
+        let down = FakeHost::new().ok(
+            "ceph osd dump",
+            r#"{"osds":[{"osd":4,"up":0,"in":0}],"pools":[]}"#,
+        );
         assert!(purge_lost(&down, &mandate, 4).await.is_err());
         assert!(!down.ran("osd purge"));
     }

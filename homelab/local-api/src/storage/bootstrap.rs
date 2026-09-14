@@ -253,7 +253,9 @@ async fn join_cluster<H: Host>(
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("remove stale mon store {}", dir.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("remove stale mon store {}", dir.display()))
+        }
     }
     std::fs::create_dir_all(&dir)?;
     Ok(())
@@ -390,7 +392,10 @@ mod tests {
 
     #[allow(clippy::manual_async_fn)]
     impl Host for FileWritingHost {
-        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
+        fn ceph<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph(args)
         }
         fn ceph_json<'a>(

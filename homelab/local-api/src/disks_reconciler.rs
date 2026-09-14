@@ -31,9 +31,9 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, io::Read, path::Path};
 use tokio::time::{sleep, Duration};
 
-use crate::host::{Host, RealHost};
 use crate::ceph::destructive;
 use crate::error::Outcome;
+use crate::host::{Host, RealHost};
 use crate::kubectl;
 
 /// Kept as "rook-ceph" even though Rook no longer runs the cluster: it is where
@@ -1039,7 +1039,11 @@ async fn reconcile_local_osds<H: Host + 'static>(
                 .flatten();
             let safe_before = before.is_some();
             if safe_before {
-                set_phase(disk_id, Phase::Removing, "Finishing up — do not unplug yet.");
+                set_phase(
+                    disk_id,
+                    Phase::Removing,
+                    "Finishing up — do not unplug yet.",
+                );
                 // Stop the daemon before purging. Purging while it still runs
                 // is the EBUSY race the old code guarded against separately.
                 disable_osd_unit(host, osd_id).await;
@@ -1261,8 +1265,12 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
         tracing::warn!(
             "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it first"
         );
-        if let Err(e) =
-            destructive::zap(host, dev_path, destructive::ZapWarrant::ForeignCluster { osd: id }).await
+        if let Err(e) = destructive::zap(
+            host,
+            dev_path,
+            destructive::ZapWarrant::ForeignCluster { osd: id },
+        )
+        .await
         {
             tracing::warn!("{disk_id}: zap failed, leaving the disk alone: {e}");
             set_phase(
@@ -1311,23 +1319,21 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
         .err()
         .and_then(destructive::ZapWarrant::stale_signature);
     if let Some(warrant) = warrant {
-            tracing::warn!(
-                "{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying"
-            );
-            if let Err(e) = destructive::zap(host, dev_path, warrant).await {
-                tracing::warn!("{disk_id}: zap failed: {e}");
-            } else {
-                result = host
-                    .ceph_volume(&[
-                        "lvm",
-                        "create",
-                        "--bluestore",
-                        "--data",
-                        dev_path,
-                        "--no-systemd",
-                    ])
-                    .await;
-            }
+        tracing::warn!("{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying");
+        if let Err(e) = destructive::zap(host, dev_path, warrant).await {
+            tracing::warn!("{disk_id}: zap failed: {e}");
+        } else {
+            result = host
+                .ceph_volume(&[
+                    "lvm",
+                    "create",
+                    "--bluestore",
+                    "--data",
+                    dev_path,
+                    "--no-systemd",
+                ])
+                .await;
+        }
     }
 
     match result {
@@ -1938,7 +1944,13 @@ async fn wipe_device<H: Host>(host: &H, device: &str, receipt: destructive::Purg
     } else {
         format!("/dev/{device}")
     };
-    match destructive::zap(host, &dev_path, destructive::ZapWarrant::AfterPurge(receipt)).await {
+    match destructive::zap(
+        host,
+        &dev_path,
+        destructive::ZapWarrant::AfterPurge(receipt),
+    )
+    .await
+    {
         Ok(_) => tracing::info!("wipe_device: {dev_path} zapped and returned to a blank state"),
         Err(e) => tracing::warn!(
             "wipe_device: could not zap {dev_path}: {e} — the disk stays registered and this \
@@ -2031,7 +2043,9 @@ async fn purge_drained_osds<H: Host>(
         tracing::info!("osd.{osd_id}: disk gone, out, safe-to-destroy — purging from Ceph");
         match destructive::purge_safe(host, proof).await {
             Ok(Some(_)) => tracing::info!("osd.{osd_id}: purged"),
-            Ok(None) => tracing::warn!("osd.{osd_id}: purge reported success but it is still listed"),
+            Ok(None) => {
+                tracing::warn!("osd.{osd_id}: purge reported success but it is still listed")
+            }
             Err(e) => tracing::warn!("osd.{osd_id}: purge failed: {e}"),
         }
     }
@@ -2645,20 +2659,19 @@ async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk
         host.kubectl(&["create", "configmap", STATUS_CM, "-n", NS])
             .await
             .debug_on_err("create the disk status ConfigMap");
-        host
-            .kubectl(&[
-                "patch",
-                "configmap",
-                STATUS_CM,
-                "-n",
-                NS,
-                "--type",
-                "merge",
-                "-p",
-                &patch,
-            ])
-            .await
-            .warn_on_err("publish this node's disk inventory");
+        host.kubectl(&[
+            "patch",
+            "configmap",
+            STATUS_CM,
+            "-n",
+            NS,
+            "--type",
+            "merge",
+            "-p",
+            &patch,
+        ])
+        .await
+        .warn_on_err("publish this node's disk inventory");
     }
 }
 
@@ -2752,7 +2765,10 @@ mod tests {
 
     #[allow(clippy::manual_async_fn)]
     impl Host for RecordingHost {
-        fn ceph<'a>(&self, _args: &'a [&str]) -> impl Future<Output = HostResult<String>> + Send + 'a {
+        fn ceph<'a>(
+            &self,
+            _args: &'a [&str],
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
             async move { Err(unreachable_err("ceph")) }
         }
 
