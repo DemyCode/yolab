@@ -129,28 +129,41 @@ in let
     formatting = treefmtEval.config.build.check treeSrc;
 
     # No `-s sh`: forcing one dialect made installer/macos/install.sh fail as
-    # The store unit stops k3s for the handover and must start it again without
-    # blocking. k3s.service is After= that unit, so a blocking `systemctl start`
-    # from inside it deadlocks: the unit waits for k3s's job, k3s's job waits for
-    # the unit to finish, and the node sits with k3s dead until the 900s timeout.
-    # That happened on node1. Pinned here because it is a property of the
-    # generated script, invisible to any Rust or shell test.
-    # k3s.service is After= the store unit, which is what makes a *blocking*
-    # `systemctl start k3s.service` from inside that unit fatal: k3s's start job
-    # cannot run until the store unit finishes, so a blocking start would
-    # deadlock the node until the unit's own timeout fired. The store unit's
-    # body — including that it restarts k3s with --no-block after stopping it —
-    # moved to homelab/local-api/src/storage/containerd_store.rs, whose
-    # `stops_and_restarts_k3s_around_an_active_migration` test asserts the
-    # ordering directly; what is left to assert here is the Nix-level half:
-    # that the ordering this property depends on is still in place.
-    containerd-store-after-order = pkgs.runCommand "containerd-store-after-order" {} ''
-      grep -qx 'yolab-containerd-store.service' ${pkgs.writeText "k3s-after" (builtins.concatStringsSep "\n" nixosSystems.yolab-ci.config.systemd.services.k3s.after)} || {
-        echo "k3s.service is no longer After= the store unit — re-read why this check exists" >&2
-        exit 1
-      }
-      touch $out
-    '';
+    # THE BOOT LINE TO K3S, pinned at the Nix level where no Rust test can see it:
+    #
+    #   yolab-ceph-system-osd → yolab-images-rbd → yolab-containerd-store → k3s
+    #
+    # Each arrow is After= AND Wants=: After alone orders a unit only if something
+    # else starts it, Wants alone starts it without waiting. Losing either lets k3s
+    # start with containerd's data-root on the root disk — the state the whole
+    # store-moving machinery existed to undo, and removed so it can never be
+    # entered. yolab-local-api must NOT be After=k3s: while k3s waits on storage,
+    # local-api is how anyone sees why.
+    containerd-store-after-order = let
+      svcs = nixosSystems.yolab-ci.config.systemd.services;
+      edges = [
+        ["k3s" "yolab-containerd-store"]
+        ["yolab-containerd-store" "yolab-images-rbd"]
+        ["yolab-images-rbd" "yolab-ceph-system-osd"]
+      ];
+      missing = builtins.concatMap (e: let
+        unit = builtins.elemAt e 0;
+        dep = "${builtins.elemAt e 1}.service";
+        s = svcs.${unit};
+      in
+        (pkgs.lib.optional (!(builtins.elem dep (s.after or []))) "${unit} is not After=${dep}")
+        ++ (pkgs.lib.optional (!(builtins.elem dep (s.wants or []))) "${unit} does not Want=${dep}"))
+      edges;
+      problems =
+        missing
+        ++ pkgs.lib.optional (builtins.elem "k3s.service" (svcs.yolab-local-api.after or []))
+        "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting";
+    in
+      pkgs.runCommand "containerd-store-after-order" {} ''
+        ${pkgs.lib.concatMapStrings (p: "echo ${pkgs.lib.escapeShellArg p} >&2\n") problems}
+        ${pkgs.lib.optionalString (problems != []) "exit 1"}
+        touch $out
+      '';
 
     # A TIMER CANNOT RE-ARM WHILE THE UNIT IT TRIGGERS IS STILL ACTIVE.
     #

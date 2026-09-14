@@ -5,10 +5,11 @@
 //!     boot unit is running it (see `storage/mod.rs`);
 //!   - keeps the old timer's `OnBootSec` as `not_before_uptime`, so boot-time
 //!     ordering against the oneshots is what it always was;
-//!   - declares NO requirement unless the job genuinely has one. The image-store
-//!     repair in particular must not wait for Ceph or Kubernetes: its whole
-//!     point is releasing a dead mount when neither can answer (the "recovery
-//!     before preflight" lesson from the 2026-09-10 outage).
+//!   - declares NO requirement unless the job genuinely has one.
+//!
+//! The steps on the boot line to k3s (`system-osd`, `images-rbd`,
+//! `containerd-store`) are deliberately NOT here: they happen once, before k3s,
+//! and nothing re-runs them on a live node — see `storage::containerd_store`.
 //!
 //! Intervals are the old timers' `OnUnitInactiveSec`: measured from the END of
 //! one run to the start of the next, which is what the runtime does.
@@ -22,8 +23,7 @@ use crate::host::{Host, RealHost};
 use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
 use super::{
-    bootstrap, containerd_store, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name,
-    mon_member, osd, StorageEnv,
+    bootstrap, csi_secrets, dashboard, images_grow, keys, lock_name, mon_member, osd, StorageEnv,
 };
 
 /// Runs `job` under its lock, or reports that the boot unit has it.
@@ -101,29 +101,6 @@ storage_controller! {
     every: Duration::from_secs(120), after_boot: Duration::from_secs(180),
     requires: [],
     run: |_env, _node| osd::run(&RealHost)
-}
-
-storage_controller! {
-    /// Keeps containerd's data-root on a working RBD — or off Ceph entirely when
-    /// the pool cannot serve. No requirements, deliberately: see the module header.
-    ContainerdStoreController, name: "containerd-store", job: "containerd-store",
-    every: Duration::from_secs(300), after_boot: Duration::from_secs(240),
-    requires: [],
-    run: |env, node| async {
-        let policy = env.containerd_store_policy();
-        containerd_store::run(&RealHost, root(), node, &policy).await
-    }
-}
-
-storage_controller! {
-    /// Creates the images pool and this node's RBD once an OSD exists.
-    ImagesRbdController, name: "images-rbd", job: "images-rbd",
-    every: Duration::from_secs(120), after_boot: Duration::from_secs(120),
-    requires: [],
-    run: |env, node| async {
-        let policy = env.images_rbd_policy();
-        images_rbd::run(&RealHost, node, &policy).await
-    }
 }
 
 storage_controller! {

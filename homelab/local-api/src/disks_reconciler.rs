@@ -52,7 +52,7 @@ const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
 // (see disk-config.nix). It's always present and always ours, so it's injected
 // directly rather than discovered/classified like pluggable physical disks.
 const SYSTEM_OSD_DEV: &str = "/dev/mapper/pool-ceph";
-const SYSTEM_OSD_ID: &str = "system";
+pub(crate) const SYSTEM_OSD_ID: &str = "system";
 
 // ── Per-disk progress ─────────────────────────────────────────────────────────
 //
@@ -299,8 +299,8 @@ fn system_osd_present() -> bool {
 
 /// Size of the system OSD LV: resolve the mapper symlink to dm-N and read
 /// /sys/block/dm-N/size (512-byte sectors). 0 if it can't be determined.
-fn system_osd_size_bytes() -> u64 {
-    std::fs::read_link(SYSTEM_OSD_DEV)
+fn lv_size_bytes(dev: &str) -> u64 {
+    std::fs::read_link(dev)
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .and_then(|dm| std::fs::read_to_string(format!("/sys/block/{dm}/size")).ok())
@@ -318,12 +318,16 @@ fn system_osd_size_bytes() -> u64 {
 /// "safe to switch on again" state. Now reads the real on-disk label, exactly
 /// like `disk_meta` does for pluggable disks.
 fn system_osd_meta(our_fsid: &str) -> Disk {
+    lv_osd_meta(SYSTEM_OSD_DEV, our_fsid)
+}
+
+fn lv_osd_meta(dev: &str, our_fsid: &str) -> Disk {
     Disk {
-        device: SYSTEM_OSD_DEV.to_string(),
+        device: dev.to_string(),
         model: "System disk".to_string(),
-        size_bytes: system_osd_size_bytes(),
+        size_bytes: lv_size_bytes(dev),
         is_loop: true,
-        ownership: Ownership::read(bluestore_fsid(SYSTEM_OSD_DEV).as_deref(), our_fsid),
+        ownership: Ownership::read(bluestore_fsid(dev).as_deref(), our_fsid),
         // Never looked up: a dedicated LVM volume disko carves out for Ceph at
         // install. It has no partition table of its own and is never mounted —
         // the OS lives on a sibling volume. Reporting either would make
@@ -333,6 +337,64 @@ fn system_osd_meta(our_fsid: &str) -> Disk {
         osd_id: None,
         progress: None,
     }
+}
+
+/// Boot step: the system LV is an OSD of this cluster.
+///
+/// The one OSD nobody switches on. Every machine's install carves this volume out
+/// for Ceph (disk-config.nix), and this node's image store lives in a pool that
+/// needs an OSD before k3s can start — so it cannot wait for a toggle stored in
+/// Kubernetes. It runs before the images pool is created and never switches off
+/// (`wants_on`).
+///
+/// Creation goes through `create_osd`, the same guarded path a switched-on disk
+/// takes (stale signatures, leaked ids), and `refuse_osd_creation` still applies:
+/// a label it cannot account for is waited on, never wiped.
+pub(crate) async fn system_osd_attempt<H: Host>(
+    host: &H,
+) -> Result<crate::storage::wait::Attempt<()>> {
+    lv_osd_attempt(host, SYSTEM_OSD_DEV).await
+}
+
+async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::wait::Attempt<()>> {
+    use crate::storage::wait::Attempt;
+
+    if !Path::new(dev).exists() {
+        anyhow::bail!(
+            "{dev} does not exist — this machine was not installed with the \
+             YoLab disk layout, so it has nowhere to keep its image store"
+        );
+    }
+    let our_fsid = match host.cluster_fsid().await {
+        Ok(fsid) => fsid,
+        Err(e) => {
+            return Ok(Attempt::NotYet(format!(
+                "cannot read this cluster's id yet ({e})"
+            )))
+        }
+    };
+    let system = canonical_device(dev);
+    let find = |local: &[(String, i64)]| {
+        local
+            .iter()
+            .find(|(path, _)| canonical_device(path) == system)
+            .map(|(_, id)| *id)
+    };
+
+    if let Some(id) = find(&local_osds(host).await?) {
+        start_osd_unit(host, id).await;
+        return Ok(Attempt::Ready(()));
+    }
+    if let Some(reason) = refuse_osd_creation(&lv_osd_meta(dev, &our_fsid)) {
+        return Ok(Attempt::NotYet(format!("{dev}: {reason}")));
+    }
+    create_osd(host, SYSTEM_OSD_ID, dev).await;
+    Ok(match find(&local_osds(host).await?) {
+        Some(_) => Attempt::Ready(()),
+        None => Attempt::NotYet(format!(
+            "creating the OSD on {dev} did not succeed (the reason is logged above)"
+        )),
+    })
 }
 
 // ── The controller ──────────────────────────────────────────────────────────
@@ -1654,11 +1716,15 @@ fn plan_create(
 
 /// The owner's intent for one disk on one node. "USING" is the same intent as
 /// "ON"; anything else, including an absent record, means off.
+///
+/// The system LV is always on, whatever a record says: this node's image store
+/// lives on it, so draining it would take the node's ability to run containers
+/// with it. It is also refused at the API (`routers::disks::set_disk_state`).
 fn wants_on(desired: &HashMap<String, String>, node: &str, disk_id: &str) -> bool {
-    desired
-        .get(&record_key(node, disk_id))
-        .map(|v| v == "ON" || v == "USING")
-        .unwrap_or(false)
+    disk_id == SYSTEM_OSD_ID
+        || desired
+            .get(&record_key(node, disk_id))
+            .is_some_and(|v| v == "ON" || v == "USING")
 }
 
 fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
@@ -4790,5 +4856,113 @@ mod tests {
             ]
         );
         assert_eq!(Phase::default(), Phase::Unset);
+    }
+
+    // ── The system OSD boot step ─────────────────────────────────────────────
+
+    fn our_fsid_host() -> FakeHost {
+        FakeHost::new().ok("ceph fsid", &format!(r#"{{"fsid":"{OURS}"}}"#))
+    }
+
+    fn listed_on(dev: &str, id: i64) -> String {
+        json!({ id.to_string(): [{"devices": [dev], "tags": {"ceph.cluster_fsid": OURS}}] })
+            .to_string()
+    }
+
+    fn not_yet(a: crate::storage::wait::Attempt<()>) -> String {
+        match a {
+            crate::storage::wait::Attempt::NotYet(why) => why,
+            crate::storage::wait::Attempt::Ready(()) => panic!("expected NotYet"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_machine_without_the_system_lv_is_an_error_not_a_skip() {
+        let host = FakeHost::new();
+        assert!(lv_osd_attempt(&host, "/nonexistent/pool-ceph").await.is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_cluster_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let host = FakeHost::new().fail("ceph fsid", "error connecting to the cluster");
+        let why = not_yet(lv_osd_attempt(&host, &dev).await.unwrap());
+        assert!(why.contains("cluster's id"), "{why}");
+        assert!(!host.ran("lvm create"));
+    }
+
+    #[tokio::test]
+    async fn an_existing_system_osd_is_started_and_nothing_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let host = our_fsid_host()
+            .ok("ceph-volume lvm list", &listed_on(&dev, 0))
+            .ok("systemctl start yolab-ceph-osd.service", "");
+
+        let ready = lv_osd_attempt(&host, &dev).await.unwrap();
+
+        assert_eq!(ready, crate::storage::wait::Attempt::Ready(()));
+        assert!(host.ran("systemctl start yolab-ceph-osd.service"));
+        assert!(!host.ran("lvm create") && !host.ran("zap"));
+    }
+
+    #[tokio::test]
+    async fn a_blank_system_lv_becomes_an_osd() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let host = our_fsid_host()
+            .ok("ceph osd ls", "[]")
+            // Not yet an OSD (the step's own look, then create_osd's foreign check)…
+            .ok("ceph-volume lvm list", "{}")
+            .ok("ceph-volume lvm list", "{}")
+            // …and one once created.
+            .ok("ceph-volume lvm list", &listed_on(&dev, 0))
+            .ok("wipefs --all", "")
+            .ok("ceph-volume lvm create", "")
+            .ok("systemctl start yolab-ceph-osd.service", "");
+
+        let ready = lv_osd_attempt(&host, &dev).await.unwrap();
+
+        assert_eq!(ready, crate::storage::wait::Attempt::Ready(()));
+        assert!(host.ran(&format!("ceph-volume lvm create --bluestore --data {dev}")));
+    }
+
+    #[tokio::test]
+    async fn a_failed_create_is_waited_on_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let host = our_fsid_host()
+            .ok("ceph osd ls", "[]")
+            .ok("ceph-volume lvm list", "{}")
+            .ok("wipefs --all", "")
+            .fail("ceph-volume lvm create", "RuntimeError: Unable to create a new OSD id");
+
+        let why = not_yet(lv_osd_attempt(&host, &dev).await.unwrap());
+
+        assert!(why.contains("did not succeed"), "{why}");
+    }
+
+    /// A label naming THIS cluster with no LVM tags behind it is data we have lost
+    /// track of. It is waited on for a person to look at, never wiped.
+    #[tokio::test]
+    async fn our_own_label_without_an_osd_is_never_wiped() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &bluestore_label(OURS));
+        let host = our_fsid_host().ok("ceph-volume lvm list", "{}");
+
+        let why = not_yet(lv_osd_attempt(&host, &dev).await.unwrap());
+
+        assert!(why.contains("already holds your files"), "{why}");
+        assert!(!host.ran("lvm create") && !host.ran("zap") && !host.ran("wipefs"));
+    }
+
+    #[test]
+    fn the_system_disk_cannot_be_switched_off_by_a_record() {
+        let desired = HashMap::from([(record_key("node1", SYSTEM_OSD_ID), "OFF".to_string())]);
+        assert!(wants_on(&desired, "node1", SYSTEM_OSD_ID));
+        assert!(wants_on(&HashMap::new(), "node1", SYSTEM_OSD_ID));
+        assert!(!wants_on(&HashMap::new(), "node1", "dev-sdb"));
     }
 }

@@ -201,13 +201,31 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
     Json(result)
 }
 
+/// Why a requested ON/OFF must not be recorded, if it must not.
+///
+/// The system disk cannot be switched off: this machine's container images live
+/// on it (see `storage::containerd_store`), so draining it would leave the node
+/// unable to run anything. The reconciler treats it as ON regardless
+/// (`disks_reconciler::wants_on`); refusing here keeps the page from showing a
+/// switch that does nothing.
+fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
+    match desired {
+        "ON" => None,
+        "OFF" if disk_id == crate::disks_reconciler::SYSTEM_OSD_ID => Some(
+            "The system disk holds this machine's container images and cannot be switched off.",
+        ),
+        "OFF" => None,
+        _ => Some("desired must be ON or OFF"),
+    }
+}
+
 pub async fn set_disk_state(
     Path((node, id)): Path<(String, String)>,
     State(_s): State<AppState>,
     Json(body): Json<SetState>,
 ) -> Json<serde_json::Value> {
-    if body.desired != "ON" && body.desired != "OFF" {
-        return Json(serde_json::json!({"ok": false, "error": "desired must be ON or OFF"}));
+    if let Some(error) = refuse_state_change(&id, &body.desired) {
+        return Json(serde_json::json!({"ok": false, "error": error}));
     }
 
     // Built by the same function the reconciler reads with, so a toggle can never
@@ -455,5 +473,15 @@ mod tests {
         assert_eq!(parsed[6], (None, "serial-wwn-0x50014ee214caf529"));
         // And it names the same disk as the node-scoped one beside it.
         assert_eq!(parsed[3].1, parsed[6].1);
+    }
+
+    #[test]
+    fn the_system_disk_cannot_be_switched_off_and_only_on_or_off_is_accepted() {
+        assert!(refuse_state_change("system", "OFF")
+            .is_some_and(|e| e.contains("container images")));
+        assert_eq!(refuse_state_change("system", "ON"), None);
+        assert_eq!(refuse_state_change("dev-sdb", "OFF"), None);
+        assert_eq!(refuse_state_change("dev-sdb", "ON"), None);
+        assert!(refuse_state_change("dev-sdb", "USING").is_some());
     }
 }
