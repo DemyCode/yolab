@@ -14,6 +14,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use crate::error::Outcome;
 use crate::host::Host;
 
 const NS: &str = "rook-ceph";
@@ -88,9 +89,9 @@ async fn replace_if_wrong_type<H: Host>(host: &H, name: &str) {
         tracing::warn!(
             "csi-secrets: secret {name} has type {have}, recreating as kubernetes.io/rook"
         );
-        let _ = host
-            .kubectl(&["delete", "secret", name, "-n", NS, "--ignore-not-found"])
-            .await;
+        host.kubectl(&["delete", "secret", name, "-n", NS, "--ignore-not-found"])
+            .await
+            .warn_on_err(format!("csi-secrets: delete {name} to recreate it with the right type"));
     }
 }
 
@@ -108,9 +109,11 @@ async fn ensure_key<H: Host>(host: &H, entity: &str, caps: &[&str]) -> Result<St
         args.extend_from_slice(caps);
         host.ceph(&args).await?;
     }
-    host.ceph(&["auth", "get-key", entity])
-        .await
-        .map(|s| s.trim().to_string())
+    Ok(host
+        .ceph(&["auth", "get-key", entity])
+        .await?
+        .trim()
+        .to_string())
 }
 
 async fn apply_rook_secret<H: Host>(
@@ -129,7 +132,7 @@ async fn apply_rook_secret<H: Host>(
         "type": "kubernetes.io/rook",
         "stringData": {id_key: id, secret_key: secret},
     });
-    host.kubectl_apply(&manifest.to_string()).await
+    Ok(host.kubectl_apply(&manifest.to_string()).await?)
 }
 
 async fn apply_rook_ceph_mon_secret<H: Host>(host: &H, fsid: &str, admin_key: &str) -> Result<()> {
@@ -148,7 +151,7 @@ async fn apply_rook_ceph_mon_secret<H: Host>(host: &H, fsid: &str, admin_key: &s
             "ceph-secret": admin_key,
         },
     });
-    host.kubectl_apply(&manifest.to_string()).await
+    Ok(host.kubectl_apply(&manifest.to_string()).await?)
 }
 
 async fn apply_mon_endpoints_configmap<H: Host>(
@@ -167,7 +170,7 @@ async fn apply_mon_endpoints_configmap<H: Host>(
             "csi-cluster-config-json": csi_cfg,
         },
     });
-    host.kubectl_apply(&manifest.to_string()).await
+    Ok(host.kubectl_apply(&manifest.to_string()).await?)
 }
 
 /// The ConfigMap the CSI drivers ACTUALLY read (both plugin pods mount

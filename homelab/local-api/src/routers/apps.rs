@@ -9,6 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::Outcome;
 use crate::{config::Config, error::Result, proc::KillOnDrop, AppState};
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
@@ -248,17 +249,20 @@ async fn read_config(
     ns: &str,
     ann: &serde_json::Map<String, Value>,
     uischema: &Value,
-) -> serde_json::Map<String, Value> {
+) -> anyhow::Result<serde_json::Map<String, Value>> {
     let from_annotation: serde_json::Map<String, Value> = ann
         .get(ANN_CONFIG)
         .and_then(|v| v.as_str())
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
-    if let Some(data) = crate::kubectl::get_secret(CONFIG_SECRET, ns).await {
+    // `?`: a Secret that could not be READ is not a Secret that is absent. The
+    // fallback below is the redacted annotation, and an update built on it hands
+    // helm the literal "__redacted__" as the app's password.
+    if let Some(data) = crate::kubectl::get_secret(CONFIG_SECRET, ns).await? {
         if let Some(raw) = data.get(CONFIG_SECRET_KEY) {
             if let Ok(v) = serde_json::from_str::<serde_json::Map<String, Value>>(raw) {
-                return v;
+                return Ok(v);
             }
         }
     }
@@ -276,7 +280,7 @@ async fn read_config(
         tracing::info!("{ns}: moving app config out of the namespace annotation into a Secret");
         write_config(ns, &from_annotation, uischema).await;
     }
-    from_annotation
+    Ok(from_annotation)
 }
 
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
@@ -538,7 +542,8 @@ async fn ensure_tunnel_credentials(ns: &str, tunnel_cfg: &toml::Table) -> anyhow
         &[("account-token", token)],
         &[("app.kubernetes.io/managed-by", "yolab")],
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn ensure_app_namespace(
@@ -564,7 +569,8 @@ async fn ensure_app_namespace(
         })
         .to_string(),
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
@@ -1380,8 +1386,13 @@ pub async fn update_app(
     body: Option<Json<UpdateRequest>>,
 ) -> impl IntoResponse {
     let ns = format!("yolab-{instance_name}");
-    let Ok(ns_v) = crate::kubectl::get_json(&["get", "namespace", &ns, "-o", "json"]).await else {
-        return (StatusCode::NOT_FOUND, "Instance not found").into_response();
+    let ns_v = match crate::kubectl::get_opt(&["get", "namespace", &ns, "-o", "json"]).await {
+        Ok(Some(v)) => v,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Instance not found").into_response(),
+        Err(e) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("cannot read the app right now: {e}"))
+                .into_response()
+        }
     };
     let ann = ns_v["metadata"]["annotations"]
         .as_object()
@@ -1396,7 +1407,16 @@ pub async fn update_app(
     // From the Secret, not the annotation: the annotation only carries redacted
     // credentials now, and an update that fell back to it would hand helm the
     // literal string "__redacted__" as the app's password.
-    let stored_config = read_config(&ns, &ann, &uischema).await;
+    let stored_config = match read_config(&ns, &ann, &uischema).await {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("cannot read this app's saved settings right now: {e}"),
+            )
+                .into_response()
+        }
+    };
 
     // Caller may supply a new config; fall back to the stored one.
     let config = match body.and_then(|b| b.0.config) {
@@ -1758,7 +1778,12 @@ pub async fn uninstall_app(
     let task = tokio::spawn(async move {
         run_teardown(&instance_owned, &ns_owned).await;
     });
-    let _ = task.await;
+    if let Err(e) = task.await {
+        // The teardown task panicked. The uninstall claim is still on the
+        // namespace, so the watchdog finishes it once the claim goes stale.
+        tracing::error!("uninstall {instance_name}: teardown task failed: {e}");
+        return Err(anyhow::anyhow!("the uninstall did not finish: {e}").into());
+    }
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -1871,8 +1896,8 @@ fn abandoned_in(v: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-async fn abandoned_uninstalls() -> Vec<(String, String)> {
-    match crate::kubectl::get_json(&[
+async fn abandoned_uninstalls() -> anyhow::Result<Vec<(String, String)>> {
+    let v = crate::kubectl::get_json(&[
         "get",
         "namespaces",
         "-l",
@@ -1880,17 +1905,11 @@ async fn abandoned_uninstalls() -> Vec<(String, String)> {
         "-o",
         "json",
     ])
-    .await
-    {
-        Ok(v) => abandoned_in(&v),
-        Err(e) => {
-            tracing::warn!("uninstall watchdog: could not list namespaces: {e}");
-            Vec::new()
-        }
-    }
+    .await?;
+    Ok(abandoned_in(&v))
 }
 
-/// Background loop: finish uninstalls whose driving request died.
+/// Finishes uninstalls whose driving request died.
 ///
 /// AN UNINSTALL IS A LONG OPERATION DRIVEN BY ONE HTTP REQUEST, and nothing was
 /// resuming it. If local-api restarts while `helm uninstall --wait` is running —
@@ -1912,20 +1931,48 @@ async fn abandoned_uninstalls() -> Vec<(String, String)> {
 /// this case — "recover from a crashed/restarted local-api", "leaving it for a
 /// future retry" — and neither had anything that would actually do it. This is
 /// that future retry.
-pub(crate) async fn run_uninstall_watchdog() {
-    const TICK: std::time::Duration = std::time::Duration::from_secs(120);
-    // Long enough after boot that a legitimate in-flight uninstall from before a
-    // restart has had its chance to be re-driven by the client first.
-    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
-    loop {
-        for (ns, instance) in abandoned_uninstalls().await {
+pub struct UninstallWatchdogController;
+
+impl crate::runtime::Controller for UninstallWatchdogController {
+    fn name(&self) -> &'static str {
+        "uninstall-watchdog"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        // One node finishes an abandoned teardown; two would race each other's
+        // helm uninstall.
+        crate::runtime::Scope::Cluster
+    }
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(120)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
+        // A storage recovery removes every app itself.
+        &[crate::runtime::Activity::StorageRecovery]
+    }
+    fn not_before_uptime(&self) -> std::time::Duration {
+        // Long enough after boot that a legitimate in-flight uninstall from before
+        // a restart has had its chance to be re-driven by the client first.
+        std::time::Duration::from_secs(90)
+    }
+    async fn reconcile(
+        &self,
+        _ctx: &crate::runtime::Ctx,
+    ) -> anyhow::Result<crate::runtime::Tick> {
+        let abandoned = abandoned_uninstalls().await?;
+        if abandoned.is_empty() {
+            return Ok(crate::runtime::Tick::Idle("no abandoned uninstalls".into()));
+        }
+        for (ns, instance) in abandoned {
             tracing::warn!(
                 "uninstall {instance}: claim is stale and nothing is driving it — \
                  finishing the teardown"
             );
             run_teardown(&instance, &ns).await;
         }
-        tokio::time::sleep(TICK).await;
+        Ok(crate::runtime::Tick::Done)
     }
 }
 
@@ -2039,7 +2086,7 @@ pub async fn pod_logs(
         while let Ok(Some(l)) = err.next_line().await {
             yield Ok(Event::default().data(format!("[yolab] {l}")));
         }
-        let _ = guard.0.wait().await;
+        guard.0.wait().await.debug_on_err("reap kubectl logs");
     };
     Sse::new(stream)
 }

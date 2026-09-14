@@ -7,6 +7,7 @@ use tokio::process::Command;
 
 use crate::routers::backup_common::*;
 use crate::routers::{backup, restore};
+use crate::error::Outcome;
 use crate::{config::Config, error::Result, AppState};
 
 // ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
@@ -85,7 +86,8 @@ pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::
 
 /// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    if restore::is_running().await {
+    // `?` on the check itself: not knowing whether a restore runs is not "no".
+    if restore::running_anywhere().await? {
         return Err(
             anyhow::anyhow!("A restore is in progress — try again once it finishes.").into(),
         );
@@ -133,8 +135,8 @@ pub async fn get_recovery_key(State(_state): State<AppState>) -> Result<Json<ser
 
 /// GET /api/backups/state — the frontend's single source of truth for what is running.
 pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let restores = restore::list().await;
-    let sets = backup::list().await;
+    let restores = restore::list().await?;
+    let sets = backup::list().await?;
     let active: Vec<serde_json::Value> = sets
         .iter()
         .filter(|s| s["state"] == "running")
@@ -155,8 +157,8 @@ pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serd
 
 /// GET /api/backups/runs — every recorded backup set, newest first, in three states
 /// (`running`, `restorable`, `crashed`).
-pub async fn list_runs(State(_state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::Value::Array(backup::list().await))
+pub async fn list_runs(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    Ok(Json(serde_json::Value::Array(backup::list().await?)))
 }
 
 /// A PVC hasn't synced in this long → flag it as stale rather than silently "Pending" forever.
@@ -247,7 +249,7 @@ pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_
 
     // When cluster state (etcd) was last captured, from the newest restorable set.
     let etcd_last = backup::list()
-        .await
+        .await?
         .into_iter()
         .find(|s| s["state"] == "restorable")
         .and_then(|s| s["finished_at"].as_str().map(String::from));
@@ -282,8 +284,8 @@ pub async fn restore_app(
 }
 
 /// GET /api/backups/restores — every recorded app restore, newest first.
-pub async fn list_restores(State(_state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::Value::Array(restore::list().await))
+pub async fn list_restores(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    Ok(Json(serde_json::Value::Array(restore::list().await?)))
 }
 
 // ── Cluster backup ─────────────────────────────────────────────────────────────
@@ -443,7 +445,9 @@ pub async fn snapshot_catalog(
     .await?;
 
     if !restore_out.status.success() {
-        let _ = tokio::fs::remove_dir_all(&target).await;
+        tokio::fs::remove_dir_all(&target)
+            .await
+            .debug_on_err("clean up a failed catalog extraction");
         return Err(anyhow::anyhow!(
             "restic restore failed: {}",
             String::from_utf8_lossy(&restore_out.stderr).trim()
@@ -468,14 +472,17 @@ pub async fn snapshot_catalog(
             .unwrap_or(serde_json::json!({"namespaces": [], "timestamp": null}))
     };
 
-    let _ = tokio::fs::remove_dir_all(&target).await;
+    tokio::fs::remove_dir_all(&target)
+        .await
+        .debug_on_err("clean up the extracted snapshot catalog");
     Ok(Json(catalog))
 }
 
 /// POST /api/backups/credentials/refresh — re-fetches B2 credentials from
 /// yolab-external after a key rotation.
 pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    if restore::is_running().await {
+    // `?` on the check itself: not knowing whether a restore runs is not "no".
+    if restore::running_anywhere().await? {
         return Err(
             anyhow::anyhow!("A restore is in progress — try again once it finishes.").into(),
         );
@@ -511,7 +518,9 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     let pvcs = list_user_pvcs().await?;
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         annotate_ns_privileged_movers(&pvc.namespace).await;
-        let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await;
+        // `?`: an app installed without its backup wiring would sit "backed up" on
+        // the page with nothing behind it. The install reports the failure instead.
+        ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await?;
         // ADOPTING A REPOSITORY IS THE MOMENT TO CLEAR A LOCK NOBODY OWNS.
         //
         // A repo is keyed by namespace and PVC name, so REINSTALLING an app lands
@@ -538,7 +547,7 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
             canonical_pvc_id(&pvc.name)
         ))
         .await;
-        let _ = ensure_replication_source(&pvc, false).await;
+        ensure_replication_source(&pvc, false).await?;
     }
     Ok(())
 }
@@ -573,30 +582,42 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
 /// holding, turning a tidy-up into corruption of the run it interrupted. This
 /// loop must be safe to run at any moment, including mid-backup, because it
 /// does.
-pub(crate) async fn run_lock_sweeper() {
-    const TICK: std::time::Duration = std::time::Duration::from_secs(1800);
-    // After the boot rush, and after the scheduler has had its first look.
-    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-    loop {
-        if let Some(cfg) = read_master_config().await {
-            // The cluster repo plus one per app PVC — the same set
-            // `setup_namespace_backup` wires up, so a new app is covered the
-            // moment it has a ReplicationSource.
-            cfg.unlock("cluster-backup").await;
-            match list_user_pvcs().await {
-                Ok(pvcs) => {
-                    for pvc in pvcs {
-                        let path =
-                            format!("volsync/{}/{}", pvc.namespace, canonical_pvc_id(&pvc.name));
-                        cfg.unlock(&path).await;
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("lock sweep: could not list PVCs: {e}");
-                }
-            }
+pub struct LockSweeperController;
+
+impl crate::runtime::Controller for LockSweeperController {
+    fn name(&self) -> &'static str {
+        "backup-lock-sweeper"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        // One node sweeps: the repositories are shared, not per machine.
+        crate::runtime::Scope::Cluster
+    }
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(1800)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    fn not_before_uptime(&self) -> std::time::Duration {
+        // After the boot rush, and after the scheduler has had its first look.
+        std::time::Duration::from_secs(300)
+    }
+    async fn reconcile(
+        &self,
+        _ctx: &crate::runtime::Ctx,
+    ) -> anyhow::Result<crate::runtime::Tick> {
+        let Some(cfg) = read_master_config().await else {
+            return Ok(crate::runtime::Tick::Idle("backups are not enabled".into()));
+        };
+        // The cluster repo plus one per app PVC — the same set
+        // `setup_namespace_backup` wires up, so a new app is covered the moment
+        // it has a ReplicationSource.
+        cfg.unlock("cluster-backup").await;
+        for pvc in list_user_pvcs().await? {
+            let path = format!("volsync/{}/{}", pvc.namespace, canonical_pvc_id(&pvc.name));
+            cfg.unlock(&path).await;
         }
-        tokio::time::sleep(TICK).await;
+        Ok(crate::runtime::Tick::Done)
     }
 }
 

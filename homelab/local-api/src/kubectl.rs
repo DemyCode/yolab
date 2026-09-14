@@ -1,156 +1,104 @@
 // kube-rs failed to connect to https://[::1]:6443 in IPv6 environments; all
 // cluster access goes through kubectl which works correctly.
-use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::process::Stdio;
+use std::collections::HashMap;
 use std::time::Duration;
-use tokio::process::Command;
+
+use crate::exec::{self, CmdError};
 
 /// Every `kubectl` invocation in this file is bounded by this and
-/// `kill_on_drop(true)`. Every reconcile loop in the crate — disks, backups,
-/// restores, topology — eventually calls through here, on one shared
-/// non-concurrent path (`reconcile_tick`'s single await chain), so a `kubectl`
-/// that hangs against a briefly-unresponsive apiserver used to wedge all of
-/// them at once, forever, with nothing to recover it short of a restart —
-/// the same incident class `ceph_cli.rs`'s blanket 30s timeout exists to
-/// prevent for `ceph` calls, which this had no equivalent of.
+/// `kill_on_drop(true)`. Every reconcile loop in the crate eventually calls
+/// through here, so a `kubectl` that hangs against a briefly-unresponsive
+/// apiserver used to wedge all of them at once, forever, with nothing to recover
+/// it short of a restart.
 const KUBECTL_TIMEOUT: Duration = Duration::from_secs(60);
 
-async fn run_bounded<F>(what: &str, f: F) -> Result<std::process::Output>
-where
-    F: std::future::Future<Output = std::io::Result<std::process::Output>>,
-{
-    tokio::time::timeout(KUBECTL_TIMEOUT, f)
-        .await
-        .map_err(|_| anyhow::anyhow!("{what} timed out after {}s", KUBECTL_TIMEOUT.as_secs()))?
-        .with_context(|| what.to_string())
+pub async fn run(args: &[&str]) -> Result<String, CmdError> {
+    let out = exec::checked("kubectl", args, KUBECTL_TIMEOUT).await?;
+    Ok(out.trim().to_string())
 }
 
-pub async fn run(args: &[&str]) -> Result<String> {
-    let out = run_bounded(
-        &format!("kubectl {}", args.join(" ")),
-        Command::new("kubectl")
-            .args(args)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        bail!(
-            "kubectl {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )
+pub async fn get_json(args: &[&str]) -> Result<Value, CmdError> {
+    let out = run(args).await?;
+    exec::parse_json(&exec::render("kubectl", args), &out)
+}
+
+/// `kubectl get … -o json` where NotFound is a legitimate answer: `Ok(None)` for
+/// a missing object, `Err` for an API server that did not answer.
+pub async fn get_opt(args: &[&str]) -> Result<Option<Value>, CmdError> {
+    match get_json(args).await {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.is_not_found() => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
-pub async fn get_json(args: &[&str]) -> Result<Value> {
-    let out = run(args).await?;
-    serde_json::from_str(&out).context("JSON parse")
-}
-
-/// Whether a `kubectl get` failure means "this object does not exist" rather
-/// than "the API server did not answer".
-///
-/// The two must never be confused where the caller maps the result onto a
-/// default: NotFound is the genuine first-run state and may be read as empty;
-/// an unreachable API server must stay "unknown" so a brief outage is not read
-/// as "every disk switched off" (which ends in a drain/purge/wipe — see
-/// disks_reconciler::read_desired).
-pub fn is_not_found(e: &anyhow::Error) -> bool {
-    format!("{e:#}").contains("NotFound")
+/// Whether a failure means "this object does not exist" rather than "the API
+/// server did not answer". A structural check on `CmdError`, not a substring
+/// search: an unreachable API server must stay "unknown" so a brief outage is
+/// not read as "every disk switched off" (which ends in a drain/purge/wipe).
+pub fn is_not_found(e: &impl exec::AsCmdError) -> bool {
+    exec::is_not_found(e)
 }
 
 // ── Shared apply / secret helpers ─────────────────────────────────────────────
-//
-// One implementation for the whole crate. Previously auth.rs, backups.rs, and
-// apps.rs each carried their own copies (auth.rs even shelled out to `base64 -d`
-// on the load path); those all funnel here now.
 
-/// Spawn `kubectl <verb> -f -`, pipe `manifest` to its stdin, and wait —
-/// bounded by `KUBECTL_TIMEOUT`, with `kill_on_drop(true)` so a timeout
-/// actually kills the child instead of orphaning it still holding the
-/// connection open. `apply`/`create`/`replace` are this with one word swapped.
-async fn pipe_manifest(verb: &str, manifest: &str) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let work = async {
-        let mut child = Command::new("kubectl")
-            .args([verb, "-f", "-"])
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("spawn kubectl {verb}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(manifest.as_bytes()).await?;
-        }
-        child
-            .wait_with_output()
-            .await
-            .with_context(|| format!("kubectl {verb}"))
-    };
-    let out = tokio::time::timeout(KUBECTL_TIMEOUT, work)
+async fn pipe_manifest(verb: &str, manifest: &str) -> Result<(), CmdError> {
+    exec::with_stdin("kubectl", &[verb, "-f", "-"], manifest, KUBECTL_TIMEOUT)
         .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "kubectl {verb} timed out after {}s",
-                KUBECTL_TIMEOUT.as_secs()
-            )
-        })??;
-    if !out.status.success() {
-        bail!(
-            "kubectl {verb}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
+        .map(|_| ())
 }
 
 /// Pipe a manifest to `kubectl apply -f -`.
-pub async fn apply(manifest: &str) -> Result<()> {
+pub async fn apply(manifest: &str) -> Result<(), CmdError> {
     pipe_manifest("apply", manifest).await
 }
 
-/// Pipe a manifest to `kubectl create -f -`.
-/// Returns Err if the resource already exists (409) or any other failure.
-pub async fn create(manifest: &str) -> Result<()> {
+/// Pipe a manifest to `kubectl create -f -`. `Failure::AlreadyExists` if it is
+/// already there.
+pub async fn create(manifest: &str) -> Result<(), CmdError> {
     pipe_manifest("create", manifest).await
 }
 
-/// Pipe a manifest to `kubectl replace -f -`.
-/// Requires `metadata.resourceVersion` in the manifest; fails with 409 if
-/// another writer has since modified the resource (optimistic concurrency CAS).
-pub async fn replace(manifest: &str) -> Result<()> {
+/// Pipe a manifest to `kubectl replace -f -`. With `metadata.resourceVersion`
+/// set this is a compare-and-swap: `Failure::Conflict` if another writer got
+/// there first.
+pub async fn replace(manifest: &str) -> Result<(), CmdError> {
     pipe_manifest("replace", manifest).await
 }
 
-/// Read a Secret and return its decoded string data. `None` if missing.
-pub async fn get_secret(name: &str, ns: &str) -> Option<std::collections::HashMap<String, String>> {
-    let raw = run(&["get", "secret", name, "-n", ns, "-o", "json"])
-        .await
-        .ok()?;
-    let v: Value = serde_json::from_str(&raw).ok()?;
-    let mut result = std::collections::HashMap::new();
+/// A Secret's decoded string data: `Ok(None)` when the Secret does not exist,
+/// `Err` when it could not be read.
+///
+/// This returned `Option` and folded both into `None`, and two callers turned
+/// that into data loss: refreshing backup credentials generated a NEW restic
+/// password when the read failed — which makes every existing backup
+/// undecryptable — and the session store rewrote itself empty after a startup
+/// blip, logging everyone out.
+pub async fn get_secret(name: &str, ns: &str) -> Result<Option<HashMap<String, String>>, CmdError> {
+    let Some(v) = get_opt(&["get", "secret", name, "-n", ns, "-o", "json"]).await? else {
+        return Ok(None);
+    };
+    let cmd = format!("kubectl get secret {name} -n {ns}");
+    let mut result = HashMap::new();
     if let Some(data) = v["data"].as_object() {
         for (k, val) in data {
-            let b64 = val.as_str().unwrap_or("");
-            let bytes = base64_decode(b64);
-            if let Ok(s) = String::from_utf8(bytes) {
-                result.insert(k.clone(), s.trim().to_string());
-            }
+            let b64 = val
+                .as_str()
+                .ok_or_else(|| CmdError::parse(&cmd, format!("key {k} is not a string")))?;
+            let bytes = base64_decode(b64)
+                .map_err(|e| CmdError::parse(&cmd, format!("key {k} is not base64: {e}")))?;
+            let s = String::from_utf8(bytes)
+                .map_err(|_| CmdError::parse(&cmd, format!("key {k} is not UTF-8")))?;
+            result.insert(k.clone(), s.trim().to_string());
         }
     }
-    Some(result)
+    Ok(Some(result))
 }
 
-fn base64_decode(s: &str) -> Vec<u8> {
+fn base64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD
-        .decode(s.as_bytes())
-        .unwrap_or_default()
+    base64::engine::general_purpose::STANDARD.decode(s.as_bytes())
 }
 
 /// Create or replace an Opaque Secret by generating a kubectl manifest and
@@ -160,7 +108,7 @@ pub async fn apply_secret(
     ns: &str,
     data: &[(&str, &str)],
     labels: &[(&str, &str)],
-) -> Result<()> {
+) -> Result<(), CmdError> {
     use base64::Engine as _;
     let mut entries = serde_json::Map::new();
     for (k, v) in data {
@@ -185,10 +133,12 @@ pub async fn apply_secret(
     apply(&manifest.to_string()).await
 }
 
-pub async fn get_nodes() -> Result<Vec<Value>> {
-    let raw = run(&["get", "nodes", "-o", "json"]).await?;
-    let v: Value = serde_json::from_str(&raw).context("parse kubectl get nodes JSON")?;
-    Ok(v["items"].as_array().cloned().unwrap_or_default())
+pub async fn get_nodes() -> Result<Vec<Value>, CmdError> {
+    let v = get_json(&["get", "nodes", "-o", "json"]).await?;
+    v["items"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| CmdError::parse("kubectl get nodes -o json", "no items list"))
 }
 
 /// Every OTHER node's IPv6 cluster address.
@@ -248,8 +198,6 @@ mod tests {
 
     #[test]
     fn an_ipv4_internal_ip_is_ignored() {
-        // The cluster is reachable over the v6 mesh only, so a v4 address here
-        // yields something nothing can actually be reached on.
         let nodes = [node(&[("InternalIP", "10.0.0.7")])];
         assert!(peer_ipv6(&nodes, "fd00:cafe::5").is_empty());
     }
@@ -284,16 +232,14 @@ mod tests {
 
     // ── is_not_found ─────────────────────────────────────────────────────────
     //
-    // This is the one place in the crate that reads a failed `kubectl get` and
-    // has to say whether the resource was absent or the server was unreachable.
     // A missing ConfigMap means "fresh install, safe to treat as empty"; a
     // broken connection must never be read that way.
 
     #[test]
     fn a_kubectl_not_found_is_a_missing_resource() {
-        let e = anyhow::anyhow!(
-            "kubectl get configmap yolab-disk-config -n rook-ceph -o json: \
-             Error from server (NotFound): configmaps \"yolab-disk-config\" not found"
+        let e = CmdError::failed(
+            "kubectl get configmap yolab-disk-config -n rook-ceph -o json",
+            "Error from server (NotFound): configmaps \"yolab-disk-config\" not found",
         );
         assert!(is_not_found(&e));
     }
@@ -301,13 +247,18 @@ mod tests {
     #[test]
     fn a_connection_failure_is_not_a_missing_resource() {
         for msg in [
-            "kubectl get configmap yolab-disk-config: The connection to the server \
-             localhost:6443 was refused - did you specify the right host or port?",
-            "kubectl get configmap yolab-disk-config: context deadline exceeded",
-            "kubectl get configmap yolab-disk-config: unable to connect to the server: EOF",
+            "The connection to the server localhost:6443 was refused - did you specify the right host or port?",
+            "context deadline exceeded",
+            "unable to connect to the server: EOF",
         ] {
-            let e = anyhow::anyhow!("{msg}");
+            let e = CmdError::failed("kubectl get configmap yolab-disk-config", msg);
             assert!(!is_not_found(&e), "{msg}");
         }
+    }
+
+    #[test]
+    fn a_plain_anyhow_message_is_never_a_not_found() {
+        let e = anyhow::anyhow!("kubectl get configmap x: Error from server (NotFound)");
+        assert!(!is_not_found(&e));
     }
 }

@@ -47,7 +47,7 @@ use serde::Serialize;
 
 use crate::{
     auth::CLUSTER_AUTH_HEADER,
-    error::Result,
+    error::{Outcome, Result},
     host::{Host, RealHost},
     kubectl, AppState,
 };
@@ -246,10 +246,12 @@ async fn peer_addresses(self_ip: &str) -> Vec<String> {
     match live_peer_addresses(self_ip).await {
         Some(peers) => {
             if let Ok(json) = serde_json::to_string(&peers) {
-                if let Some(dir) = std::path::Path::new(PEER_CACHE).parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                let _ = std::fs::write(PEER_CACHE, json);
+                let written = std::path::Path::new(PEER_CACHE)
+                    .parent()
+                    .map(std::fs::create_dir_all)
+                    .transpose()
+                    .and_then(|_| std::fs::write(PEER_CACHE, json));
+                written.warn_on_err("mesh: cache the peer list");
             }
             peers
         }
@@ -359,29 +361,76 @@ async fn routes_via_tunnel<H: Host>(host: &H, addr: &str) -> bool {
     out.stdout.contains(&format!("dev {}", wg::IFACE))
 }
 
-// ── The loop ──────────────────────────────────────────────────────────────────
+// ── The controllers ───────────────────────────────────────────────────────────
+//
+// Two, because the two halves have opposite needs. The local half needs nothing
+// but `wg show` and must run often and unconditionally — it is what lets a
+// half-promoted cluster heal itself when nothing else on the network works (see
+// `reconcile_local`). Discovery is the expensive, network-dependent half, so it
+// stays slow and waits for the Kubernetes API that lists the peers.
 
-pub async fn run() {
-    let host = &RealHost;
-    let mut last_probe: HashMap<String, Instant> = HashMap::new();
-    // Per-peer byte counters from the previous reconcile, for blackhole
-    // detection. In-memory only: a restart simply re-observes them next tick.
-    let mut blackhole: HashMap<String, Traffic> = HashMap::new();
-    let mut ticks: u64 = 0;
-    loop {
-        // Local reconcile FIRST and often. It needs nothing but `wg show`, which
-        // is what lets a half-promoted cluster heal itself — see reconcile_local.
-        if let Err(e) = reconcile_local(host, &mut blackhole).await {
-            tracing::warn!("mesh: reconcile: {e:#}");
+/// Promotes proven direct paths and demotes dead ones, from local state only.
+pub struct MeshPathsController {
+    /// Per-peer byte counters from the previous reconcile, for blackhole
+    /// detection. In-memory only: a restart simply re-observes them next tick.
+    blackhole: tokio::sync::Mutex<HashMap<String, Traffic>>,
+}
+
+impl MeshPathsController {
+    pub fn new() -> Self {
+        Self {
+            blackhole: tokio::sync::Mutex::new(HashMap::new()),
         }
-        // Discovery is the expensive, network-dependent half, so it stays slow.
-        if ticks.is_multiple_of(TICK.as_secs() / FAST_TICK.as_secs()) {
-            if let Err(e) = tick(host, &mut last_probe).await {
-                tracing::warn!("mesh: {e:#}");
-            }
+    }
+}
+
+impl crate::runtime::Controller for MeshPathsController {
+    fn name(&self) -> &'static str {
+        "mesh-paths"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Node
+    }
+    fn interval(&self) -> Duration {
+        FAST_TICK
+    }
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        let mut blackhole = self.blackhole.lock().await;
+        reconcile_local(&RealHost, &mut blackhole).await?;
+        Ok(crate::runtime::Tick::Done)
+    }
+}
+
+/// Asks peers where they can be reached directly and probes the candidates.
+pub struct MeshDiscoveryController {
+    last_probe: tokio::sync::Mutex<HashMap<String, Instant>>,
+}
+
+impl MeshDiscoveryController {
+    pub fn new() -> Self {
+        Self {
+            last_probe: tokio::sync::Mutex::new(HashMap::new()),
         }
-        ticks = ticks.wrapping_add(1);
-        tokio::time::sleep(FAST_TICK).await;
+    }
+}
+
+impl crate::runtime::Controller for MeshDiscoveryController {
+    fn name(&self) -> &'static str {
+        "mesh-discovery"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Node
+    }
+    fn interval(&self) -> Duration {
+        TICK
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        let mut last_probe = self.last_probe.lock().await;
+        tick(&RealHost, &mut last_probe).await?;
+        Ok(crate::runtime::Tick::Done)
     }
 }
 
@@ -625,7 +674,9 @@ async fn tick<H: Host>(host: &H, last_probe: &mut HashMap<String, Instant>) -> a
             tracing::debug!("mesh: {peer_addr} not reachable directly — staying relayed");
             // Leave nothing behind: a peer with a junk allowed-ips is harmless
             // but confusing, and it would look like a direct path in `wg show`.
-            let _ = wg::remove_peer(host, &cand.public_key).await;
+            wg::remove_peer(host, &cand.public_key)
+                .await
+                .warn_on_err("mesh: remove the unproven probe peer");
         }
     }
     Ok(())

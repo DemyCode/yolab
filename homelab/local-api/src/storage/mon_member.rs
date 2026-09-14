@@ -17,6 +17,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::Value;
 
+use crate::error::Outcome;
 use crate::host::Host;
 
 use super::ceph_shared::{addrvec, mon_dir};
@@ -60,7 +61,9 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArg
 
     let unit = format!("ceph-mon-{node}.service");
     if !is_active(host, &unit).await {
-        let _ = host.systemctl(&["start", "--no-block", &unit]).await;
+        host.systemctl(&["start", "--no-block", &unit])
+            .await
+            .warn_on_err(format!("start {unit}"));
         tracing::info!("started the local mon; membership is checked on the next run");
         return Ok(());
     }
@@ -87,16 +90,18 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArg
     }
 
     tracing::info!("adding {node} to the monmap");
-    let _ = host
-        .ceph(&[
-            "--connect-timeout",
-            "10",
-            "mon",
-            "add",
-            node,
-            &addrvec(&args.mon_addr),
-        ])
-        .await;
+    // Not `?`: a mon that is already joining makes `mon add` fail with EEXIST,
+    // and the poll below is what decides success either way.
+    host.ceph(&[
+        "--connect-timeout",
+        "10",
+        "mon",
+        "add",
+        node,
+        &addrvec(&args.mon_addr),
+    ])
+    .await
+    .warn_on_err(format!("mon add {node}"));
 
     for _ in 0..60 {
         if mon_dump_fast(host)

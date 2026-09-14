@@ -32,6 +32,8 @@ use std::{collections::HashMap, io::Read, path::Path};
 use tokio::time::{sleep, Duration};
 
 use crate::host::{Host, RealHost};
+use crate::ceph::destructive;
+use crate::error::Outcome;
 use crate::kubectl;
 
 /// Kept as "rook-ceph" even though Rook no longer runs the cluster: it is where
@@ -71,32 +73,54 @@ const SYSTEM_OSD_ID: &str = "system";
 
 /// Where a disk is between "plugged in" and the state its toggle asks for.
 ///
-/// These strings cross the API to the UI. They are the vocabulary the Storage
-/// page speaks, so they name situations a person can act on, not internal steps.
-pub mod phase {
+/// These names cross the API to the UI (`as_str`). They are the vocabulary the
+/// Storage page speaks, so they name situations a person can act on, not
+/// internal steps. An enum rather than string constants, so a typo is a compile
+/// error and every `match` has to consider every situation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    /// Nothing recorded yet for this disk.
+    #[default]
+    Unset,
     /// ON, OSD exists, daemon running, carrying data. The destination.
-    pub const ACTIVE: &str = "active";
+    Active,
     /// ON, a create is running right now.
-    pub const CREATING: &str = "creating";
+    Creating,
     /// ON, the last attempt failed; another is coming. `message` says why.
-    pub const RETRYING: &str = "retrying";
+    Retrying,
     /// ON, but something must be decided by a person before it can proceed —
     /// foreign Ceph data, an existing filesystem. Retrying will not help.
-    pub const BLOCKED: &str = "blocked";
+    Blocked,
     /// OFF, data still moving off it. Cannot be unplugged yet.
-    pub const DRAINING: &str = "draining";
+    Draining,
     /// OFF, drained; the OSD is being purged and the disk wiped.
-    pub const REMOVING: &str = "removing";
+    Removing,
     /// OFF and finished. Safe to physically unplug. The destination for OFF.
-    pub const REMOVABLE: &str = "removable";
+    Removable,
     /// Ceph could not be reached, so nothing here is known. Never treated as
     /// "nothing exists" — see `reconcile_local_osds`.
-    pub const UNKNOWN: &str = "unknown";
+    Unknown,
+}
+
+impl Phase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Unset => "",
+            Phase::Active => "active",
+            Phase::Creating => "creating",
+            Phase::Retrying => "retrying",
+            Phase::Blocked => "blocked",
+            Phase::Draining => "draining",
+            Phase::Removing => "removing",
+            Phase::Removable => "removable",
+            Phase::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DiskProgress {
-    pub phase: String,
+    pub phase: Phase,
     /// Shown verbatim to the user, so it says what happened and what follows.
     pub message: String,
     pub attempts: u32,
@@ -225,8 +249,8 @@ impl Disk {
         if self.is_loop {
             v["is_loop"] = json!(true);
         }
-        if let Some(p) = self.progress.as_ref().filter(|p| !p.phase.is_empty()) {
-            v["phase"] = json!(p.phase);
+        if let Some(p) = self.progress.as_ref().filter(|p| p.phase != Phase::Unset) {
+            v["phase"] = json!(p.phase.as_str());
             v["message"] = json!(p.message);
             v["attempts"] = json!(p.attempts);
         }
@@ -247,10 +271,10 @@ impl Disk {
     }
 }
 
-fn set_phase(disk_id: &str, phase: &str, message: impl Into<String>) {
+fn set_phase(disk_id: &str, phase: Phase, message: impl Into<String>) {
     let Ok(mut p) = PROGRESS.lock() else { return };
     let e = p.entry(disk_id.to_string()).or_default();
-    e.phase = phase.to_string();
+    e.phase = phase;
     e.message = message.into();
 }
 
@@ -311,161 +335,47 @@ fn system_osd_meta(our_fsid: &str) -> Disk {
     }
 }
 
-// ── Leader election ───────────────────────────────────────────────────────────
-//
-// Every node publishes its own disk inventory, but only ONE node may write the
-// shared CephCluster CR — otherwise concurrent nodes clobber each other's entry
-// in spec.storage.nodes. A coordination.k8s.io Lease elects that single writer.
-// Implemented via kubectl CLI so it works without a working kube-rs client.
-mod leader {
-    const LEASE_NAME: &str = "yolab-disk-reconciler";
-    const LEASE_NS: &str = "rook-ceph";
-    const LEASE_SECS: i32 = 30;
+// ── The controller ──────────────────────────────────────────────────────────
+/// The disk controller: every machine publishes its own disk inventory and
+/// drives its own OSDs toward the ON/OFF the owner set.
+///
+/// Node-scoped: each node owns the OSDs on its own disks, so there is nothing
+/// for a single writer to arbitrate. (The cluster Lease that used to be renewed
+/// from inside this loop now belongs to the runtime — see runtime::leader.)
+///
+/// Paused during a restore or a storage recovery, which purge OSDs and replace
+/// pools themselves: creating, draining or purging here at the same time would
+/// race that teardown. The runtime also pauses it when it cannot tell whether
+/// either is running — the old in-loop check read "cannot tell" as "no".
+pub struct DisksController;
 
-    pub async fn try_acquire(identity: &str) -> bool {
-        let now = chrono::Utc::now();
-        // MicroTime requires microsecond precision (.000000Z).
-        let fmt = chrono::SecondsFormat::Micros;
-
-        let lease_json =
-            crate::kubectl::get_json(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
-                .await;
-
-        match &lease_json {
-            Err(_) => {
-                // Lease doesn't exist yet. Use kubectl create — only one node wins (atomic).
-                let manifest = serde_json::json!({
-                    "apiVersion": "coordination.k8s.io/v1",
-                    "kind": "Lease",
-                    "metadata": { "name": LEASE_NAME, "namespace": LEASE_NS },
-                    "spec": {
-                        "holderIdentity": identity,
-                        "leaseDurationSeconds": LEASE_SECS,
-                        "acquireTime": now.to_rfc3339_opts(fmt, true),
-                        "renewTime": now.to_rfc3339_opts(fmt, true),
-                    },
-                });
-                crate::kubectl::create(&manifest.to_string()).await.is_ok()
-            }
-            Ok(v) => {
-                let spec = &v["spec"];
-                let holder = spec["holderIdentity"].as_str().unwrap_or("");
-                let dur = spec["leaseDurationSeconds"]
-                    .as_i64()
-                    .unwrap_or(LEASE_SECS as i64);
-                let expired = spec["renewTime"]
-                    .as_str()
-                    .and_then(|t| {
-                        let ts = chrono::DateTime::parse_from_rfc3339(t).ok()?;
-                        Some((now - ts.with_timezone(&chrono::Utc)).num_seconds() > dur)
-                    })
-                    .unwrap_or(true);
-
-                if holder != identity && !expired {
-                    return false; // someone else holds a live lease
-                }
-
-                let acquire_time = if holder == identity {
-                    // Renewing: preserve original acquireTime.
-                    spec["acquireTime"]
-                        .as_str()
-                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or(now)
-                } else {
-                    now // taking over from expired holder
-                };
-
-                // Use kubectl replace with the exact resourceVersion from the GET.
-                // The API server rejects with 409 if another node has since written
-                // the resource — prevents two nodes both seeing an expired lease and
-                // both becoming leader (TOCTOU).
-                let resource_version = v["metadata"]["resourceVersion"].as_str().unwrap_or("");
-                let manifest = serde_json::json!({
-                    "apiVersion": "coordination.k8s.io/v1",
-                    "kind": "Lease",
-                    "metadata": {
-                        "name": LEASE_NAME,
-                        "namespace": LEASE_NS,
-                        "resourceVersion": resource_version,
-                    },
-                    "spec": {
-                        "holderIdentity": identity,
-                        "leaseDurationSeconds": LEASE_SECS,
-                        "acquireTime": acquire_time.to_rfc3339_opts(fmt, true),
-                        "renewTime": now.to_rfc3339_opts(fmt, true),
-                    },
-                });
-                crate::kubectl::replace(&manifest.to_string()).await.is_ok()
-            }
-        }
+impl crate::runtime::Controller for DisksController {
+    fn name(&self) -> &'static str {
+        "disks"
     }
-
-    pub async fn is_holder(identity: &str) -> bool {
-        let Ok(v) =
-            crate::kubectl::get_json(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
-                .await
-        else {
-            return false;
-        };
-        let spec = &v["spec"];
-        let holder = spec["holderIdentity"].as_str().unwrap_or("");
-        let dur = spec["leaseDurationSeconds"]
-            .as_i64()
-            .unwrap_or(LEASE_SECS as i64);
-        let fresh = spec["renewTime"]
-            .as_str()
-            .and_then(|t| {
-                let ts = chrono::DateTime::parse_from_rfc3339(t).ok()?;
-                Some((chrono::Utc::now() - ts.with_timezone(&chrono::Utc)).num_seconds() <= dur)
-            })
-            .unwrap_or(false);
-        holder == identity && fresh
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Node
     }
-}
-
-/// True if this node currently holds the disk-reconciler lease. Other
-/// leader-only controllers (e.g. the topology controller) gate on this so the
-/// whole cluster has a single writer.
-pub async fn is_reconcile_leader() -> bool {
-    match node_name() {
-        Ok(node) => leader::is_holder(&node).await,
-        Err(_) => false,
+    fn interval(&self) -> Duration {
+        Duration::from_secs(INTERVAL_SECS)
     }
-}
-
-pub async fn run() {
-    let node = match node_name() {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::error!("disk reconciler: cannot determine node name: {e}");
-            return;
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        // The ON/OFF settings and the published inventory both live in the
+        // Kubernetes API; without it this tick can change nothing anyway.
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
+        &[
+            crate::runtime::Activity::Restore,
+            crate::runtime::Activity::StorageRecovery,
+        ]
+    }
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        if ctx.node.is_empty() {
+            anyhow::bail!("cannot determine this node's name");
         }
-    };
-    tracing::info!("disk reconciler started on {node}");
-    let host = RealHost;
-    loop {
-        // A restore (specifically RebuildingStorage) purges OSDs and tears down/
-        // recreates CephFS pools directly — this reconciler creating/draining/purging
-        // OSDs of its own accord at the same time would race that teardown. Skip the
-        // whole tick rather than just the writes: the Storage page reading slightly
-        // stale inventory for a few seconds is a fine trade against acting on a disk
-        // state that a restore might be about to make obsolete anyway.
-        if crate::routers::restore::is_running().await {
-            sleep(Duration::from_secs(INTERVAL_SECS)).await;
-            continue;
-        }
-        // Every node: publish its own disk inventory + run its own OSD lifecycle.
-        if let Err(e) = publish_local(&host, &node).await {
-            tracing::warn!("disk publish: {e}");
-        }
-        // The lease is still taken even though there is no longer a shared CR to
-        // write: each node now owns the OSDs on its own disks, so the disk loop
-        // itself needs no single writer. Other leader-only controllers (the
-        // topology controller, which sets pool size and mon count) gate on
-        // `is_reconcile_leader`, so this keeps electing one.
-        let _ = leader::try_acquire(&node).await;
-        sleep(Duration::from_secs(INTERVAL_SECS)).await;
+        publish_local(&RealHost, &ctx.node).await?;
+        Ok(crate::runtime::Tick::Done)
     }
 }
 
@@ -685,7 +595,7 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
             for disk_id in meta.keys() {
                 set_phase(
                     disk_id,
-                    phase::UNKNOWN,
+                    Phase::Unknown,
                     "Cannot reach this machine's settings right now. Nothing will be changed until it can.",
                 );
             }
@@ -814,7 +724,7 @@ struct Steer {
     mark_in: bool,
     mark_out: bool,
     needs_purge: bool,
-    phase: Option<&'static str>,
+    phase: Option<Phase>,
     message: Option<String>,
 }
 
@@ -843,10 +753,10 @@ fn decide_steer(
             None
         };
         let (phase, message) = if state.up {
-            (phase::ACTIVE, "In use, storing your files.".to_string())
+            (Phase::Active, "In use, storing your files.".to_string())
         } else {
             (
-                phase::RETRYING,
+                Phase::Retrying,
                 "This disk is switched on but is not currently serving data. \
                  YoLab keeps trying to bring it back."
                     .to_string(),
@@ -869,7 +779,7 @@ fn decide_steer(
             mark_in: false,
             mark_out: true,
             needs_purge: false,
-            phase: Some(phase::DRAINING),
+            phase: Some(Phase::Draining),
             message: Some(drain_message(targets, want_copies)),
         };
     }
@@ -887,12 +797,12 @@ fn decide_steer(
 /// The phase to report after steering. When the effects failed, the optimistic
 /// ACTIVE/DRAINING answer would hide that the OSD never moved, so it becomes
 /// RETRYING instead.
-fn steer_report(steer: &Steer, applied: bool) -> (&'static str, String) {
-    if applied {
-        (steer.phase.unwrap(), steer.message.clone().unwrap())
+fn steer_report(steer: &Steer, applied: bool) -> (Phase, String) {
+    if let (true, Some(phase), Some(message)) = (applied, steer.phase, steer.message.as_ref()) {
+        (phase, message.clone())
     } else {
         (
-            phase::RETRYING,
+            Phase::Retrying,
             "YoLab could not finish this step and will keep trying.".to_string(),
         )
     }
@@ -913,7 +823,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             for disk_id in meta.keys() {
                 set_phase(
                     disk_id,
-                    phase::UNKNOWN,
+                    Phase::Unknown,
                     "Waiting for the storage cluster to answer.",
                 );
             }
@@ -926,7 +836,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             for disk_id in meta.keys() {
                 set_phase(
                     disk_id,
-                    phase::UNKNOWN,
+                    Phase::Unknown,
                     "Cannot read this machine's disk setup right now. Nothing will be changed until it can.",
                 );
             }
@@ -965,7 +875,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             CreatePlan::Waiting => continue,
             CreatePlan::Blocked(reason) => {
                 tracing::warn!("{disk_id}: desired ON but not creating an OSD — {reason}");
-                set_phase(disk_id, phase::BLOCKED, reason);
+                set_phase(disk_id, Phase::Blocked, reason);
             }
             CreatePlan::Create { dev_path } => {
                 spawn_create(host.clone(), disk_id.clone(), dev_path)
@@ -1055,7 +965,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             // now" is the whole point of the OFF toggle and nothing used to
             // report it.
             if !want_on {
-                set_phase(disk_id, phase::REMOVABLE, "Not in use. Safe to unplug.");
+                set_phase(disk_id, Phase::Removable, "Not in use. Safe to unplug.");
             }
             continue;
         };
@@ -1121,19 +1031,28 @@ async fn reconcile_local_osds<H: Host + 'static>(
             // is never inferred from reweight or PG counts; inferring it from
             // `pg ls-by-osd` once caused real data loss.
             // Asked before the daemon is stopped, again after, and combined
-            // with the cluster's data-loss state. See `plan_purge`.
-            let safe_before = host.osd_safe_to_destroy(osd_id).await;
+            // with the cluster's data-loss state. See `plan_purge`. A check that
+            // could not be asked counts as "not safe" — waiting a tick is cheap.
+            let before = destructive::safe_to_destroy(host, osd_id)
+                .await
+                .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
+                .flatten();
+            let safe_before = before.is_some();
             if safe_before {
-                set_phase(
-                    disk_id,
-                    phase::REMOVING,
-                    "Finishing up — do not unplug yet.",
-                );
+                set_phase(disk_id, Phase::Removing, "Finishing up — do not unplug yet.");
                 // Stop the daemon before purging. Purging while it still runs
                 // is the EBUSY race the old code guarded against separately.
                 disable_osd_unit(host, osd_id).await;
             }
-            let safe_after = safe_before && host.osd_safe_to_destroy(osd_id).await;
+            let after = if safe_before {
+                destructive::safe_to_destroy(host, osd_id)
+                    .await
+                    .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
+                    .flatten()
+            } else {
+                None
+            };
+            let safe_after = after.is_some();
             let loss = if safe_after {
                 crate::routers::ceph::assess_pg_loss_via(host).await
             } else {
@@ -1146,7 +1065,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
                     let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
                     set_phase(
                         disk_id,
-                        phase::DRAINING,
+                        Phase::Draining,
                         drain_message(targets, want_copies),
                     );
                     continue;
@@ -1156,16 +1075,17 @@ async fn reconcile_local_osds<H: Host + 'static>(
                     continue;
                 }
                 PurgeVerdict::RefuseDataAtRisk => {
-                    let l = loss.as_ref().expect("a refusal names the loss it saw");
-                    tracing::warn!(
-                        "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
-                         and cannot be rebuilt, and this disk may hold the only copy",
-                        l.stuck,
-                        l.total
-                    );
+                    if let Some(l) = loss.as_ref() {
+                        tracing::warn!(
+                            "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
+                             and cannot be rebuilt, and this disk may hold the only copy",
+                            l.stuck,
+                            l.total
+                        );
+                    }
                     set_phase(
                         disk_id,
-                        phase::REMOVING,
+                        Phase::Removing,
                         "Not removing this disk: data elsewhere in the cluster is unreadable and \
                          cannot be rebuilt, and this disk may hold the only copy of it.",
                     );
@@ -1173,40 +1093,40 @@ async fn reconcile_local_osds<H: Host + 'static>(
                 }
                 PurgeVerdict::Purge => {}
             }
+            // `plan_purge` only says Purge when the second check passed, so the
+            // proof is there; the type makes the purge impossible without it.
+            let Some(proof) = after else {
+                continue;
+            };
 
-            match host
-                .ceph(&["osd", "purge", &osd, "--yes-i-really-mean-it"])
-                .await
-            {
-                Ok(_) => {
-                    let ids = host.osd_ids().await.ok();
-                    if purge_confirmed(ids.as_deref(), osd_id) {
-                        tracing::info!("{osd} ({disk_id}): purged");
-                        if let Some(device) = Some(m.device.as_str()).filter(|d| !d.is_empty()) {
-                            tracing::info!("{osd} ({disk_id}): wiping BlueStore label on {device}");
-                            wipe_device(host, device).await;
-                        }
-                        set_phase(
-                            disk_id,
-                            phase::REMOVABLE,
-                            "Removed from the pool. Safe to unplug.",
-                        );
-                    } else {
-                        tracing::warn!(
-                            "{osd} ({disk_id}): purge reported success but {osd} is still listed — leaving the disk alone"
-                        );
-                        set_phase(
-                            disk_id,
-                            phase::REMOVING,
-                            "Still finishing up — do not unplug this disk yet.",
-                        );
+            match destructive::purge_safe(host, proof).await {
+                Ok(Some(receipt)) => {
+                    tracing::info!("{osd} ({disk_id}): purged");
+                    if !m.device.is_empty() {
+                        tracing::info!("{osd} ({disk_id}): returning {} to blank", m.device);
+                        wipe_device(host, &m.device, receipt).await;
                     }
+                    set_phase(
+                        disk_id,
+                        Phase::Removable,
+                        "Removed from the pool. Safe to unplug.",
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "{osd} ({disk_id}): purge reported success but {osd} is still listed — leaving the disk alone"
+                    );
+                    set_phase(
+                        disk_id,
+                        Phase::Removing,
+                        "Still finishing up — do not unplug this disk yet.",
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("{osd} ({disk_id}): purge failed: {e}");
                     set_phase(
                         disk_id,
-                        phase::REMOVING,
+                        Phase::Removing,
                         "Still finishing up — do not unplug this disk yet.",
                     );
                 }
@@ -1277,7 +1197,7 @@ fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
     };
     set_phase(
         &disk_id,
-        phase::CREATING,
+        Phase::Creating,
         if attempt == 1 {
             "Setting this disk up for storage…".to_string()
         } else {
@@ -1299,11 +1219,6 @@ fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
     });
 }
 
-fn is_stale_signature(err: &str) -> bool {
-    let e = err.to_ascii_lowercase();
-    e.contains("bluestore signature") || e.contains("has a filesystem signature")
-}
-
 /// The id of an OSD from another cluster sitting on this device, if any.
 ///
 /// ceph-volume reports it because the LVM tags are on this host; the label
@@ -1316,7 +1231,7 @@ async fn foreign_osd_on<H: Host>(host: &H, dev_path: &str) -> Option<i64> {
         .ceph_volume(&["lvm", "list", "--format", "json"])
         .await
         .ok()?;
-    let our_fsid = host.cluster_fsid().await.filter(|f| !f.is_empty())?;
+    let our_fsid = host.cluster_fsid().await.ok().filter(|f| !f.is_empty())?;
     foreign_osd_in_list(&raw, &our_fsid, dev_path)
 }
 
@@ -1346,14 +1261,13 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
         tracing::warn!(
             "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it first"
         );
-        if let Err(e) = host
-            .ceph_volume(&["lvm", "zap", "--destroy", dev_path])
-            .await
+        if let Err(e) =
+            destructive::zap(host, dev_path, destructive::ZapWarrant::ForeignCluster { osd: id }).await
         {
             tracing::warn!("{disk_id}: zap failed, leaving the disk alone: {e}");
             set_phase(
                 disk_id,
-                phase::RETRYING,
+                Phase::Retrying,
                 "Could not erase this disk yet. YoLab will keep trying.",
             );
             return;
@@ -1392,17 +1306,15 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
     // disko recreates the LV but LVM does not zero reused extents. Unlike the
     // foreign stack above this one does fail, so it is cleared on the way out.
     // No --destroy: that volume is disko's to own, only its contents are stale.
-    if result.is_err() {
-        let err = result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
-        if let Some(args) = zap_args(dev_path, false, &err) {
+    let warrant = result
+        .as_ref()
+        .err()
+        .and_then(destructive::ZapWarrant::stale_signature);
+    if let Some(warrant) = warrant {
             tracing::warn!(
                 "{disk_id}: stale BlueStore signature on {dev_path} — zapping and retrying"
             );
-            if let Err(e) = host.ceph_volume(&args).await {
+            if let Err(e) = destructive::zap(host, dev_path, warrant).await {
                 tracing::warn!("{disk_id}: zap failed: {e}");
             } else {
                 result = host
@@ -1416,7 +1328,6 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                     ])
                     .await;
             }
-        }
     }
 
     match result {
@@ -1430,7 +1341,7 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                         local.iter().find(|(d, _)| canonical_device(d) == want)
                     {
                         start_osd_unit(host, *osd_id).await;
-                        set_phase(disk_id, phase::ACTIVE, "Added to the storage pool.");
+                        set_phase(disk_id, Phase::Active, "Added to the storage pool.");
                         if let Ok(mut p) = PROGRESS.lock() {
                             let e = p.entry(disk_id.to_string()).or_default();
                             e.attempts = 0;
@@ -1448,14 +1359,14 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                         );
                         set_phase(
                             disk_id,
-                            phase::CREATING,
+                            Phase::Creating,
                             "Added to the storage pool; waiting for it to come online.",
                         );
                     }
                 }
                 Err(e) => {
                     tracing::warn!("{disk_id}: created, but could not confirm it: {e}");
-                    set_phase(disk_id, phase::CREATING, "Added. Checking it is working…")
+                    set_phase(disk_id, Phase::Creating, "Added. Checking it is working…")
                 }
             }
         }
@@ -1487,7 +1398,7 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
             tracing::warn!("{disk_id}: ceph-volume create failed: {e}");
             set_phase(
                 disk_id,
-                phase::RETRYING,
+                Phase::Retrying,
                 "Could not add this disk yet. YoLab will keep trying.",
             );
         }
@@ -1529,27 +1440,30 @@ async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
         return;
     }
 
-    if !host.osd_safe_to_destroy(id).await {
-        tracing::warn!(
-            "{disk_id}: osd.{id} was left by a failed setup but Ceph will not confirm it is empty — leaving it"
-        );
-        return;
-    }
+    let proof = match destructive::safe_to_destroy(host, id).await {
+        Ok(Some(proof)) => proof,
+        Ok(None) => {
+            tracing::warn!(
+                "{disk_id}: osd.{id} was left by a failed setup but Ceph will not confirm it is empty — leaving it"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("{disk_id}: could not ask whether osd.{id} is safe to remove: {e}");
+            return;
+        }
+    };
 
-    match host.osd_purge(id).await {
-        Ok(_) => {
-            let ids = host.osd_ids().await.ok();
-            if purge_confirmed(ids.as_deref(), id) {
-                tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
-                if let Ok(mut p) = PROGRESS.lock() {
-                    p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
-                }
-            } else {
-                tracing::warn!(
-                    "{disk_id}: purge of osd.{id} reported success but it is still listed — keeping the record"
-                );
+    match destructive::purge_safe(host, proof).await {
+        Ok(Some(_)) => {
+            tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
+            if let Ok(mut p) = PROGRESS.lock() {
+                p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
             }
         }
+        Ok(None) => tracing::warn!(
+            "{disk_id}: purge of osd.{id} reported success but it is still listed — keeping the record"
+        ),
         Err(e) => tracing::warn!("{disk_id}: could not remove leftover osd.{id}: {e}"),
     }
 }
@@ -1633,13 +1547,6 @@ fn plan_purge(
         return PurgeVerdict::RefuseDataAtRisk;
     }
     PurgeVerdict::Purge
-}
-
-/// A purge is only "done" when the OSD list confirms the id is gone. An
-/// unreadable list never counts as gone — reading it that way would let a
-/// spurious purge success proceed to wipe a disk.
-fn purge_confirmed(ids: Option<&[i64]>, osd_id: i64) -> bool {
-    ids.is_some_and(|ids| !ids.contains(&osd_id))
 }
 
 /// Whether this tick may act at all.
@@ -1881,21 +1788,6 @@ fn foreign_osd_in_list(raw: &str, our_fsid: &str, dev_path: &str) -> Option<i64>
         .map(|(_, id)| id)
 }
 
-/// Which zap, if any, clears the way for a create that just failed.
-///
-/// `--destroy` removes the volume group. Right for a foreign stack, which is
-/// the leftover being erased; wrong for the system LV, which disko owns and
-/// only whose contents are stale.
-fn zap_args<'a>(dev_path: &'a str, foreign: bool, err: &str) -> Option<Vec<&'a str>> {
-    if foreign {
-        Some(vec!["lvm", "zap", "--destroy", dev_path])
-    } else if is_stale_signature(err) {
-        Some(vec!["lvm", "zap", dev_path])
-    } else {
-        None
-    }
-}
-
 /// Stop OSD units belonging to another cluster.
 ///
 /// The counterpart to `ensure_osd_unit_running`. A disk left by an earlier
@@ -1928,7 +1820,7 @@ async fn stop_foreign_osd_units<H: Host>(host: &H) {
     let Ok(raw) = host.ceph_volume(&["lvm", "list", "--format", "json"]).await else {
         return;
     };
-    let Some(our_fsid) = host.cluster_fsid().await.filter(|f| !f.is_empty()) else {
+    let Some(our_fsid) = host.cluster_fsid().await.ok().filter(|f| !f.is_empty()) else {
         return;
     };
     for id in foreign_osd_ids(&raw, &our_fsid) {
@@ -1946,7 +1838,9 @@ async fn stop_foreign_osd_units<H: Host>(host: &H) {
             continue;
         }
         tracing::warn!("osd.{id}: belongs to another cluster — stopping {unit}");
-        let _ = host.systemctl(&["stop", &unit]).await;
+        host.systemctl(&["stop", &unit])
+            .await
+            .warn_on_err(format!("stop {unit}"));
     }
 }
 
@@ -1995,7 +1889,9 @@ async fn disable_osd_unit<H: Host>(host: &H, osd_id: i64) {
     // disabling touches the read-only /etc/systemd/system. Nothing needs
     // un-enabling anyway — yolab-ceph-osd-activate derives what to start from
     // ceph-volume, and a purged OSD disappears from there on its own.
-    let _ = host.systemctl(&["stop", &unit]).await;
+    host.systemctl(&["stop", &unit])
+        .await
+        .warn_on_err(format!("stop {unit}"));
 
     // `systemctl disable --now` returns once systemd has reaped the unit, but
     // give the device a moment to be released before anything touches it.
@@ -2033,25 +1929,16 @@ async fn disable_osd_unit<H: Host>(host: &H, osd_id: i64) {
 /// around it — `--destroy` there would delete the volume itself, and there is
 /// nothing to recreate it. Plain `zap` wipes the contents and leaves the volume.
 ///
-/// Only ever called after our own successful `ceph osd purge` of that exact OSD
-/// in this same call — never on a disk we merely suspect is drained.
-async fn wipe_device<H: Host>(host: &H, device: &str) {
+/// Only callable with the `Purged` receipt of our own confirmed purge of the OSD
+/// that lived on it — never on a disk we merely suspect is drained. The
+/// `--destroy`-or-not decision for LVs lives in `destructive::zap`.
+async fn wipe_device<H: Host>(host: &H, device: &str, receipt: destructive::Purged) {
     let dev_path = if device.starts_with('/') {
         device.to_string()
     } else {
         format!("/dev/{device}")
     };
-
-    // A device-mapper path is a logical volume we did not create and must not
-    // remove; a plain disk is one ceph-volume built its own LVM stack on.
-    let is_lv = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
-    let mut args: Vec<&str> = vec!["lvm", "zap"];
-    if !is_lv {
-        args.push("--destroy");
-    }
-    args.push(&dev_path);
-
-    match host.ceph_volume(&args).await {
+    match destructive::zap(host, &dev_path, destructive::ZapWarrant::AfterPurge(receipt)).await {
         Ok(_) => tracing::info!("wipe_device: {dev_path} zapped and returned to a blank state"),
         Err(e) => tracing::warn!(
             "wipe_device: could not zap {dev_path}: {e} — the disk stays registered and this \
@@ -2129,22 +2016,22 @@ async fn purge_drained_osds<H: Host>(
         disable_osd_unit(host, osd_id).await;
 
         // Confirm no PG data remains before destroying the OSD record.
-        if !host.osd_safe_to_destroy(osd_id).await {
-            tracing::info!("osd.{osd_id}: disk gone but not yet safe-to-destroy — waiting");
-            continue;
-        }
+        let proof = match destructive::safe_to_destroy(host, osd_id).await {
+            Ok(Some(proof)) => proof,
+            Ok(None) => {
+                tracing::info!("osd.{osd_id}: disk gone but not yet safe-to-destroy — waiting");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("osd.{osd_id}: could not ask whether it is safe to destroy: {e}");
+                continue;
+            }
+        };
 
         tracing::info!("osd.{osd_id}: disk gone, out, safe-to-destroy — purging from Ceph");
-        match host
-            .ceph(&[
-                "osd",
-                "purge",
-                &format!("osd.{osd_id}"),
-                "--yes-i-really-mean-it",
-            ])
-            .await
-        {
-            Ok(_) => tracing::info!("osd.{osd_id}: purged"),
+        match destructive::purge_safe(host, proof).await {
+            Ok(Some(_)) => tracing::info!("osd.{osd_id}: purged"),
+            Ok(None) => tracing::warn!("osd.{osd_id}: purge reported success but it is still listed"),
             Err(e) => tracing::warn!("osd.{osd_id}: purge failed: {e}"),
         }
     }
@@ -2367,9 +2254,9 @@ async fn auto_register_all_disks<H: Host>(
         ])
         .await
     {
-        let _ = host
-            .kubectl(&["create", "configmap", CONFIG_CM, "-n", NS])
-            .await;
+        host.kubectl(&["create", "configmap", CONFIG_CM, "-n", NS])
+            .await
+            .debug_on_err("create the disk config ConfigMap");
         if let Err(e2) = host
             .kubectl(&[
                 "patch",
@@ -2753,11 +2640,12 @@ async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk
         .await
         .is_err()
     {
-        // ConfigMap doesn't exist yet — create it
-        let _ = host
-            .kubectl(&["create", "configmap", STATUS_CM, "-n", NS])
-            .await;
-        let _ = host
+        // ConfigMap doesn't exist yet — create it. An AlreadyExists here just
+        // means another node won that race, which is fine.
+        host.kubectl(&["create", "configmap", STATUS_CM, "-n", NS])
+            .await
+            .debug_on_err("create the disk status ConfigMap");
+        host
             .kubectl(&[
                 "patch",
                 "configmap",
@@ -2769,7 +2657,8 @@ async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk
                 "-p",
                 &patch,
             ])
-            .await;
+            .await
+            .warn_on_err("publish this node's disk inventory");
     }
 }
 
@@ -2833,14 +2722,6 @@ async fn read_desired<H: Host>(host: &H) -> Option<HashMap<String, String>> {
     )
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn node_name() -> Result<String> {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .context("read /etc/hostname")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2848,7 +2729,9 @@ mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
-    use crate::host::CommandOutput;
+    use crate::exec::CmdError;
+    use crate::host::fake::FakeHost;
+    use crate::host::{CommandOutput, HostResult};
 
     const OURS: &str = "11111111-2222-3333-4444-555555555555";
     const THEIRS: &str = "99999999-8888-7777-6666-555555555555";
@@ -2860,240 +2743,74 @@ mod tests {
         ceph_volume_calls: Arc<Mutex<usize>>,
     }
 
+    fn unreachable_err(what: &str) -> CmdError {
+        CmdError::Timeout {
+            cmd: what.to_string(),
+            after: std::time::Duration::from_secs(30),
+        }
+    }
+
     #[allow(clippy::manual_async_fn)]
     impl Host for RecordingHost {
-        fn ceph<'a>(&self, _args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("ceph unreachable")) }
+        fn ceph<'a>(&self, _args: &'a [&str]) -> impl Future<Output = HostResult<String>> + Send + 'a {
+            async move { Err(unreachable_err("ceph")) }
         }
 
         fn ceph_json<'a>(
             &self,
             _args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("ceph unreachable")) }
+        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
+            async move { Err(unreachable_err("ceph")) }
         }
 
         fn ceph_volume<'a>(
             &self,
             _args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
             let calls = self.ceph_volume_calls.clone();
             async move {
                 *calls.lock().unwrap() += 1;
-                Err(anyhow::anyhow!("ceph unreachable"))
+                Err(unreachable_err("ceph-volume"))
             }
         }
 
         fn kubectl<'a>(
             &self,
             _args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("kubectl unreachable")) }
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+            async move { Err(unreachable_err("kubectl")) }
         }
 
         fn kubectl_json<'a>(
             &self,
             _args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("kubectl unreachable")) }
+        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
+            async move { Err(unreachable_err("kubectl")) }
         }
 
         fn kubectl_apply<'a>(
             &self,
             _manifest: &'a str,
-        ) -> impl Future<Output = Result<()>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("kubectl unreachable")) }
+        ) -> impl Future<Output = HostResult<()>> + Send + 'a {
+            async move { Err(unreachable_err("kubectl")) }
         }
 
         fn systemctl<'a>(
             &self,
             _args: &'a [&str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("systemctl unreachable")) }
+        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+            async move { Err(unreachable_err("systemctl")) }
         }
 
         fn run_cmd<'a>(
             &self,
             _bin: &'a str,
             _args: &'a [&'a str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
-            async move { Err(anyhow::anyhow!("command unreachable")) }
+        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+            async move { Err(unreachable_err("command")) }
         }
     }
 
-    /// A host that records every command and answers from a script.
-    ///
-    /// `RecordingHost` above can only say "unreachable", which is why exactly
-    /// one test ever drove the reconcile path through it — leaving the
-    /// orchestration untested while its constituent decisions were covered
-    /// well. That gap is how a8ba132 shipped: the decision function was right
-    /// and the wiring that called it was not.
-    ///
-    /// Every effect the reconciler has on a disk is a command, so scripting
-    /// commands is what makes the wiring assertable. Unscripted commands fail
-    /// by default: a test must say what the machine answers, rather than
-    /// silently getting a plausible one.
-    type ScriptedAnswer = std::result::Result<String, String>;
-    type Script = Vec<(String, std::collections::VecDeque<ScriptedAnswer>)>;
-
-    #[derive(Clone, Default)]
-    struct FakeHost {
-        calls: Arc<Mutex<Vec<String>>>,
-        // Each prefix maps to a queue of answers, consumed in call order; the
-        // last answer repeats once the queue is empty, so a test only has to
-        // spell out the calls whose answer actually changes (e.g. `ceph-volume
-        // lvm list` before and after a create) and can leave a steady-state
-        // answer for everything else.
-        script: Arc<Mutex<Script>>,
-    }
-
-    impl FakeHost {
-        fn new() -> Self {
-            Self::default()
-        }
-
-        fn push(&self, prefix: &str, answer: ScriptedAnswer) {
-            let mut script = self.script.lock().unwrap();
-            match script.iter_mut().find(|(p, _)| p == prefix) {
-                Some((_, q)) => q.push_back(answer),
-                None => {
-                    let mut q = std::collections::VecDeque::new();
-                    q.push_back(answer);
-                    script.push((prefix.to_string(), q));
-                }
-            }
-        }
-
-        fn ok(self, prefix: &str, out: &str) -> Self {
-            self.push(prefix, Ok(out.to_string()));
-            self
-        }
-
-        fn fail(self, prefix: &str, err: &str) -> Self {
-            self.push(prefix, Err(err.to_string()));
-            self
-        }
-
-        /// Longest matching prefix wins, so a general steady-state answer and
-        /// a more specific override can coexist without colliding.
-        fn answer(&self, cmd: &str) -> Result<String> {
-            self.calls.lock().unwrap().push(cmd.to_string());
-            let mut script = self.script.lock().unwrap();
-            let best = script
-                .iter_mut()
-                .filter(|(p, _)| cmd.starts_with(p.as_str()))
-                .max_by_key(|(p, _)| p.len());
-            match best {
-                Some((_, q)) => {
-                    let out = if q.len() > 1 {
-                        q.pop_front().unwrap()
-                    } else {
-                        q.front().unwrap().clone()
-                    };
-                    out.map_err(|e| anyhow::anyhow!("{e}"))
-                }
-                None => Err(anyhow::anyhow!("unscripted command: {cmd}")),
-            }
-        }
-
-        fn calls(&self) -> Vec<String> {
-            self.calls.lock().unwrap().clone()
-        }
-
-        fn ran(&self, needle: &str) -> bool {
-            self.calls().iter().any(|c| c.contains(needle))
-        }
-
-        /// Index of the first call containing `needle`, for ordering asserts.
-        fn position(&self, needle: &str) -> Option<usize> {
-            self.calls().iter().position(|c| c.contains(needle))
-        }
-    }
-
-    #[allow(clippy::manual_async_fn)]
-    impl Host for FakeHost {
-        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("ceph {}", args.join(" "))) }
-        }
-
-        fn ceph_json<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
-            let me = self.clone();
-            async move {
-                let raw = me.answer(&format!("ceph {}", args.join(" ")))?;
-                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
-            }
-        }
-
-        fn ceph_volume<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("ceph-volume {}", args.join(" "))) }
-        }
-
-        fn kubectl<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("kubectl {}", args.join(" "))) }
-        }
-
-        fn kubectl_json<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
-            let me = self.clone();
-            async move {
-                let raw = me.answer(&format!("kubectl {}", args.join(" ")))?;
-                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
-            }
-        }
-
-        fn kubectl_apply<'a>(
-            &self,
-            manifest: &'a str,
-        ) -> impl Future<Output = Result<()>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("kubectl-apply {manifest}")).map(|_| ()) }
-        }
-
-        fn systemctl<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
-            let me = self.clone();
-            async move {
-                let out = me.answer(&format!("systemctl {}", args.join(" ")));
-                Ok(CommandOutput {
-                    success: out.is_ok(),
-                    stdout: out.unwrap_or_default(),
-                    stderr: String::new(),
-                })
-            }
-        }
-
-        fn run_cmd<'a>(
-            &self,
-            bin: &'a str,
-            args: &'a [&'a str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
-            let me = self.clone();
-            async move {
-                let out = me.answer(&format!("{bin} {}", args.join(" ")));
-                Ok(CommandOutput {
-                    success: out.is_ok(),
-                    stdout: out.unwrap_or_default(),
-                    stderr: String::new(),
-                })
-            }
-        }
-    }
     #[tokio::test]
     async fn create_osd_the_happy_path_confirms_and_starts_the_unit() {
         let host = FakeHost::new()
@@ -3110,7 +2827,7 @@ mod tests {
 
         create_osd(&host, "disk-happy", "/dev/sdb").await;
 
-        assert_eq!(progress_of("disk-happy").phase, phase::ACTIVE);
+        assert_eq!(progress_of("disk-happy").phase, Phase::Active);
         assert!(host.ran("start yolab-ceph-osd@5.service"));
         assert!(
             !host.ran("lvm zap"),
@@ -3297,7 +3014,7 @@ mod tests {
             "a confirmed purge must wipe the disk: {:?}",
             host.calls()
         );
-        assert_eq!(progress_of("disk-purge").phase, phase::REMOVABLE);
+        assert_eq!(progress_of("disk-purge").phase, Phase::Removable);
     }
 
     /// The other half of 240cdde: `ceph osd ls` still listing the id after a
@@ -3331,7 +3048,7 @@ mod tests {
             "a purge that is not confirmed gone must never wipe the disk: {:?}",
             host.calls()
         );
-        assert_eq!(progress_of("disk-stuck").phase, phase::REMOVING);
+        assert_eq!(progress_of("disk-stuck").phase, Phase::Removing);
     }
 
     #[tokio::test]
@@ -3343,7 +3060,7 @@ mod tests {
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
 
-        assert_eq!(progress_of("disk-a").phase, phase::UNKNOWN);
+        assert_eq!(progress_of("disk-a").phase, Phase::Unknown);
         assert_eq!(*host.ceph_volume_calls.lock().unwrap(), 0);
     }
 
@@ -3607,7 +3324,7 @@ mod tests {
         let running = Disk {
             osd_id: Some(3),
             progress: Some(DiskProgress {
-                phase: phase::ACTIVE.into(),
+                phase: Phase::Active.into(),
                 message: "In use".into(),
                 attempts: 2,
                 orphan_osd_id: None,
@@ -3617,7 +3334,7 @@ mod tests {
         }
         .to_value();
         assert_eq!(running["osd_id"], json!(3));
-        assert_eq!(running["phase"], json!(phase::ACTIVE));
+        assert_eq!(running["phase"], json!(Phase::Active.as_str()));
         assert_eq!(running["message"], json!("In use"));
         assert_eq!(running["attempts"], json!(2));
     }
@@ -4087,7 +3804,7 @@ mod tests {
         assert!(steer.mark_in);
         assert!(!steer.mark_out);
         assert!(!steer.needs_purge);
-        assert_eq!(steer.phase, Some(phase::ACTIVE));
+        assert_eq!(steer.phase, Some(Phase::Active));
     }
 
     #[test]
@@ -4097,7 +3814,7 @@ mod tests {
         assert!(!steer.mark_in);
         assert!(!steer.mark_out);
         assert!(!steer.needs_purge);
-        assert_eq!(steer.phase, Some(phase::RETRYING));
+        assert_eq!(steer.phase, Some(Phase::Retrying));
     }
 
     #[test]
@@ -4107,7 +3824,7 @@ mod tests {
         assert!(!steer.mark_in);
         assert!(!steer.mark_out);
         assert!(!steer.needs_purge);
-        assert_eq!(steer.phase, Some(phase::ACTIVE));
+        assert_eq!(steer.phase, Some(Phase::Active));
     }
 
     #[test]
@@ -4115,7 +3832,7 @@ mod tests {
         let steer = decide_steer(false, 0, seen(1.0, 1.0, 0, false), 0, &[], "osd", None);
         assert!(steer.mark_out);
         assert!(!steer.needs_purge);
-        assert_eq!(steer.phase, Some(phase::DRAINING));
+        assert_eq!(steer.phase, Some(Phase::Draining));
         assert!(steer.message.is_some());
     }
 
@@ -4127,13 +3844,6 @@ mod tests {
         assert!(!steer.mark_in);
         assert_eq!(steer.phase, None);
         assert_eq!(steer.message, None);
-    }
-
-    #[test]
-    fn a_purge_is_confirmed_only_when_the_id_is_gone() {
-        assert!(purge_confirmed(Some(&[1, 2]), 3));
-        assert!(!purge_confirmed(Some(&[1, 2, 3]), 3));
-        assert!(!purge_confirmed(None, 3));
     }
 
     #[test]
@@ -4158,14 +3868,14 @@ mod tests {
     fn a_successful_steer_reports_its_own_phase() {
         let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, true), 0, &[], "osd", None);
         let (phase, _) = steer_report(&steer, true);
-        assert_eq!(phase, phase::ACTIVE);
+        assert_eq!(phase, Phase::Active);
     }
 
     #[test]
     fn a_failed_steer_reports_retrying_not_active() {
         let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, true), 0, &[], "osd", None);
         let (phase, message) = steer_report(&steer, false);
-        assert_eq!(phase, phase::RETRYING);
+        assert_eq!(phase, Phase::Retrying);
         assert!(message.contains("keep trying"));
     }
 

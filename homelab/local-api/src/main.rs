@@ -1,17 +1,23 @@
 mod auth;
 mod boot;
 mod cache;
+mod ceph;
 mod ceph_cli;
 mod cephfs;
 mod charts;
 mod config;
+mod csi;
 mod disks_reconciler;
 mod error;
+mod exec;
 mod host;
 mod kubectl;
 mod mesh;
+mod ops;
 mod proc;
+mod records;
 mod routers;
+mod runtime;
 mod storage;
 mod storage_heal;
 mod system;
@@ -29,7 +35,7 @@ use tower_http::cors::{Any, CorsLayer};
 use auth::{auth_middleware, AuthState};
 use config::Config;
 use routers::{
-    apps, backups, ceph, ceph_join, custom_app, disks, logs, nodes, packs, reboot, rebuild, status,
+    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, packs, reboot, rebuild, status,
     terminal, update,
 };
 
@@ -38,41 +44,6 @@ use routers::{
 pub struct AppState {
     pub config: Arc<Config>,
     pub auth: AuthState,
-}
-
-/// Keeps a reconcile loop running for the life of the process.
-///
-/// Every loop passed here is written as `loop { ... sleep ... }` and never
-/// returns on its own â its own internal errors are already caught and logged
-/// a level down. So a `tokio::spawn`ed copy ending, for any reason (a panic,
-/// or the one loop that can return early: disks_reconciler::run() bails out if
-/// it cannot read this node's hostname), means the reconciler behind it is
-/// gone for good. Nothing else would ever notice: local-api keeps answering
-/// HTTP 200 on every other route while, say, the disk reconciler has been
-/// dead for a week. `f` is called again to get a fresh future every restart
-/// (this is why it takes a factory rather than one future), so a `catch_unwind`
-/// per attempt is enough â there is no state inside the loop to lose, since a
-/// reconcile tick recomputes everything from cluster/Kubernetes state anyway.
-fn supervise<F, Fut>(name: &'static str, mut f: F)
-where
-    F: FnMut() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    tokio::spawn(async move {
-        loop {
-            match tokio::spawn(f()).await {
-                Ok(()) => {
-                    tracing::error!(
-                        "{name}: reconcile loop exited unexpectedly â restarting in 30s"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("{name}: reconcile loop panicked ({e}) â restarting in 30s");
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        }
-    });
 }
 
 #[tokio::main]
@@ -132,6 +103,8 @@ async fn main() {
         .route("/api/auth/check", get(auth::check))
         // Status
         .route("/api/status", get(status::handler))
+        // What every background controller is doing — see runtime/status.rs.
+        .route("/api/system/controllers", get(runtime::status::handler))
         // Fetched on click, never polled: it carries the account token in a
         // fragment. See routers/status.rs `console_link_url`.
         .route("/api/console/link", get(status::console_link))
@@ -198,10 +171,10 @@ async fn main() {
             get(topology::get_policy).put(topology::set_policy),
         )
         // Ceph
-        .route("/api/ceph/status", get(ceph::ceph_status))
-        .route("/api/ceph/detail", get(ceph::storage_detail))
-        .route("/api/ceph/replication", post(ceph::set_replication))
-        .route("/api/ceph/dashboard", get(ceph::dashboard_creds))
+        .route("/api/ceph/status", get(ceph_api::ceph_status))
+        .route("/api/ceph/detail", get(ceph_api::storage_detail))
+        .route("/api/ceph/replication", post(ceph_api::set_replication))
+        .route("/api/ceph/dashboard", get(ceph_api::dashboard_creds))
         // The dashboard itself, proxied to whichever mgr is active. Caddy sends
         // /ceph-dashboard/* here rather than to a fixed address, because the
         // active mgr moves and a fixed address is right only by luck.
@@ -211,12 +184,12 @@ async fn main() {
         // and what a browser sends for a directory-style URL. Registering only
         // the wildcard and the bare prefix produced a 404 from the router,
         // before the proxy ran at all. See dashboard_route_tests.
-        .route("/ceph-dashboard", any(ceph::dashboard_proxy))
-        .route("/ceph-dashboard/", any(ceph::dashboard_proxy))
-        .route("/ceph-dashboard/*rest", any(ceph::dashboard_proxy))
-        .route("/api/cluster/health", get(ceph::cluster_health))
-        .route("/api/ceph/osd/:id/mark-in", post(ceph::osd_mark_in))
-        .route("/api/ceph/osd/:id/mark-out", post(ceph::osd_mark_out))
+        .route("/ceph-dashboard", any(ceph_api::dashboard_proxy))
+        .route("/ceph-dashboard/", any(ceph_api::dashboard_proxy))
+        .route("/ceph-dashboard/*rest", any(ceph_api::dashboard_proxy))
+        .route("/api/cluster/health", get(ceph_api::cluster_health))
+        .route("/api/ceph/osd/:id/mark-in", post(ceph_api::osd_mark_in))
+        .route("/api/ceph/osd/:id/mark-out", post(ceph_api::osd_mark_out))
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
@@ -284,28 +257,93 @@ async fn main() {
         .layer(cors)
         .with_state(state.clone());
 
-    // Scheduled backups (routers/backup.rs) and the per-app restore watchdog
-    // (routers/restore.rs), which scales a crashed restore back up.
-    supervise("backup-scheduler", routers::backup::run_scheduler);
-    supervise("restore-watchdog", routers::restore::run_watchdog);
-    // Finishes uninstalls whose driving request died with a local-api restart —
-    // see the note on run_uninstall_watchdog for the two apps this was written
-    // for, both left half-removed for the better part of a day.
-    supervise("uninstall-watchdog", routers::apps::run_uninstall_watchdog);
-    // Clears restic locks left behind when a lock-taking command was interrupted —
-    // see run_lock_sweeper for the three apps whose retention this had blocked.
-    supervise("backup-lock-sweeper", routers::backups::run_lock_sweeper);
-    // OSD active-state (crush weight + in/out) is driven inside disks_reconciler::run,
-    // the single actuator for the DISKâON/OFF config â no separate watcher.
-    supervise("disks", disks_reconciler::run);
-    supervise("cephfs", cephfs::run);
-    supervise("topology", topology::run_topology_controller);
+    // Every background job runs as a controller. The runtime owns leadership,
+    // requirements, pauses and restart — see runtime/mod.rs for what this
+    // replaced and why.
+    let leader = runtime::leader::start(system::hostname());
+
+    // Scheduled backups and the per-app restore watchdog, which scales a crashed
+    // restore back up.
+    runtime::spawn(routers::backup::BackupSchedulerController, leader.clone());
+    runtime::spawn(routers::restore::RestoreWatchdogController, leader.clone());
+    // Both drive long operations, so they keep their records' claims fresh — the
+    // fix for a node2 watchdog treating node1's live restore as abandoned.
+    routers::backup::start_heartbeat();
+    routers::restore::start_heartbeat();
+    // Finishes uninstalls whose driving request died with a local-api restart.
+    runtime::spawn(routers::apps::UninstallWatchdogController, leader.clone());
+    // Clears restic locks left behind when a lock-taking command was interrupted.
+    runtime::spawn(routers::backups::LockSweeperController, leader.clone());
+    // OSD active-state (crush weight + in/out) is driven by the disk controller,
+    // the single actuator for the DISK→ON/OFF config — no separate watcher.
+    runtime::spawn(disks_reconciler::DisksController, leader.clone());
+    runtime::spawn(cephfs::CephFsController, leader.clone());
+    runtime::spawn(topology::TopologyController, leader.clone());
     // Records lost disks, rebuilds the image store and mgr pool, and runs a
     // recovery from backup once the owner asks for one.
-    supervise("storage-heal", storage_heal::run);
-    supervise("mesh", mesh::run);
-    // Keeps the app catalog current without a nixos-rebuild â see charts.rs.
-    supervise("chart-sync", charts::run_chart_sync);
+    runtime::spawn(storage_heal::StorageHealController, leader.clone());
+    runtime::spawn(mesh::MeshPathsController::new(), leader.clone());
+    runtime::spawn(mesh::MeshDiscoveryController::new(), leader.clone());
+    // Keeps the app catalog current without a nixos-rebuild.
+    runtime::spawn(charts::ChartSyncController, leader.clone());
+
+    // The storage agent's own jobs, which used to be eleven systemd timers. Only
+    // on a machine whose storage settings reached the process: a dev box must not
+    // act on empty addresses.
+    let storage_env = storage::StorageEnv::from_env();
+    if storage_env.is_configured() {
+        use storage::controllers::*;
+        runtime::spawn(
+            OsdActivateController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            ContainerdStoreController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            ImagesRbdController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            ImagesGrowController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            DashboardController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            MonMemberController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            CephKeysController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(
+            CephJoinController {
+                env: storage_env.clone(),
+            },
+            leader.clone(),
+        );
+        runtime::spawn(CsiSecretsController, leader.clone());
+        runtime::spawn(CsiRecoveryController, leader.clone());
+    }
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");

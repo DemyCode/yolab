@@ -27,7 +27,7 @@ pub struct DiskInfo {
     pub has_partitions: bool,
     /// This machine has a filesystem from it mounted. Never usable for storage.
     pub mounted: bool,
-    /// Where the reconciler has got to with this disk: see disks_reconciler::phase.
+    /// Where the reconciler has got to with this disk: see disks_reconciler::Phase.
     ///
     /// Without this the UI had to guess from desired/connected/is_our_osd, and
     /// that guess cannot distinguish "started five seconds ago" from "has failed

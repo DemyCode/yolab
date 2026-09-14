@@ -25,6 +25,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::Outcome;
 use crate::{kubectl, AppState};
 
 const NS: &str = "rook-ceph";
@@ -217,7 +218,10 @@ async fn seed_policy_from_cluster() -> Option<StoragePolicy> {
         .map(str::trim)
         .filter(|p| !p.is_empty() && !p.starts_with('.'))
     {
-        size = size.max(pool_size(pool).await);
+        // `?`: one pool whose size cannot be read aborts the seed. Reading it as
+        // 1 recorded "one copy" for pools holding three, and the next tick
+        // applied that — deleting the other copies.
+        size = size.max(pool_size(pool).await?);
     }
     // No data pools yet: a brand new cluster. One copy is the only honest
     // starting point — it is what a single disk can hold.
@@ -275,7 +279,9 @@ async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
     .await
     .is_err()
     {
-        let _ = kubectl::run(&["create", "configmap", POLICY_CM, "-n", NS]).await;
+        kubectl::run(&["create", "configmap", POLICY_CM, "-n", NS])
+            .await
+            .debug_on_err("topology: create the policy ConfigMap");
         kubectl::run(&[
             "patch",
             "configmap",
@@ -349,31 +355,39 @@ async fn cluster_health() -> Option<String> {
         .map(str::to_string)
 }
 
-// ── Controller loop ───────────────────────────────────────────────────────────
+// ── Controller ────────────────────────────────────────────────────────────────
 
-pub async fn run_topology_controller() {
-    // Let the cluster settle after boot before touching anything.
-    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
-    loop {
-        if let Err(e) = tick().await {
-            tracing::debug!("topology: {e}");
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+/// Cluster-scoped: one machine sets pool sizes and rules. Paused during a restore
+/// or a storage recovery, which delete and recreate pools — setting a crush rule
+/// on a pool that is being deleted underneath would race it.
+pub struct TopologyController;
+
+impl crate::runtime::Controller for TopologyController {
+    fn name(&self) -> &'static str {
+        "topology"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Cluster
+    }
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(60)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi, crate::runtime::Requirement::Ceph]
+    }
+    fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
+        &[
+            crate::runtime::Activity::Restore,
+            crate::runtime::Activity::StorageRecovery,
+        ]
+    }
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        tick().await?;
+        Ok(crate::runtime::Tick::Done)
     }
 }
 
 async fn tick() -> anyhow::Result<()> {
-    // Single writer: only the reconciler leader acts.
-    if !crate::disks_reconciler::is_reconcile_leader().await {
-        return Ok(());
-    }
-    // A restore's RebuildingStorage phase purges OSDs and destroys/recreates CephFS
-    // pools directly — reapplying pool size/failure-domain here at the same time
-    // would race that teardown (e.g. setting a crush rule on a pool this tick just
-    // watched get deleted out from under it).
-    if crate::routers::restore::is_running().await {
-        return Ok(());
-    }
     let Some(topo) = observe().await else {
         tracing::debug!("topology: cluster shape unknown this tick — not touching replication");
         return Ok(());
@@ -399,7 +413,9 @@ async fn tick() -> anyhow::Result<()> {
             // First run, or the first run after auto mode was removed. Write
             // down what the cluster is already doing and act on it next tick;
             // nothing is applied from a policy that was never chosen.
-            let _ = seed_policy_from_cluster().await;
+            if seed_policy_from_cluster().await.is_none() {
+                tracing::debug!("topology: could not seed a policy from the cluster this tick");
+            }
             return Ok(());
         }
         Some(PolicyState::Chosen(p)) => p,
@@ -466,14 +482,15 @@ fn apply_pools_selects(pool: &str) -> bool {
     !pool.is_empty() && !pool.starts_with(".nfs") && !pool.starts_with(".rgw")
 }
 
-async fn pool_size(pool: &str) -> u32 {
+/// A pool's current size, or None when Ceph did not say. Never a default: both
+/// callers decide whether to change how many copies exist from this number.
+async fn pool_size(pool: &str) -> Option<u32> {
     crate::ceph_cli::ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
         .await
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v["size"].as_u64())
         .map(|x| x as u32)
-        .unwrap_or(1)
 }
 
 /// Apply the target crush rule + size + min_size to every data pool.
@@ -493,7 +510,7 @@ async fn apply_pools(target: &Target) {
             .await
             .unwrap_or_default();
         if !have.lines().any(|l| l.trim() == rule) {
-            let _ = crate::ceph_cli::ceph(&[
+            crate::ceph_cli::ceph(&[
                 "osd",
                 "crush",
                 "rule",
@@ -502,7 +519,8 @@ async fn apply_pools(target: &Target) {
                 "default",
                 "osd",
             ])
-            .await;
+            .await
+            .warn_on_err(format!("topology: create crush rule {rule}"));
         }
     }
 
@@ -514,7 +532,10 @@ async fn apply_pools(target: &Target) {
         .map(|l| l.trim())
         .filter(|p| apply_pools_selects(p))
     {
-        let cur = pool_size(pool).await;
+        let Some(cur) = pool_size(pool).await else {
+            tracing::debug!("topology: size of {pool} unknown this tick — leaving it");
+            continue;
+        };
         // The owner's number, applied as given — up or down. There is no
         // raise-only rule any more because there is nothing left that could
         // lower it behind their back: `size` comes from the policy and nowhere
@@ -522,7 +543,9 @@ async fn apply_pools(target: &Target) {
         let want = target.size;
         let min = MIN_SIZE;
 
-        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule]).await;
+        crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule])
+            .await
+            .warn_on_err(format!("topology: set crush_rule on {pool}"));
         if want != cur {
             let ws = want.to_string();
             let res = if want == 1 {
@@ -547,7 +570,9 @@ async fn apply_pools(target: &Target) {
             }
         }
         let ms = min.to_string();
-        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "min_size", &ms]).await;
+        crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "min_size", &ms])
+            .await
+            .warn_on_err(format!("topology: set min_size on {pool}"));
     }
 }
 

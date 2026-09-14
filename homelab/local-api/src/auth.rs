@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use axum::{
     body::Body,
@@ -33,24 +39,65 @@ fn now_secs() -> i64 {
 }
 
 // ── K8s Secret persistence ────────────────────────────────────────────────────
+//
+// The Secret is the durable copy; memory is the live one. They must never be
+// allowed to disagree by accident, and they used to: a load that failed at
+// startup (the API not up yet — local-api starts before k3s is ready) left
+// memory empty, and the next login wrote that near-empty map over the Secret,
+// logging out everyone who had been signed in.
+//
+// So nothing is written until a load has succeeded (or confirmed there is no
+// Secret yet). Until then a background task keeps trying, and when it lands the
+// stored sessions are MERGED into memory — minus any that were logged out in
+// the meantime — and the merged map is written back.
 
-async fn load_sessions_from_k8s() -> HashMap<String, i64> {
-    let Some(data) = crate::kubectl::get_secret(SECRET_NAME, SECRET_NS).await else {
-        return HashMap::new();
+static LOADED: AtomicBool = AtomicBool::new(false);
+static REVOKED_BEFORE_LOAD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+async fn load_sessions_from_k8s() -> Result<HashMap<String, i64>, crate::exec::CmdError> {
+    let Some(data) = crate::kubectl::get_secret(SECRET_NAME, SECRET_NS).await? else {
+        return Ok(HashMap::new());
     };
     let Some(json) = data.get("sessions") else {
-        return HashMap::new();
+        return Ok(HashMap::new());
     };
-    let now = now_secs();
-    serde_json::from_str::<HashMap<String, i64>>(json)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(_, exp)| *exp > now) // drop expired sessions on load
-        .collect()
+    let stored = serde_json::from_str::<HashMap<String, i64>>(json).map_err(|e| {
+        crate::exec::CmdError::parse(format!("secret {SECRET_NS}/{SECRET_NAME}"), e)
+    })?;
+    Ok(live_only(stored, now_secs()))
+}
+
+fn live_only(sessions: HashMap<String, i64>, now: i64) -> HashMap<String, i64> {
+    sessions.into_iter().filter(|(_, exp)| *exp > now).collect()
+}
+
+/// Stored sessions folded into the live map: live entries win, revoked tokens
+/// stay revoked.
+fn merge_loaded(
+    live: &mut HashMap<String, i64>,
+    stored: HashMap<String, i64>,
+    revoked: &[String],
+) {
+    for (token, exp) in stored {
+        if revoked.contains(&token) {
+            continue;
+        }
+        live.entry(token).or_insert(exp);
+    }
 }
 
 async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
-    let json = serde_json::to_string(sessions).unwrap_or_default();
+    if !LOADED.load(Ordering::SeqCst) {
+        tracing::debug!("sessions not loaded from k8s yet — keeping this change in memory");
+        return;
+    }
+    let json = match serde_json::to_string(sessions) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!("could not serialize sessions: {e}");
+            return;
+        }
+    };
     if let Err(e) =
         crate::kubectl::apply_secret(SECRET_NAME, SECRET_NS, &[("sessions", &json)], &[]).await
     {
@@ -58,15 +105,51 @@ async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
     }
 }
 
+fn note_revoked(token: &str) {
+    if !LOADED.load(Ordering::SeqCst) {
+        REVOKED_BEFORE_LOAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(token.to_string());
+    }
+}
+
 // ── Public init ───────────────────────────────────────────────────────────────
 
-/// Load persisted sessions at startup so users survive local-api restarts.
+/// Load persisted sessions so users survive local-api restarts. Returns at once;
+/// the load retries in the background until the API answers.
 pub async fn init_sessions(sessions: &Sessions) {
-    let loaded = load_sessions_from_k8s().await;
-    if !loaded.is_empty() {
-        tracing::info!("restored {} session(s) from k8s secret", loaded.len());
-        *sessions.write().await = loaded;
-    }
+    let sessions = sessions.clone();
+    tokio::spawn(async move {
+        let mut delay = std::time::Duration::from_secs(2);
+        loop {
+            match load_sessions_from_k8s().await {
+                Ok(stored) => {
+                    let mut live = sessions.write().await;
+                    let revoked = REVOKED_BEFORE_LOAD
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let had_live = !live.is_empty();
+                    let n = stored.len();
+                    merge_loaded(&mut live, stored, &revoked);
+                    LOADED.store(true, Ordering::SeqCst);
+                    if n > 0 {
+                        tracing::info!("restored {n} session(s) from k8s secret");
+                    }
+                    if had_live || !revoked.is_empty() {
+                        save_sessions_to_k8s(&live).await;
+                    }
+                    return;
+                }
+                Err(e) => {
+                    tracing::debug!("sessions: could not load yet ({e}) — retrying");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                }
+            }
+        }
+    });
 }
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -242,6 +325,7 @@ pub async fn logout(State(state): State<crate::AppState>, jar: CookieJar) -> Res
     if !token.is_empty() {
         let mut sessions = state.auth.sessions.write().await;
         sessions.remove(&token);
+        note_revoked(&token);
         save_sessions_to_k8s(&sessions).await;
     }
     let cookie = Cookie::build(("yolab_session", ""))
@@ -810,5 +894,33 @@ mod tests {
             status_of(state.auth.clone(), req).await,
             StatusCode::UNAUTHORIZED
         );
+    }
+}
+
+#[cfg(test)]
+mod session_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn stored_sessions_merge_into_live_ones_without_resurrecting_logouts() {
+        let mut live = HashMap::from([("new".to_string(), 200)]);
+        let stored = HashMap::from([
+            ("old".to_string(), 100),
+            ("new".to_string(), 50),
+            ("logged-out".to_string(), 100),
+        ]);
+        merge_loaded(&mut live, stored, &["logged-out".to_string()]);
+        assert_eq!(live.get("old"), Some(&100));
+        // The live entry wins over the stored one.
+        assert_eq!(live.get("new"), Some(&200));
+        assert!(!live.contains_key("logged-out"));
+    }
+
+    #[test]
+    fn expired_sessions_are_dropped_on_load() {
+        let s = HashMap::from([("a".to_string(), 10), ("b".to_string(), 1000)]);
+        let live = live_only(s, 500);
+        assert!(!live.contains_key("a"));
+        assert!(live.contains_key("b"));
     }
 }

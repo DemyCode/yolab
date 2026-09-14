@@ -4,17 +4,27 @@
 //! reasons found the hard way: routing storage questions through the k3s API
 //! meant the Storage page went blind during a 20-hour kubelet crash-loop, and
 //! running the `ceph` CLI inside the mgr's 512Mi cgroup OOM-killed the mgr.
-use anyhow::{bail, Context, Result};
+//!
+//! Every call returns `exec::CmdError`, never a defaulted value: see exec.rs for
+//! why "could not answer" must stay distinguishable from "answered nothing".
+//!
+//! Commands that destroy data are refused here unless they arrive through
+//! `crate::ceph::destructive`, which is the only code able to open that door and
+//! only does so with proof that the destruction is safe or was asked for.
+use std::time::Duration;
+
+use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::process::Command;
 use tokio::sync::Mutex;
+
+use crate::ceph::destructive::{self, Door};
+use crate::exec::{self, CmdError};
 
 /// One ceph-volume at a time *from this process*.
 ///
-/// It cannot see yolab-ceph-osd-activate or the yolab-ceph-osd@N ExecStartPres,
-/// which also run ceph-volume; LVM's own locking makes those block rather than
-/// corrupt, and the `timeout` wrappers on those units stop the blocking
-/// becoming permanent.
+/// It cannot see the yolab-ceph-osd@N ExecStartPres, which also run
+/// ceph-volume; LVM's own locking makes those block rather than corrupt, and
+/// the `timeout` wrappers on those units stop the blocking becoming permanent.
 ///
 /// This exists for failure, not throughput. Every caller is on a reconcile
 /// loop, so a wedged call means another starts next tick, and another, until
@@ -47,60 +57,95 @@ fn is_read_only(args: &[&str]) -> bool {
 
 /// A wedged mon can hang a command forever. Bounding every call makes a storage
 /// hiccup degrade the UI instead of blocking the whole task pool.
-const TIMEOUT_SECS: u64 = 30;
-
-async fn run_bin(bin: &str, args: &[&str]) -> Result<String> {
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(TIMEOUT_SECS),
-        // Without kill_on_drop a timeout only stops *waiting*; the child runs
-        // on and the reconcile loop starts another next tick.
-        Command::new(bin).args(args).kill_on_drop(true).output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("{bin} timed out after {TIMEOUT_SECS}s"))?
-    .with_context(|| format!("spawn {bin}"))?;
-
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // Ceph writes cephx negotiation chatter to stderr even on success, so
-        // the last line is the actual error.
-        let msg = stderr.lines().last().unwrap_or("unknown error").to_string();
-        bail!("{bin} {}: {msg}", args.join(" "))
-    }
-}
-
-pub async fn ceph(args: &[&str]) -> Result<String> {
-    run_bin("ceph", args).await
-}
-
-pub async fn ceph_json(args: &[&str]) -> Result<Value> {
-    let mut a = args.to_vec();
-    a.extend_from_slice(&["-f", "json"]);
-    let raw = ceph(&a).await?;
-    serde_json::from_str(&raw).with_context(|| format!("parse json from `ceph {}`", args.join(" ")))
-}
-
-/// Unused from Rust today — the images-store systemd units drive rbd directly,
-/// because they run before k3s and therefore before local-api exists. Kept
-/// because surfacing image-store usage on the Storage page is the obvious next
-/// consumer.
-#[allow(dead_code)]
-pub async fn rbd(args: &[&str]) -> Result<String> {
-    run_bin("rbd", args).await
-}
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Creating an OSD is the one operation whose runtime is unbounded in practice
 /// — it wipes labels, creates LVs and mkfs's BlueStore — so it gets its own
 /// generous limit rather than the shared 30s.
-pub async fn ceph_volume(args: &[&str]) -> Result<String> {
+const CEPH_VOLUME_TIMEOUT: Duration = Duration::from_secs(600);
+
+async fn run_bin(bin: &str, args: &[&str]) -> Result<String, CmdError> {
+    let out = exec::output(bin, args, TIMEOUT).await?;
+    if out.success {
+        return Ok(out.stdout);
+    }
+    // Ceph writes cephx negotiation chatter to stderr even on success, so the
+    // last line is the actual error — but classification reads all of it.
+    let stderr = out.stderr.trim();
+    let last = stderr.lines().last().unwrap_or("unknown error").to_string();
+    Err(CmdError::Failed {
+        cmd: exec::render(bin, args),
+        kind: exec::classify(bin, stderr),
+        code: None,
+        stderr: last,
+    })
+}
+
+fn refuse_destructive(bin: &str, args: &[&str]) -> Result<(), CmdError> {
+    if destructive::is_destructive(bin, args) {
+        tracing::error!(
+            "refusing `{}` — destructive commands must go through ceph::destructive",
+            exec::render(bin, args)
+        );
+        return Err(CmdError::Forbidden {
+            cmd: exec::render(bin, args),
+        });
+    }
+    Ok(())
+}
+
+pub async fn ceph(args: &[&str]) -> Result<String, CmdError> {
+    refuse_destructive("ceph", args)?;
+    run_bin("ceph", args).await
+}
+
+/// The door-holding variant. `Door` can only be constructed inside
+/// `ceph::destructive`, so no other module can reach this with a purge. The
+/// returned future does not borrow the door — holding it is the check.
+pub fn ceph_destructive<'a>(
+    _door: &Door,
+    args: &'a [&str],
+) -> impl std::future::Future<Output = Result<String, CmdError>> + Send + 'a {
+    async move { run_bin("ceph", args).await }
+}
+
+fn with_json_format<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut a = args.to_vec();
+    a.extend_from_slice(&["-f", "json"]);
+    a
+}
+
+pub async fn ceph_json(args: &[&str]) -> Result<Value, CmdError> {
+    let a = with_json_format(args);
+    let raw = ceph(&a).await?;
+    exec::parse_json(&exec::render("ceph", &a), &raw)
+}
+
+/// `ceph <args> -f json`, deserialized into a model from `crate::ceph::model`.
+/// A shape that does not match is a `Parse` error, never a default.
+pub async fn ceph_typed<T: DeserializeOwned>(args: &[&str]) -> Result<T, CmdError> {
+    let a = with_json_format(args);
+    let raw = ceph(&a).await?;
+    exec::parse_json(&exec::render("ceph", &a), &raw)
+}
+
+pub async fn ceph_volume(args: &[&str]) -> Result<String, CmdError> {
+    refuse_destructive("ceph-volume", args)?;
+    ceph_volume_inner(args).await
+}
+
+pub fn ceph_volume_destructive<'a>(
+    _door: &Door,
+    args: &'a [&str],
+) -> impl std::future::Future<Output = Result<String, CmdError>> + Send + 'a {
+    async move { ceph_volume_inner(args).await }
+}
+
+async fn ceph_volume_inner(args: &[&str]) -> Result<String, CmdError> {
+    let cmd = exec::render("ceph-volume", args);
     let _serialised = if is_read_only(args) {
         let Ok(guard) = CEPH_VOLUME_LOCK.try_lock() else {
-            bail!(
-                "ceph-volume is already running on this node — skipping `{}`",
-                args.join(" ")
-            );
+            return Err(CmdError::Busy { cmd });
         };
         guard
     } else {
@@ -110,75 +155,43 @@ pub async fn ceph_volume(args: &[&str]) -> Result<String> {
         // and "it might, depending on timing".
         CEPH_VOLUME_LOCK.lock().await
     };
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(600),
-        // Without kill_on_drop this leaked a process tree every ten minutes:
-        // ceph-volume shells out to `lvs`, lvs blocked scanning a stalled RBD,
-        // the timeout abandoned it, and the next tick started another — eight
-        // deep before yolab-local-api became unstoppable and a nixos-rebuild
-        // hung behind it.
-        //
-        // This does not fix that case on its own; uninterruptible sleep ignores
-        // SIGKILL. Keeping the RBD out of LVM's scan (see
-        // homelab/nixos/ceph/images-store.nix) is what stops lvs blocking. This
-        // fixes every other timeout, where the child was killable and simply
-        // abandoned.
-        Command::new("ceph-volume")
-            .args(args)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("ceph-volume timed out after 600s"))?
-    .context("spawn ceph-volume")?;
-
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        bail!(
-            "ceph-volume {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )
-    }
+    // `kill_on_drop` (inside exec::output) matters here: without it this leaked
+    // a process tree every ten minutes — ceph-volume shells out to `lvs`, lvs
+    // blocked scanning a stalled RBD, the timeout abandoned it, and the next
+    // tick started another, eight deep, before yolab-local-api became
+    // unstoppable and a nixos-rebuild hung behind it. Uninterruptible sleep
+    // ignores SIGKILL; keeping the RBD out of LVM's scan (images-store.nix) is
+    // what stops lvs blocking in the first place.
+    let out = exec::output("ceph-volume", args, CEPH_VOLUME_TIMEOUT).await?;
+    exec::into_checked("ceph-volume", args, out, None)
 }
 
 /// Callers compare this against the fsid in a disk's BlueStore superblock to
-/// tell our disks from a stranger's, so an unreachable mon must yield None and
+/// tell our disks from a stranger's, so an unreachable mon is an error and
 /// never a default — otherwise every foreign disk starts looking like ours.
-pub async fn cluster_fsid() -> Option<String> {
-    // Some releases return {"fsid": "..."}, others a bare UUID. Accept either:
-    // returning None makes every labelled disk look foreign.
-    if let Ok(v) = ceph_json(&["fsid"]).await {
-        if let Some(f) = v["fsid"].as_str().filter(|s| !s.is_empty()) {
-            return Some(f.to_string());
-        }
+pub async fn cluster_fsid() -> Result<String, CmdError> {
+    // Some releases return {"fsid": "..."}, others a bare UUID. Accept either.
+    let json_err = match ceph_json(&["fsid"]).await {
+        Ok(v) => match v["fsid"].as_str().filter(|s| !s.is_empty()) {
+            Some(f) => return Ok(f.to_string()),
+            None => CmdError::parse("ceph fsid -f json", "no fsid field"),
+        },
+        Err(e) => e,
+    };
+    if json_err.is_unanswered() {
+        return Err(json_err);
     }
-    ceph(&["fsid"])
-        .await
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// The only trusted signal for "destroying this OSD loses no data" — never
-/// infer it from reweight or PG counts. Inferring it from `pg ls-by-osd` once
-/// caused real data loss.
-pub async fn osd_safe_to_destroy(osd_id: i64) -> bool {
-    ceph_json(&["osd", "safe-to-destroy", &format!("osd.{osd_id}")])
-        .await
-        .ok()
-        .and_then(|v| {
-            v["safe_to_destroy"]
-                .as_array()
-                .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-        })
-        .unwrap_or(false)
+    let plain = ceph(&["fsid"]).await?;
+    let f = plain.trim();
+    if f.is_empty() {
+        return Err(CmdError::parse("ceph fsid", "empty output"));
+    }
+    Ok(f.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_read_only;
+    use super::*;
 
     /// The split that decides whether a call may be dropped under contention.
     /// Getting a mutating call classified as read-only would reintroduce the
@@ -209,5 +222,21 @@ mod tests {
     fn anything_unrecognised_is_treated_as_mutating() {
         assert!(!is_read_only(&["something-new"]));
         assert!(!is_read_only(&[]));
+    }
+
+    #[tokio::test]
+    async fn a_purge_through_the_plain_entry_point_is_refused_before_it_runs() {
+        let err = ceph(&["osd", "purge", "osd.3", "--yes-i-really-mean-it"])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CmdError::Forbidden { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_zap_through_the_plain_entry_point_is_refused_before_it_runs() {
+        let err = ceph_volume(&["lvm", "zap", "--destroy", "/dev/vdb"])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CmdError::Forbidden { .. }));
     }
 }

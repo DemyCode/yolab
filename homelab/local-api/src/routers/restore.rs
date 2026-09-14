@@ -6,23 +6,35 @@
 //! `cluster-backup` snapshot (the id the history picker selects).
 //!
 //! A restore is recorded in a ConfigMap with the same three-state model as a
-//! backup: *running* (this process is driving it), *succeeded*, or *failed*
-//! (including "was running when the process died"). A watchdog guarantees that a
-//! crashed restore never leaves the app at zero replicas: it scales any "running
-//! but no longer in-flight" app back to its recorded replica counts.
+//! backup: *running*, *succeeded*, or *failed*. "Running" is decided by the
+//! record's `Claim` (see `ops`): the node driving it heartbeats while it works,
+//! so every node — not just the one that started it — can tell a live restore
+//! from one whose process died. The cluster-scoped watchdog scales an ABANDONED
+//! restore's app back up, and nothing else.
+//!
+//! This used to key "running" off a per-process `static` list, and the watchdog
+//! ran on every node: node2 saw node1's live restore as crashed and scaled the
+//! app back up in the middle of node1 replacing its volumes.
 
-use std::sync::Mutex;
 use std::time::Duration;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::error::Outcome;
+use crate::host::RealHost;
+use crate::ops::{self, Claim, Claimed, InFlight, Liveness};
+use crate::records::Store;
 use crate::routers::backup_common::*;
-use chrono::Utc;
+use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
 use tokio::process::Command;
 
-const RESTORES_CONFIGMAP: &str = "yolab-restores";
-const RESTORES_NS: &str = "kube-system";
+pub(crate) const RESTORES: Store = Store {
+    name: "yolab-restores",
+    namespace: "kube-system",
+    key: "sets",
+};
 const MAX_RESTORES: usize = 50;
 
 /// How long to wait for a PVC to actually disappear before failing the volume.
@@ -31,9 +43,8 @@ const PVC_DELETE_TIMEOUT_SECS: u64 = 180;
 const RD_TIMEOUT_SECS: u64 = 3600;
 const WATCHDOG_TICK_SECS: u64 = 30;
 
-/// Ids this process is actively restoring. Lost when the process dies — which is
-/// exactly what lets the watchdog distinguish "running" from "crashed".
-static RESTORE_IN_FLIGHT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Ids this process is actively restoring.
+pub(crate) static RESTORE_IN_FLIGHT: InFlight = InFlight::new();
 
 #[derive(Clone, Serialize, Deserialize)]
 struct DeploymentScale {
@@ -42,7 +53,7 @@ struct DeploymentScale {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct RestoreSet {
+pub(crate) struct RestoreSet {
     id: String,
     namespace: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,13 +66,29 @@ struct RestoreSet {
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scaled_deployments: Vec<DeploymentScale>,
+    #[serde(flatten)]
+    claim: Claim,
+}
+
+impl Claimed for RestoreSet {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn started_at(&self) -> &str {
+        &self.started_at
+    }
+    fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+    fn claim(&self) -> &Claim {
+        &self.claim
+    }
+    fn claim_mut(&mut self) -> &mut Claim {
+        &mut self.claim
+    }
 }
 
 // ── ConfigMap records ──────────────────────────────────────────────────────────
-
-fn parse_sets(raw: &str) -> Vec<RestoreSet> {
-    serde_json::from_str::<Vec<RestoreSet>>(raw).unwrap_or_default()
-}
 
 fn upsert(sets: &mut Vec<RestoreSet>, set: RestoreSet) {
     sets.retain(|s| s.id != set.id);
@@ -69,44 +96,20 @@ fn upsert(sets: &mut Vec<RestoreSet>, set: RestoreSet) {
     sets.truncate(MAX_RESTORES);
 }
 
-async fn read_sets() -> Vec<RestoreSet> {
-    let Ok(v) = crate::kubectl::get_json(&[
-        "get",
-        "configmap",
-        RESTORES_CONFIGMAP,
-        "-n",
-        RESTORES_NS,
-        "-o",
-        "json",
-    ])
-    .await
-    else {
-        return Vec::new();
-    };
-    parse_sets(v["data"]["sets"].as_str().unwrap_or("[]"))
+async fn read_sets() -> anyhow::Result<Vec<RestoreSet>> {
+    Ok(RESTORES.read(&RealHost).await?)
 }
 
-async fn write_sets(sets: &[RestoreSet]) {
-    let raw = serde_json::to_string(sets).unwrap_or_else(|_| "[]".into());
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {
-            "name": RESTORES_CONFIGMAP,
-            "namespace": RESTORES_NS,
-            "labels": { "app.kubernetes.io/managed-by": "yolab" },
-        },
-        "data": { "sets": raw },
-    });
-    let _ = crate::kubectl::apply(&manifest.to_string()).await;
-}
-
-async fn patch_set(id: &str, update: impl FnOnce(&mut RestoreSet)) {
-    let mut sets = read_sets().await;
-    if let Some(s) = sets.iter_mut().find(|s| s.id == id) {
-        update(s);
-        write_sets(&sets).await;
-    }
+/// Compare-and-swap update of one record. `update` may run more than once.
+async fn patch_set(id: &str, mut update: impl FnMut(&mut RestoreSet)) -> anyhow::Result<()> {
+    RESTORES
+        .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
+            if let Some(s) = sets.iter_mut().find(|s| s.id == id) {
+                update(s);
+            }
+        })
+        .await?;
+    Ok(())
 }
 
 // ── The operation ──────────────────────────────────────────────────────────────
@@ -117,10 +120,12 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
-    if crate::storage_heal::is_recovering().await {
-        anyhow::bail!(
+    match crate::storage_heal::recovery_running().await {
+        Ok(false) => {}
+        Ok(true) => anyhow::bail!(
             "storage is being recovered from backup — every app is restored as part of it"
-        );
+        ),
+        Err(e) => anyhow::bail!("cannot tell whether a storage recovery is running: {e:#}"),
     }
 
     // Resolve the snapshot up front so the record (and the page) always shows the
@@ -130,24 +135,37 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
         anyhow::bail!("no cluster-backup snapshot to restore from");
     };
 
-    let (id, original) = begin(namespace, &snapshot_id).await;
+    let (id, original, guard) = begin(namespace, &snapshot_id).await?;
     let task_id = id.clone();
     let ns = namespace.to_string();
     tokio::spawn(async move {
+        // Held for the whole run and dropped even if the task panics, so the
+        // claim can never outlive the work.
+        let _guard = guard;
         let result = run_restore(&ns, &snapshot_id, &cfg, &original).await;
-        finish(&task_id, &result).await;
+        record_done(&task_id, &result).await;
+        crate::runtime::wake("restore-watchdog");
     });
 
     Ok(id)
 }
 
 /// Records a restore as running and claims it for this process.
-async fn begin(namespace: &str, snapshot_id: &str) -> (String, Vec<DeploymentScale>) {
+///
+/// Fails — before touching the app — when the record cannot be written: a
+/// restore with no record is a restore the watchdog can never bring back up.
+async fn begin(
+    namespace: &str,
+    snapshot_id: &str,
+) -> anyhow::Result<(String, Vec<DeploymentScale>, ops::InFlightGuard)> {
     // Record the live replica counts BEFORE scaling down, so a crash mid-restore can
     // still bring the app back to a running state.
     let scaled_deployments = read_deployment_scales(namespace).await;
 
     let id = format!("rs-{}", random_hex(8));
+    // Claimed before the record exists, so this node's watchdog never sees the
+    // new record without the claim.
+    let guard = RESTORE_IN_FLIGHT.claim(&id);
     let set = RestoreSet {
         id: id.clone(),
         namespace: namespace.to_string(),
@@ -157,39 +175,28 @@ async fn begin(namespace: &str, snapshot_id: &str) -> (String, Vec<DeploymentSca
         finished_at: None,
         error: None,
         scaled_deployments: scaled_deployments.clone(),
+        claim: Claim::mine(Utc::now()),
     };
-    let mut sets = read_sets().await;
-    upsert(&mut sets, set);
-    write_sets(&sets).await;
-
-    RESTORE_IN_FLIGHT.lock().unwrap().push(id.clone());
-    (id, scaled_deployments)
-}
-
-async fn finish(id: &str, result: &anyhow::Result<bool>) {
-    record_done(id, result).await;
-    RESTORE_IN_FLIGHT.lock().unwrap().retain(|s| s != id);
+    RESTORES
+        .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
+            upsert(sets, set.clone())
+        })
+        .await?;
+    Ok((id, scaled_deployments, guard))
 }
 
 async fn record_done(id: &str, result: &anyhow::Result<bool>) {
     let finished_at = Utc::now().to_rfc3339();
-    match result {
-        Ok(_) => {
-            patch_set(id, |s| {
-                s.state = "succeeded".to_string();
-                s.finished_at = Some(finished_at);
-            })
-            .await
-        }
-        Err(e) => {
-            patch_set(id, |s| {
-                s.state = "failed".to_string();
-                s.finished_at = Some(finished_at);
-                s.error = Some(e.to_string());
-            })
-            .await
-        }
-    }
+    let error = result.as_ref().err().map(|e| e.to_string());
+    patch_set(id, |s| {
+        s.state = if error.is_none() { "succeeded" } else { "failed" }.to_string();
+        s.finished_at = Some(finished_at.clone());
+        s.error = error.clone();
+    })
+    .await
+    .warn_on_err(format!(
+        "restore {id}: could not record the outcome — the watchdog will treat it as abandoned"
+    ));
 }
 
 /// The actual restore, guarded so a failure always brings the app back up. The
@@ -204,7 +211,9 @@ async fn run_restore(
     let result = restore_inner(namespace, snapshot_id, cfg).await;
     if result.is_err() {
         for d in original {
-            let _ = scale_deployment(namespace, &d.name, d.replicas).await;
+            scale_deployment(namespace, &d.name, d.replicas)
+                .await
+                .warn_on_err(format!("restore of {namespace} failed; scale {} back up", d.name));
         }
     }
     result
@@ -216,8 +225,10 @@ async fn restore_inner(
     snapshot_id: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<bool> {
-    // 1. Scale the app down so its pods release the PVCs being replaced.
-    let _ = crate::kubectl::run(&[
+    // 1. Scale the app down so its pods release the PVCs being replaced. `?`: if
+    //    this did not happen, the pods still hold the volumes about to be deleted,
+    //    and nothing has been touched yet — stop here.
+    crate::kubectl::run(&[
         "scale",
         "deployment",
         "--all",
@@ -225,7 +236,7 @@ async fn restore_inner(
         namespace,
         "--replicas=0",
     ])
-    .await;
+    .await?;
 
     // 2. Pull the app's config + catalog from the chosen snapshot.
     let repo = cfg.restic_repo("cluster-backup");
@@ -427,9 +438,9 @@ pub(crate) async fn reinstall_from_backup(namespace: &str) -> anyhow::Result<()>
 
     crate::routers::apps::install_now(&app.app_id, &app.instance_name, &config).await?;
 
-    let (id, original) = begin(namespace, &snapshot_id).await;
+    let (id, original, _guard) = begin(namespace, &snapshot_id).await?;
     let result = run_restore(namespace, &snapshot_id, &cfg, &original).await;
-    finish(&id, &result).await;
+    record_done(&id, &result).await;
     result?;
 
     // Only now: wiring backups up earlier would have uploaded the empty volume the
@@ -499,7 +510,7 @@ async fn restore_volume(
     .await;
 
     // Delete the live PVC and wait for it to actually go away.
-    let _ = crate::kubectl::run(&[
+    crate::kubectl::run(&[
         "delete",
         "pvc",
         pvc,
@@ -508,7 +519,7 @@ async fn restore_volume(
         "--wait=false",
         "--ignore-not-found",
     ])
-    .await;
+    .await?;
     wait_for_pvc_deleted(namespace, pvc).await?;
 
     annotate_ns_privileged_movers(namespace).await;
@@ -687,7 +698,9 @@ async fn extract_file(
     )
     .await?;
     if !out.status.success() {
-        let _ = tokio::fs::remove_dir_all(&target).await;
+        tokio::fs::remove_dir_all(&target)
+            .await
+            .debug_on_err("clean up a failed restic restore");
         anyhow::bail!(
             "restic restore failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
@@ -769,17 +782,16 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
 
 // ── Read side ──────────────────────────────────────────────────────────────────
 
-fn in_flight_ids() -> Vec<String> {
-    RESTORE_IN_FLIGHT.lock().unwrap().clone()
+fn liveness_of(s: &RestoreSet) -> Liveness {
+    s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT, Utc::now())
 }
 
 /// Every recorded restore, newest first, classified into running/succeeded/failed.
-pub(crate) async fn list() -> Vec<Value> {
-    let sets = read_sets().await;
-    let in_flight: std::collections::HashSet<String> = in_flight_ids().into_iter().collect();
-    sets.iter()
+pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
+    let sets = read_sets().await?;
+    Ok(sets
+        .iter()
         .map(|s| {
-            let state = classify(s, in_flight.contains(&s.id));
             json!({
                 "id": s.id,
                 "namespace": s.namespace,
@@ -787,62 +799,104 @@ pub(crate) async fn list() -> Vec<Value> {
                 "started_at": s.started_at,
                 "finished_at": s.finished_at,
                 "error": s.error,
-                "state": state,
+                "state": classify(s, liveness_of(s)),
+                "node": s.claim.owner,
             })
         })
-        .collect()
+        .collect())
 }
 
-pub(crate) async fn is_running() -> bool {
-    let sets = read_sets().await;
-    let in_flight: std::collections::HashSet<String> = in_flight_ids().into_iter().collect();
-    sets.iter()
-        .any(|s| s.state == "running" && in_flight.contains(&s.id))
+/// Whether a restore is running on ANY node. `Err` when the records cannot be
+/// read — callers must not read that as "no".
+pub(crate) async fn running_anywhere() -> anyhow::Result<bool> {
+    let sets = read_sets().await?;
+    Ok(sets
+        .iter()
+        .any(|s| s.is_running() && liveness_of(s).is_live()))
 }
 
-fn classify(s: &RestoreSet, in_flight: bool) -> &'static str {
+fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
     match s.state.as_str() {
         "succeeded" => "succeeded",
         "failed" => "failed",
-        _ => {
-            if in_flight {
-                "running"
-            } else {
-                "failed"
-            }
-        }
+        _ if liveness.is_live() => "running",
+        _ => "failed",
     }
 }
 
-/// Background loop: any restore that is recorded "running" but no longer in flight
-/// means the driving process died — scale that app back up so it never stays dark.
-pub(crate) async fn run_watchdog() {
-    tokio::time::sleep(Duration::from_secs(60)).await;
-    loop {
-        let in_flight: std::collections::HashSet<String> = in_flight_ids().into_iter().collect();
-        let crashed: Vec<RestoreSet> = read_sets()
-            .await
-            .into_iter()
-            .filter(|s| s.state == "running" && !in_flight.contains(&s.id))
-            .collect();
+/// Restores recorded running whose driver is gone.
+fn abandoned(sets: &[RestoreSet], me: &str, now: chrono::DateTime<Utc>) -> Vec<RestoreSet> {
+    sets.iter()
+        .filter(|s| s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT, now) == Liveness::Abandoned)
+        .cloned()
+        .collect()
+}
+
+/// Brings an abandoned restore's app back up so it never stays dark.
+///
+/// Cluster-scoped: one node acts. Each record is re-checked inside the
+/// compare-and-swap that marks it failed, so a heartbeat that lands in between
+/// (the driver was only slow) wins and the app is left to its driver.
+pub struct RestoreWatchdogController;
+
+impl Controller for RestoreWatchdogController {
+    fn name(&self) -> &'static str {
+        "restore-watchdog"
+    }
+    fn scope(&self) -> Scope {
+        Scope::Cluster
+    }
+    fn interval(&self) -> Duration {
+        Duration::from_secs(WATCHDOG_TICK_SECS)
+    }
+    fn requires(&self) -> &'static [Requirement] {
+        &[Requirement::KubeApi]
+    }
+    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+        let now = Utc::now();
+        let crashed = abandoned(&read_sets().await?, &ctx.node, now);
+        if crashed.is_empty() {
+            return Ok(Tick::Idle("no abandoned restores".into()));
+        }
         for set in crashed {
+            let mut claimed_by_us = false;
+            let me = ctx.node.clone();
+            RESTORES
+                .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
+                    claimed_by_us = false;
+                    if let Some(s) = sets.iter_mut().find(|s| s.id == set.id) {
+                        if s.is_running()
+                            && s.liveness(&me, &RESTORE_IN_FLIGHT, now) == Liveness::Abandoned
+                        {
+                            s.state = "failed".to_string();
+                            s.finished_at = Some(now.to_rfc3339());
+                            s.error = Some("interrupted — scaled back up".to_string());
+                            claimed_by_us = true;
+                        }
+                    }
+                })
+                .await?;
+            if !claimed_by_us {
+                continue;
+            }
             tracing::warn!(
-                "restore {} ({}) crashed — scaling back up",
+                "restore {} ({}) was abandoned by {} — scaling back up",
                 set.id,
-                set.namespace
+                set.namespace,
+                if set.claim.owner.is_empty() { "an older local-api" } else { &set.claim.owner }
             );
             for d in &set.scaled_deployments {
-                let _ = scale_deployment(&set.namespace, &d.name, d.replicas).await;
+                scale_deployment(&set.namespace, &d.name, d.replicas)
+                    .await
+                    .warn_on_err(format!("restore {}: scale {} back up", set.id, d.name));
             }
-            patch_set(&set.id, |s| {
-                s.state = "failed".to_string();
-                s.finished_at = Some(Utc::now().to_rfc3339());
-                s.error = Some("interrupted — scaled back up".to_string());
-            })
-            .await;
         }
-        tokio::time::sleep(Duration::from_secs(WATCHDOG_TICK_SECS)).await;
+        Ok(Tick::Done)
     }
+}
+
+pub(crate) fn start_heartbeat() {
+    ops::spawn_heartbeat::<RestoreSet>(RESTORES, &RESTORE_IN_FLIGHT);
 }
 
 #[cfg(test)]
@@ -863,23 +917,50 @@ mod tests {
             },
             error: None,
             scaled_deployments: vec![],
+            claim: Claim::default(),
         }
     }
 
     #[test]
     fn succeeded_is_succeeded() {
-        assert_eq!(classify(&set("a", "succeeded"), false), "succeeded");
+        assert_eq!(classify(&set("a", "succeeded"), Liveness::Abandoned), "succeeded");
     }
 
     #[test]
     fn failed_is_failed() {
-        assert_eq!(classify(&set("a", "failed"), false), "failed");
+        assert_eq!(classify(&set("a", "failed"), Liveness::Driving), "failed");
     }
 
     #[test]
-    fn running_is_running_only_while_in_flight() {
-        assert_eq!(classify(&set("a", "running"), true), "running");
-        assert_eq!(classify(&set("a", "running"), false), "failed");
+    fn running_is_running_only_while_someone_drives_it() {
+        assert_eq!(classify(&set("a", "running"), Liveness::Driving), "running");
+        assert_eq!(classify(&set("a", "running"), Liveness::Remote), "running");
+        assert_eq!(classify(&set("a", "running"), Liveness::Abandoned), "failed");
+    }
+
+    #[test]
+    fn another_nodes_heartbeating_restore_is_never_abandoned() {
+        // The bug: node2's watchdog scaling node1's live restore back up.
+        let now = Utc::now();
+        let mut live = set("rs-live", "running");
+        live.claim = Claim {
+            owner: "node1".into(),
+            heartbeat: Some((now - chrono::Duration::seconds(10)).to_rfc3339()),
+        };
+        let mut dead = set("rs-dead", "running");
+        dead.claim = Claim {
+            owner: "node1".into(),
+            heartbeat: Some((now - chrono::Duration::seconds(600)).to_rfc3339()),
+        };
+        let mut mine_restarted = set("rs-mine", "running");
+        mine_restarted.claim = Claim {
+            owner: "node2".into(),
+            heartbeat: Some(now.to_rfc3339()),
+        };
+        let done = set("rs-done", "succeeded");
+        let found = abandoned(&[live, dead, mine_restarted, done], "node2", now);
+        let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["rs-dead", "rs-mine"]);
     }
 
     #[test]
@@ -889,12 +970,6 @@ mod tests {
         assert_eq!(sets.len(), 2);
         assert_eq!(sets[0].id, "a");
         assert_eq!(sets[0].state, "succeeded");
-    }
-
-    #[test]
-    fn parse_sets_ignores_garbage() {
-        assert!(parse_sets("nope").is_empty());
-        assert!(parse_sets("{}").is_empty());
     }
 
     #[test]

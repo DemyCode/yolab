@@ -20,7 +20,7 @@
 
 use std::{path::Path, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::host::Host;
@@ -173,35 +173,22 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
 
     // TLS off on purpose: Caddy terminates HTTPS at the edge and this is
     // reached only over the WireGuard mesh.
-    let _ = host
-        .ceph(&["config", "set", "mgr", "mgr/dashboard/ssl", "false"])
-        .await;
-    let _ = host
-        .ceph(&[
-            "config",
-            "set",
-            "mgr",
-            "mgr/dashboard/url_prefix",
-            &policy.url_prefix,
-        ])
-        .await;
     let port_s = policy.port.to_string();
-    let _ = host
-        .ceph(&["config", "set", "mgr", "mgr/dashboard/server_port", &port_s])
-        .await;
-    let _ = host
-        .ceph(&[
-            "config",
-            "set",
-            "mgr",
-            "mgr/dashboard/ssl_server_port",
-            &port_s,
-        ])
-        .await;
     let addr_key = format!("mgr/dashboard/{node}/server_addr");
-    let _ = host
-        .ceph(&["config", "set", "mgr", &addr_key, &policy.mon_addr])
-        .await;
+    // `?` on each: a setting that did not land is exactly the drift this unit
+    // exists to correct, and reporting success over it hid that until someone
+    // clicked a dead dashboard link.
+    for (key, value) in [
+        ("mgr/dashboard/ssl", "false"),
+        ("mgr/dashboard/url_prefix", policy.url_prefix.as_str()),
+        ("mgr/dashboard/server_port", port_s.as_str()),
+        ("mgr/dashboard/ssl_server_port", port_s.as_str()),
+        (addr_key.as_str(), policy.mon_addr.as_str()),
+    ] {
+        host.ceph(&["config", "set", "mgr", key, value])
+            .await
+            .with_context(|| format!("dashboard: config set mgr {key}"))?;
+    }
 
     let active = host
         .ceph_json(&["mgr", "stat"])

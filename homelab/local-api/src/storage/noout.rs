@@ -7,10 +7,17 @@
 //! multi-node cluster it saturates the WireGuard links copying data that was
 //! never lost. `set` runs as the unit's ExecStop (ceph-noout-set, at
 //! shutdown), `clear` as its ExecStart (ceph-noout-clear, at the next boot).
+//!
+//! THE MARKER FOLLOWS THE FLAG, NEVER THE ATTEMPT. The marker says "we set
+//! noout, so we may clear it". Both sides used to ignore the ceph command's
+//! result: a failed `unset` still deleted the marker — leaving noout on for
+//! good, so a genuinely dead disk was never re-replicated — and a failed `set`
+//! still wrote one, so the next boot would clear a noout an operator had set
+//! in the meantime.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::host::Host;
 
@@ -47,11 +54,17 @@ pub async fn clear<H: Host>(host: &H, root: &Path) -> Result<()> {
         return Ok(());
     }
     let marker = marker_path(root);
-    if marker.exists() {
-        let _ = host.ceph(&["osd", "unset", "noout"]).await;
-        let _ = std::fs::remove_file(&marker);
-        tracing::info!("noout-clear: cleared noout");
+    if !marker.exists() {
+        return Ok(());
     }
+    // `?` before touching the marker: if the flag is still set, the marker is
+    // the only record that it is ours to clear.
+    host.ceph(&["osd", "unset", "noout"])
+        .await
+        .context("noout-clear: ceph osd unset noout")?;
+    std::fs::remove_file(&marker)
+        .with_context(|| format!("noout-clear: remove {}", marker.display()))?;
+    tracing::info!("noout-clear: cleared noout");
     Ok(())
 }
 
@@ -65,13 +78,21 @@ pub async fn set<H: Host>(host: &H, root: &Path) -> Result<()> {
         tracing::info!("noout-set: ceph unreachable — leaving flags alone");
         return Ok(());
     }
-    if let Ok(dump) = host.ceph(&["osd", "dump"]).await {
-        if already_set(&dump) {
+    match host.ceph(&["osd", "dump"]).await {
+        Ok(dump) if already_set(&dump) => {
             tracing::info!("noout-set: noout already set by someone else — leaving it");
             return Ok(());
         }
+        Ok(_) => {}
+        Err(e) => {
+            // Not knowing whether someone else set it means not claiming it.
+            tracing::warn!("noout-set: could not read the flags ({e}) — leaving them alone");
+            return Ok(());
+        }
     }
-    let _ = host.ceph(&["osd", "set", "noout"]).await;
+    host.ceph(&["osd", "set", "noout"])
+        .await
+        .context("noout-set: ceph osd set noout")?;
     std::fs::create_dir_all(root.join("var/lib/ceph"))?;
     std::fs::write(marker_path(root), "")?;
     tracing::info!("noout-set: set noout for shutdown");
@@ -133,6 +154,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_unset_keeps_the_marker_so_the_next_boot_retries() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .fail("ceph osd unset noout", "Error EACCES: access denied");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("var/lib/ceph")).unwrap();
+        std::fs::write(marker_path(dir.path()), "").unwrap();
+
+        assert!(clear(&host, dir.path()).await.is_err());
+        assert!(marker_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
     async fn set_leaves_an_operators_own_noout_alone() {
         let host = FakeHost::new()
             .ok("ceph -s", "")
@@ -157,6 +191,30 @@ mod tests {
 
         assert!(host.ran("osd set noout"));
         assert!(marker_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_set_claims_nothing() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd dump", "flags sortbitwise")
+            .fail("ceph osd set noout", "Error EACCES: access denied");
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(set(&host, dir.path()).await.is_err());
+        assert!(!marker_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn unreadable_flags_claim_nothing() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .fail("ceph osd dump", "timed out");
+        let dir = tempfile::tempdir().unwrap();
+
+        set(&host, dir.path()).await.unwrap();
+        assert!(!host.ran("osd set noout"));
+        assert!(!marker_path(dir.path()).exists());
     }
 
     #[tokio::test]
