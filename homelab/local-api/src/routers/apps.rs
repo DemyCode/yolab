@@ -251,9 +251,9 @@ fn parse_saved_config(
     ns: &str,
     data: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<serde_json::Map<String, Value>> {
-    let raw = data
-        .get(CONFIG_SECRET_KEY)
-        .ok_or_else(|| anyhow::anyhow!("{ns}: the {CONFIG_SECRET} Secret has no {CONFIG_SECRET_KEY}"))?;
+    let raw = data.get(CONFIG_SECRET_KEY).ok_or_else(|| {
+        anyhow::anyhow!("{ns}: the {CONFIG_SECRET} Secret has no {CONFIG_SECRET_KEY}")
+    })?;
     serde_json::from_str(raw)
         .map_err(|e| anyhow::anyhow!("{ns}: the saved settings are unreadable: {e}"))
 }
@@ -2725,16 +2725,23 @@ mod tests {
     #[test]
     fn saved_settings_are_read_exactly_or_reported() {
         use std::collections::HashMap;
-        let ok = HashMap::from([(CONFIG_SECRET_KEY.to_string(), r#"{"password":"hunter2"}"#.to_string())]);
+        let ok = HashMap::from([(
+            CONFIG_SECRET_KEY.to_string(),
+            r#"{"password":"hunter2"}"#.to_string(),
+        )]);
         let cfg = parse_saved_config("yolab-a", &ok).unwrap();
         assert_eq!(cfg["password"], "hunter2");
 
         let missing = HashMap::new();
-        let e = parse_saved_config("yolab-a", &missing).unwrap_err().to_string();
+        let e = parse_saved_config("yolab-a", &missing)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains(CONFIG_SECRET_KEY), "{e}");
 
         let junk = HashMap::from([(CONFIG_SECRET_KEY.to_string(), "not json".to_string())]);
-        let e = parse_saved_config("yolab-a", &junk).unwrap_err().to_string();
+        let e = parse_saved_config("yolab-a", &junk)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("unreadable"), "{e}");
     }
 }

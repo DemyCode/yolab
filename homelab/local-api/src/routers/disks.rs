@@ -110,7 +110,10 @@ fn disk_info(disk_id: &str, desired: &str, meta: Option<&Value>) -> DiskInfo {
 /// Every disk the page should show, by node: every record (connected or not),
 /// plus every connected disk that has no record yet — the system disk, which
 /// never needs one, and a disk seen before its first registration.
-fn disk_list(desired: &HashMap<String, String>, live: &Inventory) -> HashMap<String, Vec<DiskInfo>> {
+fn disk_list(
+    desired: &HashMap<String, String>,
+    live: &Inventory,
+) -> HashMap<String, Vec<DiskInfo>> {
     let mut result: HashMap<String, Vec<DiskInfo>> = HashMap::new();
     let mut listed: std::collections::HashSet<(String, String)> = Default::default();
 
@@ -128,7 +131,11 @@ fn disk_list(desired: &HashMap<String, String>, live: &Inventory) -> HashMap<Str
         };
         let meta = live.get(&node).and_then(|m| m.get(disk_id));
         // The system disk is ON whatever a record says (`wants_on`).
-        let setting = if disk_id == SYSTEM_OSD_ID { "ON" } else { setting };
+        let setting = if disk_id == SYSTEM_OSD_ID {
+            "ON"
+        } else {
+            setting
+        };
         listed.insert((node.clone(), disk_id.to_string()));
         result
             .entry(node)
@@ -141,7 +148,11 @@ fn disk_list(desired: &HashMap<String, String>, live: &Inventory) -> HashMap<Str
             if listed.contains(&(node.clone(), disk_id.clone())) {
                 continue;
             }
-            let setting = if disk_id == SYSTEM_OSD_ID { "ON" } else { "OFF" };
+            let setting = if disk_id == SYSTEM_OSD_ID {
+                "ON"
+            } else {
+                "OFF"
+            };
             result
                 .entry(node.clone())
                 .or_default()
@@ -242,10 +253,14 @@ pub async fn erase_disk(
     let node_payload: Value = match settings::get_json(&RealHost, &key).await {
         Ok(Some(v)) => v,
         Ok(None) => {
-            return Json(serde_json::json!({"ok": false, "error": "this node has not published its disks yet"}))
+            return Json(
+                serde_json::json!({"ok": false, "error": "this node has not published its disks yet"}),
+            )
         }
         Err(e) => {
-            return Json(serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")}))
+            return Json(
+                serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")}),
+            )
         }
     };
 
@@ -465,7 +480,10 @@ mod tests {
     #[test]
     fn a_hardware_id_record_is_listed_under_the_node_that_sees_the_disk() {
         let desired = HashMap::from([("serial-wwn-0xabc".to_string(), "OFF".to_string())]);
-        let live = inventory("node3", serde_json::json!({"serial-wwn-0xabc": {"device": "sdb"}}));
+        let live = inventory(
+            "node3",
+            serde_json::json!({"serial-wwn-0xabc": {"device": "sdb"}}),
+        );
 
         let list = disk_list(&desired, &live);
 
@@ -477,14 +495,20 @@ mod tests {
     fn the_system_disk_is_shown_on_whatever_a_record_says() {
         let desired = HashMap::from([("node1--system".to_string(), "OFF".to_string())]);
         let live = inventory("node1", serde_json::json!({"system": {"is_loop": true}}));
-        assert_eq!(ids(&disk_list(&desired, &live)["node1"]), vec![("system", "ON", true)]);
+        assert_eq!(
+            ids(&disk_list(&desired, &live)["node1"]),
+            vec![("system", "ON", true)]
+        );
     }
 
     #[test]
     fn an_unreadable_node_inventory_is_left_out_not_guessed() {
         let published = BTreeMap::from([
             ("node1".to_string(), "not json".to_string()),
-            ("node2".to_string(), r#"{"disks":{"dev-sda":{}}}"#.to_string()),
+            (
+                "node2".to_string(),
+                r#"{"disks":{"dev-sda":{}}}"#.to_string(),
+            ),
         ]);
         let live = parse_inventory(&published);
         assert!(!live.contains_key("node1"));
@@ -499,9 +523,15 @@ mod tests {
         });
         let row = disk_info("dev-sdb", "ON", Some(&meta));
         assert_eq!((row.device.as_str(), row.model.as_str()), ("sdb", "WD"));
-        assert_eq!((row.size_bytes, row.osd_id, row.attempts), (1000, Some(4), 2));
+        assert_eq!(
+            (row.size_bytes, row.osd_id, row.attempts),
+            (1000, Some(4), 2)
+        );
         assert!(row.is_our_osd && row.connected && !row.mounted);
-        assert_eq!((row.phase.as_str(), row.message.as_str()), ("active", "In use"));
+        assert_eq!(
+            (row.phase.as_str(), row.message.as_str()),
+            ("active", "In use")
+        );
     }
 
     #[test]
