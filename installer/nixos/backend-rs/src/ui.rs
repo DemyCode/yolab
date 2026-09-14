@@ -426,7 +426,7 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
     render_input(
         f,
         url_rect,
-        "Node URL  (e.g. https://node1.user.demycode.ovh)",
+        "Node URL  (e.g. https://node1.user.yolab.io)",
         &app.join_url,
         false,
         app.join_field == 0,

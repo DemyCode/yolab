@@ -64,10 +64,10 @@ mod tests {
 
     #[test]
     fn reads_the_configured_dns_url() {
-        let (_d, path) = config_with("[tunnel]\ndns_url = \"https://example.yolab.dev\"\n");
+        let (_d, path) = config_with("[tunnel]\ndns_url = \"https://example.yolab.io\"\n");
         assert_eq!(
             read_dns_url(&path).as_deref(),
-            Some("https://example.yolab.dev")
+            Some("https://example.yolab.io")
         );
     }
 
@@ -88,22 +88,22 @@ mod tests {
 
     #[test]
     fn format_banner_shows_the_url_and_qr_art_when_configured() {
-        let out = format_banner(Some("https://example.yolab.dev"), Some("[qr art]"));
+        let out = format_banner(Some("https://example.yolab.io"), Some("[qr art]"));
         assert!(out.contains("[qr art]"));
-        assert!(out.contains("YoLab Management: https://example.yolab.dev"));
+        assert!(out.contains("YoLab Management: https://example.yolab.io"));
     }
 
     #[test]
     fn format_banner_still_shows_the_url_if_qrencode_failed() {
-        let out = format_banner(Some("https://example.yolab.dev"), None);
-        assert!(out.contains("YoLab Management: https://example.yolab.dev"));
+        let out = format_banner(Some("https://example.yolab.io"), None);
+        assert!(out.contains("YoLab Management: https://example.yolab.io"));
     }
 
     #[tokio::test]
     async fn writes_the_url_and_qr_art_when_configured() {
-        let (_d, config_path) = config_with("[tunnel]\ndns_url = \"https://example.yolab.dev\"\n");
+        let (_d, config_path) = config_with("[tunnel]\ndns_url = \"https://example.yolab.io\"\n");
         let host = FakeHost::new().ok(
-            "qrencode -t UTF8 -m 1 https://example.yolab.dev",
+            "qrencode -t UTF8 -m 1 https://example.yolab.io",
             "[qr art]",
         );
         let issue_dir = tempfile::tempdir().unwrap();
@@ -113,7 +113,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&issue_path).unwrap();
         assert!(content.contains("[qr art]"));
-        assert!(content.contains("YoLab Management: https://example.yolab.dev"));
+        assert!(content.contains("YoLab Management: https://example.yolab.io"));
     }
 
     #[tokio::test]

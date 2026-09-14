@@ -165,8 +165,8 @@ mod tests {
     #[test]
     fn a_bare_host_gets_https() {
         assert_eq!(
-            normalise_url("node1.5.demycode.ovh").unwrap(),
-            "https://node1.5.demycode.ovh"
+            normalise_url("node1.5.yolab.io").unwrap(),
+            "https://node1.5.yolab.io"
         );
     }
 

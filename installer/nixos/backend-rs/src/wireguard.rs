@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 
-pub const PLATFORM_API: &str = "https://api.demycode.ovh";
+pub const PLATFORM_API: &str = "https://api.yolab.io";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct TunnelResult {

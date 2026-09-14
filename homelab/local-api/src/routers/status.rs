@@ -27,7 +27,7 @@ pub struct StatusInfo {
 /// `tunnel.platform_api_url` and none has a console setting — asking owners to
 /// add one by hand to get a link back would mean nobody has the link. The two
 /// hosts are the same deployment under different subdomains
-/// (`api.demycode.ovh` -> `console.demycode.ovh`), so the API URL already
+/// (`api.yolab.io` -> `console.yolab.io`), so the API URL already
 /// carries the answer.
 ///
 /// Conservative on purpose: anything that is not recognisably an `api.` host
@@ -209,13 +209,13 @@ mod tests {
     #[test]
     fn derives_the_console_host_from_the_api_host() {
         assert_eq!(
-            console_url_from_api("https://api.demycode.ovh").as_deref(),
-            Some("https://console.demycode.ovh")
+            console_url_from_api("https://api.yolab.io").as_deref(),
+            Some("https://console.yolab.io")
         );
         // A trailing slash is normal in config and must not become a double one.
         assert_eq!(
-            console_url_from_api("https://api.demycode.ovh/").as_deref(),
-            Some("https://console.demycode.ovh")
+            console_url_from_api("https://api.yolab.io/").as_deref(),
+            Some("https://console.yolab.io")
         );
     }
 
@@ -237,7 +237,7 @@ mod tests {
     /// than a button that goes nowhere.
     #[test]
     fn anything_unrecognisable_yields_no_link() {
-        for bad in ["", "   ", "not a url", "api.demycode.ovh", "https://api."] {
+        for bad in ["", "   ", "not a url", "api.yolab.io", "https://api."] {
             assert_eq!(console_url_from_api(bad), None, "{bad:?}");
         }
     }

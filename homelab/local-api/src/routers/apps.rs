@@ -2416,8 +2416,8 @@ mod tests {
     #[test]
     fn derive_domain_drops_subdomain() {
         assert_eq!(
-            derive_domain("https://yolab.10.demycode.ovh"),
-            "10.demycode.ovh"
+            derive_domain("https://yolab.10.yolab.io"),
+            "10.yolab.io"
         );
         assert_eq!(derive_domain("http://node1.example.com/"), "example.com");
     }

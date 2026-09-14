@@ -153,12 +153,12 @@ impl App {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         // Kick off network readiness check immediately — retries every second
-        // until api.demycode.ovh resolves (NetworkManager + DHCP may not be up yet).
+        // until api.yolab.io resolves (NetworkManager + DHCP may not be up yet).
         {
             let tx2 = tx.clone();
             tokio::spawn(async move {
                 loop {
-                    if tokio::net::lookup_host("api.demycode.ovh:443")
+                    if tokio::net::lookup_host("api.yolab.io:443")
                         .await
                         .is_ok()
                     {

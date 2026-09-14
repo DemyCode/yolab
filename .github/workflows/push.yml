@@ -95,7 +95,7 @@ jobs:
         if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "$ATTIC_AUTH_TOKEN"
+          nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
           # Push the FULL closure of what THIS bucket built — ceph and every one
           # of its build dependencies included. An older version of this grepped
           # store paths out of the build log, which captured the .drv files but
@@ -395,7 +395,7 @@ jobs:
         if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "$ATTIC_AUTH_TOKEN"
+          nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
           nix run nixpkgs#attic-client -- push yolab \
             "${{ steps.build_homelab.outputs.ui_store_path }}" \
             "${{ steps.build_homelab.outputs.api_store_path }}"
@@ -441,7 +441,7 @@ jobs:
         if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.demycode.ovh "$ATTIC_AUTH_TOKEN"
+          nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
           nix run nixpkgs#attic-client -- push yolab \
             "${{ steps.build_iso.outputs.store_path }}"
 
