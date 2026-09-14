@@ -47,9 +47,9 @@ in {
       requiredBy = ["ceph-mds-${host}.service"];
       serviceConfig = {
         Type = "oneshot";
-        # NOT RemainAfterExit — see the same note on yolab-ceph-mgr-key: the
-        # retry timer below cannot re-arm while this unit stays active, and
-        # `requiredBy` on ceph-mds holds fine without it.
+        # NOT RemainAfterExit — see the same note on yolab-ceph-mgr-key: it lets
+        # each ceph-mds start re-run this, and `requiredBy` on ceph-mds holds
+        # fine without it.
         #
         # `Type=oneshot` disables the start timeout by default; see the note on
         # yolab-ceph-bootstrap in default.nix for what that cost.
@@ -64,23 +64,8 @@ in {
       '';
     };
 
-    # Without this a joining node's MDS stays down until the next reboot: a
-    # failed oneshot is never retried on its own, and on a joining node the
-    # first attempt necessarily runs before the cluster credentials arrive.
-    #
-    # The service is deliberately not RemainAfterExit, because systemd re-arms
-    # a timer only when the unit it triggers goes inactive or failed — no timer
-    # base changes that. And OnUnitInactiveSec rather than OnCalendar, because a
-    # calendar timer counts from the last trigger and re-fires instantly after
-    # any run that outlived its interval. Same reasoning, and the same live
-    # evidence, as yolab-containerd-store's timer; see its fuller writeup.
-    systemd.timers.yolab-ceph-mds-key = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "2min";
-        OnUnitInactiveSec = "5min";
-      };
-    };
+    # Re-run by the `ceph-keys` controller (controllers.rs), which mints the MDS
+    # key and starts the daemon.
 
     systemd.tmpfiles.rules = [
       "d /var/lib/ceph/mds 0750 ceph ceph -"

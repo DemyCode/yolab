@@ -59,7 +59,6 @@ pub enum CmdError {
     Failed {
         cmd: String,
         kind: Failure,
-        code: Option<i32>,
         stderr: String,
     },
     /// It answered, but not in a shape we understand. Never "empty".
@@ -71,17 +70,6 @@ pub enum CmdError {
 }
 
 impl CmdError {
-    pub fn cmd(&self) -> &str {
-        match self {
-            CmdError::Spawn { cmd, .. }
-            | CmdError::Timeout { cmd, .. }
-            | CmdError::Failed { cmd, .. }
-            | CmdError::Parse { cmd, .. }
-            | CmdError::Busy { cmd }
-            | CmdError::Forbidden { cmd } => cmd,
-        }
-    }
-
     /// The failure kind for a command that ran; `None` for every way of not
     /// getting an answer at all.
     pub fn failure(&self) -> Option<Failure> {
@@ -122,6 +110,7 @@ impl CmdError {
     /// A scripted failure for tests and fakes, classified exactly the way a real
     /// one would be so a fake cannot disagree with production about what an
     /// error means.
+    #[cfg(test)]
     pub fn failed(cmd: impl Into<String>, stderr: impl Into<String>) -> Self {
         let cmd = cmd.into();
         let stderr = stderr.into();
@@ -134,7 +123,6 @@ impl CmdError {
         }
         CmdError::Failed {
             kind: classify(bin, &stderr),
-            code: None,
             cmd,
             stderr,
         }
@@ -290,14 +278,13 @@ pub async fn output(
 /// `output`, but a non-zero exit is an error classified by `classify`.
 pub async fn checked(bin: &str, args: &[&str], timeout: Duration) -> Result<String, CmdError> {
     let out = output(bin, args, timeout).await?;
-    into_checked(bin, args, out, None)
+    into_checked(bin, args, out)
 }
 
 pub(crate) fn into_checked(
     bin: &str,
     args: &[&str],
     out: CommandOutput,
-    code: Option<i32>,
 ) -> Result<String, CmdError> {
     if out.success {
         return Ok(out.stdout);
@@ -306,7 +293,6 @@ pub(crate) fn into_checked(
     Err(CmdError::Failed {
         cmd: render(bin, args),
         kind: classify(bin, &stderr),
-        code,
         stderr,
     })
 }
@@ -351,7 +337,6 @@ pub async fn with_stdin(
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         },
-        out.status.code(),
     )
 }
 

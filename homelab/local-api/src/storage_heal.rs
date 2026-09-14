@@ -41,7 +41,7 @@
 //! the recovery steps own `recovery` — so a button press on one node and a tick on
 //! another can no longer overwrite each other.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::time::Duration;
 
@@ -64,7 +64,6 @@ const STATE: Store = Store {
     namespace: "kube-system",
     key: "state",
 };
-const CSI_NS: &str = "rook-ceph";
 const MANAGED_SELECTOR: &str = "yolab.io/managed=true";
 
 const FS_NAME: &str = destructive::RECOVERABLE_FS;
@@ -1048,6 +1047,7 @@ pub async fn get_preview(State(_s): State<AppState>) -> (StatusCode, Json<Value>
 mod tests {
     use super::*;
     use crate::host::fake::FakeHost;
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     const NOW: u64 = 1_000_000;

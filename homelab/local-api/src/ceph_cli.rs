@@ -76,7 +76,6 @@ async fn run_bin(bin: &str, args: &[&str]) -> Result<String, CmdError> {
     Err(CmdError::Failed {
         cmd: exec::render(bin, args),
         kind: exec::classify(bin, stderr),
-        code: None,
         stderr: last,
     })
 }
@@ -163,7 +162,7 @@ async fn ceph_volume_inner(args: &[&str]) -> Result<String, CmdError> {
     // ignores SIGKILL; keeping the RBD out of LVM's scan (images-store.nix) is
     // what stops lvs blocking in the first place.
     let out = exec::output("ceph-volume", args, CEPH_VOLUME_TIMEOUT).await?;
-    exec::into_checked("ceph-volume", args, out, None)
+    exec::into_checked("ceph-volume", args, out)
 }
 
 /// Callers compare this against the fsid in a disk's BlueStore superblock to

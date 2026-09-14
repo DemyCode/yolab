@@ -302,9 +302,11 @@ async fn once_per_boot<H: Host>(marker: &std::path::Path, host: &H) -> Result<Ti
     if marker.exists() {
         return Ok(Tick::Idle("already done this boot".into()));
     }
-    // Rook may not have created the DaemonSet yet; a later tick tries again.
+    // Rook may not have created the DaemonSet yet; a later tick tries again —
+    // sooner than the interval, because the first mount after boot is what waits
+    // on it.
     if !crate::csi::plugin_daemonset_exists(host).await? {
-        return Ok(Tick::Idle("waiting for Rook to create the CSI plugin".into()));
+        return Ok(Tick::RequeueAfter(Duration::from_secs(15)));
     }
     crate::csi::restart_plugins(host, crate::csi::Which::ThisNode).await;
     if let Some(dir) = marker.parent() {
@@ -347,7 +349,7 @@ mod tests {
         );
         assert!(matches!(
             once_per_boot(&marker, &host).await.unwrap(),
-            Tick::Idle(_)
+            Tick::RequeueAfter(_)
         ));
         assert!(!marker.exists());
         assert!(!host.ran("delete pod"));

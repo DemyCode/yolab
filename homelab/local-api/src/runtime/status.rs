@@ -133,6 +133,7 @@ impl Registry {
         n
     }
 
+    #[cfg(test)]
     pub fn get(&self, name: &str) -> Option<ControllerStatus> {
         self.inner
             .read()

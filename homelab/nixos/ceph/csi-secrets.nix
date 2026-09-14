@@ -45,22 +45,6 @@ in {
       path = with pkgs; [ceph ceph-client k3s];
     };
 
-    # Re-runs so credentials appear once both Ceph and k3s are up, and so a mon
-    # address change propagates without a reboot.
-    systemd.timers.yolab-ceph-csi-secrets = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "4min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
-        # measures from when the run STARTED, so a run that outlives the interval
-        # leaves the next elapse already in the past and systemd re-fires it in the
-        # same second (see yolab-containerd-store's timer for the outage that
-        # caused). This one measures from when the run ENDED, which is both immune
-        # to that and already covers the failed-attempt case the removed directive
-        # was paired in for — a failed unit ends inactive too. It was also always
-        # the smaller of the two here, so this changes nothing in the healthy path.
-        OnUnitInactiveSec = "2min";
-      };
-    };
+    # Re-run by the `csi-secrets` controller (controllers.rs).
   };
 }

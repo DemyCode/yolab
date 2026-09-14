@@ -224,7 +224,7 @@ in {
     # cannot start until it succeeds. That is also why the join path *fails*
     # rather than exiting 0 when the seed is unreachable: a failed unit keeps
     # the mon from starting against a store that was never created, and the
-    # retry timer below re-runs it until the other machine answers.
+    # `ceph-join` controller re-runs it until the other machine answers.
     systemd.services.yolab-ceph-bootstrap = {
       description =
         if isBootstrap
@@ -269,31 +269,9 @@ in {
       '';
     };
 
-    # Retry, for joining nodes only. The other machine can be rebooting, or its
-    # WireGuard may not be up yet — neither is a fault, and neither should mean
-    # a machine sits permanently outside the storage cluster until someone
-    # notices. The bootstrap node has nothing to retry: its work is local.
-    #
-    # OnUnitInactiveSec, and deliberately not OnUnitActiveSec beside it. A failed
-    # attempt ends inactive just as a successful one does, so this single
-    # directive covers both — which is the whole reason the pair existed. And the
-    # removed one measured from when the run STARTED: with TimeoutStartSec at
-    # 300s against a 2min interval, a slow join left the next elapse already in
-    # the past when it finished, re-firing instantly (see yolab-containerd-store's
-    # timer for what that cost on a unit that stops k3s). It was also the larger
-    # of the two, so it never chose the schedule anyway.
-    #
-    # This unit keeps RemainAfterExit — see the allowlist in nix/checks.nix: a
-    # successful join genuinely has nothing left to retry, and ceph-mon requires
-    # it. That does mean this timer stops after the first success, which here is
-    # correct rather than the bug it is everywhere else.
-    systemd.timers.yolab-ceph-bootstrap = mkIf (!isBootstrap) {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "1min";
-        OnUnitInactiveSec = "2min";
-      };
-    };
+    # A joining node whose first bootstrap failed is retried by the `ceph-join`
+    # controller (see controllers.rs), not a timer. The oneshot above still runs
+    # it once at boot, and keeps RemainAfterExit because ceph-mon requires it.
 
     # ── Quorum membership ────────────────────────────────────────────────────
     # Having a mon store and a running daemon is not the same as being in the
@@ -326,21 +304,7 @@ in {
       environment.YOLAB_CEPH_MON_ADDR = cfg.monAddr;
     };
 
-    systemd.timers.yolab-ceph-mon-member = mkIf (!isBootstrap) {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "3min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
-        # measures from when the run STARTED, so a run that outlives the interval
-        # leaves the next elapse already in the past and systemd re-fires it in the
-        # same second (see yolab-containerd-store's timer for the outage that
-        # caused). This one measures from when the run ENDED, which is both immune
-        # to that and already covers the failed-attempt case the removed directive
-        # was paired in for — a failed unit ends inactive too. It was also always
-        # the smaller of the two here, so this changes nothing in the healthy path.
-        OnUnitInactiveSec = "2min";
-      };
-    };
+    # Re-run by the `mon-member` controller (controllers.rs), not a timer.
     # ── mgr key ──────────────────────────────────────────────────────────────
     # The mgr refuses to start without its own cephx key, and only the mon can
     # mint one — so this has to happen between the two.
@@ -352,13 +316,12 @@ in {
       requiredBy = ["ceph-mgr-${host}.service"];
       serviceConfig = {
         Type = "oneshot";
-        # NOT RemainAfterExit: the retry timer below cannot re-arm while this
-        # unit stays active (see its comment). `requiredBy` on ceph-mgr still
-        # holds without it — a Requires= dependency is satisfied by the oneshot
-        # having *completed*, and a oneshot exiting on its own never enqueues
-        # the stop job that would propagate to the requirer. It also means each
-        # ceph-mgr start re-runs this, which is what you want from a unit whose
-        # whole job is "make sure the key exists".
+        # NOT RemainAfterExit, so each ceph-mgr start re-runs it — a unit whose
+        # whole job is "make sure the key exists" should not stop trying.
+        # `requiredBy` on ceph-mgr still holds without it: a Requires= dependency
+        # is satisfied by the oneshot having *completed*, and a oneshot exiting
+        # on its own never enqueues the stop job that would propagate to the
+        # requirer.
         TimeoutStartSec = "180s";
         ExecStart = "${localApiEnv}/bin/local-api storage mgr-key";
       };
@@ -371,31 +334,8 @@ in {
       '';
     };
 
-    # The mon may not exist yet — on a joining node it does not until the
-    # cluster hands over its credentials. Without this the mgr would stay down
-    # until the next reboot, because a failed oneshot is never retried on its
-    # own.
-    #
-    # What makes this retry actually retry is that the service is no longer
-    # RemainAfterExit — systemd only re-arms a timer once the unit it triggers
-    # goes inactive or failed, whatever the timer base. Moving to OnCalendar
-    # alone did not fix it: on the live node this timer showed `NEXT: -` with a
-    # last trigger two days old, so a key deleted or revoked out-of-band would
-    # never have been recreated.
-    #
-    # OnUnitInactiveSec rather than OnCalendar, for the reason written out in
-    # full on yolab-containerd-store's timer: a calendar timer counts from the
-    # last trigger, so a run that outlives its interval re-fires the instant it
-    # ends. This unit is bounded well under 5min so it would not hit that today,
-    # but there is no reason to keep the shape that can. nix/checks.nix fails the
-    # build if the RemainAfterExit pairing returns.
-    systemd.timers.yolab-ceph-mgr-key = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "2min";
-        OnUnitInactiveSec = "5min";
-      };
-    };
+    # A joining node's mgr key is re-minted by the `ceph-keys` controller
+    # (controllers.rs), not a timer. The oneshot above runs it once at boot.
 
     # ── OSD daemons ──────────────────────────────────────────────────────────
     # A systemd *template* unit, because Ceph assigns an OSD its id at creation
@@ -505,8 +445,8 @@ in {
         # clean stop, so Restart=on-failure does not apply) and it stayed down.
         #
         # Without it the unit ends `inactive`, so switch-to-configuration starts
-        # it again on every rebuild, and the timer below re-asserts it
-        # periodically. Every step it takes is `systemctl start` on an already
+        # it again on every rebuild, and the `osd-activate` controller re-asserts
+        # it periodically. Every step it takes is `systemctl start` on an already
         # running unit, which is a no-op, so running it often is free.
         TimeoutStartSec = "600s";
         ExecStart = "${localApiEnv}/bin/local-api storage osd-activate";
@@ -514,25 +454,7 @@ in {
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
     };
 
-    # Re-assert the OSDs periodically as well as at boot. local-api's reconciler
-    # does the same thing and is usually first, but it needs Kubernetes and the
-    # disk map to decide anything; this needs neither, so it keeps working in
-    # exactly the situations that stop the reconciler.
-    systemd.timers.yolab-ceph-osd-activate = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "3min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
-        # measures from when the run STARTED, so a run that outlives the interval
-        # leaves the next elapse already in the past and systemd re-fires it in the
-        # same second (see yolab-containerd-store's timer for the outage that
-        # caused). This one measures from when the run ENDED, which is both immune
-        # to that and already covers the failed-attempt case the removed directive
-        # was paired in for — a failed unit ends inactive too. It was also always
-        # the smaller of the two here, so this changes nothing in the healthy path.
-        OnUnitInactiveSec = "2min";
-      };
-    };
+    # Re-asserted by the `osd-activate` controller (controllers.rs), not a timer.
 
     environment.systemPackages = with pkgs; [
       ceph

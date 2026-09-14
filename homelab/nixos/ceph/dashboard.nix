@@ -78,24 +78,6 @@ in {
       };
     };
 
-    # Re-assert periodically. A mgr failover moves the dashboard to another
-    # node, and a node that has never been active has still had its config set
-    # here, so the move needs nothing to happen. This is for the case where the
-    # module got disabled or the config was cleared by hand.
-    systemd.timers.yolab-ceph-dashboard = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "4min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
-        # measures from when the run STARTED, so a run that outlives the interval
-        # leaves the next elapse already in the past and systemd re-fires it in the
-        # same second (see yolab-containerd-store's timer for the outage that
-        # caused). This one measures from when the run ENDED, which is both immune
-        # to that and already covers the failed-attempt case the removed directive
-        # was paired in for — a failed unit ends inactive too. It was also always
-        # the smaller of the two here, so this changes nothing in the healthy path.
-        OnUnitInactiveSec = "2min";
-      };
-    };
+    # Re-asserted by the `ceph-dashboard` controller (controllers.rs).
   };
 }
