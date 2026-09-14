@@ -693,7 +693,7 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
     }
 
     mark_progress(&mut meta);
-    write_status(host, node, &meta, disk_to_osd.is_some()).await;
+    write_status(host, node, &meta).await;
     Ok(())
 }
 
@@ -2723,12 +2723,7 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
 /// is unreachable — never a default — because callers compare it against a
 /// disk's BlueStore label to tell our disks from a stranger's, and an empty
 /// string would make every foreign disk match.
-async fn write_status<H: Host>(
-    host: &H,
-    node: &str,
-    meta: &HashMap<String, Disk>,
-    osd_map_known: bool,
-) {
+async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk>) {
     // Only `disks`. There used to be an `effective` device list here, assembled
     // for the leader to write into the Rook CephCluster CR. There is no CR any
     // more — each node creates its own OSDs — and nothing had read the field
@@ -2740,13 +2735,7 @@ async fn write_status<H: Host>(
         .iter()
         .map(|(k, d)| (k.as_str(), d.to_value()))
         .collect();
-    // storage_heal reads a disk's absence from this map as proof it was unplugged,
-    // which only holds for a report that is recent and whose OSD ids were known.
-    let payload = json!({
-        "disks": wire,
-        "published_at": chrono::Utc::now().timestamp(),
-        "osd_map_known": osd_map_known,
-    });
+    let payload = json!({ "disks": wire });
     let json_val = serde_json::to_string(&payload).unwrap_or_default();
     let patch = json!({"data": {node: json_val}}).to_string();
     if host
