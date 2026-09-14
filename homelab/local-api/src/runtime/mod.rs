@@ -113,7 +113,9 @@ impl Ctx {
     /// same work — two drivers of one destructive operation. Always true for a
     /// node-scoped controller.
     pub fn still_in_charge(&self) -> bool {
-        self.leader.as_ref().is_none_or(leader::Leadership::is_leader)
+        self.leader
+            .as_ref()
+            .is_none_or(leader::Leadership::is_leader)
     }
 }
 
@@ -502,11 +504,19 @@ mod tests {
             leader::Leadership::fixed_for_tests(true),
         );
         tokio::time::sleep(Duration::from_secs(15)).await;
-        assert_eq!(runs.load(Ordering::SeqCst), 2, "requeued long before the hour");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "requeued long before the hour"
+        );
         let s = registry().get("test-impatient").expect("registered");
         assert_eq!(s.last_note.as_deref(), Some("nothing left to do"));
         assert_eq!(s.phase, Phase::Idle);
         tokio::time::sleep(Duration::from_secs(60)).await;
-        assert_eq!(runs.load(Ordering::SeqCst), 2, "an idle tick waits the interval");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "an idle tick waits the interval"
+        );
     }
 }

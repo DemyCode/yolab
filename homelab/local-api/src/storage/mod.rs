@@ -303,7 +303,11 @@ mod tests {
         let env = StorageEnv::from_lookup(|k| vars.get(k).map(|v| v.to_string()));
         let b = env.bootstrap_args();
         assert_eq!(
-            (b.fsid.as_str(), b.join_seed_addr.as_str(), b.config_path.as_str()),
+            (
+                b.fsid.as_str(),
+                b.join_seed_addr.as_str(),
+                b.config_path.as_str()
+            ),
             ("abc", "fd00::2", "/etc/yolab.toml")
         );
         assert_eq!(env.mon_member_args().mon_addr, "fd00::1");
@@ -318,9 +322,9 @@ mod tests {
     #[test]
     fn unparseable_numbers_fall_back_to_their_defaults() {
         let env = StorageEnv::from_lookup(|k| match k {
-            "YOLAB_CEPH_IMAGES_SHARE" | "YOLAB_CEPH_IMAGES_MIN_GB" | "YOLAB_CEPH_DASHBOARD_PORT" => {
-                Some("lots".to_string())
-            }
+            "YOLAB_CEPH_IMAGES_SHARE"
+            | "YOLAB_CEPH_IMAGES_MIN_GB"
+            | "YOLAB_CEPH_DASHBOARD_PORT" => Some("lots".to_string()),
             _ => None,
         });
         assert_eq!(env.images_share, 0.25);

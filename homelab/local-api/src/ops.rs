@@ -347,9 +347,23 @@ mod tests {
     #[test]
     fn a_legacy_record_is_left_alone_during_a_rolling_update() {
         let c = Claim::default();
-        let recent = liveness(&c, Some("2026-09-14T11:00:00Z"), "node2", false, at(NOW), QUIET);
+        let recent = liveness(
+            &c,
+            Some("2026-09-14T11:00:00Z"),
+            "node2",
+            false,
+            at(NOW),
+            QUIET,
+        );
         assert_eq!(recent, Liveness::Remote);
-        let old = liveness(&c, Some("2026-09-14T06:00:00Z"), "node2", false, at(NOW), QUIET);
+        let old = liveness(
+            &c,
+            Some("2026-09-14T06:00:00Z"),
+            "node2",
+            false,
+            at(NOW),
+            QUIET,
+        );
         assert_eq!(old, Liveness::Abandoned);
         let undated = liveness(&c, None, "node2", false, at(NOW), QUIET);
         assert_eq!(undated, Liveness::Abandoned);
@@ -361,10 +375,16 @@ mod tests {
         let t0 = Instant::now();
         let s = |secs| t0 + Duration::from_secs(secs);
         assert_eq!(silence_in(&mut seen, "rs-1", Some("h1"), t0), QUIET);
-        assert_eq!(silence_in(&mut seen, "rs-1", Some("h1"), s(90)), Duration::from_secs(90));
+        assert_eq!(
+            silence_in(&mut seen, "rs-1", Some("h1"), s(90)),
+            Duration::from_secs(90)
+        );
         // A new heartbeat value restarts the count.
         assert_eq!(silence_in(&mut seen, "rs-1", Some("h2"), s(100)), QUIET);
-        assert_eq!(silence_in(&mut seen, "rs-1", Some("h2"), s(130)), Duration::from_secs(30));
+        assert_eq!(
+            silence_in(&mut seen, "rs-1", Some("h2"), s(130)),
+            Duration::from_secs(30)
+        );
         // Ids are timed independently.
         assert_eq!(silence_in(&mut seen, "rs-2", None, s(130)), QUIET);
     }
@@ -374,7 +394,12 @@ mod tests {
         let mut seen = Seen::new();
         let t0 = Instant::now();
         silence_in(&mut seen, "old", Some("h"), t0);
-        silence_in(&mut seen, "new", Some("h"), t0 + FORGET_AFTER + Duration::from_secs(1));
+        silence_in(
+            &mut seen,
+            "new",
+            Some("h"),
+            t0 + FORGET_AFTER + Duration::from_secs(1),
+        );
         assert!(!seen.contains_key("old"));
         assert!(seen.contains_key("new"));
     }

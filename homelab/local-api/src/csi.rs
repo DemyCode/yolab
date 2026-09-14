@@ -111,10 +111,19 @@ mod tests {
     #[tokio::test]
     async fn a_failed_delete_is_reported_after_every_delete_was_tried() {
         let host = FakeHost::new()
-            .fail("kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin ", "etcd timeout")
-            .ok("kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin-provisioner", "");
+            .fail(
+                "kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin ",
+                "etcd timeout",
+            )
+            .ok(
+                "kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin-provisioner",
+                "",
+            );
         assert!(restart_plugins(&host, Which::AllNodes).await.is_err());
-        assert!(host.ran("app=csi-cephfsplugin-provisioner"), "the second is still tried");
+        assert!(
+            host.ran("app=csi-cephfsplugin-provisioner"),
+            "the second is still tried"
+        );
 
         let local = FakeHost::new().fail("kubectl delete pod", "etcd timeout");
         assert!(restart_plugins(&local, Which::ThisNode).await.is_err());

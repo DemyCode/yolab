@@ -330,7 +330,14 @@ impl Controller for StorageHealController {
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let in_charge = || ctx.still_in_charge();
-        tick(&RealHost, &RealApps, disposable_grace(), now_secs(), &in_charge).await?;
+        tick(
+            &RealHost,
+            &RealApps,
+            disposable_grace(),
+            now_secs(),
+            &in_charge,
+        )
+        .await?;
         Ok(Tick::Done)
     }
 }
@@ -1268,7 +1275,9 @@ mod tests {
             "kubectl get configmap yolab-storage-heal",
             "connection refused",
         );
-        assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.is_err());
+        assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .is_err());
         assert_eq!(host.calls().len(), 2, "{:?}", host.calls());
     }
 
@@ -1375,21 +1384,27 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_cluster_is_not_even_asked_about_its_state() {
         let host = FakeHost::new().fail("ceph -s", "timed out");
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         assert_eq!(host.calls(), vec!["ceph -s".to_string()]);
     }
 
     #[tokio::test]
     async fn a_healthy_cluster_writes_nothing() {
         let host = cluster_host(&json!({}), &healthy_dump(), &lost_pg_dump());
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         assert!(!wrote(&host));
     }
 
     #[tokio::test]
     async fn a_loss_is_recorded_on_the_very_first_tick_and_nothing_else_happens() {
         let host = cluster_host(&json!({}), &dump(), &lost_pg_dump());
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         let loss = applied_states(&host)[0]
             .loss
             .clone()
@@ -1412,7 +1427,9 @@ mod tests {
         let state = json!({"loss": {"osds": [1], "pgs": {"images": ["4.1"], FS_META_POOL: ["2.1"]},
                                     "detected_at": NOW - 900}});
         let host = cluster_host(&state, &dump(), &lost_pg_dump()).ok("ceph osd out", "");
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         assert!(host.ran("ceph osd out osd.1"));
         assert!(
             !host.ran("force-create-pg"),
@@ -1429,7 +1446,9 @@ mod tests {
         d["osds"][1]["in"] = json!(0);
         let pgs = json!({"pg_stats": [{"pgid": "2.1", "state": "down", "acting": [0]}]});
         let host = cluster_host(&state, &d, &pgs).ok("ceph osd force-create-pg", "");
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
 
         assert!(host.ran("force-create-pg 4.1") && host.ran("force-create-pg 1.0"));
         assert!(!host.ran("force-create-pg 2.1"));
@@ -1451,7 +1470,9 @@ mod tests {
         let only_app_data =
             json!({"pg_stats": [{"pgid": "2.1", "state": "stale+active+clean", "acting": [1]}]});
         let host = cluster_host(&state, &dump(), &only_app_data);
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         assert!(
             !host.ran("ceph osd out"),
             "reconnecting must stay a way back"
@@ -1465,7 +1486,9 @@ mod tests {
         let mut d = dump();
         d["osds"][1]["in"] = json!(0);
         let host = cluster_host(&state, &d, &json!({"pg_stats": []}));
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         assert!(!host.ran("force-create-pg") && !host.ran("osd out"));
     }
 
@@ -1474,7 +1497,9 @@ mod tests {
         let state =
             json!({"loss": {"osds": [1], "pgs": {FS_META_POOL: ["2.1"]}, "detected_at": 1}});
         let host = cluster_host(&state, &healthy_dump(), &lost_pg_dump());
-        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .unwrap();
         assert!(applied_states(&host).pop().unwrap().loss.is_none());
     }
 
@@ -1488,7 +1513,9 @@ mod tests {
             )
             .ok("ceph osd dump", &dump().to_string())
             .fail("ceph pg dump pgs_brief", "timeout");
-        assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.is_err());
+        assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always)
+            .await
+            .is_err());
         assert!(!wrote(&host));
     }
 
@@ -1611,9 +1638,15 @@ mod tests {
         running["recovery"] = serde_json::to_value(recovery_at(Step::PurgeOsds)).unwrap();
         let host = FakeHost::new()
             // What this press read first: a loss, nothing running yet…
-            .ok("kubectl get configmap yolab-storage-heal", &state_cm(&app_loss()))
+            .ok(
+                "kubectl get configmap yolab-storage-heal",
+                &state_cm(&app_loss()),
+            )
             // …and what the swap reads: the other press already started one.
-            .ok("kubectl get configmap yolab-storage-heal", &state_cm(&running))
+            .ok(
+                "kubectl get configmap yolab-storage-heal",
+                &state_cm(&running),
+            )
             .ok("ceph osd dump", &dump().to_string())
             .ok(
                 "kubectl get namespaces -l yolab.io/managed=true",
