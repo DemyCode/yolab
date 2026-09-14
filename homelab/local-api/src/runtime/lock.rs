@@ -43,12 +43,8 @@ fn open(dir: &Path, name: &str) -> std::io::Result<File> {
         .open(path_in(dir, name))
 }
 
-/// Take the lock if nobody holds it. `Ok(None)` when another process (or
-/// another holder in this one) has it.
-pub fn try_acquire(name: &str) -> std::io::Result<Option<LockGuard>> {
-    try_acquire_in(Path::new(LOCK_DIR), name)
-}
-
+/// Take the lock `name` in `dir` (normally `LOCK_DIR`) if nobody holds it.
+/// `Ok(None)` when another process (or another holder in this one) has it.
 pub fn try_acquire_in(dir: &Path, name: &str) -> std::io::Result<Option<LockGuard>> {
     let file = open(dir, name)?;
     match file.try_lock() {
