@@ -106,13 +106,17 @@ pub async fn attempt<H: Host>(
         tracing::info!("{dev} is blank — creating {:?}", policy.filesystem);
         mkfs(host, &dev, policy.filesystem).await?;
     } else if !filesystem_is_usable(host, root, &dev).await {
-        tracing::warn!("the image store on {dev} will not mount, read or start pods — rebuilding it");
+        tracing::warn!(
+            "the image store on {dev} will not mount, read or start pods — rebuilding it"
+        );
         mkfs(host, &dev, policy.filesystem).await?;
     }
 
     std::fs::create_dir_all(&croot)?;
 
-    let mounted = host.run_cmd("mount", &[dev.as_str(), croot_s.as_str()]).await?;
+    let mounted = host
+        .run_cmd("mount", &[dev.as_str(), croot_s.as_str()])
+        .await?;
     if !mounted.success {
         return Ok(Attempt::NotYet(format!(
             "mount {dev} {croot_s}: {}",
@@ -251,9 +255,7 @@ async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Result<Stri
 }
 
 async fn has_filesystem<H: Host>(host: &H, dev: &str) -> bool {
-    host.run_cmd("blkid", &[dev])
-        .await
-        .is_ok_and(|o| o.success)
+    host.run_cmd("blkid", &[dev]).await.is_ok_and(|o| o.success)
 }
 
 /// "Can containerd use this?" — answered by mounting it, which is how containerd
@@ -353,7 +355,9 @@ mod tests {
             .ok("mkfs.xfs", "")
             .ok("mount", "");
 
-        let ready = attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+        let ready = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
 
         assert_eq!(ready, Attempt::Ready(()));
         assert!(host.ran("mkfs.xfs -f -m crc=1 /dev/rbd0"));
@@ -368,7 +372,9 @@ mod tests {
             .ok("mount", "")
             .ok("umount", "");
 
-        let ready = attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+        let ready = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
 
         assert_eq!(ready, Attempt::Ready(()));
         assert!(!host.ran("mkfs"), "a good store keeps its images");
@@ -385,7 +391,9 @@ mod tests {
             .ok("mount", "")
             .ok("mkfs.xfs", "");
 
-        let ready = attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+        let ready = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
 
         assert_eq!(ready, Attempt::Ready(()));
         assert!(host.ran("mkfs.xfs"));
@@ -404,7 +412,9 @@ mod tests {
             .ok("mount", "")
             .ok("umount", "");
 
-        let ready = attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+        let ready = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
 
         assert_eq!(ready, Attempt::Ready(()));
         assert!(!host.ran("rbd map"));
@@ -418,7 +428,9 @@ mod tests {
             .fail("blkid /dev/rbd0", "")
             .fail("mkfs.xfs", "cannot open /dev/rbd0: Device or resource busy");
 
-        assert!(attempt(&host, dir.path(), "yolab-n1", &policy()).await.is_err());
+        assert!(attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .is_err());
         assert!(!host.ran("mount"));
     }
 
@@ -428,7 +440,11 @@ mod tests {
     async fn a_missing_image_is_waited_for() {
         let dir = tempfile::tempdir().unwrap();
         let host = booting().ok("rbd ls images", "someone-else\n");
-        let why = not_yet(attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap());
+        let why = not_yet(
+            attempt(&host, dir.path(), "yolab-n1", &policy())
+                .await
+                .unwrap(),
+        );
         assert!(why.contains("does not exist yet"), "{why}");
         assert!(!host.ran("rbd map") && !host.ran("mount"));
     }
@@ -438,7 +454,11 @@ mod tests {
     async fn a_pool_that_cannot_answer_is_waited_for_and_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let host = booting().fail("rbd ls images", "rbd: error opening pool 'images'");
-        let why = not_yet(attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap());
+        let why = not_yet(
+            attempt(&host, dir.path(), "yolab-n1", &policy())
+                .await
+                .unwrap(),
+        );
         assert!(why.contains("error opening pool"), "{why}");
         assert!(!host.ran("rbd map"));
     }
@@ -450,7 +470,11 @@ mod tests {
             .ok("rbd ls images", "yolab-n1\n")
             .ok("rbd showmapped --format json", "[]")
             .fail("rbd map", "rbd: sysfs write failed");
-        let why = not_yet(attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap());
+        let why = not_yet(
+            attempt(&host, dir.path(), "yolab-n1", &policy())
+                .await
+                .unwrap(),
+        );
         assert!(why.contains("sysfs write failed"), "{why}");
         assert!(!host.ran("mkfs") && !host.ran("mount"));
     }
@@ -462,7 +486,11 @@ mod tests {
             .fail("blkid /dev/rbd0", "")
             .ok("mkfs.xfs", "")
             .fail("mount", "mount: /dev/rbd0: can't read superblock");
-        let why = not_yet(attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap());
+        let why = not_yet(
+            attempt(&host, dir.path(), "yolab-n1", &policy())
+                .await
+                .unwrap(),
+        );
         assert!(why.contains("can't read superblock"), "{why}");
     }
 
@@ -473,7 +501,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
 
-        let ready = attempt(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+        let ready = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
 
         assert_eq!(ready, Attempt::Ready(()));
         assert_eq!(host.calls().len(), 1, "{:?}", host.calls());
@@ -523,7 +553,11 @@ mod tests {
         for (db, dirs, coherent) in cases {
             let dir = tempfile::tempdir().unwrap();
             snapshotter_at(dir.path(), db, dirs);
-            assert_eq!(snapshotter_is_coherent(dir.path()), coherent, "db={db} dirs={dirs}");
+            assert_eq!(
+                snapshotter_is_coherent(dir.path()),
+                coherent,
+                "db={db} dirs={dirs}"
+            );
         }
         let nothing = tempfile::tempdir().unwrap();
         assert!(snapshotter_is_coherent(&nothing.path().join("not-created")));
