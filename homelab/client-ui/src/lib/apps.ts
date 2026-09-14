@@ -198,8 +198,17 @@ export function catalogEntry(
  */
 export function appDisplayName(app: AppInfo, catalog: CatalogApp[]): string {
   const entry = catalogEntry(app, catalog);
-  if (!entry) return app.instance_name;
+  const stem = instanceStem(app);
+  if (!entry) return stem;
   // A renamed instance is meaningful information — show it rather than
   // pretending every copy is "Immich".
-  return app.instance_name === app.app_id ? entry.name : app.instance_name;
+  return stem === app.app_id ? entry.name : stem;
+}
+
+/** The instance name without the random id the backend appends to every install. */
+export function instanceStem(app: AppInfo): string {
+  const id = app.instance_id;
+  return id && app.instance_name.endsWith(`-${id}`)
+    ? app.instance_name.slice(0, -(id.length + 1))
+    : app.instance_name;
 }

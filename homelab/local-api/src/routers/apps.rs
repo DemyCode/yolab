@@ -71,6 +71,9 @@ pub struct OutputSpec {
 pub struct AppInfo {
     pub app_id: String,
     pub instance_name: String,
+    /// The random suffix `unique_instance_name` appended, or None for a name that
+    /// predates it. The UI strips it from the display name and shows it on its own.
+    pub instance_id: Option<String>,
     pub status: String,
     /// Plain-language explanation of `status`, empty when the app is healthy.
     /// See `explain_app_state` for why this is not left to the UI to guess.
@@ -1087,6 +1090,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
 
         apps.push(AppInfo {
             app_id: id,
+            instance_id: split_instance_name(&name).1.map(str::to_string),
             instance_name: name,
             status,
             detail,
@@ -1112,10 +1116,26 @@ const INSTANCE_SUFFIX_LEN: usize = 4;
 /// combinations, which for a homelab is far past the point where collisions
 /// matter; `unique_instance_name` re-rolls on the off chance anyway.
 fn instance_suffix() -> String {
-    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
     (0..INSTANCE_SUFFIX_LEN)
-        .map(|_| ALPHABET[rand::random::<usize>() % ALPHABET.len()] as char)
+        .map(|_| SUFFIX_ALPHABET[rand::random::<usize>() % SUFFIX_ALPHABET.len()] as char)
         .collect()
+}
+
+const SUFFIX_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
+
+/// The inverse of `unique_instance_name`: `(stem, Some(suffix))`, or the whole name
+/// and None when its last segment could not have come from `instance_suffix`.
+fn split_instance_name(name: &str) -> (&str, Option<&str>) {
+    match name.rsplit_once('-') {
+        Some((stem, id))
+            if !stem.is_empty()
+                && id.len() == INSTANCE_SUFFIX_LEN
+                && id.bytes().all(|b| SUFFIX_ALPHABET.contains(&b)) =>
+        {
+            (stem, Some(id))
+        }
+        _ => (name, None),
+    }
 }
 
 /// The part of the requested name that survives into the namespace.
@@ -2401,6 +2421,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn split_instance_name_recovers_what_unique_instance_name_built() {
+        for stem in ["filebrowser", "filebrowser-2", "my-blog"] {
+            let id = instance_suffix();
+            let name = format!("{stem}-{id}");
+            assert_eq!(split_instance_name(&name), (stem, Some(id.as_str())));
+        }
+        assert_eq!(
+            split_instance_name("filebrowser-pgxw"),
+            ("filebrowser", Some("pgxw"))
+        );
+        assert_eq!(split_instance_name("nextcloud-2"), ("nextcloud-2", None));
+        assert_eq!(split_instance_name("gitea"), ("gitea", None));
+        assert_eq!(split_instance_name("app-ab01"), ("app-ab01", None));
+        assert_eq!(split_instance_name("-pgxw"), ("-pgxw", None));
+    }
+
     /// Two installs of the same app must not land on the same namespace — that
     /// is the entire reason the suffix exists.
     #[test]
@@ -2415,10 +2452,7 @@ mod tests {
 
     #[test]
     fn derive_domain_drops_subdomain() {
-        assert_eq!(
-            derive_domain("https://yolab.10.yolab.io"),
-            "10.yolab.io"
-        );
+        assert_eq!(derive_domain("https://yolab.10.yolab.io"), "10.yolab.io");
         assert_eq!(derive_domain("http://node1.example.com/"), "example.com");
     }
 

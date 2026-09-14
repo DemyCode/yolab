@@ -14,6 +14,8 @@ export interface OutputSpec {
 export interface AppInfo {
   app_id: string;
   instance_name: string;
+  /** Random suffix the backend appends to every install, or null for older names. */
+  instance_id?: string | null;
   status: "starting" | "running" | "uninstalling";
   /** Plain-language explanation of `status`, empty when healthy. Written by the
    *  backend (routers/apps.rs `explain_app_state`) rather than derived here: the

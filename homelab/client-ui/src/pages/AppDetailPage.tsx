@@ -30,6 +30,7 @@ import {
   appLinks,
   appState,
   catalogEntry,
+  instanceStem,
 } from "@/lib/apps";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
@@ -719,8 +720,8 @@ export function AppDetailPage() {
       {entry && (
         <div className="mb-6 flex flex-wrap items-center gap-2">
           <Badge variant="outline">version {entry.chart_version}</Badge>
-          {app.instance_name !== app.app_id && (
-            <Badge variant="muted">copy named “{app.instance_name}”</Badge>
+          {instanceStem(app) !== app.app_id && (
+            <Badge variant="muted">copy named “{instanceStem(app)}”</Badge>
           )}
           {entry.repo !== "official" && (
             // A chart from a repo the user added can create arbitrary cluster
@@ -728,6 +729,15 @@ export function AppDetailPage() {
             <Badge variant="warning">from {entry.repo}</Badge>
           )}
         </div>
+      )}
+
+      {app.instance_id && (
+        <section className="mb-6">
+          <h2 className="mb-2 text-sm font-medium text-fg">UUID</h2>
+          <Card className="p-0">
+            <CopyValue label="UUID" value={app.instance_id} />
+          </Card>
+        </section>
       )}
 
       <div className="flex flex-col gap-2 sm:flex-row">
