@@ -55,10 +55,23 @@ pub async fn attempt<H: Host>(
         run_ok(
             host,
             "ceph",
-            &["osd", "pool", "set", pool, "size", "1", "--yes-i-really-mean-it"],
+            &[
+                "osd",
+                "pool",
+                "set",
+                pool,
+                "size",
+                "1",
+                "--yes-i-really-mean-it",
+            ],
         )
         .await?;
-        run_ok(host, "ceph", &["osd", "pool", "application", "enable", pool, "rbd"]).await?;
+        run_ok(
+            host,
+            "ceph",
+            &["osd", "pool", "application", "enable", pool, "rbd"],
+        )
+        .await?;
         run_ok(host, "rbd", &["pool", "init", pool]).await?;
     }
 
@@ -106,7 +119,10 @@ pub async fn attempt<H: Host>(
             ],
         )
         .await?;
-        tracing::info!("images-rbd: created {}/{node} ({want_mb} MB)", policy.pool_name);
+        tracing::info!(
+            "images-rbd: created {}/{node} ({want_mb} MB)",
+            policy.pool_name
+        );
     }
     Ok(Attempt::Ready(()))
 }
@@ -141,9 +157,10 @@ mod tests {
 
     #[tokio::test]
     async fn waits_until_an_osd_is_up_instead_of_giving_up() {
-        let host = FakeHost::new()
-            .ok("ceph -s", "")
-            .ok("ceph osd stat", r#"{"num_osds":1,"num_up_osds":0,"num_in_osds":1}"#);
+        let host = FakeHost::new().ok("ceph -s", "").ok(
+            "ceph osd stat",
+            r#"{"num_osds":1,"num_up_osds":0,"num_in_osds":1}"#,
+        );
         let why = not_yet(attempt(&host, "yolab-n1", &policy()).await.unwrap());
         assert!(why.contains("no OSD is up"), "{why}");
         assert!(!host.ran("pool create"));
@@ -232,7 +249,10 @@ mod tests {
             )
             .ok("ceph df", r#"{"stats":{"total_bytes":1048576000000}}"#)
             .ok("ceph osd pool get images size", r#"{"size":1}"#)
-            .fail("rbd ls images", "rbd: error opening pool: (110) Connection timed out");
+            .fail(
+                "rbd ls images",
+                "rbd: error opening pool: (110) Connection timed out",
+            );
 
         let result = attempt(&host, "yolab-n1", &policy()).await;
 

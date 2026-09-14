@@ -17,8 +17,8 @@
   # does (see push.yml's "Push to the Nix cache" step) — so nothing sensitive
   # lives here.
   nixConfig = {
-    extra-substituters = [ "https://cache.yolab.io/yolab" ];
-    extra-trusted-public-keys = [ "yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ=" ];
+    extra-substituters = ["https://cache.yolab.io/yolab"];
+    extra-trusted-public-keys = ["yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="];
   };
 
   inputs = {
@@ -36,51 +36,49 @@
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      disko,
-      nixos-wsl,
-      nix-darwin,
-      ...
-    }@inputs:
-    let
-      pkgs = nixpkgs.legacyPackages.x86_64-linux;
-      inherit (nixpkgs) lib;
+  outputs = {
+    self,
+    nixpkgs,
+    disko,
+    nixos-wsl,
+    nix-darwin,
+    ...
+  } @ inputs: let
+    pkgs = nixpkgs.legacyPackages.x86_64-linux;
+    inherit (nixpkgs) lib;
 
-      rust = import ./nix/rust.nix { inherit pkgs inputs; };
+    rust = import ./nix/rust.nix {inherit pkgs inputs;};
 
-      treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs (
-        import ./nix/treefmt.nix { inherit (rust) rustToolchain; }
-      );
+    treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs (
+      import ./nix/treefmt.nix {inherit (rust) rustToolchain;}
+    );
 
-      # The config.toml path is an argument so the CI stubs can be evaluated
-      # without a node's real config.toml being touched.
-      mkYolabSystem =
-        {
-          configPath,
-          modules,
-        }:
-        nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          inherit modules;
-          specialArgs = {
-            inherit rust;
-            yolabConfigPath = configPath;
-            localApiEnv = rust.crates.local-api.package;
-          };
+    # The config.toml path is an argument so the CI stubs can be evaluated
+    # without a node's real config.toml being touched.
+    mkYolabSystem = {
+      configPath,
+      modules,
+    }:
+      nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        inherit modules;
+        specialArgs = {
+          inherit rust;
+          yolabConfigPath = configPath;
+          localApiEnv = rust.crates.local-api.package;
         };
+      };
 
-      baseModules = [
-        disko.nixosModules.disko
-        ./homelab/nixos/configuration.nix
-        ./homelab/nixos/disk-config.nix
-      ];
+    baseModules = [
+      disko.nixosModules.disko
+      ./homelab/nixos/configuration.nix
+      ./homelab/nixos/disk-config.nix
+    ];
 
-      # Bound here rather than inline under `nixosConfigurations` so nix/checks.nix
-      # can build their toplevels without reaching back through `self`.
-      nixosSystems = {
+    # Bound here rather than inline under `nixosConfigurations` so nix/checks.nix
+    # can build their toplevels without reaching back through `self`.
+    nixosSystems =
+      {
         yolab-ci = mkYolabSystem {
           configPath = ./homelab/ci-config.toml;
           modules = baseModules;
@@ -102,7 +100,7 @@
             "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
             ./installer/nixos/iso-config.nix
           ];
-          specialArgs = { inherit inputs rust; };
+          specialArgs = {inherit inputs rust;};
         };
       }
       # Guarded so `nix flake check` works on a clone that has no config.toml.
@@ -115,151 +113,148 @@
         };
       };
 
-      bootTest = import ./nix/tests/boot.nix {
-        inherit
-          pkgs
-          inputs
-          rust
-          disko
-          ;
-      };
+    bootTest = import ./nix/tests/boot.nix {
+      inherit
+        pkgs
+        inputs
+        rust
+        disko
+        ;
+    };
 
-      twoNodeTest = import ./nix/tests/two-node.nix {
-        inherit
-          pkgs
-          inputs
-          rust
-          disko
-          ;
-      };
+    twoNodeTest = import ./nix/tests/two-node.nix {
+      inherit
+        pkgs
+        inputs
+        rust
+        disko
+        ;
+    };
 
-      diskLossTest = import ./nix/tests/disk-loss.nix {
-        inherit
-          pkgs
-          inputs
-          rust
-          disko
-          ;
-      };
+    diskLossTest = import ./nix/tests/disk-loss.nix {
+      inherit
+        pkgs
+        inputs
+        rust
+        disko
+        ;
+    };
 
-      allChecks = import ./nix/checks.nix {
-        inherit
-          pkgs
-          treefmtEval
-          rust
-          nixosSystems
-          ;
-      };
+    allChecks = import ./nix/checks.nix {
+      inherit
+        pkgs
+        treefmtEval
+        rust
+        nixosSystems
+        ;
+    };
 
-      mkDarwinSystem =
-        system:
-        nix-darwin.lib.darwinSystem {
-          inherit system;
-          modules = [ ./homelab/darwin/configuration.nix ];
-          specialArgs = {
-            inherit inputs rust;
-            yolabConfigPath = ./homelab/ignored/config.toml;
-          };
+    mkDarwinSystem = system:
+      nix-darwin.lib.darwinSystem {
+        inherit system;
+        modules = [./homelab/darwin/configuration.nix];
+        specialArgs = {
+          inherit inputs rust;
+          yolabConfigPath = ./homelab/ignored/config.toml;
         };
-    in
-    {
-      nixosConfigurations = nixosSystems;
+      };
+  in {
+    nixosConfigurations = nixosSystems;
 
-      # VM tests that actually boot machines. Kept out of `checks` on purpose: a
-      # boot test needs a QEMU-capable runner (CI has one, the build sandbox does
-      # not) and has not yet been verified to pass, so it must not be part of
-      # `nix flake check`. Run it explicitly:
-      #   nix build .#nixosTests.boot-test
-      #   nix build .#nixosTests.two-node-test
+    # VM tests that actually boot machines. Kept out of `checks` on purpose: a
+    # boot test needs a QEMU-capable runner (CI has one, the build sandbox does
+    # not) and has not yet been verified to pass, so it must not be part of
+    # `nix flake check`. Run it explicitly:
+    #   nix build .#nixosTests.boot-test
+    #   nix build .#nixosTests.two-node-test
+    #
+    # two-node-test is the one to run before shipping anything that touches
+    # Ceph, k3s ordering or the image store: two machines is the topology most
+    # installs actually have, and it is the topology where a node taking itself
+    # offline to do maintenance costs the whole cluster its etcd quorum. Every
+    # storage bug this project has had was found on a live two-node cluster
+    # rather than here, which is the wrong order.
+    nixosTests = {
+      boot-test = bootTest;
+      two-node-test = twoNodeTest;
+      # Unplugs a disk from a one-copy cluster and asserts storage_heal restores it.
+      disk-loss-test = diskLossTest;
+    };
+
+    # Guarded like `yolab`: these import shared.nix too. No CI stub variant,
+    # because a Darwin toplevel cannot be built from x86_64-linux checks.
+    darwinConfigurations = lib.optionalAttrs (builtins.pathExists ./homelab/ignored/config.toml) {
+      "yolab-mac" = mkDarwinSystem "aarch64-darwin";
+      "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
+    };
+
+    # `coverage-*` filtered out: they are reports, not gates. See nix/checks.nix.
+    checks.x86_64-linux = lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks;
+
+    formatter.x86_64-linux = treefmtEval.config.build.wrapper;
+
+    packages.x86_64-linux = let
+      builds = import ./homelab/builds.nix {inherit pkgs rust;};
+      checks = self.checks.x86_64-linux;
+    in {
+      inherit (allChecks) coverage-local-api;
+      inherit (allChecks) coverage-installer;
+
+      # eslint is a package, not a check: 7 pre-existing findings. It belongs in
+      # `checks` once those are fixed, as clippy now is.
+      client-ui-lint = builds.clientUiLint;
+
+      # `nix run .#coverage` — build both HTML reports and say where they are.
+      # Kept out of `ci` deliberately; see the note on checks.x86_64-linux.
+      coverage = pkgs.writeShellApplication {
+        name = "yolab-coverage";
+        text = ''
+          # cargo-llvm-cov writes its report tree under html/.
+          echo "Browsable reports:"
+          echo "  local-api  ${allChecks.coverage-local-api}/html/index.html"
+          echo "  installer  ${allChecks.coverage-installer}/html/index.html"
+          echo
+          for r in ${allChecks.coverage-local-api} ${allChecks.coverage-installer}; do
+            [ -f "$r/coverage-summary.txt" ] && cat "$r/coverage-summary.txt"
+            echo
+          done
+        '';
+      };
+
+      iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
+      homelab-ui = builds.clientUi;
+      homelab-api = builds.localApiEnv;
+
+      # `nix build .#desktop-client` produces the binary; `nix run` below opens
+      # the window. It asks for the box address once and from then on opens
+      # straight into it — see shells/desktop/README.md for why the UI is loaded
+      # from the box rather than bundled here.
+      desktop-client = rust.crates.desktop-client.package;
+
+      # `nix build .#android-apk` -> ./result/*.apk, unsigned, for sideloading.
       #
-      # two-node-test is the one to run before shipping anything that touches
-      # Ceph, k3s ordering or the image store: two machines is the topology most
-      # installs actually have, and it is the topology where a node taking itself
-      # offline to do maintenance costs the whole cluster its etcd quorum. Every
-      # storage bug this project has had was found on a live two-node cluster
-      # rather than here, which is the wrong order.
-      nixosTests = {
-        boot-test = bootTest;
-        two-node-test = twoNodeTest;
-        # Unplugs a disk from a one-copy cluster and asserts storage_heal restores it.
-        disk-loss-test = diskLossTest;
+      # NOT in `checks`, unlike desktop-client. It needs the Android SDK and NDK
+      # — several gigabytes — and a Gradle dependency cache whose hash has to be
+      # pinned by hand; putting that on every push would make CI slow and
+      # brittle for an artifact that is cut on release, not on commit.
+      android-apk = import ./nix/android.nix {inherit pkgs rust;};
+
+      # Every check is a build input, so nix has already run them all before the
+      # first line executes: this prints a summary, it is not a test runner.
+      ci = pkgs.writeShellApplication {
+        name = "yolab-ci";
+        text = ''
+          ${lib.concatMapStringsSep "\n" (name: ''
+            echo "✓ ${name}  (${checks.${name}})"
+          '') (builtins.attrNames checks)}
+          echo "all ${toString (builtins.length (builtins.attrNames checks))} checks passed"
+        '';
       };
+    };
 
-      # Guarded like `yolab`: these import shared.nix too. No CI stub variant,
-      # because a Darwin toplevel cannot be built from x86_64-linux checks.
-      darwinConfigurations = lib.optionalAttrs (builtins.pathExists ./homelab/ignored/config.toml) {
-        "yolab-mac" = mkDarwinSystem "aarch64-darwin";
-        "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
-      };
-
-      # `coverage-*` filtered out: they are reports, not gates. See nix/checks.nix.
-      checks.x86_64-linux = lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks;
-
-      formatter.x86_64-linux = treefmtEval.config.build.wrapper;
-
-      packages.x86_64-linux =
-        let
-          builds = import ./homelab/builds.nix { inherit pkgs rust; };
-          checks = self.checks.x86_64-linux;
-        in
-        {
-          inherit (allChecks) coverage-local-api;
-          inherit (allChecks) coverage-installer;
-
-          # eslint is a package, not a check: 7 pre-existing findings. It belongs in
-          # `checks` once those are fixed, as clippy now is.
-          client-ui-lint = builds.clientUiLint;
-
-          # `nix run .#coverage` — build both HTML reports and say where they are.
-          # Kept out of `ci` deliberately; see the note on checks.x86_64-linux.
-          coverage = pkgs.writeShellApplication {
-            name = "yolab-coverage";
-            text = ''
-              # cargo-llvm-cov writes its report tree under html/.
-              echo "Browsable reports:"
-              echo "  local-api  ${allChecks.coverage-local-api}/html/index.html"
-              echo "  installer  ${allChecks.coverage-installer}/html/index.html"
-              echo
-              for r in ${allChecks.coverage-local-api} ${allChecks.coverage-installer}; do
-                [ -f "$r/coverage-summary.txt" ] && cat "$r/coverage-summary.txt"
-                echo
-              done
-            '';
-          };
-
-          iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
-          homelab-ui = builds.clientUi;
-          homelab-api = builds.localApiEnv;
-
-          # `nix build .#desktop-client` produces the binary; `nix run` below opens
-          # the window. It asks for the box address once and from then on opens
-          # straight into it — see shells/desktop/README.md for why the UI is loaded
-          # from the box rather than bundled here.
-          desktop-client = rust.crates.desktop-client.package;
-
-          # `nix build .#android-apk` -> ./result/*.apk, unsigned, for sideloading.
-          #
-          # NOT in `checks`, unlike desktop-client. It needs the Android SDK and NDK
-          # — several gigabytes — and a Gradle dependency cache whose hash has to be
-          # pinned by hand; putting that on every push would make CI slow and
-          # brittle for an artifact that is cut on release, not on commit.
-          android-apk = import ./nix/android.nix { inherit pkgs rust; };
-
-          # Every check is a build input, so nix has already run them all before the
-          # first line executes: this prints a summary, it is not a test runner.
-          ci = pkgs.writeShellApplication {
-            name = "yolab-ci";
-            text = ''
-              ${lib.concatMapStringsSep "\n" (name: ''
-                echo "✓ ${name}  (${checks.${name}})"
-              '') (builtins.attrNames checks)}
-              echo "all ${toString (builtins.length (builtins.attrNames checks))} checks passed"
-            '';
-          };
-        };
-
-      # `nix run .#<check>` for a single one, and `nix run .` for everything.
-      apps.x86_64-linux = {
+    # `nix run .#<check>` for a single one, and `nix run .` for everything.
+    apps.x86_64-linux =
+      {
         default = {
           type = "app";
           program = lib.getExe self.packages.x86_64-linux.ci;
@@ -286,76 +281,77 @@
         type = "app";
         program = toString (pkgs.writeShellScript "check" "echo ${drv}");
         meta.description = "Build the ${name} check and print its store path";
-      }) self.checks.x86_64-linux;
+      })
+      self.checks.x86_64-linux;
 
-      # Toolchain from nix/rust.nix and formatters from treefmtEval, so a tool run
-      # by hand behaves exactly as it does inside a derivation.
-      devShells.x86_64-linux.default = pkgs.mkShell {
-        packages =
-          (with pkgs; [
-            # Nix
-            statix
-            deadnix
-            # Shell / Docker
-            shellcheck
-            hadolint
-            # Apps are Helm charts — needed to lint/template them locally.
-            kubernetes-helm
-            # Rust (version from rust-toolchain.toml, via nix/rust.nix)
-            pkg-config
-            openssl
-            uv
-            # Node.js
-            nodejs
-            # Runner
-            pre-commit
-            # So each check can also be run by hand while iterating.
-            busybox
-            jq
-            (python3.withPackages (ps: [ ps.pyyaml ]))
-          ])
-          ++ [ rust.rustToolchain ]
-          # alejandra, rustfmt, prettier and shfmt at the exact versions
-          # `nix fmt` uses, plus `treefmt` itself. The pre-commit alejandra hook
-          # therefore runs the same binary the formatting check does.
-          ++ builtins.attrValues treefmtEval.config.build.programs
-          ++ [ treefmtEval.config.build.wrapper ];
+    # Toolchain from nix/rust.nix and formatters from treefmtEval, so a tool run
+    # by hand behaves exactly as it does inside a derivation.
+    devShells.x86_64-linux.default = pkgs.mkShell {
+      packages =
+        (with pkgs; [
+          # Nix
+          statix
+          deadnix
+          # Shell / Docker
+          shellcheck
+          hadolint
+          # Apps are Helm charts — needed to lint/template them locally.
+          kubernetes-helm
+          # Rust (version from rust-toolchain.toml, via nix/rust.nix)
+          pkg-config
+          openssl
+          uv
+          # Node.js
+          nodejs
+          # Runner
+          pre-commit
+          # So each check can also be run by hand while iterating.
+          busybox
+          jq
+          (python3.withPackages (ps: [ps.pyyaml]))
+        ])
+        ++ [rust.rustToolchain]
+        # alejandra, rustfmt, prettier and shfmt at the exact versions
+        # `nix fmt` uses, plus `treefmt` itself. The pre-commit alejandra hook
+        # therefore runs the same binary the formatting check does.
+        ++ builtins.attrValues treefmtEval.config.build.programs
+        ++ [treefmtEval.config.build.wrapper];
 
-        shellHook = ''
-          echo "yolab devshell — 'nix run .#ci' runs every check exactly as CI does"
-        '';
-      };
-
-      # The desktop shell (shells/desktop) needs a webview and its GTK stack, none
-      # of which the default shell carries — and it is the whole toolchain cost of
-      # that app: the Rust in it is a few hundred lines, while `cargo check` there
-      # fails in the default shell on libdbus before it reaches a line of ours.
-      #
-      # Separate rather than merged into `default` so everyday work on local-api
-      # and the charts does not pull webkitgtk and its closure.
-      devShells.x86_64-linux.desktop = pkgs.mkShell {
-        packages =
-          (with pkgs; [
-            pkg-config
-            # Tauri v2 on Linux links against the 4.1 ABI specifically; 4.0 is
-            # present in nixpkgs too and produces a confusing pkg-config miss.
-            webkitgtk_4_1
-            gtk3
-            libsoup_3
-            glib
-            cairo
-            pango
-            gdk-pixbuf
-            atk
-            librsvg
-            dbus
-            openssl
-          ])
-          ++ [ rust.rustToolchain ];
-
-        shellHook = ''
-          echo "yolab desktop shell — cd shells/desktop && cargo check"
-        '';
-      };
+      shellHook = ''
+        echo "yolab devshell — 'nix run .#ci' runs every check exactly as CI does"
+      '';
     };
+
+    # The desktop shell (shells/desktop) needs a webview and its GTK stack, none
+    # of which the default shell carries — and it is the whole toolchain cost of
+    # that app: the Rust in it is a few hundred lines, while `cargo check` there
+    # fails in the default shell on libdbus before it reaches a line of ours.
+    #
+    # Separate rather than merged into `default` so everyday work on local-api
+    # and the charts does not pull webkitgtk and its closure.
+    devShells.x86_64-linux.desktop = pkgs.mkShell {
+      packages =
+        (with pkgs; [
+          pkg-config
+          # Tauri v2 on Linux links against the 4.1 ABI specifically; 4.0 is
+          # present in nixpkgs too and produces a confusing pkg-config miss.
+          webkitgtk_4_1
+          gtk3
+          libsoup_3
+          glib
+          cairo
+          pango
+          gdk-pixbuf
+          atk
+          librsvg
+          dbus
+          openssl
+        ])
+        ++ [rust.rustToolchain];
+
+      shellHook = ''
+        echo "yolab desktop shell — cd shells/desktop && cargo check"
+      '';
+    };
+  };
 }

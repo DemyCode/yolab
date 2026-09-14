@@ -227,8 +227,16 @@ mod tests {
     #[test]
     fn kube_watches_select_by_name_so_a_missing_object_can_still_be_watched() {
         for w in standard().into_iter().filter(|w| w.bin == "kubectl") {
-            assert!(w.args.contains(&"--field-selector".to_string()), "{}", w.label);
-            assert!(w.args.iter().any(|a| a.starts_with("metadata.name=")), "{}", w.label);
+            assert!(
+                w.args.contains(&"--field-selector".to_string()),
+                "{}",
+                w.label
+            );
+            assert!(
+                w.args.iter().any(|a| a.starts_with("metadata.name=")),
+                "{}",
+                w.label
+            );
             // `get configmap <name>` would put the name straight after the kind.
             assert_eq!(w.args[2], "-n", "{}: {:?}", w.label, w.args);
         }

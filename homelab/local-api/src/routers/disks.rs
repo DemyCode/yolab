@@ -477,8 +477,9 @@ mod tests {
 
     #[test]
     fn the_system_disk_cannot_be_switched_off_and_only_on_or_off_is_accepted() {
-        assert!(refuse_state_change("system", "OFF")
-            .is_some_and(|e| e.contains("container images")));
+        assert!(
+            refuse_state_change("system", "OFF").is_some_and(|e| e.contains("container images"))
+        );
         assert_eq!(refuse_state_change("system", "ON"), None);
         assert_eq!(refuse_state_change("dev-sdb", "OFF"), None);
         assert_eq!(refuse_state_change("dev-sdb", "ON"), None);

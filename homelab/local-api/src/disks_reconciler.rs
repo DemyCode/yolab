@@ -4879,7 +4879,9 @@ mod tests {
     #[tokio::test]
     async fn a_machine_without_the_system_lv_is_an_error_not_a_skip() {
         let host = FakeHost::new();
-        assert!(lv_osd_attempt(&host, "/nonexistent/pool-ceph").await.is_err());
+        assert!(lv_osd_attempt(&host, "/nonexistent/pool-ceph")
+            .await
+            .is_err());
         assert!(host.calls().is_empty());
     }
 
@@ -4937,7 +4939,10 @@ mod tests {
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm list", "{}")
             .ok("wipefs --all", "")
-            .fail("ceph-volume lvm create", "RuntimeError: Unable to create a new OSD id");
+            .fail(
+                "ceph-volume lvm create",
+                "RuntimeError: Unable to create a new OSD id",
+            );
 
         let why = not_yet(lv_osd_attempt(&host, &dev).await.unwrap());
 
