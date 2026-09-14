@@ -1008,12 +1008,19 @@ mod tests {
             {"metadata": {"name": "worker"}, "spec": {}},
         ]});
         let scales = parse_deployment_scales(&v).unwrap();
-        let got: Vec<(&str, u32)> = scales.iter().map(|d| (d.name.as_str(), d.replicas)).collect();
+        let got: Vec<(&str, u32)> = scales
+            .iter()
+            .map(|d| (d.name.as_str(), d.replicas))
+            .collect();
         assert_eq!(got, vec![("web", 2), ("worker", 1)]);
-        assert!(parse_deployment_scales(&json!({})).is_err(), "not a list is not empty");
+        assert!(
+            parse_deployment_scales(&json!({})).is_err(),
+            "not a list is not empty"
+        );
         let unnamed = json!({"items": [{"spec": {"replicas": 1}}]});
         assert!(parse_deployment_scales(&unnamed).is_err());
-        let absurd = json!({"items": [{"metadata": {"name": "x"}, "spec": {"replicas": 5_000_000_000u64}}]});
+        let absurd =
+            json!({"items": [{"metadata": {"name": "x"}, "spec": {"replicas": 5_000_000_000u64}}]});
         assert!(parse_deployment_scales(&absurd).is_err());
     }
 
