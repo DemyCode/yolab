@@ -13,6 +13,9 @@ mod mesh;
 mod proc;
 mod routers;
 mod storage;
+// Not started from main (see the note at the supervise calls); kept for the
+// recover-from-backup action, which reuses its rebuild steps.
+#[allow(dead_code)]
 mod storage_heal;
 mod system;
 mod topology;
@@ -292,8 +295,10 @@ async fn main() {
     supervise("disks", disks_reconciler::run);
     supervise("cephfs", cephfs::run);
     supervise("topology", topology::run_topology_controller);
-    // Rebuilds everything but app data once disks or machines are provably gone.
-    supervise("storage-heal", storage_heal::run);
+    // storage_heal::run is deliberately NOT started. nix/tests/disk-loss.nix showed
+    // that after `ceph osd lost` Ceph brings a lost placement group back as
+    // active+clean and EMPTY, so the loop saw no loss, purged the OSD and left
+    // CephFS dead. Loss has to be judged before the OSD is declared lost.
     supervise("mesh", mesh::run);
     // Keeps the app catalog current without a nixos-rebuild â see charts.rs.
     supervise("chart-sync", charts::run_chart_sync);
