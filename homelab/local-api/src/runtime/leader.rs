@@ -20,7 +20,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{json, Value};
@@ -99,9 +99,10 @@ pub fn start(identity: String) -> Leadership {
         return handle;
     }
     tokio::spawn(async move {
+        let mut seen: Option<(String, Instant)> = None;
         loop {
             let attempt_started = now_ms();
-            match try_acquire(&identity, Utc::now()).await {
+            match try_acquire(&identity, Utc::now(), &mut seen).await {
                 Ok(true) => {
                     if !IS_ME.swap(true, Ordering::SeqCst) {
                         tracing::info!("leader: {identity} now holds the cluster lease");
@@ -169,17 +170,35 @@ pub(crate) enum LeaseDecision {
     Take { acquire_time: DateTime<Utc> },
 }
 
-pub(crate) fn decide(lease: &Value, identity: &str, now: DateTime<Utc>) -> LeaseDecision {
+/// How long this node has watched the lease record sit at `version` unchanged,
+/// on its own monotonic clock. Starts at zero whenever the version moves.
+fn unchanged_for(seen: &mut Option<(String, Instant)>, version: &str, now: Instant) -> Duration {
+    match seen {
+        Some((v, since)) if v == version => now.saturating_duration_since(*since),
+        _ => {
+            *seen = Some((version.to_string(), now));
+            Duration::ZERO
+        }
+    }
+}
+
+/// EXPIRY IS OBSERVED, NOT READ. The holder's `renewTime` is a timestamp from
+/// ANOTHER machine's clock; comparing it with ours meant a node whose clock ran
+/// 10s ahead saw every live lease as expired and took it — two leaders, two
+/// writers of every cluster-scoped controller. So a lease held by someone else
+/// expires only once THIS node has watched its record stay unchanged for the
+/// lease duration (the rule client-go's leader election uses). The cost: a node
+/// that just started waits one lease duration before taking over a dead leader.
+pub(crate) fn decide(
+    lease: &Value,
+    identity: &str,
+    now: DateTime<Utc>,
+    unchanged: Duration,
+) -> LeaseDecision {
     let spec = &lease["spec"];
     let holder = spec["holderIdentity"].as_str().unwrap_or("");
-    let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS);
-    // An unreadable renewTime reads as EXPIRED: a lease nobody can prove is live
-    // must not block the cluster from ever having a leader again.
-    let expired = spec["renewTime"]
-        .as_str()
-        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .map(|ts| (now - ts.with_timezone(&Utc)).num_seconds() > dur)
-        .unwrap_or(true);
+    let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS).max(0);
+    let expired = unchanged > Duration::from_secs(dur.unsigned_abs());
     if holder != identity && !holder.is_empty() && !expired {
         return LeaseDecision::Yield;
     }
@@ -221,7 +240,11 @@ fn manifest(
 
 /// `Ok(true)` when this node holds the lease after the call, `Ok(false)` when
 /// someone else does, `Err` when the API did not answer.
-async fn try_acquire(identity: &str, now: DateTime<Utc>) -> Result<bool, CmdError> {
+async fn try_acquire(
+    identity: &str,
+    now: DateTime<Utc>,
+    seen: &mut Option<(String, Instant)>,
+) -> Result<bool, CmdError> {
     let current =
         crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
             .await?;
@@ -233,16 +256,19 @@ async fn try_acquire(identity: &str, now: DateTime<Utc>) -> Result<bool, CmdErro
             Err(e) => Err(e),
         };
     };
-    match decide(&lease, identity, now) {
+    // The version is both what expiry is observed against and what the takeover
+    // swaps on; without it there is neither.
+    let Some(version) = lease["metadata"]["resourceVersion"].as_str() else {
+        return Err(CmdError::parse(
+            "kubectl get lease",
+            "lease has no resourceVersion",
+        ));
+    };
+    let unchanged = unchanged_for(seen, version, Instant::now());
+    match decide(&lease, identity, now, unchanged) {
         LeaseDecision::Yield => Ok(false),
         LeaseDecision::Take { acquire_time } => {
-            let rv = lease["metadata"]["resourceVersion"].as_str();
-            if rv.is_none() {
-                return Err(CmdError::parse(
-                    "kubectl get lease",
-                    "lease has no resourceVersion",
-                ));
-            }
+            let rv = Some(version);
             // Compare-and-swap on resourceVersion: if another node renewed or
             // took it since we read it, this is a Conflict and we are not leader.
             match crate::kubectl::replace(&manifest(identity, now, acquire_time, rv).to_string())
@@ -282,38 +308,59 @@ mod tests {
         assert!(!holds_live(&unreadable, "n1", now));
     }
 
+    const SECS: fn(u64) -> Duration = Duration::from_secs;
+
     #[test]
     fn a_live_lease_held_by_another_node_is_respected() {
         let now = Utc::now();
-        assert_eq!(
-            decide(&lease("n2", 5, now), "n1", now),
-            LeaseDecision::Yield
-        );
+        let fresh = decide(&lease("n2", 5, now), "n1", now, SECS(5));
+        assert_eq!(fresh, LeaseDecision::Yield);
     }
 
     #[test]
     fn an_expired_lease_is_taken_with_a_fresh_acquire_time() {
         let now = Utc::now();
-        assert_eq!(
-            decide(&lease("n2", 31, now), "n1", now),
-            LeaseDecision::Take { acquire_time: now }
-        );
+        let dead = decide(&lease("n2", 31, now), "n1", now, SECS(31));
+        assert_eq!(dead, LeaseDecision::Take { acquire_time: now });
+    }
+
+    /// The skew bug: this node's clock runs ahead, so the holder's renewTime
+    /// LOOKS a minute old. The holder is renewing it right now, though, and
+    /// that is all that counts.
+    #[test]
+    fn a_clock_that_runs_ahead_does_not_steal_a_lease_that_is_being_renewed() {
+        let now = Utc::now();
+        let looks_stale = lease("n2", 60, now);
+        let just_changed = decide(&looks_stale, "n1", now, Duration::ZERO);
+        assert_eq!(just_changed, LeaseDecision::Yield);
+    }
+
+    #[test]
+    fn expiry_is_timed_from_when_this_node_last_saw_the_record_change() {
+        let t0 = Instant::now();
+        let mut seen = None;
+        assert_eq!(unchanged_for(&mut seen, "7", t0), Duration::ZERO);
+        assert_eq!(unchanged_for(&mut seen, "7", t0 + SECS(20)), SECS(20));
+        // A renewal moves the version and restarts the clock.
+        assert_eq!(unchanged_for(&mut seen, "8", t0 + SECS(25)), Duration::ZERO);
+        assert_eq!(unchanged_for(&mut seen, "8", t0 + SECS(40)), SECS(15));
     }
 
     #[test]
     fn renewing_our_own_lease_keeps_the_original_acquire_time() {
         let now = Utc::now();
-        match decide(&lease("n1", 5, now), "n1", now) {
+        match decide(&lease("n1", 5, now), "n1", now, Duration::ZERO) {
             LeaseDecision::Take { acquire_time } => assert!(acquire_time < now),
             other => panic!("expected Take, got {other:?}"),
         }
     }
 
     #[test]
-    fn an_unreadable_renew_time_does_not_lock_the_cluster_out_forever() {
+    fn an_unreadable_lease_that_never_changes_does_not_lock_the_cluster_out() {
         let now = Utc::now();
         let l = json!({"spec": {"holderIdentity": "n2", "renewTime": "garbage"}});
-        assert!(matches!(decide(&l, "n1", now), LeaseDecision::Take { .. }));
+        let decision = decide(&l, "n1", now, SECS(31));
+        assert!(matches!(decision, LeaseDecision::Take { .. }));
     }
 
     #[test]
@@ -346,7 +393,7 @@ mod tests {
     fn a_released_lease_is_taken_even_if_recently_renewed() {
         let now = Utc::now();
         assert!(matches!(
-            decide(&lease("", 1, now), "n1", now),
+            decide(&lease("", 1, now), "n1", now, Duration::ZERO),
             LeaseDecision::Take { acquire_time } if acquire_time == now
         ));
     }
