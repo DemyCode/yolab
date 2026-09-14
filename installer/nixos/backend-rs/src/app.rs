@@ -158,10 +158,7 @@ impl App {
             let tx2 = tx.clone();
             tokio::spawn(async move {
                 loop {
-                    if tokio::net::lookup_host("api.yolab.io:443")
-                        .await
-                        .is_ok()
-                    {
+                    if tokio::net::lookup_host("api.yolab.io:443").await.is_ok() {
                         let _ = tx2.send(AppEvent::NetworkReady);
                         return;
                     }
