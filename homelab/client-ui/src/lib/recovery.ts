@@ -11,9 +11,14 @@ export interface RecoveryStatus {
   } | null;
   recovery: {
     step: RecoveryStep;
+    steps: RecoveryStep[];
     running: boolean;
     started_at: number;
     finished_at: number | null;
+    /** Of the whole run. 100 only once it has finished. */
+    percent: number;
+    /** How far the current step has got, when it can be counted. */
+    step_progress: { done: number; total: number; detail?: string } | null;
     apps: {
       namespace: string;
       instance_name: string;
@@ -38,31 +43,61 @@ export type RecoveryStep =
 /** `GET /api/storage/recovery/preview` */
 export interface RecoveryPreview {
   backup_taken_at: string | null;
+  /** OSD ids that are down right now. */
+  down_osds: number[];
   restored: string[];
   not_restored: string[];
 }
 
-export const RECOVERY_STEPS: { step: RecoveryStep; label: string }[] = [
-  { step: "purge_osds", label: "Forgetting the lost disks" },
-  { step: "remove_apps", label: "Removing apps" },
-  { step: "delete_storage", label: "Deleting the damaged storage" },
-  { step: "recreate_storage", label: "Creating fresh storage" },
-  { step: "restart_csi", label: "Restarting the storage driver" },
-  { step: "reinstall_apps", label: "Reinstalling apps from backup" },
-];
+export const RECOVERY_STEP_LABELS: Record<RecoveryStep, string> = {
+  purge_osds: "Forgetting the lost disks",
+  remove_apps: "Removing apps",
+  delete_storage: "Deleting the damaged storage",
+  recreate_storage: "Creating fresh storage",
+  restart_csi: "Restarting the storage driver",
+  reinstall_apps: "Reinstalling apps from backup",
+};
 
 /** A finished recovery stays on the page this long, so its outcome can be read. */
 const SHOW_FINISHED_FOR_SECS = 7 * 24 * 3600;
 
 export function useRecoveryStatus() {
   return useApi<RecoveryStatus>("storage-recovery", "/api/storage/recovery", {
-    pollMs: 5_000,
+    pollMs: 3_000,
   });
 }
 
-/** Whether there is anything about lost data the owner has to act on or watch. */
-export function recoveryNeedsAttention(s: RecoveryStatus | undefined): boolean {
-  return Boolean(s?.loss?.needs_recovery || s?.recovery?.running);
+/** Where each step stands relative to the one the recovery is on. */
+export function stepState(
+  steps: RecoveryStep[],
+  current: RecoveryStep,
+  step: RecoveryStep,
+  running: boolean,
+): "done" | "current" | "pending" {
+  if (!running) return "done";
+  const at = steps.indexOf(current);
+  const i = steps.indexOf(step);
+  if (i < at) return "done";
+  return i === at ? "current" : "pending";
+}
+
+const DISMISSED_KEY = "yolab-recovery-dismissed";
+
+/** A finished recovery's summary is shown until the owner has read it. */
+export function recoveryDismissed(startedAt: number): boolean {
+  try {
+    return localStorage.getItem(DISMISSED_KEY) === String(startedAt);
+  } catch {
+    return false;
+  }
+}
+
+export function dismissRecovery(startedAt: number) {
+  try {
+    localStorage.setItem(DISMISSED_KEY, String(startedAt));
+  } catch {
+    /* storage unavailable: the summary shows again next time, which is harmless */
+  }
 }
 
 export function finishedRecently(

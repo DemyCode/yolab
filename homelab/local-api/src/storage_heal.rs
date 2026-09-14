@@ -1,26 +1,25 @@
-//! Lost disks: record the loss, heal what is disposable, and on request reset
-//! storage and reinstall every app from backup.
+//! Lost data: notice it the moment Ceph shows it, heal what is disposable, and on
+//! request reset storage and reinstall every app from backup.
 //!
 //! THREE PHASES, AND ONLY THE LAST ONE DESTROYS ANYTHING.
 //!
-//! 1. Notice. A disk is gone once its OSD has stayed down past a grace period with
-//!    positive proof: the disk is absent from its machine's fresh inventory (15 min),
-//!    or the machine itself has been NotReady (60 min). A reboot, a deploy or a
-//!    machine that merely cannot be read never counts.
-//!
-//! 2. Record and self-heal. Placement groups whose every copy sat on gone disks are
-//!    written down right away, because this is the only moment the evidence exists:
+//! 1. Notice. A placement group is lost when every disk holding it is down — the
+//!    same signal the home page's "X of Y groups unavailable" banner reads. It is
+//!    recorded straight away, because this is the only moment the evidence exists:
 //!    `nix/tests/disk-loss.nix` showed that once an OSD is declared lost, Ceph brings
-//!    such a placement group back as `active+clean` and EMPTY. The gone OSDs are then
-//!    marked `out` — reversible, it moves nothing when there is no other copy — so
-//!    the placement groups of the two pools a machine can always refill (`images`,
-//!    `.mgr`) are rebuilt empty on the disks that remain. App data is not touched:
-//!    plugging the disk back in brings every file back, and the record clears itself.
+//!    such a placement group back as `active+clean` and EMPTY. A deploy or a reboot
+//!    records a loss too; it clears itself the moment the disks are back, and nothing
+//!    happens to data unless the owner presses the button.
+//!
+//! 2. Self-heal what a machine can refill. Once a loss has lasted long enough that it
+//!    is plainly not a restart, the lost OSDs are marked `out` (reversible — nothing
+//!    moves when there is no other copy) and the lost placement groups of `images`
+//!    and `.mgr` are rebuilt empty. App data is never touched here.
 //!
 //! 3. Recover, when the owner presses "Recover health from backup". Not a repair —
 //!    a reset. Nothing a half-broken cluster reports is trusted:
 //!
-//!    purge the gone OSDs → remove every app → delete the CephFS pools →
+//!    purge the lost OSDs → remove every app → delete the CephFS pools →
 //!    recreate them → restart the CSI driver → reinstall every app in the newest
 //!    backup, with its settings and its volumes at the snapshots that backup pinned
 //!
@@ -47,8 +46,6 @@ use crate::AppState;
 
 const STATE_CM: &str = "yolab-storage-heal";
 const STATE_NS: &str = "kube-system";
-const DISK_STATUS_CM: &str = "yolab-disk-status";
-const DISK_NS: &str = "rook-ceph";
 const CSI_NS: &str = "rook-ceph";
 const MANAGED_SELECTOR: &str = "yolab.io/managed=true";
 
@@ -56,35 +53,24 @@ const FS_NAME: &str = "yolab-fs";
 const FS_META_POOL: &str = "yolab-fs-metadata";
 const FS_DATA_POOL: &str = "yolab-fs-data0";
 const FS_SUBVOLUME_GROUP: &str = "csi";
+const FS_POOL_PGS: [(&str, u32); 2] = [(FS_META_POOL, 16), (FS_DATA_POOL, 32)];
 
 /// Pools holding nothing a machine cannot fetch or regenerate again.
 const DISPOSABLE_POOLS: &[&str] = &[".mgr", "images"];
 
-/// A node's disk status older than this is not evidence of anything. The
-/// reconciler publishes every 30s.
-const STATUS_FRESH_SECS: u64 = 300;
-const TICK: Duration = Duration::from_secs(30);
+const TICK: Duration = Duration::from_secs(15);
 
-pub struct HealPolicy {
-    pub disk_grace: Duration,
-    pub node_grace: Duration,
-}
-
-impl HealPolicy {
-    fn from_env() -> Self {
-        let secs = |name: &str, default: u64| {
-            Duration::from_secs(
-                std::env::var(name)
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(default),
-            )
-        };
-        Self {
-            disk_grace: secs("YOLAB_STORAGE_HEAL_DISK_GRACE_SECS", 900),
-            node_grace: secs("YOLAB_STORAGE_HEAL_NODE_GRACE_SECS", 3600),
-        }
-    }
+/// How long a loss must last before the disposable pools are rebuilt on their own.
+/// Nobody chooses that rebuild, so it waits out deploys (~90s) and reboots (a few
+/// minutes) — throwing away every node's image cache on a restart would be a worse
+/// outage than the one being repaired.
+fn disposable_grace() -> Duration {
+    Duration::from_secs(
+        std::env::var("YOLAB_STORAGE_HEAL_DISPOSABLE_GRACE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(900),
+    )
 }
 
 // ── Persisted state ───────────────────────────────────────────────────────────
@@ -93,9 +79,6 @@ type PgsByPool = BTreeMap<String, BTreeSet<String>>;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 struct HealState {
-    /// OSD id → unix time it was first seen gone.
-    #[serde(default)]
-    gone_since: BTreeMap<i64, u64>,
     #[serde(default)]
     loss: Option<Loss>,
     /// The current or most recent recovery.
@@ -105,6 +88,7 @@ struct HealState {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 struct Loss {
+    /// The down OSDs that held the lost placement groups.
     osds: BTreeSet<i64>,
     /// Placement groups with no copy left, by pool name.
     pgs: PgsByPool,
@@ -157,16 +141,31 @@ enum Step {
 }
 
 impl Step {
+    const ALL: [Step; 6] = [
+        Step::PurgeOsds,
+        Step::RemoveApps,
+        Step::DeleteStorage,
+        Step::RecreateStorage,
+        Step::RestartCsi,
+        Step::ReinstallApps,
+    ];
+
     fn next(self) -> Option<Step> {
-        use Step::*;
-        Some(match self {
-            PurgeOsds => RemoveApps,
-            RemoveApps => DeleteStorage,
-            DeleteStorage => RecreateStorage,
-            RecreateStorage => RestartCsi,
-            RestartCsi => ReinstallApps,
-            ReinstallApps => return None,
-        })
+        let i = Self::ALL.iter().position(|s| *s == self)?;
+        Self::ALL.get(i + 1).copied()
+    }
+
+    /// Share of the whole run, in percent. Reinstalling pulls every app's files
+    /// back down and dwarfs everything before it.
+    fn weight(self) -> u32 {
+        match self {
+            Step::PurgeOsds => 5,
+            Step::RemoveApps => 10,
+            Step::DeleteStorage => 5,
+            Step::RecreateStorage => 15,
+            Step::RestartCsi => 5,
+            Step::ReinstallApps => 60,
+        }
     }
 }
 
@@ -226,162 +225,14 @@ fn blocked_reason(state: &HealState) -> Option<&'static str> {
         return Some("storage is being recovered from backup");
     }
     if state.loss.as_ref().is_some_and(Loss::needs_recovery) {
-        return Some("a disk holding app data is gone — reconnect it or recover from backup first");
+        return Some(
+            "a disk holding app data is unavailable — reconnect it or recover from backup first",
+        );
     }
     None
 }
 
-// ── Observation ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Presence {
-    /// Its disk is reported on a live machine: the daemon is down, the data is not.
-    Present,
-    DiskGone,
-    NodeGone,
-    /// Nothing trustworthy to go on this tick.
-    Unknown,
-}
-
-#[derive(Default)]
-struct NodeDisks {
-    fresh: bool,
-    osd_map_known: bool,
-    osd_ids: HashSet<i64>,
-}
-
-#[derive(Default)]
-struct Observed {
-    now: u64,
-    /// id → up
-    osds: BTreeMap<i64, bool>,
-    in_osds: HashSet<i64>,
-    osd_host: HashMap<i64, String>,
-    known_nodes: HashSet<String>,
-    ready_nodes: HashSet<String>,
-    disks: HashMap<String, NodeDisks>,
-}
-
-fn presence(obs: &Observed, osd: i64) -> Presence {
-    let Some(host) = obs.osd_host.get(&osd) else {
-        return Presence::Unknown;
-    };
-    // A CRUSH host Kubernetes has never heard of is a naming mismatch, not proof
-    // the machine is gone.
-    if !obs.known_nodes.contains(host) {
-        return Presence::Unknown;
-    }
-    if !obs.ready_nodes.contains(host) {
-        return Presence::NodeGone;
-    }
-    match obs.disks.get(host) {
-        Some(d) if d.fresh && d.osd_map_known => {
-            if d.osd_ids.contains(&osd) {
-                Presence::Present
-            } else {
-                Presence::DiskGone
-            }
-        }
-        _ => Presence::Unknown,
-    }
-}
-
-/// Advance every down OSD's clock and return the ones proven gone past their grace.
-fn advance_clocks(state: &mut HealState, obs: &Observed, policy: &HealPolicy) -> BTreeSet<i64> {
-    state.gone_since.retain(|id, _| obs.osds.contains_key(id));
-    let mut gone = BTreeSet::new();
-    for (&id, &up) in &obs.osds {
-        if up {
-            state.gone_since.remove(&id);
-            continue;
-        }
-        let grace = match presence(obs, id) {
-            Presence::Present => {
-                state.gone_since.remove(&id);
-                continue;
-            }
-            // Keeps the clock where it is: not evidence either way.
-            Presence::Unknown => continue,
-            Presence::DiskGone => policy.disk_grace,
-            Presence::NodeGone => policy.node_grace,
-        };
-        let since = *state.gone_since.entry(id).or_insert(obs.now);
-        if obs.now.saturating_sub(since) >= grace.as_secs() {
-            gone.insert(id);
-        }
-    }
-    gone
-}
-
-fn parse_observed(dump: &Value, tree: &Value, nodes: &Value, status: &Value, now: u64) -> Observed {
-    let mut obs = Observed {
-        now,
-        ..Default::default()
-    };
-    for o in dump["osds"].as_array().into_iter().flatten() {
-        if let Some(id) = o["osd"].as_i64() {
-            obs.osds.insert(id, o["up"].as_i64() == Some(1));
-            if o["in"].as_i64() == Some(1) {
-                obs.in_osds.insert(id);
-            }
-        }
-    }
-    for n in tree["nodes"].as_array().into_iter().flatten() {
-        if n["type"].as_str() != Some("host") {
-            continue;
-        }
-        let Some(name) = n["name"].as_str() else {
-            continue;
-        };
-        for c in n["children"].as_array().into_iter().flatten() {
-            if let Some(id) = c.as_i64().filter(|id| *id >= 0) {
-                obs.osd_host.insert(id, name.to_string());
-            }
-        }
-    }
-    for n in nodes["items"].as_array().into_iter().flatten() {
-        let Some(name) = n["metadata"]["name"].as_str() else {
-            continue;
-        };
-        obs.known_nodes.insert(name.to_string());
-        let ready = n["status"]["conditions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|c| c["type"] == "Ready" && c["status"] == "True");
-        if ready {
-            obs.ready_nodes.insert(name.to_string());
-        }
-    }
-    for (node, raw) in status["data"].as_object().into_iter().flatten() {
-        let Some(payload) = raw
-            .as_str()
-            .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        else {
-            continue;
-        };
-        let fresh = payload["published_at"]
-            .as_u64()
-            .is_some_and(|t| now.saturating_sub(t) <= STATUS_FRESH_SECS);
-        let osd_ids = payload["disks"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(_, d)| d["osd_id"].as_i64())
-            .collect();
-        obs.disks.insert(
-            node.clone(),
-            NodeDisks {
-                fresh,
-                osd_map_known: payload["osd_map_known"].as_bool() == Some(true),
-                osd_ids,
-            },
-        );
-    }
-    obs
-}
-
-// ── Placement groups ──────────────────────────────────────────────────────────
+// ── Reading Ceph ──────────────────────────────────────────────────────────────
 
 fn pg_items(pgs: &Value) -> &[Value] {
     pgs["pg_stats"]
@@ -400,48 +251,69 @@ fn pool_names(dump: &Value) -> HashMap<i64, String> {
         .collect()
 }
 
+fn pool_of(pgid: &str) -> Option<i64> {
+    pgid.split('.').next()?.parse().ok()
+}
+
+fn osds_where(dump: &Value, field: &str, value: i64) -> BTreeSet<i64> {
+    dump["osds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|o| o[field].as_i64() == Some(value))
+        .filter_map(|o| o["osd"].as_i64())
+        .collect()
+}
+
 fn osd_list(v: &Value) -> Option<Vec<i64>> {
     v.as_array()
         .map(|a| a.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
         .filter(|a| !a.is_empty())
 }
 
-/// Placement groups whose every copy is on a gone OSD, by pool name. Read while the
-/// OSDs are still `in`: that is when the acting set still names where the data was.
-fn lost_pgs(dump: &Value, pgs: &Value, gone: &BTreeSet<i64>) -> PgsByPool {
+fn is_active(pg: &Value) -> bool {
+    pg["state"]
+        .as_str()
+        .is_some_and(|s| s.split('+').any(|x| x == "active"))
+}
+
+/// Placement groups whose every holder is down, by pool name, and those holders.
+///
+/// Read while the OSDs are still `in`: that is when the acting set still names where
+/// the data was. A group Ceph merely has no statistics for (`unknown`, right after a
+/// mgr restart) still maps to its live holders, so it never counts.
+fn lost_pgs(dump: &Value, pgs: &Value) -> (PgsByPool, BTreeSet<i64>) {
+    let down = osds_where(dump, "up", 0);
     let names = pool_names(dump);
     let mut lost = PgsByPool::new();
-    if gone.is_empty() {
-        return lost;
+    let mut holders = BTreeSet::new();
+    if down.is_empty() {
+        return (lost, holders);
     }
     for pg in pg_items(pgs) {
         let Some(pgid) = pg["pgid"].as_str() else {
             continue;
         };
-        let Some(holders) = osd_list(&pg["acting"]).or_else(|| osd_list(&pg["up"])) else {
+        let Some(on) = osd_list(&pg["acting"]).or_else(|| osd_list(&pg["up"])) else {
             continue;
         };
-        if !holders.iter().all(|id| gone.contains(id)) {
+        if !on.iter().all(|id| down.contains(id)) {
             continue;
         }
-        let Some(pool) = pgid
-            .split('.')
-            .next()
-            .and_then(|p| p.parse::<i64>().ok())
-            .and_then(|id| names.get(&id))
-        else {
+        let Some(pool) = pool_of(pgid).and_then(|id| names.get(&id)) else {
             continue;
         };
         lost.entry(pool.clone())
             .or_default()
             .insert(pgid.to_string());
+        holders.extend(on);
     }
-    lost
+    (lost, holders)
 }
 
 /// Folds what this tick found into the record, which only ever grows until the
 /// disks come back or a recovery consumes it.
-fn merge_loss(loss: &mut Option<Loss>, gone: &BTreeSet<i64>, found: PgsByPool, now: u64) {
+fn merge_loss(loss: &mut Option<Loss>, found: PgsByPool, holders: BTreeSet<i64>, now: u64) {
     if found.is_empty() {
         return;
     }
@@ -451,15 +323,16 @@ fn merge_loss(loss: &mut Option<Loss>, gone: &BTreeSet<i64>, found: PgsByPool, n
         rebuilt: BTreeSet::new(),
         detected_at: now,
     });
-    l.osds.extend(gone.iter().copied());
+    l.osds.extend(holders);
     for (pool, ids) in found {
         l.pgs.entry(pool).or_default().extend(ids);
     }
 }
 
-/// Every recorded OSD running again means reconnecting worked: nothing is lost.
-fn reconnected(loss: &Loss, obs: &Observed) -> bool {
-    loss.osds.iter().all(|id| obs.osds.get(id) == Some(&true))
+/// Every recorded OSD running again means the disks came back: nothing is lost.
+fn reconnected(loss: &Loss, dump: &Value) -> bool {
+    let up = osds_where(dump, "up", 1);
+    loss.osds.iter().all(|id| up.contains(id))
 }
 
 // ── The loop ──────────────────────────────────────────────────────────────────
@@ -485,13 +358,13 @@ impl AppRecovery for RealApps {
 }
 
 pub async fn run() {
-    tokio::time::sleep(Duration::from_secs(120)).await;
-    let policy = HealPolicy::from_env();
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let grace = disposable_grace();
     loop {
         if crate::disks_reconciler::is_reconcile_leader().await
             && !crate::routers::restore::is_running().await
         {
-            if let Err(e) = tick(&RealHost, &RealApps, &policy, now_secs()).await {
+            if let Err(e) = tick(&RealHost, &RealApps, grace, now_secs()).await {
                 tracing::warn!("storage-heal: {e:#}");
             }
         }
@@ -509,7 +382,7 @@ fn now_secs() -> u64 {
 async fn tick<H: Host, A: AppRecovery>(
     host: &H,
     apps: &A,
-    policy: &HealPolicy,
+    grace: Duration,
     now: u64,
 ) -> Result<()> {
     if !host.reachable().await {
@@ -521,35 +394,15 @@ async fn tick<H: Host, A: AppRecovery>(
     }
 
     let dump = host.ceph_json(&["osd", "dump"]).await?;
-    let tree = host.ceph_json(&["osd", "tree"]).await?;
-    let nodes = host.kubectl_json(&["get", "nodes", "-o", "json"]).await?;
-    let status = host
-        .kubectl_json(&[
-            "get",
-            "configmap",
-            DISK_STATUS_CM,
-            "-n",
-            DISK_NS,
-            "-o",
-            "json",
-        ])
-        .await?;
-    let obs = parse_observed(&dump, &tree, &nodes, &status, now);
+    let pgs = host.ceph_json(&["pg", "dump", "pgs_brief"]).await?;
 
     let before = state.clone();
-    let gone = advance_clocks(&mut state, &obs, policy);
-
-    if state.loss.as_ref().is_some_and(|l| reconnected(l, &obs)) {
-        tracing::info!("storage-heal: every lost disk is back — nothing needs recovering");
+    if state.loss.as_ref().is_some_and(|l| reconnected(l, &dump)) {
+        tracing::info!("storage-heal: every disk that held lost data is back");
         state.loss = None;
     }
-    if !gone.is_empty() {
-        // Unreadable placement groups skip the record this tick rather than record
-        // nothing: an empty answer here is not proof that nothing was lost.
-        if let Ok(pgs) = host.ceph_json(&["pg", "dump", "pgs_brief"]).await {
-            merge_loss(&mut state.loss, &gone, lost_pgs(&dump, &pgs, &gone), now);
-        }
-    }
+    let (found, holders) = lost_pgs(&dump, &pgs);
+    merge_loss(&mut state.loss, found, holders, now);
     if state != before {
         // Persisted BEFORE anything below changes where Ceph maps those groups.
         write_state(host, &state).await?;
@@ -558,41 +411,52 @@ async fn tick<H: Host, A: AppRecovery>(
     let Some(loss) = state.loss.clone() else {
         return Ok(());
     };
-    for id in &loss.osds {
-        if obs.osds.get(id) == Some(&false) && obs.in_osds.contains(id) {
-            tracing::warn!(
-                "storage-heal: osd.{id} is gone — marking it out so what can be rebuilt is \
-                 rebuilt on the disks that remain (reconnecting it brings it back in)"
-            );
-            if let Err(e) = host.ceph(&["osd", "out", &format!("osd.{id}")]).await {
-                tracing::warn!("storage-heal: could not mark osd.{id} out: {e}");
-            }
+    let disposable: Vec<(&str, &String)> = DISPOSABLE_POOLS
+        .iter()
+        .flat_map(|pool| {
+            loss.pgs
+                .get(*pool)
+                .into_iter()
+                .flatten()
+                .map(move |pg| (*pool, pg))
+        })
+        .filter(|(_, pg)| !loss.rebuilt.contains(*pg))
+        .collect();
+    if disposable.is_empty() || now.saturating_sub(loss.detected_at) < grace.as_secs() {
+        return Ok(());
+    }
+
+    let still_in = osds_where(&dump, "in", 1);
+    let mut all_out = true;
+    for id in loss.osds.iter().filter(|id| still_in.contains(id)) {
+        all_out = false;
+        tracing::warn!(
+            "storage-heal: osd.{id} has been down since the loss began — marking it out so the \
+             image store and mgr pool can be rebuilt on the disks that remain"
+        );
+        if let Err(e) = host.ceph(&["osd", "out", &format!("osd.{id}")]).await {
+            tracing::warn!("storage-heal: could not mark osd.{id} out: {e}");
         }
     }
-    // Only once they are all out as of this tick's observation, so the rebuilt
-    // groups map to a disk that can hold them rather than to the missing one.
-    if !loss.osds.iter().all(|id| !obs.in_osds.contains(id)) {
+    // Next tick: the rebuilt groups must map to a disk that can hold them rather
+    // than to the missing one, which only holds once the OSDs are seen out.
+    if !all_out {
         return Ok(());
     }
     let mut changed = false;
-    for pool in DISPOSABLE_POOLS {
-        for pg in loss.pgs.get(*pool).into_iter().flatten() {
-            if loss.rebuilt.contains(pg) {
-                continue;
-            }
-            match host
-                .ceph(&["osd", "force-create-pg", pg, "--yes-i-really-mean-it"])
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("storage-heal: rebuilt {pg} ({pool}) empty");
-                    if let Some(l) = state.loss.as_mut() {
-                        l.rebuilt.insert(pg.clone());
-                        changed = true;
-                    }
+    for (pool, pg) in disposable {
+        match host
+            .ceph(&["osd", "force-create-pg", pg, "--yes-i-really-mean-it"])
+            .await
+        {
+            Ok(_) => {
+                tracing::info!("storage-heal: rebuilt {pg} ({pool}) empty");
+                if let Some(l) = state.loss.as_mut() {
+                    l.rebuilt.insert(pg.clone());
+                    changed = true;
                 }
-                Err(e) => tracing::warn!("storage-heal: could not rebuild {pg}: {e}"),
             }
+            Err(e) => tracing::warn!("storage-heal: could not rebuild {pg}: {e}"),
         }
     }
     if changed {
@@ -621,15 +485,21 @@ async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
         bail!("a recovery is already running");
     }
     let Some(loss) = state.loss.clone() else {
-        bail!("no data has been lost — there is nothing to recover");
+        bail!("no data is unavailable — there is nothing to recover");
     };
     if !loss.needs_recovery() {
-        bail!("only data that rebuilds itself was lost — there is nothing to restore");
+        bail!("only data that rebuilds itself is unavailable — there is nothing to restore");
     }
     let dump = host.ceph_json(&["osd", "dump"]).await?;
-    let back = osds_up(&dump, &loss.osds);
+    let up = osds_where(&dump, "up", 1);
+    let back: Vec<i64> = loss
+        .osds
+        .iter()
+        .copied()
+        .filter(|id| up.contains(id))
+        .collect();
     if !back.is_empty() {
-        bail!("a lost disk is running again ({back:?}) — wait for it to catch up instead");
+        bail!("a disk that held the data is running again ({back:?}) — wait for it to catch up");
     }
     let removed = managed_namespaces(host).await?;
     tracing::warn!(
@@ -648,17 +518,6 @@ async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
         outcomes: BTreeMap::new(),
     });
     write_state(host, &state).await
-}
-
-fn osds_up(dump: &Value, ids: &BTreeSet<i64>) -> Vec<i64> {
-    dump["osds"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|o| o["up"].as_i64() == Some(1))
-        .filter_map(|o| o["osd"].as_i64())
-        .filter(|id| ids.contains(id))
-        .collect()
 }
 
 // ── Running a recovery ────────────────────────────────────────────────────────
@@ -706,9 +565,6 @@ async fn continue_recovery<H: Host, A: AppRecovery>(
             Some(step) => r.step = step,
             None => {
                 r.finished_at = Some(now);
-                for id in &r.osds {
-                    state.gone_since.remove(id);
-                }
                 state.loss = None;
                 tracing::info!("storage-heal: recovery from backup finished");
             }
@@ -722,7 +578,8 @@ async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
     match r.step {
         Step::PurgeOsds => {
             let dump = host.ceph_json(&["osd", "dump"]).await?;
-            if !osds_up(&dump, &r.osds).is_empty() {
+            let up = osds_where(&dump, "up", 1);
+            if r.osds.iter().any(|id| up.contains(id)) {
                 return Ok(Cancel);
             }
             let existing = host.osd_ids().await?;
@@ -783,10 +640,10 @@ async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
         }
         Step::RecreateStorage => {
             let existing = pools(host).await?;
-            for (pool, pgs) in [(FS_META_POOL, "16"), (FS_DATA_POOL, "32")] {
+            for (pool, pgs) in FS_POOL_PGS {
                 if !existing.contains(pool) {
-                    host.ceph(&["osd", "pool", "create", pool, pgs, pgs])
-                        .await?;
+                    let n = pgs.to_string();
+                    host.ceph(&["osd", "pool", "create", pool, &n, &n]).await?;
                 }
             }
             if !fs_exists(host).await? {
@@ -961,14 +818,163 @@ async fn pools<H: Host>(host: &H) -> Result<HashSet<String>> {
         .collect())
 }
 
+// ── Progress ──────────────────────────────────────────────────────────────────
+
+/// How far the current step has got, as far as it can be counted.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct StepProgress {
+    done: u32,
+    total: u32,
+    /// What is happening right now, in words, when there is something to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+fn count(done: usize, total: usize) -> StepProgress {
+    StepProgress {
+        done: done.min(total) as u32,
+        total: total as u32,
+        detail: None,
+    }
+}
+
+/// Percent of the whole recovery, from the step it is on and that step's progress.
+fn overall_percent(r: &Recovery, step: Option<&StepProgress>) -> u32 {
+    if !r.running() {
+        return 100;
+    }
+    let before: u32 = Step::ALL
+        .iter()
+        .take_while(|s| **s != r.step)
+        .map(|s| s.weight())
+        .sum();
+    let within = step
+        .filter(|p| p.total > 0)
+        .map(|p| r.step.weight() * p.done / p.total)
+        .unwrap_or(0);
+    (before + within).min(99)
+}
+
+/// What one app being reinstalled is doing, from what exists in its namespace.
+fn app_phase(namespace_exists: bool, destinations: &Value, deployments: &Value) -> &'static str {
+    if !namespace_exists {
+        return "Installing the app";
+    }
+    let restoring = destinations["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|d| d["status"]["latestMoverStatus"]["result"].as_str() != Some("Successful"));
+    if restoring {
+        return "Restoring its files";
+    }
+    let starting = deployments["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|d| {
+            d["status"]["readyReplicas"].as_u64().unwrap_or(0)
+                < d["spec"]["replicas"].as_u64().unwrap_or(1)
+        });
+    if starting {
+        "Starting it up"
+    } else {
+        "Installing the app"
+    }
+}
+
+fn fs_pgs_active(dump: &Value, pgs: &Value) -> (usize, usize) {
+    let ids: HashSet<i64> = pool_names(dump)
+        .into_iter()
+        .filter(|(_, n)| n == FS_META_POOL || n == FS_DATA_POOL)
+        .map(|(id, _)| id)
+        .collect();
+    let in_fs: Vec<&Value> = pg_items(pgs)
+        .iter()
+        .filter(|pg| {
+            pg["pgid"]
+                .as_str()
+                .and_then(pool_of)
+                .is_some_and(|p| ids.contains(&p))
+        })
+        .collect();
+    (in_fs.iter().filter(|pg| is_active(pg)).count(), in_fs.len())
+}
+
+/// Counts the current step against the cluster as it is now. None when it cannot be
+/// read or has nothing to count — the page then shows the step without a bar.
+async fn step_progress<H: Host>(host: &H, r: &Recovery) -> Option<StepProgress> {
+    match r.step {
+        Step::PurgeOsds => {
+            let ids = host.osd_ids().await.ok()?;
+            Some(count(
+                r.osds.iter().filter(|id| !ids.contains(id)).count(),
+                r.osds.len(),
+            ))
+        }
+        Step::RemoveApps => {
+            let live = managed_namespaces(host).await.ok()?;
+            Some(count(
+                r.removed.iter().filter(|ns| !live.contains(ns)).count(),
+                r.removed.len(),
+            ))
+        }
+        Step::DeleteStorage => {
+            let pools = pools(host).await.ok()?;
+            let fs = fs_exists(host).await.ok()?;
+            let gone = usize::from(!fs)
+                + [FS_META_POOL, FS_DATA_POOL]
+                    .iter()
+                    .filter(|p| !pools.contains(**p))
+                    .count();
+            Some(count(gone, 3))
+        }
+        Step::RecreateStorage => {
+            let dump = host.ceph_json(&["osd", "dump"]).await.ok()?;
+            let pgs = host.ceph_json(&["pg", "dump", "pgs_brief"]).await.ok()?;
+            let (active, present) = fs_pgs_active(&dump, &pgs);
+            let expected: usize = FS_POOL_PGS.iter().map(|(_, n)| *n as usize).sum();
+            Some(StepProgress {
+                detail: Some(format!(
+                    "{active} of {} storage groups ready",
+                    present.max(expected)
+                )),
+                ..count(active, present.max(expected))
+            })
+        }
+        Step::RestartCsi => None,
+        Step::ReinstallApps => {
+            let apps = r.apps.as_ref()?;
+            let mut p = count(r.outcomes.len(), apps.len());
+            if let Some(ns) = apps.iter().find(|ns| !r.outcomes.contains_key(*ns)) {
+                let exists = host.kubectl(&["get", "namespace", ns]).await.is_ok();
+                let rds = host
+                    .kubectl_json(&["get", "replicationdestination", "-n", ns, "-o", "json"])
+                    .await
+                    .unwrap_or(Value::Null);
+                let deploys = host
+                    .kubectl_json(&["get", "deployment", "-n", ns, "-o", "json"])
+                    .await
+                    .unwrap_or(Value::Null);
+                p.detail = Some(format!(
+                    "{}: {}",
+                    instance_name(ns),
+                    app_phase(exists, &rds, &deploys)
+                ));
+            }
+            Some(p)
+        }
+    }
+}
+
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 
 fn instance_name(namespace: &str) -> &str {
     namespace.strip_prefix("yolab-").unwrap_or(namespace)
 }
 
-/// What the Backups page renders: the loss, and the current or last recovery.
-fn status_json(state: &HealState) -> Value {
+/// What the page renders: the loss, and the current or last recovery.
+fn status_json(state: &HealState, progress: Option<&StepProgress>) -> Value {
     let loss = state.loss.as_ref().map(|l| {
         json!({
             "osds": l.osds,
@@ -999,11 +1005,18 @@ fn status_json(state: &HealState) -> Value {
                 .map(|ns| instance_name(ns))
                 .collect()
         });
+        let steps: Vec<Value> = Step::ALL
+            .iter()
+            .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+            .collect();
         json!({
             "step": serde_json::to_value(r.step).unwrap_or(Value::Null),
+            "steps": steps,
             "running": r.running(),
             "started_at": r.started_at,
             "finished_at": r.finished_at,
+            "percent": overall_percent(r, progress),
+            "step_progress": progress.filter(|_| r.running()),
             "apps": apps,
             "not_restored": not_restored,
         })
@@ -1012,9 +1025,14 @@ fn status_json(state: &HealState) -> Value {
 }
 
 /// What pressing the button would do: which apps come back, and which do not.
-fn preview_json(installed: &[String], contents: &crate::routers::restore::BackupContents) -> Value {
+fn preview_json(
+    installed: &[String],
+    down_osds: &BTreeSet<i64>,
+    contents: &crate::routers::restore::BackupContents,
+) -> Value {
     json!({
         "backup_taken_at": contents.taken_at,
+        "down_osds": down_osds,
         "restored": contents.apps.iter().map(|ns| instance_name(ns)).collect::<Vec<_>>(),
         "not_restored": installed
             .iter()
@@ -1026,13 +1044,21 @@ fn preview_json(installed: &[String], contents: &crate::routers::restore::Backup
 
 /// `GET /api/storage/recovery`
 pub async fn get_status(State(_s): State<AppState>) -> (StatusCode, Json<Value>) {
-    match read_state(&RealHost).await {
-        Ok(state) => (StatusCode::OK, Json(status_json(&state))),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": e.to_string() })),
-        ),
-    }
+    let host = RealHost;
+    let state = match read_state(&host).await {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": e.to_string() })),
+            )
+        }
+    };
+    let progress = match state.recovery.as_ref().filter(|r| r.running()) {
+        Some(r) => step_progress(&host, r).await,
+        None => None,
+    };
+    (StatusCode::OK, Json(status_json(&state, progress.as_ref())))
 }
 
 /// `POST /api/storage/recovery`
@@ -1048,21 +1074,27 @@ pub async fn post_recover(State(_s): State<AppState>) -> (StatusCode, Json<Value
 
 /// `GET /api/storage/recovery/preview`
 pub async fn get_preview(State(_s): State<AppState>) -> (StatusCode, Json<Value>) {
-    let installed = match managed_namespaces(&RealHost).await {
+    let host = RealHost;
+    let unavailable = |e: anyhow::Error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": e.to_string() })),
+        )
+    };
+    let installed = match managed_namespaces(&host).await {
         Ok(n) => n,
-        Err(e) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": e.to_string() })),
-            )
-        }
+        Err(e) => return unavailable(e),
+    };
+    let down = match host.ceph_json(&["osd", "dump"]).await {
+        Ok(d) => osds_where(&d, "up", 0),
+        Err(e) => return unavailable(e),
     };
     match crate::routers::restore::backup_contents().await {
-        Ok(contents) => (StatusCode::OK, Json(preview_json(&installed, &contents))),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": format!("could not read the backup: {e}") })),
+        Ok(contents) => (
+            StatusCode::OK,
+            Json(preview_json(&installed, &down, &contents)),
         ),
+        Err(e) => unavailable(anyhow::anyhow!("could not read the backup: {e}")),
     }
 }
 
@@ -1073,13 +1105,7 @@ mod tests {
     use std::sync::Mutex;
 
     const NOW: u64 = 1_000_000;
-
-    fn policy() -> HealPolicy {
-        HealPolicy {
-            disk_grace: Duration::from_secs(900),
-            node_grace: Duration::from_secs(3600),
-        }
-    }
+    const GRACE: Duration = Duration::from_secs(900);
 
     fn set<T: Ord + Clone>(items: &[T]) -> BTreeSet<T> {
         items.iter().cloned().collect()
@@ -1101,124 +1127,6 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    // ── Presence and clocks ──────────────────────────────────────────────────
-
-    /// node1 carries osd.0 and osd.1; osd.1 is down.
-    fn obs(ready: bool, fresh: bool, reported: &[i64]) -> Observed {
-        let mut o = Observed {
-            now: NOW,
-            ..Default::default()
-        };
-        o.osds.insert(0, true);
-        o.osds.insert(1, false);
-        o.in_osds.extend([0, 1]);
-        o.osd_host.insert(0, "node1".into());
-        o.osd_host.insert(1, "node1".into());
-        o.known_nodes.insert("node1".into());
-        if ready {
-            o.ready_nodes.insert("node1".into());
-        }
-        o.disks.insert(
-            "node1".into(),
-            NodeDisks {
-                fresh,
-                osd_map_known: true,
-                osd_ids: reported.iter().copied().collect(),
-            },
-        );
-        o
-    }
-
-    #[test]
-    fn a_disk_still_reported_is_a_down_daemon_not_a_lost_disk() {
-        assert_eq!(presence(&obs(true, true, &[0, 1]), 1), Presence::Present);
-    }
-
-    #[test]
-    fn a_disk_missing_from_a_fresh_report_is_gone() {
-        assert_eq!(presence(&obs(true, true, &[0]), 1), Presence::DiskGone);
-    }
-
-    #[test]
-    fn a_stale_report_or_an_unknown_osd_map_proves_nothing() {
-        assert_eq!(presence(&obs(true, false, &[0]), 1), Presence::Unknown);
-        let mut o = obs(true, true, &[0]);
-        o.disks.get_mut("node1").unwrap().osd_map_known = false;
-        assert_eq!(presence(&o, 1), Presence::Unknown);
-        o.disks.clear();
-        assert_eq!(presence(&o, 1), Presence::Unknown);
-    }
-
-    #[test]
-    fn a_not_ready_node_is_gone_and_an_unheard_of_host_is_unknown() {
-        assert_eq!(presence(&obs(false, false, &[]), 1), Presence::NodeGone);
-        let mut o = obs(true, true, &[0]);
-        o.osd_host.insert(1, "somewhere-else".into());
-        assert_eq!(presence(&o, 1), Presence::Unknown);
-        o.osd_host.remove(&1);
-        assert_eq!(presence(&o, 1), Presence::Unknown);
-    }
-
-    #[test]
-    fn a_gone_disk_waits_out_its_grace_period() {
-        let mut state = HealState::default();
-        let mut o = obs(true, true, &[0]);
-        assert!(advance_clocks(&mut state, &o, &policy()).is_empty());
-        assert_eq!(state.gone_since.get(&1), Some(&NOW));
-        o.now = NOW + 899;
-        assert!(advance_clocks(&mut state, &o, &policy()).is_empty());
-        o.now = NOW + 900;
-        assert_eq!(advance_clocks(&mut state, &o, &policy()), set(&[1]));
-    }
-
-    #[test]
-    fn a_whole_machine_gets_the_longer_grace() {
-        let mut state = HealState::default();
-        let mut o = obs(false, false, &[]);
-        o.osds.insert(0, false);
-        advance_clocks(&mut state, &o, &policy());
-        o.now = NOW + 900;
-        assert!(advance_clocks(&mut state, &o, &policy()).is_empty());
-        o.now = NOW + 3600;
-        assert_eq!(advance_clocks(&mut state, &o, &policy()), set(&[0, 1]));
-    }
-
-    #[test]
-    fn the_disk_coming_back_resets_the_clock() {
-        let mut state = HealState::default();
-        advance_clocks(&mut state, &obs(true, true, &[0]), &policy());
-        advance_clocks(&mut state, &obs(true, true, &[0, 1]), &policy());
-        assert!(state.gone_since.is_empty());
-    }
-
-    #[test]
-    fn unknown_neither_starts_nor_clears_a_clock_and_never_counts() {
-        let mut state = HealState::default();
-        state.gone_since.insert(1, NOW - 10_000);
-        assert!(advance_clocks(&mut state, &obs(true, false, &[0]), &policy()).is_empty());
-        assert_eq!(state.gone_since.get(&1), Some(&(NOW - 10_000)));
-    }
-
-    #[test]
-    fn an_osd_that_no_longer_exists_loses_its_clock() {
-        let mut state = HealState::default();
-        state.gone_since.insert(9, NOW - 5);
-        advance_clocks(&mut state, &obs(true, true, &[0]), &policy());
-        assert!(!state.gone_since.contains_key(&9));
-    }
-
-    #[test]
-    fn each_disk_keeps_its_own_clock() {
-        let mut state = HealState::default();
-        let mut o = obs(true, true, &[]);
-        o.osds.insert(0, false);
-        state.gone_since.insert(0, NOW - 900);
-        assert_eq!(advance_clocks(&mut state, &o, &policy()), set(&[0]));
-        assert_eq!(state.gone_since[&1], NOW, "osd.1 only started counting now");
-    }
-
-    // ── Parsing ──────────────────────────────────────────────────────────────
-
     fn dump() -> Value {
         json!({
             "osds": [{"osd": 0, "up": 1, "in": 1}, {"osd": 1, "up": 0, "in": 1}],
@@ -1231,47 +1139,24 @@ mod tests {
         })
     }
 
-    #[test]
-    fn parse_observed_reads_all_four_sources() {
-        let tree = json!({"nodes": [
-            {"id": -1, "type": "root", "name": "default", "children": [-3, 5]},
-            {"id": -3, "type": "host", "name": "node1", "children": [1, 0, -9]},
-        ]});
-        let nodes = json!({"items": [
-            {"metadata": {"name": "node1"}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}},
-            {"metadata": {"name": "node2"}, "status": {"conditions": [{"type": "Ready", "status": "Unknown"}]}},
-            {"metadata": {"name": "node3"}, "status": {}},
-        ]});
-        let status = json!({"data": {
-            "node1": json!({"published_at": NOW - 20, "osd_map_known": true,
-                            "disks": {"system": {"osd_id": 0}, "sdc": {}}}).to_string(),
-            "node2": json!({"published_at": NOW - 301, "osd_map_known": true, "disks": {}}).to_string(),
-            "node3": json!({"published_at": NOW - 300, "disks": {}}).to_string(),
-            "node4": "not json",
-        }});
-        let o = parse_observed(&dump(), &tree, &nodes, &status, NOW);
-        assert_eq!(o.osds.get(&1), Some(&false));
-        assert!(o.in_osds.contains(&1));
-        assert_eq!(o.osd_host.len(), 2, "only host buckets place OSDs");
-        assert_eq!(o.osd_host[&1], "node1");
-        assert!(o.ready_nodes.contains("node1"));
-        assert!(!o.ready_nodes.contains("node2") && !o.ready_nodes.contains("node3"));
-        assert!(o.known_nodes.contains("node3"));
-        assert!(o.disks["node1"].fresh && o.disks["node1"].osd_map_known);
-        assert_eq!(o.disks["node1"].osd_ids, HashSet::from([0]));
-        assert!(!o.disks["node2"].fresh, "301s is stale");
-        assert!(o.disks["node3"].fresh, "300s is not");
-        assert!(
-            !o.disks["node3"].osd_map_known,
-            "a report that does not say is not known"
-        );
-        assert!(!o.disks.contains_key("node4"));
+    fn healthy_dump() -> Value {
+        let mut d = dump();
+        d["osds"][1]["up"] = json!(1);
+        d
+    }
+
+    fn lost_pg_dump() -> Value {
+        json!({"pg_stats": [
+            {"pgid": "2.1", "state": "stale+active+clean", "acting": [1]},
+            {"pgid": "4.1", "state": "stale+active+clean", "acting": [1]},
+            {"pgid": "4.2", "state": "active+clean", "acting": [0]},
+        ]})
     }
 
     // ── Which placement groups are lost ──────────────────────────────────────
 
     #[test]
-    fn a_pg_is_lost_only_when_every_holder_is_gone() {
+    fn a_pg_is_lost_when_every_holder_is_down() {
         let pgs = json!({"pg_stats": [
             {"pgid": "2.1", "state": "stale+active+clean", "acting": [1], "up": [1]},
             {"pgid": "3.4", "state": "stale+active+clean", "acting": [1]},
@@ -1280,10 +1165,12 @@ mod tests {
             {"pgid": "4.7", "state": "stale+down", "acting": [], "up": [1]},
             {"pgid": "1.0", "state": "stale+active+clean", "acting": [1]},
             {"pgid": "9.9", "state": "stale", "acting": [1]},
-            {"pgid": "2.2", "state": "unknown"},
+            {"pgid": "2.2", "state": "unknown", "acting": [0]},
+            {"pgid": "2.3", "state": "unknown"},
         ]});
+        let (lost, holders) = lost_pgs(&dump(), &pgs);
         assert_eq!(
-            lost_pgs(&dump(), &pgs, &set(&[1])),
+            lost,
             pgs_by_pool(&[
                 (".mgr", &["1.0"]),
                 (FS_META_POOL, &["2.1"]),
@@ -1291,42 +1178,45 @@ mod tests {
                 ("images", &["4.7"]),
             ])
         );
+        assert_eq!(holders, set(&[1]));
     }
 
     #[test]
-    fn nothing_is_lost_while_no_disk_is_proven_gone() {
-        let pgs = json!([{"pgid": "2.1", "state": "stale", "acting": [1]}]);
-        assert!(lost_pgs(&dump(), &pgs, &BTreeSet::new()).is_empty());
+    fn nothing_is_lost_while_every_disk_is_up() {
+        let (lost, holders) = lost_pgs(&healthy_dump(), &lost_pg_dump());
+        assert!(lost.is_empty() && holders.is_empty());
     }
 
     #[test]
-    fn two_gone_disks_holding_both_copies_lose_the_pg() {
-        let pgs = json!([{"pgid": "3.1", "state": "stale", "acting": [1, 2]}]);
-        assert_eq!(
-            lost_pgs(&dump(), &pgs, &set(&[1, 2])),
-            pgs_by_pool(&[(FS_DATA_POOL, &["3.1"])])
-        );
-        assert!(lost_pgs(&dump(), &pgs, &set(&[1])).is_empty());
+    fn a_pg_with_one_copy_still_up_is_not_lost() {
+        let mut d = dump();
+        d["osds"] = json!([
+            {"osd": 0, "up": 1}, {"osd": 1, "up": 0}, {"osd": 2, "up": 0}
+        ]);
+        let pgs = json!([
+            {"pgid": "3.1", "state": "stale", "acting": [1, 2]},
+            {"pgid": "3.2", "state": "active+undersized+degraded", "acting": [0, 2]},
+        ]);
+        let (lost, holders) = lost_pgs(&d, &pgs);
+        assert_eq!(lost, pgs_by_pool(&[(FS_DATA_POOL, &["3.1"])]));
+        assert_eq!(holders, set(&[1, 2]));
     }
 
     #[test]
-    fn the_record_only_grows_and_starts_at_its_first_sighting() {
+    fn the_record_only_grows_and_keeps_its_first_sighting() {
         let mut loss = None;
-        merge_loss(&mut loss, &set(&[1]), PgsByPool::new(), NOW);
-        assert!(
-            loss.is_none(),
-            "a gone disk that held nothing unique records nothing"
-        );
+        merge_loss(&mut loss, PgsByPool::new(), set(&[1]), NOW);
+        assert!(loss.is_none());
         merge_loss(
             &mut loss,
-            &set(&[1]),
             pgs_by_pool(&[("images", &["4.1"])]),
+            set(&[1]),
             NOW,
         );
         merge_loss(
             &mut loss,
-            &set(&[2]),
             pgs_by_pool(&[("images", &["4.2"]), (FS_META_POOL, &["2.0"])]),
+            set(&[2]),
             NOW + 60,
         );
         let l = loss.unwrap();
@@ -1350,6 +1240,25 @@ mod tests {
         assert!(!l.needs_recovery());
     }
 
+    #[test]
+    fn the_loss_clears_only_when_every_recorded_disk_is_up() {
+        let l = Loss {
+            osds: set(&[1, 2]),
+            pgs: pgs_by_pool(&[(FS_META_POOL, &["2.1"])]),
+            rebuilt: BTreeSet::new(),
+            detected_at: NOW,
+        };
+        let partly = json!({"osds": [{"osd": 1, "up": 1}, {"osd": 2, "up": 0}]});
+        assert!(!reconnected(&l, &partly));
+        let all = json!({"osds": [{"osd": 1, "up": 1}, {"osd": 2, "up": 1}]});
+        assert!(reconnected(&l, &all));
+        let purged = json!({"osds": [{"osd": 1, "up": 1}]});
+        assert!(
+            !reconnected(&l, &purged),
+            "a missing OSD is not a returned one"
+        );
+    }
+
     // ── State ────────────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1358,9 +1267,7 @@ mod tests {
             "kubectl get configmap yolab-storage-heal",
             "connection refused",
         );
-        assert!(tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .is_err());
+        assert!(tick(&host, &FakeApps::default(), GRACE, NOW).await.is_err());
         assert_eq!(host.calls().len(), 2, "{:?}", host.calls());
     }
 
@@ -1378,7 +1285,6 @@ mod tests {
     #[test]
     fn state_round_trips_through_json() {
         let s = HealState {
-            gone_since: BTreeMap::from([(3, 10), (12, 20)]),
             loss: Some(Loss {
                 osds: set(&[3]),
                 pgs: pgs_by_pool(&[(FS_META_POOL, &["2.1"])]),
@@ -1405,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn backups_are_blocked_while_app_data_is_lost_or_being_recovered() {
+    fn backups_are_blocked_while_app_data_is_unavailable_or_being_recovered() {
         let mut s = HealState::default();
         assert_eq!(blocked_reason(&s), None);
         s.loss = Some(Loss {
@@ -1426,39 +1332,16 @@ mod tests {
 
     // ── The tick ─────────────────────────────────────────────────────────────
 
-    /// A null `pgs` leaves the PG dump unscripted so a test can script its failure:
-    /// a second answer would queue behind this one rather than replace it.
-    fn cluster_host(state: &Value, dump: &Value, pgs: &Value, reported: &[i64]) -> FakeHost {
-        let tree =
-            json!({"nodes": [{"id": -3, "type": "host", "name": "node1", "children": [0, 1]}]});
-        let nodes = json!({"items": [{"metadata": {"name": "node1"},
-            "status": {"conditions": [{"type": "Ready", "status": "True"}]}}]});
-        let disks: serde_json::Map<String, Value> = reported
-            .iter()
-            .map(|id| (format!("d{id}"), json!({"osd_id": id})))
-            .collect();
-        let status = json!({"data": {"node1": json!({
-            "published_at": NOW, "osd_map_known": true, "disks": disks
-        }).to_string()}});
-        let host = FakeHost::new()
+    fn cluster_host(state: &Value, dump: &Value, pgs: &Value) -> FakeHost {
+        FakeHost::new()
             .ok("ceph -s", "")
             .ok(
                 "kubectl get configmap yolab-storage-heal",
                 &json!({"kind": "ConfigMap", "data": {"state": state.to_string()}}).to_string(),
             )
             .ok("ceph osd dump", &dump.to_string())
-            .ok("ceph osd tree", &tree.to_string())
-            .ok("kubectl get nodes", &nodes.to_string())
-            .ok(
-                "kubectl get configmap yolab-disk-status",
-                &status.to_string(),
-            )
-            .ok("kubectl-apply", "");
-        if pgs.is_null() {
-            host
-        } else {
-            host.ok("ceph pg dump pgs_brief", &pgs.to_string())
-        }
+            .ok("ceph pg dump pgs_brief", &pgs.to_string())
+            .ok("kubectl-apply", "")
     }
 
     fn applied_states(host: &FakeHost) -> Vec<HealState> {
@@ -1470,85 +1353,66 @@ mod tests {
             .collect()
     }
 
-    fn lost_pg_dump() -> Value {
-        json!({"pg_stats": [
-            {"pgid": "2.1", "state": "stale+active+clean", "acting": [1]},
-            {"pgid": "4.1", "state": "stale+active+clean", "acting": [1]},
-            {"pgid": "4.2", "state": "active+clean", "acting": [0]},
-        ]})
-    }
-
     #[tokio::test]
     async fn an_unreachable_cluster_is_not_even_asked_about_its_state() {
         let host = FakeHost::new().fail("ceph -s", "timed out");
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
         assert_eq!(host.calls(), vec!["ceph -s".to_string()]);
     }
 
     #[tokio::test]
-    async fn a_disk_inside_its_grace_period_is_only_timed() {
-        let host = cluster_host(&json!({}), &dump(), &lost_pg_dump(), &[0]);
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
-        assert!(
-            !host.ran("pg dump"),
-            "no PG is judged before a disk is proven gone"
-        );
-        assert!(!host.ran("ceph osd out"));
-        assert_eq!(applied_states(&host)[0].gone_since.get(&1), Some(&NOW));
+    async fn a_healthy_cluster_writes_nothing() {
+        let host = cluster_host(&json!({}), &healthy_dump(), &lost_pg_dump());
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        assert!(!host.ran("kubectl-apply"));
     }
 
     #[tokio::test]
-    async fn a_proven_gone_disk_is_recorded_before_it_is_marked_out() {
-        let state = json!({"gone_since": {"1": NOW - 900}});
-        let host = cluster_host(&state, &dump(), &lost_pg_dump(), &[0]).ok("ceph osd out", "");
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
-
-        let recorded = applied_states(&host)[0].loss.clone().expect("recorded");
-        assert_eq!(recorded.osds, set(&[1]));
+    async fn a_loss_is_recorded_on_the_very_first_tick_and_nothing_else_happens() {
+        let host = cluster_host(&json!({}), &dump(), &lost_pg_dump());
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        let loss = applied_states(&host)[0]
+            .loss
+            .clone()
+            .expect("recorded at once");
+        assert_eq!(loss.osds, set(&[1]));
+        assert_eq!(loss.detected_at, NOW);
         assert_eq!(
-            recorded.pgs,
+            loss.pgs,
             pgs_by_pool(&[(FS_META_POOL, &["2.1"]), ("images", &["4.1"])])
         );
-        let calls = host.calls();
-        let record = calls
-            .iter()
-            .position(|c| c.starts_with("kubectl-apply"))
-            .unwrap();
-        let out = calls
-            .iter()
-            .position(|c| c == "ceph osd out osd.1")
-            .unwrap();
         assert!(
-            record < out,
-            "the evidence must be saved before it changes: {calls:#?}"
+            !host.ran("ceph osd out"),
+            "nothing moves inside the grace period"
         );
-        assert!(!host.ran("force-create-pg"), "not until the OSD is out");
-        assert!(!host.ran("osd purge") && !host.ran("pool delete"));
+        assert!(!host.ran("force-create-pg") && !host.ran("osd purge"));
     }
 
     #[tokio::test]
-    async fn once_out_the_disposable_pools_rebuild_empty_and_app_data_is_left_alone() {
-        let state = json!({
-            "gone_since": {"1": NOW - 2000},
-            "loss": {"osds": [1], "pgs": {FS_META_POOL: ["2.1"], "images": ["4.1"], ".mgr": ["1.0"]},
-                     "detected_at": NOW - 100},
-        });
+    async fn past_the_grace_the_lost_disks_go_out_first_and_nothing_is_rebuilt_yet() {
+        let state = json!({"loss": {"osds": [1], "pgs": {"images": ["4.1"], FS_META_POOL: ["2.1"]},
+                                    "detected_at": NOW - 900}});
+        let host = cluster_host(&state, &dump(), &lost_pg_dump()).ok("ceph osd out", "");
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        assert!(host.ran("ceph osd out osd.1"));
+        assert!(
+            !host.ran("force-create-pg"),
+            "not until the OSD is seen out"
+        );
+    }
+
+    #[tokio::test]
+    async fn once_out_the_disposable_pools_rebuild_and_app_data_is_left_alone() {
+        let state = json!({"loss": {"osds": [1],
+            "pgs": {FS_META_POOL: ["2.1"], "images": ["4.1"], ".mgr": ["1.0"]},
+            "detected_at": NOW - 2000}});
         let mut d = dump();
         d["osds"][1]["in"] = json!(0);
         let pgs = json!({"pg_stats": [{"pgid": "2.1", "state": "down", "acting": [0]}]});
-        let host = cluster_host(&state, &d, &pgs, &[0]).ok("ceph osd force-create-pg", "");
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
+        let host = cluster_host(&state, &d, &pgs).ok("ceph osd force-create-pg", "");
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
 
-        assert!(host.ran("force-create-pg 4.1"));
-        assert!(host.ran("force-create-pg 1.0"));
+        assert!(host.ran("force-create-pg 4.1") && host.ran("force-create-pg 1.0"));
         assert!(!host.ran("force-create-pg 2.1"));
         assert!(!host.ran("ceph osd out"), "already out");
         assert!(!host.ran("fs fail") && !host.ran("pool delete") && !host.ran("osd purge"));
@@ -1562,48 +1426,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_loss_of_only_app_data_never_marks_anything_out() {
+        let state = json!({"loss": {"osds": [1], "pgs": {FS_META_POOL: ["2.1"]},
+                                    "detected_at": NOW - 100_000}});
+        let only_app_data =
+            json!({"pg_stats": [{"pgid": "2.1", "state": "stale+active+clean", "acting": [1]}]});
+        let host = cluster_host(&state, &dump(), &only_app_data);
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        assert!(
+            !host.ran("ceph osd out"),
+            "reconnecting must stay a way back"
+        );
+    }
+
+    #[tokio::test]
     async fn an_already_rebuilt_pg_is_not_rebuilt_again() {
-        let state = json!({
-            "gone_since": {"1": NOW - 2000},
-            "loss": {"osds": [1], "pgs": {"images": ["4.1"]}, "rebuilt": ["4.1"], "detected_at": 1},
-        });
+        let state = json!({"loss": {"osds": [1], "pgs": {"images": ["4.1"]}, "rebuilt": ["4.1"],
+                                    "detected_at": 1}});
         let mut d = dump();
         d["osds"][1]["in"] = json!(0);
-        let host = cluster_host(&state, &d, &json!({"pg_stats": []}), &[0]);
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
-        assert!(!host.ran("force-create-pg"));
+        let host = cluster_host(&state, &d, &json!({"pg_stats": []}));
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        assert!(!host.ran("force-create-pg") && !host.ran("osd out"));
     }
 
     #[tokio::test]
-    async fn plugging_the_disk_back_in_clears_the_record() {
+    async fn the_disk_coming_back_clears_the_record() {
         let state =
             json!({"loss": {"osds": [1], "pgs": {FS_META_POOL: ["2.1"]}, "detected_at": 1}});
-        let mut d = dump();
-        d["osds"][1] = json!({"osd": 1, "up": 1, "in": 0});
-        let host = cluster_host(&state, &d, &json!({}), &[0, 1]);
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
+        let host = cluster_host(&state, &healthy_dump(), &lost_pg_dump());
+        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
         assert!(applied_states(&host).pop().unwrap().loss.is_none());
-        assert!(!host.ran("force-create-pg"));
     }
 
     #[tokio::test]
-    async fn an_unreadable_pg_dump_records_nothing_rather_than_an_empty_loss() {
-        let state = json!({"gone_since": {"1": NOW - 900}});
-        let host = cluster_host(&state, &dump(), &Value::Null, &[0])
-            .fail("ceph pg dump pgs_brief", "timeout");
-        tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .unwrap();
-        assert!(applied_states(&host).iter().all(|s| s.loss.is_none()));
-        assert!(!host.ran("ceph osd out"));
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_cluster_shape_is_an_error_and_changes_nothing() {
+    async fn an_unreadable_pg_dump_is_an_error_and_records_nothing() {
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok(
@@ -1611,10 +1468,8 @@ mod tests {
                 &json!({"kind": "ConfigMap", "data": {"state": "{}"}}).to_string(),
             )
             .ok("ceph osd dump", &dump().to_string())
-            .fail("ceph osd tree", "timeout");
-        assert!(tick(&host, &FakeApps::default(), &policy(), NOW)
-            .await
-            .is_err());
+            .fail("ceph pg dump pgs_brief", "timeout");
+        assert!(tick(&host, &FakeApps::default(), GRACE, NOW).await.is_err());
         assert!(!host.ran("kubectl-apply"));
     }
 
@@ -1633,10 +1488,11 @@ mod tests {
             )
             .ok("kubectl delete pod", "")
             .ok("kubectl-apply", "");
-        let apps = FakeApps::failing_list();
-        let err = tick(&host, &apps, &policy(), NOW).await.unwrap_err();
+        let err = tick(&host, &FakeApps::failing_list(), GRACE, NOW)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("restic unreachable"), "{err}");
-        assert!(!host.ran("ceph osd tree"), "no detection while recovering");
+        assert!(!host.ran("pg dump"), "no detection while recovering");
         assert!(host.ran("app=csi-cephfsplugin"));
     }
 
@@ -1662,12 +1518,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_button_records_the_installed_apps_and_starts_by_purging_the_disks() {
+    async fn the_button_works_immediately_after_a_loss_is_seen() {
         let host = start_host(&app_loss(), &dump());
-        start_recovery(&host, NOW).await.unwrap();
+        start_recovery(&host, 2).await.unwrap();
         let r = applied_states(&host).pop().unwrap().recovery.unwrap();
         assert_eq!(r.step, Step::PurgeOsds);
-        assert_eq!(r.started_at, NOW);
+        assert_eq!(r.started_at, 2);
         assert_eq!(r.osds, set(&[1]));
         assert_eq!(r.removed, strings(&["yolab-a", "yolab-b"]));
         assert_eq!(r.apps, None, "the backup is read when reinstalling starts");
@@ -1701,9 +1557,7 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("already running"));
 
-        let mut d = dump();
-        d["osds"][1]["up"] = json!(1);
-        let err = start_recovery(&start_host(&app_loss(), &d), NOW)
+        let err = start_recovery(&start_host(&app_loss(), &healthy_dump()), NOW)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("running again"));
@@ -1785,15 +1639,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_disk_coming_back_cancels_before_anything_is_destroyed() {
-        let mut d = dump();
-        d["osds"][1]["up"] = json!(1);
         let host = FakeHost::new()
-            .ok("ceph osd dump", &d.to_string())
+            .ok("ceph osd dump", &healthy_dump().to_string())
             .ok("kubectl-apply", "");
         let mut state = HealState {
             loss: serde_json::from_value(app_loss()["loss"].clone()).unwrap(),
             recovery: Some(recovery_at(Step::PurgeOsds)),
-            ..Default::default()
         };
         continue_recovery(&host, &FakeApps::default(), &mut state, NOW)
             .await
@@ -1961,25 +1812,15 @@ mod tests {
     }
 
     #[test]
-    fn the_steps_run_in_the_order_that_keeps_every_resume_safe() {
+    fn the_steps_run_in_order_and_their_weights_make_a_whole() {
         let mut s = Step::PurgeOsds;
         let mut order = vec![s];
         while let Some(n) = s.next() {
             order.push(n);
             s = n;
         }
-        assert_eq!(
-            order,
-            vec![
-                Step::PurgeOsds,
-                Step::RemoveApps,
-                Step::DeleteStorage,
-                Step::RecreateStorage,
-                Step::RestartCsi,
-                Step::ReinstallApps,
-            ],
-            "apps go before their storage, storage comes back before apps return"
-        );
+        assert_eq!(order, Step::ALL.to_vec());
+        assert_eq!(Step::ALL.iter().map(|s| s.weight()).sum::<u32>(), 100);
     }
 
     // ── Reinstalling ─────────────────────────────────────────────────────────
@@ -2037,7 +1878,6 @@ mod tests {
 
     fn reinstalling() -> HealState {
         HealState {
-            gone_since: BTreeMap::from([(1, NOW - 5000)]),
             loss: serde_json::from_value(app_loss()["loss"].clone()).unwrap(),
             recovery: Some(recovery_at(Step::ReinstallApps)),
         }
@@ -2068,7 +1908,6 @@ mod tests {
             "yolab-b was not in the backup, so it does not come back"
         );
         assert!(state.loss.is_none(), "the loss is consumed");
-        assert!(state.gone_since.is_empty());
         assert_eq!(blocked_reason(&state), None, "backups may run again");
     }
 
@@ -2101,12 +1940,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreadable_backup_stops_before_reinstalling_anything() {
-        let apps = FakeApps::failing_list();
         let mut state = reinstalling();
         let host = FakeHost::new().ok("kubectl-apply", "");
-        assert!(continue_recovery(&host, &apps, &mut state, NOW)
-            .await
-            .is_err());
+        assert!(
+            continue_recovery(&host, &FakeApps::failing_list(), &mut state, NOW)
+                .await
+                .is_err()
+        );
         assert!(state.recovery.unwrap().running());
     }
 
@@ -2163,11 +2003,7 @@ mod tests {
         continue_recovery(&host, &apps, &mut state, NOW)
             .await
             .unwrap();
-        assert_eq!(
-            state.recovery.as_ref().unwrap().step,
-            Step::RemoveApps,
-            "the first tick waits for the namespace to go"
-        );
+        assert_eq!(state.recovery.as_ref().unwrap().step, Step::RemoveApps);
         continue_recovery(&host, &apps, &mut state, NOW + 30)
             .await
             .unwrap();
@@ -2196,13 +2032,162 @@ mod tests {
         for w in order.windows(2) {
             assert!(pos(w[0]) < pos(w[1]), "{} must come before {}", w[0], w[1]);
         }
-        assert_eq!(*apps.reinstalled.lock().unwrap(), strings(&["yolab-a"]));
+    }
+
+    // ── Progress ─────────────────────────────────────────────────────────────
+
+    fn progress(done: u32, total: u32) -> StepProgress {
+        StepProgress {
+            done,
+            total,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn the_overall_percent_adds_finished_steps_and_the_share_of_the_current_one() {
+        let at = |step| recovery_at(step);
+        assert_eq!(overall_percent(&at(Step::PurgeOsds), None), 0);
+        assert_eq!(
+            overall_percent(&at(Step::PurgeOsds), Some(&progress(1, 1))),
+            5
+        );
+        assert_eq!(
+            overall_percent(&at(Step::RemoveApps), Some(&progress(1, 2))),
+            10
+        );
+        assert_eq!(
+            overall_percent(&at(Step::RecreateStorage), Some(&progress(24, 48))),
+            27
+        );
+        assert_eq!(
+            overall_percent(&at(Step::ReinstallApps), Some(&progress(2, 4))),
+            70
+        );
+        assert_eq!(
+            overall_percent(&at(Step::ReinstallApps), Some(&progress(4, 4))),
+            99,
+            "a running recovery never claims 100"
+        );
+        assert_eq!(
+            overall_percent(&at(Step::RemoveApps), Some(&progress(3, 0))),
+            5
+        );
+        let mut done = at(Step::ReinstallApps);
+        done.finished_at = Some(NOW);
+        assert_eq!(overall_percent(&done, None), 100);
+    }
+
+    #[test]
+    fn an_app_being_reinstalled_says_what_it_is_doing() {
+        let none = json!({"items": []});
+        assert_eq!(app_phase(false, &none, &none), "Installing the app");
+        let restoring = json!({"items": [{"status": {"latestMoverStatus": {"result": "Failed"}}}, {"status": {}}]});
+        assert_eq!(app_phase(true, &restoring, &none), "Restoring its files");
+        let restored =
+            json!({"items": [{"status": {"latestMoverStatus": {"result": "Successful"}}}]});
+        let starting =
+            json!({"items": [{"spec": {"replicas": 2}, "status": {"readyReplicas": 1}}]});
+        assert_eq!(app_phase(true, &restored, &starting), "Starting it up");
+        let ready = json!({"items": [{"spec": {"replicas": 1}, "status": {"readyReplicas": 1}}]});
+        assert_eq!(app_phase(true, &restored, &ready), "Installing the app");
+    }
+
+    #[test]
+    fn filesystem_pgs_are_counted_only_in_the_filesystem_pools() {
+        let pgs = json!({"pg_stats": [
+            {"pgid": "2.0", "state": "active+clean"},
+            {"pgid": "2.1", "state": "creating"},
+            {"pgid": "3.0", "state": "active+clean"},
+            {"pgid": "4.0", "state": "active+clean"},
+        ]});
+        assert_eq!(fs_pgs_active(&dump(), &pgs), (2, 3));
+    }
+
+    #[tokio::test]
+    async fn step_progress_counts_each_step_against_the_cluster() {
+        let host = FakeHost::new().ok("ceph osd ls", "[0]");
+        let mut r = recovery_at(Step::PurgeOsds);
+        r.osds = set(&[1, 2]);
+        assert_eq!(step_progress(&host, &r).await, Some(progress(2, 2)));
+
+        let host = FakeHost::new().ok(
+            "kubectl get namespaces -l yolab.io/managed=true",
+            r#"{"items": [{"metadata": {"name": "yolab-b"}}]}"#,
+        );
+        assert_eq!(
+            step_progress(&host, &recovery_at(Step::RemoveApps)).await,
+            Some(progress(1, 2))
+        );
+
+        let host = FakeHost::new()
+            .ok("ceph osd pool ls", "yolab-fs-data0")
+            .ok("ceph fs ls", "[]");
+        assert_eq!(
+            step_progress(&host, &recovery_at(Step::DeleteStorage)).await,
+            Some(progress(2, 3))
+        );
+
+        let pgs = json!({"pg_stats": [{"pgid": "2.0", "state": "active+clean"}]});
+        let host = FakeHost::new()
+            .ok("ceph osd dump", &dump().to_string())
+            .ok("ceph pg dump pgs_brief", &pgs.to_string());
+        assert_eq!(
+            step_progress(&host, &recovery_at(Step::RecreateStorage)).await,
+            Some(StepProgress {
+                done: 1,
+                total: 48,
+                detail: Some("1 of 48 storage groups ready".into())
+            }),
+            "counts against the groups the new pools will have, not the few created so far"
+        );
+
+        assert_eq!(
+            step_progress(&FakeHost::new(), &recovery_at(Step::RestartCsi)).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn reinstall_progress_names_the_app_in_progress_and_what_it_is_doing() {
+        let mut r = recovery_at(Step::ReinstallApps);
+        assert_eq!(
+            step_progress(&FakeHost::new(), &r).await,
+            None,
+            "nothing to count before the backup is read"
+        );
+        r.apps = Some(strings(&["yolab-a", "yolab-b", "yolab-c"]));
+        r.outcomes.insert("yolab-a".into(), AppOutcome::Restored);
+        let host = FakeHost::new()
+            .ok("kubectl get namespace yolab-b", "")
+            .ok(
+                "kubectl get replicationdestination -n yolab-b",
+                r#"{"items": [{"status": {}}]}"#,
+            )
+            .ok("kubectl get deployment -n yolab-b", r#"{"items": []}"#);
+        assert_eq!(
+            step_progress(&host, &r).await,
+            Some(StepProgress {
+                done: 1,
+                total: 3,
+                detail: Some("b: Restoring its files".into())
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_cluster_gives_no_bar_rather_than_a_wrong_one() {
+        let host = FakeHost::new().fail("ceph osd ls", "timeout");
+        assert_eq!(
+            step_progress(&host, &recovery_at(Step::PurgeOsds)).await,
+            None
+        );
     }
 
     // ── What the page is told ────────────────────────────────────────────────
 
     #[test]
-    fn status_reports_the_loss_the_step_and_each_apps_outcome() {
+    fn status_reports_the_loss_the_steps_the_progress_and_each_app() {
         let mut r = recovery_at(Step::ReinstallApps);
         r.apps = Some(strings(&["yolab-a", "yolab-c"]));
         r.outcomes.insert("yolab-a".into(), AppOutcome::Restored);
@@ -2214,15 +2199,35 @@ mod tests {
                 detected_at: 42,
             }),
             recovery: Some(r),
-            ..Default::default()
         };
-        let v = status_json(&state);
+        let p = StepProgress {
+            done: 1,
+            total: 2,
+            detail: Some("c: Restoring its files".into()),
+        };
+        let v = status_json(&state, Some(&p));
         assert_eq!(v["loss"]["osds"], json!([1, 3]));
         assert_eq!(v["loss"]["pools"], json!(["images", FS_META_POOL]));
         assert_eq!(v["loss"]["placement_groups"], 3);
         assert_eq!(v["loss"]["needs_recovery"], true);
         assert_eq!(v["recovery"]["step"], "reinstall_apps");
+        assert_eq!(
+            v["recovery"]["steps"],
+            json!([
+                "purge_osds",
+                "remove_apps",
+                "delete_storage",
+                "recreate_storage",
+                "restart_csi",
+                "reinstall_apps"
+            ])
+        );
         assert_eq!(v["recovery"]["running"], true);
+        assert_eq!(v["recovery"]["percent"], 70);
+        assert_eq!(
+            v["recovery"]["step_progress"],
+            json!({"done": 1, "total": 2, "detail": "c: Restoring its files"})
+        );
         assert_eq!(
             v["recovery"]["apps"],
             json!([
@@ -2234,45 +2239,52 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_recovery_is_at_100_percent_with_no_step_bar() {
+        let mut r = recovery_at(Step::ReinstallApps);
+        r.finished_at = Some(NOW);
+        let state = HealState {
+            recovery: Some(r),
+            ..Default::default()
+        };
+        let v = status_json(&state, Some(&progress(1, 2)));
+        assert_eq!(v["recovery"]["percent"], 100);
+        assert_eq!(v["recovery"]["step_progress"], Value::Null);
+    }
+
+    #[test]
     fn before_the_backup_is_read_nobody_knows_what_will_not_come_back() {
         let state = HealState {
             recovery: Some(recovery_at(Step::RemoveApps)),
             ..Default::default()
         };
-        let v = status_json(&state);
+        let v = status_json(&state, None);
         assert_eq!(v["recovery"]["apps"], json!([]));
         assert_eq!(v["recovery"]["not_restored"], Value::Null);
+        assert_eq!(v["recovery"]["step_progress"], Value::Null);
     }
 
     #[test]
     fn status_of_a_healthy_cluster_is_all_null() {
         assert_eq!(
-            status_json(&HealState::default()),
+            status_json(&HealState::default(), None),
             json!({"loss": null, "recovery": null})
         );
     }
 
     #[test]
-    fn the_preview_splits_installed_apps_into_restored_and_not() {
+    fn the_preview_names_the_down_disks_and_splits_the_apps() {
         let contents = crate::routers::restore::BackupContents {
             taken_at: Some("2026-09-14T12:10:02Z".into()),
             apps: strings(&["yolab-a", "yolab-gone-now"]),
         };
         assert_eq!(
-            preview_json(&strings(&["yolab-a", "yolab-b"]), &contents),
+            preview_json(&strings(&["yolab-a", "yolab-b"]), &set(&[1]), &contents),
             json!({
                 "backup_taken_at": "2026-09-14T12:10:02Z",
+                "down_osds": [1],
                 "restored": ["a", "gone-now"],
                 "not_restored": ["b"],
             })
-        );
-        let none = crate::routers::restore::BackupContents {
-            taken_at: None,
-            apps: vec![],
-        };
-        assert_eq!(
-            preview_json(&strings(&["yolab-a"]), &none),
-            json!({"backup_taken_at": null, "restored": [], "not_restored": ["a"]})
         );
     }
 }

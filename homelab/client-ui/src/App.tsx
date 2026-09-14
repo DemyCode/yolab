@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
+import { RepairGate } from "@/components/RepairScreen";
 import { Spinner } from "@/components/ui/feedback";
 import { LoginPage } from "@/pages/LoginPage";
 import { HomePage } from "@/pages/HomePage";
@@ -75,99 +76,101 @@ export default function App() {
   if (!loggedIn) return <LoginPage onLogin={() => setLoggedIn(true)} />;
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<AppShell onLogout={handleLogout} />}>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/app/:instanceName" element={<AppDetailPage />} />
-          <Route path="/add" element={<DiscoverPage />} />
-          <Route path="/search" element={<SearchPage />} />
-          <Route path="/add/custom" element={<CustomAppPage />} />
-          <Route path="/add/:appId" element={<InstallPage />} />
-          <Route path="/box" element={<BoxPage />} />
-          <Route
-            path="/box/storage"
-            element={
-              <BoxSubPage
-                title="Storage"
-                subtitle="The disks your apps keep their data on."
-              >
-                <Suspense fallback={<Loading />}>
-                  <StoragePage />
-                </Suspense>
-              </BoxSubPage>
-            }
-          />
-          <Route
-            path="/box/backups"
-            element={
-              <BoxSubPage
-                title="Backups"
-                subtitle="Copies of your data, kept somewhere else."
-              >
-                <Suspense fallback={<Loading />}>
-                  <BackupsPage />
-                </Suspense>
-              </BoxSubPage>
-            }
-          />
-          <Route
-            path="/box/machines"
-            element={
-              <BoxSubPage
-                title="Machines"
-                subtitle="Every machine that makes up your home server."
-              >
-                <Suspense fallback={<Loading />}>
-                  <NodesPage />
-                </Suspense>
-              </BoxSubPage>
-            }
-          />
-          <Route
-            path="/box/system"
-            element={
-              <BoxSubPage
-                title="Updates and system"
-                subtitle="What version your machines are running."
-              >
-                <Suspense fallback={<Loading />}>
-                  <SystemPage />
-                </Suspense>
-              </BoxSubPage>
-            }
-          />
-          <Route
-            path="/box/logs"
-            element={
-              <BoxSubPage
-                title="Logs"
-                subtitle="Everything the machine has been saying."
-              >
-                <Suspense fallback={<Loading />}>
-                  <LogsPage />
-                </Suspense>
-              </BoxSubPage>
-            }
-          />
-          <Route
-            path="/box/terminal"
-            element={
-              <BoxSubPage
-                title="Terminal"
-                subtitle="Run commands directly on the machine."
-              >
-                <Suspense fallback={<Loading />}>
-                  <TerminalPage />
-                </Suspense>
-              </BoxSubPage>
-            }
-          />
-          {/* Old bookmarks and the previous hash routes land somewhere sensible
+    <RepairGate>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<AppShell onLogout={handleLogout} />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/app/:instanceName" element={<AppDetailPage />} />
+            <Route path="/add" element={<DiscoverPage />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/add/custom" element={<CustomAppPage />} />
+            <Route path="/add/:appId" element={<InstallPage />} />
+            <Route path="/box" element={<BoxPage />} />
+            <Route
+              path="/box/storage"
+              element={
+                <BoxSubPage
+                  title="Storage"
+                  subtitle="The disks your apps keep their data on."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <StoragePage />
+                  </Suspense>
+                </BoxSubPage>
+              }
+            />
+            <Route
+              path="/box/backups"
+              element={
+                <BoxSubPage
+                  title="Backups"
+                  subtitle="Copies of your data, kept somewhere else."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <BackupsPage />
+                  </Suspense>
+                </BoxSubPage>
+              }
+            />
+            <Route
+              path="/box/machines"
+              element={
+                <BoxSubPage
+                  title="Machines"
+                  subtitle="Every machine that makes up your home server."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <NodesPage />
+                  </Suspense>
+                </BoxSubPage>
+              }
+            />
+            <Route
+              path="/box/system"
+              element={
+                <BoxSubPage
+                  title="Updates and system"
+                  subtitle="What version your machines are running."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <SystemPage />
+                  </Suspense>
+                </BoxSubPage>
+              }
+            />
+            <Route
+              path="/box/logs"
+              element={
+                <BoxSubPage
+                  title="Logs"
+                  subtitle="Everything the machine has been saying."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <LogsPage />
+                  </Suspense>
+                </BoxSubPage>
+              }
+            />
+            <Route
+              path="/box/terminal"
+              element={
+                <BoxSubPage
+                  title="Terminal"
+                  subtitle="Run commands directly on the machine."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <TerminalPage />
+                  </Suspense>
+                </BoxSubPage>
+              }
+            />
+            {/* Old bookmarks and the previous hash routes land somewhere sensible
               rather than on a blank page. */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </RepairGate>
   );
 }
