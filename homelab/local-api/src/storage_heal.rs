@@ -51,8 +51,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::ceph::destructive::{self, DisposablePg, RecoveryMandate, DISPOSABLE_POOLS};
-use crate::ceph::model::{self, OsdDump, PgBrief};
 pub(crate) use crate::ceph::model::PgsByPool;
+use crate::ceph::model::{self, OsdDump, PgBrief};
 use crate::error::Outcome;
 use crate::host::{Host, RealHost};
 use crate::records::Store;
@@ -454,7 +454,12 @@ fn recovery_refusal(state: &HealState, up: &BTreeSet<i64>) -> Option<String> {
             "only data that rebuilds itself is unavailable — there is nothing to restore".into(),
         );
     }
-    let back: Vec<i64> = loss.osds.iter().copied().filter(|id| up.contains(id)).collect();
+    let back: Vec<i64> = loss
+        .osds
+        .iter()
+        .copied()
+        .filter(|id| up.contains(id))
+        .collect();
     if !back.is_empty() {
         return Some(format!(
             "a disk that held the data is running again ({back:?}) — wait for it to catch up"

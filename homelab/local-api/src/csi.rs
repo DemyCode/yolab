@@ -50,17 +50,9 @@ pub async fn restart_plugins<H: Host>(host: &H, which: Which) {
         Which::AllNodes => {
             for app in ["csi-cephfsplugin", "csi-cephfsplugin-provisioner"] {
                 let selector = format!("app={app}");
-                host.kubectl(&[
-                    "delete",
-                    "pod",
-                    "-n",
-                    NS,
-                    "-l",
-                    &selector,
-                    "--wait=false",
-                ])
-                .await
-                .warn_on_err(format!("restart {app} pods"));
+                host.kubectl(&["delete", "pod", "-n", NS, "-l", &selector, "--wait=false"])
+                    .await
+                    .warn_on_err(format!("restart {app} pods"));
             }
         }
     }
@@ -70,7 +62,15 @@ pub async fn restart_plugins<H: Host>(host: &H, which: Which) {
 /// API says it does not exist.
 pub async fn plugin_daemonset_exists<H: Host>(host: &H) -> Result<bool, crate::exec::CmdError> {
     let got: Option<Value> = host
-        .kubectl_get_opt(&["get", "daemonset", "csi-cephfsplugin", "-n", NS, "-o", "json"])
+        .kubectl_get_opt(&[
+            "get",
+            "daemonset",
+            "csi-cephfsplugin",
+            "-n",
+            NS,
+            "-o",
+            "json",
+        ])
         .await?;
     Ok(got.is_some())
 }

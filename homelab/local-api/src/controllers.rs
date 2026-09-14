@@ -84,7 +84,10 @@ pub fn spawn_all(leader: Leadership) {
     let env = StorageEnv::from_env();
     if env.is_configured() {
         spawn(storage::OsdActivateController { env: env.clone() }, &leader);
-        spawn(storage::ContainerdStoreController { env: env.clone() }, &leader);
+        spawn(
+            storage::ContainerdStoreController { env: env.clone() },
+            &leader,
+        );
         spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
         spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
         spawn(storage::DashboardController { env: env.clone() }, &leader);

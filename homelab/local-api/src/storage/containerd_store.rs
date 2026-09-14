@@ -1735,7 +1735,10 @@ mod tests {
 
     #[allow(clippy::manual_async_fn)]
     impl Host for SimulatedDisk {
-        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
+        fn ceph<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph(args)
         }
         fn ceph_json<'a>(
