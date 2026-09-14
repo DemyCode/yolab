@@ -23,9 +23,7 @@ export interface RecoveryStatus {
       namespace: string;
       instance_name: string;
       outcome:
-        | { result: "restored" }
-        | { result: "failed"; error: string }
-        | null;
+        { result: "restored" } | { result: "failed"; error: string } | null;
     }[];
     /** Null until the backup has been read. */
     not_restored: string[] | null;
