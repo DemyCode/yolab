@@ -499,7 +499,7 @@ jobs:
     if: startsWith(github.ref, 'refs/heads/')
     concurrency:
       group: format-${{ github.ref_name }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
