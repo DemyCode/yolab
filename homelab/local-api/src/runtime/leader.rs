@@ -176,8 +176,7 @@ async fn try_acquire(identity: &str, now: DateTime<Utc>) -> Result<bool, CmdErro
             .await?;
     let Some(lease) = current else {
         // No lease yet. `create` is atomic: exactly one node wins.
-        return match crate::kubectl::create(&manifest(identity, now, now, None).to_string()).await
-        {
+        return match crate::kubectl::create(&manifest(identity, now, now, None).to_string()).await {
             Ok(()) => Ok(true),
             Err(e) if e.is_already_exists() => Ok(false),
             Err(e) => Err(e),
@@ -225,7 +224,10 @@ mod tests {
     #[test]
     fn a_live_lease_held_by_another_node_is_respected() {
         let now = Utc::now();
-        assert_eq!(decide(&lease("n2", 5, now), "n1", now), LeaseDecision::Yield);
+        assert_eq!(
+            decide(&lease("n2", 5, now), "n1", now),
+            LeaseDecision::Yield
+        );
     }
 
     #[test]

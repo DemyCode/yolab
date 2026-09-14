@@ -73,11 +73,7 @@ fn live_only(sessions: HashMap<String, i64>, now: i64) -> HashMap<String, i64> {
 
 /// Stored sessions folded into the live map: live entries win, revoked tokens
 /// stay revoked.
-fn merge_loaded(
-    live: &mut HashMap<String, i64>,
-    stored: HashMap<String, i64>,
-    revoked: &[String],
-) {
+fn merge_loaded(live: &mut HashMap<String, i64>, stored: HashMap<String, i64>, revoked: &[String]) {
     for (token, exp) in stored {
         if revoked.contains(&token) {
             continue;

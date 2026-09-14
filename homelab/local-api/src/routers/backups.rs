@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use tokio::process::Command;
 
+use crate::error::Outcome;
 use crate::routers::backup_common::*;
 use crate::routers::{backup, restore};
-use crate::error::Outcome;
 use crate::{config::Config, error::Result, AppState};
 
 // ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
@@ -602,10 +602,7 @@ impl crate::runtime::Controller for LockSweeperController {
         // After the boot rush, and after the scheduler has had its first look.
         std::time::Duration::from_secs(300)
     }
-    async fn reconcile(
-        &self,
-        _ctx: &crate::runtime::Ctx,
-    ) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let Some(cfg) = read_master_config().await else {
             return Ok(crate::runtime::Tick::Idle("backups are not enabled".into()));
         };

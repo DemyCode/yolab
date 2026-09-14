@@ -43,8 +43,10 @@ pub type HostResult<T> = Result<T, CmdError>;
 #[allow(clippy::manual_async_fn)]
 pub trait Host: Send + Sync + Clone {
     fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = HostResult<String>> + Send + 'a;
-    fn ceph_json<'a>(&self, args: &'a [&str])
-        -> impl Future<Output = HostResult<Value>> + Send + 'a;
+    fn ceph_json<'a>(
+        &self,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<Value>> + Send + 'a;
     fn ceph_volume<'a>(
         &self,
         args: &'a [&str],
@@ -166,7 +168,9 @@ pub trait Host: Send + Sync + Clone {
 
     fn pgs_brief(&self) -> impl Future<Output = HostResult<Vec<PgBrief>>> + Send + '_ {
         async move {
-            let raw = self.ceph(&["pg", "dump", "pgs_brief", "-f", "json"]).await?;
+            let raw = self
+                .ceph(&["pg", "dump", "pgs_brief", "-f", "json"])
+                .await?;
             model::parse_pgs_brief("ceph pg dump pgs_brief", &raw)
         }
     }
@@ -176,8 +180,7 @@ pub trait Host: Send + Sync + Clone {
     fn kubectl_get_opt<'a>(
         &'a self,
         args: &'a [&str],
-    ) -> impl Future<Output = HostResult<Option<Value>>> + Send + 'a
-    {
+    ) -> impl Future<Output = HostResult<Option<Value>>> + Send + 'a {
         async move {
             match self.kubectl_json(args).await {
                 Ok(v) => Ok(Some(v)),
@@ -507,7 +510,11 @@ pub(crate) mod fake {
             args: &'a [&str],
         ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
-            async move { Ok(output_of(me.answer(&format!("systemctl {}", args.join(" "))))) }
+            async move {
+                Ok(output_of(
+                    me.answer(&format!("systemctl {}", args.join(" "))),
+                ))
+            }
         }
 
         fn run_cmd<'a>(
@@ -561,6 +568,9 @@ mod tests {
             "kubectl get configmap x",
             "The connection to the server localhost:6443 was refused",
         );
-        assert!(down.kubectl_get_opt(&["get", "configmap", "x"]).await.is_err());
+        assert!(down
+            .kubectl_get_opt(&["get", "configmap", "x"])
+            .await
+            .is_err());
     }
 }
