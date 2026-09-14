@@ -423,6 +423,28 @@ in {
       };
     };
 
+    # ── The system LV is an OSD ──────────────────────────────────────────────
+    # The first step on the boot line to k3s (see images-store.nix). Every
+    # install carves the rest of the system disk out as `pool/ceph`
+    # (disk-config.nix) for exactly this, so it needs no ON switch — and it must
+    # not wait for one, because that switch lives in Kubernetes and Kubernetes
+    # needs the image store this OSD holds. Waits for the mon (and, on a joining
+    # machine, for the join to have happened); never falls back.
+    systemd.services.yolab-ceph-system-osd = {
+      description = "Make this machine's system LV an OSD of the cluster";
+      wantedBy = ["multi-user.target"];
+      after = ["yolab-ceph-bootstrap.service" "ceph-mon-${host}.service"];
+      wants = ["ceph-mon-${host}.service"];
+      restartIfChanged = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "infinity";
+        ExecStart = "${localApiEnv}/bin/local-api storage system-osd";
+      };
+      path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
+    };
+
     # ── Boot persistence for OSDs ────────────────────────────────────────────
     # Replaces `systemctl enable`, which cannot work here: enabling writes into
     # /etc/systemd/system, a read-only Nix store path. So instead of each OSD

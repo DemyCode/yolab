@@ -87,10 +87,26 @@ async fn run_once(w: &Watch) -> std::io::Result<()> {
 /// readable in one place.
 pub fn standard() -> Vec<Watch> {
     let kube_watch = |kind: &str, name: &str, ns: &str| -> Vec<String> {
-        ["get", kind, name, "-n", ns, "--watch-only", "-o", "name"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        let selector = format!("metadata.name={name}");
+        // By field selector, never `get <kind> <name>`: watching a NAMED object
+        // that does not exist fails at once with NotFound, and yolab-restores and
+        // yolab-storage-heal do not exist until the first restore or recovery —
+        // so those watches never ran, only retried. A filtered watch of the
+        // namespace waits, and reports the object's creation too.
+        [
+            "get",
+            kind,
+            "-n",
+            ns,
+            "--field-selector",
+            &selector,
+            "--watch-only",
+            "-o",
+            "name",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     };
     vec![
         Watch {
@@ -206,6 +222,16 @@ mod tests {
             filter: any_line,
         };
         assert!(run_once(&w).await.is_err());
+    }
+
+    #[test]
+    fn kube_watches_select_by_name_so_a_missing_object_can_still_be_watched() {
+        for w in standard().into_iter().filter(|w| w.bin == "kubectl") {
+            assert!(w.args.contains(&"--field-selector".to_string()), "{}", w.label);
+            assert!(w.args.iter().any(|a| a.starts_with("metadata.name=")), "{}", w.label);
+            // `get configmap <name>` would put the name straight after the kind.
+            assert_eq!(w.args[2], "-n", "{}: {:?}", w.label, w.args);
+        }
     }
 
     #[test]

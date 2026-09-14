@@ -2,7 +2,6 @@
   pkgs,
   lib,
   config,
-  _,
   yolabConfigPath,
   rust,
   localApiEnv,
@@ -448,10 +447,11 @@ in {
     # its own local-api, which fans out disk / storage / node requests to
     # sibling nodes via their private IPv6 addresses (discovered from kubectl).
     systemd.services.yolab-local-api = {
-      after = [
-        "network.target"
-        "k3s.service"
-      ];
+      # NOT After=k3s. k3s now waits at boot until this node's image store is on
+      # its RBD, and while it waits this process is the only way to see why
+      # (/api/system/controllers, the Storage page). Its controllers wait for the
+      # Kubernetes API themselves (runtime `requires`).
+      after = ["network.target"];
       wants = ["k3s.service"];
       wantedBy = ["multi-user.target"];
       environment =

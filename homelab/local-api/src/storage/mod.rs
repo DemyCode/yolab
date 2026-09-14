@@ -5,8 +5,10 @@
 //!
 //!   - as a `local-api storage <name>` subcommand from a systemd oneshot, when
 //!     it must happen at a fixed point in boot — before a Ceph daemon
-//!     (`bootstrap`, `mgr-key`, `mds-key`) or before k3s (`osd-activate`,
-//!     `images-rbd`, `containerd-store`), or at shutdown (`noout-set`);
+//!     (`bootstrap`, `mgr-key`, `mds-key`), on the straight line to k3s
+//!     (`system-osd` → `images-rbd` → `containerd-store`, each WAITING for its
+//!     preconditions rather than falling back; see `wait`), or at shutdown
+//!     (`noout-set`);
 //!   - as a controller in the long-running local-api (`controllers.rs`), for
 //!     everything that must keep being true afterwards.
 //!
@@ -33,6 +35,7 @@ pub mod keys;
 pub mod mon_member;
 pub mod noout;
 pub mod osd;
+pub mod wait;
 
 use std::path::Path;
 use std::time::Duration;
@@ -181,6 +184,7 @@ pub async fn run(args: &[String]) -> i32 {
         "mgr-key",
         "mds-key",
         "osd-activate",
+        "system-osd",
         "noout-clear",
         "noout-set",
         "bootstrap",
@@ -224,9 +228,25 @@ pub async fn run(args: &[String]) -> i32 {
         "noout-set" => noout::set(&host, root()).await,
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
         "mon-member" => mon_member::run(&host, root(), &node, &env.mon_member_args()).await,
-        "images-rbd" => images_rbd::run(&host, &node, &env.images_rbd_policy()).await,
+        "system-osd" => {
+            wait::until_ready("system-osd", || {
+                crate::disks_reconciler::system_osd_attempt(&host)
+            })
+            .await;
+            Ok(())
+        }
+        "images-rbd" => {
+            let policy = env.images_rbd_policy();
+            wait::until_ready("images-rbd", || images_rbd::attempt(&host, &node, &policy)).await;
+            Ok(())
+        }
         "containerd-store" => {
-            containerd_store::run(&host, root(), &node, &env.containerd_store_policy()).await
+            let policy = env.containerd_store_policy();
+            wait::until_ready("containerd-store", || {
+                containerd_store::attempt(&host, root(), &node, &policy)
+            })
+            .await;
+            Ok(())
         }
         "images-grow" => images_grow::run(&host, root(), &node, &env.grow_policy()).await,
         "dashboard" => dashboard::run(&host, &node, &env.dashboard_policy()).await,

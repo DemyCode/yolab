@@ -126,118 +126,80 @@ in {
       devices/global_filter = [ "r|^/dev/rbd[0-9]+|", "a|.*|" ]
     '';
 
-    # ── Provision the pool and this node's image ─────────────────────────────
+    # ── The boot line to k3s ─────────────────────────────────────────────────
+    #
+    #   yolab-ceph-system-osd → yolab-images-rbd → yolab-containerd-store → k3s
+    #
+    # One path, with no fallback. Each step WAITS for what it needs (the reason
+    # is in its journal while it does) instead of exiting with nothing done, so
+    # k3s only ever starts with containerd's data-root on this node's RBD, and
+    # nothing later has to move the store underneath a running k3s. That move —
+    # a controller stopping k3s every five minutes — restarted k3s 73 times on
+    # node1 in one day and orphaned every container it had been running
+    # (KillMode=process). See homelab/local-api/src/storage/containerd_store.rs.
+    #
+    # All three are once-per-boot: RemainAfterExit, and restartIfChanged = false
+    # so a rebuild never re-runs them under a node that is already up.
+    # `TimeoutStartSec = "infinity"` because waiting IS their job; every command
+    # inside is individually bounded, so what waits is the loop, never a hung
+    # process.
+
     systemd.services.yolab-images-rbd = {
       description = "Ensure the Ceph images pool and this node's RBD image exist";
       wantedBy = ["multi-user.target"];
-      # No dependency on any OSD unit: OSD instances are enabled dynamically by
-      # local-api, so there is no single unit to order against. The script waits
-      # for an OSD to actually report `up` instead, which is the real condition.
-      after = ["ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
+      after = ["yolab-ceph-system-osd.service" "ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
+      wants = ["yolab-ceph-system-osd.service"];
       requires = ["ceph-mon-${host}.service"];
-      # Deliberately NOT RemainAfterExit: on a fresh cluster this runs before any
-      # OSD exists and exits cleanly with nothing to do. It has to be able to run
-      # again once the user switches a disk on, so the `images-rbd` controller
-      # re-runs it.
+      restartIfChanged = false;
       serviceConfig = {
         Type = "oneshot";
-        # `Type=oneshot` DISABLES the start timeout by default — it is the one
-        # service type systemd does not bound. Every unit in this directory was
-        # therefore able to hang forever, and on node3 one did: `rbd ls` blocked
-        # on an OSD read that could never complete, and k3s (ordered behind it)
-        # never started at all. Nothing was broken on that machine; it was
-        # waiting on a disk in another one.
-        TimeoutStartSec = "300s";
+        RemainAfterExit = true;
+        TimeoutStartSec = "infinity";
         ExecStart = "${localApiEnv}/bin/local-api storage images-rbd";
       };
-      # The reachability/OSD-up waits, the pool-create-if-missing check and the
-      # sizing arithmetic now live in
-      # homelab/local-api/src/storage/{images_rbd,images_sizing}.rs, with unit
-      # tests pinning the same three cases the old images-sizing.nix check drove
-      # against the shell version.
       path = with pkgs; [ceph ceph-client];
       environment = imagesStoreEnv;
     };
 
-    # The images pool's lost placement groups are rebuilt by the `storage-heal`
-    # controller (storage_heal.rs), which owns the whole recovery path now.
-
-    # ── Map + mount it, before containerd can start ──────────────────────────
     systemd.services.yolab-containerd-store = {
-      description = "Map the images RBD and mount it as containerd's data-root";
+      description = "Mount this node's images RBD as containerd's data-root";
       wantedBy = ["multi-user.target"];
-      # `after` only, never `requires`, on both sides. This unit must not fail
-      # when Ceph has no OSDs yet, and k3s must not fail when this one does —
-      # otherwise a fresh cluster deadlocks: k3s waits on the RBD, the RBD waits
-      # on an OSD, and OSDs are created by the reconciler from ConfigMaps that
-      # only exist once k3s is up. Failing open costs one boot cycle before
-      # images move off the root disk; failing closed costs the whole node, with
-      # no UI left to diagnose it from.
       after = ["yolab-images-rbd.service"];
+      wants = ["yolab-images-rbd.service"];
       before = ["k3s.service"];
+      restartIfChanged = false;
       serviceConfig = {
         Type = "oneshot";
-        # NOT RemainAfterExit, so the `containerd-store` controller can re-run
-        # its mount health check every tick. Nothing
-        # `requires` this unit (deliberately: see the note above), so leaving it
-        # active after it exits bought nothing and cost everything.
-        #
-        # Never let this unit's failure propagate into k3s.
-        SuccessExitStatus = "0 1";
-        # Generous ON PURPOSE. The bounded checks that make FAILURE fast — an
-        # unreachable cluster giving up in 20-30s rather than holding k3s —
-        # are inside storage::containerd_store now (RealHost::run_cmd bounds
-        # every individual rbd/mkfs/cp/mount call at 600s); this is only a
-        # last-resort backstop above that, and it has to clear the sum of a few
-        # of those before it can fire, because the legitimate slow path (the
-        # first migration onto the RBD, possibly gigabytes across the network)
-        # must not be mistaken for a hang and killed mid-copy — killing this
-        # unit only ever kills the *wrapping* process, never a subprocess
-        # already parked in uninterruptible sleep on a stuck read/write, so a
-        # kill here that lands mid-operation just adds another orphaned RBD
-        # mapping for the next run to clean up rather than actually recovering
-        # anything.
-        TimeoutStartSec = "3600s";
+        RemainAfterExit = true;
+        TimeoutStartSec = "infinity";
         ExecStart = "${localApiEnv}/bin/local-api storage containerd-store";
       };
-      # The mount/readability check that replaced a bare `mountpoint` (see this
-      # file's header — the seventeen-hour incident), the k3s stop/start
-      # bracket, and the migrate-then-swap dance all live in
-      # homelab/local-api/src/storage/containerd_store.rs now, with unit tests
-      # covering the migration end to end and the k3s restart ordering.
       path = cephPath;
       environment = imagesStoreEnv;
     };
 
-    # Ordered after the store unit so the mount lands before containerd opens
-    # its data-root — but with `after` only, never `requires`. A hard dependency
-    # here is what deadlocks a fresh cluster (see the note on that unit).
-    systemd.services.k3s.after = ["yolab-containerd-store.service"];
+    # k3s starts only once the store is in place. `wants`, not `requires`: a
+    # Requires= would also STOP k3s whenever this oneshot is stopped, and the
+    # store step never fails — it waits — so there is no failure to propagate.
+    systemd.services.k3s = {
+      after = ["yolab-containerd-store.service"];
+      wants = ["yolab-containerd-store.service"];
+    };
 
     # ── Growth ───────────────────────────────────────────────────────────────
     # Without this the whole feature is inert: you would add a disk, the pool
     # would grow, and the image store would stay exactly the same size forever.
+    # Re-run by the `images-grow` controller; this unit is for running it by hand.
     systemd.services.yolab-images-rbd-grow = {
       description = "Grow the images RBD as the Ceph pool grows";
-      # `requires`, not just `after`: the controller runs it on a schedule and
-      # would otherwise run during bootstrap, before the admin keyring exists,
-      # and fail noisily with "unable to find a keyring" on a cluster that is
-      # perfectly healthy — observed on the first live switch.
       after = ["yolab-containerd-store.service"];
       serviceConfig = {
         Type = "oneshot";
         TimeoutStartSec = "300s";
         ExecStart = "${localApiEnv}/bin/local-api storage images-grow";
       };
-      # The not-ready checks, the current-vs-wanted size comparison and the
-      # grow-only guard (never shrink a mounted filesystem) now live in
-      # homelab/local-api/src/storage/images_grow.rs.
       path = cephPath;
       environment = imagesStoreEnv;
     };
-
-    # Provisioning, the mount health check and growth are re-run by the
-    # `images-rbd`, `containerd-store` and `images-grow` controllers
-    # (controllers.rs) now — no timers. See runtime/mod.rs for why.
   };
 }

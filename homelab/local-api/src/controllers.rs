@@ -27,8 +27,6 @@ pub const NAMES: &[&str] = &[
     "chart-sync",
     // The storage agent's own jobs (formerly systemd timers).
     "osd-activate",
-    "containerd-store",
-    "images-rbd",
     "images-grow",
     "ceph-dashboard",
     "mon-member",
@@ -84,11 +82,6 @@ pub fn spawn_all(leader: Leadership) {
     let env = StorageEnv::from_env();
     if env.is_configured() {
         spawn(storage::OsdActivateController { env: env.clone() }, &leader);
-        spawn(
-            storage::ContainerdStoreController { env: env.clone() },
-            &leader,
-        );
-        spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
         spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
         spawn(storage::DashboardController { env: env.clone() }, &leader);
         spawn(storage::MonMemberController { env: env.clone() }, &leader);
@@ -126,8 +119,6 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "mesh-discovery" => runtime::run_once(&crate::mesh::MeshDiscoveryController::new()).await,
         "chart-sync" => runtime::run_once(&crate::charts::ChartSyncController).await,
         "osd-activate" => runtime::run_once(&storage::OsdActivateController { env }).await,
-        "containerd-store" => runtime::run_once(&storage::ContainerdStoreController { env }).await,
-        "images-rbd" => runtime::run_once(&storage::ImagesRbdController { env }).await,
         "images-grow" => runtime::run_once(&storage::ImagesGrowController { env }).await,
         "ceph-dashboard" => runtime::run_once(&storage::DashboardController { env }).await,
         "mon-member" => runtime::run_once(&storage::MonMemberController { env }).await,
