@@ -308,11 +308,17 @@ mod tests {
         let t0 = Instant::now();
         let s = |secs| t0 + Duration::from_secs(secs);
         assert_eq!(silence_in(&mut seen, "rs-1", "h1", t0), QUIET);
-        assert_eq!(silence_in(&mut seen, "rs-1", "h1", s(90)), Duration::from_secs(90));
+        assert_eq!(
+            silence_in(&mut seen, "rs-1", "h1", s(90)),
+            Duration::from_secs(90)
+        );
         // A new heartbeat value restarts the count — however old its timestamp
         // looks, which is what makes this immune to another node's clock.
         assert_eq!(silence_in(&mut seen, "rs-1", "h2", s(100)), QUIET);
-        assert_eq!(silence_in(&mut seen, "rs-1", "h2", s(130)), Duration::from_secs(30));
+        assert_eq!(
+            silence_in(&mut seen, "rs-1", "h2", s(130)),
+            Duration::from_secs(30)
+        );
         // Ids are timed independently.
         assert_eq!(silence_in(&mut seen, "rs-2", "h1", s(130)), QUIET);
     }
@@ -395,11 +401,13 @@ mod tests {
         beat(&mut sets, &["a".into(), "c".into()], "node1", at(NOW));
         assert_eq!(sets[0].claim.heartbeat, at(NOW).to_rfc3339());
         assert_eq!(
-            sets[1].claim, claim("node2"),
+            sets[1].claim,
+            claim("node2"),
             "a record this process does not drive is not ours to stamp"
         );
         assert_eq!(
-            sets[2].claim, claim("node1"),
+            sets[2].claim,
+            claim("node1"),
             "a finished record needs no heartbeat"
         );
     }
@@ -411,7 +419,10 @@ mod tests {
                 .unwrap();
         assert_eq!(r.claim.owner, "n1");
         let unclaimed = serde_json::from_str::<Rec>(r#"{"id":"x","state":"running"}"#);
-        assert!(unclaimed.is_err(), "a record without its claim does not parse");
+        assert!(
+            unclaimed.is_err(),
+            "a record without its claim does not parse"
+        );
     }
 
     #[test]

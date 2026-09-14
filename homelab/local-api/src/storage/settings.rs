@@ -44,7 +44,9 @@ pub async fn get<H: Host>(host: &H, key: &str) -> Result<Option<String>, CmdErro
 }
 
 pub async fn set<H: Host>(host: &H, key: &str, value: &str) -> Result<(), CmdError> {
-    host.ceph(&["config-key", "set", key, value]).await.map(|_| ())
+    host.ceph(&["config-key", "set", key, value])
+        .await
+        .map(|_| ())
 }
 
 /// Every key under `prefix`, with the prefix stripped. Empty when there are none.
@@ -82,9 +84,13 @@ pub async fn get_json<H: Host, T: DeserializeOwned>(
     }
 }
 
-pub async fn set_json<H: Host, T: Serialize>(host: &H, key: &str, value: &T) -> Result<(), CmdError> {
-    let raw = serde_json::to_string(value)
-        .map_err(|e| CmdError::parse(format!("serialise {key}"), e))?;
+pub async fn set_json<H: Host, T: Serialize>(
+    host: &H,
+    key: &str,
+    value: &T,
+) -> Result<(), CmdError> {
+    let raw =
+        serde_json::to_string(value).map_err(|e| CmdError::parse(format!("serialise {key}"), e))?;
     set(host, key, &raw).await
 }
 
@@ -121,7 +127,9 @@ mod tests {
         assert!(host.ran(r#"ceph config-key set yolab/storage-policy {"size":3}"#));
 
         let junk = FakeHost::new().ok("ceph config-key get yolab/storage-policy", "{nope");
-        assert!(get_json::<_, serde_json::Value>(&junk, STORAGE_POLICY).await.is_err());
+        assert!(get_json::<_, serde_json::Value>(&junk, STORAGE_POLICY)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
