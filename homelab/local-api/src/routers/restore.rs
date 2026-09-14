@@ -189,7 +189,12 @@ async fn record_done(id: &str, result: &anyhow::Result<bool>) {
     let finished_at = Utc::now().to_rfc3339();
     let error = result.as_ref().err().map(|e| e.to_string());
     patch_set(id, |s| {
-        s.state = if error.is_none() { "succeeded" } else { "failed" }.to_string();
+        s.state = if error.is_none() {
+            "succeeded"
+        } else {
+            "failed"
+        }
+        .to_string();
         s.finished_at = Some(finished_at.clone());
         s.error = error.clone();
     })
@@ -213,7 +218,10 @@ async fn run_restore(
         for d in original {
             scale_deployment(namespace, &d.name, d.replicas)
                 .await
-                .warn_on_err(format!("restore of {namespace} failed; scale {} back up", d.name));
+                .warn_on_err(format!(
+                    "restore of {namespace} failed; scale {} back up",
+                    d.name
+                ));
         }
     }
     result
@@ -827,7 +835,9 @@ fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
 /// Restores recorded running whose driver is gone.
 fn abandoned(sets: &[RestoreSet], me: &str, now: chrono::DateTime<Utc>) -> Vec<RestoreSet> {
     sets.iter()
-        .filter(|s| s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT, now) == Liveness::Abandoned)
+        .filter(|s| {
+            s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT, now) == Liveness::Abandoned
+        })
         .cloned()
         .collect()
 }
@@ -883,7 +893,11 @@ impl Controller for RestoreWatchdogController {
                 "restore {} ({}) was abandoned by {} — scaling back up",
                 set.id,
                 set.namespace,
-                if set.claim.owner.is_empty() { "an older local-api" } else { &set.claim.owner }
+                if set.claim.owner.is_empty() {
+                    "an older local-api"
+                } else {
+                    &set.claim.owner
+                }
             );
             for d in &set.scaled_deployments {
                 scale_deployment(&set.namespace, &d.name, d.replicas)
@@ -923,7 +937,10 @@ mod tests {
 
     #[test]
     fn succeeded_is_succeeded() {
-        assert_eq!(classify(&set("a", "succeeded"), Liveness::Abandoned), "succeeded");
+        assert_eq!(
+            classify(&set("a", "succeeded"), Liveness::Abandoned),
+            "succeeded"
+        );
     }
 
     #[test]
@@ -935,7 +952,10 @@ mod tests {
     fn running_is_running_only_while_someone_drives_it() {
         assert_eq!(classify(&set("a", "running"), Liveness::Driving), "running");
         assert_eq!(classify(&set("a", "running"), Liveness::Remote), "running");
-        assert_eq!(classify(&set("a", "running"), Liveness::Abandoned), "failed");
+        assert_eq!(
+            classify(&set("a", "running"), Liveness::Abandoned),
+            "failed"
+        );
     }
 
     #[test]

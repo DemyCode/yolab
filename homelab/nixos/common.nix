@@ -455,7 +455,22 @@ in {
       wants = ["k3s.service"];
       wantedBy = ["multi-user.target"];
       environment = {
-        PATH = lib.mkForce "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
+        # The storage controllers run what the boot oneshots ran, so they get the
+        # same tools those units name in their own `path` — explicitly, rather
+        # than trusting each one to also be in the system profile.
+        PATH = lib.mkForce (
+          lib.optionalString config.yolab.ceph.enable "${lib.makeBinPath (with pkgs; [
+            ceph
+            ceph-client
+            lvm2
+            util-linux
+            xfsprogs
+            e2fsprogs
+            coreutils
+            systemd
+          ])}:"
+          + "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
+        );
         YOLAB_REPO_PATH = config.yolab.repoPath;
         YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
         YOLAB_PLATFORM = config.yolab.platform;

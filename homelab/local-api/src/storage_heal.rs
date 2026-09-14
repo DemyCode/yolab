@@ -51,8 +51,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::ceph::destructive::{self, DisposablePg, RecoveryMandate, DISPOSABLE_POOLS};
-use crate::ceph::model::{self, OsdDump, PgBrief};
 pub(crate) use crate::ceph::model::PgsByPool;
+use crate::ceph::model::{self, OsdDump, PgBrief};
 use crate::error::Outcome;
 use crate::host::{Host, RealHost};
 use crate::records::Store;
@@ -454,7 +454,12 @@ fn recovery_refusal(state: &HealState, up: &BTreeSet<i64>) -> Option<String> {
             "only data that rebuilds itself is unavailable — there is nothing to restore".into(),
         );
     }
-    let back: Vec<i64> = loss.osds.iter().copied().filter(|id| up.contains(id)).collect();
+    let back: Vec<i64> = loss
+        .osds
+        .iter()
+        .copied()
+        .filter(|id| up.contains(id))
+        .collect();
     if !back.is_empty() {
         return Some(format!(
             "a disk that held the data is running again ({back:?}) — wait for it to catch up"
@@ -1085,6 +1090,30 @@ mod tests {
         })
     }
 
+    /// Test fixtures stay terse JSON; the code under test takes the typed dump.
+    /// Fields real Ceph always sends (`in`, `pools`) are filled in when a
+    /// fixture leaves them out.
+    fn osd_dump(v: &Value) -> OsdDump {
+        let mut v = v.clone();
+        if v.get("pools").is_none() {
+            v["pools"] = json!([]);
+        }
+        for o in v["osds"].as_array_mut().into_iter().flatten() {
+            if o.get("in").is_none() {
+                o["in"] = json!(1);
+            }
+        }
+        serde_json::from_value(v).expect("fixture is a valid osd dump")
+    }
+
+    fn pg_briefs(v: &Value) -> Vec<PgBrief> {
+        model::parse_pgs_brief("fixture", &v.to_string()).expect("fixture is a valid pgs_brief")
+    }
+
+    fn lost_pgs(dump: &Value, pgs: &Value) -> (PgsByPool, BTreeSet<i64>) {
+        model::lost_pgs(&osd_dump(dump), &pg_briefs(pgs))
+    }
+
     fn healthy_dump() -> Value {
         let mut d = dump();
         d["osds"][1]["up"] = json!(1);
@@ -1195,12 +1224,12 @@ mod tests {
             detected_at: NOW,
         };
         let partly = json!({"osds": [{"osd": 1, "up": 1}, {"osd": 2, "up": 0}]});
-        assert!(!reconnected(&l, &partly));
+        assert!(!reconnected(&l, &osd_dump(&partly)));
         let all = json!({"osds": [{"osd": 1, "up": 1}, {"osd": 2, "up": 1}]});
-        assert!(reconnected(&l, &all));
+        assert!(reconnected(&l, &osd_dump(&all)));
         let purged = json!({"osds": [{"osd": 1, "up": 1}]});
         assert!(
-            !reconnected(&l, &purged),
+            !reconnected(&l, &osd_dump(&purged)),
             "a missing OSD is not a returned one"
         );
     }
@@ -1283,17 +1312,35 @@ mod tests {
             .ok("ceph -s", "")
             .ok(
                 "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "data": {"state": state.to_string()}}).to_string(),
+                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": state.to_string()}}).to_string(),
             )
             .ok("ceph osd dump", &dump.to_string())
             .ok("ceph pg dump pgs_brief", &pgs.to_string())
-            .ok("kubectl-apply", "")
+            .ok("kubectl-replace", "")
+            .ok("kubectl-create", "")
+    }
+
+    const NO_STATE_MAP: &str =
+        "Error from server (NotFound): configmaps \"yolab-storage-heal\" not found";
+
+    /// A host with no state map yet, where every state write succeeds.
+    fn fresh_state_host() -> FakeHost {
+        FakeHost::new()
+            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
+            .ok("kubectl-create", "")
+    }
+
+    fn wrote(host: &FakeHost) -> bool {
+        host.ran("kubectl-replace") || host.ran("kubectl-create")
     }
 
     fn applied_states(host: &FakeHost) -> Vec<HealState> {
         host.calls()
             .iter()
-            .filter_map(|c| c.strip_prefix("kubectl-apply "))
+            .filter_map(|c| {
+                c.strip_prefix("kubectl-replace ")
+                    .or_else(|| c.strip_prefix("kubectl-create "))
+            })
             .filter_map(|m| serde_json::from_str::<Value>(m).ok())
             .filter_map(|m| serde_json::from_str(m["data"]["state"].as_str()?).ok())
             .collect()
@@ -1310,7 +1357,7 @@ mod tests {
     async fn a_healthy_cluster_writes_nothing() {
         let host = cluster_host(&json!({}), &healthy_dump(), &lost_pg_dump());
         tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
-        assert!(!host.ran("kubectl-apply"));
+        assert!(!wrote(&host));
     }
 
     #[tokio::test]
@@ -1411,12 +1458,12 @@ mod tests {
             .ok("ceph -s", "")
             .ok(
                 "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "data": {"state": "{}"}}).to_string(),
+                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": "{}"}}).to_string(),
             )
             .ok("ceph osd dump", &dump().to_string())
             .fail("ceph pg dump pgs_brief", "timeout");
         assert!(tick(&host, &FakeApps::default(), GRACE, NOW).await.is_err());
-        assert!(!host.ran("kubectl-apply"));
+        assert!(!wrote(&host));
     }
 
     #[tokio::test]
@@ -1429,11 +1476,12 @@ mod tests {
             .ok("ceph -s", "")
             .ok(
                 "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "data": {"state": serde_json::to_string(&state).unwrap()}})
+                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": serde_json::to_string(&state).unwrap()}})
                     .to_string(),
             )
             .ok("kubectl delete pod", "")
-            .ok("kubectl-apply", "");
+            .ok("kubectl-replace", "")
+            .ok("kubectl-create", "");
         let err = tick(&host, &FakeApps::failing_list(), GRACE, NOW)
             .await
             .unwrap_err();
@@ -1448,7 +1496,7 @@ mod tests {
         FakeHost::new()
             .ok(
                 "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "data": {"state": state.to_string()}}).to_string(),
+                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": state.to_string()}}).to_string(),
             )
             .ok("ceph osd dump", &dump.to_string())
             .ok(
@@ -1456,7 +1504,8 @@ mod tests {
                 &json!({"items": [{"metadata": {"name": "yolab-a"}}, {"metadata": {"name": "yolab-b"}}]})
                     .to_string(),
             )
-            .ok("kubectl-apply", "")
+            .ok("kubectl-replace", "")
+            .ok("kubectl-create", "")
     }
 
     fn app_loss() -> Value {
@@ -1572,7 +1621,10 @@ mod tests {
     #[tokio::test]
     async fn purge_osds_skips_disks_already_purged_by_an_earlier_run() {
         let host = FakeHost::new()
-            .ok("ceph osd dump", r#"{"osds": [{"osd": 0, "up": 1}]}"#)
+            .ok(
+                "ceph osd dump",
+                r#"{"osds": [{"osd": 0, "up": 1, "in": 1}], "pools": []}"#,
+            )
             .ok("ceph osd ls", "[0]");
         assert_eq!(
             run_step(&host, &recovery_at(Step::PurgeOsds))
@@ -1586,8 +1638,10 @@ mod tests {
     #[tokio::test]
     async fn a_disk_coming_back_cancels_before_anything_is_destroyed() {
         let host = FakeHost::new()
+            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
             .ok("ceph osd dump", &healthy_dump().to_string())
-            .ok("kubectl-apply", "");
+            .ok("kubectl-replace", "")
+            .ok("kubectl-create", "");
         let mut state = HealState {
             loss: serde_json::from_value(app_loss()["loss"].clone()).unwrap(),
             recovery: Some(recovery_at(Step::PurgeOsds)),
@@ -1833,7 +1887,7 @@ mod tests {
     async fn every_app_in_the_backup_is_reinstalled_and_the_recovery_finishes() {
         let apps = FakeApps::with(&["yolab-a", "yolab-c"]).fail("yolab-c", "helm timed out");
         let mut state = reinstalling();
-        let host = FakeHost::new().ok("kubectl-apply", "");
+        let host = fresh_state_host();
         continue_recovery(&host, &apps, &mut state, NOW)
             .await
             .unwrap();
@@ -1861,7 +1915,7 @@ mod tests {
     async fn the_backup_list_is_saved_before_the_first_reinstall() {
         let apps = FakeApps::with(&["yolab-a"]);
         let mut state = reinstalling();
-        let host = FakeHost::new().ok("kubectl-apply", "");
+        let host = fresh_state_host();
         continue_recovery(&host, &apps, &mut state, NOW)
             .await
             .unwrap();
@@ -1877,7 +1931,7 @@ mod tests {
         let r = state.recovery.as_mut().unwrap();
         r.apps = Some(strings(&["yolab-a", "yolab-b"]));
         r.outcomes.insert("yolab-a".into(), AppOutcome::Restored);
-        let host = FakeHost::new().ok("kubectl-apply", "");
+        let host = fresh_state_host();
         continue_recovery(&host, &apps, &mut state, NOW)
             .await
             .unwrap();
@@ -1887,7 +1941,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_backup_stops_before_reinstalling_anything() {
         let mut state = reinstalling();
-        let host = FakeHost::new().ok("kubectl-apply", "");
+        let host = fresh_state_host();
         assert!(
             continue_recovery(&host, &FakeApps::failing_list(), &mut state, NOW)
                 .await
@@ -1901,7 +1955,9 @@ mod tests {
         let apps = FakeApps::with(&["yolab-a", "yolab-b"]);
         let mut state = reinstalling();
         state.recovery.as_mut().unwrap().apps = Some(strings(&["yolab-a", "yolab-b"]));
-        let host = FakeHost::new().fail("kubectl-apply", "etcd timeout");
+        let host = FakeHost::new()
+            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
+            .fail("kubectl-create", "etcd timeout");
         assert!(continue_recovery(&host, &apps, &mut state, NOW)
             .await
             .is_err());
@@ -1941,7 +1997,9 @@ mod tests {
             .ok("ceph osd pool create", "")
             .ok("ceph fs new", "")
             .ok("ceph fs subvolumegroup create", "")
-            .ok("kubectl-apply", "");
+            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
+            .ok("kubectl-replace", "")
+            .ok("kubectl-create", "");
         let apps = FakeApps::with(&["yolab-a"]);
         let mut state = reinstalling();
         state.recovery.as_mut().unwrap().step = Step::PurgeOsds;
@@ -2047,7 +2105,7 @@ mod tests {
             {"pgid": "3.0", "state": "active+clean"},
             {"pgid": "4.0", "state": "active+clean"},
         ]});
-        assert_eq!(fs_pgs_active(&dump(), &pgs), (2, 3));
+        assert_eq!(fs_pgs_active(&osd_dump(&dump()), &pg_briefs(&pgs)), (2, 3));
     }
 
     #[tokio::test]

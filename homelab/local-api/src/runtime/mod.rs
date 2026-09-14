@@ -130,7 +130,8 @@ const RECHECK: Duration = Duration::from_secs(15);
 /// cluster, but still retries sooner than a long `interval` would.
 fn failure_backoff(consecutive: u32, interval: Duration) -> Duration {
     let base = Duration::from_secs(10).min(interval);
-    let grown = Duration::from_secs(10).saturating_mul(1u32 << consecutive.saturating_sub(1).min(6));
+    let grown =
+        Duration::from_secs(10).saturating_mul(1u32 << consecutive.saturating_sub(1).min(6));
     grown.clamp(base, interval)
 }
 
@@ -152,7 +153,9 @@ fn waker(name: &'static str) -> Arc<Notify> {
         .wakers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    w.entry(name).or_insert_with(|| Arc::new(Notify::new())).clone()
+    w.entry(name)
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
 }
 
 /// Ask a controller to run as soon as its gates allow. Cheap and idempotent:
@@ -278,11 +281,26 @@ async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: lea
 
 /// Runs a controller's tick once, outside the loop — the `local-api run <name>`
 /// subcommand, so a person over SSH can drive exactly what the daemon would.
+///
+/// Under the same gates the daemon applies, or it would be a way around them:
+/// `local-api run disks` during a restore would drain and purge OSDs underneath
+/// it, and `local-api run storage-heal` on a standby would be a second writer
+/// next to the leader. A refusal says which gate and why.
 pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
-    let ctx = Ctx {
-        node: crate::system::hostname(),
-    };
-    controller.reconcile(&ctx).await
+    let node = crate::system::hostname();
+    if controller.scope() == Scope::Cluster && !leader::held_by(&node).await? {
+        anyhow::bail!(
+            "{} is cluster-scoped and {node} does not hold the cluster lease — run it on the leader",
+            controller.name()
+        );
+    }
+    if let Some(missing) = activity::unmet(controller.requires()).await {
+        anyhow::bail!("not running {}: waiting for {missing}", controller.name());
+    }
+    if let activity::Gate::Paused(why) = activity::gate(controller.pauses_during()).await {
+        anyhow::bail!("not running {}: {why}", controller.name());
+    }
+    controller.reconcile(&Ctx { node }).await
 }
 
 #[cfg(test)]
@@ -337,7 +355,10 @@ mod tests {
         );
         for _ in 0..600 {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            if registry().get("test-flaky").is_some_and(|s| s.last_ok_at.is_some()) {
+            if registry()
+                .get("test-flaky")
+                .is_some_and(|s| s.last_ok_at.is_some())
+            {
                 break;
             }
         }

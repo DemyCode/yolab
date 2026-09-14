@@ -63,9 +63,8 @@ pub async fn run<H: Host>(
     let dev = source.stdout.trim().to_string();
 
     let image = format!("{}/{node}", policy.pool_name);
-    let info: Value = serde_json::from_str(
-        &checked(host, "rbd", &["info", &image, "--format", "json"]).await?,
-    )?;
+    let info: Value =
+        serde_json::from_str(&checked(host, "rbd", &["info", &image, "--format", "json"]).await?)?;
     let Some(cur_mb) = current_size_mb(&info) else {
         bail!("images-grow: `rbd info {image}` has no size");
     };
@@ -87,7 +86,12 @@ pub async fn run<H: Host>(
         return Ok(());
     }
     tracing::info!("images-grow: growing images RBD: {cur_mb}MB -> {want_mb}MB");
-    checked(host, "rbd", &["resize", &image, "--size", &want_mb.to_string()]).await?;
+    checked(
+        host,
+        "rbd",
+        &["resize", &image, "--size", &want_mb.to_string()],
+    )
+    .await?;
     match policy.filesystem {
         Filesystem::Xfs => {
             checked(host, "xfs_growfs", &[&croot_s]).await?;
@@ -182,7 +186,10 @@ mod tests {
             )
             .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#)
             .ok("ceph osd pool get images size", r#"{"size":1}"#)
-            .fail("rbd resize", "rbd: error resizing image: (28) No space left on device")
+            .fail(
+                "rbd resize",
+                "rbd: error resizing image: (28) No space left on device",
+            )
             .ok("xfs_growfs", "");
         let dir = tempfile::tempdir().unwrap();
         assert!(run(&host, dir.path(), "yolab-n1", &policy()).await.is_err());

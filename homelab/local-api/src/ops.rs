@@ -168,7 +168,6 @@ impl Drop for InFlightGuard {
     }
 }
 
-
 /// A record whose liveness is tracked by a `Claim`.
 pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync {
     fn id(&self) -> &str;
@@ -352,22 +351,50 @@ mod tests {
     #[test]
     fn a_heartbeat_only_touches_running_records_this_process_drives() {
         let mut sets = vec![
-            Rec { id: "a".into(), started_at: NOW.into(), state: "running".into(), claim: Claim::default() },
-            Rec { id: "b".into(), started_at: NOW.into(), state: "running".into(), claim: claim("node2", Some("2026-09-14T11:59:59Z")) },
-            Rec { id: "c".into(), started_at: NOW.into(), state: "succeeded".into(), claim: Claim::default() },
+            Rec {
+                id: "a".into(),
+                started_at: NOW.into(),
+                state: "running".into(),
+                claim: Claim::default(),
+            },
+            Rec {
+                id: "b".into(),
+                started_at: NOW.into(),
+                state: "running".into(),
+                claim: claim("node2", Some("2026-09-14T11:59:59Z")),
+            },
+            Rec {
+                id: "c".into(),
+                started_at: NOW.into(),
+                state: "succeeded".into(),
+                claim: Claim::default(),
+            },
         ];
         beat(&mut sets, &["a".into(), "c".into()], "node1", at(NOW));
         assert_eq!(sets[0].claim.owner, "node1");
-        assert_eq!(sets[0].claim.heartbeat.as_deref(), Some(at(NOW).to_rfc3339().as_str()));
-        assert_eq!(sets[1].claim.owner, "node2", "another node's record is not ours to stamp");
-        assert!(sets[2].claim.owner.is_empty(), "a finished record needs no heartbeat");
+        assert_eq!(
+            sets[0].claim.heartbeat.as_deref(),
+            Some(at(NOW).to_rfc3339().as_str())
+        );
+        assert_eq!(
+            sets[1].claim.owner, "node2",
+            "another node's record is not ours to stamp"
+        );
+        assert!(
+            sets[2].claim.owner.is_empty(),
+            "a finished record needs no heartbeat"
+        );
     }
 
     #[test]
     fn a_flattened_claim_round_trips_inside_a_record() {
-        let r: Rec = serde_json::from_str(r#"{"id":"x","started_at":"t","state":"running","owner":"n1","heartbeat":"h"}"#).unwrap();
+        let r: Rec = serde_json::from_str(
+            r#"{"id":"x","started_at":"t","state":"running","owner":"n1","heartbeat":"h"}"#,
+        )
+        .unwrap();
         assert_eq!(r.claim.owner, "n1");
-        let legacy: Rec = serde_json::from_str(r#"{"id":"x","started_at":"t","state":"running"}"#).unwrap();
+        let legacy: Rec =
+            serde_json::from_str(r#"{"id":"x","started_at":"t","state":"running"}"#).unwrap();
         assert_eq!(legacy.claim, Claim::default());
     }
 

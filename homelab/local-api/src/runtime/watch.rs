@@ -34,7 +34,8 @@ pub fn any_line(_: &str) -> bool {
 /// A block device appeared, disappeared or changed.
 pub fn udev_block_event(line: &str) -> bool {
     let l = line.trim_start();
-    l.starts_with("UDEV") && (l.contains(" add ") || l.contains(" remove ") || l.contains(" change "))
+    l.starts_with("UDEV")
+        && (l.contains(" add ") || l.contains(" remove ") || l.contains(" change "))
 }
 
 pub fn spawn(w: Watch) {
@@ -86,19 +87,10 @@ async fn run_once(w: &Watch) -> std::io::Result<()> {
 /// readable in one place.
 pub fn standard() -> Vec<Watch> {
     let kube_watch = |kind: &str, name: &str, ns: &str| -> Vec<String> {
-        [
-            "get",
-            kind,
-            name,
-            "-n",
-            ns,
-            "--watch-only",
-            "-o",
-            "name",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+        ["get", kind, name, "-n", ns, "--watch-only", "-o", "name"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     };
     vec![
         Watch {
@@ -136,7 +128,13 @@ pub fn standard() -> Vec<Watch> {
             label: "restores",
             bin: "kubectl",
             args: kube_watch("configmap", "yolab-restores", "kube-system"),
-            targets: &["restore-watchdog", "disks", "topology", "cephfs", "storage-heal"],
+            targets: &[
+                "restore-watchdog",
+                "disks",
+                "topology",
+                "cephfs",
+                "storage-heal",
+            ],
             filter: any_line,
         },
     ]
@@ -154,7 +152,9 @@ mod tests {
         assert!(udev_block_event(
             "UDEV  [1234.5678] remove   /devices/pci0000:00/block/sdb (block)"
         ));
-        assert!(!udev_block_event("monitor will print the received events for:"));
+        assert!(!udev_block_event(
+            "monitor will print the received events for:"
+        ));
         assert!(!udev_block_event(
             "KERNEL[1234.5678] add      /devices/pci0000:00/block/sdb (block)"
         ));
@@ -166,7 +166,11 @@ mod tests {
         let known = crate::controllers::NAMES;
         for w in standard() {
             for t in w.targets {
-                assert!(known.contains(t), "watch {} wakes unknown controller {t}", w.label);
+                assert!(
+                    known.contains(t),
+                    "watch {} wakes unknown controller {t}",
+                    w.label
+                );
             }
         }
     }

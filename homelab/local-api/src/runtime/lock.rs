@@ -126,7 +126,9 @@ mod tests {
         let held = try_acquire_in(dir.path(), "handover").unwrap().unwrap();
         let path = dir.path().to_path_buf();
         let waiter =
-            tokio::spawn(async move { acquire_in(&path, "handover", Duration::from_secs(5)).await });
+            tokio::spawn(
+                async move { acquire_in(&path, "handover", Duration::from_secs(5)).await },
+            );
         tokio::time::sleep(Duration::from_millis(100)).await;
         drop(held);
         assert!(waiter.await.unwrap().unwrap().is_some());

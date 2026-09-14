@@ -91,7 +91,9 @@ async fn replace_if_wrong_type<H: Host>(host: &H, name: &str) {
         );
         host.kubectl(&["delete", "secret", name, "-n", NS, "--ignore-not-found"])
             .await
-            .warn_on_err(format!("csi-secrets: delete {name} to recreate it with the right type"));
+            .warn_on_err(format!(
+                "csi-secrets: delete {name} to recreate it with the right type"
+            ));
     }
 }
 
