@@ -660,12 +660,23 @@ async fn assess_app_damage() -> serde_json::Value {
         }
         None => false,
     };
-    if !cephfs_lost {
+    // Apps storage_heal put back on empty volumes. They stay corrupted after the
+    // cluster is healthy again — that is the whole point of recording them — until
+    // a restore succeeds.
+    let flagged: HashSet<String> = crate::storage_heal::corrupted_namespaces()
+        .await
+        .into_iter()
+        .collect();
+    if !cephfs_lost && flagged.is_empty() {
         return empty;
     }
 
     let lost_disks = crate::routers::ceph::lost_osd_count().await;
-    let loss_since = data_loss_since().await;
+    let loss_since = if cephfs_lost {
+        data_loss_since().await
+    } else {
+        chrono::DateTime::<chrono::Utc>::MIN_UTC
+    };
 
     let ns_items = crate::kubectl::get_json(&[
         "get",
@@ -726,7 +737,7 @@ async fn assess_app_damage() -> serde_json::Value {
     let mut checks: Vec<(String, String, String)> = Vec::new();
     let mut affected: Vec<(&String, &Vec<(String, bool)>)> = Vec::new();
     for (ns, pvcs) in &pvcs_by_ns {
-        if !pvcs.iter().any(|(_, pre_loss)| *pre_loss) {
+        if !flagged.contains(ns) && !pvcs.iter().any(|(_, pre_loss)| *pre_loss) {
             continue;
         }
         affected.push((ns, pvcs));
