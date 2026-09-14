@@ -7,8 +7,7 @@
   rust,
   localApiEnv,
   ...
-}:
-let
+}: let
   s = import ../shared.nix {
     inherit
       pkgs
@@ -29,7 +28,7 @@ let
   # Ceph runs as host daemons rather than Rook pods so containerd's image store
   # can live on an RBD — see homelab/nixos/ceph/default.nix for why that is not
   # possible while the mons are pods.
-  cephCfg = s.homelabConfig.ceph or { };
+  cephCfg = s.homelabConfig.ceph or {};
 
   # The mesh address of a machine already in the cluster, taken from the k3s
   # server URL the installer wrote — same tunnel, same peer, one fewer thing to
@@ -40,21 +39,18 @@ let
   # bootstrap its own Ceph cluster instead of joining, which looks healthy on
   # both nodes and is only discovered when the storage turns out to be split.
   cephSeedAddr =
-    if isFirstNode then
-      ""
-    else
-      let
-        # `]` is deliberately unescaped outside the bracket expression: Nix uses POSIX
-        # ERE, where `\]` is not a valid escape and the whole pattern is rejected at
-        # eval time with "invalid regular expression".
-        m = builtins.match "https?://\\[([^]]+)]:[0-9]+" k3sCfg.server_addr;
-      in
-      if m == null then
-        throw "[ceph] cannot read a cluster address out of node.k3s.server_addr (${k3sCfg.server_addr}); expected https://[<ipv6>]:6443"
-      else
-        builtins.head m;
-in
-{
+    if isFirstNode
+    then ""
+    else let
+      # `]` is deliberately unescaped outside the bracket expression: Nix uses POSIX
+      # ERE, where `\]` is not a valid escape and the whole pattern is rejected at
+      # eval time with "invalid regular expression".
+      m = builtins.match "https?://\\[([^]]+)]:[0-9]+" k3sCfg.server_addr;
+    in
+      if m == null
+      then throw "[ceph] cannot read a cluster address out of node.k3s.server_addr (${k3sCfg.server_addr}); expected https://[<ipv6>]:6443"
+      else builtins.head m;
+in {
   imports = [
     ./ceph
     ./ceph/images-store.nix
@@ -170,7 +166,7 @@ in
       # that), while wg0 needs a *source* policy in table 51820 so return
       # traffic from our public address does not exit asymmetrically.
       wireguard.interfaces.wg0 = {
-        ips = [ "${s.tunnelCfg.sub_ipv6}/128" ];
+        ips = ["${s.tunnelCfg.sub_ipv6}/128"];
         privateKey = s.tunnelCfg.wg_private_key;
 
         postSetup = ''
@@ -194,14 +190,14 @@ in
           {
             publicKey = s.tunnelCfg.wg_server_public_key;
             endpoint = s.tunnelCfg.wg_server_endpoint;
-            allowedIPs = [ "::/0" ];
+            allowedIPs = ["::/0"];
             persistentKeepalive = 25;
           }
         ];
       };
 
       wireguard.interfaces.wg1 = {
-        ips = [ "${s.nodeCfg.sub_ipv6_private}/128" ];
+        ips = ["${s.nodeCfg.sub_ipv6_private}/128"];
         privateKey = s.nodeCfg.wg_private_key;
 
         # FIXED, so a peer can dial us. Without it the kernel picks an ephemeral
@@ -228,7 +224,7 @@ in
           {
             publicKey = s.nodeCfg.wg_server_public_key;
             endpoint = s.nodeCfg.wg_server_endpoint;
-            allowedIPs = [ "${s.privateSubnet}" ];
+            allowedIPs = ["${s.privateSubnet}"];
             persistentKeepalive = 25;
           }
         ];
@@ -238,7 +234,7 @@ in
     # ── SSH ───────────────────────────────────────────────────────────────
     services.openssh = {
       enable = true;
-      ports = [ s.sshPort ];
+      ports = [s.sshPort];
       settings = {
         PermitRootLogin = "prohibit-password";
         PasswordAuthentication = false;
@@ -323,9 +319,9 @@ in
         "wireguard-wg1.service"
         "network-online.target"
       ];
-      wants = [ "network-online.target" ];
-      before = [ "k3s.service" ];
-      wantedBy = [ "k3s.service" ];
+      wants = ["network-online.target"];
+      before = ["k3s.service"];
+      wantedBy = ["k3s.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -333,7 +329,7 @@ in
       };
       # The IPv4 detection and the dual-stack-vs-IPv6-only line now live in
       # homelab/local-api/src/boot/node_ip.rs, with unit tests for both.
-      path = [ pkgs.iproute2 ];
+      path = [pkgs.iproute2];
       environment.YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
     };
 
@@ -435,8 +431,8 @@ in
     };
 
     systemd.services.caddy = {
-      after = [ "wireguard-wg0.service" ];
-      wants = [ "wireguard-wg0.service" ];
+      after = ["wireguard-wg0.service"];
+      wants = ["wireguard-wg0.service"];
     };
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
@@ -456,61 +452,64 @@ in
         "network.target"
         "k3s.service"
       ];
-      wants = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
-      environment = {
-        # The storage controllers run what the boot oneshots ran, so they get the
-        # same tools those units name in their own `path` — explicitly, rather
-        # than trusting each one to also be in the system profile.
-        PATH = lib.mkForce (
-          lib.optionalString config.yolab.ceph.enable "${
-            lib.makeBinPath (
-              with pkgs;
-              [
-                ceph
-                ceph-client
-                lvm2
-                util-linux
-                xfsprogs
-                e2fsprogs
-                coreutils
-                systemd
-              ]
-            )
-          }:"
-          + "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
-        );
-        YOLAB_REPO_PATH = config.yolab.repoPath;
-        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
-        YOLAB_PLATFORM = config.yolab.platform;
-        YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
-        YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
-        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-        NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
-        SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
-      }
-      // lib.optionalAttrs config.yolab.ceph.enable {
-        # The storage jobs that used to be systemd timers now run as controllers
-        # inside this process (homelab/local-api/src/storage/controllers.rs), so
-        # it needs the same settings the boot oneshots get — see `StorageEnv` in
-        # homelab/local-api/src/storage/mod.rs. Without these the daemon sees
-        # empty addresses, `is_configured()` is false, and none of them start.
-        YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
-        YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
-        # "" on the machine that created the cluster.
-        YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
-        YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
-        YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
-        YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
-        YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
-        YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
-        YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
-        YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
-        YOLAB_CEPH_MDS = if config.yolab.ceph.filesystem.enable then "1" else "0";
-        # The storage-heal controller's grace before it rebuilds a disposable
-        # pool's lost placement groups (storage_heal.rs).
-        YOLAB_STORAGE_HEAL_DISPOSABLE_GRACE_SECS = toString config.yolab.ceph.imagesStore.recoverGraceSeconds;
-      };
+      wants = ["k3s.service"];
+      wantedBy = ["multi-user.target"];
+      environment =
+        {
+          # The storage controllers run what the boot oneshots ran, so they get the
+          # same tools those units name in their own `path` — explicitly, rather
+          # than trusting each one to also be in the system profile.
+          PATH = lib.mkForce (
+            lib.optionalString config.yolab.ceph.enable "${
+              lib.makeBinPath (
+                with pkgs; [
+                  ceph
+                  ceph-client
+                  lvm2
+                  util-linux
+                  xfsprogs
+                  e2fsprogs
+                  coreutils
+                  systemd
+                ]
+              )
+            }:"
+            + "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
+          );
+          YOLAB_REPO_PATH = config.yolab.repoPath;
+          YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+          YOLAB_PLATFORM = config.yolab.platform;
+          YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
+          YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
+          KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+          NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+          SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+        }
+        // lib.optionalAttrs config.yolab.ceph.enable {
+          # The storage jobs that used to be systemd timers now run as controllers
+          # inside this process (homelab/local-api/src/storage/controllers.rs), so
+          # it needs the same settings the boot oneshots get — see `StorageEnv` in
+          # homelab/local-api/src/storage/mod.rs. Without these the daemon sees
+          # empty addresses, `is_configured()` is false, and none of them start.
+          YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
+          YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
+          # "" on the machine that created the cluster.
+          YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
+          YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
+          YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
+          YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
+          YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
+          YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
+          YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
+          YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
+          YOLAB_CEPH_MDS =
+            if config.yolab.ceph.filesystem.enable
+            then "1"
+            else "0";
+          # The storage-heal controller's grace before it rebuilds a disposable
+          # pool's lost placement groups (storage_heal.rs).
+          YOLAB_STORAGE_HEAL_DISPOSABLE_GRACE_SECS = toString config.yolab.ceph.imagesStore.recoverGraceSeconds;
+        };
       serviceConfig = {
         Type = "simple";
         User = "root";
@@ -543,8 +542,8 @@ in
     # so app pods and VolSync backup jobs can mount volumes without delay.
     systemd.services.yolab-csi-recovery = {
       description = "Restart CephFS CSI plugin to clear stale volume locks";
-      after = [ "k3s.service" ];
-      wantedBy = [ "multi-user.target" ];
+      after = ["k3s.service"];
+      wantedBy = ["multi-user.target"];
       environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       serviceConfig = {
         Type = "oneshot";
@@ -554,17 +553,19 @@ in
       };
       # The wait-for-DaemonSet loop and the this-node-only pod delete now live
       # in homelab/local-api/src/boot/csi_recovery.rs.
-      path = [ pkgs.k3s ];
+      path = [pkgs.k3s];
     };
 
     # ── Users ─────────────────────────────────────────────────────────────
-    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey ++ [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
-    ];
+    users.users.root.openssh.authorizedKeys.keys =
+      lib.optional (s.rootSshKey != "") s.rootSshKey
+      ++ [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
+      ];
 
     users.users.homelab = {
       isNormalUser = true;
-      extraGroups = [ "wheel" ];
+      extraGroups = ["wheel"];
       openssh.authorizedKeys.keys = s.allowedSshKeys;
       hashedPassword = lib.mkIf (s.homelabPasswordHash != "") s.homelabPasswordHash;
     };
@@ -576,9 +577,9 @@ in
     # the login prompt.  agetty is configured to display that file.
     systemd.services.yolab-banner = {
       description = "Generate boot banner with management URL QR code";
-      before = [ "getty@tty1.service" ];
-      wantedBy = [ "getty@tty1.service" ];
-      after = [ "local-fs.target" ];
+      before = ["getty@tty1.service"];
+      wantedBy = ["getty@tty1.service"];
+      after = ["local-fs.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -586,7 +587,7 @@ in
       };
       # The config.toml parsing (a real TOML parse now, not a regex) and the
       # banner text now live in homelab/local-api/src/boot/banner.rs.
-      path = [ pkgs.qrencode ];
+      path = [pkgs.qrencode];
       environment.YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
     };
 
@@ -596,8 +597,7 @@ in
       "--noclear"
     ];
 
-    environment.systemPackages =
-      with pkgs;
+    environment.systemPackages = with pkgs;
       map lib.lowPrio [
         curl
         gitMinimal
