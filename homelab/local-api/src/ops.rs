@@ -136,12 +136,11 @@ impl InFlight {
 
     /// Claims `id` for this process until the guard drops — including when the
     /// driving task panics, which the old push/retain pairs did not survive.
+    ///
+    /// Counted: each guard holds one entry, so a second claim of the same id keeps
+    /// it in flight until BOTH guards drop.
     pub fn claim(&'static self, id: &str) -> InFlightGuard {
-        let mut ids = self.lock();
-        if !ids.iter().any(|i| i == id) {
-            ids.push(id.to_string());
-        }
-        drop(ids);
+        self.lock().push(id.to_string());
         InFlightGuard {
             set: self,
             id: id.to_string(),
@@ -152,8 +151,12 @@ impl InFlight {
         self.lock().iter().any(|i| i == id)
     }
 
+    /// Each id once, however many guards hold it.
     pub fn ids(&self) -> Vec<String> {
-        self.lock().clone()
+        let mut ids = self.lock().clone();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 }
 
@@ -164,7 +167,10 @@ pub struct InFlightGuard {
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        self.set.lock().retain(|i| i != &self.id);
+        let mut ids = self.set.lock();
+        if let Some(pos) = ids.iter().position(|i| i == &self.id) {
+            ids.swap_remove(pos);
+        }
     }
 }
 
@@ -307,6 +313,20 @@ mod tests {
             liveness(&c, None, "node2", false, at(NOW)),
             Liveness::Abandoned
         );
+    }
+
+    #[test]
+    fn a_doubly_claimed_id_stays_in_flight_until_both_guards_drop() {
+        static SET: InFlight = InFlight::new();
+        let first = SET.claim("rs-1");
+        let second = SET.claim("rs-1");
+        let _other = SET.claim("rs-2");
+        assert_eq!(SET.ids(), vec!["rs-1".to_string(), "rs-2".to_string()]);
+        drop(first);
+        assert!(SET.contains("rs-1"));
+        drop(second);
+        assert!(!SET.contains("rs-1"));
+        assert!(SET.contains("rs-2"));
     }
 
     #[test]

@@ -4756,4 +4756,32 @@ mod tests {
             }
         }
     }
+
+    /// These names are the Storage page's vocabulary: renaming a variant must not
+    /// silently change what the UI receives.
+    #[test]
+    fn phases_keep_the_names_the_ui_reads() {
+        let wire: Vec<&str> = [
+            Phase::Unset,
+            Phase::Active,
+            Phase::Creating,
+            Phase::Retrying,
+            Phase::Blocked,
+            Phase::Draining,
+            Phase::Removing,
+            Phase::Removable,
+            Phase::Unknown,
+        ]
+        .iter()
+        .map(|p| p.as_str())
+        .collect();
+        assert_eq!(
+            wire,
+            [
+                "", "active", "creating", "retrying", "blocked", "draining", "removing",
+                "removable", "unknown"
+            ]
+        );
+        assert_eq!(Phase::default(), Phase::Unset);
+    }
 }

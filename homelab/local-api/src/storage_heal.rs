@@ -328,8 +328,9 @@ impl Controller for StorageHealController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(60)
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        tick(&RealHost, &RealApps, disposable_grace(), now_secs()).await?;
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+        let in_charge = || ctx.still_in_charge();
+        tick(&RealHost, &RealApps, disposable_grace(), now_secs(), &in_charge).await?;
         Ok(Tick::Done)
     }
 }
@@ -346,6 +347,7 @@ async fn tick<H: Host, A: AppRecovery>(
     apps: &A,
     grace: Duration,
     now: u64,
+    in_charge: InCharge<'_>,
 ) -> Result<()> {
     if !host.reachable().await {
         return Ok(());
@@ -353,7 +355,7 @@ async fn tick<H: Host, A: AppRecovery>(
     let state = read_state(host).await?;
     if state.recovery.as_ref().is_some_and(Recovery::running) {
         let mut state = state;
-        return continue_recovery(host, apps, &mut state, now).await;
+        return continue_recovery(host, apps, &mut state, now, in_charge).await;
     }
 
     let dump = host.osd_dump().await?;
@@ -507,6 +509,9 @@ async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
 
 // ── Running a recovery ────────────────────────────────────────────────────────
 
+/// Whether this node may still act — `Ctx::still_in_charge` in production.
+type InCharge<'a> = &'a (dyn Fn() -> bool + Sync);
+
 #[derive(Debug, PartialEq)]
 enum StepResult {
     Done,
@@ -521,15 +526,26 @@ async fn continue_recovery<H: Host, A: AppRecovery>(
     apps: &A,
     state: &mut HealState,
     now: u64,
+    in_charge: InCharge<'_>,
 ) -> Result<()> {
     loop {
+        // Asked before every step, not once per tick: a step can take many
+        // minutes, and a node that lost the lease meanwhile must not go on to the
+        // next destructive step while the new leader starts the same one.
+        if !in_charge() {
+            tracing::warn!("storage-heal: no longer the leader — leaving the recovery to it");
+            return Ok(());
+        }
         let Some(recovery) = state.recovery.clone().filter(Recovery::running) else {
             return Ok(());
         };
         tracing::info!("storage-heal: recovery step {:?}", recovery.step);
         let result = if recovery.step == Step::ReinstallApps {
-            reinstall_apps(host, apps, state).await?;
-            StepResult::Done
+            if reinstall_apps(host, apps, state, in_charge).await? {
+                StepResult::Done
+            } else {
+                StepResult::NotYet
+            }
         } else {
             run_step(host, &recovery).await?
         };
@@ -628,7 +644,7 @@ async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
         }
         Step::RestartCsi => {
             // Both hold state about the filesystem that was just replaced.
-            crate::csi::restart_plugins(host, crate::csi::Which::AllNodes).await;
+            crate::csi::restart_plugins(host, crate::csi::Which::AllNodes).await?;
             Ok(Done)
         }
         Step::ReinstallApps => unreachable!("handled by reinstall_apps"),
@@ -721,11 +737,14 @@ async fn remove_apps<H: Host>(host: &H) -> Result<StepResult> {
     })
 }
 
+/// `Ok(true)` once every app in the list has an outcome; `Ok(false)` when it
+/// stopped early because this node is no longer the leader.
 async fn reinstall_apps<H: Host, A: AppRecovery>(
     host: &H,
     apps: &A,
     state: &mut HealState,
-) -> Result<()> {
+    in_charge: InCharge<'_>,
+) -> Result<bool> {
     let list = match state.recovery.as_ref().and_then(|r| r.apps.clone()) {
         Some(list) => list,
         None => {
@@ -745,6 +764,9 @@ async fn reinstall_apps<H: Host, A: AppRecovery>(
         {
             continue;
         }
+        if !in_charge() {
+            return Ok(false);
+        }
         let outcome = match apps.reinstall(ns).await {
             Ok(()) => AppOutcome::Restored,
             Err(e) => AppOutcome::Failed {
@@ -757,7 +779,7 @@ async fn reinstall_apps<H: Host, A: AppRecovery>(
         }
         write_recovery(host, &state.recovery).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn fs_exists<H: Host>(host: &H) -> Result<bool> {
@@ -1058,6 +1080,10 @@ mod tests {
     const NOW: u64 = 1_000_000;
     const GRACE: Duration = Duration::from_secs(900);
 
+    fn always() -> bool {
+        true
+    }
+
     fn set<T: Ord + Clone>(items: &[T]) -> BTreeSet<T> {
         items.iter().cloned().collect()
     }
@@ -1242,7 +1268,7 @@ mod tests {
             "kubectl get configmap yolab-storage-heal",
             "connection refused",
         );
-        assert!(tick(&host, &FakeApps::default(), GRACE, NOW).await.is_err());
+        assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.is_err());
         assert_eq!(host.calls().len(), 2, "{:?}", host.calls());
     }
 
@@ -1349,21 +1375,21 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_cluster_is_not_even_asked_about_its_state() {
         let host = FakeHost::new().fail("ceph -s", "timed out");
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         assert_eq!(host.calls(), vec!["ceph -s".to_string()]);
     }
 
     #[tokio::test]
     async fn a_healthy_cluster_writes_nothing() {
         let host = cluster_host(&json!({}), &healthy_dump(), &lost_pg_dump());
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         assert!(!wrote(&host));
     }
 
     #[tokio::test]
     async fn a_loss_is_recorded_on_the_very_first_tick_and_nothing_else_happens() {
         let host = cluster_host(&json!({}), &dump(), &lost_pg_dump());
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         let loss = applied_states(&host)[0]
             .loss
             .clone()
@@ -1386,7 +1412,7 @@ mod tests {
         let state = json!({"loss": {"osds": [1], "pgs": {"images": ["4.1"], FS_META_POOL: ["2.1"]},
                                     "detected_at": NOW - 900}});
         let host = cluster_host(&state, &dump(), &lost_pg_dump()).ok("ceph osd out", "");
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         assert!(host.ran("ceph osd out osd.1"));
         assert!(
             !host.ran("force-create-pg"),
@@ -1403,7 +1429,7 @@ mod tests {
         d["osds"][1]["in"] = json!(0);
         let pgs = json!({"pg_stats": [{"pgid": "2.1", "state": "down", "acting": [0]}]});
         let host = cluster_host(&state, &d, &pgs).ok("ceph osd force-create-pg", "");
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
 
         assert!(host.ran("force-create-pg 4.1") && host.ran("force-create-pg 1.0"));
         assert!(!host.ran("force-create-pg 2.1"));
@@ -1425,7 +1451,7 @@ mod tests {
         let only_app_data =
             json!({"pg_stats": [{"pgid": "2.1", "state": "stale+active+clean", "acting": [1]}]});
         let host = cluster_host(&state, &dump(), &only_app_data);
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         assert!(
             !host.ran("ceph osd out"),
             "reconnecting must stay a way back"
@@ -1439,7 +1465,7 @@ mod tests {
         let mut d = dump();
         d["osds"][1]["in"] = json!(0);
         let host = cluster_host(&state, &d, &json!({"pg_stats": []}));
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         assert!(!host.ran("force-create-pg") && !host.ran("osd out"));
     }
 
@@ -1448,7 +1474,7 @@ mod tests {
         let state =
             json!({"loss": {"osds": [1], "pgs": {FS_META_POOL: ["2.1"]}, "detected_at": 1}});
         let host = cluster_host(&state, &healthy_dump(), &lost_pg_dump());
-        tick(&host, &FakeApps::default(), GRACE, NOW).await.unwrap();
+        tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.unwrap();
         assert!(applied_states(&host).pop().unwrap().loss.is_none());
     }
 
@@ -1462,7 +1488,7 @@ mod tests {
             )
             .ok("ceph osd dump", &dump().to_string())
             .fail("ceph pg dump pgs_brief", "timeout");
-        assert!(tick(&host, &FakeApps::default(), GRACE, NOW).await.is_err());
+        assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always).await.is_err());
         assert!(!wrote(&host));
     }
 
@@ -1482,7 +1508,7 @@ mod tests {
             .ok("kubectl delete pod", "")
             .ok("kubectl-replace", "")
             .ok("kubectl-create", "");
-        let err = tick(&host, &FakeApps::failing_list(), GRACE, NOW)
+        let err = tick(&host, &FakeApps::failing_list(), GRACE, NOW, &always)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("restic unreachable"), "{err}");
@@ -1574,6 +1600,31 @@ mod tests {
             .running());
     }
 
+    #[tokio::test]
+    async fn a_second_press_that_loses_the_race_starts_nothing_and_writes_nothing() {
+        let state_cm = |state: &Value| {
+            json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"},
+                   "data": {"state": state.to_string()}})
+            .to_string()
+        };
+        let mut running = app_loss();
+        running["recovery"] = serde_json::to_value(recovery_at(Step::PurgeOsds)).unwrap();
+        let host = FakeHost::new()
+            // What this press read first: a loss, nothing running yet…
+            .ok("kubectl get configmap yolab-storage-heal", &state_cm(&app_loss()))
+            // …and what the swap reads: the other press already started one.
+            .ok("kubectl get configmap yolab-storage-heal", &state_cm(&running))
+            .ok("ceph osd dump", &dump().to_string())
+            .ok(
+                "kubectl get namespaces -l yolab.io/managed=true",
+                r#"{"items": []}"#,
+            )
+            .ok("kubectl-replace", "");
+        let err = start_recovery(&host, NOW).await.unwrap_err();
+        assert!(err.to_string().contains("already running"), "{err}");
+        assert!(!wrote(&host), "{:?}", host.calls());
+    }
+
     // ── Recovery steps ───────────────────────────────────────────────────────
 
     fn recovery_at(step: Step) -> Recovery {
@@ -1646,7 +1697,7 @@ mod tests {
             loss: serde_json::from_value(app_loss()["loss"].clone()).unwrap(),
             recovery: Some(recovery_at(Step::PurgeOsds)),
         };
-        continue_recovery(&host, &FakeApps::default(), &mut state, NOW)
+        continue_recovery(&host, &FakeApps::default(), &mut state, NOW, &always)
             .await
             .unwrap();
         assert!(state.recovery.is_none());
@@ -1888,7 +1939,7 @@ mod tests {
         let apps = FakeApps::with(&["yolab-a", "yolab-c"]).fail("yolab-c", "helm timed out");
         let mut state = reinstalling();
         let host = fresh_state_host();
-        continue_recovery(&host, &apps, &mut state, NOW)
+        continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .unwrap();
 
@@ -1916,12 +1967,45 @@ mod tests {
         let apps = FakeApps::with(&["yolab-a"]);
         let mut state = reinstalling();
         let host = fresh_state_host();
-        continue_recovery(&host, &apps, &mut state, NOW)
+        continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .unwrap();
         let first = applied_states(&host).remove(0).recovery.unwrap();
         assert_eq!(first.apps, Some(strings(&["yolab-a"])));
         assert!(first.outcomes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_node_that_loses_the_lease_mid_recovery_stops_before_the_next_app() {
+        let apps = FakeApps::with(&["yolab-a", "yolab-b"]);
+        let mut state = reinstalling();
+        state.recovery.as_mut().unwrap().apps = Some(strings(&["yolab-a", "yolab-b"]));
+        let host = fresh_state_host();
+        let asked = std::sync::atomic::AtomicU32::new(0);
+        // In charge for the step check and the first app, then the lease is gone.
+        let in_charge = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2;
+        continue_recovery(&host, &apps, &mut state, NOW, &in_charge)
+            .await
+            .unwrap();
+        assert_eq!(*apps.reinstalled.lock().unwrap(), strings(&["yolab-a"]));
+        let r = state.recovery.unwrap();
+        assert!(r.running(), "not finished: the new leader carries on");
+        assert_eq!(r.step, Step::ReinstallApps);
+        assert_eq!(r.outcomes.len(), 1, "yolab-a's outcome was saved");
+    }
+
+    #[tokio::test]
+    async fn a_node_that_is_not_in_charge_starts_no_step_at_all() {
+        let host = FakeHost::new();
+        let mut state = HealState {
+            loss: None,
+            recovery: Some(recovery_at(Step::PurgeOsds)),
+        };
+        continue_recovery(&host, &FakeApps::default(), &mut state, NOW, &|| false)
+            .await
+            .unwrap();
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
+        assert_eq!(state.recovery.unwrap().step, Step::PurgeOsds);
     }
 
     #[tokio::test]
@@ -1932,7 +2016,7 @@ mod tests {
         r.apps = Some(strings(&["yolab-a", "yolab-b"]));
         r.outcomes.insert("yolab-a".into(), AppOutcome::Restored);
         let host = fresh_state_host();
-        continue_recovery(&host, &apps, &mut state, NOW)
+        continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .unwrap();
         assert_eq!(*apps.reinstalled.lock().unwrap(), strings(&["yolab-b"]));
@@ -1943,7 +2027,7 @@ mod tests {
         let mut state = reinstalling();
         let host = fresh_state_host();
         assert!(
-            continue_recovery(&host, &FakeApps::failing_list(), &mut state, NOW)
+            continue_recovery(&host, &FakeApps::failing_list(), &mut state, NOW, &always)
                 .await
                 .is_err()
         );
@@ -1958,7 +2042,7 @@ mod tests {
         let host = FakeHost::new()
             .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
             .fail("kubectl-create", "etcd timeout");
-        assert!(continue_recovery(&host, &apps, &mut state, NOW)
+        assert!(continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .is_err());
         assert_eq!(*apps.reinstalled.lock().unwrap(), strings(&["yolab-a"]));
@@ -2004,11 +2088,11 @@ mod tests {
         let mut state = reinstalling();
         state.recovery.as_mut().unwrap().step = Step::PurgeOsds;
 
-        continue_recovery(&host, &apps, &mut state, NOW)
+        continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .unwrap();
         assert_eq!(state.recovery.as_ref().unwrap().step, Step::RemoveApps);
-        continue_recovery(&host, &apps, &mut state, NOW + 30)
+        continue_recovery(&host, &apps, &mut state, NOW + 30, &always)
             .await
             .unwrap();
         let r = state.recovery.clone().unwrap();

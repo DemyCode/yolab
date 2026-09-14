@@ -173,11 +173,24 @@ impl Store {
                     }
                 },
             };
+            let encode = |v: &T| {
+                serde_json::to_string(v).map_err(|e| RecordError::Corrupt {
+                    store: self.label(),
+                    detail: e.to_string(),
+                })
+            };
+            let before = encode(&value)?;
             let result = f(&mut value);
-            let body = serde_json::to_string(&value).map_err(|e| RecordError::Corrupt {
-                store: self.label(),
-                detail: e.to_string(),
-            })?;
+            let body = encode(&value)?;
+            // The closure changed nothing: no write. One that decides inside the
+            // swap not to act (a watchdog that lost the race, a refused start) must
+            // not bump the resourceVersion and turn every concurrent writer's swap
+            // into a conflict for nothing. Compared against the value as parsed,
+            // not the stored text, which another writer may have formatted
+            // differently. Unreadable content is always rewritten, to move it aside.
+            if corrupt.is_none() && before == body {
+                return Ok(result);
+            }
             let manifest = self.manifest(
                 &body,
                 corrupt.as_deref(),
@@ -343,6 +356,85 @@ mod tests {
             .unwrap();
         assert!(write.contains("sets.corrupt"));
         assert!(write.contains("not json {"));
+    }
+
+    #[tokio::test]
+    async fn an_update_that_changes_nothing_writes_nothing() {
+        let host = FakeHost::new()
+            .ok("kubectl get configmap yolab-test", &cm(r#"["a"]"#, "1"))
+            .ok("kubectl-replace", "");
+        let n = STORE
+            .update(&host, |v: &mut Vec<String>| v.len())
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "the closure's result is still returned");
+        assert!(!host.ran("kubectl-replace"));
+
+        let absent = FakeHost::new()
+            .fail(
+                "kubectl get configmap yolab-test",
+                "Error from server (NotFound): configmaps \"yolab-test\" not found",
+            )
+            .ok("kubectl-create", "");
+        STORE
+            .update(&absent, |_: &mut Vec<String>| ())
+            .await
+            .unwrap();
+        assert!(
+            !absent.ran("kubectl-create"),
+            "an empty record is not worth creating"
+        );
+    }
+
+    #[tokio::test]
+    async fn losing_the_race_to_create_retries_as_a_replace_of_the_winner() {
+        let host = FakeHost::new()
+            .fail(
+                "kubectl get configmap yolab-test",
+                "Error from server (NotFound): configmaps \"yolab-test\" not found",
+            )
+            .ok("kubectl get configmap yolab-test", &cm(r#"["theirs"]"#, "4"))
+            .fail(
+                "kubectl-create",
+                "Error from server (AlreadyExists): configmaps \"yolab-test\" already exists",
+            )
+            .ok("kubectl-replace", "");
+        STORE
+            .update(&host, |v: &mut Vec<String>| v.push("ours".into()))
+            .await
+            .unwrap();
+        let replace = host
+            .calls()
+            .into_iter()
+            .find(|c| c.starts_with("kubectl-replace"))
+            .expect("retried as a replace");
+        assert!(replace.contains("theirs") && replace.contains("ours"), "{replace}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_a_configmap_is_an_error() {
+        let host = FakeHost::new().ok(
+            "kubectl get configmap yolab-test",
+            r#"{"kind":"Status","metadata":{}}"#,
+        );
+        let r: Result<Vec<String>, _> = STORE.read(&host).await;
+        assert!(matches!(r, Err(RecordError::Cluster(_))));
+    }
+
+    #[test]
+    fn errors_name_the_store_they_are_about() {
+        let corrupt = RecordError::Corrupt {
+            store: "kube-system/x".into(),
+            detail: "eof".into(),
+        };
+        assert!(corrupt.to_string().contains("kube-system/x"));
+        let contended = RecordError::Contended {
+            store: "kube-system/x".into(),
+        };
+        assert!(contended.to_string().contains("gave up"));
+        assert!(std::error::Error::source(&contended).is_none());
+        let cluster = RecordError::from(CmdError::parse("kubectl get", "bad"));
+        assert!(std::error::Error::source(&cluster).is_some());
     }
 
     #[tokio::test]

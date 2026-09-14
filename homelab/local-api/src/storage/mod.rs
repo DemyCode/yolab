@@ -281,4 +281,50 @@ mod tests {
     fn a_subcommand_and_its_controller_share_one_lock_name() {
         assert_eq!(lock_name("containerd-store"), "storage-containerd-store");
     }
+
+    #[tokio::test]
+    async fn a_missing_or_unknown_subcommand_is_a_usage_error_that_touches_nothing() {
+        // Exit 2 is returned before any lock is taken or any command is run.
+        assert_eq!(run(&[]).await, 2);
+        assert_eq!(run(&["images-recover".to_string()]).await, 2);
+    }
+
+    #[test]
+    fn every_policy_is_built_from_the_one_environment() {
+        let vars = std::collections::HashMap::from([
+            ("YOLAB_CEPH_FSID", "abc"),
+            ("YOLAB_CEPH_MON_ADDR", "fd00::1"),
+            ("YOLAB_CEPH_JOIN_SEED_ADDR", "fd00::2"),
+            ("YOLAB_CONFIG", "/etc/yolab.toml"),
+            ("YOLAB_CEPH_IMAGES_SHARE", "0.5"),
+            ("YOLAB_CEPH_IMAGES_MIN_GB", "80"),
+            ("YOLAB_CEPH_DASHBOARD_PORT", "8443"),
+        ]);
+        let env = StorageEnv::from_lookup(|k| vars.get(k).map(|v| v.to_string()));
+        let b = env.bootstrap_args();
+        assert_eq!(
+            (b.fsid.as_str(), b.join_seed_addr.as_str(), b.config_path.as_str()),
+            ("abc", "fd00::2", "/etc/yolab.toml")
+        );
+        assert_eq!(env.mon_member_args().mon_addr, "fd00::1");
+        let rbd = env.images_rbd_policy();
+        assert_eq!((rbd.share_of_pool, rbd.min_size_gb), (0.5, 80));
+        let grow = env.grow_policy();
+        assert_eq!((grow.share_of_pool, grow.min_size_gb), (0.5, 80));
+        assert_eq!(env.containerd_store_policy().pool_name, "images");
+        assert_eq!(env.dashboard_policy().port, 8443);
+    }
+
+    #[test]
+    fn unparseable_numbers_fall_back_to_their_defaults() {
+        let env = StorageEnv::from_lookup(|k| match k {
+            "YOLAB_CEPH_IMAGES_SHARE" | "YOLAB_CEPH_IMAGES_MIN_GB" | "YOLAB_CEPH_DASHBOARD_PORT" => {
+                Some("lots".to_string())
+            }
+            _ => None,
+        });
+        assert_eq!(env.images_share, 0.25);
+        assert_eq!(env.images_min_gb, 40);
+        assert_eq!(env.dashboard_port, 7000);
+    }
 }

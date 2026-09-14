@@ -52,6 +52,19 @@ impl Leadership {
         last > 0 && now_ms() - last < ACT_WITHIN_MS
     }
 
+    /// A handle for a lease this process has just seen live but does not renew
+    /// (`local-api run`): leader for `ACT_WITHIN` from now, then not.
+    pub fn confirmed_now() -> Self {
+        Self::renewed_at(now_ms())
+    }
+
+    fn renewed_at(ms: i64) -> Self {
+        Self {
+            last_renewed_ms: Arc::new(AtomicI64::new(ms)),
+            fixed: None,
+        }
+    }
+
     #[cfg(test)]
     pub fn fixed_for_tests(leader: bool) -> Self {
         Self {
@@ -78,6 +91,13 @@ pub fn start(identity: String) -> Leadership {
         last_renewed_ms: last.clone(),
         fixed: None,
     };
+    if !may_stand(&identity) {
+        // An empty holder reads as a RELEASED lease to `decide`, so a node with
+        // no name would be taken over by everyone and take over from everyone:
+        // no single leader at all. Better never to lead.
+        tracing::error!("leader: this node has no hostname — it will never lead the cluster");
+        return handle;
+    }
     tokio::spawn(async move {
         loop {
             let attempt_started = now_ms();
@@ -108,10 +128,17 @@ pub fn start(identity: String) -> Leadership {
     handle
 }
 
+fn may_stand(identity: &str) -> bool {
+    !identity.trim().is_empty()
+}
+
 /// Whether `identity` holds a live lease right now, read straight from the API —
 /// for a one-off process (`local-api run`) that takes part in no election. `Err`
 /// when the API did not answer: not knowing is not "yes".
 pub async fn held_by(identity: &str) -> Result<bool, CmdError> {
+    if !may_stand(identity) {
+        return Ok(false);
+    }
     let lease =
         crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
             .await?;
@@ -295,6 +322,51 @@ mod tests {
             assert!(ACT_WITHIN_MS < LEASE_SECS * 1000);
             assert!((RENEW_EVERY.as_millis() as i64) < ACT_WITHIN_MS);
         }
+    }
+
+    #[test]
+    fn a_node_without_a_name_never_stands_for_leader() {
+        assert!(!may_stand(""));
+        assert!(!may_stand("  "));
+        assert!(may_stand("yolab-n1"));
+    }
+
+    #[tokio::test]
+    async fn a_node_without_a_name_never_holds_the_lease_for_a_manual_run() {
+        // Answered before any API call: a released lease has an empty holder too.
+        assert!(!held_by("").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn starting_without_a_name_yields_a_handle_that_never_leads() {
+        assert!(!start(String::new()).is_leader());
+    }
+
+    #[test]
+    fn a_released_lease_is_taken_even_if_recently_renewed() {
+        let now = Utc::now();
+        assert!(matches!(
+            decide(&lease("", 1, now), "n1", now),
+            LeaseDecision::Take { acquire_time } if acquire_time == now
+        ));
+    }
+
+    #[test]
+    fn the_written_lease_is_a_compare_and_swap_only_when_it_names_a_version() {
+        let now = Utc::now();
+        let renew = manifest("n1", now, now, Some("42"));
+        assert_eq!(renew["metadata"]["resourceVersion"], "42");
+        assert_eq!(renew["spec"]["holderIdentity"], "n1");
+        assert_eq!(renew["spec"]["leaseDurationSeconds"], LEASE_SECS);
+        let create = manifest("n1", now, now, None);
+        assert!(create["metadata"].get("resourceVersion").is_none());
+    }
+
+    #[test]
+    fn a_manual_confirmation_lasts_only_as_long_as_the_daemon_would_trust_it() {
+        assert!(Leadership::confirmed_now().is_leader());
+        assert!(!Leadership::renewed_at(now_ms() - ACT_WITHIN_MS - 1).is_leader());
+        assert!(!Leadership::renewed_at(0).is_leader());
     }
 
     #[test]

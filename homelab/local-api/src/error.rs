@@ -122,6 +122,32 @@ mod tests {
     }
 
     #[test]
+    fn best_effort_results_keep_the_value_and_drop_only_the_error() {
+        let ok: std::result::Result<u8, String> = Ok(7);
+        let err: std::result::Result<u8, String> = Err("boom".into());
+        assert_eq!(ok.clone().ok_or_warn("x"), Some(7));
+        assert_eq!(err.clone().ok_or_warn("x"), None);
+        // These only log; what matters is that neither panics on either arm.
+        ok.clone().warn_on_err("x");
+        err.clone().warn_on_err("x");
+        ok.debug_on_err("x");
+        err.debug_on_err("x");
+    }
+
+    #[test]
+    fn an_app_error_displays_its_whole_chain() {
+        let e = AppError(anyhow::anyhow!("root cause").context("while reading the disk"));
+        let shown = e.to_string();
+        assert!(shown.contains("while reading the disk") && shown.contains("root cause"));
+    }
+
+    #[test]
+    fn an_error_response_carries_its_status_and_message() {
+        let r = AppError(anyhow::anyhow!("nope")).into_response();
+        assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
     fn a_plain_error_is_a_500() {
         assert_eq!(
             status_for(&anyhow::anyhow!("boom")),

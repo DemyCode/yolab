@@ -95,6 +95,26 @@ pub enum Tick {
 /// Everything a tick is told about the world by the runtime.
 pub struct Ctx {
     pub node: String,
+    leader: Option<leader::Leadership>,
+}
+
+impl Ctx {
+    fn new(node: String, scope: Scope, leader: &leader::Leadership) -> Self {
+        Self {
+            node,
+            leader: (scope == Scope::Cluster).then(|| leader.clone()),
+        }
+    }
+
+    /// Whether this tick may still act. The runtime checks leadership only
+    /// BEFORE a tick; a cluster-scoped tick that runs for minutes (a storage
+    /// recovery reinstalling every app) must ask again between steps, or a node
+    /// that lost the lease halfway keeps acting while the new leader starts the
+    /// same work — two drivers of one destructive operation. Always true for a
+    /// node-scoped controller.
+    pub fn still_in_charge(&self) -> bool {
+        self.leader.as_ref().is_none_or(leader::Leadership::is_leader)
+    }
 }
 
 pub trait Controller: Send + Sync + 'static {
@@ -246,7 +266,7 @@ async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: lea
         last_start = Some(Instant::now());
         reg.started(name);
         let c = controller.clone();
-        let ctx = Ctx { node: node.clone() };
+        let ctx = Ctx::new(node.clone(), controller.scope(), &leader);
         let outcome = tokio::spawn(async move { c.reconcile(&ctx).await }).await;
 
         let interval = controller.interval();
@@ -300,7 +320,12 @@ pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
     if let activity::Gate::Paused(why) = activity::gate(controller.pauses_during()).await {
         anyhow::bail!("not running {}: {why}", controller.name());
     }
-    controller.reconcile(&Ctx { node }).await
+    // The lease was just seen live, and nothing renews it from this process: past
+    // the same window the daemon allows itself, a long manual tick stops acting.
+    let leader = leader::Leadership::confirmed_now();
+    controller
+        .reconcile(&Ctx::new(node, controller.scope(), &leader))
+        .await
 }
 
 #[cfg(test)]
@@ -436,5 +461,52 @@ mod tests {
         wake("test-woken");
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn only_a_cluster_tick_can_lose_the_right_to_act() {
+        let lost = leader::Leadership::fixed_for_tests(false);
+        let held = leader::Leadership::fixed_for_tests(true);
+        assert!(Ctx::new("n1".into(), Scope::Node, &lost).still_in_charge());
+        assert!(!Ctx::new("n1".into(), Scope::Cluster, &lost).still_in_charge());
+        assert!(Ctx::new("n1".into(), Scope::Cluster, &held).still_in_charge());
+    }
+
+    struct Impatient {
+        runs: Arc<AtomicU32>,
+    }
+
+    impl Controller for Impatient {
+        fn name(&self) -> &'static str {
+            "test-impatient"
+        }
+        fn scope(&self) -> Scope {
+            Scope::Node
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(3600)
+        }
+        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            match self.runs.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(Tick::RequeueAfter(Duration::from_secs(10))),
+                _ => Ok(Tick::Idle("nothing left to do".into())),
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_requeue_runs_sooner_and_an_idle_reason_is_shown() {
+        let runs = Arc::new(AtomicU32::new(0));
+        spawn(
+            Impatient { runs: runs.clone() },
+            leader::Leadership::fixed_for_tests(true),
+        );
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "requeued long before the hour");
+        let s = registry().get("test-impatient").expect("registered");
+        assert_eq!(s.last_note.as_deref(), Some("nothing left to do"));
+        assert_eq!(s.phase, Phase::Idle);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "an idle tick waits the interval");
     }
 }

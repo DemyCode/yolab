@@ -161,6 +161,53 @@ mod tests {
         assert!(!udev_block_event(""));
     }
 
+    fn sh(script: &str, targets: &'static [&'static str], filter: fn(&str) -> bool) -> Watch {
+        Watch {
+            label: "test",
+            bin: "/bin/sh",
+            args: vec!["-c".to_string(), script.to_string()],
+            targets,
+            filter,
+        }
+    }
+
+    fn is_event(line: &str) -> bool {
+        line.starts_with("EVENT")
+    }
+
+    #[tokio::test]
+    async fn a_matching_line_wakes_every_target() {
+        let woken = super::super::waker("test-watch-target");
+        let watch = sh("echo EVENT; echo noise", &["test-watch-target"], is_event);
+        run_once(&watch).await.unwrap();
+        // The permit from the wake is waiting for the controller's next wait.
+        let notified = tokio::time::timeout(Duration::from_secs(1), woken.notified()).await;
+        assert!(notified.is_ok(), "the target was woken");
+    }
+
+    #[tokio::test]
+    async fn a_watch_that_dies_without_output_is_an_error_but_a_finished_one_is_not() {
+        let failed = run_once(&sh("exit 3", &[], any_line)).await;
+        assert!(failed.is_err());
+        let finished = run_once(&sh("exit 0", &[], any_line)).await;
+        assert!(finished.is_ok());
+        // kubectl watches end on their own after printing events; that is normal.
+        let ended = run_once(&sh("echo event; exit 1", &[], any_line)).await;
+        assert!(ended.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_binary_that_cannot_start_is_an_error() {
+        let w = Watch {
+            label: "test",
+            bin: "/nonexistent/watcher",
+            args: vec![],
+            targets: &[],
+            filter: any_line,
+        };
+        assert!(run_once(&w).await.is_err());
+    }
+
     #[test]
     fn every_watch_target_is_a_controller_that_exists() {
         let known = crate::controllers::NAMES;
