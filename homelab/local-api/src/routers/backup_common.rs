@@ -549,12 +549,18 @@ pub(crate) async fn list_managed_namespaces() -> anyhow::Result<Vec<String>> {
 /// yet exist (first call for a PVC — install time, or the hourly self-heal reconciler picking
 /// up something new), it's still created with a concrete one-off manual value rather than an
 /// empty trigger, so it syncs exactly once and then idles rather than looping continuously.
+pub(crate) fn replication_source_name(pvc_name: &str) -> String {
+    format!("volsync-{}", canonical_pvc_id(pvc_name))
+}
+
+/// Returns the manual trigger value it set, or None when an existing source was
+/// left untouched.
 pub(crate) async fn ensure_replication_source(
     pvc: &PvcInfo,
     trigger_now: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let cid = canonical_pvc_id(&pvc.name);
-    let rs_name = format!("volsync-{cid}");
+    let rs_name = replication_source_name(&pvc.name);
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
 
     // Self-healing path: only create if missing — never overwrite a live manual trigger.
@@ -564,7 +570,7 @@ pub(crate) async fn ensure_replication_source(
                 .await
                 .is_ok();
         if exists {
-            return Ok(());
+            return Ok(None);
         }
     }
 
@@ -577,11 +583,17 @@ pub(crate) async fn ensure_replication_source(
     // Every RS this function creates — trigger_now true or false — must get a concrete
     // manual value so VolSync syncs exactly once and then idles in "Waiting for manual
     // trigger" until the next real backup changes it.
-    let trigger = serde_json::json!({
-        "manual": chrono::Utc::now()
-            .format(if trigger_now { "backup-%Y%m%d%H%M%S" } else { "init-%Y%m%d%H%M%S" })
-            .to_string()
-    });
+    // Milliseconds, because a backup waits for `lastManualSync` to equal this value:
+    // two runs in the same second would share it and the second would wait on
+    // nothing, reporting an upload that never happened.
+    let manual = chrono::Utc::now()
+        .format(if trigger_now {
+            "backup-%Y%m%d%H%M%S%3f"
+        } else {
+            "init-%Y%m%d%H%M%S%3f"
+        })
+        .to_string();
+    let trigger = serde_json::json!({ "manual": manual });
     // copyMethod Direct: read from the live PVC without snapshotting first.
     // More reliable than Snapshot which requires a working VolumeSnapshotClass —
     // if the CSI plugin is unhealthy the snapshot never completes and the backup
@@ -616,7 +628,8 @@ pub(crate) async fn ensure_replication_source(
             }
         }
     });
-    kubectl_apply(&manifest.to_string()).await
+    kubectl_apply(&manifest.to_string()).await?;
+    Ok(Some(manual))
 }
 
 /// Raw `kubectl get replicationsource -A -o json` — callers match against this

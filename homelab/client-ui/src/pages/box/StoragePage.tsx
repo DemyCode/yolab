@@ -349,9 +349,12 @@ function DiskRow({
 
   async function toggle() {
     const next = isOn ? "OFF" : "ON";
-    // Turning off a disk that currently holds data starts a drain, so it gets
-    // a confirmation the other direction does not need.
-    if (next === "OFF" && disk.is_our_osd && !confirm) {
+    // Turning off a disk that currently holds data starts a drain, and turning on
+    // one that holds another system's data erases it — both get a confirmation.
+    const needsConfirm =
+      (next === "OFF" && disk.is_our_osd) ||
+      (next === "ON" && state === "foreign");
+    if (needsConfirm && !confirm) {
       setConfirm(true);
       return;
     }
@@ -439,7 +442,9 @@ function DiskRow({
       {confirm && (
         <div className="flex shrink-0 items-center gap-2">
           <span className="hidden text-sm text-fg-muted sm:inline">
-            Data moves off first.
+            {isOn
+              ? "Data moves off first."
+              : "Everything on it will be erased."}
           </span>
           <Button
             size="sm"
@@ -447,7 +452,7 @@ function DiskRow({
             disabled={busy}
             onClick={() => void toggle()}
           >
-            Remove
+            {isOn ? "Remove" : "Erase and use"}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
             Cancel
@@ -455,13 +460,12 @@ function DiskRow({
         </div>
       )}
 
-      {/* `unidentified` is excluded alongside `foreign` because the reconciler
-          refuses to create an OSD for BOTH (Ownership::is_foreign covers
-          Unknown too) — so the toggle would be a control that silently does
-          nothing. It is deliberately NOT given the Erase button above either:
-          we do not know what the disk is, and the likeliest answer is that it
-          is one of ours. */}
-      {state !== "foreign" && state !== "unidentified" && !confirm && (
+      {/* `unidentified` gets no switch: the reconciler refuses to create an OSD
+          on it (refuse_osd_creation), because the likeliest answer is that it is
+          one of ours seen while the cluster was unreachable. A `foreign` disk
+          does get one — switching it on erases the other system's data, which
+          is what the confirmation above says. */}
+      {state !== "unidentified" && !confirm && (
         <button
           onClick={() => void toggle()}
           disabled={busy}

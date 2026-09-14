@@ -117,6 +117,11 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
+    if crate::storage_heal::is_rebuilding().await {
+        anyhow::bail!(
+            "storage is still being rebuilt after a lost disk — restore once it finishes"
+        );
+    }
 
     // Resolve the snapshot up front so the record (and the page) always shows the
     // concrete id being restored, even for "restore latest".
@@ -239,6 +244,7 @@ async fn restore_inner(
         }
     }
 
+    crate::storage_heal::clear_corrupted(namespace).await;
     tracing::info!("restore: {namespace} restored from {snapshot_id}");
     Ok(())
 }

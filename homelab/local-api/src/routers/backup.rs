@@ -259,16 +259,47 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
 /// by the restic timeouts, so a crash simply leaves a "running" record that the next
 /// tick classifies as crashed.
 async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    // 1. Volumes: trigger every managed PVC. Fire-and-forget by design — VolSync's
-    //    mover runs in the background and its status is read separately.
-    let pvcs = list_user_pvcs().await?;
+    // 1. Volumes: trigger every managed PVC, then WAIT for each upload to finish.
+    //
+    // This used to be fire-and-forget, and the cluster snapshot below then started
+    // seconds before the volume uploads did. Restore uses the cluster snapshot's time
+    // as VolSync's `restoreAsOf`, so it could never see the volume snapshots taken
+    // by its own backup — observed 2026-09-14: cluster snapshot 12:10:02, the app's
+    // only volume snapshot 12:10:05, and a restore of it would have found "No
+    // eligible snapshots", exited successfully, and left the app empty.
+    //
+    // Apps whose volumes storage_heal replaced are skipped: backing up the empty
+    // replacement would make it the newest copy, and restoring would bring back
+    // nothing.
+    let corrupted = crate::storage_heal::corrupted_namespaces().await;
+    let pvcs: Vec<PvcInfo> = list_user_pvcs()
+        .await?
+        .into_iter()
+        .filter(|p| !corrupted.contains(&p.namespace))
+        .collect();
+    let mut pending = Vec::new();
+    let mut failures = Vec::new();
     for pvc in &pvcs {
         annotate_ns_privileged_movers(&pvc.namespace).await;
         let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await;
-        let _ = ensure_replication_source(pvc, true).await;
+        let before = replication_source(&pvc.namespace, &pvc.name).await;
+        match ensure_replication_source(pvc, true).await {
+            Ok(Some(trigger)) => pending.push(PendingSync {
+                pvc: pvc.clone(),
+                trigger,
+                logs_before: mover_logs(&before),
+            }),
+            Ok(None) => {}
+            Err(e) => failures.push(format!(
+                "{}/{}: could not start: {e}",
+                pvc.namespace, pvc.name
+            )),
+        }
     }
+    failures.extend(wait_for_volume_syncs(&pending).await);
 
-    // 2. Cluster state, tagged with the set id.
+    // 2. Cluster state, tagged with the set id. Taken even when a volume failed, so
+    //    every other app still has a restorable backup from this run.
     let (snapshot_id, services) = snapshot_cluster(cfg, id).await?;
 
     // 3. Retention. Best-effort: if it fails or is skipped this run, the next one
@@ -296,7 +327,115 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
     )
     .await;
 
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "the app settings were saved, but {} volume(s) did not back up: {}",
+            failures.len(),
+            failures.join("; ")
+        );
+    }
     Ok((snapshot_id, services))
+}
+
+// ── Waiting for volume uploads ─────────────────────────────────────────────────
+
+/// How long one backup may wait for all volume uploads before calling them failed.
+const VOLUME_SYNC_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
+const VOLUME_SYNC_POLL: Duration = Duration::from_secs(10);
+
+struct PendingSync {
+    pvc: PvcInfo,
+    trigger: String,
+    logs_before: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum SyncOutcome {
+    Done,
+    Failed(String),
+    Pending,
+}
+
+async fn replication_source(namespace: &str, pvc: &str) -> Value {
+    crate::kubectl::get_json(&[
+        "get",
+        "replicationsource",
+        &replication_source_name(pvc),
+        "-n",
+        namespace,
+        "-o",
+        "json",
+    ])
+    .await
+    .unwrap_or(Value::Null)
+}
+
+fn mover_logs(rs: &Value) -> Option<String> {
+    rs["status"]["latestMoverStatus"]["logs"]
+        .as_str()
+        .map(str::to_string)
+}
+
+/// VolSync records `lastManualSync` = the trigger value only once that sync has
+/// completed. A failed attempt shows up as a new `latestMoverStatus` with result
+/// `Failed` — new meaning its logs differ from what was there before this trigger.
+fn sync_outcome(rs: &Value, trigger: &str, logs_before: Option<&str>) -> SyncOutcome {
+    let status = &rs["status"];
+    let result = status["latestMoverStatus"]["result"].as_str();
+    let logs = status["latestMoverStatus"]["logs"].as_str();
+    if status["lastManualSync"].as_str() == Some(trigger) {
+        return match result {
+            Some("Failed") => SyncOutcome::Failed(last_line(logs)),
+            _ => SyncOutcome::Done,
+        };
+    }
+    if result == Some("Failed") && logs != logs_before {
+        return SyncOutcome::Failed(last_line(logs));
+    }
+    SyncOutcome::Pending
+}
+
+fn last_line(logs: Option<&str>) -> String {
+    logs.and_then(|l| l.lines().rev().find(|x| !x.trim().is_empty()))
+        .unwrap_or("the upload failed")
+        .trim()
+        .to_string()
+}
+
+async fn wait_for_volume_syncs(pending: &[PendingSync]) -> Vec<String> {
+    let deadline = std::time::Instant::now() + VOLUME_SYNC_TIMEOUT;
+    let mut waiting: Vec<&PendingSync> = pending.iter().collect();
+    let mut failures = Vec::new();
+    while !waiting.is_empty() {
+        let mut still = Vec::new();
+        for p in waiting {
+            let rs = replication_source(&p.pvc.namespace, &p.pvc.name).await;
+            match sync_outcome(&rs, &p.trigger, p.logs_before.as_deref()) {
+                SyncOutcome::Done => {}
+                SyncOutcome::Failed(why) => {
+                    failures.push(format!("{}/{}: {why}", p.pvc.namespace, p.pvc.name))
+                }
+                SyncOutcome::Pending => still.push(p),
+            }
+        }
+        waiting = still;
+        if waiting.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            for p in &waiting {
+                failures.push(format!(
+                    "{}/{}: still uploading after {}h",
+                    p.pvc.namespace,
+                    p.pvc.name,
+                    VOLUME_SYNC_TIMEOUT.as_secs() / 3600
+                ));
+            }
+            break;
+        }
+        tokio::time::sleep(VOLUME_SYNC_POLL).await;
+    }
+    failures
 }
 
 // ── Cluster-state snapshot (etcd + K8s objects + catalog) ──────────────────────
@@ -649,6 +788,54 @@ pub(crate) async fn run_scheduler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rs(last_manual: &str, result: &str, logs: &str) -> Value {
+        json!({"status": {
+            "lastManualSync": last_manual,
+            "latestMoverStatus": {"result": result, "logs": logs},
+        }})
+    }
+
+    #[test]
+    fn a_volume_is_backed_up_only_once_volsync_records_this_trigger() {
+        let old = rs("backup-1", "Successful", "snapshot a saved");
+        assert_eq!(
+            sync_outcome(&old, "backup-2", Some("snapshot a saved")),
+            SyncOutcome::Pending,
+            "the previous run's success is not this run's"
+        );
+        let new = rs("backup-2", "Successful", "snapshot b saved");
+        assert_eq!(
+            sync_outcome(&new, "backup-2", Some("snapshot a saved")),
+            SyncOutcome::Done
+        );
+    }
+
+    #[test]
+    fn a_new_failure_fails_the_volume_but_an_old_one_does_not() {
+        let stale = rs("backup-1", "Failed", "old error");
+        assert_eq!(
+            sync_outcome(&stale, "backup-2", Some("old error")),
+            SyncOutcome::Pending
+        );
+        let fresh = rs(
+            "backup-1",
+            "Failed",
+            "...\nFatal: unable to open repository\n",
+        );
+        assert_eq!(
+            sync_outcome(&fresh, "backup-2", Some("old error")),
+            SyncOutcome::Failed("Fatal: unable to open repository".into())
+        );
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_is_still_pending() {
+        assert_eq!(
+            sync_outcome(&Value::Null, "backup-2", None),
+            SyncOutcome::Pending
+        );
+    }
 
     fn set(id: &str, state: &str) -> BackupSet {
         BackupSet {

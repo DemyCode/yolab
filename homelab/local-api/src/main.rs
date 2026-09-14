@@ -13,6 +13,7 @@ mod mesh;
 mod proc;
 mod routers;
 mod storage;
+mod storage_heal;
 mod system;
 mod topology;
 
@@ -291,6 +292,8 @@ async fn main() {
     supervise("disks", disks_reconciler::run);
     supervise("cephfs", cephfs::run);
     supervise("topology", topology::run_topology_controller);
+    // Rebuilds everything but app data once disks or machines are provably gone.
+    supervise("storage-heal", storage_heal::run);
     supervise("mesh", mesh::run);
     // Keeps the app catalog current without a nixos-rebuild â see charts.rs.
     supervise("chart-sync", charts::run_chart_sync);

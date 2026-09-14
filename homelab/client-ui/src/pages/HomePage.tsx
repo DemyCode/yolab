@@ -20,7 +20,7 @@ interface DamagedApp {
   backup_age_hours: number | null;
 }
 
-/** `GET /api/backups/damage` — only non-empty while storage is unrecoverable. */
+/** `GET /api/backups/damage` — apps whose data is lost and not yet restored. */
 interface DamageResponse {
   unrecoverable: boolean;
   lost_disks: number;
@@ -103,12 +103,15 @@ export function HomePage() {
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
   const installed = useMemo(() => apps.data ?? [], [apps.data]);
 
-  // Only asked for while storage is unrecoverable — otherwise the endpoint is a
-  // no-op and fetching it on every visit is noise. `key=null` disables the fetch.
+  // Always asked for, not only while storage is unrecoverable: once a lost disk
+  // has been healed the cluster is healthy again, but the apps that came back on
+  // empty volumes are still corrupted until each one is restored.
   const damage = useApi<DamageResponse>(
-    health.data?.storage_unrecoverable ? "backups-damage" : null,
+    "backups-damage",
     "/api/backups/damage",
-    { pollMs: 15_000 },
+    {
+      pollMs: 15_000,
+    },
   );
 
   // ONE GRID. Damaged apps used to be pulled out into a section of their own

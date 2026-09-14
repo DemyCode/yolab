@@ -25,14 +25,10 @@ fn pool_listed(pool_ls: &str, name: &str) -> bool {
 pub async fn run() {
     tokio::time::sleep(std::time::Duration::from_secs(90)).await;
     loop {
-        // Gated here, not inside `ensure()` itself: restore_run.rs calls `ensure()`
-        // directly as part of its own RebuildingStorage recovery — after purging OSDs
-        // and tearing the filesystem down, it needs `ensure()` to recreate it, and a
-        // check inside `ensure()` would refuse that exact call (a restore is active by
-        // definition while it's running) and deadlock the rebuild it's trying to finish.
-        // This loop's own periodic background calls are what would race a rebuild in
-        // progress, so only they are skipped.
-        if crate::routers::restore::is_running().await {
+        // storage_heal owns the filesystem while it rebuilds it; creating one here
+        // between its steps would race that.
+        if crate::routers::restore::is_running().await || crate::storage_heal::is_rebuilding().await
+        {
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
             continue;
         }
