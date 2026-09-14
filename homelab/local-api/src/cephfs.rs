@@ -27,7 +27,7 @@ pub async fn run() {
     loop {
         // storage_heal owns the filesystem while it rebuilds it; creating one here
         // between its steps would race that.
-        if crate::routers::restore::is_running().await || crate::storage_heal::is_rebuilding().await
+        if crate::routers::restore::is_running().await || crate::storage_heal::is_recovering().await
         {
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
             continue;

@@ -13,7 +13,7 @@
 //! failed). There is deliberately no phase machine, no deadline, no watchdog and no
 //! cross-process lock: a set is fire-and-forget, and several may be in flight at once.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -236,6 +236,9 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
+    if let Some(why) = crate::storage_heal::backups_blocked().await {
+        anyhow::bail!("not backing up: {why}");
+    }
     let id = new_id();
     IN_FLIGHT.lock().unwrap().push(id.clone());
     record_running(&id, triggered_by).await;
@@ -268,15 +271,7 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
     // only volume snapshot 12:10:05, and a restore of it would have found "No
     // eligible snapshots", exited successfully, and left the app empty.
     //
-    // Apps whose volumes storage_heal replaced are skipped: backing up the empty
-    // replacement would make it the newest copy, and restoring would bring back
-    // nothing.
-    let corrupted = crate::storage_heal::corrupted_namespaces().await;
-    let pvcs: Vec<PvcInfo> = list_user_pvcs()
-        .await?
-        .into_iter()
-        .filter(|p| !corrupted.contains(&p.namespace))
-        .collect();
+    let pvcs = list_user_pvcs().await?;
     let mut pending = Vec::new();
     let mut failures = Vec::new();
     for pvc in &pvcs {
@@ -296,11 +291,27 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
             )),
         }
     }
-    failures.extend(wait_for_volume_syncs(&pending).await);
+    let (sync_failures, synced) = wait_for_volume_syncs(&pending).await;
+    failures.extend(sync_failures);
+
+    // Which restic snapshot each upload produced, so a restore takes exactly that one
+    // rather than whatever a timestamp happens to select.
+    let mut pinned = HashMap::new();
+    for (pvc, rs) in &synced {
+        match pin_volume_snapshot(cfg, pvc, rs).await {
+            Some(snap) => {
+                pinned.insert((pvc.namespace.clone(), pvc.name.clone()), snap);
+            }
+            None => failures.push(format!(
+                "{}/{}: uploaded, but its snapshot could not be identified",
+                pvc.namespace, pvc.name
+            )),
+        }
+    }
 
     // 2. Cluster state, tagged with the set id. Taken even when a volume failed, so
     //    every other app still has a restorable backup from this run.
-    let (snapshot_id, services) = snapshot_cluster(cfg, id).await?;
+    let (snapshot_id, services) = snapshot_cluster(cfg, id, &pinned).await?;
 
     // 3. Retention. Best-effort: if it fails or is skipped this run, the next one
     //    prunes whatever it left behind.
@@ -402,16 +413,65 @@ fn last_line(logs: Option<&str>) -> String {
         .to_string()
 }
 
-async fn wait_for_volume_syncs(pending: &[PendingSync]) -> Vec<String> {
+/// A volume snapshot pinned by id, as recorded in `catalog.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VolumeSnapshot {
+    pub id: String,
+    /// restic's own timestamp for it, verbatim.
+    pub time: String,
+}
+
+/// The snapshot VolSync's restic mover just saved: its log ends with
+/// `snapshot f46c4413 saved`.
+fn saved_snapshot_id(logs: &str) -> Option<String> {
+    logs.lines().rev().find_map(|l| {
+        let rest = l.trim().strip_prefix("snapshot ")?;
+        let id = rest.strip_suffix(" saved")?;
+        (!id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| id.to_string())
+    })
+}
+
+/// `restic snapshots <id> --json` → the full id and time of that one snapshot.
+fn parse_pinned(v: &Value) -> Option<VolumeSnapshot> {
+    let s = v.as_array()?.first()?;
+    Some(VolumeSnapshot {
+        id: s["id"].as_str()?.to_string(),
+        time: s["time"].as_str()?.to_string(),
+    })
+}
+
+async fn pin_volume_snapshot(
+    cfg: &BackupConfig,
+    pvc: &PvcInfo,
+    rs: &Value,
+) -> Option<VolumeSnapshot> {
+    let short = saved_snapshot_id(mover_logs(rs)?.as_str())?;
+    let repo = cfg.restic_repo(&format!(
+        "volsync/{}/{}",
+        pvc.namespace,
+        canonical_pvc_id(&pvc.name)
+    ));
+    let out = restic(&repo, cfg, &["snapshots", "--no-lock", "--json", &short])
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_pinned(&serde_json::from_slice(&out.stdout).ok()?)
+}
+
+/// Failures, and the source status of every volume that finished.
+async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(PvcInfo, Value)>) {
     let deadline = std::time::Instant::now() + VOLUME_SYNC_TIMEOUT;
     let mut waiting: Vec<&PendingSync> = pending.iter().collect();
     let mut failures = Vec::new();
+    let mut synced = Vec::new();
     while !waiting.is_empty() {
         let mut still = Vec::new();
         for p in waiting {
             let rs = replication_source(&p.pvc.namespace, &p.pvc.name).await;
             match sync_outcome(&rs, &p.trigger, p.logs_before.as_deref()) {
-                SyncOutcome::Done => {}
+                SyncOutcome::Done => synced.push((p.pvc.clone(), rs)),
                 SyncOutcome::Failed(why) => {
                     failures.push(format!("{}/{}: {why}", p.pvc.namespace, p.pvc.name))
                 }
@@ -435,7 +495,7 @@ async fn wait_for_volume_syncs(pending: &[PendingSync]) -> Vec<String> {
         }
         tokio::time::sleep(VOLUME_SYNC_POLL).await;
     }
-    failures
+    (failures, synced)
 }
 
 // ── Cluster-state snapshot (etcd + K8s objects + catalog) ──────────────────────
@@ -446,6 +506,7 @@ async fn wait_for_volume_syncs(pending: &[PendingSync]) -> Vec<String> {
 async fn snapshot_cluster(
     cfg: &BackupConfig,
     tag: &str,
+    pinned: &PinnedVolumes,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
 
@@ -457,15 +518,31 @@ async fn snapshot_cluster(
         tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
     }
 
-    let result = snapshot_cluster_inner(cfg, tag, &tmp_dir).await;
+    let result = snapshot_cluster_inner(cfg, tag, &tmp_dir, pinned).await;
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
     result
+}
+
+/// (namespace, pvc name) → the snapshot this backup took of it.
+type PinnedVolumes = HashMap<(String, String), VolumeSnapshot>;
+
+/// One volume's catalog entry. A pinned snapshot is what restore takes; without one
+/// (a volume whose upload failed) restore falls back to the newest snapshot before
+/// the cluster snapshot, or refuses.
+fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> Value {
+    let mut v = json!({ "name": name, "capacity": capacity });
+    if let Some(s) = pinned {
+        v["snapshot_id"] = Value::String(s.id.clone());
+        v["snapshot_time"] = Value::String(s.time.clone());
+    }
+    v
 }
 
 async fn snapshot_cluster_inner(
     cfg: &BackupConfig,
     tag: &str,
     tmp_dir: &str,
+    pinned: &PinnedVolumes,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
@@ -585,7 +662,8 @@ async fn snapshot_cluster_inner(
                     .as_str()
                     .unwrap_or("?")
                     .to_string();
-                Some(json!({ "name": name, "capacity": capacity }))
+                let snap = pinned.get(&(ns.clone(), name.clone()));
+                Some(catalog_pvc(&name, &capacity, snap))
             })
             .collect();
 
@@ -826,6 +904,66 @@ mod tests {
         assert_eq!(
             sync_outcome(&fresh, "backup-2", Some("old error")),
             SyncOutcome::Failed("Fatal: unable to open repository".into())
+        );
+    }
+
+    /// The exact log VolSync 0.16's restic mover left on the live cluster.
+    #[test]
+    fn the_saved_snapshot_is_read_from_the_mover_log() {
+        let logs = "=== Initialize Dir ===\ncreated restic repository 9bc0b3e83e at s3:https://x\n\
+                    no parent snapshot found, will read all files\n\
+                    Added to the repository: 669.094 MiB (628.814 MiB stored)\n\
+                    processed 2158 files, 680.417 MiB in 0:20\nsnapshot f46c4413 saved\n\
+                    Restic completed in 25s";
+        assert_eq!(saved_snapshot_id(logs), Some("f46c4413".into()));
+    }
+
+    #[test]
+    fn a_log_without_a_saved_snapshot_pins_nothing() {
+        assert_eq!(
+            saved_snapshot_id("Fatal: repository is already locked"),
+            None
+        );
+        assert_eq!(saved_snapshot_id("snapshot  saved"), None);
+        assert_eq!(saved_snapshot_id("snapshot not-hex saved"), None);
+        assert_eq!(saved_snapshot_id(""), None);
+    }
+
+    #[test]
+    fn the_last_saved_snapshot_wins_when_a_mover_retried() {
+        let logs = "snapshot aaaa1111 saved\nerror: prune failed\nsnapshot bbbb2222 saved";
+        assert_eq!(saved_snapshot_id(logs), Some("bbbb2222".into()));
+    }
+
+    #[test]
+    fn a_pinned_snapshot_keeps_restics_full_id_and_exact_time() {
+        let v = json!([{"id": "f46c4413abcdef", "short_id": "f46c4413",
+                        "time": "2026-09-14T12:10:05.417123456Z"}]);
+        assert_eq!(
+            parse_pinned(&v),
+            Some(VolumeSnapshot {
+                id: "f46c4413abcdef".into(),
+                time: "2026-09-14T12:10:05.417123456Z".into()
+            })
+        );
+        assert_eq!(parse_pinned(&json!([])), None);
+        assert_eq!(parse_pinned(&json!([{"id": "x"}])), None);
+    }
+
+    #[test]
+    fn a_catalog_volume_carries_its_snapshot_only_when_it_has_one() {
+        let snap = VolumeSnapshot {
+            id: "abc".into(),
+            time: "2026-09-14T12:10:05Z".into(),
+        };
+        assert_eq!(
+            catalog_pvc("data", "5Gi", Some(&snap)),
+            json!({"name": "data", "capacity": "5Gi", "snapshot_id": "abc",
+                   "snapshot_time": "2026-09-14T12:10:05Z"})
+        );
+        assert_eq!(
+            catalog_pvc("data", "5Gi", None),
+            json!({"name": "data", "capacity": "5Gi"})
         );
     }
 

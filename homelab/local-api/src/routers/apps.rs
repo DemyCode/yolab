@@ -1224,43 +1224,15 @@ pub async fn install_app(
     };
 
     let stream = async_stream::stream! {
-        let Ok(tunnel_cfg) = tunnel_config(&state.config) else {
-            yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
-            return;
-        };
-        let Some((repo, chart_dir)) = crate::charts::resolve_chart(&state.config.catalog_dir(), &id, None).await else {
-            yield Ok(Event::default().data(format!("[ERROR] no chart named {id} in any configured repository")));
-            return;
-        };
-        let Some(meta) = read_chart(&chart_dir) else {
-            yield Ok(Event::default().data(format!("[ERROR] {id} is not a valid chart")));
-            return;
-        };
-
-        let ns = format!("yolab-{instance_name}");
-        // Namespace first: the chart's resources are namespaced, and the labels/
-        // annotations set here are what the backup layer selects on.
         yield Ok(Event::default().data("Preparing namespace..."));
-        if let Err(e) = ensure_app_namespace(&ns, &id, &repo, &meta.chart.version).await {
-            yield Ok(Event::default().data(format!("[ERROR] create namespace: {e}")));
-            return;
-        }
-        // The one container that needs the account token reads it from here.
-        if let Err(e) = ensure_tunnel_credentials(&ns, &tunnel_cfg).await {
-            yield Ok(Event::default().data(format!("[ERROR] stage tunnel credentials: {e}")));
-            return;
-        }
-
-        let service_name = resolve_service_name(&meta.schema, &body.config);
-        let values = build_values(&body.config, &tunnel_cfg, &service_name);
-        let tmp = match tempfile::Builder::new().suffix(".json").tempfile() {
-            Ok(t) => t,
-            Err(e) => { yield Ok(Event::default().data(format!("[ERROR] staging values: {e}"))); return; }
+        let staged = match stage_install(&state.config, &id, &instance_name, &body.config).await {
+            Ok(s) => s,
+            Err(e) => {
+                yield Ok(Event::default().data(format!("[ERROR] {e}")));
+                return;
+            }
         };
-        if let Err(e) = std::fs::write(tmp.path(), &values) {
-            yield Ok(Event::default().data(format!("[ERROR] write values: {e}")));
-            return;
-        }
+        let StagedInstall { ns, chart_dir, values: tmp } = staged;
 
         yield Ok(Event::default().data("Installing chart..."));
         // `upgrade --install` rather than `install`: a retry after a partial failure then
@@ -1305,6 +1277,96 @@ pub async fn install_app(
     };
 
     Sse::new(stream).into_response()
+}
+
+/// Everything an install needs before `helm upgrade --install` runs.
+struct StagedInstall {
+    ns: String,
+    chart_dir: std::path::PathBuf,
+    /// The values file; removed when dropped, so it must outlive the helm call.
+    values: tempfile::NamedTempFile,
+}
+
+/// The steps every install shares, whoever asked for it: the chart, the namespace
+/// the backup layer selects on, the tunnel credentials and the values file.
+async fn stage_install(
+    cfg: &Config,
+    id: &str,
+    instance_name: &str,
+    config: &serde_json::Map<String, Value>,
+) -> anyhow::Result<StagedInstall> {
+    let tunnel_cfg =
+        tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
+    let Some((repo, chart_dir)) = crate::charts::resolve_chart(&cfg.catalog_dir(), id, None).await
+    else {
+        anyhow::bail!("no chart named {id} in any configured repository");
+    };
+    let Some(meta) = read_chart(&chart_dir) else {
+        anyhow::bail!("{id} is not a valid chart");
+    };
+    let ns = format!("yolab-{instance_name}");
+    // Namespace first: the chart's resources are namespaced, and the labels/
+    // annotations set here are what the backup layer selects on.
+    ensure_app_namespace(&ns, id, &repo, &meta.chart.version)
+        .await
+        .map_err(|e| anyhow::anyhow!("create namespace: {e}"))?;
+    // The one container that needs the account token reads it from here.
+    ensure_tunnel_credentials(&ns, &tunnel_cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
+    let service_name = resolve_service_name(&meta.schema, config);
+    let values = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile()
+        .map_err(|e| anyhow::anyhow!("staging values: {e}"))?;
+    std::fs::write(
+        values.path(),
+        build_values(config, &tunnel_cfg, &service_name),
+    )
+    .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
+    Ok(StagedInstall {
+        ns,
+        chart_dir,
+        values,
+    })
+}
+
+/// Install an app and wait for it, for callers that are not an HTTP request —
+/// storage recovery reinstalls every app from its backup. Backups are NOT wired
+/// up here: the caller does that once the app's data is back.
+pub(crate) async fn install_now(
+    id: &str,
+    instance_name: &str,
+    config: &serde_json::Map<String, Value>,
+) -> anyhow::Result<()> {
+    let cfg = Config::from_env();
+    let staged = stage_install(&cfg, id, instance_name, config).await?;
+    const HELM_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+    let work = tokio::process::Command::new("helm")
+        .args([
+            "upgrade",
+            "--install",
+            "--dependency-update",
+            instance_name,
+            &staged.chart_dir.to_string_lossy(),
+            "-n",
+            &staged.ns,
+            "--values",
+            &staged.values.path().to_string_lossy(),
+        ])
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(HELM_INSTALL_TIMEOUT, work)
+        .await
+        .map_err(|_| anyhow::anyhow!("helm install of {instance_name} timed out"))??;
+    if !out.status.success() {
+        anyhow::bail!(
+            "helm install of {instance_name}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    write_config(&staged.ns, config, &chart_uischema(&cfg.catalog_dir(), id)).await;
+    Ok(())
 }
 
 #[derive(Deserialize)]

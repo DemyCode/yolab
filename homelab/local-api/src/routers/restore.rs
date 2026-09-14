@@ -117,9 +117,9 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
-    if crate::storage_heal::is_rebuilding().await {
+    if crate::storage_heal::is_recovering().await {
         anyhow::bail!(
-            "storage is still being rebuilt after a lost disk — restore once it finishes"
+            "storage is being recovered from backup — every app is restored as part of it"
         );
     }
 
@@ -130,6 +130,19 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
         anyhow::bail!("no cluster-backup snapshot to restore from");
     };
 
+    let (id, original) = begin(namespace, &snapshot_id).await;
+    let task_id = id.clone();
+    let ns = namespace.to_string();
+    tokio::spawn(async move {
+        let result = run_restore(&ns, &snapshot_id, &cfg, &original).await;
+        finish(&task_id, &result).await;
+    });
+
+    Ok(id)
+}
+
+/// Records a restore as running and claims it for this process.
+async fn begin(namespace: &str, snapshot_id: &str) -> (String, Vec<DeploymentScale>) {
     // Record the live replica counts BEFORE scaling down, so a crash mid-restore can
     // still bring the app back to a running state.
     let scaled_deployments = read_deployment_scales(namespace).await;
@@ -138,7 +151,7 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let set = RestoreSet {
         id: id.clone(),
         namespace: namespace.to_string(),
-        snapshot_id: Some(snapshot_id.clone()),
+        snapshot_id: Some(snapshot_id.to_string()),
         started_at: Utc::now().to_rfc3339(),
         state: "running".to_string(),
         finished_at: None,
@@ -150,26 +163,18 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     write_sets(&sets).await;
 
     RESTORE_IN_FLIGHT.lock().unwrap().push(id.clone());
-
-    let task_id = id.clone();
-    let ns = namespace.to_string();
-    let original = scaled_deployments;
-    tokio::spawn(async move {
-        let result = run_restore(&ns, &snapshot_id, &cfg, &original).await;
-        record_done(&task_id, &result).await;
-        {
-            let mut guard = RESTORE_IN_FLIGHT.lock().unwrap();
-            guard.retain(|s| s != &task_id);
-        }
-    });
-
-    Ok(id)
+    (id, scaled_deployments)
 }
 
-async fn record_done(id: &str, result: &anyhow::Result<()>) {
+async fn finish(id: &str, result: &anyhow::Result<bool>) {
+    record_done(id, result).await;
+    RESTORE_IN_FLIGHT.lock().unwrap().retain(|s| s != id);
+}
+
+async fn record_done(id: &str, result: &anyhow::Result<bool>) {
     let finished_at = Utc::now().to_rfc3339();
     match result {
-        Ok(()) => {
+        Ok(_) => {
             patch_set(id, |s| {
                 s.state = "succeeded".to_string();
                 s.finished_at = Some(finished_at);
@@ -195,7 +200,7 @@ async fn run_restore(
     snapshot_id: &str,
     cfg: &BackupConfig,
     original: &[DeploymentScale],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let result = restore_inner(namespace, snapshot_id, cfg).await;
     if result.is_err() {
         for d in original {
@@ -205,11 +210,12 @@ async fn run_restore(
     result
 }
 
+/// Ok(true) when at least one volume was restored from backup.
 async fn restore_inner(
     namespace: &str,
     snapshot_id: &str,
     cfg: &BackupConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     // 1. Scale the app down so its pods release the PVCs being replaced.
     let _ = crate::kubectl::run(&[
         "scale",
@@ -235,22 +241,26 @@ async fn restore_inner(
     //    live volume and reported success over an empty one.
     let pvcs = catalog_pvcs(&catalog, namespace);
     let mut backed_up = Vec::new();
-    for (pvc, capacity) in &pvcs {
-        let times = volume_snapshot_times(namespace, pvc, cfg).await?;
-        match volume_backup(&times, restore_as_of.as_deref()) {
-            VolumeBackup::None => {
-                tracing::warn!("restore: {namespace}/{pvc}: no backup snapshot — keeping as-is")
-            }
-            VolumeBackup::OnlyNewer => anyhow::bail!(
-                "{pvc} has no backup taken before this restore point — pick a later backup"
+    for pvc in &pvcs {
+        let snaps = volume_snapshots(namespace, &pvc.name, cfg).await?;
+        match plan_volume(
+            &pvc.name,
+            pvc.snapshot.as_ref(),
+            &snaps,
+            restore_as_of.as_deref(),
+        ) {
+            VolumePlan::NoBackup => tracing::warn!(
+                "restore: {namespace}/{}: no backup snapshot — keeping as-is",
+                pvc.name
             ),
-            VolumeBackup::Eligible => backed_up.push((pvc.clone(), capacity.clone())),
+            VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
+            VolumePlan::RestoreAsOf(as_of) => backed_up.push((pvc, as_of)),
         }
     }
 
     // 4. Recreate each PVC from its own VolSync restic repo.
-    for (pvc, capacity) in &backed_up {
-        restore_volume(namespace, pvc, capacity, cfg, restore_as_of.as_deref()).await?;
+    for (pvc, as_of) in &backed_up {
+        restore_volume(namespace, &pvc.name, &pvc.capacity, cfg, as_of.as_deref()).await?;
     }
 
     // 5. Re-apply the app's backed-up objects (deploy/secret/configmap/etc.), which
@@ -263,44 +273,73 @@ async fn restore_inner(
         }
     }
 
-    // Only a restore that brought every volume back makes a corrupted app whole.
-    if !pvcs.is_empty() && backed_up.len() == pvcs.len() {
-        crate::storage_heal::clear_corrupted(namespace).await;
-    }
     tracing::info!("restore: {namespace} restored from {snapshot_id}");
-    Ok(())
+    Ok(!backed_up.is_empty())
 }
 
+/// What to do with one volume of a restore.
 #[derive(Debug, PartialEq)]
-enum VolumeBackup {
-    None,
-    /// Snapshots exist, but every one is newer than the restore point.
-    OnlyNewer,
-    Eligible,
+enum VolumePlan {
+    /// Nothing of it was ever backed up: leave it as it is.
+    NoBackup,
+    /// Refuse the whole restore before anything is replaced.
+    Refuse(String),
+    /// Hand VolSync this `restoreAsOf`.
+    RestoreAsOf(Option<String>),
 }
 
-fn volume_backup(times: &[chrono::DateTime<Utc>], restore_as_of: Option<&str>) -> VolumeBackup {
-    if times.is_empty() {
-        return VolumeBackup::None;
+/// A snapshot as restic lists it.
+#[derive(Debug, Clone, PartialEq)]
+struct SnapshotEntry {
+    id: String,
+    time: chrono::DateTime<Utc>,
+}
+
+/// VolSync restores the newest snapshot no newer than `restoreAsOf`, and when none
+/// qualifies it logs "No eligible snapshots found" and exits successfully. So:
+///
+///   * a volume the backup pinned is restored at that snapshot's own time — which
+///     selects exactly it — provided it still exists (retention may have pruned it);
+///   * a volume from an older backup, with nothing pinned, is restored at the
+///     cluster snapshot's time, and only if some snapshot is old enough.
+fn plan_volume(
+    pvc: &str,
+    pinned: Option<&VolumeSnapshotRef>,
+    snaps: &[SnapshotEntry],
+    cluster_time: Option<&str>,
+) -> VolumePlan {
+    if snaps.is_empty() {
+        return VolumePlan::NoBackup;
     }
-    let Some(as_of) = restore_as_of
+    if let Some(p) = pinned {
+        return if snaps.iter().any(|s| s.id == p.id) {
+            VolumePlan::RestoreAsOf(Some(p.time.clone()))
+        } else {
+            VolumePlan::Refuse(format!(
+                "the backup of {pvc} this restore point took has since been pruned — pick a newer backup"
+            ))
+        };
+    }
+    let Some(as_of) = cluster_time
         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
         .map(|t| t.with_timezone(&Utc))
     else {
-        return VolumeBackup::Eligible;
+        return VolumePlan::RestoreAsOf(None);
     };
-    if times.iter().any(|t| *t <= as_of) {
-        VolumeBackup::Eligible
+    if snaps.iter().any(|s| s.time <= as_of) {
+        VolumePlan::RestoreAsOf(cluster_time.map(str::to_string))
     } else {
-        VolumeBackup::OnlyNewer
+        VolumePlan::Refuse(format!(
+            "{pvc} has no backup taken before this restore point — pick a later backup"
+        ))
     }
 }
 
-async fn volume_snapshot_times(
+async fn volume_snapshots(
     namespace: &str,
     pvc: &str,
     cfg: &BackupConfig,
-) -> anyhow::Result<Vec<chrono::DateTime<Utc>>> {
+) -> anyhow::Result<Vec<SnapshotEntry>> {
     let repo = cfg.restic_repo(&format!("volsync/{namespace}/{}", canonical_pvc_id(pvc)));
     let out = restic(&repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
     if !out.status.success() {
@@ -310,16 +349,136 @@ async fn volume_snapshot_times(
         }
         anyhow::bail!("{}", stderr.trim());
     }
-    Ok(parse_snapshot_times(&serde_json::from_slice(&out.stdout)?))
+    Ok(parse_snapshots(&serde_json::from_slice(&out.stdout)?))
 }
 
-fn parse_snapshot_times(v: &Value) -> Vec<chrono::DateTime<Utc>> {
+fn parse_snapshots(v: &Value) -> Vec<SnapshotEntry> {
     v.as_array()
         .into_iter()
         .flatten()
-        .filter_map(|s| chrono::DateTime::parse_from_rfc3339(s["time"].as_str()?).ok())
-        .map(|t| t.with_timezone(&Utc))
+        .filter_map(|s| {
+            Some(SnapshotEntry {
+                id: s["id"].as_str()?.to_string(),
+                time: chrono::DateTime::parse_from_rfc3339(s["time"].as_str()?)
+                    .ok()?
+                    .with_timezone(&Utc),
+            })
+        })
         .collect()
+}
+
+// ── Reinstalling from backup ───────────────────────────────────────────────────
+
+/// What the newest backup holds.
+pub(crate) struct BackupContents {
+    pub taken_at: Option<String>,
+    /// Every app it can reinstall, by namespace.
+    pub apps: Vec<String>,
+}
+
+/// Empty when backups were never enabled or nothing has been backed up.
+pub(crate) async fn backup_contents() -> anyhow::Result<BackupContents> {
+    let empty = BackupContents {
+        taken_at: None,
+        apps: Vec::new(),
+    };
+    let Some(cfg) = read_master_config().await else {
+        return Ok(empty);
+    };
+    let Some(snapshot_id) = resolve_snapshot(&cfg, None).await? else {
+        return Ok(empty);
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    let catalog = extract_json_file(&repo, &cfg, &snapshot_id, "catalog.json").await?;
+    Ok(BackupContents {
+        taken_at: snapshot_time(&repo, &cfg, &snapshot_id).await,
+        apps: catalog_apps(&catalog)
+            .into_iter()
+            .map(|a| a.namespace)
+            .collect(),
+    })
+}
+
+/// Install an app that is not on this machine from the newest backup: its chart
+/// with the settings it had, then its volumes, then its saved objects.
+pub(crate) async fn reinstall_from_backup(namespace: &str) -> anyhow::Result<()> {
+    let Some(cfg) = read_master_config().await else {
+        anyhow::bail!("backup not configured");
+    };
+    let Some(snapshot_id) = resolve_snapshot(&cfg, None).await? else {
+        anyhow::bail!("no backup to restore from");
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock("cluster-backup").await;
+    let catalog = extract_json_file(&repo, &cfg, &snapshot_id, "catalog.json").await?;
+    let Some(app) = catalog_apps(&catalog)
+        .into_iter()
+        .find(|a| a.namespace == namespace)
+    else {
+        anyhow::bail!("{namespace} is not in the newest backup");
+    };
+    let Some(path) =
+        extract_file(&repo, &cfg, &snapshot_id, &format!("**/{namespace}.yaml")).await?
+    else {
+        anyhow::bail!("the backup has no saved settings for {namespace}");
+    };
+    let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
+    let config = saved_config(&objects).unwrap_or_default();
+
+    crate::routers::apps::install_now(&app.app_id, &app.instance_name, &config).await?;
+
+    let (id, original) = begin(namespace, &snapshot_id).await;
+    let result = run_restore(namespace, &snapshot_id, &cfg, &original).await;
+    finish(&id, &result).await;
+    result?;
+
+    // Only now: wiring backups up earlier would have uploaded the empty volume the
+    // chart created, as the newest copy of this app.
+    crate::routers::backups::setup_namespace_backup(namespace).await?;
+    Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct CatalogApp {
+    namespace: String,
+    app_id: String,
+    instance_name: String,
+}
+
+/// Apps a backup can reinstall — those that recorded which chart they came from.
+fn catalog_apps(catalog: &Value) -> Vec<CatalogApp> {
+    catalog["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let app_id = s["app_id"].as_str().filter(|a| !a.is_empty())?;
+            let namespace = s["namespace"].as_str()?;
+            Some(CatalogApp {
+                namespace: namespace.to_string(),
+                app_id: app_id.to_string(),
+                instance_name: s["instance_name"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| namespace.trim_start_matches("yolab-").to_string()),
+            })
+        })
+        .collect()
+}
+
+/// The app's full settings, credentials included, from its backed-up `yolab-config`
+/// Secret. Charts derive their passwords from these, so reinstalling with them is
+/// what lets the restored data be opened again.
+fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
+    use base64::Engine as _;
+    let secret = objects["items"].as_array()?.iter().find(|i| {
+        i["kind"].as_str() == Some("Secret")
+            && i["metadata"]["name"].as_str() == Some("yolab-config")
+    })?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(secret["data"]["config.json"].as_str()?)
+        .ok()?;
+    serde_json::from_slice(&raw).ok()
 }
 
 async fn restore_volume(
@@ -566,7 +725,21 @@ async fn extract_json_file(
     }
 }
 
-fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<(String, String)> {
+/// The snapshot a backup pinned for one volume.
+#[derive(Debug, Clone, PartialEq)]
+struct VolumeSnapshotRef {
+    id: String,
+    time: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogPvc {
+    name: String,
+    capacity: String,
+    snapshot: Option<VolumeSnapshotRef>,
+}
+
+fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
     catalog["services"]
         .as_array()
         .and_then(|svcs| {
@@ -577,10 +750,17 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<(String, String)> {
         .map(|pvcs| {
             pvcs.iter()
                 .filter_map(|p| {
-                    Some((
-                        p["name"].as_str()?.to_string(),
-                        p["capacity"].as_str().unwrap_or("10Gi").to_string(),
-                    ))
+                    Some(CatalogPvc {
+                        name: p["name"].as_str()?.to_string(),
+                        capacity: p["capacity"].as_str().unwrap_or("10Gi").to_string(),
+                        snapshot: match (p["snapshot_id"].as_str(), p["snapshot_time"].as_str()) {
+                            (Some(id), Some(time)) => Some(VolumeSnapshotRef {
+                                id: id.to_string(),
+                                time: time.to_string(),
+                            }),
+                            _ => None,
+                        },
+                    })
                 })
                 .collect()
         })
@@ -732,94 +912,209 @@ mod tests {
         assert_eq!(newest_snapshot_id(&json!({})), None);
     }
 
-    #[test]
-    fn catalog_pvcs_finds_names_and_capacity() {
-        let catalog = json!({
-            "services": [
-                {"namespace": "yolab-gitea", "pvcs": [{"name": "gitea-data", "capacity": "5Gi"}]},
-                {"namespace": "yolab-other", "pvcs": [{"name": "other-data", "capacity": "5Gi"}]},
-            ]
-        });
-        assert_eq!(
-            catalog_pvcs(&catalog, "yolab-gitea"),
-            vec![("gitea-data".to_string(), "5Gi".to_string())]
-        );
-    }
-
-    #[test]
-    fn catalog_pvcs_defaults_capacity() {
-        let catalog = json!({
-            "services": [{"namespace": "yolab-gitea", "pvcs": [{"name": "gitea-data"}]}]
-        });
-        assert_eq!(
-            catalog_pvcs(&catalog, "yolab-gitea"),
-            vec![("gitea-data".to_string(), "10Gi".to_string())]
-        );
-    }
-
     fn t(s: &str) -> chrono::DateTime<Utc> {
         chrono::DateTime::parse_from_rfc3339(s)
             .unwrap()
             .with_timezone(&Utc)
     }
 
-    /// The live case this exists for: cluster snapshot 12:10:02, the only volume
-    /// snapshot 12:10:05. VolSync would restore nothing and call it success.
+    fn snap(id: &str, time: &str) -> SnapshotEntry {
+        SnapshotEntry {
+            id: id.into(),
+            time: t(time),
+        }
+    }
+
+    fn pin(id: &str, time: &str) -> VolumeSnapshotRef {
+        VolumeSnapshotRef {
+            id: id.into(),
+            time: time.into(),
+        }
+    }
+
+    // ── Which snapshot a volume is restored from ──────────────────────────────
+
     #[test]
-    fn a_volume_whose_only_snapshot_is_newer_than_the_restore_point_is_refused() {
-        let times = [t("2026-09-14T12:10:05Z")];
+    fn a_pinned_snapshot_is_restored_at_its_own_exact_time() {
+        let snaps = [
+            snap("old", "2026-09-13T08:00:00Z"),
+            snap("pinned", "2026-09-14T12:10:05.417123456Z"),
+            snap("newer", "2026-09-15T09:00:00Z"),
+        ];
         assert_eq!(
-            volume_backup(&times, Some("2026-09-14T12:10:02.123456+00:00")),
-            VolumeBackup::OnlyNewer
+            plan_volume(
+                "data",
+                Some(&pin("pinned", "2026-09-14T12:10:05.417123456Z")),
+                &snaps,
+                Some("2026-09-14T12:10:02Z")
+            ),
+            VolumePlan::RestoreAsOf(Some("2026-09-14T12:10:05.417123456Z".into())),
+            "the pin wins over the cluster snapshot's earlier time"
         );
     }
 
     #[test]
-    fn any_snapshot_at_or_before_the_restore_point_is_eligible() {
-        let times = [t("2026-09-14T12:10:05Z"), t("2026-09-13T08:00:00Z")];
+    fn a_pinned_snapshot_that_was_pruned_refuses_the_restore() {
+        let snaps = [snap("other", "2026-09-15T09:00:00Z")];
+        match plan_volume(
+            "data",
+            Some(&pin("gone", "2026-09-14T12:10:05Z")),
+            &snaps,
+            None,
+        ) {
+            VolumePlan::Refuse(why) => assert!(why.contains("pruned"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The live case: cluster snapshot 12:10:02, the only volume snapshot 12:10:05,
+    /// and a backup from before snapshots were pinned. VolSync would restore
+    /// nothing and call it success.
+    #[test]
+    fn an_unpinned_volume_whose_only_snapshot_is_too_new_is_refused() {
+        let snaps = [snap("a", "2026-09-14T12:10:05Z")];
+        match plan_volume(
+            "data",
+            None,
+            &snaps,
+            Some("2026-09-14T12:10:02.123456+00:00"),
+        ) {
+            VolumePlan::Refuse(why) => assert!(why.contains("before this restore point"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unpinned_volume_restores_at_the_cluster_time_when_something_is_old_enough() {
+        let snaps = [
+            snap("a", "2026-09-14T12:10:05Z"),
+            snap("b", "2026-09-14T12:10:02Z"),
+        ];
         assert_eq!(
-            volume_backup(&times, Some("2026-09-14T12:10:02Z")),
-            VolumeBackup::Eligible
-        );
-        assert_eq!(
-            volume_backup(&[t("2026-09-14T12:10:02Z")], Some("2026-09-14T12:10:02Z")),
-            VolumeBackup::Eligible,
+            plan_volume("data", None, &snaps, Some("2026-09-14T12:10:02Z")),
+            VolumePlan::RestoreAsOf(Some("2026-09-14T12:10:02Z".into())),
             "exactly at the restore point counts"
         );
-    }
-
-    #[test]
-    fn no_snapshots_means_no_backup_and_no_restore_point_means_any_will_do() {
         assert_eq!(
-            volume_backup(&[], Some("2026-09-14T12:10:02Z")),
-            VolumeBackup::None
+            plan_volume("data", None, &snaps, None),
+            VolumePlan::RestoreAsOf(None)
         );
         assert_eq!(
-            volume_backup(&[t("2030-01-01T00:00:00Z")], None),
-            VolumeBackup::Eligible
-        );
-        assert_eq!(
-            volume_backup(&[t("2030-01-01T00:00:00Z")], Some("not a time")),
-            VolumeBackup::Eligible
+            plan_volume("data", None, &snaps, Some("not a time")),
+            VolumePlan::RestoreAsOf(None)
         );
     }
 
     #[test]
-    fn snapshot_times_are_read_from_restic_json_and_bad_entries_skipped() {
+    fn a_volume_with_no_snapshots_at_all_has_no_backup_pinned_or_not() {
+        assert_eq!(plan_volume("data", None, &[], None), VolumePlan::NoBackup);
+        assert_eq!(
+            plan_volume("data", Some(&pin("x", "2026-09-14T12:10:05Z")), &[], None),
+            VolumePlan::NoBackup
+        );
+    }
+
+    #[test]
+    fn snapshots_are_read_from_restic_json_and_bad_entries_skipped() {
         let v = json!([
             {"id": "a", "time": "2026-09-14T12:10:05.417+00:00"},
             {"id": "b"},
+            {"time": "2026-09-14T12:10:05Z"},
             {"id": "c", "time": "yesterday"},
         ]);
         assert_eq!(
-            parse_snapshot_times(&v),
-            vec![t("2026-09-14T12:10:05.417Z")]
+            parse_snapshots(&v),
+            vec![snap("a", "2026-09-14T12:10:05.417Z")]
         );
-        assert!(parse_snapshot_times(&json!({})).is_empty());
+        assert!(parse_snapshots(&json!({})).is_empty());
+    }
+
+    // ── The catalog ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn catalog_pvcs_read_names_capacity_and_the_pinned_snapshot() {
+        let catalog = json!({"services": [
+            {"namespace": "yolab-gitea", "pvcs": [
+                {"name": "gitea-data", "capacity": "5Gi",
+                 "snapshot_id": "abc", "snapshot_time": "2026-09-14T12:10:05Z"},
+                {"name": "gitea-db"},
+                {"name": "half-pinned", "snapshot_id": "abc"},
+            ]},
+            {"namespace": "yolab-other", "pvcs": [{"name": "other-data", "capacity": "5Gi"}]},
+        ]});
+        let pvcs = catalog_pvcs(&catalog, "yolab-gitea");
+        assert_eq!(
+            pvcs,
+            vec![
+                CatalogPvc {
+                    name: "gitea-data".into(),
+                    capacity: "5Gi".into(),
+                    snapshot: Some(pin("abc", "2026-09-14T12:10:05Z")),
+                },
+                CatalogPvc {
+                    name: "gitea-db".into(),
+                    capacity: "10Gi".into(),
+                    snapshot: None,
+                },
+                CatalogPvc {
+                    name: "half-pinned".into(),
+                    capacity: "10Gi".into(),
+                    snapshot: None,
+                },
+            ]
+        );
+        assert!(catalog_pvcs(&catalog, "yolab-nope").is_empty());
+        assert!(catalog_pvcs(&json!({}), "yolab-gitea").is_empty());
     }
 
     #[test]
-    fn catalog_pvcs_is_empty_for_unknown_namespace() {
-        assert!(catalog_pvcs(&json!({"services": []}), "yolab-nope").is_empty());
+    fn only_apps_that_recorded_their_chart_can_be_reinstalled() {
+        let catalog = json!({"services": [
+            {"namespace": "yolab-fb-pgxw", "app_id": "filebrowser", "instance_name": "fb-pgxw"},
+            {"namespace": "yolab-legacy", "app_id": ""},
+            {"namespace": "yolab-nameless", "app_id": "gitea"},
+            {"app_id": "broken"},
+        ]});
+        assert_eq!(
+            catalog_apps(&catalog),
+            vec![
+                CatalogApp {
+                    namespace: "yolab-fb-pgxw".into(),
+                    app_id: "filebrowser".into(),
+                    instance_name: "fb-pgxw".into(),
+                },
+                CatalogApp {
+                    namespace: "yolab-nameless".into(),
+                    app_id: "gitea".into(),
+                    instance_name: "nameless".into(),
+                },
+            ]
+        );
+        assert!(catalog_apps(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_saved_config_comes_back_with_its_credentials() {
+        use base64::Engine as _;
+        let config = json!({"password": "s3cr\"et", "domain": "fb"});
+        let encoded = base64::engine::general_purpose::STANDARD.encode(config.to_string());
+        let objects = json!({"kind": "List", "items": [
+            {"kind": "Secret", "metadata": {"name": "fb-admin"}, "data": {"password": "eA=="}},
+            {"kind": "ConfigMap", "metadata": {"name": "yolab-config"}, "data": {}},
+            {"kind": "Secret", "metadata": {"name": "yolab-config"}, "data": {"config.json": encoded}},
+        ]});
+        assert_eq!(
+            saved_config(&objects),
+            Some(config.as_object().unwrap().clone())
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_saved_config_is_none() {
+        assert_eq!(saved_config(&json!({"items": []})), None);
+        let bad = json!({"items": [
+            {"kind": "Secret", "metadata": {"name": "yolab-config"}, "data": {"config.json": "!!!"}}
+        ]});
+        assert_eq!(saved_config(&bad), None);
     }
 }

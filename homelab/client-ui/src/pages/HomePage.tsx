@@ -7,27 +7,10 @@ import { Banner, EmptyState, ServiceTrouble } from "@/components/ui/feedback";
 import { buttonClass } from "@/components/ui/button-variants";
 import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
+import { StorageRecoveryBanner } from "@/components/StorageRecovery";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
-
-/** One app with permanently lost data, and whether it can come back. */
-interface DamagedApp {
-  namespace: string;
-  instance_name: string;
-  app_id: string;
-  restorable: boolean;
-  backup_age_hours: number | null;
-}
-
-/** `GET /api/backups/damage` — apps whose data is lost and not yet restored. */
-interface DamageResponse {
-  unrecoverable: boolean;
-  lost_disks: number;
-  restorable_count: number;
-  delete_count: number;
-  apps: DamagedApp[];
-}
 
 /**
  * Chooses the single most important thing to say, or says nothing.
@@ -103,27 +86,6 @@ export function HomePage() {
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
   const installed = useMemo(() => apps.data ?? [], [apps.data]);
 
-  // Always asked for, not only while storage is unrecoverable: once a lost disk
-  // has been healed the cluster is healthy again, but the apps that came back on
-  // empty volumes are still corrupted until each one is restored.
-  const damage = useApi<DamageResponse>(
-    "backups-damage",
-    "/api/backups/damage",
-    {
-      pollMs: 15_000,
-    },
-  );
-
-  // ONE GRID. Damaged apps used to be pulled out into a section of their own
-  // below the healthy ones, which meant the answer to "where is my app" depended
-  // on how it was doing — you looked in the grid, did not find it, and had to
-  // learn that a second list existed. They stay where they always were and say
-  // what is wrong on the tile instead.
-  const lostNames = useMemo(
-    () => new Set((damage.data?.apps ?? []).map((a) => a.instance_name)),
-    [damage.data],
-  );
-
   return (
     <Page wide>
       <header className="mb-6">
@@ -137,6 +99,10 @@ export function HomePage() {
           <CacheDot cache={health.cache ?? apps.cache} />
         </p>
       </header>
+
+      {/* Lost app data outranks every other concern: it is the one that needs a
+          decision, and the only place to make it is the Backups page. */}
+      <StorageRecoveryBanner className="mb-6" />
 
       {concern && (
         <Banner
@@ -202,7 +168,6 @@ export function HomePage() {
                   app={app}
                   name={appDisplayName(app, catalogApps)}
                   icon={entry?.icon ?? "📦"}
-                  corrupted={lostNames.has(app.instance_name)}
                 />
               );
             })}

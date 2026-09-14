@@ -431,16 +431,8 @@ export function AppDetailPage() {
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
 
-  const damage = useApi<{ apps: { instance_name: string }[] }>(
-    "backups-damage",
-    "/api/backups/damage",
-    { pollMs: 15_000 },
-  );
   const app = apps.data?.find((a) => a.instance_name === instanceName);
-  const corrupted = (damage.data?.apps ?? []).some(
-    (a) => a.instance_name === instanceName,
-  );
-  const state = app ? appState(app, corrupted) : "starting";
+  const state = app ? appState(app) : "starting";
 
   // Poll this app's restore record so the page can say "restoring this app" the
   // moment one starts (from this tab or another), and clear it when it finishes.
@@ -592,22 +584,6 @@ export function AppDetailPage() {
         </div>
       </header>
 
-      {state === "corrupted" && restore?.state !== "running" && (
-        <Banner
-          tone="error"
-          title="Corrupted data"
-          className="mb-5"
-          action={
-            <Button size="sm" onClick={() => setRestoreOpen(true)}>
-              <RotateCcw className="h-4 w-4" />
-              Restore
-            </Button>
-          }
-        >
-          A disk holding this app&rsquo;s files was lost. It is running again,
-          but empty. Restore it from your latest backup to bring its files back.
-        </Banner>
-      )}
       {state === "starting" && (
         <Banner tone="info" title="Still starting" className="mb-5">
           This usually takes a minute or two the first time. Details appear here
