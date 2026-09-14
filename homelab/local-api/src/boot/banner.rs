@@ -102,10 +102,7 @@ mod tests {
     #[tokio::test]
     async fn writes_the_url_and_qr_art_when_configured() {
         let (_d, config_path) = config_with("[tunnel]\ndns_url = \"https://example.yolab.io\"\n");
-        let host = FakeHost::new().ok(
-            "qrencode -t UTF8 -m 1 https://example.yolab.io",
-            "[qr art]",
-        );
+        let host = FakeHost::new().ok("qrencode -t UTF8 -m 1 https://example.yolab.io", "[qr art]");
         let issue_dir = tempfile::tempdir().unwrap();
         let issue_path = issue_dir.path().join("issue");
 
