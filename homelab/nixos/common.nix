@@ -464,6 +464,28 @@ in {
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
         NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
         SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+      }
+      // lib.optionalAttrs config.yolab.ceph.enable {
+        # The storage jobs that used to be systemd timers now run as controllers
+        # inside this process (homelab/local-api/src/storage/controllers.rs), so
+        # it needs the same settings the boot oneshots get — see `StorageEnv` in
+        # homelab/local-api/src/storage/mod.rs. Without these the daemon sees
+        # empty addresses, `is_configured()` is false, and none of them start.
+        YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
+        YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
+        # "" on the machine that created the cluster.
+        YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
+        YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
+        YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
+        YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
+        YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
+        YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
+        YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
+        YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
+        YOLAB_CEPH_MDS = if config.yolab.ceph.filesystem.enable then "1" else "0";
+        # The storage-heal controller's grace before it rebuilds a disposable
+        # pool's lost placement groups (storage_heal.rs).
+        YOLAB_STORAGE_HEAL_DISPOSABLE_GRACE_SECS = toString config.yolab.ceph.imagesStore.recoverGraceSeconds;
       };
       serviceConfig = {
         Type = "simple";

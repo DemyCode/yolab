@@ -23,10 +23,6 @@ use crate::exec::{self, CmdError};
 pub struct OsdDump {
     pub osds: Vec<OsdDumpEntry>,
     pub pools: Vec<PoolEntry>,
-    /// Comma-separated cluster flags ("noout,sortbitwise,..."). Absent on some
-    /// releases when no flag is set.
-    #[serde(default)]
-    pub flags: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -85,10 +81,6 @@ impl OsdDump {
             .iter()
             .find(|p| p.pool_name == name)
             .map(|p| p.pool)
-    }
-
-    pub fn has_flag(&self, flag: &str) -> bool {
-        self.flags.split(',').any(|f| f.trim() == flag)
     }
 }
 
@@ -182,35 +174,8 @@ pub struct OsdStat {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct Health {
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FsEntry {
     pub name: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct LsPool {
-    pub poolnum: i64,
-    pub poolname: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct MonDump {
-    pub mons: Vec<MonEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct MonEntry {
-    pub name: String,
-}
-
-impl MonDump {
-    pub fn contains(&self, name: &str) -> bool {
-        self.mons.iter().any(|m| m.name == name)
-    }
 }
 
 /// `ceph osd safe-to-destroy osd.N -f json` when Ceph agrees. When it does not,
@@ -233,6 +198,7 @@ pub struct LvmVolume {
 }
 
 impl LvmVolume {
+    #[cfg(test)]
     pub fn cluster_fsid(&self) -> Option<&str> {
         self.tags.get("ceph.cluster_fsid").map(String::as_str)
     }
@@ -269,14 +235,12 @@ mod tests {
     }"#;
 
     #[test]
-    fn osd_dump_parses_up_in_pools_and_flags() {
+    fn osd_dump_parses_up_in_and_pools() {
         let d: OsdDump = serde_json::from_str(DUMP).unwrap();
         assert_eq!(d.up(), BTreeSet::from([0]));
         assert_eq!(d.down(), BTreeSet::from([1]));
         assert_eq!(d.is_in(), BTreeSet::from([0, 1]));
         assert_eq!(d.pool_id("yolab-fs-data0"), Some(3));
-        assert!(d.has_flag("noout"));
-        assert!(!d.has_flag("nodown"));
     }
 
     #[test]
@@ -330,12 +294,5 @@ mod tests {
         assert!(parse_lvm_list("--> no json here").is_err());
         assert!(parse_lvm_list("{\"x\": []}").is_err());
         assert!(parse_lvm_list("{}").unwrap().is_empty());
-    }
-
-    #[test]
-    fn mon_dump_membership() {
-        let m: MonDump = serde_json::from_str(r#"{"mons":[{"name":"yolab-n1"}]}"#).unwrap();
-        assert!(m.contains("yolab-n1"));
-        assert!(!m.contains("yolab-n2"));
     }
 }

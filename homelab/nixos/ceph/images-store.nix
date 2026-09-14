@@ -48,7 +48,6 @@ with lib; let
     YOLAB_CEPH_IMAGES_SHARE = toString cfg.shareOfPool;
     YOLAB_CEPH_IMAGES_MIN_GB = toString cfg.minSizeGb;
     YOLAB_CEPH_IMAGES_FS = cfg.filesystem;
-    YOLAB_CEPH_IMAGES_RECOVER_GRACE_SECS = toString cfg.recoverGraceSeconds;
   };
 in {
   options.yolab.ceph.imagesStore = {
@@ -138,7 +137,8 @@ in {
       requires = ["ceph-mon-${host}.service"];
       # Deliberately NOT RemainAfterExit: on a fresh cluster this runs before any
       # OSD exists and exits cleanly with nothing to do. It has to be able to run
-      # again once the user switches a disk on, so the timer below re-runs it.
+      # again once the user switches a disk on, so the `images-rbd` controller
+      # re-runs it.
       serviceConfig = {
         Type = "oneshot";
         # `Type=oneshot` DISABLES the start timeout by default — it is the one
@@ -159,48 +159,8 @@ in {
       environment = imagesStoreEnv;
     };
 
-    # ── Rebuild the pool's lost placement groups ─────────────────────────────
-    #
-    # The layer of self-healing that was missing. Everything else here rebuilds
-    # the filesystem ON the RBD, or the contents of the data-root; nothing ever
-    # rebuilt the RBD's own storage, so a pool whose placement groups had no
-    # surviving copy left every node parked on its root disk forever, waiting on
-    # a disk that was never coming back. See storage/images_recover.rs.
-    #
-    # NOT ordered before k3s, and that is deliberate. This is a repair for a
-    # condition that has already persisted for a quarter of an hour — there is
-    # nothing urgent about it, and putting it in the boot path would add another
-    # unit that can hold the node out of the cluster. It runs on its timer only.
-    systemd.services.yolab-images-recover = {
-      description = "Rebuild the Ceph images pool's unrecoverable placement groups";
-      after = ["ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
-      requires = ["ceph-mon-${host}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        # Bounded like everything else here: Type=oneshot disables the start
-        # timeout by default, which is how units in this directory used to hang
-        # forever.
-        TimeoutStartSec = "300s";
-        ExecStart = "${localApiEnv}/bin/local-api storage images-recover";
-      };
-      path = with pkgs; [ceph ceph-client];
-      environment = imagesStoreEnv;
-    };
-
-    systemd.timers.yolab-images-recover = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        # Well after the boot-time units have had their chance. A pool that is
-        # merely slow to come up must not be judged before it has finished
-        # peering.
-        OnBootSec = "15min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it — see the long
-        # note on yolab-containerd-store's timer for the outage that pairing
-        # caused. The grace period, not this interval, is what decides when a
-        # rebuild happens; this only sets how often the question is asked.
-        OnUnitInactiveSec = "5min";
-      };
-    };
+    # The images pool's lost placement groups are rebuilt by the `storage-heal`
+    # controller (storage_heal.rs), which owns the whole recovery path now.
 
     # ── Map + mount it, before containerd can start ──────────────────────────
     systemd.services.yolab-containerd-store = {
@@ -217,8 +177,8 @@ in {
       before = ["k3s.service"];
       serviceConfig = {
         Type = "oneshot";
-        # NOT RemainAfterExit, and that is the whole reason this unit's health
-        # check gets to run more than once — see the timer below. Nothing
+        # NOT RemainAfterExit, so the `containerd-store` controller can re-run
+        # its mount health check every tick. Nothing
         # `requires` this unit (deliberately: see the note above), so leaving it
         # active after it exits bought nothing and cost everything.
         #
@@ -259,9 +219,9 @@ in {
     # would grow, and the image store would stay exactly the same size forever.
     systemd.services.yolab-images-rbd-grow = {
       description = "Grow the images RBD as the Ceph pool grows";
-      # `requires`, not just `after`: the timer fires on a schedule and would
-      # otherwise run during bootstrap, before the admin keyring exists, and
-      # fail noisily with "unable to find a keyring" on a cluster that is
+      # `requires`, not just `after`: the controller runs it on a schedule and
+      # would otherwise run during bootstrap, before the admin keyring exists,
+      # and fail noisily with "unable to find a keyring" on a cluster that is
       # perfectly healthy — observed on the first live switch.
       after = ["yolab-containerd-store.service"];
       serviceConfig = {
@@ -276,98 +236,8 @@ in {
       environment = imagesStoreEnv;
     };
 
-    # Re-runs provisioning so the pool and image appear shortly after the first
-    # disk is switched on, without needing a reboot to get there.
-    systemd.timers.yolab-images-rbd = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "2min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
-        # measures from when the run STARTED, so a run that outlives the interval
-        # leaves the next elapse already in the past and systemd re-fires it in the
-        # same second (see yolab-containerd-store's timer for the outage that
-        # caused). This one measures from when the run ENDED, which is both immune
-        # to that and already covers the failed-attempt case the removed directive
-        # was paired in for — a failed unit ends inactive too. It was also always
-        # the smaller of the two here, so this changes nothing in the healthy path.
-        OnUnitInactiveSec = "2min";
-      };
-    };
-
-    # The other half of that. Provisioning creating the RBD achieved nothing on
-    # its own: the unit that mounts it only ran at boot, so a first install left
-    # containerd on the root disk until somebody rebooted — indefinitely, and
-    # invisibly. Runs behind the provisioning timer so the image exists by the
-    # time it looks, and exits immediately once the mount is in place.
-    #
-    # THE SERVICE MUST BE ABLE TO GO INACTIVE, OR NO TIMER BASE SAVES YOU.
-    #
-    # systemd re-arms a timer when the unit it triggers becomes inactive or
-    # failed, and at no other moment (timer.c, `timer_trigger_notify`: in state
-    # TIMER_RUNNING it only calls `timer_enter_waiting` once the triggered unit
-    # is inactive-or-failed). A `RemainAfterExit = true` oneshot that succeeds
-    # stays "active (exited)" forever, so that moment never comes and the timer
-    # sits in TIMER_RUNNING with `NextElapseUSecMonotonic=infinity` for the rest
-    # of the boot. The timer base is irrelevant to this: it decides what the
-    # next elapse is computed *from*, not whether the timer is ever re-armed.
-    #
-    # An earlier round of this fix moved these timers to OnCalendar in the
-    # belief that a wall-clock base escaped the trap. It does not, and the cost
-    # of believing it did was the 2026-09-06 outage: node1's NIC flapped for
-    # ~40s, the images RBD's writes hit their osd_request_timeout, XFS shut the
-    # containerd data-root down, and the "mounted but unreadable -> rebuild"
-    # check in storage::containerd_store::run() — written for exactly this —
-    # never ran again. `systemctl list-timers` on the live node showed
-    # `NEXT: -`, last trigger 2 days earlier. kubelet reported "container
-    # runtime is down", the node went NotReady, its pods hung in Terminating
-    # forever (kubelet cannot kill what the runtime will not answer for), and
-    # every app in the UI read "Starting up…" for 32 hours.
-    #
-    # AND THE INTERVAL MUST BE MEASURED FROM WHEN THE RUN ENDS.
-    #
-    # OnCalendar was the first attempt at the line above, and it introduced a
-    # worse failure the same day. A calendar timer computes its next elapse from
-    # the LAST TRIGGER, so when a run outlives the interval the next slot is
-    # already in the past by the time the unit finishes, and systemd fires it
-    # again in the same second. This unit is bounded at 3600s and the interval
-    # was 5min, so any real migration — copying the whole image store across the
-    # network — re-triggered itself forever. On node2 (2026-09-07): started
-    # 09:59:48, finished 10:17:41 having moved 8.3G, and restarted at 10:17:41.
-    # Each run stops k3s to do its work, so the node never came back.
-    #
-    # OnUnitInactiveSec measures from the moment the unit went inactive, so the
-    # gap is always a real gap no matter how long the run took, and back-to-back
-    # runs are impossible by construction. It covers a failed attempt too, which
-    # also ends inactive. Do NOT add OnUnitActiveSec beside it: that one measures
-    # from activation *start* and brings the same overshoot problem straight back.
-    #
-    # Note this is the directive the earlier round moved AWAY from. It was never
-    # the problem — `RemainAfterExit` was, and with that gone it is simply
-    # correct. The `self-healing-timers-can-re-arm` check in nix/checks.nix fails
-    # the build if that pairing ever comes back. Same fix on yolab-ceph-mgr-key's
-    # and yolab-ceph-mds-key's timers.
-    systemd.timers.yolab-containerd-store = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "4min";
-        OnUnitInactiveSec = "5min";
-      };
-    };
-
-    systemd.timers.yolab-images-rbd-grow = {
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnBootSec = "10min";
-        # OnUnitInactiveSec alone, never OnUnitActiveSec beside it: the latter
-        # measures from when the run STARTED, so a run that outlives the interval
-        # leaves the next elapse already in the past and systemd re-fires it in the
-        # same second (see yolab-containerd-store's timer for the outage that
-        # caused). This one measures from when the run ENDED, which is both immune
-        # to that and already covers the failed-attempt case the removed directive
-        # was paired in for — a failed unit ends inactive too. It was also always
-        # the smaller of the two here, so this changes nothing in the healthy path.
-        OnUnitInactiveSec = "2min";
-      };
-    };
+    # Provisioning, the mount health check and growth are re-run by the
+    # `images-rbd`, `containerd-store` and `images-grow` controllers
+    # (controllers.rs) now — no timers. See runtime/mod.rs for why.
   };
 }

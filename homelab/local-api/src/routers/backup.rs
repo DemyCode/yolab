@@ -868,13 +868,10 @@ impl Controller for BackupSchedulerController {
         if read_master_config().await.is_none() {
             return Ok(Tick::Idle("backups are not enabled".into()));
         }
-        let sets = read_sets().await?;
-        if sets
-            .iter()
-            .any(|s| s.is_running() && liveness_of(s).is_live())
-        {
+        if running_anywhere().await? {
             return Ok(Tick::Idle("a backup is already running".into()));
         }
+        let sets = read_sets().await?;
         if !should_schedule(&sets, Utc::now()) {
             return Ok(Tick::Idle("the newest backup is recent enough".into()));
         }

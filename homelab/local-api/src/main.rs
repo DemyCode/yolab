@@ -6,6 +6,7 @@ mod ceph_cli;
 mod cephfs;
 mod charts;
 mod config;
+mod controllers;
 mod csi;
 mod disks_reconciler;
 mod error;
@@ -77,6 +78,22 @@ async fn main() {
     }
     if args.get(1).map(String::as_str) == Some("boot") {
         std::process::exit(boot::run(&args[2..]).await);
+    }
+    // Drives exactly one controller's tick and exits — so a person over SSH can
+    // run what the daemon would, without waiting for its interval.
+    if args.get(1).map(String::as_str) == Some("run") {
+        let name = args.get(2).map(String::as_str).unwrap_or("");
+        let code = match controllers::run_named(name).await {
+            Ok(tick) => {
+                println!("{name}: {tick:?}");
+                0
+            }
+            Err(e) => {
+                eprintln!("{name}: {e:#}");
+                1
+            }
+        };
+        std::process::exit(code);
     }
 
     let cfg = Arc::new(Config::from_env());
@@ -259,91 +276,9 @@ async fn main() {
 
     // Every background job runs as a controller. The runtime owns leadership,
     // requirements, pauses and restart — see runtime/mod.rs for what this
-    // replaced and why.
-    let leader = runtime::leader::start(system::hostname());
-
-    // Scheduled backups and the per-app restore watchdog, which scales a crashed
-    // restore back up.
-    runtime::spawn(routers::backup::BackupSchedulerController, leader.clone());
-    runtime::spawn(routers::restore::RestoreWatchdogController, leader.clone());
-    // Both drive long operations, so they keep their records' claims fresh — the
-    // fix for a node2 watchdog treating node1's live restore as abandoned.
-    routers::backup::start_heartbeat();
-    routers::restore::start_heartbeat();
-    // Finishes uninstalls whose driving request died with a local-api restart.
-    runtime::spawn(routers::apps::UninstallWatchdogController, leader.clone());
-    // Clears restic locks left behind when a lock-taking command was interrupted.
-    runtime::spawn(routers::backups::LockSweeperController, leader.clone());
-    // OSD active-state (crush weight + in/out) is driven by the disk controller,
-    // the single actuator for the DISK→ON/OFF config — no separate watcher.
-    runtime::spawn(disks_reconciler::DisksController, leader.clone());
-    runtime::spawn(cephfs::CephFsController, leader.clone());
-    runtime::spawn(topology::TopologyController, leader.clone());
-    // Records lost disks, rebuilds the image store and mgr pool, and runs a
-    // recovery from backup once the owner asks for one.
-    runtime::spawn(storage_heal::StorageHealController, leader.clone());
-    runtime::spawn(mesh::MeshPathsController::new(), leader.clone());
-    runtime::spawn(mesh::MeshDiscoveryController::new(), leader.clone());
-    // Keeps the app catalog current without a nixos-rebuild.
-    runtime::spawn(charts::ChartSyncController, leader.clone());
-
-    // The storage agent's own jobs, which used to be eleven systemd timers. Only
-    // on a machine whose storage settings reached the process: a dev box must not
-    // act on empty addresses.
-    let storage_env = storage::StorageEnv::from_env();
-    if storage_env.is_configured() {
-        use storage::controllers::*;
-        runtime::spawn(
-            OsdActivateController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            ContainerdStoreController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            ImagesRbdController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            ImagesGrowController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            DashboardController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            MonMemberController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            CephKeysController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(
-            CephJoinController {
-                env: storage_env.clone(),
-            },
-            leader.clone(),
-        );
-        runtime::spawn(CsiSecretsController, leader.clone());
-        runtime::spawn(CsiRecoveryController, leader.clone());
-    }
+    // replaced, and controllers.rs for the list. `local-api run <name>` drives
+    // exactly one of them once.
+    controllers::spawn_all(runtime::leader::start(system::hostname()));
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");

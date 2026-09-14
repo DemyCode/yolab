@@ -116,12 +116,6 @@ pub struct SafeToDestroy {
     osd: i64,
 }
 
-impl SafeToDestroy {
-    pub fn osd(&self) -> i64 {
-        self.osd
-    }
-}
-
 /// `Ok(Some)` when Ceph confirms, `Ok(None)` when Ceph says the OSD still holds
 /// data (EBUSY), `Err` when Ceph did not answer. The caller cannot confuse the
 /// last two: "could not ask" is not "not safe yet", and neither is "safe".
@@ -148,12 +142,6 @@ pub async fn safe_to_destroy<H: Host>(
 #[derive(Debug)]
 pub struct Purged {
     osd: i64,
-}
-
-impl Purged {
-    pub fn osd(&self) -> i64 {
-        self.osd
-    }
 }
 
 /// Purges an OSD Ceph has confirmed is safe to destroy, then confirms it is gone
@@ -194,10 +182,6 @@ impl RecoveryMandate {
     pub fn from_persisted_recovery(started_at: u64, osds: BTreeSet<i64>) -> Self {
         Self { started_at, osds }
     }
-
-    pub fn started_at(&self) -> u64 {
-        self.started_at
-    }
 }
 
 /// Purges one OSD named in the mandate — and refuses if it is up. A lost disk
@@ -227,11 +211,12 @@ pub async fn purge_lost<H: Host>(
 /// else, or every app's data is within reach of any bug.
 pub async fn delete_app_filesystem<H: Host>(
     host: &H,
-    _mandate: &RecoveryMandate,
+    mandate: &RecoveryMandate,
     fs_exists: bool,
     existing_pools: &[String],
 ) -> Result<(), CmdError> {
     let door = Door(());
+    tracing::warn!("recovery started at {}: deleting the app filesystem", mandate.started_at);
     if fs_exists {
         host.ceph_destructive(&door, &["fs", "fail", RECOVERABLE_FS])
             .await?;
@@ -360,7 +345,12 @@ pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Resu
         args.push("--destroy");
     }
     args.push(dev_path);
-    tracing::warn!("zapping {dev_path} ({warrant:?})");
+    let why = match &warrant {
+        ZapWarrant::AfterPurge(purged) => format!("after purging osd.{}", purged.osd),
+        ZapWarrant::ForeignCluster { osd } => format!("foreign cluster's osd.{osd}"),
+        ZapWarrant::StaleSignature => "stale signature".to_string(),
+    };
+    tracing::warn!("zapping {dev_path}: {why}");
     host.ceph_volume_destructive(&door, &args).await.map(|_| ())
 }
 
@@ -446,7 +436,7 @@ mod tests {
             .ok("ceph osd ls", "[1,2]");
         let proof = safe_to_destroy(&gone, 3).await.unwrap().unwrap();
         let receipt = purge_safe(&gone, proof).await.unwrap();
-        assert_eq!(receipt.map(|p| p.osd()), Some(3));
+        assert_eq!(receipt.map(|p| p.osd), Some(3));
 
         let lingering = FakeHost::new()
             .ok("ceph osd safe-to-destroy osd.3", r#"{"safe_to_destroy":[3]}"#)
