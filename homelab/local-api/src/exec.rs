@@ -115,6 +115,13 @@ impl CmdError {
         let cmd = cmd.into();
         let stderr = stderr.into();
         let bin = cmd.split_whitespace().next().unwrap_or("");
+        // FakeHost labels piped writes `kubectl-apply`/`kubectl-replace`/…; they
+        // are kubectl and must be classified as kubectl.
+        let bin = if bin.starts_with("kubectl-") {
+            "kubectl"
+        } else {
+            bin
+        };
         if stderr.contains("timed out") {
             return CmdError::Timeout {
                 cmd,
@@ -417,7 +424,10 @@ mod tests {
             Failure::NotFound
         );
         assert_eq!(
-            classify("ceph", "Error EBUSY: OSD(s) 3 have 25 pgs currently mapped to them."),
+            classify(
+                "ceph",
+                "Error EBUSY: OSD(s) 3 have 25 pgs currently mapped to them."
+            ),
             Failure::Busy
         );
         assert_eq!(
@@ -459,13 +469,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_binary_is_a_spawn_error() {
-        let err = output(
-            "yolab-definitely-not-a-binary",
-            &[],
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap_err();
+        let err = output("yolab-definitely-not-a-binary", &[], Duration::from_secs(5))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CmdError::Spawn { .. }));
         assert!(err.is_unanswered());
     }
@@ -480,9 +486,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_zero_exit_is_a_classified_failure() {
-        let err = checked("sh", &["-c", "echo nope >&2; exit 3"], Duration::from_secs(5))
-            .await
-            .unwrap_err();
+        let err = checked(
+            "sh",
+            &["-c", "echo nope >&2; exit 3"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
         match err {
             CmdError::Failed { stderr, kind, .. } => {
                 assert_eq!(stderr, "nope");

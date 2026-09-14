@@ -108,6 +108,30 @@ pub fn start(identity: String) -> Leadership {
     handle
 }
 
+/// Whether `identity` holds a live lease right now, read straight from the API —
+/// for a one-off process (`local-api run`) that takes part in no election. `Err`
+/// when the API did not answer: not knowing is not "yes".
+pub async fn held_by(identity: &str) -> Result<bool, CmdError> {
+    let lease =
+        crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
+            .await?;
+    Ok(lease.is_some_and(|l| holds_live(&l, identity, Utc::now())))
+}
+
+fn holds_live(lease: &Value, identity: &str, now: DateTime<Utc>) -> bool {
+    let spec = &lease["spec"];
+    if spec["holderIdentity"].as_str() != Some(identity) {
+        return false;
+    }
+    let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS);
+    // Unlike `decide`, an unreadable renewTime is NOT live here: this answer
+    // grants permission to act, so it must be proven.
+    spec["renewTime"]
+        .as_str()
+        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+        .is_some_and(|ts| (now - ts.with_timezone(&Utc)).num_seconds() <= dur)
+}
+
 /// What to do with the Lease as it stands. Pure, so the takeover rules are
 /// tested without a cluster.
 #[derive(Debug, PartialEq)]
@@ -176,8 +200,7 @@ async fn try_acquire(identity: &str, now: DateTime<Utc>) -> Result<bool, CmdErro
             .await?;
     let Some(lease) = current else {
         // No lease yet. `create` is atomic: exactly one node wins.
-        return match crate::kubectl::create(&manifest(identity, now, now, None).to_string()).await
-        {
+        return match crate::kubectl::create(&manifest(identity, now, now, None).to_string()).await {
             Ok(()) => Ok(true),
             Err(e) if e.is_already_exists() => Ok(false),
             Err(e) => Err(e),
@@ -223,9 +246,22 @@ mod tests {
     }
 
     #[test]
+    fn a_manual_run_needs_a_live_lease_of_its_own() {
+        let now = Utc::now();
+        assert!(holds_live(&lease("n1", 5, now), "n1", now));
+        assert!(!holds_live(&lease("n1", 31, now), "n1", now), "expired");
+        assert!(!holds_live(&lease("n2", 5, now), "n1", now), "someone else's");
+        let unreadable = json!({"spec": {"holderIdentity": "n1", "renewTime": "garbage"}});
+        assert!(!holds_live(&unreadable, "n1", now));
+    }
+
+    #[test]
     fn a_live_lease_held_by_another_node_is_respected() {
         let now = Utc::now();
-        assert_eq!(decide(&lease("n2", 5, now), "n1", now), LeaseDecision::Yield);
+        assert_eq!(
+            decide(&lease("n2", 5, now), "n1", now),
+            LeaseDecision::Yield
+        );
     }
 
     #[test]
@@ -255,8 +291,10 @@ mod tests {
 
     #[test]
     fn this_node_stops_acting_before_another_may_take_over() {
-        assert!(ACT_WITHIN_MS < LEASE_SECS * 1000);
-        assert!((RENEW_EVERY.as_millis() as i64) < ACT_WITHIN_MS);
+        const {
+            assert!(ACT_WITHIN_MS < LEASE_SECS * 1000);
+            assert!((RENEW_EVERY.as_millis() as i64) < ACT_WITHIN_MS);
+        }
     }
 
     #[test]

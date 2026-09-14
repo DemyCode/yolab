@@ -66,7 +66,9 @@ fn cache() -> &'static Mutex<HashMap<Key, (Instant, Answer)>> {
 
 async fn cached(key: Key, ask: impl std::future::Future<Output = Answer>) -> Answer {
     {
-        let c = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let c = cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((at, a)) = c.get(&key) {
             if at.elapsed() < CACHE_FOR {
                 return *a;
@@ -150,7 +152,10 @@ mod tests {
 
     #[test]
     fn not_knowing_whether_a_restore_runs_pauses_like_one_running() {
-        assert!(matches!(decide(Activity::Restore, Some(false)), Gate::Clear));
+        assert!(matches!(
+            decide(Activity::Restore, Some(false)),
+            Gate::Clear
+        ));
         match decide(Activity::Restore, Some(true)) {
             Gate::Paused(why) => assert!(why.contains("restore is running")),
             Gate::Clear => panic!("a running restore must pause"),

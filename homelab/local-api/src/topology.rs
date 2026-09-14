@@ -373,7 +373,10 @@ impl crate::runtime::Controller for TopologyController {
         std::time::Duration::from_secs(60)
     }
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi, crate::runtime::Requirement::Ceph]
+        &[
+            crate::runtime::Requirement::KubeApi,
+            crate::runtime::Requirement::Ceph,
+        ]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[

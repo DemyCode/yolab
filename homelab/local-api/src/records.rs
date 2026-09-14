@@ -178,7 +178,19 @@ impl Store {
                 store: self.label(),
                 detail: e.to_string(),
             })?;
-            let manifest = self.manifest(&body, corrupt.as_deref(), loaded.resource_version.as_deref());
+            let manifest = self.manifest(
+                &body,
+                corrupt.as_deref(),
+                loaded.resource_version.as_deref(),
+            );
+            // `replace` without a resourceVersion is an unconditional overwrite, not a
+            // compare-and-swap — exactly the lost update this module exists to prevent.
+            if loaded.exists && loaded.resource_version.is_none() {
+                return Err(RecordError::Cluster(CmdError::parse(
+                    format!("kubectl get configmap {}", self.name),
+                    "no metadata.resourceVersion",
+                )));
+            }
             let verb = if loaded.exists { "replace" } else { "create" };
             match host.kubectl_write(verb, &manifest.to_string()).await {
                 Ok(()) => return Ok(result),
@@ -195,7 +207,10 @@ impl Store {
         let mut data = serde_json::Map::new();
         data.insert(self.key.to_string(), Value::String(body.to_string()));
         if let Some(c) = corrupt {
-            data.insert(format!("{}.corrupt", self.key), Value::String(c.to_string()));
+            data.insert(
+                format!("{}.corrupt", self.key),
+                Value::String(c.to_string()),
+            );
         }
         let mut metadata = json!({
             "name": self.name,
@@ -290,15 +305,24 @@ mod tests {
             .await
             .unwrap();
         // The second attempt saw the other writer's "b" and kept it.
-        assert_eq!(seen.last().unwrap(), &vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            seen.last().unwrap(),
+            &vec!["a".to_string(), "b".to_string()]
+        );
         let replaces: Vec<String> = host
             .calls()
             .into_iter()
             .filter(|c| c.starts_with("kubectl-replace"))
             .collect();
         assert_eq!(replaces.len(), 2);
-        assert!(replaces[0].contains(r#"\"resourceVersion\":\"1\""#) || replaces[0].contains(r#""resourceVersion":"1""#));
-        assert!(replaces[1].contains(r#"["a","b","c"]"#) || replaces[1].contains(r#"[\"a\",\"b\",\"c\"]"#));
+        assert!(
+            replaces[0].contains(r#"\"resourceVersion\":\"1\""#)
+                || replaces[0].contains(r#""resourceVersion":"1""#)
+        );
+        assert!(
+            replaces[1].contains(r#"["a","b","c"]"#)
+                || replaces[1].contains(r#"[\"a\",\"b\",\"c\"]"#)
+        );
     }
 
     #[tokio::test]
@@ -322,6 +346,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_object_without_a_resource_version_is_never_blindly_replaced() {
+        let host = FakeHost::new()
+            .ok(
+                "kubectl get configmap yolab-test",
+                r#"{"kind":"ConfigMap","metadata":{},"data":{"sets":"[]"}}"#,
+            )
+            .ok("kubectl-replace", "");
+        let r = STORE
+            .update(&host, |v: &mut Vec<String>| v.push("x".into()))
+            .await;
+        assert!(r.is_err());
+        assert!(!host.ran("kubectl-replace"));
+    }
+
+    #[tokio::test]
     async fn endless_contention_gives_up_instead_of_overwriting() {
         let host = FakeHost::new()
             .ok("kubectl get configmap yolab-test", &cm("[]", "1"))
@@ -329,7 +368,9 @@ mod tests {
                 "kubectl-replace",
                 "Error from server (Conflict): the object has been modified",
             );
-        let r = STORE.update(&host, |v: &mut Vec<String>| v.push("x".into())).await;
+        let r = STORE
+            .update(&host, |v: &mut Vec<String>| v.push("x".into()))
+            .await;
         assert!(matches!(r, Err(RecordError::Contended { .. })));
     }
 }
