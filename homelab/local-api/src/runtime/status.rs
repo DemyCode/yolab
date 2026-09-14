@@ -234,5 +234,31 @@ mod tests {
         let r = Registry::default();
         r.started("ghost");
         assert!(r.get("ghost").is_none());
+        assert_eq!(r.failed("ghost", "boom".into()), 1);
+        assert!(r.snapshot().is_empty());
+    }
+
+    #[test]
+    fn a_phase_without_a_reason_serializes_as_just_the_phase() {
+        let r = Registry::default();
+        r.register("z", Scope::Node, Duration::from_secs(5));
+        let v = serde_json::to_value(r.get("z").unwrap()).unwrap();
+        assert_eq!(v["phase"], "starting");
+        assert!(v.get("reason").is_none());
+        assert_eq!(v["interval_secs"], 5);
+    }
+
+    #[tokio::test]
+    async fn the_status_endpoint_lists_the_registered_controllers() {
+        super::super::registry().register("test-status-endpoint", Scope::Node, Duration::from_secs(1));
+        let axum::Json(body) = handler().await;
+        let names: Vec<&str> = body["controllers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        assert!(names.contains(&"test-status-endpoint"), "{body}");
+        assert!(body["leader"].is_boolean());
     }
 }

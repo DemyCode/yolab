@@ -13,7 +13,7 @@
 
 use serde_json::Value;
 
-use crate::error::Outcome;
+use crate::exec::CmdError;
 use crate::host::Host;
 
 pub const NS: &str = "rook-ceph";
@@ -26,10 +26,12 @@ pub enum Which {
     AllNodes,
 }
 
-/// Best effort by design: a pod that cannot be deleted now is retried by the
-/// caller's next tick, and nothing here is destructive — the DaemonSet brings
-/// every pod straight back.
-pub async fn restart_plugins<H: Host>(host: &H, which: Which) {
+/// Nothing here is destructive — the DaemonSet brings every pod straight back —
+/// but a restart that did not happen is reported, never swallowed: both callers
+/// record "done" on success (csi-recovery's once-per-boot marker, the recovery's
+/// step), and recording it over a failed delete meant the stale plugin was never
+/// restarted at all. Every delete is attempted; the first failure is returned.
+pub async fn restart_plugins<H: Host>(host: &H, which: Which) -> Result<(), CmdError> {
     match which {
         Which::ThisNode => {
             let selector = format!("spec.nodeName={}", crate::system::hostname());
@@ -45,14 +47,23 @@ pub async fn restart_plugins<H: Host>(host: &H, which: Which) {
                 "--ignore-not-found",
             ])
             .await
-            .warn_on_err("restart this node's CephFS CSI plugin");
+            .map(|_| ())
         }
         Which::AllNodes => {
+            let mut first_err = None;
             for app in ["csi-cephfsplugin", "csi-cephfsplugin-provisioner"] {
                 let selector = format!("app={app}");
-                host.kubectl(&["delete", "pod", "-n", NS, "-l", &selector, "--wait=false"])
+                if let Err(e) = host
+                    .kubectl(&["delete", "pod", "-n", NS, "-l", &selector, "--wait=false"])
                     .await
-                    .warn_on_err(format!("restart {app} pods"));
+                {
+                    tracing::warn!("restart {app} pods: {e}");
+                    first_err.get_or_insert(e);
+                }
+            }
+            match first_err {
+                Some(e) => Err(e),
+                None => Ok(()),
             }
         }
     }
@@ -83,7 +94,7 @@ mod tests {
     #[tokio::test]
     async fn this_node_only_deletes_the_local_plugin_pod() {
         let host = FakeHost::new().ok("kubectl delete pod", "");
-        restart_plugins(&host, Which::ThisNode).await;
+        restart_plugins(&host, Which::ThisNode).await.unwrap();
         assert!(host.ran("kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin --field-selector spec.nodeName="));
         assert!(!host.ran("csi-cephfsplugin-provisioner"));
     }
@@ -91,10 +102,22 @@ mod tests {
     #[tokio::test]
     async fn all_nodes_restarts_plugin_and_provisioner() {
         let host = FakeHost::new().ok("kubectl delete pod", "");
-        restart_plugins(&host, Which::AllNodes).await;
+        restart_plugins(&host, Which::AllNodes).await.unwrap();
         assert!(host.ran("-l app=csi-cephfsplugin --wait=false"));
         assert!(host.ran("-l app=csi-cephfsplugin-provisioner --wait=false"));
         assert!(!host.ran("--field-selector"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_is_reported_after_every_delete_was_tried() {
+        let host = FakeHost::new()
+            .fail("kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin ", "etcd timeout")
+            .ok("kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin-provisioner", "");
+        assert!(restart_plugins(&host, Which::AllNodes).await.is_err());
+        assert!(host.ran("app=csi-cephfsplugin-provisioner"), "the second is still tried");
+
+        let local = FakeHost::new().fail("kubectl delete pod", "etcd timeout");
+        assert!(restart_plugins(&local, Which::ThisNode).await.is_err());
     }
 
     #[tokio::test]

@@ -32,10 +32,18 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let Some(_guard) = lock::try_acquire(&lock_name(job))? else {
-        return Ok(Tick::Idle(format!(
-            "yolab-{job} (the boot unit) is running this right now"
-        )));
+    locked_in(std::path::Path::new(lock::LOCK_DIR), job, f).await
+}
+
+async fn locked_in<F, Fut>(dir: &std::path::Path, job: &str, f: F) -> Result<Tick>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let Some(_guard) = lock::try_acquire_in(dir, &lock_name(job))? else {
+        // Not run, and not a failure: whoever holds the lock (the boot unit, or a
+        // `local-api storage` run by hand) is doing this very job right now.
+        return Ok(Tick::Idle(format!("another run of {job} holds its lock right now")));
     };
     f().await?;
     Ok(Tick::Done)
@@ -308,7 +316,7 @@ async fn once_per_boot<H: Host>(marker: &std::path::Path, host: &H) -> Result<Ti
     if !crate::csi::plugin_daemonset_exists(host).await? {
         return Ok(Tick::RequeueAfter(Duration::from_secs(15)));
     }
-    crate::csi::restart_plugins(host, crate::csi::Which::ThisNode).await;
+    crate::csi::restart_plugins(host, crate::csi::Which::ThisNode).await?;
     if let Some(dir) = marker.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -353,6 +361,54 @@ mod tests {
         ));
         assert!(!marker.exists());
         assert!(!host.ran("delete pod"));
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_failed_is_not_marked_done_for_the_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let host = FakeHost::new()
+            .ok("kubectl get daemonset csi-cephfsplugin", "{}")
+            .fail("kubectl delete pod", "etcd timeout");
+        assert!(once_per_boot(&marker, &host).await.is_err());
+        assert!(!marker.exists(), "the next tick must try again");
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_lock_is_held_is_skipped_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let _boot_unit = lock::try_acquire_in(dir.path(), &lock_name("images-rbd"))
+            .unwrap()
+            .unwrap();
+        let ran = std::sync::atomic::AtomicBool::new(false);
+        let tick = locked_in(dir.path(), "images-rbd", || async {
+            ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+        assert!(matches!(tick, Tick::Idle(_)));
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    async fn succeed() -> Result<()> {
+        Ok(())
+    }
+
+    async fn time_out() -> Result<()> {
+        anyhow::bail!("ceph-volume timed out")
+    }
+
+    #[tokio::test]
+    async fn a_free_job_runs_and_its_error_is_the_tick_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = locked_in(dir.path(), "osd-activate", succeed).await;
+        assert_eq!(ok.unwrap(), Tick::Done);
+        let failed = locked_in(dir.path(), "osd-activate", time_out).await;
+        assert!(failed.is_err());
+        // The lock is released after each run, failed or not.
+        let free = lock::try_acquire_in(dir.path(), &lock_name("osd-activate"));
+        assert!(free.unwrap().is_some());
     }
 
     #[tokio::test]

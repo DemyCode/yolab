@@ -734,9 +734,9 @@ async fn mount_the_store<H: Host>(
 /// reboot). Now that local-api runs this periodically, a local-api restart in
 /// the middle of a repair — a deploy — would otherwise leave k3s stopped, and
 /// the next run would read "k3s is not active" as "it was never running".
-async fn resume_k3s<H: Host>(host: &H, root: &Path, was_active: bool) -> Result<()> {
+async fn resume_k3s<H: Host>(host: &H, root: &Path, stopped_here: bool) -> Result<()> {
     let marker = k3s_stop_marker(root);
-    if was_active || marker.exists() {
+    if stopped_here || marker.exists() {
         tracing::info!("starting k3s again");
         match host
             .systemctl(&["start", "--no-block", "k3s.service"])
@@ -808,6 +808,9 @@ pub async fn run<H: Host>(
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
     let mut needs_rebuild = false;
+    // Whether THIS run stopped k3s. Distinct from `was_active`: only a run that
+    // stopped it may start it — the marker covers a run that stopped it and died.
+    let mut stopped = false;
 
     // Captured HERE, before anything below can stop k3s, because the recovery
     // path further down stops it too. Reading it after that point would see the
@@ -847,6 +850,7 @@ pub async fn run<H: Host>(
             );
             if was_active {
                 stop_k3s(host, root, "rebuild the incoherent image store").await;
+                stopped = true;
             }
             let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
             release_pinning_overlays(host, &mounts, &croot_s).await;
@@ -866,7 +870,10 @@ pub async fn run<H: Host>(
             needs_rebuild = true;
         } else if is_readable_dir(&croot) {
             tracing::info!("{croot_s} is already mounted and readable");
-            return Ok(());
+            // Not a bare `Ok(())`: a previous run may have stopped k3s, mounted the
+            // store and died before starting it again. The store then looks
+            // perfect on every later run, and k3s would never come back.
+            return resume_k3s(host, root, false).await;
         } else {
             // MOUNTED BUT UNREADABLE MEANS XFS LATCHED A SHUTDOWN, NOT THAT THE DATA
             // IS GONE.
@@ -907,6 +914,7 @@ pub async fn run<H: Host>(
             // shared one at the bottom, driven by `was_active` captured above.
             if was_active {
                 stop_k3s(host, root, "release the dead image store").await;
+                stopped = true;
             }
 
             let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
@@ -943,7 +951,7 @@ pub async fn run<H: Host>(
     // repaired perfectly, with its runtime never started again.
     if !host.reachable().await {
         tracing::info!("ceph not reachable — containerd stays on the root disk");
-        return resume_k3s(host, root, was_active).await;
+        return resume_k3s(host, root, stopped).await;
     }
     match image_state(host, &policy.pool_name, node).await {
         ImageState::Present => {}
@@ -952,7 +960,7 @@ pub async fn run<H: Host>(
                 "no {}/{node} image yet — containerd stays on the root disk",
                 policy.pool_name
             );
-            return resume_k3s(host, root, was_active).await;
+            return resume_k3s(host, root, stopped).await;
         }
         // The case that used to masquerade as `Absent`. Staying on the root disk
         // is not a degraded outcome here, it is the whole recovery: every byte
@@ -973,7 +981,7 @@ pub async fn run<H: Host>(
             // mapping has to go too, or it wedges the OSD start path and with it
             // every deploy on this node — see `abandon_mapping`.
             abandon_mapping(host, &policy.pool_name, node).await;
-            return resume_k3s(host, root, was_active).await;
+            return resume_k3s(host, root, stopped).await;
         }
     }
 
@@ -986,6 +994,7 @@ pub async fn run<H: Host>(
     // recovery branch having stopped it costs nothing here.
     if was_active {
         stop_k3s(host, root, "move its image store onto Ceph").await;
+        stopped = true;
     }
 
     let result = mount_the_store(host, root, node, policy, needs_rebuild).await;
@@ -993,7 +1002,7 @@ pub async fn run<H: Host>(
     // Not `?` on either: the restart has to happen even when mounting failed —
     // that is the case where the node most needs its runtime back — so the
     // start is issued first and `mount_the_store`'s result reported after.
-    resume_k3s(host, root, was_active)
+    resume_k3s(host, root, stopped)
         .await
         .warn_on_err("resume k3s");
 
@@ -1923,6 +1932,66 @@ mod tests {
                 .iter()
                 .any(|c| c.contains("systemctl start --no-block k3s.service")),
             "and it must be started again, calls were: {calls:?}"
+        );
+    }
+
+    /// A run that stopped k3s and then died (a local-api restart mid-repair)
+    /// leaves the store mounted and healthy. Every later run takes the
+    /// "already fine" path, so that path is where k3s has to come back.
+    #[tokio::test]
+    async fn a_k3s_left_stopped_by_a_crashed_run_is_started_by_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
+        let marker = k3s_stop_marker(dir.path());
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "move its image store onto Ceph").unwrap();
+        let host = FakeHost::new()
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .ok("systemctl is-active", "inactive")
+            .ok("systemctl start", "");
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(host.ran("systemctl start --no-block k3s.service"));
+        assert!(!marker.exists(), "cleared once k3s is started");
+    }
+
+    #[tokio::test]
+    async fn the_marker_stays_until_k3s_actually_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = k3s_stop_marker(dir.path());
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "x").unwrap();
+        let refused = FakeHost::new().fail("systemctl start", "Job failed");
+        resume_k3s(&refused, dir.path(), false).await.unwrap();
+        assert!(marker.exists(), "the next run must try again");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_stopped_nothing_starts_nothing() {
+        // A healthy node on the root disk with Ceph away: k3s is running, this
+        // run never touched it, so it must not `systemctl start` it every tick.
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new()
+            .fail("findmnt -rno TARGET --mountpoint", "not a mountpoint")
+            .ok("systemctl is-active", "active")
+            .fail("ceph -s", "timed out");
+
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+
+        assert!(!host.ran("systemctl start") && !host.ran("systemctl stop"));
+    }
+
+    #[tokio::test]
+    async fn stopping_k3s_leaves_the_marker_before_the_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new().fail("systemctl stop", "Job failed");
+        stop_k3s(&host, dir.path(), "rebuild").await;
+        assert!(host.ran("systemctl stop k3s.service"));
+        assert_eq!(
+            std::fs::read_to_string(k3s_stop_marker(dir.path())).unwrap(),
+            "rebuild",
+            "written even though the stop failed: starting an already running k3s is harmless"
         );
     }
 
