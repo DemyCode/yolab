@@ -213,74 +213,49 @@ fn redact_credentials(
 }
 
 /// Persist an app's config: the real thing in a Secret, a redacted copy in the
-/// annotation.
+/// annotation (what `list_apps` reads for every app at once, without a Secret
+/// fetch per namespace).
 ///
-/// Both, not one: the annotation is what `list_apps` reads for every app at once
-/// without a Secret fetch per namespace, and it is the migration path for apps
-/// installed before the Secret existed.
-async fn write_config(ns: &str, config: &serde_json::Map<String, Value>, uischema: &Value) {
-    let full = serde_json::to_string(config).unwrap_or_default();
-    if let Err(e) = crate::kubectl::apply_secret(
+/// The Secret is the ONLY copy of the app's credentials, so failing to write it
+/// is an error the caller reports: an app whose settings were not saved cannot
+/// be reconfigured without its passwords.
+async fn write_config(
+    ns: &str,
+    config: &serde_json::Map<String, Value>,
+    uischema: &Value,
+) -> anyhow::Result<()> {
+    let full = serde_json::to_string(config)?;
+    crate::kubectl::apply_secret(
         CONFIG_SECRET,
         ns,
         &[(CONFIG_SECRET_KEY, full.as_str())],
         &[("yolab.io/managed", "true")],
     )
-    .await
-    {
-        // Not fatal on its own — the annotation below still carries everything
-        // that is not a credential — but it means a reconfigure will not find
-        // the password, so it has to be visible.
-        tracing::warn!("config secret for {ns} could not be written: {e}");
-    }
+    .await?;
     let redacted = redact_credentials(config, &credential_fields(uischema));
-    let json = serde_json::to_string(&redacted).unwrap_or_default();
-    annotate_ns(ns, ANN_CONFIG, &json).await;
+    annotate_ns(ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
+    Ok(())
 }
 
-/// An app's config, credentials included.
-///
-/// Prefers the Secret and falls back to the annotation, which is what apps
-/// installed before this existed still have. When it does fall back it writes
-/// the Secret and redacts the annotation on the way past, so every app migrates
-/// itself the first time anything reads its config — there is no separate
-/// migration to run and no window where an old app cannot be reconfigured.
-async fn read_config(
+/// An app's config, credentials included, from its Secret — the only place it
+/// lives. Never from the annotation: that copy is redacted, and an update built
+/// on it would hand helm the literal "__redacted__" as the app's password.
+async fn read_config(ns: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+    let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
+    parse_saved_config(ns, &data)
+}
+
+fn parse_saved_config(
     ns: &str,
-    ann: &serde_json::Map<String, Value>,
-    uischema: &Value,
+    data: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<serde_json::Map<String, Value>> {
-    let from_annotation: serde_json::Map<String, Value> = ann
-        .get(ANN_CONFIG)
-        .and_then(|v| v.as_str())
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-
-    // `?`: a Secret that could not be READ is not a Secret that is absent. The
-    // fallback below is the redacted annotation, and an update built on it hands
-    // helm the literal "__redacted__" as the app's password.
-    if let Some(data) = crate::kubectl::get_secret(CONFIG_SECRET, ns).await? {
-        if let Some(raw) = data.get(CONFIG_SECRET_KEY) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Map<String, Value>>(raw) {
-                return Ok(v);
-            }
-        }
-    }
-
-    // No Secret yet. If the annotation still holds real credentials, this is a
-    // pre-migration app: move them now.
-    let credentials = credential_fields(uischema);
-    let holds_plaintext = credentials.iter().any(|k| {
-        from_annotation
-            .get(k)
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s != REDACTED)
-    });
-    if holds_plaintext {
-        tracing::info!("{ns}: moving app config out of the namespace annotation into a Secret");
-        write_config(ns, &from_annotation, uischema).await;
-    }
-    Ok(from_annotation)
+    let raw = data
+        .get(CONFIG_SECRET_KEY)
+        .ok_or_else(|| anyhow::anyhow!("{ns}: the {CONFIG_SECRET} Secret has no {CONFIG_SECRET_KEY}"))?;
+    serde_json::from_str(raw)
+        .map_err(|e| anyhow::anyhow!("{ns}: the saved settings are unreadable: {e}"))
 }
 
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
@@ -578,40 +553,12 @@ fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
     if raw.is_empty() {
         return vec![];
     }
-    let Ok(outputs) = serde_json::from_str::<Vec<Value>>(raw) else {
-        return vec![];
-    };
-    // Handle old format [{url, ipv6}]
-    if outputs
-        .first()
-        .map(|o| o.get("url").is_some() || o.get("ipv6").is_some())
-        .unwrap_or(false)
-    {
-        let mut result = vec![];
-        for o in &outputs {
-            if let Some(url) = o["url"].as_str().filter(|s| !s.is_empty()) {
-                result.push(AppOutput {
-                    key: "url".into(),
-                    label: "Web URL".into(),
-                    value: url.into(),
-                    type_: "url".into(),
-                });
-            }
-            if let Some(ip) = o["ipv6"].as_str().filter(|s| !s.is_empty()) {
-                result.push(AppOutput {
-                    key: "ipv6".into(),
-                    label: "IPv6".into(),
-                    value: ip.into(),
-                    type_: "text".into(),
-                });
-            }
-        }
-        return result;
-    }
-    outputs
-        .into_iter()
-        .filter_map(|o| serde_json::from_value(o).ok())
-        .collect()
+    // Written only by scan_outputs, in this shape. Anything else is logged, not
+    // guessed at.
+    serde_json::from_str::<Vec<AppOutput>>(raw).unwrap_or_else(|e| {
+        tracing::warn!("{ANN_OUTPUTS} does not hold a list of outputs ({e}) — showing none");
+        vec![]
+    })
 }
 
 /// Reject config scalars that could break out of a YAML scalar and inject
@@ -1278,7 +1225,12 @@ pub async fn install_app(
         // The real config goes in a Secret; a copy with credentials redacted stays
         // on the namespace, where list_apps can read every app's at once. See
         // write_config for why it is no longer all in the annotation.
-        write_config(&ns, &body.config, &chart_uischema(&state.config.catalog_dir(), &id)).await;
+        if let Err(e) = write_config(&ns, &body.config, &chart_uischema(&state.config.catalog_dir(), &id)).await {
+            yield Ok(Event::default().data(format!(
+                "[ERROR] {id} was installed, but its settings could not be saved ({e}) — reinstall it before changing its settings"
+            )));
+            return;
+        }
         yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));
     };
 
@@ -1371,7 +1323,7 @@ pub(crate) async fn install_now(
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    write_config(&staged.ns, config, &chart_uischema(&cfg.catalog_dir(), id)).await;
+    write_config(&staged.ns, config, &chart_uischema(&cfg.catalog_dir(), id)).await?;
     Ok(())
 }
 
@@ -1410,7 +1362,7 @@ pub async fn update_app(
     // From the Secret, not the annotation: the annotation only carries redacted
     // credentials now, and an update that fell back to it would hand helm the
     // literal string "__redacted__" as the app's password.
-    let stored_config = match read_config(&ns, &ann, &uischema).await {
+    let stored_config = match read_config(&ns).await {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1512,7 +1464,12 @@ pub async fn update_app(
         // manifests and restarts only what actually changed — and charts that need a
         // restart on a config-only change (e.g. a password held in a Secret) carry a
         // checksum annotation on the pod template, which is the idiomatic way to say so.
-        write_config(&ns, &config, &uischema).await;
+        if let Err(e) = write_config(&ns, &config, &uischema).await {
+            yield Ok(Event::default().data(format!(
+                "[ERROR] {id} was updated, but its new settings could not be saved ({e})"
+            )));
+            return;
+        }
         yield Ok(Event::default().data(format!("[DONE] {id} updated")));
     };
 
@@ -2613,20 +2570,14 @@ mod tests {
     }
 
     #[test]
-    fn normalize_outputs_legacy_format() {
-        // Old shape: [{url, ipv6}] gets expanded into url + ipv6 rows.
-        let ann = map(json!({
-            ANN_OUTPUTS: r#"[{"url":"https://x","ipv6":"fd00::1"}]"#
-        }));
-        let out = normalize_outputs(&ann);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].key, "url");
-        assert_eq!(out[1].key, "ipv6");
+    fn normalize_outputs_empty() {
+        assert!(normalize_outputs(&serde_json::Map::new()).is_empty());
     }
 
     #[test]
-    fn normalize_outputs_empty() {
-        assert!(normalize_outputs(&serde_json::Map::new()).is_empty());
+    fn outputs_in_any_other_shape_are_not_guessed_at() {
+        let ann = map(json!({ ANN_OUTPUTS: r#"[{"url":"https://x"}]"# }));
+        assert!(normalize_outputs(&ann).is_empty());
     }
 
     // ── uninstall_lock_is_fresh ──────────────────────────────────────────────
@@ -2769,5 +2720,21 @@ mod tests {
         assert!(chart_outputs_spec(dir.path(), "filebrowser").is_empty());
         assert!(chart_outputs_spec(dir.path(), "not-in-the-catalog").is_empty());
         assert!(chart_outputs_spec(dir.path(), "").is_empty());
+    }
+
+    #[test]
+    fn saved_settings_are_read_exactly_or_reported() {
+        use std::collections::HashMap;
+        let ok = HashMap::from([(CONFIG_SECRET_KEY.to_string(), r#"{"password":"hunter2"}"#.to_string())]);
+        let cfg = parse_saved_config("yolab-a", &ok).unwrap();
+        assert_eq!(cfg["password"], "hunter2");
+
+        let missing = HashMap::new();
+        let e = parse_saved_config("yolab-a", &missing).unwrap_err().to_string();
+        assert!(e.contains(CONFIG_SECRET_KEY), "{e}");
+
+        let junk = HashMap::from([(CONFIG_SECRET_KEY.to_string(), "not json".to_string())]);
+        let e = parse_saved_config("yolab-a", &junk).unwrap_err().to_string();
+        assert!(e.contains("unreadable"), "{e}");
     }
 }

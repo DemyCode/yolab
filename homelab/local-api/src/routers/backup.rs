@@ -82,9 +82,6 @@ impl Claimed for BackupSet {
     fn id(&self) -> &str {
         &self.id
     }
-    fn started_at(&self) -> &str {
-        &self.started_at
-    }
     fn is_running(&self) -> bool {
         self.state == "running"
     }
@@ -781,7 +778,7 @@ fn built_hash() -> Option<String> {
 // ── Read side ──────────────────────────────────────────────────────────────────
 
 fn liveness_of(s: &BackupSet) -> Liveness {
-    s.liveness(&crate::system::hostname(), &IN_FLIGHT, Utc::now())
+    s.liveness(&crate::system::hostname(), &IN_FLIGHT)
 }
 
 /// Every recorded set, newest first, classified into the three page states.

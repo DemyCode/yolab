@@ -287,55 +287,11 @@ fn config_from_secret(data: &HashMap<String, String>) -> Option<BackupConfig> {
 /// the reconcile loop uses `read_master_config` so a not-yet-configured cluster never
 /// triggers provisioning as a side effect of a scheduling tick.
 pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupConfig> {
-    // `?`, not `if let Some`: an unreadable Secret is NOT an absent one. Treating
-    // it as absent provisioned fresh storage and a fresh restic password, and
-    // wrote them over the real ones — every existing backup unreadable.
-    if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await? {
-        let restic_password = data.get("restic_password").cloned().unwrap_or_default();
-        if !restic_password.is_empty() {
-            return Ok(BackupConfig {
-                access_key_id: data.get("access_key_id").cloned().unwrap_or_default(),
-                secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
-                bucket: data.get("bucket").cloned().unwrap_or_default(),
-                endpoint: data.get("endpoint").cloned().unwrap_or_default(),
-                restic_password,
-            });
-        }
-        // Old secret exists (rclone era) but lacks restic_password — add it.
-        let restic_password = random_hex(32);
-        kubectl_apply_secret(
-            MASTER_SECRET,
-            MASTER_NS,
-            &[
-                (
-                    "access_key_id",
-                    data.get("access_key_id").map(|s| s.as_str()).unwrap_or(""),
-                ),
-                (
-                    "secret_access_key",
-                    data.get("secret_access_key")
-                        .map(|s| s.as_str())
-                        .unwrap_or(""),
-                ),
-                (
-                    "bucket",
-                    data.get("bucket").map(|s| s.as_str()).unwrap_or(""),
-                ),
-                (
-                    "endpoint",
-                    data.get("endpoint").map(|s| s.as_str()).unwrap_or(""),
-                ),
-                ("restic_password", &restic_password),
-            ],
-        )
-        .await?;
-        return Ok(BackupConfig {
-            access_key_id: data.get("access_key_id").cloned().unwrap_or_default(),
-            secret_access_key: data.get("secret_access_key").cloned().unwrap_or_default(),
-            bucket: data.get("bucket").cloned().unwrap_or_default(),
-            endpoint: data.get("endpoint").cloned().unwrap_or_default(),
-            restic_password,
-        });
+    // `?`: an unreadable Secret is NOT an absent one. Treating it as absent
+    // provisioned fresh storage and a fresh restic password, and wrote them over
+    // the real ones — every existing backup unreadable.
+    if let Some(cfg) = load_master_config().await? {
+        return Ok(cfg);
     }
 
     let resp = http_client()

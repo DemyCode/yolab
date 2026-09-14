@@ -74,9 +74,6 @@ impl Claimed for RestoreSet {
     fn id(&self) -> &str {
         &self.id
     }
-    fn started_at(&self) -> &str {
-        &self.started_at
-    }
     fn is_running(&self) -> bool {
         self.state == "running"
     }
@@ -806,7 +803,7 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
 // ── Read side ──────────────────────────────────────────────────────────────────
 
 fn liveness_of(s: &RestoreSet) -> Liveness {
-    s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT, Utc::now())
+    s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT)
 }
 
 /// Every recorded restore, newest first, classified into running/succeeded/failed.
@@ -848,10 +845,10 @@ fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
 }
 
 /// Restores recorded running whose driver is gone.
-fn abandoned(sets: &[RestoreSet], me: &str, now: chrono::DateTime<Utc>) -> Vec<RestoreSet> {
+fn abandoned(sets: &[RestoreSet], me: &str) -> Vec<RestoreSet> {
     sets.iter()
         .filter(|s| {
-            s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT, now) == Liveness::Abandoned
+            s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
         })
         .cloned()
         .collect()
@@ -879,7 +876,7 @@ impl Controller for RestoreWatchdogController {
     }
     async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         let now = Utc::now();
-        let crashed = abandoned(&read_sets().await?, &ctx.node, now);
+        let crashed = abandoned(&read_sets().await?, &ctx.node);
         if crashed.is_empty() {
             return Ok(Tick::Idle("no abandoned restores".into()));
         }
@@ -891,7 +888,7 @@ impl Controller for RestoreWatchdogController {
                     claimed_by_us = false;
                     if let Some(s) = sets.iter_mut().find(|s| s.id == set.id) {
                         if s.is_running()
-                            && s.liveness(&me, &RESTORE_IN_FLIGHT, now) == Liveness::Abandoned
+                            && s.liveness(&me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
                         {
                             s.state = "failed".to_string();
                             s.finished_at = Some(now.to_rfc3339());
@@ -908,11 +905,7 @@ impl Controller for RestoreWatchdogController {
                 "restore {} ({}) was abandoned by {} — scaling back up",
                 set.id,
                 set.namespace,
-                if set.claim.owner.is_empty() {
-                    "an older local-api"
-                } else {
-                    &set.claim.owner
-                }
+                set.claim.owner
             );
             for d in &set.scaled_deployments {
                 scale_deployment(&set.namespace, &d.name, d.replicas)
@@ -980,7 +973,7 @@ mod tests {
         let mut live = set("rs-live", "running");
         live.claim = Claim {
             owner: "node1".into(),
-            heartbeat: Some((now - chrono::Duration::seconds(10)).to_rfc3339()),
+            heartbeat: (now - chrono::Duration::seconds(10)).to_rfc3339(),
         };
         // Its timestamp is ten minutes old — a skewed clock, or an API outage —
         // but this process has only just seen it, so it is not yet abandoned. It
@@ -988,15 +981,15 @@ mod tests {
         let mut looks_old = set("rs-looks-old", "running");
         looks_old.claim = Claim {
             owner: "node1".into(),
-            heartbeat: Some((now - chrono::Duration::seconds(600)).to_rfc3339()),
+            heartbeat: (now - chrono::Duration::seconds(600)).to_rfc3339(),
         };
         let mut mine_restarted = set("rs-mine", "running");
         mine_restarted.claim = Claim {
             owner: "node2".into(),
-            heartbeat: Some(now.to_rfc3339()),
+            heartbeat: now.to_rfc3339(),
         };
         let done = set("rs-done", "succeeded");
-        let found = abandoned(&[live, looks_old, mine_restarted, done], "node2", now);
+        let found = abandoned(&[live, looks_old, mine_restarted, done], "node2");
         let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["rs-mine"]);
     }
