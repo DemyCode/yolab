@@ -160,7 +160,7 @@ async fn begin(
 ) -> anyhow::Result<(String, Vec<DeploymentScale>, ops::InFlightGuard)> {
     // Record the live replica counts BEFORE scaling down, so a crash mid-restore can
     // still bring the app back to a running state.
-    let scaled_deployments = read_deployment_scales(namespace).await;
+    let scaled_deployments = read_deployment_scales(namespace).await?;
 
     let id = format!("rs-{}", random_hex(8));
     // Claimed before the record exists, so this node's watchdog never sees the
@@ -615,17 +615,32 @@ async fn wait_for_rd(namespace: &str, dest_name: &str) -> anyhow::Result<()> {
 
 // ── Cluster observation helpers ────────────────────────────────────────────────
 
-async fn read_deployment_scales(ns: &str) -> Vec<DeploymentScale> {
-    crate::kubectl::get_json(&["get", "deployments", "-n", ns, "-o", "json"])
-        .await
-        .ok()
-        .and_then(|v| v["items"].as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|d| {
-            Some(DeploymentScale {
-                name: d["metadata"]["name"].as_str()?.to_string(),
-                replicas: d["spec"]["replicas"].as_u64().unwrap_or(1) as u32,
+/// The replica counts to bring an app back to if its restore dies.
+///
+/// An error, never an empty list. This used to read a failed `kubectl get` as
+/// "no deployments": the restore then scaled the app to zero anyway, and if it
+/// crashed the watchdog had nothing to scale back up — the app stayed dark for
+/// good, the exact outcome this record exists to prevent.
+async fn read_deployment_scales(ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
+    let v = crate::kubectl::get_json(&["get", "deployments", "-n", ns, "-o", "json"]).await?;
+    parse_deployment_scales(&v)
+}
+
+fn parse_deployment_scales(v: &Value) -> anyhow::Result<Vec<DeploymentScale>> {
+    let items = v["items"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("kubectl get deployments: no items list"))?;
+    items
+        .iter()
+        .map(|d| -> anyhow::Result<DeploymentScale> {
+            let name = d["metadata"]["name"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("a deployment without a name"))?;
+            // Kubernetes defaults an unset `replicas` to 1.
+            let replicas = d["spec"]["replicas"].as_u64().unwrap_or(1);
+            Ok(DeploymentScale {
+                name: name.to_string(),
+                replicas: u32::try_from(replicas)?,
             })
         })
         .collect()
@@ -967,8 +982,11 @@ mod tests {
             owner: "node1".into(),
             heartbeat: Some((now - chrono::Duration::seconds(10)).to_rfc3339()),
         };
-        let mut dead = set("rs-dead", "running");
-        dead.claim = Claim {
+        // Its timestamp is ten minutes old — a skewed clock, or an API outage —
+        // but this process has only just seen it, so it is not yet abandoned. It
+        // becomes so after STALE_AFTER of being watched unchanged (see ops tests).
+        let mut looks_old = set("rs-looks-old", "running");
+        looks_old.claim = Claim {
             owner: "node1".into(),
             heartbeat: Some((now - chrono::Duration::seconds(600)).to_rfc3339()),
         };
@@ -978,9 +996,25 @@ mod tests {
             heartbeat: Some(now.to_rfc3339()),
         };
         let done = set("rs-done", "succeeded");
-        let found = abandoned(&[live, dead, mine_restarted, done], "node2", now);
+        let found = abandoned(&[live, looks_old, mine_restarted, done], "node2", now);
         let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["rs-dead", "rs-mine"]);
+        assert_eq!(ids, vec!["rs-mine"]);
+    }
+
+    #[test]
+    fn replica_counts_are_read_exactly_or_not_at_all() {
+        let v = json!({"items": [
+            {"metadata": {"name": "web"}, "spec": {"replicas": 2}},
+            {"metadata": {"name": "worker"}, "spec": {}},
+        ]});
+        let scales = parse_deployment_scales(&v).unwrap();
+        let got: Vec<(&str, u32)> = scales.iter().map(|d| (d.name.as_str(), d.replicas)).collect();
+        assert_eq!(got, vec![("web", 2), ("worker", 1)]);
+        assert!(parse_deployment_scales(&json!({})).is_err(), "not a list is not empty");
+        let unnamed = json!({"items": [{"spec": {"replicas": 1}}]});
+        assert!(parse_deployment_scales(&unnamed).is_err());
+        let absurd = json!({"items": [{"metadata": {"name": "x"}, "spec": {"replicas": 5_000_000_000u64}}]});
+        assert!(parse_deployment_scales(&absurd).is_err());
     }
 
     #[test]

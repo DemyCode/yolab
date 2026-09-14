@@ -22,9 +22,20 @@
 //!     node died).
 //!
 //! Only `Abandoned` may be cleaned up.
+//!
+//! STALE MEANS "THIS PROCESS HAS WATCHED IT NOT CHANGE", NOT "ITS TIMESTAMP IS OLD".
+//! The heartbeat is written with the claimant's clock. Reading it against ours
+//! made a node whose clock ran ahead see every live restore as abandoned — and
+//! after an API outage longer than `STALE_AFTER`, when no heartbeat could land,
+//! every node did. The watchdog would then scale an app back up in the middle of
+//! its live restore. So staleness is timed on this process's monotonic clock,
+//! from the moment it last saw the heartbeat value change (`observed_silence`):
+//! skew cannot shorten it, and an outage restarts the count once the records
+//! can be read again.
 
-use std::sync::Mutex;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -74,13 +85,15 @@ impl Liveness {
 }
 
 /// Classifies a `running` record. Pure: `me` is this node, `in_flight_here`
-/// whether this process holds the id.
+/// whether this process holds the id, `silent` how long this process has watched
+/// the claim's heartbeat stay unchanged (see the module header).
 pub fn liveness(
     claim: &Claim,
     started_at: Option<&str>,
     me: &str,
     in_flight_here: bool,
     now: DateTime<Utc>,
+    silent: Duration,
 ) -> Liveness {
     if in_flight_here {
         return Liveness::Driving;
@@ -99,14 +112,41 @@ pub fn liveness(
         // that did is gone.
         return Liveness::Abandoned;
     }
-    let beat = claim
-        .heartbeat
-        .as_deref()
-        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.with_timezone(&Utc));
-    match beat {
-        Some(t) if age(now, t) < STALE_AFTER => Liveness::Remote,
-        _ => Liveness::Abandoned,
+    if silent < STALE_AFTER {
+        Liveness::Remote
+    } else {
+        Liveness::Abandoned
+    }
+}
+
+/// Forgotten after this long unseen, so the map cannot grow for the life of the
+/// process. Far longer than any record stays `running`.
+const FORGET_AFTER: Duration = Duration::from_secs(24 * 3600);
+
+type Seen = HashMap<String, (Option<String>, Instant, Instant)>;
+
+/// How long this process has seen `id`'s heartbeat sit at `heartbeat`. Zero the
+/// first time it is seen and whenever the value changes.
+pub fn observed_silence(id: &str, heartbeat: Option<&str>, now: Instant) -> Duration {
+    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    silence_in(&mut seen, id, heartbeat, now)
+}
+
+fn silence_in(seen: &mut Seen, id: &str, heartbeat: Option<&str>, now: Instant) -> Duration {
+    seen.retain(|_, (_, _, last_seen)| now.saturating_duration_since(*last_seen) < FORGET_AFTER);
+    match seen.get_mut(id) {
+        Some((beat, since, last_seen)) if beat.as_deref() == heartbeat => {
+            *last_seen = now;
+            now.saturating_duration_since(*since)
+        }
+        _ => {
+            seen.insert(id.to_string(), (heartbeat.map(str::to_string), now, now));
+            Duration::ZERO
+        }
     }
 }
 
@@ -184,12 +224,14 @@ pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync 
     fn claim_mut(&mut self) -> &mut Claim;
 
     fn liveness(&self, me: &str, in_flight: &InFlight, now: DateTime<Utc>) -> Liveness {
+        let silent = observed_silence(self.id(), self.claim().heartbeat.as_deref(), Instant::now());
         liveness(
             self.claim(),
             Some(self.started_at()),
             me,
             in_flight.contains(self.id()),
             now,
+            silent,
         )
     }
 }
@@ -256,63 +298,85 @@ mod tests {
         }
     }
 
+    const QUIET: Duration = Duration::ZERO;
+    const SILENT: Duration = Duration::from_secs(300);
+
     #[test]
     fn a_restore_driven_by_another_node_is_not_crashed_while_it_heartbeats() {
         // The exact bug: node2 looking at node1's live restore.
         let c = claim("node1", Some("2026-09-14T11:59:30Z"));
-        assert_eq!(
-            liveness(&c, None, "node2", false, at(NOW)),
-            Liveness::Remote
-        );
+        let seen = liveness(&c, None, "node2", false, at(NOW), Duration::from_secs(30));
+        assert_eq!(seen, Liveness::Remote);
     }
 
     #[test]
-    fn a_dead_node_claim_is_abandoned_once_its_heartbeat_is_stale() {
+    fn a_dead_node_claim_is_abandoned_once_this_node_has_watched_it_go_quiet() {
         let c = claim("node1", Some("2026-09-14T11:55:00Z"));
-        assert_eq!(
-            liveness(&c, None, "node2", false, at(NOW)),
-            Liveness::Abandoned
-        );
+        let seen = liveness(&c, None, "node2", false, at(NOW), SILENT);
+        assert_eq!(seen, Liveness::Abandoned);
+    }
+
+    /// node2's clock runs an hour ahead, or the API was down for an hour: the
+    /// heartbeat TIMESTAMP looks ancient, but this process has only just seen it.
+    #[test]
+    fn an_old_looking_heartbeat_is_not_stale_until_it_has_been_watched_that_long() {
+        let c = claim("node1", Some("2026-09-14T11:00:00Z"));
+        let seen = liveness(&c, None, "node2", false, at(NOW), QUIET);
+        assert_eq!(seen, Liveness::Remote);
     }
 
     #[test]
     fn our_own_claim_without_our_process_is_abandoned_immediately() {
         // local-api restarted mid-restore on this very node.
         let c = claim("node1", Some("2026-09-14T11:59:59Z"));
-        assert_eq!(
-            liveness(&c, None, "node1", false, at(NOW)),
-            Liveness::Abandoned
-        );
-        assert_eq!(
-            liveness(&c, None, "node1", true, at(NOW)),
-            Liveness::Driving
-        );
+        let restarted = liveness(&c, None, "node1", false, at(NOW), QUIET);
+        assert_eq!(restarted, Liveness::Abandoned);
+        let driving = liveness(&c, None, "node1", true, at(NOW), SILENT);
+        assert_eq!(driving, Liveness::Driving);
     }
 
     #[test]
-    fn a_claim_without_a_heartbeat_is_abandoned() {
+    fn a_claim_without_a_heartbeat_goes_stale_like_any_other() {
         let c = claim("node1", None);
-        assert_eq!(
-            liveness(&c, None, "node2", false, at(NOW)),
-            Liveness::Abandoned
-        );
+        let fresh = liveness(&c, None, "node2", false, at(NOW), QUIET);
+        assert_eq!(fresh, Liveness::Remote);
+        let stale = liveness(&c, None, "node2", false, at(NOW), SILENT);
+        assert_eq!(stale, Liveness::Abandoned);
     }
 
     #[test]
     fn a_legacy_record_is_left_alone_during_a_rolling_update() {
         let c = Claim::default();
-        assert_eq!(
-            liveness(&c, Some("2026-09-14T11:00:00Z"), "node2", false, at(NOW)),
-            Liveness::Remote
-        );
-        assert_eq!(
-            liveness(&c, Some("2026-09-14T06:00:00Z"), "node2", false, at(NOW)),
-            Liveness::Abandoned
-        );
-        assert_eq!(
-            liveness(&c, None, "node2", false, at(NOW)),
-            Liveness::Abandoned
-        );
+        let recent = liveness(&c, Some("2026-09-14T11:00:00Z"), "node2", false, at(NOW), QUIET);
+        assert_eq!(recent, Liveness::Remote);
+        let old = liveness(&c, Some("2026-09-14T06:00:00Z"), "node2", false, at(NOW), QUIET);
+        assert_eq!(old, Liveness::Abandoned);
+        let undated = liveness(&c, None, "node2", false, at(NOW), QUIET);
+        assert_eq!(undated, Liveness::Abandoned);
+    }
+
+    #[test]
+    fn silence_is_timed_from_the_last_change_this_process_saw() {
+        let mut seen = Seen::new();
+        let t0 = Instant::now();
+        let s = |secs| t0 + Duration::from_secs(secs);
+        assert_eq!(silence_in(&mut seen, "rs-1", Some("h1"), t0), QUIET);
+        assert_eq!(silence_in(&mut seen, "rs-1", Some("h1"), s(90)), Duration::from_secs(90));
+        // A new heartbeat value restarts the count.
+        assert_eq!(silence_in(&mut seen, "rs-1", Some("h2"), s(100)), QUIET);
+        assert_eq!(silence_in(&mut seen, "rs-1", Some("h2"), s(130)), Duration::from_secs(30));
+        // Ids are timed independently.
+        assert_eq!(silence_in(&mut seen, "rs-2", None, s(130)), QUIET);
+    }
+
+    #[test]
+    fn ids_unseen_for_a_day_are_forgotten() {
+        let mut seen = Seen::new();
+        let t0 = Instant::now();
+        silence_in(&mut seen, "old", Some("h"), t0);
+        silence_in(&mut seen, "new", Some("h"), t0 + FORGET_AFTER + Duration::from_secs(1));
+        assert!(!seen.contains_key("old"));
+        assert!(seen.contains_key("new"));
     }
 
     #[test]
