@@ -4901,12 +4901,12 @@ mod tests {
         let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph-volume lvm list", &listed_on(&dev, 0))
-            .ok("systemctl start yolab-ceph-osd.service", "");
+            .ok("systemctl start yolab-ceph-osd@0.service", "");
 
         let ready = lv_osd_attempt(&host, &dev).await.unwrap();
 
         assert_eq!(ready, crate::storage::wait::Attempt::Ready(()));
-        assert!(host.ran("systemctl start yolab-ceph-osd.service"));
+        assert!(host.ran("systemctl start yolab-ceph-osd@0.service"));
         assert!(!host.ran("lvm create") && !host.ran("zap"));
     }
 
@@ -4923,7 +4923,7 @@ mod tests {
             .ok("ceph-volume lvm list", &listed_on(&dev, 0))
             .ok("wipefs --all", "")
             .ok("ceph-volume lvm create", "")
-            .ok("systemctl start yolab-ceph-osd.service", "");
+            .ok("systemctl start yolab-ceph-osd@0.service", "");
 
         let ready = lv_osd_attempt(&host, &dev).await.unwrap();
 

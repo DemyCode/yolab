@@ -324,6 +324,12 @@ mod tests {
         FakeHost::new().fail("findmnt -rno TARGET --mountpoint", "")
     }
 
+    /// Whether `mount` itself ran. Not `host.ran("mount")`: that is a substring
+    /// match, and every attempt runs `findmnt … --mountpoint` first.
+    fn ran_mount(host: &FakeHost) -> bool {
+        host.calls().iter().any(|c| c.starts_with("mount "))
+    }
+
     /// …and this node's image exists and maps to /dev/rbd0.
     fn mapped() -> FakeHost {
         booting()
@@ -431,7 +437,7 @@ mod tests {
         assert!(attempt(&host, dir.path(), "yolab-n1", &policy())
             .await
             .is_err());
-        assert!(!host.ran("mount"));
+        assert!(!ran_mount(&host), "{:?}", host.calls());
     }
 
     // ── Waiting, never falling back ──────────────────────────────────────────
@@ -446,7 +452,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(why.contains("does not exist yet"), "{why}");
-        assert!(!host.ran("rbd map") && !host.ran("mount"));
+        assert!(!host.ran("rbd map") && !ran_mount(&host), "{:?}", host.calls());
     }
 
     /// 2026-09-10: a pool that cannot answer is not a pool without the image.
@@ -476,7 +482,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(why.contains("sysfs write failed"), "{why}");
-        assert!(!host.ran("mkfs") && !host.ran("mount"));
+        assert!(!host.ran("mkfs") && !ran_mount(&host), "{:?}", host.calls());
     }
 
     #[tokio::test]

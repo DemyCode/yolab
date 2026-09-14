@@ -47,25 +47,20 @@ pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(20);
 /// heartbeats, so a slow API call or a GC pause is never mistaken for death.
 pub const STALE_AFTER: Duration = Duration::from_secs(120);
 
-/// Records written before claims existed have no owner. They are left alone for
-/// this long after they started — enough to outlast any restore or backup an
-/// old-version node could still be driving during a rolling update — and only
-/// then treated as abandoned.
-pub const LEGACY_GRACE: Duration = Duration::from_secs(3 * 3600);
-
+/// Which node drives a record, and the last time it said so. Both are written
+/// with the record (`Claim::mine`) and refreshed by the heartbeat; a record
+/// without them does not parse.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Claim {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heartbeat: Option<String>,
+    pub heartbeat: String,
 }
 
 impl Claim {
     pub fn mine(now: DateTime<Utc>) -> Self {
         Self {
             owner: crate::system::hostname(),
-            heartbeat: Some(now.to_rfc3339()),
+            heartbeat: now.to_rfc3339(),
         }
     }
 }
@@ -87,25 +82,9 @@ impl Liveness {
 /// Classifies a `running` record. Pure: `me` is this node, `in_flight_here`
 /// whether this process holds the id, `silent` how long this process has watched
 /// the claim's heartbeat stay unchanged (see the module header).
-pub fn liveness(
-    claim: &Claim,
-    started_at: Option<&str>,
-    me: &str,
-    in_flight_here: bool,
-    now: DateTime<Utc>,
-    silent: Duration,
-) -> Liveness {
+pub fn liveness(claim: &Claim, me: &str, in_flight_here: bool, silent: Duration) -> Liveness {
     if in_flight_here {
         return Liveness::Driving;
-    }
-    if claim.owner.is_empty() {
-        let started = started_at
-            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-            .map(|t| t.with_timezone(&Utc));
-        return match started {
-            Some(t) if age(now, t) < LEGACY_GRACE => Liveness::Remote,
-            _ => Liveness::Abandoned,
-        };
     }
     if claim.owner == me {
         // This node's own claim, and this process does not hold it: the process
@@ -123,11 +102,12 @@ pub fn liveness(
 /// process. Far longer than any record stays `running`.
 const FORGET_AFTER: Duration = Duration::from_secs(24 * 3600);
 
-type Seen = HashMap<String, (Option<String>, Instant, Instant)>;
+/// id → (heartbeat last seen, when it was first seen at that value, when last seen at all)
+type Seen = HashMap<String, (String, Instant, Instant)>;
 
 /// How long this process has seen `id`'s heartbeat sit at `heartbeat`. Zero the
 /// first time it is seen and whenever the value changes.
-pub fn observed_silence(id: &str, heartbeat: Option<&str>, now: Instant) -> Duration {
+pub fn observed_silence(id: &str, heartbeat: &str, now: Instant) -> Duration {
     static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
     let mut seen = SEEN
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -136,22 +116,18 @@ pub fn observed_silence(id: &str, heartbeat: Option<&str>, now: Instant) -> Dura
     silence_in(&mut seen, id, heartbeat, now)
 }
 
-fn silence_in(seen: &mut Seen, id: &str, heartbeat: Option<&str>, now: Instant) -> Duration {
+fn silence_in(seen: &mut Seen, id: &str, heartbeat: &str, now: Instant) -> Duration {
     seen.retain(|_, (_, _, last_seen)| now.saturating_duration_since(*last_seen) < FORGET_AFTER);
     match seen.get_mut(id) {
-        Some((beat, since, last_seen)) if beat.as_deref() == heartbeat => {
+        Some((beat, since, last_seen)) if beat == heartbeat => {
             *last_seen = now;
             now.saturating_duration_since(*since)
         }
         _ => {
-            seen.insert(id.to_string(), (heartbeat.map(str::to_string), now, now));
+            seen.insert(id.to_string(), (heartbeat.to_string(), now, now));
             Duration::ZERO
         }
     }
-}
-
-fn age(now: DateTime<Utc>, then: DateTime<Utc>) -> Duration {
-    (now - then).to_std().unwrap_or(Duration::ZERO)
 }
 
 /// The ids one kind of operation has in flight in THIS process. A registry
@@ -217,22 +193,15 @@ impl Drop for InFlightGuard {
 /// A record whose liveness is tracked by a `Claim`.
 pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync {
     fn id(&self) -> &str;
-    fn started_at(&self) -> &str;
     /// Recorded as still running (not yet succeeded or failed).
     fn is_running(&self) -> bool;
     fn claim(&self) -> &Claim;
     fn claim_mut(&mut self) -> &mut Claim;
 
-    fn liveness(&self, me: &str, in_flight: &InFlight, now: DateTime<Utc>) -> Liveness {
-        let silent = observed_silence(self.id(), self.claim().heartbeat.as_deref(), Instant::now());
-        liveness(
-            self.claim(),
-            Some(self.started_at()),
-            me,
-            in_flight.contains(self.id()),
-            now,
-            silent,
-        )
+    fn liveness(&self, me: &str, in_flight: &InFlight) -> Liveness {
+        let claim = self.claim();
+        let silent = observed_silence(self.id(), &claim.heartbeat, Instant::now());
+        liveness(claim, me, in_flight.contains(self.id()), silent)
     }
 }
 
@@ -276,7 +245,7 @@ pub fn beat<T: Claimed>(sets: &mut [T], ids: &[String], me: &str, now: DateTime<
         if s.is_running() && ids.iter().any(|i| i == s.id()) {
             let c = s.claim_mut();
             c.owner = me.to_string();
-            c.heartbeat = Some(now.to_rfc3339());
+            c.heartbeat = now.to_rfc3339();
         }
     }
 }
@@ -290,83 +259,47 @@ mod tests {
     }
 
     const NOW: &str = "2026-09-14T12:00:00Z";
-
-    fn claim(owner: &str, beat: Option<&str>) -> Claim {
-        Claim {
-            owner: owner.into(),
-            heartbeat: beat.map(str::to_string),
-        }
-    }
-
     const QUIET: Duration = Duration::ZERO;
     const SILENT: Duration = Duration::from_secs(300);
 
+    fn claim(owner: &str) -> Claim {
+        Claim {
+            owner: owner.into(),
+            heartbeat: "2026-09-14T11:59:30Z".into(),
+        }
+    }
+
     #[test]
-    fn a_restore_driven_by_another_node_is_not_crashed_while_it_heartbeats() {
-        // The exact bug: node2 looking at node1's live restore.
-        let c = claim("node1", Some("2026-09-14T11:59:30Z"));
-        let seen = liveness(&c, None, "node2", false, at(NOW), Duration::from_secs(30));
+    fn a_restore_driven_by_another_node_is_live_while_it_heartbeats() {
+        // The bug this module exists for: node2 looking at node1's live restore.
+        let seen = liveness(&claim("node1"), "node2", false, Duration::from_secs(30));
         assert_eq!(seen, Liveness::Remote);
     }
 
     #[test]
-    fn a_dead_node_claim_is_abandoned_once_this_node_has_watched_it_go_quiet() {
-        let c = claim("node1", Some("2026-09-14T11:55:00Z"));
-        let seen = liveness(&c, None, "node2", false, at(NOW), SILENT);
-        assert_eq!(seen, Liveness::Abandoned);
-    }
-
-    /// node2's clock runs an hour ahead, or the API was down for an hour: the
-    /// heartbeat TIMESTAMP looks ancient, but this process has only just seen it.
-    #[test]
-    fn an_old_looking_heartbeat_is_not_stale_until_it_has_been_watched_that_long() {
-        let c = claim("node1", Some("2026-09-14T11:00:00Z"));
-        let seen = liveness(&c, None, "node2", false, at(NOW), QUIET);
-        assert_eq!(seen, Liveness::Remote);
+    fn another_nodes_claim_is_abandoned_once_this_node_has_watched_it_go_quiet() {
+        assert_eq!(
+            liveness(&claim("node1"), "node2", false, SILENT),
+            Liveness::Abandoned
+        );
+        let just_under = STALE_AFTER - Duration::from_secs(1);
+        assert_eq!(
+            liveness(&claim("node1"), "node2", false, just_under),
+            Liveness::Remote
+        );
     }
 
     #[test]
     fn our_own_claim_without_our_process_is_abandoned_immediately() {
         // local-api restarted mid-restore on this very node.
-        let c = claim("node1", Some("2026-09-14T11:59:59Z"));
-        let restarted = liveness(&c, None, "node1", false, at(NOW), QUIET);
-        assert_eq!(restarted, Liveness::Abandoned);
-        let driving = liveness(&c, None, "node1", true, at(NOW), SILENT);
-        assert_eq!(driving, Liveness::Driving);
-    }
-
-    #[test]
-    fn a_claim_without_a_heartbeat_goes_stale_like_any_other() {
-        let c = claim("node1", None);
-        let fresh = liveness(&c, None, "node2", false, at(NOW), QUIET);
-        assert_eq!(fresh, Liveness::Remote);
-        let stale = liveness(&c, None, "node2", false, at(NOW), SILENT);
-        assert_eq!(stale, Liveness::Abandoned);
-    }
-
-    #[test]
-    fn a_legacy_record_is_left_alone_during_a_rolling_update() {
-        let c = Claim::default();
-        let recent = liveness(
-            &c,
-            Some("2026-09-14T11:00:00Z"),
-            "node2",
-            false,
-            at(NOW),
-            QUIET,
+        assert_eq!(
+            liveness(&claim("node1"), "node1", false, QUIET),
+            Liveness::Abandoned
         );
-        assert_eq!(recent, Liveness::Remote);
-        let old = liveness(
-            &c,
-            Some("2026-09-14T06:00:00Z"),
-            "node2",
-            false,
-            at(NOW),
-            QUIET,
+        assert_eq!(
+            liveness(&claim("node1"), "node1", true, SILENT),
+            Liveness::Driving
         );
-        assert_eq!(old, Liveness::Abandoned);
-        let undated = liveness(&c, None, "node2", false, at(NOW), QUIET);
-        assert_eq!(undated, Liveness::Abandoned);
     }
 
     #[test]
@@ -374,32 +307,23 @@ mod tests {
         let mut seen = Seen::new();
         let t0 = Instant::now();
         let s = |secs| t0 + Duration::from_secs(secs);
-        assert_eq!(silence_in(&mut seen, "rs-1", Some("h1"), t0), QUIET);
-        assert_eq!(
-            silence_in(&mut seen, "rs-1", Some("h1"), s(90)),
-            Duration::from_secs(90)
-        );
-        // A new heartbeat value restarts the count.
-        assert_eq!(silence_in(&mut seen, "rs-1", Some("h2"), s(100)), QUIET);
-        assert_eq!(
-            silence_in(&mut seen, "rs-1", Some("h2"), s(130)),
-            Duration::from_secs(30)
-        );
+        assert_eq!(silence_in(&mut seen, "rs-1", "h1", t0), QUIET);
+        assert_eq!(silence_in(&mut seen, "rs-1", "h1", s(90)), Duration::from_secs(90));
+        // A new heartbeat value restarts the count — however old its timestamp
+        // looks, which is what makes this immune to another node's clock.
+        assert_eq!(silence_in(&mut seen, "rs-1", "h2", s(100)), QUIET);
+        assert_eq!(silence_in(&mut seen, "rs-1", "h2", s(130)), Duration::from_secs(30));
         // Ids are timed independently.
-        assert_eq!(silence_in(&mut seen, "rs-2", None, s(130)), QUIET);
+        assert_eq!(silence_in(&mut seen, "rs-2", "h1", s(130)), QUIET);
     }
 
     #[test]
     fn ids_unseen_for_a_day_are_forgotten() {
         let mut seen = Seen::new();
         let t0 = Instant::now();
-        silence_in(&mut seen, "old", Some("h"), t0);
-        silence_in(
-            &mut seen,
-            "new",
-            Some("h"),
-            t0 + FORGET_AFTER + Duration::from_secs(1),
-        );
+        silence_in(&mut seen, "old", "h", t0);
+        let later = t0 + FORGET_AFTER + Duration::from_secs(1);
+        silence_in(&mut seen, "new", "h", later);
         assert!(!seen.contains_key("old"));
         assert!(seen.contains_key("new"));
     }
@@ -433,7 +357,6 @@ mod tests {
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Rec {
         id: String,
-        started_at: String,
         state: String,
         #[serde(flatten)]
         claim: Claim,
@@ -442,9 +365,6 @@ mod tests {
     impl Claimed for Rec {
         fn id(&self) -> &str {
             &self.id
-        }
-        fn started_at(&self) -> &str {
-            &self.started_at
         }
         fn is_running(&self) -> bool {
             self.state == "running"
@@ -457,60 +377,47 @@ mod tests {
         }
     }
 
+    fn rec(id: &str, state: &str, claim: Claim) -> Rec {
+        Rec {
+            id: id.into(),
+            state: state.into(),
+            claim,
+        }
+    }
+
     #[test]
     fn a_heartbeat_only_touches_running_records_this_process_drives() {
         let mut sets = vec![
-            Rec {
-                id: "a".into(),
-                started_at: NOW.into(),
-                state: "running".into(),
-                claim: Claim::default(),
-            },
-            Rec {
-                id: "b".into(),
-                started_at: NOW.into(),
-                state: "running".into(),
-                claim: claim("node2", Some("2026-09-14T11:59:59Z")),
-            },
-            Rec {
-                id: "c".into(),
-                started_at: NOW.into(),
-                state: "succeeded".into(),
-                claim: Claim::default(),
-            },
+            rec("a", "running", claim("node1")),
+            rec("b", "running", claim("node2")),
+            rec("c", "succeeded", claim("node1")),
         ];
         beat(&mut sets, &["a".into(), "c".into()], "node1", at(NOW));
-        assert_eq!(sets[0].claim.owner, "node1");
+        assert_eq!(sets[0].claim.heartbeat, at(NOW).to_rfc3339());
         assert_eq!(
-            sets[0].claim.heartbeat.as_deref(),
-            Some(at(NOW).to_rfc3339().as_str())
+            sets[1].claim, claim("node2"),
+            "a record this process does not drive is not ours to stamp"
         );
         assert_eq!(
-            sets[1].claim.owner, "node2",
-            "another node's record is not ours to stamp"
-        );
-        assert!(
-            sets[2].claim.owner.is_empty(),
+            sets[2].claim, claim("node1"),
             "a finished record needs no heartbeat"
         );
     }
 
     #[test]
-    fn a_flattened_claim_round_trips_inside_a_record() {
-        let r: Rec = serde_json::from_str(
-            r#"{"id":"x","started_at":"t","state":"running","owner":"n1","heartbeat":"h"}"#,
-        )
-        .unwrap();
+    fn a_claim_is_part_of_every_record_and_required() {
+        let r: Rec =
+            serde_json::from_str(r#"{"id":"x","state":"running","owner":"n1","heartbeat":"h"}"#)
+                .unwrap();
         assert_eq!(r.claim.owner, "n1");
-        let legacy: Rec =
-            serde_json::from_str(r#"{"id":"x","started_at":"t","state":"running"}"#).unwrap();
-        assert_eq!(legacy.claim, Claim::default());
+        let unclaimed = serde_json::from_str::<Rec>(r#"{"id":"x","state":"running"}"#);
+        assert!(unclaimed.is_err(), "a record without its claim does not parse");
     }
 
     #[test]
-    fn claims_serialize_compactly_and_legacy_records_parse() {
-        let v: Claim = serde_json::from_str("{}").unwrap();
-        assert_eq!(v, Claim::default());
-        assert_eq!(serde_json::to_string(&Claim::default()).unwrap(), "{}");
+    fn a_new_claim_names_this_node_and_the_time() {
+        let c = Claim::mine(at(NOW));
+        assert_eq!(c.owner, crate::system::hostname());
+        assert_eq!(c.heartbeat, at(NOW).to_rfc3339());
     }
 }
