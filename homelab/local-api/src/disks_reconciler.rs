@@ -4778,8 +4778,15 @@ mod tests {
         assert_eq!(
             wire,
             [
-                "", "active", "creating", "retrying", "blocked", "draining", "removing",
-                "removable", "unknown"
+                "",
+                "active",
+                "creating",
+                "retrying",
+                "blocked",
+                "draining",
+                "removing",
+                "removable",
+                "unknown"
             ]
         );
         assert_eq!(Phase::default(), Phase::Unset);

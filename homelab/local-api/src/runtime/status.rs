@@ -250,7 +250,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_status_endpoint_lists_the_registered_controllers() {
-        super::super::registry().register("test-status-endpoint", Scope::Node, Duration::from_secs(1));
+        super::super::registry().register(
+            "test-status-endpoint",
+            Scope::Node,
+            Duration::from_secs(1),
+        );
         let axum::Json(body) = handler().await;
         let names: Vec<&str> = body["controllers"]
             .as_array()

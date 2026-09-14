@@ -43,7 +43,9 @@ where
     let Some(_guard) = lock::try_acquire_in(dir, &lock_name(job))? else {
         // Not run, and not a failure: whoever holds the lock (the boot unit, or a
         // `local-api storage` run by hand) is doing this very job right now.
-        return Ok(Tick::Idle(format!("another run of {job} holds its lock right now")));
+        return Ok(Tick::Idle(format!(
+            "another run of {job} holds its lock right now"
+        )));
     };
     f().await?;
     Ok(Tick::Done)

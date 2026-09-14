@@ -197,7 +197,10 @@ pub(crate) fn decide(
 ) -> LeaseDecision {
     let spec = &lease["spec"];
     let holder = spec["holderIdentity"].as_str().unwrap_or("");
-    let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS).max(0);
+    let dur = spec["leaseDurationSeconds"]
+        .as_i64()
+        .unwrap_or(LEASE_SECS)
+        .max(0);
     let expired = unchanged > Duration::from_secs(dur.unsigned_abs());
     if holder != identity && !holder.is_empty() && !expired {
         return LeaseDecision::Yield;
@@ -303,7 +306,10 @@ mod tests {
         let now = Utc::now();
         assert!(holds_live(&lease("n1", 5, now), "n1", now));
         assert!(!holds_live(&lease("n1", 31, now), "n1", now), "expired");
-        assert!(!holds_live(&lease("n2", 5, now), "n1", now), "someone else's");
+        assert!(
+            !holds_live(&lease("n2", 5, now), "n1", now),
+            "someone else's"
+        );
         let unreadable = json!({"spec": {"holderIdentity": "n1", "renewTime": "garbage"}});
         assert!(!holds_live(&unreadable, "n1", now));
     }

@@ -393,7 +393,10 @@ mod tests {
                 "kubectl get configmap yolab-test",
                 "Error from server (NotFound): configmaps \"yolab-test\" not found",
             )
-            .ok("kubectl get configmap yolab-test", &cm(r#"["theirs"]"#, "4"))
+            .ok(
+                "kubectl get configmap yolab-test",
+                &cm(r#"["theirs"]"#, "4"),
+            )
             .fail(
                 "kubectl-create",
                 "Error from server (AlreadyExists): configmaps \"yolab-test\" already exists",
@@ -408,7 +411,10 @@ mod tests {
             .into_iter()
             .find(|c| c.starts_with("kubectl-replace"))
             .expect("retried as a replace");
-        assert!(replace.contains("theirs") && replace.contains("ours"), "{replace}");
+        assert!(
+            replace.contains("theirs") && replace.contains("ours"),
+            "{replace}"
+        );
     }
 
     #[tokio::test]
