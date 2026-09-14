@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use serde_json::Value;
 
+use crate::error::Outcome;
 use crate::host::Host;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,7 +371,9 @@ async fn clear_stale_mappings<H: Host>(host: &H, pool: &str, name: &str) {
                 .await
                 .is_ok_and(|o| o.success)
             {
-                let _ = host.run_cmd("umount", &["-l", target.as_str()]).await;
+                host.run_cmd("umount", &["-l", target.as_str()])
+                    .await
+                    .warn_on_err(format!("lazy-unmount stale {target}"));
             }
         }
         if !host
@@ -548,9 +551,11 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
     let usable = mounted && is_readable_dir(&probe) && snapshotter_is_coherent(&probe);
 
     if mounted {
-        let _ = host.run_cmd("umount", &[probe_s.as_str()]).await;
+        host.run_cmd("umount", &[probe_s.as_str()])
+            .await
+            .warn_on_err(format!("unmount the probe mount {probe_s}"));
     }
-    let _ = std::fs::remove_dir(&probe);
+    std::fs::remove_dir(&probe).debug_on_err(format!("remove {probe_s}"));
     usable
 }
 
@@ -620,9 +625,11 @@ async fn discard_and_swap<H: Host>(host: &H, root: &Path, croot: &Path, dev: &st
         .await
         .is_ok_and(|o| o.success);
     if mountable {
-        let _ = host.run_cmd("umount", &[probe_s.as_str()]).await;
+        host.run_cmd("umount", &[probe_s.as_str()])
+            .await
+            .warn_on_err(format!("unmount the probe mount {probe_s}"));
     }
-    let _ = std::fs::remove_dir(&probe);
+    std::fs::remove_dir(&probe).debug_on_err(format!("remove {probe_s}"));
     if !mountable {
         bail!("{dev} would not mount — staying on the root disk");
     }
@@ -721,14 +728,48 @@ async fn mount_the_store<H: Host>(
 /// failures. "Ceph cannot serve the image store" is a state this unit is
 /// designed to survive by staying on the root disk, and reporting it as a unit
 /// failure would only add a red service to a node that is, by then, working.
-async fn resume_k3s<H: Host>(host: &H, was_active: bool) -> Result<()> {
-    if was_active {
+///
+/// Also restarts k3s when a PREVIOUS run stopped it and never got here: the
+/// marker `stop_k3s` leaves survives the process (it lives in /run, so not a
+/// reboot). Now that local-api runs this periodically, a local-api restart in
+/// the middle of a repair — a deploy — would otherwise leave k3s stopped, and
+/// the next run would read "k3s is not active" as "it was never running".
+async fn resume_k3s<H: Host>(host: &H, root: &Path, was_active: bool) -> Result<()> {
+    let marker = k3s_stop_marker(root);
+    if was_active || marker.exists() {
         tracing::info!("starting k3s again");
-        let _ = host
+        match host
             .systemctl(&["start", "--no-block", "k3s.service"])
-            .await;
+            .await
+        {
+            Ok(o) if o.success => {
+                std::fs::remove_file(&marker).debug_on_err("clear the k3s-stopped marker");
+            }
+            Ok(o) => tracing::warn!("could not start k3s: {}", o.stderr.trim()),
+            Err(e) => tracing::warn!("could not start k3s: {e}"),
+        }
     }
     Ok(())
+}
+
+fn k3s_stop_marker(root: &Path) -> PathBuf {
+    root.join("run/yolab/containerd-store-stopped-k3s")
+}
+
+/// Stops k3s for a repair, leaving a marker first so whichever run comes next
+/// knows to start it again even if this one never finishes.
+async fn stop_k3s<H: Host>(host: &H, root: &Path, why: &str) {
+    tracing::info!("stopping k3s to {why}");
+    let marker = k3s_stop_marker(root);
+    marker
+        .parent()
+        .map(std::fs::create_dir_all)
+        .transpose()
+        .and_then(|_| std::fs::write(&marker, why))
+        .warn_on_err("write the k3s-stopped marker");
+    host.systemctl(&["stop", "k3s.service"])
+        .await
+        .warn_on_err("stop k3s");
 }
 
 pub async fn run<H: Host>(
@@ -805,8 +846,7 @@ pub async fn run<H: Host>(
                  Rebuilding the image store."
             );
             if was_active {
-                tracing::info!("stopping k3s to rebuild the incoherent image store");
-                let _ = host.systemctl(&["stop", "k3s.service"]).await;
+                stop_k3s(host, root, "rebuild the incoherent image store").await;
             }
             let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
             release_pinning_overlays(host, &mounts, &croot_s).await;
@@ -815,7 +855,9 @@ pub async fn run<H: Host>(
                 .await
                 .is_ok_and(|o| o.success)
             {
-                let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
+                host.run_cmd("umount", &["-l", &croot_s])
+                    .await
+                    .warn_on_err(format!("lazy-unmount {croot_s}"));
             }
             // The one place that forces a rebuild rather than letting
             // mount_the_store decide: the filesystem WILL mount and read
@@ -864,8 +906,7 @@ pub async fn run<H: Host>(
             // otherwise be recreating the mounts being torn down. The restart is the
             // shared one at the bottom, driven by `was_active` captured above.
             if was_active {
-                tracing::info!("stopping k3s to release the dead image store");
-                let _ = host.systemctl(&["stop", "k3s.service"]).await;
+                stop_k3s(host, root, "release the dead image store").await;
             }
 
             let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
@@ -878,7 +919,9 @@ pub async fn run<H: Host>(
                 .await
                 .is_ok_and(|o| o.success)
             {
-                let _ = host.run_cmd("umount", &["-l", &croot_s]).await;
+                host.run_cmd("umount", &["-l", &croot_s])
+                    .await
+                    .warn_on_err(format!("lazy-unmount {croot_s}"));
             }
 
             // Deliberately NOT `needs_rebuild = true`. For a LATCHED SHUTDOWN a
@@ -900,7 +943,7 @@ pub async fn run<H: Host>(
     // repaired perfectly, with its runtime never started again.
     if !host.reachable().await {
         tracing::info!("ceph not reachable — containerd stays on the root disk");
-        return resume_k3s(host, was_active).await;
+        return resume_k3s(host, root, was_active).await;
     }
     match image_state(host, &policy.pool_name, node).await {
         ImageState::Present => {}
@@ -909,7 +952,7 @@ pub async fn run<H: Host>(
                 "no {}/{node} image yet — containerd stays on the root disk",
                 policy.pool_name
             );
-            return resume_k3s(host, was_active).await;
+            return resume_k3s(host, root, was_active).await;
         }
         // The case that used to masquerade as `Absent`. Staying on the root disk
         // is not a degraded outcome here, it is the whole recovery: every byte
@@ -930,7 +973,7 @@ pub async fn run<H: Host>(
             // mapping has to go too, or it wedges the OSD start path and with it
             // every deploy on this node — see `abandon_mapping`.
             abandon_mapping(host, &policy.pool_name, node).await;
-            return resume_k3s(host, was_active).await;
+            return resume_k3s(host, root, was_active).await;
         }
     }
 
@@ -942,8 +985,7 @@ pub async fn run<H: Host>(
     // Idempotent by design: `stop` on an already-stopped unit is a no-op, so the
     // recovery branch having stopped it costs nothing here.
     if was_active {
-        tracing::info!("stopping k3s to move its image store onto Ceph");
-        let _ = host.systemctl(&["stop", "k3s.service"]).await;
+        stop_k3s(host, root, "move its image store onto Ceph").await;
     }
 
     let result = mount_the_store(host, root, node, policy, needs_rebuild).await;
@@ -951,7 +993,9 @@ pub async fn run<H: Host>(
     // Not `?` on either: the restart has to happen even when mounting failed —
     // that is the case where the node most needs its runtime back — so the
     // start is issued first and `mount_the_store`'s result reported after.
-    let _ = resume_k3s(host, was_active).await;
+    resume_k3s(host, root, was_active)
+        .await
+        .warn_on_err("resume k3s");
 
     result
 }
@@ -1666,7 +1710,7 @@ mod tests {
         device_backing: PathBuf,
     }
 
-    fn ok_output(stdout: &str) -> Result<CommandOutput> {
+    fn ok_output(stdout: &str) -> crate::host::HostResult<CommandOutput> {
         Ok(CommandOutput {
             success: true,
             stdout: stdout.to_string(),
@@ -1675,7 +1719,7 @@ mod tests {
     }
 
     fn copy_dir_all(src: &Path, dst: &Path) {
-        let _ = std::fs::create_dir_all(dst);
+        std::fs::create_dir_all(dst).unwrap();
         let Ok(entries) = std::fs::read_dir(src) else {
             return;
         };
@@ -1684,57 +1728,57 @@ mod tests {
             if entry.path().is_dir() {
                 copy_dir_all(&entry.path(), &dest);
             } else {
-                let _ = std::fs::copy(entry.path(), dest);
+                std::fs::copy(entry.path(), dest).unwrap();
             }
         }
     }
 
     #[allow(clippy::manual_async_fn)]
     impl Host for SimulatedDisk {
-        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph(args)
         }
         fn ceph_json<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<Value>> + Send + 'a {
             self.inner.ceph_json(args)
         }
         fn ceph_volume<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph_volume(args)
         }
         fn kubectl<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.kubectl(args)
         }
         fn kubectl_json<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<Value>> + Send + 'a {
             self.inner.kubectl_json(args)
         }
         fn kubectl_apply<'a>(
             &self,
             manifest: &'a str,
-        ) -> impl Future<Output = Result<()>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<()>> + Send + 'a {
             self.inner.kubectl_apply(manifest)
         }
         fn systemctl<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<CommandOutput>> + Send + 'a {
             self.inner.systemctl(args)
         }
         fn run_cmd<'a>(
             &self,
             bin: &'a str,
             args: &'a [&'a str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
             async move {
                 match bin {

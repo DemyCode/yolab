@@ -889,7 +889,11 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     let mut safe_to_destroy = Vec::new();
     let mut ok_to_stop = Vec::new();
     for id in ids {
-        if crate::ceph_cli::osd_safe_to_destroy(id).await {
+        // Display only: an unanswered check shows as "not safe", never as safe.
+        if crate::ceph::destructive::safe_to_destroy(&crate::host::RealHost, id)
+            .await
+            .is_ok_and(|p| p.is_some())
+        {
             safe_to_destroy.push(id);
         }
         // ok-to-stop exits 0 when losing this OSD would not block I/O.

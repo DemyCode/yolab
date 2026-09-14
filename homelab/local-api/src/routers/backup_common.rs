@@ -12,10 +12,15 @@ use tokio::process::Command;
 const MANAGED_BY: (&str, &str) = ("app.kubernetes.io/managed-by", "yolab");
 
 pub(crate) async fn kubectl_apply(manifest: &str) -> anyhow::Result<()> {
-    crate::kubectl::apply(manifest).await
+    Ok(crate::kubectl::apply(manifest).await?)
 }
 
-pub(crate) async fn kubectl_get_secret(name: &str, ns: &str) -> Option<HashMap<String, String>> {
+/// A Secret's data: `Ok(None)` only when it does not exist. See
+/// `kubectl::get_secret` for the two data-loss bugs the old `Option` caused.
+pub(crate) async fn kubectl_get_secret(
+    name: &str,
+    ns: &str,
+) -> Result<Option<HashMap<String, String>>, crate::exec::CmdError> {
     crate::kubectl::get_secret(name, ns).await
 }
 
@@ -24,7 +29,7 @@ pub(crate) async fn kubectl_apply_secret(
     ns: &str,
     data: &[(&str, &str)],
 ) -> anyhow::Result<()> {
-    crate::kubectl::apply_secret(name, ns, data, &[MANAGED_BY]).await
+    Ok(crate::kubectl::apply_secret(name, ns, data, &[MANAGED_BY]).await?)
 }
 
 pub(crate) fn random_hex(bytes: usize) -> String {
@@ -244,7 +249,26 @@ pub(crate) async fn restic_unlock_reporting(
 /// anything or calls yolab-external; safe to call from the reconcile loop on
 /// every tick.
 pub(crate) async fn read_master_config() -> Option<BackupConfig> {
-    let data = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await?;
+    match load_master_config().await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::debug!("backup config unreadable right now: {e}");
+            None
+        }
+    }
+}
+
+/// `read_master_config` with the difference kept: `Ok(None)` means backups were
+/// never enabled, `Err` means the answer is unknown right now. Anything that
+/// would WRITE the config must use this one.
+pub(crate) async fn load_master_config() -> Result<Option<BackupConfig>, crate::exec::CmdError> {
+    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await? else {
+        return Ok(None);
+    };
+    Ok(config_from_secret(&data))
+}
+
+fn config_from_secret(data: &HashMap<String, String>) -> Option<BackupConfig> {
     let restic_password = data.get("restic_password").cloned().unwrap_or_default();
     if restic_password.is_empty() {
         return None;
@@ -263,7 +287,10 @@ pub(crate) async fn read_master_config() -> Option<BackupConfig> {
 /// the reconcile loop uses `read_master_config` so a not-yet-configured cluster never
 /// triggers provisioning as a side effect of a scheduling tick.
 pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupConfig> {
-    if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
+    // `?`, not `if let Some`: an unreadable Secret is NOT an absent one. Treating
+    // it as absent provisioned fresh storage and a fresh restic password, and
+    // wrote them over the real ones — every existing backup unreadable.
+    if let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await? {
         let restic_password = data.get("restic_password").cloned().unwrap_or_default();
         if !restic_password.is_empty() {
             return Ok(BackupConfig {
@@ -363,7 +390,11 @@ pub(crate) async fn refresh_master_config(url: &str, token: &str) -> anyhow::Res
     let s3: S3StorageInfo = resp.json().await.map_err(|e| anyhow::anyhow!(e))?;
 
     // Preserve the existing restic_password — only the S3-side credentials rotate.
-    let restic_password = match kubectl_get_secret(MASTER_SECRET, MASTER_NS).await {
+    //
+    // The read is `?`: if the Secret cannot be read, stop. Falling through to
+    // `random_hex` here replaced the encryption password of every existing
+    // backup with a new one whenever the API blipped during a refresh.
+    let restic_password = match kubectl_get_secret(MASTER_SECRET, MASTER_NS).await? {
         Some(data)
             if !data
                 .get("restic_password")

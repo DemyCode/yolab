@@ -16,6 +16,11 @@
 //!    moves when there is no other copy) and the lost placement groups of `images`
 //!    and `.mgr` are rebuilt empty. App data is never touched here.
 //!
+//!    THIS IS THE ONLY PLACE THAT DOES IT. A separate `yolab-images-recover` systemd
+//!    timer used to rebuild the same `images` placement groups on its own per-node
+//!    clock, from its own marker file, without marking the lost OSDs out first — two
+//!    owners for one destructive action. It is gone.
+//!
 //! 3. Recover, when the owner presses "Recover health from backup". Not a repair —
 //!    a reset. Nothing a half-broken cluster reports is trusted:
 //!
@@ -30,7 +35,11 @@
 //! API cannot run any of this; with one mon and one etcd member per machine, losing
 //! one of two machines stops both.
 //!
-//! Single writer: the loop acts only on the disk-reconciler lease holder.
+//! Single writer: the controller is cluster-scoped, so it runs only on the leader.
+//! The state record is compare-and-swapped (see `records`), and each writer changes
+//! only its own half of it — the leader's tick owns `loss`, the owner's button and
+//! the recovery steps own `recovery` — so a button press on one node and a tick on
+//! another can no longer overwrite each other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -41,22 +50,28 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::ceph::destructive::{self, DisposablePg, RecoveryMandate, DISPOSABLE_POOLS};
+use crate::ceph::model::{self, OsdDump, PgBrief};
+pub(crate) use crate::ceph::model::PgsByPool;
+use crate::error::Outcome;
 use crate::host::{Host, RealHost};
+use crate::records::Store;
+use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
 use crate::AppState;
 
-const STATE_CM: &str = "yolab-storage-heal";
-const STATE_NS: &str = "kube-system";
+const STATE: Store = Store {
+    name: "yolab-storage-heal",
+    namespace: "kube-system",
+    key: "state",
+};
 const CSI_NS: &str = "rook-ceph";
 const MANAGED_SELECTOR: &str = "yolab.io/managed=true";
 
-const FS_NAME: &str = "yolab-fs";
+const FS_NAME: &str = destructive::RECOVERABLE_FS;
 const FS_META_POOL: &str = "yolab-fs-metadata";
 const FS_DATA_POOL: &str = "yolab-fs-data0";
 const FS_SUBVOLUME_GROUP: &str = "csi";
 const FS_POOL_PGS: [(&str, u32); 2] = [(FS_META_POOL, 16), (FS_DATA_POOL, 32)];
-
-/// Pools holding nothing a machine cannot fetch or regenerate again.
-const DISPOSABLE_POOLS: &[&str] = &[".mgr", "images"];
 
 const TICK: Duration = Duration::from_secs(15);
 
@@ -74,8 +89,6 @@ fn disposable_grace() -> Duration {
 }
 
 // ── Persisted state ───────────────────────────────────────────────────────────
-
-type PgsByPool = BTreeMap<String, BTreeSet<String>>;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 struct HealState {
@@ -127,6 +140,13 @@ impl Recovery {
     fn running(&self) -> bool {
         self.finished_at.is_none()
     }
+
+    /// The authority this record carries to destroy things. Only a running,
+    /// persisted recovery has one.
+    fn mandate(&self) -> Option<RecoveryMandate> {
+        self.running()
+            .then(|| RecoveryMandate::from_persisted_recovery(self.started_at, self.osds.clone()))
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,48 +196,44 @@ enum AppOutcome {
     Failed { error: String },
 }
 
+/// Absent is the normal state of a healthy cluster; unreadable is not, and acting
+/// without knowing whether a recovery is half done is how two start.
 async fn read_state<H: Host>(host: &H) -> Result<HealState> {
-    match host
-        .kubectl_json(&["get", "configmap", STATE_CM, "-n", STATE_NS, "-o", "json"])
-        .await
-    {
-        Ok(v) => {
-            if v["kind"].as_str() != Some("ConfigMap") {
-                bail!("{STATE_CM}: unreadable");
-            }
-            Ok(serde_json::from_str(
-                v["data"]["state"].as_str().unwrap_or("{}"),
-            )?)
-        }
-        // Absent is the normal state of a healthy cluster; unreadable is not, and
-        // acting without knowing whether a recovery is half done is how two start.
-        Err(e) if crate::kubectl::is_not_found(&e) => Ok(HealState::default()),
-        Err(e) => Err(e),
-    }
+    Ok(STATE.read(host).await?)
 }
 
-async fn write_state<H: Host>(host: &H, state: &HealState) -> Result<()> {
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": { "name": STATE_CM, "namespace": STATE_NS },
-        "data": { "state": serde_json::to_string(state)? },
-    });
-    host.kubectl_apply(&manifest.to_string()).await
+/// Writes only `loss`, on top of whatever `recovery` is stored right now.
+async fn write_loss<H: Host>(host: &H, loss: &Option<Loss>) -> Result<()> {
+    STATE
+        .update(host, |s: &mut HealState| s.loss = loss.clone())
+        .await?;
+    Ok(())
 }
 
-pub(crate) async fn is_recovering() -> bool {
-    read_state(&RealHost)
-        .await
-        .is_ok_and(|s| s.recovery.as_ref().is_some_and(Recovery::running))
+/// Writes only `recovery`, on top of whatever `loss` is stored right now.
+async fn write_recovery<H: Host>(host: &H, recovery: &Option<Recovery>) -> Result<()> {
+    STATE
+        .update(host, |s: &mut HealState| s.recovery = recovery.clone())
+        .await?;
+    Ok(())
+}
+
+/// Whether a recovery is running. `Err` when the state cannot be read — callers
+/// that gate on this must treat that as "maybe", which the runtime does.
+pub(crate) async fn recovery_running() -> Result<bool> {
+    let s = read_state(&RealHost).await?;
+    Ok(s.recovery.as_ref().is_some_and(Recovery::running))
 }
 
 /// Why a backup must not run right now, if it must not. Backing up while app data
 /// is lost — or while a recovery is putting apps back — would upload broken or
-/// empty volumes as the newest copy of those apps.
-pub(crate) async fn backups_blocked() -> Option<&'static str> {
-    let state = read_state(&RealHost).await.ok()?;
-    blocked_reason(&state)
+/// empty volumes as the newest copy of those apps. Not being able to tell is a
+/// reason too: this used to answer "go ahead" whenever the state was unreadable.
+pub(crate) async fn backups_blocked() -> Option<String> {
+    match read_state(&RealHost).await {
+        Ok(state) => blocked_reason(&state).map(str::to_string),
+        Err(e) => Some(format!("cannot read the storage health state ({e:#})")),
+    }
 }
 
 fn blocked_reason(state: &HealState) -> Option<&'static str> {
@@ -234,81 +250,15 @@ fn blocked_reason(state: &HealState) -> Option<&'static str> {
 
 // ── Reading Ceph ──────────────────────────────────────────────────────────────
 
-fn pg_items(pgs: &Value) -> &[Value] {
-    pgs["pg_stats"]
-        .as_array()
-        .or_else(|| pgs.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-}
-
-fn pool_names(dump: &Value) -> HashMap<i64, String> {
-    dump["pools"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|p| Some((p["pool"].as_i64()?, p["pool_name"].as_str()?.to_string())))
-        .collect()
-}
-
-fn pool_of(pgid: &str) -> Option<i64> {
-    pgid.split('.').next()?.parse().ok()
-}
-
-fn osds_where(dump: &Value, field: &str, value: i64) -> BTreeSet<i64> {
-    dump["osds"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|o| o[field].as_i64() == Some(value))
-        .filter_map(|o| o["osd"].as_i64())
-        .collect()
-}
-
-fn osd_list(v: &Value) -> Option<Vec<i64>> {
-    v.as_array()
-        .map(|a| a.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
-        .filter(|a| !a.is_empty())
-}
-
-fn is_active(pg: &Value) -> bool {
-    pg["state"]
-        .as_str()
-        .is_some_and(|s| s.split('+').any(|x| x == "active"))
-}
-
-/// Placement groups whose every holder is down, by pool name, and those holders.
-///
-/// Read while the OSDs are still `in`: that is when the acting set still names where
-/// the data was. A group Ceph merely has no statistics for (`unknown`, right after a
-/// mgr restart) still maps to its live holders, so it never counts.
-fn lost_pgs(dump: &Value, pgs: &Value) -> (PgsByPool, BTreeSet<i64>) {
-    let down = osds_where(dump, "up", 0);
-    let names = pool_names(dump);
-    let mut lost = PgsByPool::new();
-    let mut holders = BTreeSet::new();
-    if down.is_empty() {
-        return (lost, holders);
-    }
-    for pg in pg_items(pgs) {
-        let Some(pgid) = pg["pgid"].as_str() else {
-            continue;
-        };
-        let Some(on) = osd_list(&pg["acting"]).or_else(|| osd_list(&pg["up"])) else {
-            continue;
-        };
-        if !on.iter().all(|id| down.contains(id)) {
-            continue;
-        }
-        let Some(pool) = pool_of(pgid).and_then(|id| names.get(&id)) else {
-            continue;
-        };
-        lost.entry(pool.clone())
-            .or_default()
-            .insert(pgid.to_string());
-        holders.extend(on);
-    }
-    (lost, holders)
+fn active_in_pools(pgs: &[PgBrief], pool_ids: &HashSet<i64>) -> (usize, usize) {
+    let in_pools: Vec<&PgBrief> = pgs
+        .iter()
+        .filter(|pg| pg.pool().is_some_and(|p| pool_ids.contains(&p)))
+        .collect();
+    (
+        in_pools.iter().filter(|pg| pg.is_active()).count(),
+        in_pools.len(),
+    )
 }
 
 /// Folds what this tick found into the record, which only ever grows until the
@@ -330,12 +280,12 @@ fn merge_loss(loss: &mut Option<Loss>, found: PgsByPool, holders: BTreeSet<i64>,
 }
 
 /// Every recorded OSD running again means the disks came back: nothing is lost.
-fn reconnected(loss: &Loss, dump: &Value) -> bool {
-    let up = osds_where(dump, "up", 1);
+fn reconnected(loss: &Loss, dump: &OsdDump) -> bool {
+    let up = dump.up();
     loss.osds.iter().all(|id| up.contains(id))
 }
 
-// ── The loop ──────────────────────────────────────────────────────────────────
+// ── The controller ────────────────────────────────────────────────────────────
 
 /// Reinstalling apps from backup. A seam so the recovery can be tested without
 /// restic, VolSync or helm.
@@ -357,18 +307,31 @@ impl AppRecovery for RealApps {
     }
 }
 
-pub async fn run() {
-    tokio::time::sleep(Duration::from_secs(60)).await;
-    let grace = disposable_grace();
-    loop {
-        if crate::disks_reconciler::is_reconcile_leader().await
-            && !crate::routers::restore::is_running().await
-        {
-            if let Err(e) = tick(&RealHost, &RealApps, grace, now_secs()).await {
-                tracing::warn!("storage-heal: {e:#}");
-            }
-        }
-        tokio::time::sleep(TICK).await;
+pub struct StorageHealController;
+
+impl Controller for StorageHealController {
+    fn name(&self) -> &'static str {
+        "storage-heal"
+    }
+    fn scope(&self) -> Scope {
+        Scope::Cluster
+    }
+    fn interval(&self) -> Duration {
+        TICK
+    }
+    fn requires(&self) -> &'static [Requirement] {
+        &[Requirement::KubeApi]
+    }
+    fn pauses_during(&self) -> &'static [Activity] {
+        // Not StorageRecovery: this controller IS the storage recovery.
+        &[Activity::Restore]
+    }
+    fn not_before_uptime(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
+        tick(&RealHost, &RealApps, disposable_grace(), now_secs()).await?;
+        Ok(Tick::Done)
     }
 }
 
@@ -388,79 +351,78 @@ async fn tick<H: Host, A: AppRecovery>(
     if !host.reachable().await {
         return Ok(());
     }
-    let mut state = read_state(host).await?;
+    let state = read_state(host).await?;
     if state.recovery.as_ref().is_some_and(Recovery::running) {
+        let mut state = state;
         return continue_recovery(host, apps, &mut state, now).await;
     }
 
-    let dump = host.ceph_json(&["osd", "dump"]).await?;
-    let pgs = host.ceph_json(&["pg", "dump", "pgs_brief"]).await?;
+    let dump = host.osd_dump().await?;
+    let pgs = host.pgs_brief().await?;
 
-    let before = state.clone();
-    if state.loss.as_ref().is_some_and(|l| reconnected(l, &dump)) {
+    let mut loss = state.loss.clone();
+    if loss.as_ref().is_some_and(|l| reconnected(l, &dump)) {
         tracing::info!("storage-heal: every disk that held lost data is back");
-        state.loss = None;
+        loss = None;
     }
-    let (found, holders) = lost_pgs(&dump, &pgs);
-    merge_loss(&mut state.loss, found, holders, now);
-    if state != before {
+    let (found, holders) = model::lost_pgs(&dump, &pgs);
+    merge_loss(&mut loss, found, holders, now);
+    if loss != state.loss {
         // Persisted BEFORE anything below changes where Ceph maps those groups.
-        write_state(host, &state).await?;
+        write_loss(host, &loss).await?;
     }
 
-    let Some(loss) = state.loss.clone() else {
+    let Some(current) = loss.clone() else {
         return Ok(());
     };
-    let disposable: Vec<(&str, &String)> = DISPOSABLE_POOLS
+    let disposable: Vec<DisposablePg> = DISPOSABLE_POOLS
         .iter()
         .flat_map(|pool| {
-            loss.pgs
+            current
+                .pgs
                 .get(*pool)
                 .into_iter()
                 .flatten()
                 .map(move |pg| (*pool, pg))
         })
-        .filter(|(_, pg)| !loss.rebuilt.contains(*pg))
+        .filter(|(_, pg)| !current.rebuilt.contains(*pg))
+        .filter_map(|(pool, pg)| DisposablePg::new(&dump, pool, pg))
         .collect();
-    if disposable.is_empty() || now.saturating_sub(loss.detected_at) < grace.as_secs() {
+    if disposable.is_empty() || now.saturating_sub(current.detected_at) < grace.as_secs() {
         return Ok(());
     }
 
-    let still_in = osds_where(&dump, "in", 1);
+    let still_in = dump.is_in();
     let mut all_out = true;
-    for id in loss.osds.iter().filter(|id| still_in.contains(id)) {
+    for id in current.osds.iter().filter(|id| still_in.contains(id)) {
         all_out = false;
         tracing::warn!(
             "storage-heal: osd.{id} has been down since the loss began — marking it out so the \
              image store and mgr pool can be rebuilt on the disks that remain"
         );
-        if let Err(e) = host.ceph(&["osd", "out", &format!("osd.{id}")]).await {
-            tracing::warn!("storage-heal: could not mark osd.{id} out: {e}");
-        }
+        host.ceph(&["osd", "out", &format!("osd.{id}")])
+            .await
+            .warn_on_err(format!("storage-heal: mark osd.{id} out"));
     }
     // Next tick: the rebuilt groups must map to a disk that can hold them rather
     // than to the missing one, which only holds once the OSDs are seen out.
     if !all_out {
         return Ok(());
     }
-    let mut changed = false;
-    for (pool, pg) in disposable {
-        match host
-            .ceph(&["osd", "force-create-pg", pg, "--yes-i-really-mean-it"])
-            .await
-        {
-            Ok(_) => {
-                tracing::info!("storage-heal: rebuilt {pg} ({pool}) empty");
-                if let Some(l) = state.loss.as_mut() {
-                    l.rebuilt.insert(pg.clone());
-                    changed = true;
-                }
+    let mut rebuilt = current.rebuilt.clone();
+    for pg in &disposable {
+        match destructive::force_create_pg(host, pg).await {
+            Ok(()) => {
+                tracing::info!("storage-heal: rebuilt {} ({}) empty", pg.pgid(), pg.pool());
+                rebuilt.insert(pg.pgid().to_string());
             }
-            Err(e) => tracing::warn!("storage-heal: could not rebuild {pg}: {e}"),
+            Err(e) => tracing::warn!("storage-heal: could not rebuild {}: {e}", pg.pgid()),
         }
     }
-    if changed {
-        write_state(host, &state).await?;
+    if rebuilt != current.rebuilt {
+        let mut updated = current;
+        updated.rebuilt = rebuilt;
+        write_loss(host, &Some(updated)).await?;
     }
     Ok(())
 }
@@ -471,53 +433,72 @@ async fn managed_namespaces<H: Host>(host: &H) -> Result<Vec<String>> {
     let v = host
         .kubectl_json(&["get", "namespaces", "-l", MANAGED_SELECTOR, "-o", "json"])
         .await?;
-    Ok(v["items"]
+    let items = v["items"]
         .as_array()
-        .into_iter()
-        .flatten()
+        .ok_or_else(|| anyhow::anyhow!("kubectl get namespaces: no items list"))?;
+    Ok(items
+        .iter()
         .filter_map(|n| n["metadata"]["name"].as_str().map(str::to_string))
         .collect())
 }
 
-async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
-    let mut state = read_state(host).await?;
+/// Why a recovery cannot start from this state, if it cannot.
+fn recovery_refusal(state: &HealState, up: &BTreeSet<i64>) -> Option<String> {
     if state.recovery.as_ref().is_some_and(Recovery::running) {
-        bail!("a recovery is already running");
+        return Some("a recovery is already running".into());
     }
-    let Some(loss) = state.loss.clone() else {
-        bail!("no data is unavailable — there is nothing to recover");
+    let Some(loss) = state.loss.as_ref() else {
+        return Some("no data is unavailable — there is nothing to recover".into());
     };
     if !loss.needs_recovery() {
-        bail!("only data that rebuilds itself is unavailable — there is nothing to restore");
+        return Some(
+            "only data that rebuilds itself is unavailable — there is nothing to restore".into(),
+        );
     }
-    let dump = host.ceph_json(&["osd", "dump"]).await?;
-    let up = osds_where(&dump, "up", 1);
-    let back: Vec<i64> = loss
-        .osds
-        .iter()
-        .copied()
-        .filter(|id| up.contains(id))
-        .collect();
+    let back: Vec<i64> = loss.osds.iter().copied().filter(|id| up.contains(id)).collect();
     if !back.is_empty() {
-        bail!("a disk that held the data is running again ({back:?}) — wait for it to catch up");
+        return Some(format!(
+            "a disk that held the data is running again ({back:?}) — wait for it to catch up"
+        ));
+    }
+    None
+}
+
+async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
+    let state = read_state(host).await?;
+    let dump = host.osd_dump().await?;
+    if let Some(why) = recovery_refusal(&state, &dump.up()) {
+        bail!("{why}");
     }
     let removed = managed_namespaces(host).await?;
+    let up = dump.up();
+    // Decided inside the compare-and-swap, against the state as it is at the
+    // moment of writing: two presses (on two nodes) cannot both start one.
+    let started = STATE
+        .update(host, |s: &mut HealState| {
+            if let Some(why) = recovery_refusal(s, &up) {
+                return Err(why);
+            }
+            let osds = s.loss.as_ref().map(|l| l.osds.clone()).unwrap_or_default();
+            s.recovery = Some(Recovery {
+                step: Step::PurgeOsds,
+                started_at: now,
+                finished_at: None,
+                osds,
+                removed: removed.clone(),
+                apps: None,
+                outcomes: BTreeMap::new(),
+            });
+            Ok(())
+        })
+        .await?;
+    started.map_err(|why| anyhow::anyhow!(why))?;
     tracing::warn!(
-        "storage-heal: recovery from backup started — resetting storage, OSDs {:?}, {} app(s) \
-         to remove",
-        loss.osds,
+        "storage-heal: recovery from backup started — resetting storage, {} app(s) to remove",
         removed.len()
     );
-    state.recovery = Some(Recovery {
-        step: Step::PurgeOsds,
-        started_at: now,
-        finished_at: None,
-        osds: loss.osds,
-        removed,
-        apps: None,
-        outcomes: BTreeMap::new(),
-    });
-    write_state(host, &state).await
+    crate::runtime::wake("storage-heal");
+    Ok(())
 }
 
 // ── Running a recovery ────────────────────────────────────────────────────────
@@ -556,37 +537,53 @@ async fn continue_recovery<H: Host, A: AppRecovery>(
                      recovery cancelled"
                 );
                 state.recovery = None;
-                return write_state(host, state).await;
+                return write_recovery(host, &state.recovery).await;
             }
-            StepResult::Done => {}
-        }
-        let r = state.recovery.as_mut().expect("checked above");
-        match r.step.next() {
-            Some(step) => r.step = step,
-            None => {
-                r.finished_at = Some(now);
-                state.loss = None;
-                tracing::info!("storage-heal: recovery from backup finished");
+            StepResult::Done => {
+                if let Some(r) = state.recovery.as_mut() {
+                    match r.step.next() {
+                        Some(next) => r.step = next,
+                        None => {
+                            r.finished_at = Some(now);
+                            tracing::info!("storage-heal: recovery finished");
+                        }
+                    }
+                }
+                if state.recovery.as_ref().is_some_and(|r| !r.running()) {
+                    // The loss this recovery answered is consumed with it.
+                    let finished = state.recovery.clone();
+                    STATE
+                        .update(host, |s: &mut HealState| {
+                            s.recovery = finished.clone();
+                            s.loss = None;
+                        })
+                        .await?;
+                    state.loss = None;
+                } else {
+                    write_recovery(host, &state.recovery).await?;
+                }
             }
         }
-        write_state(host, state).await?;
     }
 }
 
 async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
     use StepResult::*;
+    let Some(mandate) = r.mandate() else {
+        bail!("recovery is not running — no step may run");
+    };
     match r.step {
         Step::PurgeOsds => {
-            let dump = host.ceph_json(&["osd", "dump"]).await?;
-            let up = osds_where(&dump, "up", 1);
+            let dump = host.osd_dump().await?;
+            let up = dump.up();
             if r.osds.iter().any(|id| up.contains(id)) {
                 return Ok(Cancel);
             }
             let existing = host.osd_ids().await?;
             for id in r.osds.iter().filter(|id| existing.contains(id)) {
-                if let Err(e) = host.osd_purge(*id).await {
-                    tracing::warn!("storage-heal: could not purge osd.{id}: {e}");
-                }
+                destructive::purge_lost(host, &mandate, *id)
+                    .await
+                    .warn_on_err(format!("storage-heal: purge osd.{id}"));
             }
             let left = host.osd_ids().await?;
             Ok(if r.osds.iter().any(|id| left.contains(id)) {
@@ -597,45 +594,9 @@ async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
         }
         Step::RemoveApps => remove_apps(host).await,
         Step::DeleteStorage => {
-            if fs_exists(host).await? {
-                host.ceph(&["fs", "fail", FS_NAME]).await?;
-                host.ceph(&["fs", "rm", FS_NAME, "--yes-i-really-mean-it"])
-                    .await?;
-            }
-            let existing = pools(host).await?;
-            let doomed: Vec<&str> = [FS_META_POOL, FS_DATA_POOL]
-                .into_iter()
-                .filter(|p| existing.contains(*p))
-                .collect();
-            if doomed.is_empty() {
-                return Ok(Done);
-            }
-            // Pool deletion stays off everywhere else. It is switched on for exactly
-            // these two names and switched off again whatever happened in between.
-            host.ceph(&["config", "set", "mon", "mon_allow_pool_delete", "true"])
-                .await?;
-            let mut result = Ok(());
-            for pool in doomed {
-                if let Err(e) = host
-                    .ceph(&[
-                        "osd",
-                        "pool",
-                        "delete",
-                        pool,
-                        pool,
-                        "--yes-i-really-really-mean-it",
-                    ])
-                    .await
-                {
-                    result = Err(e);
-                    break;
-                }
-            }
-            let off = host
-                .ceph(&["config", "set", "mon", "mon_allow_pool_delete", "false"])
-                .await;
-            result?;
-            off?;
+            let exists = fs_exists(host).await?;
+            let existing: Vec<String> = pools(host).await?.into_iter().collect();
+            destructive::delete_app_filesystem(host, &mandate, exists, &existing).await?;
             Ok(Done)
         }
         Step::RecreateStorage => {
@@ -663,20 +624,7 @@ async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
         }
         Step::RestartCsi => {
             // Both hold state about the filesystem that was just replaced.
-            for app in ["csi-cephfsplugin", "csi-cephfsplugin-provisioner"] {
-                let selector = format!("app={app}");
-                let _ = host
-                    .kubectl(&[
-                        "delete",
-                        "pod",
-                        "-n",
-                        CSI_NS,
-                        "-l",
-                        &selector,
-                        "--wait=false",
-                    ])
-                    .await;
-            }
+            crate::csi::restart_plugins(host, crate::csi::Which::AllNodes).await;
             Ok(Done)
         }
         Step::ReinstallApps => unreachable!("handled by reinstall_apps"),
@@ -686,72 +634,81 @@ async fn run_step<H: Host>(host: &H, r: &Recovery) -> Result<StepResult> {
 /// Tears every app down without waiting on anything the broken filesystem holds:
 /// pods are forced off, and the finalizers that would wait for the CSI driver to
 /// delete a volume from a filesystem that cannot answer are removed.
+///
+/// Every command here is best effort by design — each namespace is retried on
+/// the next tick until none is left — but a failure is logged, never discarded.
 async fn remove_apps<H: Host>(host: &H) -> Result<StepResult> {
     const NO_FINALIZERS: &str = r#"{"metadata":{"finalizers":null}}"#;
     let live = managed_namespaces(host).await?;
     for ns in &live {
         let ns = ns.as_str();
-        let _ = host
-            .kubectl(&[
-                "scale",
-                "deployment,statefulset",
-                "--all",
-                "-n",
-                ns,
-                "--replicas=0",
-            ])
-            .await;
-        let _ = host
-            .kubectl(&[
-                "delete",
-                "pod",
-                "--all",
-                "-n",
-                ns,
-                "--force",
-                "--grace-period=0",
-                "--wait=false",
-            ])
-            .await;
-        let pvcs = host
+        host.kubectl(&[
+            "scale",
+            "deployment,statefulset",
+            "--all",
+            "-n",
+            ns,
+            "--replicas=0",
+        ])
+        .await
+        .warn_on_err(format!("storage-heal: scale down {ns}"));
+        host.kubectl(&[
+            "delete",
+            "pod",
+            "--all",
+            "-n",
+            ns,
+            "--force",
+            "--grace-period=0",
+            "--wait=false",
+        ])
+        .await
+        .warn_on_err(format!("storage-heal: delete pods in {ns}"));
+        let pvcs = match host
             .kubectl_json(&["get", "pvc", "-n", ns, "-o", "json"])
             .await
-            .unwrap_or(Value::Null);
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("storage-heal: list PVCs in {ns}: {e}");
+                continue;
+            }
+        };
         for p in pvcs["items"].as_array().into_iter().flatten() {
             let Some(name) = p["metadata"]["name"].as_str() else {
                 continue;
             };
-            let _ = host
-                .kubectl(&[
-                    "patch",
-                    "pvc",
-                    name,
-                    "-n",
-                    ns,
-                    "--type",
-                    "merge",
-                    "-p",
-                    NO_FINALIZERS,
-                ])
-                .await;
+            host.kubectl(&[
+                "patch",
+                "pvc",
+                name,
+                "-n",
+                ns,
+                "--type",
+                "merge",
+                "-p",
+                NO_FINALIZERS,
+            ])
+            .await
+            .debug_on_err(format!("storage-heal: clear finalizers on pvc {ns}/{name}"));
             if let Some(pv) = p["spec"]["volumeName"].as_str() {
-                let _ = host
-                    .kubectl(&["patch", "pv", pv, "--type", "merge", "-p", NO_FINALIZERS])
-                    .await;
-                let _ = host
-                    .kubectl(&["delete", "pv", pv, "--wait=false", "--ignore-not-found"])
-                    .await;
+                host.kubectl(&["patch", "pv", pv, "--type", "merge", "-p", NO_FINALIZERS])
+                    .await
+                    .debug_on_err(format!("storage-heal: clear finalizers on pv {pv}"));
+                host.kubectl(&["delete", "pv", pv, "--wait=false", "--ignore-not-found"])
+                    .await
+                    .warn_on_err(format!("storage-heal: delete pv {pv}"));
             }
         }
-        let _ = host
-            .kubectl(&[
-                "delete",
-                "namespace",
-                ns,
-                "--wait=false",
-                "--ignore-not-found",
-            ])
-            .await;
+        host.kubectl(&[
+            "delete",
+            "namespace",
+            ns,
+            "--wait=false",
+            "--ignore-not-found",
+        ])
+        .await
+        .warn_on_err(format!("storage-heal: delete namespace {ns}"));
     }
     Ok(if live.is_empty() {
         StepResult::Done
@@ -760,8 +717,6 @@ async fn remove_apps<H: Host>(host: &H) -> Result<StepResult> {
     })
 }
 
-/// Reinstalls every app in the newest backup, persisting the list first and each
-/// outcome as it lands, so a restart never reinstalls the same app twice.
 async fn reinstall_apps<H: Host, A: AppRecovery>(
     host: &H,
     apps: &A,
@@ -774,7 +729,7 @@ async fn reinstall_apps<H: Host, A: AppRecovery>(
             if let Some(r) = state.recovery.as_mut() {
                 r.apps = Some(list.clone());
             }
-            write_state(host, state).await?;
+            write_recovery(host, &state.recovery).await?;
             list
         }
     };
@@ -796,16 +751,15 @@ async fn reinstall_apps<H: Host, A: AppRecovery>(
         if let Some(r) = state.recovery.as_mut() {
             r.outcomes.insert(ns.clone(), outcome);
         }
-        write_state(host, state).await?;
+        write_recovery(host, &state.recovery).await?;
     }
     Ok(())
 }
 
 async fn fs_exists<H: Host>(host: &H) -> Result<bool> {
-    let ls = host.ceph_json(&["fs", "ls"]).await?;
-    Ok(ls
-        .as_array()
-        .is_some_and(|a| a.iter().any(|f| f["name"].as_str() == Some(FS_NAME))))
+    let ls: Vec<model::FsEntry> = serde_json::from_value(host.ceph_json(&["fs", "ls"]).await?)
+        .map_err(|e| anyhow::anyhow!("ceph fs ls: {e}"))?;
+    Ok(ls.iter().any(|f| f.name == FS_NAME))
 }
 
 async fn pools<H: Host>(host: &H) -> Result<HashSet<String>> {
@@ -883,22 +837,14 @@ fn app_phase(namespace_exists: bool, destinations: &Value, deployments: &Value) 
     }
 }
 
-fn fs_pgs_active(dump: &Value, pgs: &Value) -> (usize, usize) {
-    let ids: HashSet<i64> = pool_names(dump)
+fn fs_pgs_active(dump: &OsdDump, pgs: &[PgBrief]) -> (usize, usize) {
+    let ids: HashSet<i64> = dump
+        .pool_names()
         .into_iter()
         .filter(|(_, n)| n == FS_META_POOL || n == FS_DATA_POOL)
         .map(|(id, _)| id)
         .collect();
-    let in_fs: Vec<&Value> = pg_items(pgs)
-        .iter()
-        .filter(|pg| {
-            pg["pgid"]
-                .as_str()
-                .and_then(pool_of)
-                .is_some_and(|p| ids.contains(&p))
-        })
-        .collect();
-    (in_fs.iter().filter(|pg| is_active(pg)).count(), in_fs.len())
+    active_in_pools(pgs, &ids)
 }
 
 /// Counts the current step against the cluster as it is now. None when it cannot be
@@ -930,8 +876,8 @@ async fn step_progress<H: Host>(host: &H, r: &Recovery) -> Option<StepProgress> 
             Some(count(gone, 3))
         }
         Step::RecreateStorage => {
-            let dump = host.ceph_json(&["osd", "dump"]).await.ok()?;
-            let pgs = host.ceph_json(&["pg", "dump", "pgs_brief"]).await.ok()?;
+            let dump = host.osd_dump().await.ok()?;
+            let pgs = host.pgs_brief().await.ok()?;
             let (active, present) = fs_pgs_active(&dump, &pgs);
             let expected: usize = FS_POOL_PGS.iter().map(|(_, n)| *n as usize).sum();
             Some(StepProgress {
@@ -1085,9 +1031,9 @@ pub async fn get_preview(State(_s): State<AppState>) -> (StatusCode, Json<Value>
         Ok(n) => n,
         Err(e) => return unavailable(e),
     };
-    let down = match host.ceph_json(&["osd", "dump"]).await {
-        Ok(d) => osds_where(&d, "up", 0),
-        Err(e) => return unavailable(e),
+    let down = match host.osd_dump().await {
+        Ok(d) => d.down(),
+        Err(e) => return unavailable(e.into()),
     };
     match crate::routers::restore::backup_contents().await {
         Ok(contents) => (

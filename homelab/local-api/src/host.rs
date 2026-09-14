@@ -1,16 +1,23 @@
-//! The seam between the disk reconciler and the machine it runs on.
+//! The seam between reconcile logic and the machine it runs on.
 //!
-//! Every side effect the reconciler performs — kubectl, ceph, ceph-volume,
-//! systemctl, lsblk — goes through this trait. The real implementation shells
-//! out to those binaries; tests substitute a fake that records calls and returns
-//! canned answers, so the reconcile logic can be exercised without a cluster.
+//! Every side effect — kubectl, ceph, ceph-volume, systemctl, lsblk — goes
+//! through this trait. The real implementation shells out to those binaries;
+//! tests substitute `fake::FakeHost`, which records calls and answers from a
+//! script, so the logic can be exercised without a cluster.
+//!
+//! Every method fails with `exec::CmdError`. There is no `unwrap_or_default`
+//! anywhere on this seam: a timeout is a timeout, a NotFound is a NotFound, and
+//! a caller that wants one of them to mean "empty" has to say so by name.
 
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use serde_json::Value;
-use tokio::process::Command;
+
+use crate::ceph::destructive::Door;
+use crate::ceph::model::{self, OsdDump, PgBrief};
+pub use crate::exec::CommandOutput;
+use crate::exec::{self, CmdError};
 
 /// The DEFAULT bound for a `RealHost` subprocess call. Not a universal one: work whose
 /// duration scales with data rather than with the cluster's responsiveness must ask for
@@ -25,88 +32,91 @@ use tokio::process::Command;
 /// writing a bound into prose.
 ///
 /// 600s remains right for everything else here, because the failure it guards against is
-/// not "a slow command", it is a command
-/// that never returns at all: a `mkfs`/`cp`/`mount` against an RBD device blocked on
-/// Ceph parks the calling thread in uninterruptible sleep (state D), a state no signal
-/// — including the `kill_on_drop` below — can end. Before this, that meant the entire
-/// `local-api storage <cmd>` process hung forever; systemd's own `TimeoutStartSec` was
-/// the only thing that ever
-/// intervened, and it could only SIGKILL the *wrapping* process, never the wedged child
-/// itself. Bounding the await here at least lets that wrapping process fail fast and
-/// exit cleanly instead of needing to be killed — the wedged child is orphaned either
-/// way, since nothing short of the kernel resolving the I/O (or a reboot) can end it.
-const RUN_CMD_TIMEOUT: Duration = Duration::from_secs(600);
+/// not "a slow command", it is a command that never returns at all: a `mkfs`/`mount`
+/// against an RBD device blocked on Ceph parks the calling thread in uninterruptible
+/// sleep (state D), which no signal can end. Bounding the await at least lets this task
+/// fail fast and report it; the wedged child is orphaned either way.
+pub const RUN_CMD_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The observable result of running a process, without carrying the process
-/// handle. `std::process::Output` cannot be built by hand in tests, so a fake
-/// host needs its own shape.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CommandOutput {
-    pub success: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-fn from_output(out: std::process::Output) -> CommandOutput {
-    CommandOutput {
-        success: out.status.success(),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-    }
-}
+pub type HostResult<T> = Result<T, CmdError>;
 
 #[allow(clippy::manual_async_fn)]
 pub trait Host: Send + Sync + Clone {
-    fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a;
-    fn ceph_json<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<Value>> + Send + 'a;
-    fn ceph_volume<'a>(&self, args: &'a [&str])
-        -> impl Future<Output = Result<String>> + Send + 'a;
-    fn kubectl<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a;
-    fn kubectl_json<'a>(&self, args: &'a [&str])
-        -> impl Future<Output = Result<Value>> + Send + 'a;
-    /// Pipe a manifest to `kubectl apply -f -`. A distinct primitive (not
-    /// folded into `run_cmd`) so callers that write Kubernetes objects — like
-    /// storage::csi_secrets — stay behind the same seam as their reads,
-    /// rather than reaching around it to `crate::kubectl::apply` the way
-    /// pre-existing code (lease.rs, routers/ceph_join.rs) does.
-    fn kubectl_apply<'a>(&self, manifest: &'a str) -> impl Future<Output = Result<()>> + Send + 'a;
+    fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = HostResult<String>> + Send + 'a;
+    fn ceph_json<'a>(&self, args: &'a [&str])
+        -> impl Future<Output = HostResult<Value>> + Send + 'a;
+    fn ceph_volume<'a>(
+        &self,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a;
+    fn kubectl<'a>(&self, args: &'a [&str])
+        -> impl Future<Output = HostResult<String>> + Send + 'a;
+    fn kubectl_json<'a>(
+        &self,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<Value>> + Send + 'a;
+    /// Pipe a manifest to `kubectl apply -f -`.
+    fn kubectl_apply<'a>(
+        &self,
+        manifest: &'a str,
+    ) -> impl Future<Output = HostResult<()>> + Send + 'a;
+    /// Pipe a manifest to `kubectl create -f -` (`verb = "create"`) or
+    /// `kubectl replace -f -` (`verb = "replace"`, a compare-and-swap when the
+    /// manifest carries `metadata.resourceVersion`). Hosts that never write
+    /// records need not support it.
+    fn kubectl_write<'a>(
+        &self,
+        verb: &'a str,
+        _manifest: &'a str,
+    ) -> impl Future<Output = HostResult<()>> + Send + 'a {
+        async move {
+            Err(CmdError::Forbidden {
+                cmd: format!("kubectl {verb} -f - (not supported by this host)"),
+            })
+        }
+    }
     fn systemctl<'a>(
         &self,
         args: &'a [&str],
-    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a;
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a;
     fn run_cmd<'a>(
         &self,
         bin: &'a str,
         args: &'a [&'a str],
-    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a;
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a;
+
+    /// The destructive entry points. Only `ceph::destructive` can supply a
+    /// `Door`. The defaults route through the guarded methods, so a host that
+    /// does not override them refuses destruction rather than performing it.
+    fn ceph_destructive<'a>(
+        &self,
+        _door: &Door,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+        self.ceph(args)
+    }
+
+    fn ceph_volume_destructive<'a>(
+        &self,
+        _door: &Door,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+        self.ceph_volume(args)
+    }
 
     /// `run_cmd` for the one kind of work whose duration scales with the data,
-    /// not with the cluster's responsiveness.
+    /// not with the cluster's responsiveness (mkfs, a store copy).
     ///
-    /// `RUN_CMD_TIMEOUT` is 600s, which is the right bound for every `rbd`,
-    /// `mkfs`, `mount` or `systemctl` call here: past ten minutes those are hung,
-    /// not slow. Copying an image store is a different animal — it moves
-    /// gigabytes across the network, and how long that legitimately takes is a
-    /// property of how many containers the node runs.
-    ///
-    /// Applying the 600s bound to it made the first migration impossible on any
-    /// node with a real image store. On node2 (2026-09-07, 9.2G at ~9MB/s) the
-    /// `cp` needed ~1000s, was SIGKILLed at 600s on every attempt, and
-    /// `migrate_existing_store` reported "copy failed (is the RBD large enough?)"
-    /// — which was doubly unhelpful, since the RBD was 163G and size had nothing
-    /// to do with it. The unit's own `TimeoutStartSec` is 3600s precisely so this
-    /// copy would not be mistaken for a hang; this inner bound defeated it.
-    ///
-    /// Defaults to ignoring the bound and deferring to `run_cmd`, which is what
-    /// every scripted test host wants — they have no clock, and the seam exists
-    /// so that *production* can pick a real bound per call. `RealHost` overrides
-    /// it; nothing else needs to.
+    /// Applying the 600s bound to a copy made the first migration impossible on
+    /// any node with a real image store (node2, 2026-09-07: 9.2G at ~9MB/s needed
+    /// ~1000s). Scripted test hosts have no clock, so the default ignores the
+    /// bound; `RealHost` overrides it.
     fn run_cmd_bounded<'a>(
         &self,
         bin: &'a str,
         args: &'a [&'a str],
         _timeout: Duration,
-    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
         self.run_cmd(bin, args)
     }
 
@@ -114,53 +124,66 @@ pub trait Host: Send + Sync + Clone {
         async move { self.ceph(&["-s"]).await.is_ok() }
     }
 
-    fn cluster_fsid(&self) -> impl Future<Output = Option<String>> + Send + '_ {
+    /// Our cluster's fsid. An error when Ceph cannot say — callers compare disk
+    /// labels against it, and a defaulted value makes every foreign disk look
+    /// ours or every disk of ours look foreign.
+    fn cluster_fsid(&self) -> impl Future<Output = HostResult<String>> + Send + '_ {
         async move {
-            if let Ok(v) = self.ceph_json(&["fsid"]).await {
-                if let Some(f) = v["fsid"].as_str().filter(|s| !s.is_empty()) {
-                    return Some(f.to_string());
-                }
+            let first = match self.ceph_json(&["fsid"]).await {
+                Ok(v) => match v["fsid"].as_str().filter(|s| !s.is_empty()) {
+                    Some(f) => return Ok(f.to_string()),
+                    None => CmdError::parse("ceph fsid -f json", "no fsid field"),
+                },
+                Err(e) => e,
+            };
+            if first.is_unanswered() {
+                return Err(first);
             }
-            self.ceph(&["fsid"])
-                .await
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
+            let plain = self.ceph(&["fsid"]).await?;
+            let f = plain.trim();
+            if f.is_empty() {
+                return Err(CmdError::parse("ceph fsid", "empty output"));
+            }
+            Ok(f.to_string())
         }
     }
 
-    fn osd_ids(&self) -> impl Future<Output = Result<Vec<i64>>> + Send + '_ {
+    /// Every OSD id the cluster knows. Output that is not a list of integers is
+    /// a parse error — never an empty cluster.
+    fn osd_ids(&self) -> impl Future<Output = HostResult<Vec<i64>>> + Send + '_ {
         async move {
             let v = self.ceph_json(&["osd", "ls"]).await?;
-            Ok(v.as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
-                .unwrap_or_default())
+            serde_json::from_value::<Vec<i64>>(v).map_err(|e| CmdError::parse("ceph osd ls", e))
         }
     }
 
-    fn osd_safe_to_destroy(&self, osd_id: i64) -> impl Future<Output = bool> + Send + '_ {
+    fn osd_dump(&self) -> impl Future<Output = HostResult<OsdDump>> + Send + '_ {
         async move {
-            self.ceph_json(&["osd", "safe-to-destroy", &format!("osd.{osd_id}")])
-                .await
-                .ok()
-                .and_then(|v| {
-                    v["safe_to_destroy"]
-                        .as_array()
-                        .map(|a| a.iter().any(|x| x.as_i64() == Some(osd_id)))
-                })
-                .unwrap_or(false)
+            let v = self.ceph_json(&["osd", "dump"]).await?;
+            serde_json::from_value(v).map_err(|e| CmdError::parse("ceph osd dump", e))
         }
     }
 
-    fn osd_purge(&self, osd_id: i64) -> impl Future<Output = Result<String>> + Send + '_ {
+    fn pgs_brief(&self) -> impl Future<Output = HostResult<Vec<PgBrief>>> + Send + '_ {
         async move {
-            self.ceph(&[
-                "osd",
-                "purge",
-                &format!("osd.{osd_id}"),
-                "--yes-i-really-mean-it",
-            ])
-            .await
+            let raw = self.ceph(&["pg", "dump", "pgs_brief", "-f", "json"]).await?;
+            model::parse_pgs_brief("ceph pg dump pgs_brief", &raw)
+        }
+    }
+
+    /// `kubectl get … -o json` where NotFound is a legitimate answer: `Ok(None)`
+    /// for a missing object, `Err` for everything else.
+    fn kubectl_get_opt<'a>(
+        &'a self,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<Option<Value>>> + Send + 'a
+    {
+        async move {
+            match self.kubectl_json(args).await {
+                Ok(v) => Ok(Some(v)),
+                Err(e) if e.is_not_found() => Ok(None),
+                Err(e) => Err(e),
+            }
         }
     }
 }
@@ -170,64 +193,89 @@ pub struct RealHost;
 
 #[allow(clippy::manual_async_fn)]
 impl Host for RealHost {
-    fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+    fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = HostResult<String>> + Send + 'a {
         async move { crate::ceph_cli::ceph(args).await }
     }
 
-    fn ceph_json<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<Value>> + Send + 'a {
+    fn ceph_json<'a>(
+        &self,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
         async move { crate::ceph_cli::ceph_json(args).await }
     }
 
     fn ceph_volume<'a>(
         &self,
         args: &'a [&str],
-    ) -> impl Future<Output = Result<String>> + Send + 'a {
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
         async move { crate::ceph_cli::ceph_volume(args).await }
     }
 
-    fn kubectl<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+    fn ceph_destructive<'a>(
+        &self,
+        door: &Door,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+        crate::ceph_cli::ceph_destructive(door, args)
+    }
+
+    fn ceph_volume_destructive<'a>(
+        &self,
+        door: &Door,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+        crate::ceph_cli::ceph_volume_destructive(door, args)
+    }
+
+    fn kubectl<'a>(
+        &self,
+        args: &'a [&str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
         async move { crate::kubectl::run(args).await }
     }
 
     fn kubectl_json<'a>(
         &self,
         args: &'a [&str],
-    ) -> impl Future<Output = Result<Value>> + Send + 'a {
+    ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
         async move { crate::kubectl::get_json(args).await }
     }
 
-    fn kubectl_apply<'a>(&self, manifest: &'a str) -> impl Future<Output = Result<()>> + Send + 'a {
+    fn kubectl_apply<'a>(
+        &self,
+        manifest: &'a str,
+    ) -> impl Future<Output = HostResult<()>> + Send + 'a {
         async move { crate::kubectl::apply(manifest).await }
+    }
+
+    fn kubectl_write<'a>(
+        &self,
+        verb: &'a str,
+        manifest: &'a str,
+    ) -> impl Future<Output = HostResult<()>> + Send + 'a {
+        async move {
+            match verb {
+                "create" => crate::kubectl::create(manifest).await,
+                "replace" => crate::kubectl::replace(manifest).await,
+                other => Err(CmdError::Forbidden {
+                    cmd: format!("kubectl {other} -f -"),
+                }),
+            }
+        }
     }
 
     fn systemctl<'a>(
         &self,
         args: &'a [&str],
-    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
-        async move {
-            let work = Command::new("systemctl")
-                .args(args)
-                .kill_on_drop(true)
-                .output();
-            let out = tokio::time::timeout(RUN_CMD_TIMEOUT, work)
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "systemctl {}: timed out after {}s",
-                        args.join(" "),
-                        RUN_CMD_TIMEOUT.as_secs()
-                    )
-                })?
-                .context("spawn systemctl")?;
-            Ok(from_output(out))
-        }
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+        async move { exec::output("systemctl", args, RUN_CMD_TIMEOUT).await }
     }
 
     fn run_cmd<'a>(
         &self,
         bin: &'a str,
         args: &'a [&'a str],
-    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
         self.run_cmd_bounded(bin, args, RUN_CMD_TIMEOUT)
     }
 
@@ -236,28 +284,13 @@ impl Host for RealHost {
         bin: &'a str,
         args: &'a [&'a str],
         timeout: Duration,
-    ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
-        async move {
-            let work = Command::new(bin).args(args).kill_on_drop(true).output();
-            let out = tokio::time::timeout(timeout, work)
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "{bin} {}: timed out after {}s",
-                        args.join(" "),
-                        timeout.as_secs()
-                    )
-                })?
-                .with_context(|| format!("spawn {bin}"))?;
-            Ok(from_output(out))
-        }
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+        async move { exec::output(bin, args, timeout).await }
     }
 }
 
-/// A scripted `Host` for tests, shared by every module under `storage/` so
-/// each one does not grow its own copy. (disks_reconciler.rs predates this and
-/// keeps its own private version — not worth the churn of migrating a 4900-line
-/// file's existing, passing test suite onto a shared one.)
+/// A scripted `Host` for tests, shared by every module so each one does not
+/// grow its own copy.
 #[cfg(test)]
 pub(crate) mod fake {
     use std::{
@@ -266,18 +299,23 @@ pub(crate) mod fake {
         sync::{Arc, Mutex},
     };
 
-    use anyhow::Result;
     use serde_json::Value;
 
-    use super::{CommandOutput, Host};
+    use super::{CommandOutput, Door, Host, HostResult};
+    use crate::ceph::destructive::is_destructive;
+    use crate::exec::CmdError;
 
     type ScriptedAnswer = std::result::Result<String, String>;
     type Script = Vec<(String, VecDeque<ScriptedAnswer>)>;
 
-    /// Every effect a storage subcommand performs is a command, so scripting
-    /// commands is what makes the sequence assertable. Unscripted commands
-    /// fail loudly by default — a test must say what the machine answers
-    /// rather than silently getting a plausible one.
+    /// Every effect is a command, so scripting commands is what makes the
+    /// sequence assertable. Unscripted commands fail loudly by default — a test
+    /// must say what the machine answers rather than silently getting a
+    /// plausible one.
+    ///
+    /// Each prefix maps to a queue of answers, consumed in call order; the last
+    /// answer repeats once the queue is empty, so a test only has to spell out
+    /// the calls whose answer actually changes.
     #[derive(Clone, Default)]
     pub(crate) struct FakeHost {
         calls: Arc<Mutex<Vec<String>>>,
@@ -313,7 +351,7 @@ pub(crate) mod fake {
 
         /// Longest matching prefix wins, so a general steady-state answer and a
         /// more specific override can coexist without colliding.
-        fn answer(&self, cmd: &str) -> Result<String> {
+        fn answer(&self, cmd: &str) -> HostResult<String> {
             self.calls.lock().unwrap().push(cmd.to_string());
             let mut script = self.script.lock().unwrap();
             let best = script
@@ -327,10 +365,19 @@ pub(crate) mod fake {
                     } else {
                         q.front().unwrap().clone()
                     };
-                    out.map_err(|e| anyhow::anyhow!("{e}"))
+                    out.map_err(|e| CmdError::failed(cmd, e))
                 }
-                None => Err(anyhow::anyhow!("unscripted command: {cmd}")),
+                None => Err(CmdError::failed(cmd, format!("unscripted command: {cmd}"))),
             }
+        }
+
+        fn guarded(&self, bin: &str, args: &[&str]) -> HostResult<String> {
+            let cmd = format!("{bin} {}", args.join(" "));
+            if is_destructive(bin, args) {
+                self.calls.lock().unwrap().push(format!("REFUSED {cmd}"));
+                return Err(CmdError::Forbidden { cmd });
+            }
+            self.answer(&cmd)
         }
 
         pub fn calls(&self) -> Vec<String> {
@@ -338,32 +385,82 @@ pub(crate) mod fake {
         }
 
         pub fn ran(&self, needle: &str) -> bool {
-            self.calls().iter().any(|c| c.contains(needle))
+            self.calls()
+                .iter()
+                .any(|c| !c.starts_with("REFUSED ") && c.contains(needle))
+        }
+
+        /// Whether a destructive command was attempted outside the door.
+        pub fn refused(&self, needle: &str) -> bool {
+            self.calls()
+                .iter()
+                .any(|c| c.starts_with("REFUSED ") && c.contains(needle))
+        }
+
+        /// Index of the first call containing `needle`, for ordering asserts.
+        pub fn position(&self, needle: &str) -> Option<usize> {
+            self.calls().iter().position(|c| c.contains(needle))
+        }
+    }
+
+    fn output_of(out: HostResult<String>) -> CommandOutput {
+        match out {
+            Ok(stdout) => CommandOutput {
+                success: true,
+                stdout,
+                stderr: String::new(),
+            },
+            Err(e) => CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: e.to_string(),
+            },
         }
     }
 
     #[allow(clippy::manual_async_fn)]
     impl Host for FakeHost {
-        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+        fn ceph<'a>(
+            &self,
+            args: &'a [&str],
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
             let me = self.clone();
-            async move { me.answer(&format!("ceph {}", args.join(" "))) }
+            async move { me.guarded("ceph", args) }
         }
 
         fn ceph_json<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
             let me = self.clone();
             async move {
-                let raw = me.answer(&format!("ceph {}", args.join(" ")))?;
-                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
+                let raw = me.guarded("ceph", args)?;
+                crate::exec::parse_json(&format!("ceph {}", args.join(" ")), &raw)
             }
         }
 
         fn ceph_volume<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.guarded("ceph-volume", args) }
+        }
+
+        fn ceph_destructive<'a>(
+            &self,
+            _door: &Door,
+            args: &'a [&str],
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("ceph {}", args.join(" "))) }
+        }
+
+        fn ceph_volume_destructive<'a>(
+            &self,
+            _door: &Door,
+            args: &'a [&str],
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
             let me = self.clone();
             async move { me.answer(&format!("ceph-volume {}", args.join(" "))) }
         }
@@ -371,7 +468,7 @@ pub(crate) mod fake {
         fn kubectl<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
             let me = self.clone();
             async move { me.answer(&format!("kubectl {}", args.join(" "))) }
         }
@@ -379,51 +476,91 @@ pub(crate) mod fake {
         fn kubectl_json<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
             let me = self.clone();
             async move {
-                let raw = me.answer(&format!("kubectl {}", args.join(" ")))?;
-                Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
+                let cmd = format!("kubectl {}", args.join(" "));
+                let raw = me.answer(&cmd)?;
+                crate::exec::parse_json(&cmd, &raw)
             }
         }
 
         fn kubectl_apply<'a>(
             &self,
             manifest: &'a str,
-        ) -> impl Future<Output = Result<()>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<()>> + Send + 'a {
             let me = self.clone();
             async move { me.answer(&format!("kubectl-apply {manifest}")).map(|_| ()) }
+        }
+
+        fn kubectl_write<'a>(
+            &self,
+            verb: &'a str,
+            manifest: &'a str,
+        ) -> impl Future<Output = HostResult<()>> + Send + 'a {
+            let me = self.clone();
+            async move { me.answer(&format!("kubectl-{verb} {manifest}")).map(|_| ()) }
         }
 
         fn systemctl<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
-            async move {
-                let out = me.answer(&format!("systemctl {}", args.join(" ")));
-                Ok(CommandOutput {
-                    success: out.is_ok(),
-                    stdout: out.unwrap_or_default(),
-                    stderr: String::new(),
-                })
-            }
+            async move { Ok(output_of(me.answer(&format!("systemctl {}", args.join(" "))))) }
         }
 
         fn run_cmd<'a>(
             &self,
             bin: &'a str,
             args: &'a [&'a str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
-            async move {
-                let out = me.answer(&format!("{bin} {}", args.join(" ")));
-                Ok(CommandOutput {
-                    success: out.is_ok(),
-                    stdout: out.unwrap_or_default(),
-                    stderr: String::new(),
-                })
-            }
+            async move { Ok(output_of(me.answer(&format!("{bin} {}", args.join(" "))))) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeHost;
+    use super::*;
+
+    #[tokio::test]
+    async fn osd_ids_that_are_not_a_list_are_an_error_not_an_empty_cluster() {
+        let host = FakeHost::new().ok("ceph osd ls", r#"{"unexpected": true}"#);
+        assert!(host.osd_ids().await.is_err());
+        let host = FakeHost::new().ok("ceph osd ls", "[0, 3]");
+        assert_eq!(host.osd_ids().await.unwrap(), vec![0, 3]);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_fsid_is_an_error() {
+        let host = FakeHost::new().fail("ceph fsid", "timed out");
+        assert!(host.cluster_fsid().await.is_err());
+        let host = FakeHost::new()
+            .ok("ceph fsid -f json", r#"{"fsid":""}"#)
+            .ok("ceph fsid", "");
+        assert!(host.cluster_fsid().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn kubectl_get_opt_separates_absent_from_unreachable() {
+        let absent = FakeHost::new().fail(
+            "kubectl get configmap x",
+            "Error from server (NotFound): configmaps \"x\" not found",
+        );
+        assert_eq!(
+            absent
+                .kubectl_get_opt(&["get", "configmap", "x"])
+                .await
+                .unwrap(),
+            None
+        );
+        let down = FakeHost::new().fail(
+            "kubectl get configmap x",
+            "The connection to the server localhost:6443 was refused",
+        );
+        assert!(down.kubectl_get_opt(&["get", "configmap", "x"]).await.is_err());
     }
 }

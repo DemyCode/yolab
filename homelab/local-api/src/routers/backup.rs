@@ -8,25 +8,36 @@
 //!      tagged with the same id.
 //!
 //! The set's lifecycle is recorded in a ConfigMap so the page can show three states:
-//! *running* (this process is still driving it), *restorable* (the cluster snapshot
-//! completed), or *crashed* (started, but the process that owned it is gone, or it
-//! failed). There is deliberately no phase machine, no deadline, no watchdog and no
-//! cross-process lock: a set is fire-and-forget, and several may be in flight at once.
+//! *running* (a node is still driving it — see the record's `Claim`), *restorable*
+//! (the cluster snapshot completed), or *crashed* (started, but its driver is gone,
+//! or it failed). There is no phase machine and no deadline; several sets may be in
+//! flight at once.
+//!
+//! The scheduler is cluster-scoped. It used to run on every node, and each node only
+//! knew about the sets IT was driving, so two nodes could each start the daily backup
+//! in the same window.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::error::Outcome;
+use crate::host::RealHost;
+use crate::ops::{self, Claim, Claimed, InFlight, Liveness};
+use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
 use crate::routers::backup_common::*;
+use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
 use chrono::{DateTime, Utc};
 use tokio::process::Command;
 
-const SETS_CONFIGMAP: &str = "yolab-backups";
-const SETS_NS: &str = "kube-system";
+pub(crate) const SETS: Store = Store {
+    name: "yolab-backups",
+    namespace: "kube-system",
+    key: "sets",
+};
 const MAX_SETS: usize = 50;
 
 /// How long the newest restorable backup may be un-refreshed before the scheduler
@@ -39,10 +50,8 @@ const SCHEDULE_TICK_SECS: u64 = 300;
 const CLUSTER_BACKUP_TIMEOUT_SECS: u64 = 3600;
 const PRUNE_TIMEOUT_SECS: u64 = 600;
 
-/// Ids this process is actively backing up. A ConfigMap record that says "running" but
-/// is not in here means the process that started it died — the definition of "crashed".
-/// A `Vec` rather than a set because there are never more than a handful in flight.
-static IN_FLIGHT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Ids this process is actively backing up.
+pub(crate) static IN_FLIGHT: InFlight = InFlight::new();
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ServiceSummary {
@@ -65,10 +74,30 @@ pub(crate) struct BackupSet {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ServiceSummary>,
+    #[serde(flatten)]
+    pub claim: Claim,
+}
+
+impl Claimed for BackupSet {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn started_at(&self) -> &str {
+        &self.started_at
+    }
+    fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+    fn claim(&self) -> &Claim {
+        &self.claim
+    }
+    fn claim_mut(&mut self) -> &mut Claim {
+        &mut self.claim
+    }
 }
 
 /// The three states the page shows. `Crashed` covers both "failed" and "was running
-/// when the process died" — either way it is not something you can restore from.
+/// when its driver died" — either way it is not something you can restore from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SetState {
     Running,
@@ -90,131 +119,77 @@ pub(crate) fn new_id() -> String {
 
 // ── ConfigMap records ──────────────────────────────────────────────────────────
 
-fn parse_sets(raw: &str) -> Vec<BackupSet> {
-    serde_json::from_str::<Vec<BackupSet>>(raw).unwrap_or_default()
-}
-
 fn upsert(sets: &mut Vec<BackupSet>, set: BackupSet) {
     sets.retain(|s| s.id != set.id);
     sets.insert(0, set);
     sets.truncate(MAX_SETS);
 }
 
-async fn read_sets() -> Vec<BackupSet> {
-    let Ok(v) = crate::kubectl::get_json(&[
-        "get",
-        "configmap",
-        SETS_CONFIGMAP,
-        "-n",
-        SETS_NS,
-        "-o",
-        "json",
-    ])
-    .await
-    else {
-        return Vec::new();
+async fn read_sets() -> anyhow::Result<Vec<BackupSet>> {
+    Ok(SETS.read(&RealHost).await?)
+}
+
+async fn record_running(id: &str, triggered_by: &str) -> anyhow::Result<()> {
+    let set = BackupSet {
+        id: id.to_string(),
+        triggered_by: triggered_by.to_string(),
+        started_at: Utc::now().to_rfc3339(),
+        state: "running".to_string(),
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+        services: vec![],
+        claim: Claim::mine(Utc::now()),
     };
-    parse_sets(v["data"]["sets"].as_str().unwrap_or("[]"))
-}
-
-async fn write_sets(sets: &[BackupSet]) {
-    let raw = serde_json::to_string(sets).unwrap_or_else(|_| "[]".into());
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {
-            "name": SETS_CONFIGMAP,
-            "namespace": SETS_NS,
-            "labels": { "app.kubernetes.io/managed-by": "yolab" },
-        },
-        "data": { "sets": raw },
-    });
-    let _ = crate::kubectl::apply(&manifest.to_string()).await;
-}
-
-async fn record_running(id: &str, triggered_by: &str) {
-    let mut sets = read_sets().await;
-    upsert(
-        &mut sets,
-        BackupSet {
-            id: id.to_string(),
-            triggered_by: triggered_by.to_string(),
-            started_at: Utc::now().to_rfc3339(),
-            state: "running".to_string(),
-            finished_at: None,
-            snapshot_id: None,
-            error: None,
-            services: vec![],
-        },
-    );
-    write_sets(&sets).await;
+    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| upsert(sets, set.clone()))
+        .await?;
+    Ok(())
 }
 
 async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSummary>)>) {
-    let mut sets = read_sets().await;
     let finished_at = Utc::now().to_rfc3339();
-    let set = match result {
-        Ok((snapshot_id, services)) => BackupSet {
-            id: id.to_string(),
-            triggered_by: sets
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.triggered_by.clone())
-                .unwrap_or_default(),
-            started_at: sets
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.started_at.clone())
-                .unwrap_or_else(|| Utc::now().to_rfc3339()),
-            state: "succeeded".to_string(),
-            finished_at: Some(finished_at),
-            snapshot_id: Some(snapshot_id.clone()),
-            error: None,
-            services: services.clone(),
-        },
-        Err(e) => BackupSet {
-            id: id.to_string(),
-            triggered_by: sets
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.triggered_by.clone())
-                .unwrap_or_default(),
-            started_at: sets
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.started_at.clone())
-                .unwrap_or_else(|| Utc::now().to_rfc3339()),
-            state: "failed".to_string(),
-            finished_at: Some(finished_at),
-            snapshot_id: None,
-            error: Some(e.to_string()),
-            services: vec![],
-        },
-    };
-    upsert(&mut sets, set);
-    write_sets(&sets).await;
+    let written = SETS
+        .update(&RealHost, |sets: &mut Vec<BackupSet>| {
+            let Some(s) = sets.iter_mut().find(|s| s.id == id) else {
+                return;
+            };
+            s.finished_at = Some(finished_at.clone());
+            match result {
+                Ok((snapshot_id, services)) => {
+                    s.state = "succeeded".to_string();
+                    s.snapshot_id = Some(snapshot_id.clone());
+                    s.error = None;
+                    s.services = services.clone();
+                }
+                Err(e) => {
+                    s.state = "failed".to_string();
+                    s.snapshot_id = None;
+                    s.error = Some(e.to_string());
+                    s.services = vec![];
+                }
+            }
+        })
+        .await;
+    written.warn_on_err(format!(
+        "backup {id}: could not record the outcome — it will read as crashed"
+    ));
 }
 
 // ── Pure decision functions ────────────────────────────────────────────────────
 
-fn classify(set: &BackupSet, in_flight: bool) -> SetState {
+fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
     match set.state.as_str() {
         "succeeded" => SetState::Restorable,
         "failed" => SetState::Crashed,
-        _ => {
-            if in_flight {
-                SetState::Running
-            } else {
-                SetState::Crashed
-            }
-        }
+        _ if liveness.is_live() => SetState::Running,
+        _ => SetState::Crashed,
     }
 }
 
 /// Whether a backup is due, based only on the age of the newest restorable one.
-/// The "is something already running" gate is separate (`is_running`), so a crashed
-/// set — recorded "running" but no longer driven by any process — must NOT read as
-/// "in progress" here, or a crash would stop scheduling forever.
+/// The "is something already running" gate is separate (`running_anywhere`), so a
+/// crashed set must NOT read as "in progress" here, or a crash would stop
+/// scheduling forever.
 fn should_schedule(sets: &[BackupSet], now: DateTime<Utc>) -> bool {
     let last_ok = sets
         .iter()
@@ -240,19 +215,17 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
         anyhow::bail!("not backing up: {why}");
     }
     let id = new_id();
-    IN_FLIGHT.lock().unwrap().push(id.clone());
-    record_running(&id, triggered_by).await;
+    let guard = IN_FLIGHT.claim(&id);
+    record_running(&id, triggered_by).await?;
 
     let task_id = id.clone();
     tokio::spawn(async move {
+        // Dropped when the task ends, panics included.
+        let _guard = guard;
         let result = run_set(&task_id, &cfg).await;
-        // Record the terminal state before dropping the in-flight claim, so the page
-        // never briefly reads a finished set as "crashed".
+        // Record the terminal state before dropping the claim, so the page never
+        // briefly reads a finished set as "crashed".
         record_done(&task_id, &result).await;
-        {
-            let mut guard = IN_FLIGHT.lock().unwrap();
-            guard.retain(|s| s != &task_id);
-        }
     });
 
     Ok(id)
@@ -276,7 +249,13 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
     let mut failures = Vec::new();
     for pvc in &pvcs {
         annotate_ns_privileged_movers(&pvc.namespace).await;
-        let _ = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await;
+        if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await {
+            failures.push(format!(
+                "{}/{}: could not write its backup credentials: {e}",
+                pvc.namespace, pvc.name
+            ));
+            continue;
+        }
         let before = replication_source(&pvc.namespace, &pvc.name).await;
         match ensure_replication_source(pvc, true).await {
             Ok(Some(trigger)) => pending.push(PendingSync {
@@ -317,7 +296,7 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
     //    prunes whatever it left behind.
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
-    let _ = restic_timeout(
+    restic_timeout(
         &repo,
         cfg,
         &[
@@ -336,7 +315,8 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
         ],
         Duration::from_secs(PRUNE_TIMEOUT_SECS),
     )
-    .await;
+    .await
+    .warn_on_err("backup: retention (forget --prune) — the next run prunes instead");
 
     if !failures.is_empty() {
         anyhow::bail!(
@@ -510,7 +490,9 @@ async fn snapshot_cluster(
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
 
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    tokio::fs::remove_dir_all(&tmp_dir)
+        .await
+        .debug_on_err("backup: clear the staging directory");
     tokio::fs::create_dir_all(&tmp_dir).await?;
     #[cfg(unix)]
     {
@@ -519,7 +501,9 @@ async fn snapshot_cluster(
     }
 
     let result = snapshot_cluster_inner(cfg, tag, &tmp_dir, pinned).await;
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    tokio::fs::remove_dir_all(&tmp_dir)
+        .await
+        .debug_on_err("backup: clear the staging directory");
     result
 }
 
@@ -568,15 +552,17 @@ async fn snapshot_cluster_inner(
                         if let Err(e) = std::fs::copy(entry.path(), &dst) {
                             tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
                         } else {
-                            let _ = std::fs::remove_file(entry.path());
+                            std::fs::remove_file(entry.path())
+                                .warn_on_err("cluster-backup: remove the local etcd snapshot copy");
                         }
-                        let _ = crate::kubectl::run(&[
+                        crate::kubectl::run(&[
                             "delete",
                             "etcdsnapshotfile",
                             fname_str.as_ref(),
                             "--ignore-not-found",
                         ])
-                        .await;
+                        .await
+                        .warn_on_err("cluster-backup: delete the etcdsnapshotfile record");
                         break;
                     }
                 }
@@ -596,15 +582,19 @@ async fn snapshot_cluster_inner(
     for ns in &namespaces {
         let mut items: Vec<Value> = Vec::new();
 
-        let ns_obj: Option<Value> =
-            crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
-                .await
-                .ok();
-        if let Some(v) = &ns_obj {
-            items.push(v.clone());
-        }
+        // Every read here is `?`. A failed read used to become an empty list, and
+        // the backup was then recorded restorable without that app's objects —
+        // discovered only when a restore could not find them. A namespace that
+        // vanished since it was listed is the one legitimate absence.
+        let Some(ns_obj) =
+            crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"]).await?
+        else {
+            continue;
+        };
+        items.push(ns_obj.clone());
+        let ns_obj = Some(ns_obj);
 
-        let workloads: Vec<Value> = crate::kubectl::get_json(&[
+        let raw = crate::kubectl::run(&[
             "get",
             "deploy,svc,secret,configmap",
             "-n",
@@ -613,18 +603,22 @@ async fn snapshot_cluster_inner(
             "json",
             "--ignore-not-found",
         ])
-        .await
-        .ok()
-        .and_then(|v| v["items"].as_array().cloned())
-        .unwrap_or_default();
+        .await?;
+        let workloads: Vec<Value> = if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str::<Value>(&raw)?["items"]
+                .as_array()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("kubectl get -n {ns}: no items list"))?
+        };
         items.extend(workloads.iter().cloned());
 
         let sanitized = sanitize_k8s_items_for_backup(&items);
         if !sanitized.is_empty() {
             let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
-            if let Ok(s) = serde_json::to_string_pretty(&list) {
-                let _ = tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), s.as_bytes()).await;
-            }
+            let s = serde_json::to_string_pretty(&list)?;
+            tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), s.as_bytes()).await?;
         }
 
         let ann = ns_obj
@@ -692,7 +686,7 @@ async fn snapshot_cluster_inner(
         "total_pvc_bytes": total_pvc_bytes,
         "catalog_version": built_hash(),
     });
-    let _ = tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await;
+    tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await?;
 
     // 3. Init restic repo if needed.
     cfg.unlock("cluster-backup").await;
@@ -785,17 +779,16 @@ fn built_hash() -> Option<String> {
 
 // ── Read side ──────────────────────────────────────────────────────────────────
 
-fn in_flight_ids() -> Vec<String> {
-    IN_FLIGHT.lock().unwrap().clone()
+fn liveness_of(s: &BackupSet) -> Liveness {
+    s.liveness(&crate::system::hostname(), &IN_FLIGHT, Utc::now())
 }
 
 /// Every recorded set, newest first, classified into the three page states.
-pub(crate) async fn list() -> Vec<Value> {
-    let sets = read_sets().await;
-    let in_flight: HashSet<String> = in_flight_ids().into_iter().collect();
-    sets.iter()
+pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
+    let sets = read_sets().await?;
+    Ok(sets
+        .iter()
         .map(|s| {
-            let state = classify(s, in_flight.contains(&s.id));
             json!({
                 "id": s.id,
                 "triggered_by": s.triggered_by,
@@ -804,23 +797,26 @@ pub(crate) async fn list() -> Vec<Value> {
                 "snapshot_id": s.snapshot_id,
                 "error": s.error,
                 "services": s.services,
-                "state": state_str(state),
+                "state": state_str(classify(s, liveness_of(s))),
+                "node": s.claim.owner,
             })
         })
-        .collect()
+        .collect())
 }
 
-/// Whether any set is currently running — the single-flight gate for "start another".
-pub(crate) async fn is_running() -> bool {
-    let sets = read_sets().await;
-    let in_flight: HashSet<String> = in_flight_ids().into_iter().collect();
-    sets.iter()
-        .any(|s| s.state == "running" && in_flight.contains(&s.id))
+/// Whether any set is running on any node — the single-flight gate for "start
+/// another". `Err` when the records cannot be read.
+pub(crate) async fn running_anywhere() -> anyhow::Result<bool> {
+    let sets = read_sets().await?;
+    Ok(sets
+        .iter()
+        .any(|s| s.is_running() && liveness_of(s).is_live()))
 }
 
-/// Hours since the newest restorable backup, or `None` if none ever succeeded.
+/// Hours since the newest restorable backup, or `None` if none ever succeeded or
+/// the records cannot be read.
 pub(crate) async fn last_ok_age_hours() -> Option<i64> {
-    let sets = read_sets().await;
+    let sets = read_sets().await.ok()?;
     sets.iter()
         .find(|s| s.state == "succeeded")
         .and_then(|s| s.finished_at.as_deref())
@@ -845,22 +841,51 @@ pub(crate) async fn volsync_mover_running() -> bool {
     .unwrap_or(false)
 }
 
-/// Background loop that starts a scheduled backup when the newest restorable one is
-/// older than the interval and nothing is running. A crashed record (running but no
-/// longer in flight) is not treated as "in progress" and never blocks a fresh start.
-pub(crate) async fn run_scheduler() {
-    tokio::time::sleep(Duration::from_secs(60)).await;
-    loop {
-        if read_master_config().await.is_some() && !is_running().await {
-            let sets = read_sets().await;
-            if should_schedule(&sets, Utc::now()) {
-                if let Err(e) = start("schedule").await {
-                    tracing::warn!("backup: scheduled start failed: {e}");
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(SCHEDULE_TICK_SECS)).await;
+/// Starts a scheduled backup when the newest restorable one is older than the
+/// interval and nothing is running anywhere. Cluster-scoped: one node schedules.
+pub struct BackupSchedulerController;
+
+impl Controller for BackupSchedulerController {
+    fn name(&self) -> &'static str {
+        "backup-scheduler"
     }
+    fn scope(&self) -> Scope {
+        Scope::Cluster
+    }
+    fn interval(&self) -> Duration {
+        Duration::from_secs(SCHEDULE_TICK_SECS)
+    }
+    fn requires(&self) -> &'static [Requirement] {
+        &[Requirement::KubeApi]
+    }
+    fn pauses_during(&self) -> &'static [Activity] {
+        &[Activity::Restore, Activity::StorageRecovery]
+    }
+    fn not_before_uptime(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+    async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        if read_master_config().await.is_none() {
+            return Ok(Tick::Idle("backups are not enabled".into()));
+        }
+        let sets = read_sets().await?;
+        if sets
+            .iter()
+            .any(|s| s.is_running() && liveness_of(s).is_live())
+        {
+            return Ok(Tick::Idle("a backup is already running".into()));
+        }
+        if !should_schedule(&sets, Utc::now()) {
+            return Ok(Tick::Idle("the newest backup is recent enough".into()));
+        }
+        let id = start("schedule").await?;
+        tracing::info!("backup: scheduled {id}");
+        Ok(Tick::Done)
+    }
+}
+
+pub(crate) fn start_heartbeat() {
+    ops::spawn_heartbeat::<BackupSet>(SETS, &IN_FLIGHT);
 }
 
 #[cfg(test)]
@@ -989,32 +1014,34 @@ mod tests {
             snapshot_id: None,
             error: None,
             services: vec![],
+            claim: Claim::default(),
         }
     }
 
     #[test]
     fn a_succeeded_set_is_restorable_regardless_of_in_flight() {
-        assert_eq!(classify(&set("a", "succeeded"), true), SetState::Restorable);
+        assert_eq!(classify(&set("a", "succeeded"), Liveness::Driving), SetState::Restorable);
         assert_eq!(
-            classify(&set("a", "succeeded"), false),
+            classify(&set("a", "succeeded"), Liveness::Abandoned),
             SetState::Restorable
         );
     }
 
     #[test]
     fn a_failed_set_is_crashed() {
-        assert_eq!(classify(&set("a", "failed"), false), SetState::Crashed);
+        assert_eq!(classify(&set("a", "failed"), Liveness::Driving), SetState::Crashed);
     }
 
     #[test]
-    fn a_running_set_is_running_only_while_in_flight() {
-        assert_eq!(classify(&set("a", "running"), true), SetState::Running);
-        assert_eq!(classify(&set("a", "running"), false), SetState::Crashed);
+    fn a_running_set_is_running_only_while_someone_drives_it() {
+        assert_eq!(classify(&set("a", "running"), Liveness::Driving), SetState::Running);
+        assert_eq!(classify(&set("a", "running"), Liveness::Remote), SetState::Running);
+        assert_eq!(classify(&set("a", "running"), Liveness::Abandoned), SetState::Crashed);
     }
 
     #[test]
     fn an_unknown_state_reads_as_crashed_when_not_in_flight() {
-        assert_eq!(classify(&set("a", "weird"), false), SetState::Crashed);
+        assert_eq!(classify(&set("a", "weird"), Liveness::Abandoned), SetState::Crashed);
     }
 
     #[test]
@@ -1035,22 +1062,6 @@ mod tests {
         upsert(&mut sets, set("bk-new", "running"));
         assert_eq!(sets.len(), MAX_SETS);
         assert_eq!(sets[0].id, "bk-new");
-    }
-
-    #[test]
-    fn parse_sets_ignores_garbage() {
-        assert!(parse_sets("not json").is_empty());
-        assert!(parse_sets("{}").is_empty());
-    }
-
-    #[test]
-    fn parse_sets_round_trips() {
-        let sets = vec![set("a", "succeeded"), set("b", "running")];
-        let raw = serde_json::to_string(&sets).unwrap();
-        let parsed = parse_sets(&raw);
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].id, "a");
-        assert_eq!(parsed[1].state, "running");
     }
 
     #[test]

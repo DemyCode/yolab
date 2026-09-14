@@ -427,18 +427,39 @@ pub async fn resolve_chart(
 /// `nixos-rebuild` on every machine. A failed sync is logged and retried next tick rather
 /// than escalated — a node whose network is briefly unhappy should keep serving the
 /// charts it already has, not lose its storefront.
-pub async fn run_chart_sync() {
-    // Let k3s settle before the first sync; nothing here works without the API server.
-    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-    loop {
+pub struct ChartSyncController;
+
+impl crate::runtime::Controller for ChartSyncController {
+    fn name(&self) -> &'static str {
+        "chart-sync"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        // Each machine keeps its own copy of the charts under /var/lib/yolab.
+        crate::runtime::Scope::Node
+    }
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(3600)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    async fn reconcile(
+        &self,
+        _ctx: &crate::runtime::Ctx,
+    ) -> anyhow::Result<crate::runtime::Tick> {
+        let mut failed = Vec::new();
         for repo in list_repos().await {
             match sync_repo(&repo).await {
                 Ok(n) if n > 0 => tracing::info!("chart sync: {} — {n} chart(s)", repo.name),
                 Ok(_) => {}
-                Err(e) => tracing::warn!("chart sync: {}: {e}", repo.name),
+                Err(e) => failed.push(format!("{}: {e}", repo.name)),
             }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        if failed.is_empty() {
+            Ok(crate::runtime::Tick::Done)
+        } else {
+            anyhow::bail!("{}", failed.join("; "))
+        }
     }
 }
 

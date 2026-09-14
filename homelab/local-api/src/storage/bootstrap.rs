@@ -216,10 +216,8 @@ async fn join_cluster<H: Host>(
 
     let admin_s = admin.to_string_lossy().into_owned();
     let bootstrap_osd_s = bootstrap_osd.to_string_lossy().into_owned();
-    let _ = host.run_cmd("chown", &["ceph:ceph", &admin_s]).await;
-    let _ = host
-        .run_cmd("chown", &["ceph:ceph", &bootstrap_osd_s])
-        .await;
+    run_ok(host, "chown", &["ceph:ceph", &admin_s]).await?;
+    run_ok(host, "chown", &["ceph:ceph", &bootstrap_osd_s]).await?;
 
     // Cleared first so a *failed* attempt below can never leave a stale
     // monmap from an earlier retry of this same subcommand sitting there to
@@ -228,7 +226,7 @@ async fn join_cluster<H: Host>(
     // old bytes behind.
     let monmap = tmp_monmap_path(root);
     let monmap_s = monmap.to_string_lossy().into_owned();
-    let _ = std::fs::remove_file(&monmap);
+    remove_if_present(&monmap)?;
     for _ in 0..30 {
         if host
             .run_cmd(
@@ -250,7 +248,13 @@ async fn join_cluster<H: Host>(
     }
 
     let dir = mon_dir(root, node);
-    let _ = std::fs::remove_dir_all(&dir);
+    // A leftover store that cannot be removed would make `--mkfs` fail against
+    // it later with a far less obvious error. Only "already absent" is fine.
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("remove stale mon store {}", dir.display())),
+    }
     std::fs::create_dir_all(&dir)?;
     Ok(())
 }
@@ -282,14 +286,22 @@ async fn finish_mkfs<H: Host>(host: &H, root: &Path, node: &str) -> Result<()> {
     std::fs::copy(&tmp_mon, dir.join("keyring"))?;
     let ceph_dir = root.join("var/lib/ceph");
     let ceph_dir_s = ceph_dir.to_string_lossy().into_owned();
-    let _ = host
-        .run_cmd("chown", &["-R", "ceph:ceph", &ceph_dir_s])
-        .await;
+    // `?`: a mon store left owned by root is a mon that will not start as
+    // `ceph`, reported by nothing but a unit restarting in a loop.
+    run_ok(host, "chown", &["-R", "ceph:ceph", &ceph_dir_s]).await?;
     let admin_s = admin_keyring_path(root).to_string_lossy().into_owned();
-    let _ = host.run_cmd("chown", &["ceph:ceph", &admin_s]).await;
-    let _ = std::fs::remove_file(&tmp_mon);
-    let _ = std::fs::remove_file(&monmap);
+    run_ok(host, "chown", &["ceph:ceph", &admin_s]).await?;
+    remove_if_present(&tmp_mon)?;
+    remove_if_present(&monmap)?;
     Ok(())
+}
+
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
+    }
 }
 
 async fn run_ok<H: Host>(host: &H, bin: &str, args: &[&str]) -> Result<()> {
@@ -370,58 +382,58 @@ mod tests {
         };
         if let Some(path) = path {
             if let Some(parent) = std::path::Path::new(path).parent() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent).unwrap();
             }
-            let _ = std::fs::write(path, "fake-bytes-from-a-real-binary");
+            std::fs::write(path, "fake-bytes-from-a-real-binary").unwrap();
         }
     }
 
     #[allow(clippy::manual_async_fn)]
     impl Host for FileWritingHost {
-        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = Result<String>> + Send + 'a {
+        fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph(args)
         }
         fn ceph_json<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<serde_json::Value>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<serde_json::Value>> + Send + 'a {
             self.inner.ceph_json(args)
         }
         fn ceph_volume<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph_volume(args)
         }
         fn kubectl<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<String>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.kubectl(args)
         }
         fn kubectl_json<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<serde_json::Value>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<serde_json::Value>> + Send + 'a {
             self.inner.kubectl_json(args)
         }
         fn kubectl_apply<'a>(
             &self,
             manifest: &'a str,
-        ) -> impl Future<Output = Result<()>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<()>> + Send + 'a {
             self.inner.kubectl_apply(manifest)
         }
         fn systemctl<'a>(
             &self,
             args: &'a [&str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<CommandOutput>> + Send + 'a {
             self.inner.systemctl(args)
         }
         fn run_cmd<'a>(
             &self,
             bin: &'a str,
             args: &'a [&'a str],
-        ) -> impl Future<Output = Result<CommandOutput>> + Send + 'a {
+        ) -> impl Future<Output = crate::host::HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
             async move {
                 let out = me.inner.run_cmd(bin, args).await?;

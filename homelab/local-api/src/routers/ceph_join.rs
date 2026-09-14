@@ -110,7 +110,7 @@ pub async fn ceph_join_bundle() -> Result<Json<CephJoinBundle>> {
     // bundle would let the caller mkfs a mon against a half-known cluster.
     let fsid = crate::ceph_cli::cluster_fsid()
         .await
-        .ok_or_else(|| anyhow::anyhow!("ceph is not reachable from this node"))?;
+        .map_err(|e| anyhow::anyhow!("ceph is not reachable from this node: {e}"))?;
 
     let dump = crate::ceph_cli::ceph_json(&["mon", "dump"]).await?;
     let mon_addrs = parse_mon_addrs(&dump);
