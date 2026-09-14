@@ -218,7 +218,7 @@ function diskState(disk: DiskInfo): DiskState {
   if (disk.ownership === "unknown") return "unidentified";
   if (disk.foreign_ceph) return "foreign";
 
-  const on = disk.desired === "ON" || disk.desired === "USING";
+  const on = disk.desired === "ON";
   if (on && !disk.connected) return "missing";
   if (!on && !disk.connected) return "historical";
 
@@ -345,7 +345,7 @@ function DiskRow({
 
   const state = diskState(disk);
   const sm = STATE_META[state];
-  const isOn = disk.desired === "ON" || disk.desired === "USING";
+  const isOn = disk.desired === "ON";
 
   async function toggle() {
     const next = isOn ? "OFF" : "ON";

@@ -3,15 +3,15 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::{kubectl, AppState};
+use crate::disks_reconciler::{is_globally_unique_id, record_key, SYSTEM_OSD_ID};
+use crate::host::RealHost;
+use crate::storage::settings;
+use crate::AppState;
 
-const STATUS_CM: &str = "yolab-disk-status";
-const CONFIG_CM: &str = "yolab-disk-config";
-const NS: &str = "rook-ceph";
-
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct DiskInfo {
     pub id: String,
     pub device: String,
@@ -28,11 +28,6 @@ pub struct DiskInfo {
     /// This machine has a filesystem from it mounted. Never usable for storage.
     pub mounted: bool,
     /// Where the reconciler has got to with this disk: see disks_reconciler::Phase.
-    ///
-    /// Without this the UI had to guess from desired/connected/is_our_osd, and
-    /// that guess cannot distinguish "started five seconds ago" from "has failed
-    /// fourteen times" — both render as "Setting up…". Every failure lived only
-    /// in a log line.
     pub phase: String,
     /// Plain-language detail for `phase`, including the last error. Shown as-is.
     pub message: String,
@@ -45,160 +40,140 @@ pub struct SetState {
     pub desired: String,
 }
 
-/// The inverse of `disks_reconciler::record_key`.
-///
-/// Keys come in two shapes, and this is the half that was missing when they did:
-/// `record_key` gained a bare form for hardware ids, nothing here learned to read it,
-/// and `split_once("--")` skipped every such key with `else { continue }`. The record
-/// driving a live disk drain was therefore absent from the page entirely — no row, no
-/// toggle, no way to see or undo it. A writer changed and its reader did not.
-///
-/// Returns the node a record is scoped to, or None when the record belongs to the disk
-/// itself and so to whichever machine currently holds it.
+/// The inverse of `disks_reconciler::record_key`: the node a record is scoped to
+/// (None for a hardware id, which belongs to the disk wherever it is plugged in)
+/// and the disk id. A key in neither shape is still returned, never skipped — a
+/// record nobody can parse still governs a disk.
 fn split_record_key(key: &str) -> (Option<&str>, &str) {
-    // Checked before splitting: a hardware id is never node-scoped, and splitting one
-    // on the first `--` it happens to contain would cut it in the wrong place.
-    if crate::disks_reconciler::is_globally_unique_id(key) {
+    if is_globally_unique_id(key) {
         return (None, key);
     }
     match key.split_once("--") {
         Some((node, id)) => (Some(node), id),
-        // Neither shape. Not skipped: a key nobody can parse still governs a disk, and
-        // dropping it is exactly how one became invisible.
         None => (None, key),
     }
 }
 
-pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<DiskInfo>>> {
-    let config_raw = kubectl::get_json(&[
-        "get",
-        "configmap",
-        CONFIG_CM,
-        "-n",
-        NS,
-        "-o",
-        "jsonpath={.data}",
-    ])
-    .await
-    .unwrap_or(serde_json::Value::Object(Default::default()));
+/// node → disk id → the metadata that node last published.
+type Inventory = HashMap<String, HashMap<String, Value>>;
 
-    let status_raw = kubectl::get_json(&[
-        "get",
-        "configmap",
-        STATUS_CM,
-        "-n",
-        NS,
-        "-o",
-        "jsonpath={.data}",
-    ])
-    .await
-    .unwrap_or(serde_json::Value::Object(Default::default()));
-    let status_raw2 = status_raw.clone();
-
-    let desired: HashMap<String, String> = serde_json::from_value(config_raw).unwrap_or_default();
-
-    // Build a lookup: node → disk_id → live metadata (only if currently connected)
-    let mut live: HashMap<String, HashMap<String, serde_json::Value>> = HashMap::new();
-    if let Some(status_map) = status_raw.as_object() {
-        for (node, node_json) in status_map {
-            let payload: serde_json::Value =
-                serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
-            if let Some(disks) = payload["disks"].as_object() {
-                live.entry(node.clone())
-                    .or_default()
-                    .extend(disks.iter().map(|(k, v)| (k.clone(), v.clone())));
+/// Parses each node's published inventory. A node whose payload does not parse
+/// is left out and logged: its disks show as not connected rather than wrong.
+fn parse_inventory(published: &BTreeMap<String, String>) -> Inventory {
+    published
+        .iter()
+        .filter_map(|(node, raw)| match serde_json::from_str::<Value>(raw) {
+            Ok(v) => {
+                let disks = v["disks"].as_object()?;
+                Some((
+                    node.clone(),
+                    disks.iter().map(|(k, m)| (k.clone(), m.clone())).collect(),
+                ))
             }
-        }
-    }
-
-    // Where each disk was last seen, so a bare-keyed record for a disk that is
-    // currently unplugged still lands under a machine rather than nowhere.
-    let mut last_seen: HashMap<String, String> = HashMap::new();
-    if let Some(status_map) = status_raw2.as_object() {
-        for (node, node_json) in status_map {
-            let payload: serde_json::Value =
-                serde_json::from_str(node_json.as_str().unwrap_or("{}")).unwrap_or_default();
-            if let Some(disks) = payload["knownDisks"]
-                .as_object()
-                .or(payload["disks"].as_object())
-            {
-                for id in disks.keys() {
-                    last_seen.entry(id.clone()).or_insert_with(|| node.clone());
-                }
+            Err(e) => {
+                tracing::warn!("disk inventory published by {node} is unreadable: {e}");
+                None
             }
-        }
-    }
+        })
+        .collect()
+}
 
-    // Config CM is the authoritative list of all known disks.
-    // Status CM enriches connected disks with live metadata.
+fn disk_info(disk_id: &str, desired: &str, meta: Option<&Value>) -> DiskInfo {
+    let text = |field: &str| {
+        meta.and_then(|v| v[field].as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let flag = |field: &str| meta.and_then(|v| v[field].as_bool()).unwrap_or(false);
+    DiskInfo {
+        id: disk_id.to_string(),
+        desired: desired.to_string(),
+        connected: meta.is_some(),
+        device: text("device"),
+        model: text("model"),
+        size_bytes: meta.and_then(|v| v["size_bytes"].as_u64()).unwrap_or(0),
+        has_partitions: flag("has_partitions"),
+        mounted: flag("mounted"),
+        phase: text("phase"),
+        message: text("message"),
+        attempts: meta
+            .and_then(|v| v["attempts"].as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
+        is_loop: flag("is_loop"),
+        is_our_osd: flag("is_our_osd"),
+        foreign_ceph: flag("foreign_ceph"),
+        osd_id: meta.and_then(|v| v["osd_id"].as_i64()),
+    }
+}
+
+/// Every disk the page should show, by node: every record (connected or not),
+/// plus every connected disk that has no record yet — the system disk, which
+/// never needs one, and a disk seen before its first registration.
+fn disk_list(desired: &HashMap<String, String>, live: &Inventory) -> HashMap<String, Vec<DiskInfo>> {
     let mut result: HashMap<String, Vec<DiskInfo>> = HashMap::new();
-    for (cm_key, desired_val) in &desired {
-        let (scoped_node, disk_id) = split_record_key(cm_key);
-        // A record that belongs to the disk rather than to a machine is shown under
-        // whichever machine can actually see the disk right now — which is the whole
-        // point of it not being node-scoped. When nobody can see it, it is listed
-        // against the node it was last known at, so an unplugged disk still appears
-        // instead of vanishing from the page.
-        let node: &str = match scoped_node {
-            Some(n) => n,
+    let mut listed: std::collections::HashSet<(String, String)> = Default::default();
+
+    for (key, setting) in desired {
+        let (scoped_node, disk_id) = split_record_key(key);
+        // A hardware-id record is shown under whichever node sees the disk now;
+        // a disk nobody sees stays listed, under no node ("").
+        let node = match scoped_node {
+            Some(n) => n.to_string(),
             None => live
                 .iter()
                 .find(|(_, disks)| disks.contains_key(disk_id))
-                .map(|(n, _)| n.as_str())
-                .or_else(|| last_seen.get(disk_id).map(String::as_str))
-                .unwrap_or(""),
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default(),
         };
-        let meta = live.get(node).and_then(|m| m.get(disk_id));
-        let connected = meta.is_some();
-        let info = DiskInfo {
-            id: disk_id.to_string(),
-            desired: desired_val.clone(),
-            connected,
-            device: meta
-                .and_then(|v| v["device"].as_str())
-                .unwrap_or("")
-                .to_string(),
-            model: meta
-                .and_then(|v| v["model"].as_str())
-                .unwrap_or("")
-                .to_string(),
-            size_bytes: meta.and_then(|v| v["size_bytes"].as_u64()).unwrap_or(0),
-            has_partitions: meta
-                .and_then(|v| v["has_partitions"].as_bool())
-                .unwrap_or(false),
-            mounted: meta.and_then(|v| v["mounted"].as_bool()).unwrap_or(false),
-            phase: meta
-                .and_then(|v| v["phase"].as_str())
-                .unwrap_or("")
-                .to_string(),
-            message: meta
-                .and_then(|v| v["message"].as_str())
-                .unwrap_or("")
-                .to_string(),
-            attempts: meta.and_then(|v| v["attempts"].as_u64()).unwrap_or(0) as u32,
-            is_loop: meta.and_then(|v| v["is_loop"].as_bool()).unwrap_or(false),
-            is_our_osd: meta
-                .and_then(|v| v["is_our_osd"].as_bool())
-                .unwrap_or(false),
-            foreign_ceph: meta
-                .and_then(|v| v["foreign_ceph"].as_bool())
-                .unwrap_or(false),
-            osd_id: meta.and_then(|v| v["osd_id"].as_i64()),
-        };
-        result.entry(node.to_string()).or_default().push(info);
+        let meta = live.get(&node).and_then(|m| m.get(disk_id));
+        // The system disk is ON whatever a record says (`wants_on`).
+        let setting = if disk_id == SYSTEM_OSD_ID { "ON" } else { setting };
+        listed.insert((node.clone(), disk_id.to_string()));
+        result
+            .entry(node)
+            .or_default()
+            .push(disk_info(disk_id, setting, meta));
     }
 
-    // Sort each node's list: connected first, then system disk, then by size desc
+    for (node, disks) in live {
+        for (disk_id, meta) in disks {
+            if listed.contains(&(node.clone(), disk_id.clone())) {
+                continue;
+            }
+            let setting = if disk_id == SYSTEM_OSD_ID { "ON" } else { "OFF" };
+            result
+                .entry(node.clone())
+                .or_default()
+                .push(disk_info(disk_id, setting, Some(meta)));
+        }
+    }
+
+    // Connected first, then the system disk, then by size, then by id so the
+    // order never shuffles between refreshes.
     for disks in result.values_mut() {
         disks.sort_by(|a, b| {
             b.connected
                 .cmp(&a.connected)
                 .then(b.is_loop.cmp(&a.is_loop))
                 .then(b.size_bytes.cmp(&a.size_bytes))
+                .then(a.id.cmp(&b.id))
         });
     }
+    result
+}
 
-    Json(result)
+/// GET /api/disks. An unreadable settings store is an error, never an empty
+/// page: "no disks" and "cannot tell" must not look the same.
+pub async fn list_disks(
+    State(_s): State<AppState>,
+) -> crate::error::Result<Json<HashMap<String, Vec<DiskInfo>>>> {
+    let desired: HashMap<String, String> = settings::dump(&RealHost, settings::DISKS)
+        .await?
+        .into_iter()
+        .collect();
+    let live = parse_inventory(&settings::dump(&RealHost, settings::DISK_STATUS).await?);
+    Ok(Json(disk_list(&desired, &live)))
 }
 
 /// Why a requested ON/OFF must not be recorded, if it must not.
@@ -211,7 +186,7 @@ pub async fn list_disks(State(_s): State<AppState>) -> Json<HashMap<String, Vec<
 fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
     match desired {
         "ON" => None,
-        "OFF" if disk_id == crate::disks_reconciler::SYSTEM_OSD_ID => Some(
+        "OFF" if disk_id == SYSTEM_OSD_ID => Some(
             "The system disk holds this machine's container images and cannot be switched off.",
         ),
         "OFF" => None,
@@ -219,54 +194,30 @@ fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
     }
 }
 
+/// Records the owner's switch for one disk and wakes the disk controller. Shared
+/// by the Storage page's toggle and the Ceph page's per-OSD buttons, so there is
+/// one writer and one set of rules.
+pub(crate) async fn record_switch(node: &str, disk_id: &str, desired: &str) -> Result<(), String> {
+    if let Some(error) = refuse_state_change(disk_id, desired) {
+        return Err(error.to_string());
+    }
+    let key = format!("{}{}", settings::DISKS, record_key(node, disk_id));
+    settings::set(&RealHost, &key, desired)
+        .await
+        .map_err(|e| format!("the setting could not be saved: {e}"))?;
+    crate::runtime::wake("disks");
+    Ok(())
+}
+
 pub async fn set_disk_state(
     Path((node, id)): Path<(String, String)>,
     State(_s): State<AppState>,
     Json(body): Json<SetState>,
-) -> Json<serde_json::Value> {
-    if let Some(error) = refuse_state_change(&id, &body.desired) {
-        return Json(serde_json::json!({"ok": false, "error": error}));
+) -> Json<Value> {
+    match record_switch(&node, &id, &body.desired).await {
+        Ok(()) => Json(serde_json::json!({"ok": true})),
+        Err(error) => Json(serde_json::json!({"ok": false, "error": error})),
     }
-
-    // Built by the same function the reconciler reads with, so a toggle can never
-    // write a key nothing acts on (or act on one nothing can write).
-    let cm_key = crate::disks_reconciler::record_key(&node, &id);
-    let patch = serde_json::json!({"data": {cm_key.as_str(): body.desired.as_str()}}).to_string();
-
-    if kubectl::run(&[
-        "patch",
-        "configmap",
-        CONFIG_CM,
-        "-n",
-        NS,
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await
-    .is_err()
-    {
-        let _ = kubectl::run(&["create", "configmap", CONFIG_CM, "-n", NS]).await;
-        if kubectl::run(&[
-            "patch",
-            "configmap",
-            CONFIG_CM,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await
-        .is_err()
-        {
-            return Json(serde_json::json!({"ok": false, "error": "failed to save disk config"}));
-        }
-    }
-
-    Json(serde_json::json!({"ok": true}))
 }
 
 /// Erase a foreign-Ceph disk so it can be provisioned as an OSD.
@@ -277,10 +228,8 @@ pub async fn set_disk_state(
 pub async fn erase_disk(
     Path((node, id)): Path<(String, String)>,
     State(_s): State<AppState>,
-) -> Json<serde_json::Value> {
-    let this_node = std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+) -> Json<Value> {
+    let this_node = crate::system::hostname();
     if node != this_node {
         return Json(serde_json::json!({
             "ok": false,
@@ -288,23 +237,17 @@ pub async fn erase_disk(
         }));
     }
 
-    // Read the disk's published metadata from the status ConfigMap.
-    let status_raw = kubectl::get_json(&[
-        "get",
-        "configmap",
-        STATUS_CM,
-        "-n",
-        NS,
-        "-o",
-        "jsonpath={.data}",
-    ])
-    .await
-    .unwrap_or_default();
-
-    let node_payload: serde_json::Value = status_raw[&node]
-        .as_str()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
+    // This node's own published inventory. Unreadable is refused, never guessed.
+    let key = format!("{}{node}", settings::DISK_STATUS);
+    let node_payload: Value = match settings::get_json(&RealHost, &key).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Json(serde_json::json!({"ok": false, "error": "this node has not published its disks yet"}))
+        }
+        Err(e) => {
+            return Json(serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")}))
+        }
+    };
 
     let meta = &node_payload["disks"][&id];
     if meta.is_null() {
@@ -454,7 +397,7 @@ mod tests {
         }
     }
 
-    /// The live ConfigMap at the moment the disk went missing from the page. Both
+    /// The live record set at the moment the disk went missing from the page. Both
     /// records for the easystore have to be readable; previously the second was not.
     #[test]
     fn the_configmap_that_hid_a_draining_disk_now_parses_completely() {
@@ -473,6 +416,92 @@ mod tests {
         assert_eq!(parsed[6], (None, "serial-wwn-0x50014ee214caf529"));
         // And it names the same disk as the node-scoped one beside it.
         assert_eq!(parsed[3].1, parsed[6].1);
+    }
+
+    // ── The page's list ───────────────────────────────────────────────────────
+
+    fn inventory(node: &str, disks: Value) -> Inventory {
+        parse_inventory(&BTreeMap::from([(
+            node.to_string(),
+            serde_json::json!({ "disks": disks }).to_string(),
+        )]))
+    }
+
+    fn ids(list: &[DiskInfo]) -> Vec<(&str, &str, bool)> {
+        list.iter()
+            .map(|d| (d.id.as_str(), d.desired.as_str(), d.connected))
+            .collect()
+    }
+
+    #[test]
+    fn records_and_connected_disks_without_records_are_all_listed() {
+        let desired = HashMap::from([
+            ("node1--dev-sdb".to_string(), "ON".to_string()),
+            // Unplugged, still switched on: listed, not connected.
+            ("node1--dev-sdz".to_string(), "ON".to_string()),
+        ]);
+        let live = inventory(
+            "node1",
+            serde_json::json!({
+                "system": {"device": "/dev/mapper/pool-ceph", "is_loop": true, "size_bytes": 10},
+                "dev-sdb": {"device": "sdb", "size_bytes": 50},
+                "dev-sdc": {"device": "sdc", "size_bytes": 20},
+            }),
+        );
+
+        let list = disk_list(&desired, &live);
+
+        assert_eq!(
+            ids(&list["node1"]),
+            vec![
+                ("system", "ON", true),
+                ("dev-sdb", "ON", true),
+                ("dev-sdc", "OFF", true),
+                ("dev-sdz", "ON", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hardware_id_record_is_listed_under_the_node_that_sees_the_disk() {
+        let desired = HashMap::from([("serial-wwn-0xabc".to_string(), "OFF".to_string())]);
+        let live = inventory("node3", serde_json::json!({"serial-wwn-0xabc": {"device": "sdb"}}));
+
+        let list = disk_list(&desired, &live);
+
+        assert_eq!(ids(&list["node3"]), vec![("serial-wwn-0xabc", "OFF", true)]);
+        assert!(!list.contains_key(""), "the disk is not listed twice");
+    }
+
+    #[test]
+    fn the_system_disk_is_shown_on_whatever_a_record_says() {
+        let desired = HashMap::from([("node1--system".to_string(), "OFF".to_string())]);
+        let live = inventory("node1", serde_json::json!({"system": {"is_loop": true}}));
+        assert_eq!(ids(&disk_list(&desired, &live)["node1"]), vec![("system", "ON", true)]);
+    }
+
+    #[test]
+    fn an_unreadable_node_inventory_is_left_out_not_guessed() {
+        let published = BTreeMap::from([
+            ("node1".to_string(), "not json".to_string()),
+            ("node2".to_string(), r#"{"disks":{"dev-sda":{}}}"#.to_string()),
+        ]);
+        let live = parse_inventory(&published);
+        assert!(!live.contains_key("node1"));
+        assert!(live["node2"].contains_key("dev-sda"));
+    }
+
+    #[test]
+    fn metadata_fields_are_read_into_the_row() {
+        let meta = serde_json::json!({
+            "device": "sdb", "model": "WD", "size_bytes": 1000, "is_our_osd": true,
+            "osd_id": 4, "phase": "active", "message": "In use", "attempts": 2,
+        });
+        let row = disk_info("dev-sdb", "ON", Some(&meta));
+        assert_eq!((row.device.as_str(), row.model.as_str()), ("sdb", "WD"));
+        assert_eq!((row.size_bytes, row.osd_id, row.attempts), (1000, Some(4), 2));
+        assert!(row.is_our_osd && row.connected && !row.mounted);
+        assert_eq!((row.phase.as_str(), row.message.as_str()), ("active", "In use"));
     }
 
     #[test]

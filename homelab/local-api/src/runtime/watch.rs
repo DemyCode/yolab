@@ -89,9 +89,9 @@ pub fn standard() -> Vec<Watch> {
     let kube_watch = |kind: &str, name: &str, ns: &str| -> Vec<String> {
         let selector = format!("metadata.name={name}");
         // By field selector, never `get <kind> <name>`: watching a NAMED object
-        // that does not exist fails at once with NotFound, and yolab-restores and
-        // yolab-storage-heal do not exist until the first restore or recovery —
-        // so those watches never ran, only retried. A filtered watch of the
+        // that does not exist fails at once with NotFound, and yolab-restores does
+        // not exist until the first restore — so that watch never ran, only
+        // retried. A filtered watch of the
         // namespace waits, and reports the object's creation too.
         [
             "get",
@@ -118,27 +118,6 @@ pub fn standard() -> Vec<Watch> {
                 .collect(),
             targets: &["disks"],
             filter: udev_block_event,
-        },
-        Watch {
-            label: "disk-config",
-            bin: "kubectl",
-            args: kube_watch("configmap", "yolab-disk-config", "rook-ceph"),
-            targets: &["disks"],
-            filter: any_line,
-        },
-        Watch {
-            label: "storage-policy",
-            bin: "kubectl",
-            args: kube_watch("configmap", "yolab-storage-policy", "rook-ceph"),
-            targets: &["topology", "disks"],
-            filter: any_line,
-        },
-        Watch {
-            label: "storage-heal",
-            bin: "kubectl",
-            args: kube_watch("configmap", "yolab-storage-heal", "kube-system"),
-            targets: &["storage-heal", "cephfs", "disks", "topology"],
-            filter: any_line,
         },
         Watch {
             label: "restores",

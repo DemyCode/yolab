@@ -156,19 +156,27 @@ pub async fn get_nodes() -> Result<Vec<Value>, CmdError> {
 pub fn peer_ipv6(nodes: &[Value], self_ip: &str) -> Vec<String> {
     nodes
         .iter()
-        .filter_map(|n| {
-            n["status"]["addresses"]
-                .as_array()?
-                .iter()
-                .find(|a| {
-                    a["type"] == "InternalIP"
-                        && a["address"].as_str().is_some_and(|s| s.contains(':'))
-                })
-                .and_then(|a| a["address"].as_str())
-                .map(String::from)
-        })
+        .filter_map(cluster_ipv6)
         .filter(|a| a != self_ip)
         .collect()
+}
+
+/// The IPv6 cluster address of the node named `name` (a node's name is its
+/// hostname, which is also its identity in the leader lease).
+pub fn node_ipv6(nodes: &[Value], name: &str) -> Option<String> {
+    nodes
+        .iter()
+        .find(|n| n["metadata"]["name"].as_str() == Some(name))
+        .and_then(cluster_ipv6)
+}
+
+fn cluster_ipv6(node: &Value) -> Option<String> {
+    node["status"]["addresses"]
+        .as_array()?
+        .iter()
+        .find(|a| a["type"] == "InternalIP" && a["address"].as_str().is_some_and(|s| s.contains(':')))
+        .and_then(|a| a["address"].as_str())
+        .map(String::from)
 }
 
 #[cfg(test)]
@@ -209,6 +217,23 @@ mod tests {
             ("InternalIP", "fd00:cafe::6"),
         ])];
         assert_eq!(peer_ipv6(&nodes, "fd00:cafe::5"), vec!["fd00:cafe::6"]);
+    }
+
+    #[test]
+    fn a_node_is_found_by_name_and_only_its_ipv6_is_used() {
+        let named = |name: &str, ips: &[(&str, &str)]| {
+            let mut n = node(ips);
+            n["metadata"] = serde_json::json!({ "name": name });
+            n
+        };
+        let nodes = [
+            named("node1", &[("InternalIP", "fd00:cafe::5")]),
+            named("node2", &[("InternalIP", "10.0.0.7"), ("InternalIP", "fd00:cafe::6")]),
+            named("node3", &[("InternalIP", "10.0.0.8")]),
+        ];
+        assert_eq!(node_ipv6(&nodes, "node2").as_deref(), Some("fd00:cafe::6"));
+        assert_eq!(node_ipv6(&nodes, "node3"), None, "no v6 address");
+        assert_eq!(node_ipv6(&nodes, "node9"), None, "no such node");
     }
 
     #[test]

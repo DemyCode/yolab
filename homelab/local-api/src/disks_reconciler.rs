@@ -1,31 +1,17 @@
-/// Disk reconciler — runs as a background task inside yolab-local-api.
+/// Disk reconciler — the `disks` controller, on every node.
 ///
-/// Every 30 seconds on each node:
+/// Every tick:
 ///   1. Discover block devices via lsblk (type=disk, no partition children)
-///   2. Classify them (ours / clean / foreign-wipe)
-///   3. Publish metadata to yolab-disk-status ConfigMap
-///   4. Read desired states from yolab-disk-config ConfigMap
-///   5. Create or tear down OSDs so reality matches those desired states
+///   2. Classify them (ours / blank / foreign)
+///   3. Read the owner's ON/OFF per disk (`storage::settings`, in Ceph)
+///   4. Create or tear down OSDs so reality matches those switches
+///   5. Publish what this node sees for the Storage page (also in Ceph)
 ///
-/// SHARED STATE IS STILL THE SOURCE OF TRUTH
-/// -----------------------------------------
-/// Ceph no longer runs inside Kubernetes (see homelab/nixos/ceph/ for why: a mon
-/// that is a pod makes an RBD-backed containerd store impossible). But the
-/// control plane for *which disks are in Ceph* deliberately stays in
-/// Kubernetes: `yolab-disk-config` holds the ON/OFF the user sets in the UI,
-/// `yolab-disk-status` holds what each node actually sees, and a
-/// coordination.k8s.io Lease still elects a single writer. Any node's UI can
-/// therefore flip a disk on any other node, exactly as before, and the contract
-/// the frontend consumes is unchanged.
-///
-/// What changed is only the mechanism underneath:
-///   - was: patch the CephCluster CR and let Rook's operator provision
-///   - now: run `ceph-volume lvm create` and enable `yolab-ceph-osd@<id>`
-///
-/// That removes the whole class of bugs where Rook fought this loop — the
-/// delete/recreate war when Rook rediscovered BlueStore data on a drained disk,
-/// and `removeOSDsIfOutAndSafeToRemove` stalling for 45h. Nothing races us now,
-/// so removal no longer has to be one atomic burst inside a single tick.
+/// The switches live in Ceph's key-value store rather than Kubernetes because
+/// they configure the layer Kubernetes depends on (see `storage::settings`).
+/// Each node owns the OSDs on its own disks, so no single writer is needed here;
+/// the one OSD nobody switches is the system LV, created at boot
+/// (`system_osd_attempt`) and never switched off (`wants_on`).
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{collections::HashMap, io::Read, path::Path};
@@ -34,15 +20,8 @@ use tokio::time::{sleep, Duration};
 use crate::ceph::destructive;
 use crate::error::Outcome;
 use crate::host::{Host, RealHost};
-use crate::kubectl;
+use crate::storage::settings;
 
-/// Kept as "rook-ceph" even though Rook no longer runs the cluster: it is where
-/// the existing ConfigMaps, Lease and CSI resources already live, and renaming
-/// it would be a migration with no benefit. It is a namespace name, not a
-/// statement about who runs Ceph.
-const NS: &str = "rook-ceph";
-const STATUS_CM: &str = "yolab-disk-status";
-const CONFIG_CM: &str = "yolab-disk-config";
 const INTERVAL_SECS: u64 = 30;
 
 const BLUESTORE_MAGIC: &[u8] = b"bluestore block device\n";
@@ -207,7 +186,7 @@ impl Ownership {
 /// One device as this node sees it.
 ///
 /// The published shape is produced in exactly one place (`to_value`) so the
-/// ConfigMap the UI reads cannot drift field by field.
+/// inventory the Storage page reads cannot drift field by field.
 #[derive(Clone, Debug)]
 pub(crate) struct Disk {
     pub device: String,
@@ -422,9 +401,8 @@ impl crate::runtime::Controller for DisksController {
         Duration::from_secs(INTERVAL_SECS)
     }
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        // The ON/OFF settings and the published inventory both live in the
-        // Kubernetes API; without it this tick can change nothing anyway.
-        &[crate::runtime::Requirement::KubeApi]
+        // The switches and the published inventory both live in Ceph.
+        &[crate::runtime::Requirement::Ceph]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[
@@ -607,7 +585,7 @@ async fn local_osds<H: Host>(host: &H) -> Result<Vec<(String, i64)>> {
 }
 
 /// Per-node: publish this node's disk inventory + its effective device list to
-/// the status ConfigMap, and run this node's own OSD lifecycle. No shared-CR
+/// its settings key in Ceph, and run this node's own OSD lifecycle. No shared-CR
 /// writes happen here, so every node can run it concurrently without racing.
 async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
     let Some(scanned) = scan_devices(host).await else {
@@ -1218,7 +1196,7 @@ fn any_unplugged_but_wanted(
 ) -> bool {
     let prefix = format!("{node}--");
     desired.iter().any(|(k, v)| {
-        if v != "ON" && v != "USING" {
+        if v != "ON" {
             return false;
         }
         match k.strip_prefix(&prefix) {
@@ -1714,8 +1692,8 @@ fn plan_create(
     CreatePlan::Create { dev_path }
 }
 
-/// The owner's intent for one disk on one node. "USING" is the same intent as
-/// "ON"; anything else, including an absent record, means off.
+/// The owner's intent for one disk on one node: exactly "ON" is on; anything
+/// else, including an absent record, is off.
 ///
 /// The system LV is always on, whatever a record says: this node's image store
 /// lives on it, so draining it would take the node's ability to run containers
@@ -1724,7 +1702,7 @@ fn wants_on(desired: &HashMap<String, String>, node: &str, disk_id: &str) -> boo
     disk_id == SYSTEM_OSD_ID
         || desired
             .get(&record_key(node, disk_id))
-            .is_some_and(|v| v == "ON" || v == "USING")
+            .is_some_and(|v| v == "ON")
 }
 
 fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
@@ -2129,241 +2107,43 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
     }
 }
 
-/// Carry a disk's setting across a change in how disks are identified.
+/// Records a switch for every disk on this node that has none yet.
 ///
-/// Records are keyed by `<node>--<disk_id>`, and disk_id changed shape in this release:
-/// it used to fall back to the kernel name (`dev-sdb`) on hardware where the old serial
-/// path did not exist, which on some machines was every disk. After the change the same
-/// disk is `serial-wwn-0x…`, so every existing record would look like it belongs to a
-/// disk that is no longer present, and every present disk would look brand new.
-///
-/// Brand new means OFF. Applied to a disk already carrying an OSD, OFF means drain,
-/// purge and wipe — which is exactly the accident this release exists to prevent, and
-/// it would have been triggered BY the release. `auto_register_all_disks` refuses to
-/// register a live OSD's disk as OFF, which covers the disks that are running; this
-/// covers the rest, so a disk deliberately switched OFF does not silently come back ON,
-/// and one switched ON before an unplug is still ON when it returns.
-///
-/// Pure so the mapping can be tested without a cluster: given the old records and the
-/// devices seen now, return the entries to write.
-/// What a migration pass wants written and removed.
-#[derive(Debug, Default, PartialEq)]
-pub(crate) struct Migration {
-    /// Keys to set, in the current shape.
-    pub write: HashMap<String, String>,
-    /// Keys to delete. Carrying a value forward and leaving the source behind is what
-    /// produced two rows for one disk — and worse, two records for one disk that can
-    /// disagree, with only one of them connected to anything.
-    pub remove: Vec<String>,
-}
-
-fn migrate_disk_records(
-    node: &str,
-    // `current`: disk_id -> the kernel device it is at now, for every disk seen.
-    current: &[(String, String)],
-    // `desired`: existing records, `<node>--<disk_id>` -> "ON"/"OFF".
-    desired: &HashMap<String, String>,
-) -> Migration {
-    let mut out = HashMap::new();
-    let mut remove: Vec<String> = Vec::new();
-    for (disk_id, device) in current {
-        let new_key = record_key(node, disk_id);
-        // Not `continue` when the new key already exists.
-        //
-        // That is the state a half-finished migration leaves — and the one the live
-        // cluster was in: the bare key written, the node-scoped source still sitting
-        // beside it. Skipping meant the duplicate could never be cleared, so one disk
-        // kept two records that were free to disagree, and did.
-        let already_migrated = desired.contains_key(&new_key);
-        // Two shapes can precede this one, and both are checked: the kernel-name key
-        // from before disks were identified by hardware, and the node-scoped hardware
-        // key from before hardware ids stopped being node-scoped. A cluster can be
-        // updated straight from the first to the third, so neither may be skipped.
-        // Order matters, and getting it wrong cost a live drain.
-        //
-        // The node-scoped HARDWARE key is tried first because it is the most recent
-        // and the most specific: it was written by the previous release for this exact
-        // disk. The kernel-name key is a last resort — it belongs to whatever was at
-        // that letter under a scheme that could not tell disks apart, and stale ones
-        // linger for devices that have long since moved.
-        //
-        // Reversed, the stale one won. `node1--dev-sdc` was an orphan reading OFF;
-        // `node1--serial-wwn-…` was the live record reading ON. The migration carried
-        // OFF, the reconciler read OFF as an instruction, and started draining a disk
-        // nobody had asked to remove.
-        for old_key in [
-            format!("{node}--{disk_id}"),
-            format!("{node}--dev-{device}"),
-        ] {
-            if old_key == new_key {
-                continue; // nothing to carry onto itself
-            }
-            if let Some(setting) = desired.get(&old_key) {
-                // Only the first match supplies the value — they are ordered
-                // best-first — but EVERY predecessor is superseded and every one goes.
-                // Keeping any of them leaves a second record for the same hardware,
-                // which is how one disk ended up with an ON record carrying the
-                // visible toggle and an OFF record doing the deciding.
-                if !already_migrated && !out.contains_key(&new_key) {
-                    out.insert(new_key.clone(), setting.clone());
-                }
-                remove.push(old_key);
-            }
-        }
-    }
-
-    // Kernel-name records for disks that are not at that device any more.
-    //
-    // These cannot be matched by identity ever again: a disk that publishes any
-    // hardware id is now keyed by it, so a `dev-*` record can only ever be picked up
-    // by whatever unrelated disk next lands on that letter. That is not a stale
-    // record, it is a trap — and it has already sprung once, when a stale `dev-sdc`
-    // reading OFF was carried onto a live disk and started draining it.
-    //
-    // Losing a setting is the cheap failure here: a disk with no record is OFF, and
-    // OFF can no longer destroy anything now that a live OSD's disk is never
-    // registered off.
-    let devices_now: std::collections::HashSet<&str> =
-        current.iter().map(|(_, d)| d.as_str()).collect();
-    for key in desired.keys() {
-        let Some(id) = key.strip_prefix(&format!("{node}--")) else {
-            continue;
-        };
-        let Some(device) = id.strip_prefix("dev-") else {
-            continue;
-        };
-        if !devices_now.contains(device) && !remove.contains(key) {
-            remove.push(key.clone());
-        }
-    }
-
-    Migration { write: out, remove }
-}
-
-/// Register every newly detected disk in the config CM on first sight.
-/// System disk (is_loop) defaults ON — it's always the primary storage.
-/// All other disks default OFF; the user must explicitly enable them.
-/// Foreign-Ceph disks are registered too so they show in the UI.
+/// A new disk is OFF until the owner asks for it — except one already running
+/// one of OUR OSDs, which is ON: that OSD is itself the evidence somebody switched
+/// it on, and registering a live OSD's disk OFF would drain, purge and wipe it.
+/// (The system LV needs no record; `wants_on` treats it as always on.)
 async fn auto_register_all_disks<H: Host>(
     host: &H,
     node: &str,
     meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
 ) {
-    // Before deciding anything is new: carry over records this release's change in
-    // disk identity would otherwise have orphaned.
-    let current: Vec<(String, String)> = meta
+    for (key, setting) in new_disk_records(node, meta, desired) {
+        let full = format!("{}{key}", settings::DISKS);
+        match settings::set(host, &full, setting).await {
+            Ok(()) => tracing::info!("disk {key}: first seen on {node}, registered {setting}"),
+            Err(e) => tracing::warn!("disk {key}: could not register it ({e})"),
+        }
+    }
+}
+
+/// The records `auto_register_all_disks` writes: pure, so the ON/OFF rule is
+/// tested without a cluster.
+fn new_disk_records(
+    node: &str,
+    meta: &HashMap<String, Disk>,
+    desired: &HashMap<String, String>,
+) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = meta
         .iter()
-        .filter(|(_, m)| !m.device.is_empty())
-        .map(|(id, m)| (id.clone(), m.device.clone()))
+        .filter(|(disk_id, _)| disk_id.as_str() != SYSTEM_OSD_ID)
+        .map(|(disk_id, m)| (record_key(node, disk_id), m))
+        .filter(|(key, _)| !desired.contains_key(key))
+        .map(|(key, m)| (key, if m.ownership.is_ours() { "ON" } else { "OFF" }))
         .collect();
-    let migration = migrate_disk_records(node, &current, desired);
-    let mut new_entries: HashMap<String, String> = migration.write;
-    if !new_entries.is_empty() {
-        tracing::info!(
-            "auto_register_all_disks: carried {} disk setting(s) onto their hardware ids on {node}",
-            new_entries.len()
-        );
-    }
-    // A merge patch deletes by setting a key to null, so removals ride along with the
-    // writes in one request — the two must not be able to half-apply, or a value could
-    // be dropped without its replacement landing.
-    let mut patch_data: serde_json::Map<String, Value> = new_entries
-        .iter()
-        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-        .collect();
-    if !migration.remove.is_empty() {
-        tracing::info!(
-            "auto_register_all_disks: removing {} superseded disk record(s) on {node}: {}",
-            migration.remove.len(),
-            migration.remove.join(", ")
-        );
-        for key in &migration.remove {
-            patch_data.insert(key.clone(), Value::Null);
-        }
-    }
-
-    for (disk_id, m) in meta {
-        let key = record_key(node, disk_id);
-        if desired.contains_key(&key) || new_entries.contains_key(&key) {
-            continue;
-        }
-
-        // A disk with no record is normally new, and new disks are OFF until someone
-        // asks for them. But "no record" also happens when a disk's IDENTITY changes
-        // while the disk itself does not — a replug landing on a different kernel
-        // name, or this very release moving from `dev-sdb` to the hardware id.
-        //
-        // Defaulting those to OFF is how a running OSD carrying live data gets read as
-        // "the owner does not want this disk", then drained, purged and wiped. That is
-        // not hypothetical: it happened, twice, and destroyed the only copy of 63
-        // placement groups.
-        //
-        // A disk that is already running one of OUR OSDs is therefore ON, whatever the
-        // record says, because the OSD is itself the evidence that somebody switched it
-        // on. The record was lost; the decision it recorded was not.
-        let default = if m.is_loop || m.ownership.is_ours() {
-            "ON"
-        } else {
-            "OFF"
-        };
-        if default == "ON" && !m.is_loop {
-            tracing::info!(
-                "auto_register_all_disks: {disk_id} has no record but is running one of our OSDs — registering it ON, not OFF"
-            );
-        }
-        new_entries.insert(key.clone(), default.to_string());
-        patch_data.insert(key, Value::String(default.to_string()));
-    }
-    if patch_data.is_empty() {
-        return;
-    }
-
-    let patch = json!({ "data": Value::Object(patch_data) }).to_string();
-    if let Err(e) = host
-        .kubectl(&[
-            "patch",
-            "configmap",
-            CONFIG_CM,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await
-    {
-        host.kubectl(&["create", "configmap", CONFIG_CM, "-n", NS])
-            .await
-            .debug_on_err("create the disk config ConfigMap");
-        if let Err(e2) = host
-            .kubectl(&[
-                "patch",
-                "configmap",
-                CONFIG_CM,
-                "-n",
-                NS,
-                "--type",
-                "merge",
-                "-p",
-                &patch,
-            ])
-            .await
-        {
-            tracing::warn!("auto_register_all_disks: {e}, then {e2}");
-        } else {
-            tracing::info!(
-                "auto_register_all_disks: registered {} new disk(s) on {node}",
-                new_entries.len()
-            );
-        }
-    } else {
-        tracing::info!(
-            "auto_register_all_disks: registered {} new disk(s) on {node}",
-            new_entries.len()
-        );
-    }
+    out.sort();
+    out
 }
 
 // ── Device discovery ──────────────────────────────────────────────────────────
@@ -2645,7 +2425,7 @@ fn stable_id_for(device: &str) -> Option<String> {
 }
 
 /// Split from `disk_id` so the sanitizing rules can be tested without a real device.
-/// A disk's id ends up as a ConfigMap *key*, so whatever the vendor wrote in the
+/// A disk's id ends up in a settings *key* (and a URL path), so whatever the vendor wrote in the
 /// serial has to come out as `[a-z0-9-]`.
 fn disk_id_from(device: &str, stable: Option<&str>) -> String {
     if let Some(serial) = stable {
@@ -2684,121 +2464,39 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
     }
 }
 
-// ── ConfigMap helpers ─────────────────────────────────────────────────────────
+// ── Settings in Ceph ──────────────────────────────────────────────────────────
 
-/// The cluster's own fsid, straight from the local mon. Returns None when Ceph
-/// is unreachable — never a default — because callers compare it against a
-/// disk's BlueStore label to tell our disks from a stranger's, and an empty
-/// string would make every foreign disk match.
+/// Publishes this node's disk inventory for the Storage page. Only this node
+/// writes its own key, so there is nothing to race.
 async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk>) {
-    // Only `disks`. There used to be an `effective` device list here, assembled
-    // for the leader to write into the Rook CephCluster CR. There is no CR any
-    // more — each node creates its own OSDs — and nothing had read the field
-    // since, so it was ~30 lines (and a `classify` pass over every disk) whose
-    // only effect was to make the format look like it still meant something.
-    // One place turns Disk into wire JSON, so the ConfigMap the UI reads
-    // cannot drift field by field.
+    // One place turns Disk into wire JSON, so what the page reads cannot drift
+    // field by field.
     let wire: HashMap<&str, Value> = meta
         .iter()
         .map(|(k, d)| (k.as_str(), d.to_value()))
         .collect();
-    let payload = json!({ "disks": wire });
-    let json_val = serde_json::to_string(&payload).unwrap_or_default();
-    let patch = json!({"data": {node: json_val}}).to_string();
-    if host
-        .kubectl(&[
-            "patch",
-            "configmap",
-            STATUS_CM,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await
-        .is_err()
-    {
-        // ConfigMap doesn't exist yet — create it. An AlreadyExists here just
-        // means another node won that race, which is fine.
-        host.kubectl(&["create", "configmap", STATUS_CM, "-n", NS])
-            .await
-            .debug_on_err("create the disk status ConfigMap");
-        host.kubectl(&[
-            "patch",
-            "configmap",
-            STATUS_CM,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
+    let key = format!("{}{node}", settings::DISK_STATUS);
+    settings::set_json(host, &key, &json!({ "disks": wire }))
         .await
         .warn_on_err("publish this node's disk inventory");
-    }
 }
 
-/// The ON/OFF the user set, or None when it could not be read.
+/// The ON/OFF the owner set, by record key — or None when it could not be read.
 ///
-/// THE MOST DANGEROUS FUNCTION IN THIS FILE. It used to return an empty map on
-/// any failure, and the reconciler reads a missing entry as OFF — so a
-/// Kubernetes API that was briefly unreachable meant *every disk on the node is
-/// switched off*. The OFF path is fully automatic and ends in `ceph osd out`,
-/// `ceph osd purge`, and wiping the device.
-///
-/// On one machine that is survivable: with nowhere to move the data,
-/// safe-to-destroy never passes and the purge never happens. On a cluster it is
-/// not: one node losing kubectl marks its own OSDs out, the data drains
-/// correctly onto its peers, safe-to-destroy then passes, and that node's disks
-/// are purged and zeroed — because an API server restarted.
-///
-/// The API server restarts on every nixos-rebuild. This is not a rare path.
-///
-/// `-o json` on the whole object rather than `jsonpath={.data}`, because a
-/// ConfigMap that exists with no data yet produces an empty jsonpath result that
-/// is indistinguishable from a failed call — and those two must never be
-/// confused. The `kind` check is what proves a real object came back.
+/// THE MOST DANGEROUS READ IN THIS FILE. A missing entry means OFF, and OFF is
+/// fully automatic: `ceph osd out`, purge, wipe. Reading "could not ask" as "no
+/// entries" switches every disk on the node off; on a cluster the data then
+/// drains correctly onto the peers, safe-to-destroy passes, and the disks are
+/// purged — because a read failed. So a failed read is None, and the caller
+/// changes nothing. An empty store (nothing switched yet) is `Some(empty)`.
 async fn read_desired<H: Host>(host: &H) -> Option<HashMap<String, String>> {
-    let v = match host
-        .kubectl_json(&["get", "configmap", CONFIG_CM, "-n", NS, "-o", "json"])
-        .await
-    {
-        Ok(v) => v,
+    match settings::dump(host, settings::DISKS).await {
+        Ok(records) => Some(records.into_iter().collect()),
         Err(e) => {
-            // A missing ConfigMap is the genuine first-run state: nothing has
-            // been switched on or off yet. It must not read as "cannot reach
-            // Kubernetes" — that reading is what deadlocked a fresh install,
-            // because the only path that creates this map
-            // (auto_register_all_disks) runs behind read_desired. NotFound is
-            // the one error that means "no one has ever set a disk", so it is
-            // safe to return an empty map and let the caller register every
-            // disk and create the map.
-            //
-            // Every other error still means None: an unreachable API server
-            // read as "all disks OFF" is the drain/purge/wipe accident the None
-            // return exists to prevent (see the header above).
-            if kubectl::is_not_found(&e) {
-                return Some(HashMap::new());
-            }
-            return None;
+            tracing::warn!("disk settings are unreadable right now ({e})");
+            None
         }
-    };
-    if v["kind"].as_str() != Some("ConfigMap") {
-        return None;
     }
-    Some(
-        v["data"]
-            .as_object()
-            .map(|o| {
-                o.iter()
-                    .filter_map(|(k, x)| x.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    )
 }
 
 #[cfg(test)]
@@ -3443,220 +3141,6 @@ mod tests {
 
     // ── disk_id ───────────────────────────────────────────────────────────────
 
-    // ── Migrating to hardware ids ─────────────────────────────────────────────
-    //
-    // disk_id changed shape in this release. Without carrying records across, every
-    // disk looks new on the first tick after updating — and new means OFF, which for a
-    // disk already carrying an OSD means drain, purge, wipe. The release that fixes
-    // the accident would have caused it.
-
-    fn recs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn a_setting_follows_the_disk_onto_its_hardware_id() {
-        let desired = recs(&[("node1--dev-sdb", "ON"), ("node1--dev-sda", "OFF")]);
-        let current = vec![
-            (
-                "serial-wwn-0x50014ee214caf529".to_string(),
-                "sdb".to_string(),
-            ),
-            (
-                "serial-wwn-0x500a0751191b8afa".to_string(),
-                "sda".to_string(),
-            ),
-        ];
-        let out = migrate_disk_records("node1", &current, &desired).write;
-        assert_eq!(
-            out.get("serial-wwn-0x50014ee214caf529").map(String::as_str),
-            Some("ON")
-        );
-        assert_eq!(
-            out.get("serial-wwn-0x500a0751191b8afa").map(String::as_str),
-            Some("OFF")
-        );
-    }
-
-    /// OFF has to travel too. Silently switching a deliberately-off disk back ON would
-    /// hand a disk to Ceph that its owner did not offer.
-    #[test]
-    fn a_disk_switched_off_stays_off() {
-        let desired = recs(&[("node1--dev-sdb", "OFF")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert_eq!(
-            migrate_disk_records("node1", &current, &desired)
-                .write
-                .get("serial-wwn-0xabc")
-                .map(String::as_str),
-            Some("OFF")
-        );
-    }
-
-    /// Already migrated: leave it alone rather than overwrite a newer decision with an
-    /// older one that happens to still be in the map.
-    #[test]
-    fn an_existing_record_is_never_overwritten() {
-        let desired = recs(&[("node1--dev-sdb", "ON"), ("serial-wwn-0xabc", "OFF")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired)
-            .write
-            .is_empty());
-    }
-
-    /// Hardware that publishes no id keeps the kernel-name key it already had; there
-    /// is nothing to carry, and carrying it onto itself would be a no-op write.
-    #[test]
-    fn a_disk_still_identified_by_kernel_name_is_left_as_is() {
-        let desired = recs(&[("node1--dev-sdb", "ON")]);
-        let current = vec![("dev-sdb".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired)
-            .write
-            .is_empty());
-    }
-
-    /// A genuinely new disk has no old record, and must not inherit one from whichever
-    /// letter it happened to land on.
-    #[test]
-    fn a_new_disk_inherits_nothing() {
-        let desired = recs(&[("node1--dev-sdb", "ON")]);
-        // A different disk, now at sdc. sdb's record is not its to take.
-        let current = vec![("serial-wwn-0xnew".to_string(), "sdc".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired)
-            .write
-            .is_empty());
-    }
-
-    /// Records belong to a node. Another machine's disk must not pick one up.
-    #[test]
-    fn records_do_not_cross_between_machines() {
-        let desired = recs(&[("node3--dev-sdb", "ON")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        assert!(migrate_disk_records("node1", &current, &desired)
-            .write
-            .is_empty());
-    }
-
-    /// The exact situation that drained a live disk: a stale kernel-name orphan saying
-    /// OFF, sitting beside the real record saying ON. The newest, most specific
-    /// predecessor has to win — a `dev-*` key belongs to a letter, not to a disk, and
-    /// stale ones outlive the hardware that made them.
-    #[test]
-    fn a_stale_kernel_name_record_never_beats_the_hardware_one() {
-        let desired = recs(&[
-            ("node1--dev-sdc", "OFF"),              // orphan from the old scheme
-            ("node1--serial-wwn-0x50014ee2", "ON"), // the record that means it
-        ]);
-        let current = vec![("serial-wwn-0x50014ee2".to_string(), "sdc".to_string())];
-        let out = migrate_disk_records("node1", &current, &desired).write;
-        assert_eq!(
-            out.get("serial-wwn-0x50014ee2").map(String::as_str),
-            Some("ON"),
-            "the live hardware record must win over a stale letter record"
-        );
-    }
-
-    /// With no hardware record to prefer, the kernel-name one is still the right
-    /// answer — that is the upgrade path from the oldest scheme.
-    #[test]
-    fn the_kernel_name_record_is_still_used_when_it_is_all_there_is() {
-        let desired = recs(&[("node1--dev-sdc", "ON")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdc".to_string())];
-        assert_eq!(
-            migrate_disk_records("node1", &current, &desired)
-                .write
-                .get("serial-wwn-0xabc")
-                .map(String::as_str),
-            Some("ON")
-        );
-    }
-
-    // ── Removing what has been superseded ─────────────────────────────────────
-
-    /// Carrying a value forward and leaving the source behind gives one disk two
-    /// records that can disagree — which is exactly what happened: an ON record with
-    /// the visible toggle, and an OFF record doing the deciding.
-    #[test]
-    fn the_record_a_value_came_from_is_removed() {
-        let desired = recs(&[("node1--serial-wwn-0xabc", "ON")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        let m = migrate_disk_records("node1", &current, &desired);
-        assert_eq!(
-            m.write.get("serial-wwn-0xabc").map(String::as_str),
-            Some("ON")
-        );
-        assert!(m.remove.contains(&"node1--serial-wwn-0xabc".to_string()));
-    }
-
-    /// The whole ConfigMap from the cluster this went wrong on, with the easystore
-    /// present at sdc. Afterwards there must be exactly one record for that disk.
-    #[test]
-    fn the_live_configmap_collapses_to_one_record_per_disk() {
-        let desired = recs(&[
-            ("node1--dev-sda", "OFF"),
-            ("node1--dev-sdb", "OFF"),
-            ("node1--dev-sdc", "OFF"),
-            ("node1--serial-wwn-0x50014ee214caf529", "ON"),
-            ("node1--system", "ON"),
-            ("node3--system", "ON"),
-            ("serial-wwn-0x50014ee214caf529", "OFF"),
-        ]);
-        let current = vec![
-            (
-                "serial-wwn-0x50014ee214caf529".to_string(),
-                "sdc".to_string(),
-            ),
-            ("system".to_string(), "dm-1".to_string()),
-        ];
-        let m = migrate_disk_records("node1", &current, &desired);
-
-        // The node-scoped duplicate goes.
-        assert!(m
-            .remove
-            .contains(&"node1--serial-wwn-0x50014ee214caf529".to_string()));
-        // The kernel-name traps go — including the one that started the drain.
-        for orphan in ["node1--dev-sda", "node1--dev-sdb"] {
-            assert!(m.remove.contains(&orphan.to_string()), "{orphan} must go");
-        }
-        // system records are untouched: they name a machine's own disk, not a letter.
-        assert!(!m.remove.iter().any(|k| k.ends_with("--system")));
-    }
-
-    /// A kernel-name record for a disk that IS at that letter is the only identity
-    /// that disk has — some enclosures publish nothing — so it stays.
-    #[test]
-    fn a_kernel_name_record_for_a_present_disk_is_kept() {
-        let desired = recs(&[("node1--dev-sdb", "ON")]);
-        let current = vec![("dev-sdb".to_string(), "sdb".to_string())];
-        let m = migrate_disk_records("node1", &current, &desired);
-        assert!(m.remove.is_empty(), "the disk is still there under that id");
-    }
-
-    /// Another machine's records are never touched — this node cannot see that
-    /// hardware and has no standing to judge it.
-    #[test]
-    fn another_nodes_records_are_never_removed() {
-        let desired = recs(&[("node3--dev-sdb", "ON"), ("node3--system", "ON")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        let m = migrate_disk_records("node1", &current, &desired);
-        assert!(m.remove.is_empty());
-    }
-
-    /// Nothing to do on an already-clean cluster: no writes, no deletes, no patch.
-    #[test]
-    fn a_settled_cluster_produces_no_changes() {
-        let desired = recs(&[("serial-wwn-0xabc", "ON"), ("node1--system", "ON")]);
-        let current = vec![
-            ("serial-wwn-0xabc".to_string(), "sdb".to_string()),
-            ("system".to_string(), "dm-1".to_string()),
-        ];
-        let m = migrate_disk_records("node1", &current, &desired);
-        assert!(m.write.is_empty() && m.remove.is_empty());
-    }
-
     // ── Whether a record belongs to a disk or to a machine ────────────────────
 
     /// A hardware id names one physical disk, so its record must not be tied to
@@ -3696,41 +3180,6 @@ mod tests {
         for local in ["dev-sda", "dev-nvme0n1", "system", "", "loop0"] {
             assert!(!is_globally_unique_id(local), "{local} names a position");
         }
-    }
-
-    // ── Migration, across both changes ────────────────────────────────────────
-
-    /// Straight from the oldest scheme to the newest, which is what a cluster that
-    /// skipped a release actually does.
-    #[test]
-    fn a_kernel_name_record_migrates_all_the_way_to_a_bare_hardware_key() {
-        let desired = recs(&[("node1--dev-sdb", "ON")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        let out = migrate_disk_records("node1", &current, &desired).write;
-        assert_eq!(out.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
-    }
-
-    /// And from the intermediate shape this release replaces.
-    #[test]
-    fn a_node_scoped_hardware_record_loses_its_prefix() {
-        let desired = recs(&[("node1--serial-wwn-0xabc", "ON")]);
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdb".to_string())];
-        let out = migrate_disk_records("node1", &current, &desired).write;
-        assert_eq!(out.get("serial-wwn-0xabc").map(String::as_str), Some("ON"));
-    }
-
-    /// A disk that moves to another machine keeps the setting it already had, which is
-    /// the point of the whole change.
-    #[test]
-    fn a_disk_moved_to_another_node_keeps_its_setting() {
-        let desired = recs(&[("serial-wwn-0xabc", "ON")]);
-        // Now plugged into node3, at a completely different letter.
-        let current = vec![("serial-wwn-0xabc".to_string(), "sdd".to_string())];
-        // Nothing to migrate — the record already applies, on any node.
-        assert!(migrate_disk_records("node3", &current, &desired)
-            .write
-            .is_empty());
-        assert_eq!(record_key("node3", "serial-wwn-0xabc"), "serial-wwn-0xabc");
     }
 
     // ── Stable identity ───────────────────────────────────────────────────────
@@ -3782,7 +3231,7 @@ mod tests {
         assert_eq!(disk_id_from("sdc", Some("  \n ")), "dev-sdc");
     }
 
-    /// The id becomes a ConfigMap key, so a WWN's `0x` and an ATA id's underscores
+    /// The id becomes part of a settings key and a URL path, so a WWN's `0x` and an ATA id's underscores
     /// have to survive sanitising into something still unique per disk.
     #[test]
     fn two_different_disks_never_sanitise_to_the_same_id() {
@@ -3799,7 +3248,7 @@ mod tests {
 
     #[test]
     fn disk_id_replaces_characters_a_configmap_key_cannot_hold() {
-        // ConfigMap keys are [-._a-zA-Z0-9]; vendors ship spaces, slashes and colons.
+        // Keys are kept to [-._a-zA-Z0-9]; vendors ship spaces, slashes and colons.
         assert_eq!(
             disk_id_from("sda", Some("WD/Blue 500:GB")),
             "serial-wd-blue-500-gb"
@@ -3847,6 +3296,61 @@ mod tests {
     // wipes the device it is given, and the creation loop calls it for any ON
     // disk missing from a map that is EMPTY whenever `ceph-volume lvm list`
     // fails. These tests exist so that failure mode can never become data loss.
+
+    fn recs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_new_disk_is_registered_off_and_one_running_our_osd_on() {
+        let meta = HashMap::from([
+            ("dev-sdb".to_string(), disk(Ownership::Blank)),
+            ("dev-sdc".to_string(), disk(Ownership::Ours)),
+            ("dev-sdd".to_string(), disk(Ownership::Foreign)),
+        ]);
+        assert_eq!(
+            new_disk_records("node1", &meta, &HashMap::new()),
+            vec![
+                ("node1--dev-sdb".to_string(), "OFF"),
+                ("node1--dev-sdc".to_string(), "ON"),
+                ("node1--dev-sdd".to_string(), "OFF"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_existing_record_is_never_overwritten_and_the_system_lv_needs_none() {
+        let meta = HashMap::from([
+            ("dev-sdb".to_string(), disk(Ownership::Ours)),
+            (SYSTEM_OSD_ID.to_string(), disk(Ownership::Blank)),
+        ]);
+        let desired = recs(&[("node1--dev-sdb", "OFF")]);
+        assert!(new_disk_records("node1", &meta, &desired).is_empty());
+    }
+
+    #[tokio::test]
+    async fn switches_are_read_from_ceph_and_an_unreadable_store_changes_nothing() {
+        let host = FakeHost::new().ok(
+            "ceph config-key dump yolab/disks/",
+            r#"{"yolab/disks/node1--dev-sdb":"ON"}"#,
+        );
+        let desired = read_desired(&host).await.expect("readable");
+        assert_eq!(desired.get("node1--dev-sdb").map(String::as_str), Some("ON"));
+
+        let down = FakeHost::new().fail("ceph config-key dump", "error connecting to the cluster");
+        assert_eq!(read_desired(&down).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_node_publishes_its_inventory_under_its_own_key() {
+        let host = FakeHost::new().ok("ceph config-key set yolab/disk-status/node1", "");
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+        write_status(&host, "node1", &meta).await;
+        assert!(host.ran("ceph config-key set yolab/disk-status/node1 {\"disks\":{\"dev-sdb\":"));
+    }
 
     fn disk(ownership: Ownership) -> Disk {
         Disk {
@@ -3970,7 +3474,7 @@ mod tests {
 
     #[test]
     fn a_node_scoped_wanted_disk_absent_is_unplugged() {
-        let desired = HashMap::from([("node1--dev-sdb".to_string(), "USING".to_string())]);
+        let desired = HashMap::from([("node1--dev-sdb".to_string(), "ON".to_string())]);
         let meta: HashMap<String, Disk> = HashMap::new();
         assert!(any_unplugged_but_wanted(&desired, "node1", &meta));
     }
@@ -4420,24 +3924,6 @@ mod tests {
         );
     }
 
-    /// "USING" is the same intent as "ON" — it is what the page writes once a
-    /// disk is actually carrying data. Reading it as "not ON" would make the
-    /// reconciler try to create a second OSD on a disk already holding one.
-    #[test]
-    fn using_counts_as_on() {
-        let plan = plan_create(
-            "node1",
-            "dev-sdb",
-            &blank_disk("sdb"),
-            &recs(&[("node1--dev-sdb", "USING")]),
-            &osds(&[]),
-            false,
-            0,    // attempts
-            None, // since_last_attempt
-        );
-        assert!(matches!(plan, CreatePlan::Create { .. }));
-    }
-
     #[test]
     fn a_disk_switched_off_is_never_created() {
         for state in ["OFF", "", "on", "true", "1"] {
@@ -4697,10 +4183,9 @@ mod tests {
     }
 
     #[test]
-    fn only_on_and_using_are_on() {
+    fn only_on_is_on() {
         assert!(wants_on(&recs(&[("node1--d", "ON")]), "node1", "d"));
-        assert!(wants_on(&recs(&[("node1--d", "USING")]), "node1", "d"));
-        for off in ["OFF", "off", "On", "using", "", "REMOVING"] {
+        for off in ["OFF", "off", "On", "USING", "", "REMOVING"] {
             assert!(
                 !wants_on(&recs(&[("node1--d", off)]), "node1", "d"),
                 "{off:?} must not read as on"
