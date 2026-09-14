@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::kubectl;
-
 #[derive(Serialize)]
 pub struct CephStatus {
     pub available: bool,
@@ -1206,112 +1204,77 @@ pub async fn set_replication(
 
 // ── OSD lifecycle ──────────────────────────────────────────────────────────────
 //
-// There is exactly one source of truth for whether a disk is in the cluster: the
-// `yolab-disk-config` ConfigMap (DISK → USING|OFF). Both the main toggle and these
-// Advanced buttons write that map; the disk reconciler (disks_reconciler.rs) is the
-// single actuator that drives crush weight + in/out to match. So "Re-add" / "Remove
-// safely" here simply set desired ON/OFF for the disk backing this OSD.
+// One source of truth for whether a disk is in the cluster: the owner's switch
+// for it (`storage::settings`). These Advanced buttons set the same switch as the
+// Storage page's toggle, through the same function, and the disk controller is
+// the single actuator that drives the OSD to match.
 
-/// Re-add the disk backing this OSD: set its desired state to USING.
+/// Re-add the disk backing this OSD.
 pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
-    set_desired_by_osd(id, "USING").await
+    set_desired_by_osd(id, "ON").await
 }
 
-/// Remove the disk backing this OSD safely: set its desired state to OFF. The
-/// reconciler drains it (osd out); it's fine if draining takes a long time.
+/// Remove the disk backing this OSD safely. The disk controller drains it first;
+/// it is fine if draining takes a long time.
 pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     set_desired_by_osd(id, "OFF").await
 }
 
-/// Resolve an OSD id to its `{node}--{disk_id}` config key (via the disk-status
-/// ConfigMap) and set that key's desired state. Keeps the Advanced buttons on the
-/// same source of truth as the main toggle.
+/// The node and disk id publishing `osd_id` in the inventory, if any.
+fn disk_of_osd(published: &std::collections::BTreeMap<String, String>, osd_id: i64) -> Option<(String, String)> {
+    published.iter().find_map(|(node, raw)| {
+        let payload: Value = serde_json::from_str(raw).ok()?;
+        payload["disks"]
+            .as_object()?
+            .iter()
+            .find(|(_, meta)| meta["osd_id"].as_i64() == Some(osd_id))
+            .map(|(disk_id, _)| (node.clone(), disk_id.clone()))
+    })
+}
+
 async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_json::Value>) {
-    let status = kubectl::get_json(&[
-        "get",
-        "configmap",
-        "yolab-disk-status",
-        "-n",
-        "rook-ceph",
-        "-o",
-        "jsonpath={.data}",
-    ])
-    .await
-    .ok();
-
-    let mut found: Option<(String, String)> = None;
-    if let Some(map) = status.as_ref().and_then(|v| v.as_object()) {
-        for (node, payload) in map {
-            let Some(s) = payload.as_str() else { continue };
-            let Ok(p) = serde_json::from_str::<serde_json::Value>(s) else {
-                continue;
-            };
-            if let Some(disks) = p["disks"].as_object() {
-                for (disk_id, meta) in disks {
-                    if meta["osd_id"].as_i64() == Some(id) {
-                        found = Some((node.clone(), disk_id.clone()));
-                    }
-                }
-            }
+    use crate::storage::settings;
+    let published = match settings::dump(&crate::host::RealHost, settings::DISK_STATUS).await {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")})),
+            )
         }
-    }
-
-    let Some((node, disk_id)) = found else {
+    };
+    let Some((node, disk_id)) = disk_of_osd(&published, id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "ok": false, "error": format!("osd.{id} not found in disk inventory")
-            })),
+            Json(serde_json::json!({"ok": false, "error": format!("osd.{id} is not in any node's disk inventory")})),
         );
     };
-
-    let key = format!("{node}--{disk_id}");
-    let patch = serde_json::json!({"data": {key: desired}}).to_string();
-    if kubectl::run(&[
-        "patch",
-        "configmap",
-        "yolab-disk-config",
-        "-n",
-        "rook-ceph",
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await
-    .is_err()
-    {
-        let _ = kubectl::run(&[
-            "create",
-            "configmap",
-            "yolab-disk-config",
-            "-n",
-            "rook-ceph",
-        ])
-        .await;
-        if kubectl::run(&[
-            "patch",
-            "configmap",
-            "yolab-disk-config",
-            "-n",
-            "rook-ceph",
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await
-        .is_err()
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "ok": false, "error": "failed to save disk config"
-                })),
-            );
-        }
+    match crate::routers::disks::record_switch(&node, &disk_id, desired).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": error})),
+        ),
     }
-    (StatusCode::OK, Json(serde_json::json!({"ok": true})))
+}
+
+#[cfg(test)]
+mod osd_switch_tests {
+    use super::*;
+
+    #[test]
+    fn an_osd_is_found_in_whichever_node_publishes_it() {
+        let published = std::collections::BTreeMap::from([
+            ("node1".to_string(), r#"{"disks":{"dev-sda":{"osd_id":0}}}"#.to_string()),
+            ("node2".to_string(), r#"{"disks":{"serial-wwn-0x1":{"osd_id":3}}}"#.to_string()),
+            ("node3".to_string(), "not json".to_string()),
+        ]);
+        assert_eq!(
+            disk_of_osd(&published, 3),
+            Some(("node2".to_string(), "serial-wwn-0x1".to_string()))
+        );
+        assert_eq!(disk_of_osd(&published, 9), None);
+    }
 }
 
 /// Where homelab/nixos/ceph/dashboard.nix writes the generated password.

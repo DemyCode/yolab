@@ -79,6 +79,34 @@ pub fn current_holder_is_me() -> bool {
     IS_ME.load(Ordering::SeqCst)
 }
 
+/// This process's election handle, once `start` has run.
+static PROCESS: std::sync::OnceLock<Leadership> = std::sync::OnceLock::new();
+
+/// Whether THIS process leads the cluster right now, by the same rule every
+/// cluster-scoped controller acts on. For request handlers that must only act on
+/// the leader (a storage recovery); false before the election has started.
+pub fn this_process_leads() -> bool {
+    PROCESS.get().is_some_and(Leadership::is_leader)
+}
+
+/// The identity currently written in the lease, if any — where to send work that
+/// only the leader may do. `Err` when the API did not answer. The receiver checks
+/// `this_process_leads` itself, so a stale answer costs a refused request, never a
+/// second writer.
+pub async fn holder() -> Result<Option<String>, CmdError> {
+    let lease =
+        crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
+            .await?;
+    Ok(lease.and_then(|l| holder_of(&l)))
+}
+
+fn holder_of(lease: &Value) -> Option<String> {
+    lease["spec"]["holderIdentity"]
+        .as_str()
+        .filter(|h| may_stand(h))
+        .map(str::to_string)
+}
+
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
@@ -91,6 +119,9 @@ pub fn start(identity: String) -> Leadership {
         last_renewed_ms: last.clone(),
         fixed: None,
     };
+    if PROCESS.set(handle.clone()).is_err() {
+        tracing::warn!("leader: the election was started twice in one process");
+    }
     if !may_stand(&identity) {
         // An empty holder reads as a RELEASED lease to `decide`, so a node with
         // no name would be taken over by everyone and take over from everyone:
@@ -375,6 +406,14 @@ mod tests {
             assert!(ACT_WITHIN_MS < LEASE_SECS * 1000);
             assert!((RENEW_EVERY.as_millis() as i64) < ACT_WITHIN_MS);
         }
+    }
+
+    #[test]
+    fn the_holder_is_read_from_the_lease_and_a_released_one_has_none() {
+        let now = Utc::now();
+        assert_eq!(holder_of(&lease("node2", 5, now)).as_deref(), Some("node2"));
+        assert_eq!(holder_of(&lease("", 5, now)), None);
+        assert_eq!(holder_of(&json!({})), None);
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub mod keys;
 pub mod mon_member;
 pub mod noout;
 pub mod osd;
+pub mod settings;
 pub mod wait;
 
 use std::path::Path;

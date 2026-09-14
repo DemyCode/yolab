@@ -35,11 +35,12 @@
 //! API cannot run any of this; with one mon and one etcd member per machine, losing
 //! one of two machines stops both.
 //!
-//! Single writer: the controller is cluster-scoped, so it runs only on the leader.
-//! The state record is compare-and-swapped (see `records`), and each writer changes
-//! only its own half of it — the leader's tick owns `loss`, the owner's button and
-//! the recovery steps own `recovery` — so a button press on one node and a tick on
-//! another can no longer overwrite each other.
+//! ONE WRITER. The state lives in Ceph (`storage::settings`), which has no
+//! compare-and-swap, so it is written only on the cluster leader: the controller
+//! is cluster-scoped, and a recovery requested on any other node is forwarded to
+//! the leader (`post_recover`). Within that one process every read-modify-write
+//! goes through `update_state`, serialised by a lock, so the tick and a request
+//! arriving at the same moment compose instead of overwriting each other.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
@@ -55,15 +56,9 @@ pub(crate) use crate::ceph::model::PgsByPool;
 use crate::ceph::model::{self, OsdDump, PgBrief};
 use crate::error::Outcome;
 use crate::host::{Host, RealHost};
-use crate::records::Store;
 use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
+use crate::storage::settings;
 use crate::AppState;
-
-const STATE: Store = Store {
-    name: "yolab-storage-heal",
-    namespace: "kube-system",
-    key: "state",
-};
 const MANAGED_SELECTOR: &str = "yolab.io/managed=true";
 
 const FS_NAME: &str = destructive::RECOVERABLE_FS;
@@ -198,23 +193,36 @@ enum AppOutcome {
 /// Absent is the normal state of a healthy cluster; unreadable is not, and acting
 /// without knowing whether a recovery is half done is how two start.
 async fn read_state<H: Host>(host: &H) -> Result<HealState> {
-    Ok(STATE.read(host).await?)
+    Ok(settings::get_json(host, settings::STORAGE_HEAL)
+        .await?
+        .unwrap_or_default())
+}
+
+/// Serialises every read-modify-write of the state in this process. Only the
+/// leader writes (see the module header), so this is the whole of the
+/// concurrency control.
+static STATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Reads the state, applies `f`, and writes it back if `f` changed anything.
+async fn update_state<H: Host, R>(host: &H, f: impl FnOnce(&mut HealState) -> R) -> Result<R> {
+    let _serialised = STATE_LOCK.lock().await;
+    let mut state = read_state(host).await?;
+    let before = state.clone();
+    let result = f(&mut state);
+    if state != before {
+        settings::set_json(host, settings::STORAGE_HEAL, &state).await?;
+    }
+    Ok(result)
 }
 
 /// Writes only `loss`, on top of whatever `recovery` is stored right now.
 async fn write_loss<H: Host>(host: &H, loss: &Option<Loss>) -> Result<()> {
-    STATE
-        .update(host, |s: &mut HealState| s.loss = loss.clone())
-        .await?;
-    Ok(())
+    update_state(host, |s| s.loss = loss.clone()).await
 }
 
 /// Writes only `recovery`, on top of whatever `loss` is stored right now.
 async fn write_recovery<H: Host>(host: &H, recovery: &Option<Recovery>) -> Result<()> {
-    STATE
-        .update(host, |s: &mut HealState| s.recovery = recovery.clone())
-        .await?;
-    Ok(())
+    update_state(host, |s| s.recovery = recovery.clone()).await
 }
 
 /// Whether a recovery is running. `Err` when the state cannot be read — callers
@@ -485,10 +493,9 @@ async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
     }
     let removed = managed_namespaces(host).await?;
     let up = dump.up();
-    // Decided inside the compare-and-swap, against the state as it is at the
-    // moment of writing: two presses (on two nodes) cannot both start one.
-    let started = STATE
-        .update(host, |s: &mut HealState| {
+    // Decided again under the state lock, against the state as it is at the
+    // moment of writing: two requests cannot both start one.
+    let started = update_state(host, |s| {
             if let Some(why) = recovery_refusal(s, &up) {
                 return Err(why);
             }
@@ -503,8 +510,8 @@ async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
                 outcomes: BTreeMap::new(),
             });
             Ok(())
-        })
-        .await?;
+    })
+    .await?;
     started.map_err(|why| anyhow::anyhow!(why))?;
     tracing::warn!(
         "storage-heal: recovery from backup started — resetting storage, {} app(s) to remove",
@@ -579,12 +586,11 @@ async fn continue_recovery<H: Host, A: AppRecovery>(
                 if state.recovery.as_ref().is_some_and(|r| !r.running()) {
                     // The loss this recovery answered is consumed with it.
                     let finished = state.recovery.clone();
-                    STATE
-                        .update(host, |s: &mut HealState| {
-                            s.recovery = finished.clone();
-                            s.loss = None;
-                        })
-                        .await?;
+                    update_state(host, |s| {
+                        s.recovery = finished;
+                        s.loss = None;
+                    })
+                    .await?;
                     state.loss = None;
                 } else {
                     write_recovery(host, &state.recovery).await?;
@@ -1040,13 +1046,79 @@ pub async fn get_status(State(_s): State<AppState>) -> (StatusCode, Json<Value>)
     (StatusCode::OK, Json(status_json(&state, progress.as_ref())))
 }
 
+/// Set on a request one node forwards to the leader. A node receiving it that
+/// does not lead refuses rather than forwarding again, so a lease changing hands
+/// mid-request can cost a retry but never a loop.
+const FORWARDED_FROM: &str = "x-yolab-forwarded-from";
+
 /// `POST /api/storage/recovery`
-pub async fn post_recover(State(_s): State<AppState>) -> (StatusCode, Json<Value>) {
-    match start_recovery(&RealHost, now_secs()).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
+///
+/// Runs on the leader, the heal state's only writer (see the module header). On
+/// any other node the request is forwarded to the leader and its answer relayed.
+pub async fn post_recover(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> (StatusCode, Json<Value>) {
+    match recovery_route(crate::runtime::leader::this_process_leads(), headers.contains_key(FORWARDED_FROM)) {
+        Route::Here => match start_recovery(&RealHost, now_secs()).await {
+            Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
+            Err(e) => (StatusCode::CONFLICT, Json(json!({ "error": e.to_string() }))),
+        },
+        Route::Refuse => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "this machine stopped leading the cluster while the request was on its way — try again" })),
+        ),
+        Route::ToLeader => forward_to_leader(&s.config).await,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    Here,
+    ToLeader,
+    Refuse,
+}
+
+fn recovery_route(leads: bool, already_forwarded: bool) -> Route {
+    match (leads, already_forwarded) {
+        (true, _) => Route::Here,
+        (false, false) => Route::ToLeader,
+        (false, true) => Route::Refuse,
+    }
+}
+
+async fn forward_to_leader(cfg: &crate::config::Config) -> (StatusCode, Json<Value>) {
+    let unavailable = |why: String| (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": why })));
+    let holder = match crate::runtime::leader::holder().await {
+        Ok(Some(h)) => h,
+        Ok(None) => return unavailable("no machine leads the cluster right now — try again shortly".into()),
+        Err(e) => return unavailable(format!("cannot tell which machine leads the cluster: {e}")),
+    };
+    let nodes = match crate::kubectl::get_nodes().await {
+        Ok(n) => n,
+        Err(e) => return unavailable(format!("cannot list the cluster's machines: {e}")),
+    };
+    let Some(addr) = crate::kubectl::node_ipv6(&nodes, &holder) else {
+        return unavailable(format!("{holder} leads the cluster but has no cluster address"));
+    };
+    let url = format!("http://[{addr}]:{}/api/storage/recovery", cfg.port);
+    let sent = reqwest::Client::new()
+        .post(&url)
+        .header(crate::auth::CLUSTER_AUTH_HEADER, cfg.cluster_token())
+        .header(FORWARDED_FROM, crate::system::hostname())
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await;
+    let response = match sent {
+        Ok(r) => r,
+        Err(e) => return unavailable(format!("{holder} (the leader) did not answer: {e}")),
+    };
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    match response.json::<Value>().await {
+        Ok(body) => (status, Json(body)),
         Err(e) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": e.to_string() })),
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("{holder} (the leader) sent an unreadable answer: {e}") })),
         ),
     }
 }
@@ -1272,7 +1344,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_state_map_stops_everything() {
         let host = FakeHost::new().ok("ceph -s", "").fail(
-            "kubectl get configmap yolab-storage-heal",
+            "ceph config-key get yolab/storage-heal",
             "connection refused",
         );
         assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always)
@@ -1284,11 +1356,11 @@ mod tests {
     #[tokio::test]
     async fn a_missing_state_map_is_a_healthy_cluster_and_junk_is_unreadable() {
         let host = FakeHost::new().fail(
-            "kubectl get configmap yolab-storage-heal",
-            "Error from server (NotFound): configmaps not found",
+            "ceph config-key get yolab/storage-heal",
+            "Error ENOENT: key 'yolab/storage-heal' doesn't exist",
         );
         assert_eq!(read_state(&host).await.unwrap(), HealState::default());
-        let host = FakeHost::new().ok("kubectl get configmap yolab-storage-heal", "{}");
+        let host = FakeHost::new().ok("ceph config-key get yolab/storage-heal", "{nope");
         assert!(read_state(&host).await.is_err());
     }
 
@@ -1321,6 +1393,14 @@ mod tests {
     }
 
     #[test]
+    fn a_recovery_runs_on_the_leader_and_is_forwarded_at_most_once() {
+        assert_eq!(recovery_route(true, false), Route::Here);
+        assert_eq!(recovery_route(true, true), Route::Here);
+        assert_eq!(recovery_route(false, false), Route::ToLeader);
+        assert_eq!(recovery_route(false, true), Route::Refuse, "never forwarded twice");
+    }
+
+    #[test]
     fn backups_are_blocked_while_app_data_is_unavailable_or_being_recovered() {
         let mut s = HealState::default();
         assert_eq!(blocked_reason(&s), None);
@@ -1346,38 +1426,33 @@ mod tests {
         FakeHost::new()
             .ok("ceph -s", "")
             .ok(
-                "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": state.to_string()}}).to_string(),
+                "ceph config-key get yolab/storage-heal",
+                &state.to_string(),
             )
             .ok("ceph osd dump", &dump.to_string())
             .ok("ceph pg dump pgs_brief", &pgs.to_string())
-            .ok("kubectl-replace", "")
-            .ok("kubectl-create", "")
+            .ok("ceph config-key set yolab/storage-heal", "")
     }
 
     const NO_STATE_MAP: &str =
-        "Error from server (NotFound): configmaps \"yolab-storage-heal\" not found";
+        "Error ENOENT: key 'yolab/storage-heal' doesn't exist";
 
     /// A host with no state map yet, where every state write succeeds.
     fn fresh_state_host() -> FakeHost {
         FakeHost::new()
-            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
-            .ok("kubectl-create", "")
+            .fail("ceph config-key get yolab/storage-heal", NO_STATE_MAP)
+            .ok("ceph config-key set yolab/storage-heal", "")
     }
 
     fn wrote(host: &FakeHost) -> bool {
-        host.ran("kubectl-replace") || host.ran("kubectl-create")
+        host.ran("ceph config-key set yolab/storage-heal")
     }
 
     fn applied_states(host: &FakeHost) -> Vec<HealState> {
         host.calls()
             .iter()
-            .filter_map(|c| {
-                c.strip_prefix("kubectl-replace ")
-                    .or_else(|| c.strip_prefix("kubectl-create "))
-            })
-            .filter_map(|m| serde_json::from_str::<Value>(m).ok())
-            .filter_map(|m| serde_json::from_str(m["data"]["state"].as_str()?).ok())
+            .filter_map(|c| c.strip_prefix("ceph config-key set yolab/storage-heal "))
+            .filter_map(|raw| serde_json::from_str(raw).ok())
             .collect()
     }
 
@@ -1508,8 +1583,8 @@ mod tests {
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok(
-                "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": "{}"}}).to_string(),
+                "ceph config-key get yolab/storage-heal",
+                "{}",
             )
             .ok("ceph osd dump", &dump().to_string())
             .fail("ceph pg dump pgs_brief", "timeout");
@@ -1528,13 +1603,11 @@ mod tests {
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok(
-                "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": serde_json::to_string(&state).unwrap()}})
-                    .to_string(),
+                "ceph config-key get yolab/storage-heal",
+                &serde_json::to_string(&state).unwrap(),
             )
             .ok("kubectl delete pod", "")
-            .ok("kubectl-replace", "")
-            .ok("kubectl-create", "");
+            .ok("ceph config-key set yolab/storage-heal", "");
         let err = tick(&host, &FakeApps::failing_list(), GRACE, NOW, &always)
             .await
             .unwrap_err();
@@ -1548,8 +1621,8 @@ mod tests {
     fn start_host(state: &Value, dump: &Value) -> FakeHost {
         FakeHost::new()
             .ok(
-                "kubectl get configmap yolab-storage-heal",
-                &json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"}, "data": {"state": state.to_string()}}).to_string(),
+                "ceph config-key get yolab/storage-heal",
+                &state.to_string(),
             )
             .ok("ceph osd dump", &dump.to_string())
             .ok(
@@ -1557,8 +1630,7 @@ mod tests {
                 &json!({"items": [{"metadata": {"name": "yolab-a"}}, {"metadata": {"name": "yolab-b"}}]})
                     .to_string(),
             )
-            .ok("kubectl-replace", "")
-            .ok("kubectl-create", "")
+            .ok("ceph config-key set yolab/storage-heal", "")
     }
 
     fn app_loss() -> Value {
@@ -1629,22 +1701,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_press_that_loses_the_race_starts_nothing_and_writes_nothing() {
-        let state_cm = |state: &Value| {
-            json!({"kind": "ConfigMap", "metadata": {"resourceVersion": "1"},
-                   "data": {"state": state.to_string()}})
-            .to_string()
-        };
+        let state_cm = |state: &Value| state.to_string();
         let mut running = app_loss();
         running["recovery"] = serde_json::to_value(recovery_at(Step::PurgeOsds)).unwrap();
         let host = FakeHost::new()
             // What this press read first: a loss, nothing running yet…
             .ok(
-                "kubectl get configmap yolab-storage-heal",
+                "ceph config-key get yolab/storage-heal",
                 &state_cm(&app_loss()),
             )
             // …and what the swap reads: the other press already started one.
             .ok(
-                "kubectl get configmap yolab-storage-heal",
+                "ceph config-key get yolab/storage-heal",
                 &state_cm(&running),
             )
             .ok("ceph osd dump", &dump().to_string())
@@ -1652,7 +1720,7 @@ mod tests {
                 "kubectl get namespaces -l yolab.io/managed=true",
                 r#"{"items": []}"#,
             )
-            .ok("kubectl-replace", "");
+            .ok("ceph config-key set yolab/storage-heal", "");
         let err = start_recovery(&host, NOW).await.unwrap_err();
         assert!(err.to_string().contains("already running"), "{err}");
         assert!(!wrote(&host), "{:?}", host.calls());
@@ -1722,10 +1790,9 @@ mod tests {
     #[tokio::test]
     async fn a_disk_coming_back_cancels_before_anything_is_destroyed() {
         let host = FakeHost::new()
-            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
+            .fail("ceph config-key get yolab/storage-heal", NO_STATE_MAP)
             .ok("ceph osd dump", &healthy_dump().to_string())
-            .ok("kubectl-replace", "")
-            .ok("kubectl-create", "");
+            .ok("ceph config-key set yolab/storage-heal", "");
         let mut state = HealState {
             loss: serde_json::from_value(app_loss()["loss"].clone()).unwrap(),
             recovery: Some(recovery_at(Step::PurgeOsds)),
@@ -2073,8 +2140,8 @@ mod tests {
         let mut state = reinstalling();
         state.recovery.as_mut().unwrap().apps = Some(strings(&["yolab-a", "yolab-b"]));
         let host = FakeHost::new()
-            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
-            .fail("kubectl-create", "etcd timeout");
+            .fail("ceph config-key get yolab/storage-heal", NO_STATE_MAP)
+            .fail("ceph config-key set yolab/storage-heal", "error connecting to the cluster");
         assert!(continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .is_err());
@@ -2114,9 +2181,8 @@ mod tests {
             .ok("ceph osd pool create", "")
             .ok("ceph fs new", "")
             .ok("ceph fs subvolumegroup create", "")
-            .fail("kubectl get configmap yolab-storage-heal", NO_STATE_MAP)
-            .ok("kubectl-replace", "")
-            .ok("kubectl-create", "");
+            .fail("ceph config-key get yolab/storage-heal", NO_STATE_MAP)
+            .ok("ceph config-key set yolab/storage-heal", "");
         let apps = FakeApps::with(&["yolab-a"]);
         let mut state = reinstalling();
         state.recovery.as_mut().unwrap().step = Step::PurgeOsds;

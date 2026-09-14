@@ -58,8 +58,8 @@ export interface DiskInfo {
    */
   ownership?: "ours" | "foreign" | "blank" | "unknown";
   osd_id: number | null;
-  /** "ON" = user wants in cluster, "OFF" = excluded. Legacy "USING" treated as ON. */
-  desired: "ON" | "OFF" | "USING";
+  /** "ON" = the owner wants this disk in the cluster, "OFF" = excluded. */
+  desired: "ON" | "OFF";
   connected: boolean;
   /** Has a partition table — something is already stored on it. */
   has_partitions: boolean;

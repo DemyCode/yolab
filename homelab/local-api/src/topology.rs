@@ -26,10 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Outcome;
+use crate::storage::settings;
 use crate::{kubectl, AppState};
-
-const NS: &str = "rook-ceph";
-const POLICY_CM: &str = "yolab-storage-policy";
 
 /// What the owner asked for. Two numbers, both theirs, neither derived.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,8 +71,7 @@ pub const MIN_SIZE: u32 = 1;
 /// A policy the owner has never set is different from one that cannot be read,
 /// and both are different from a policy that says "one copy".
 pub enum PolicyState {
-    /// No choice has been recorded yet — a fresh cluster, or one upgrading from
-    /// the era of auto mode. See `seed_policy_from_cluster`.
+    /// No choice has been recorded yet.
     NotChosen,
     Chosen(StoragePolicy),
 }
@@ -138,163 +135,35 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
     }
 }
 
-// ── Policy persistence (ConfigMap) ────────────────────────────────────────────
+// ── Policy persistence (Ceph) ────────────────────────────────────────────────
 
-/// None when the policy could not be read.
+/// The owner's storage policy — `Some(NotChosen)` when none has been set, `None`
+/// when it could not be read.
 ///
-/// It used to fall back to `StoragePolicy::default()` — auto mode — so a
-/// kubectl blip silently discarded a user's pinned manual policy and re-derived
-/// one from hardware. On a cluster where they had deliberately pinned three
-/// copies with fewer machines than that implies, the fallback reduces it.
-///
-/// A missing ConfigMap is different from an unreadable one and still means
-/// "auto": that is the genuine first-run state, and the `kind` check is what
-/// tells the two apart.
+/// The difference is load-bearing: this decides how many copies of the owner's
+/// data exist. Reading "could not ask" as "not chosen" or as a default would let
+/// a failed read rewrite every pool's size.
 pub async fn read_policy() -> Option<PolicyState> {
-    let v = match kubectl::get_json(&["get", "configmap", POLICY_CM, "-n", NS, "-o", "json"]).await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            // A missing ConfigMap is the genuine first-run state and must mean
-            // NotChosen, not "unreadable": only the former lets the controller
-            // seed a policy, and nothing else creates this map. An unreachable
-            // API server is the other, dangerous case and must stay None — the
-            // `kind` check below is what told those two apart until a fresh
-            // install's missing map was swallowed into None by `.ok()?`.
-            if kubectl::is_not_found(&e) {
-                return Some(PolicyState::NotChosen);
-            }
-            return None;
-        }
-    };
-    if v["kind"].as_str() != Some("ConfigMap") {
-        return None;
-    }
-    let map: std::collections::HashMap<String, String> = v["data"]
-        .as_object()
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, x)| x.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // A cluster from the auto-mode era has `mode` and a `size` that was a
-    // DEFAULT, not a decision — auto never wrote back what it applied. Reading
-    // that stored 2 on a cluster running 3 copies and applying it would delete
-    // a replica on the first tick after upgrading, which is the exact failure
-    // this whole change exists to remove. So the presence of `mode` means the
-    // policy has not really been chosen, and the pools themselves are asked
-    // instead.
-    let migrating = map.contains_key("mode");
-    let (Some(size), false) = (
-        map.get("size").and_then(|s| s.parse::<u32>().ok()),
-        migrating,
-    ) else {
-        return Some(PolicyState::NotChosen);
-    };
-
-    Some(PolicyState::Chosen(StoragePolicy {
-        size,
-        failure_domain: map
-            .get("failure_domain")
-            .cloned()
-            .unwrap_or_else(|| "host".into()),
-    }))
+    read_policy_from(&crate::host::RealHost).await
 }
 
-/// Adopt whatever the cluster is already doing as the owner's choice.
-///
-/// Run once, when no policy has been recorded. Copies the largest size across
-/// the data pools and the failure domain of the rule they are using, so
-/// upgrading changes nothing about the data and only writes down what was
-/// already true. Taking a default here instead would shrink a pool the moment
-/// this controller first ran.
-async fn seed_policy_from_cluster() -> Option<StoragePolicy> {
-    let pools = crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await.ok()?;
-    let mut size = 0u32;
-    for pool in pools
-        .lines()
-        .map(str::trim)
-        .filter(|p| !p.is_empty() && !p.starts_with('.'))
-    {
-        // `?`: one pool whose size cannot be read aborts the seed. Reading it as
-        // 1 recorded "one copy" for pools holding three, and the next tick
-        // applied that — deleting the other copies.
-        size = size.max(pool_size(pool).await?);
-    }
-    // No data pools yet: a brand new cluster. One copy is the only honest
-    // starting point — it is what a single disk can hold.
-    let size = if size == 0 { 1 } else { size };
-
-    // "host" only when the cluster can actually place that way today; otherwise
-    // the first apply would leave everything undersized for a reason the owner
-    // never chose.
-    // Unknown topology falls back to "osd", the domain that can always be
-    // placed. Guessing "host" could leave every group undersized on a cluster
-    // whose shape we could not read.
-    let osd_hosts = observe().await.map(|t| t.osd_hosts).unwrap_or(0);
-    let failure_domain = if osd_hosts >= size { "host" } else { "osd" };
-
-    let p = StoragePolicy {
-        size,
-        failure_domain: failure_domain.into(),
-    };
-    match write_policy(&p).await {
-        Ok(()) => {
-            tracing::info!(
-                "storage policy adopted from the running cluster: {size} copies, {failure_domain} domain"
-            );
-            Some(p)
-        }
+async fn read_policy_from<H: crate::host::Host>(host: &H) -> Option<PolicyState> {
+    match settings::get_json::<_, StoragePolicy>(host, settings::STORAGE_POLICY).await {
+        Ok(Some(p)) => Some(PolicyState::Chosen(p)),
+        Ok(None) => Some(PolicyState::NotChosen),
         Err(e) => {
-            tracing::warn!("could not record the storage policy: {e}");
+            tracing::warn!("storage policy is unreadable right now ({e})");
             None
         }
     }
 }
 
-async fn write_policy(p: &StoragePolicy) -> anyhow::Result<()> {
-    // `mode` and `min_size` are removed, not just left unwritten: a merge patch
-    // keeps keys it does not mention, and a lingering `mode` would make
-    // read_policy treat every later read as an unmigrated cluster.
-    let patch = serde_json::json!({"data": {
-        "mode": serde_json::Value::Null,
-        "min_size": serde_json::Value::Null,
-        "size": p.size.to_string(),
-        "failure_domain": p.failure_domain,
-    }})
-    .to_string();
-    if kubectl::run(&[
-        "patch",
-        "configmap",
-        POLICY_CM,
-        "-n",
-        NS,
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await
-    .is_err()
-    {
-        kubectl::run(&["create", "configmap", POLICY_CM, "-n", NS])
-            .await
-            .debug_on_err("topology: create the policy ConfigMap");
-        kubectl::run(&[
-            "patch",
-            "configmap",
-            POLICY_CM,
-            "-n",
-            NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await?;
-    }
+async fn write_policy<H: crate::host::Host>(host: &H, p: &StoragePolicy) -> anyhow::Result<()> {
+    settings::set_json(host, settings::STORAGE_POLICY, p).await?;
+    // Applied now rather than on the next resync: pool sizes, and the disk
+    // controller's reading of whether a drain can finish.
+    crate::runtime::wake("topology");
+    crate::runtime::wake("disks");
     Ok(())
 }
 
@@ -413,12 +282,8 @@ async fn tick() -> anyhow::Result<()> {
             return Ok(());
         }
         Some(PolicyState::NotChosen) => {
-            // First run, or the first run after auto mode was removed. Write
-            // down what the cluster is already doing and act on it next tick;
-            // nothing is applied from a policy that was never chosen.
-            if seed_policy_from_cluster().await.is_none() {
-                tracing::debug!("topology: could not seed a policy from the cluster this tick");
-            }
+            // Nothing is applied from a policy nobody chose: pools keep the one
+            // copy they were created with until the owner picks a number.
             return Ok(());
         }
         Some(PolicyState::Chosen(p)) => p,
@@ -614,26 +479,8 @@ pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
 #[derive(Deserialize)]
 pub struct SetPolicyReq {
     pub size: Option<u32>,
-    /// Accepted and ignored: older clients still send it, and the threshold is
-    /// decided here (`MIN_SIZE`), not by the caller. Optional, so a client that
-    /// has stopped sending it still parses — the point of tolerating a
-    /// field is that its absence has to be fine too.
-    #[allow(dead_code)]
-    pub min_size: Option<u32>,
     pub failure_domain: Option<String>,
 }
-
-// `mode` is deliberately absent rather than accepted-and-ignored. It used to be
-// declared here as a bare `String` to tolerate older clients, which had exactly
-// the opposite effect: serde treats a non-Option field as REQUIRED, so the new
-// page — which correctly no longer sends a mode — got
-//
-//   missing field `mode` at line 1 column 33
-//
-// (column 33 being the end of `{"size":2,"failure_domain":"osd"}`) and every
-// attempt to change the copy count failed with a deserialization error instead
-// of changing anything. Serde ignores unknown fields by default, so REMOVING
-// the field is what actually accepts both the old shape and the new one.
 
 pub async fn set_policy(
     State(_s): State<AppState>,
@@ -670,7 +517,7 @@ pub async fn set_policy(
         size,
         failure_domain,
     };
-    match write_policy(&p).await {
+    match write_policy(&crate::host::RealHost, &p).await {
         Ok(_) => (
             StatusCode::OK,
             Json(serde_json::json!({"ok": true, "policy": p})),
@@ -845,16 +692,42 @@ mod tests {
         assert_eq!(req.failure_domain.as_deref(), Some("osd"));
     }
 
-    /// The reason the field was there in the first place. An older client still
-    /// sends `mode` and `min_size`; both are ignored, and neither may make the
-    /// body unparseable.
-    #[test]
-    fn an_older_client_body_still_parses() {
-        let req: SetPolicyReq = serde_json::from_str(
-            r#"{"mode":"manual","size":3,"min_size":2,"failure_domain":"host"}"#,
-        )
-        .unwrap();
-        assert_eq!(req.size, Some(3));
-        assert_eq!(req.failure_domain.as_deref(), Some("host"));
+    // ── Where the policy lives ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_policy_is_chosen_not_chosen_or_unreadable_and_never_defaulted() {
+        use crate::host::fake::FakeHost;
+
+        let chosen = FakeHost::new().ok(
+            "ceph config-key get yolab/storage-policy",
+            r#"{"size":2,"failure_domain":"host"}"#,
+        );
+        match read_policy_from(&chosen).await {
+            Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(2, "host")),
+            _ => panic!("expected a chosen policy"),
+        }
+
+        let fresh = FakeHost::new().fail(
+            "ceph config-key get yolab/storage-policy",
+            "Error ENOENT: key 'yolab/storage-policy' doesn't exist",
+        );
+        assert!(matches!(read_policy_from(&fresh).await, Some(PolicyState::NotChosen)));
+
+        let down = FakeHost::new().fail(
+            "ceph config-key get yolab/storage-policy",
+            "error connecting to the cluster",
+        );
+        assert!(read_policy_from(&down).await.is_none());
+
+        let junk = FakeHost::new().ok("ceph config-key get yolab/storage-policy", r#"{"size":"two"}"#);
+        assert!(read_policy_from(&junk).await.is_none(), "unreadable is not 'not chosen'");
+    }
+
+    #[tokio::test]
+    async fn a_chosen_policy_is_stored_in_ceph() {
+        use crate::host::fake::FakeHost;
+        let host = FakeHost::new().ok("ceph config-key set yolab/storage-policy", "");
+        write_policy(&host, &policy(3, "osd")).await.unwrap();
+        assert!(host.ran(r#"ceph config-key set yolab/storage-policy {"size":3,"failure_domain":"osd"}"#));
     }
 }
