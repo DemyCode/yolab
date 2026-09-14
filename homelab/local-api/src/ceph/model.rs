@@ -66,7 +66,11 @@ impl OsdDump {
     }
 
     pub fn is_in(&self) -> BTreeSet<i64> {
-        self.osds.iter().filter(|o| o.is_in).map(|o| o.osd).collect()
+        self.osds
+            .iter()
+            .filter(|o| o.is_in)
+            .map(|o| o.osd)
+            .collect()
     }
 
     pub fn pool_names(&self) -> HashMap<i64, String> {
@@ -158,7 +162,9 @@ pub fn lost_pgs(dump: &OsdDump, pgs: &[PgBrief]) -> (PgsByPool, BTreeSet<i64>) {
         let Some(pool) = pg.pool().and_then(|id| names.get(&id)) else {
             continue;
         };
-        lost.entry(pool.clone()).or_default().insert(pg.pgid.clone());
+        lost.entry(pool.clone())
+            .or_default()
+            .insert(pg.pgid.clone());
         holders.extend(on.iter().copied());
     }
     (lost, holders)
@@ -257,7 +263,8 @@ mod tests {
     #[test]
     fn pgs_brief_accepts_both_shapes() {
         let bare = r#"[{"pgid":"1.0","state":"active+clean","up":[0],"acting":[0]}]"#;
-        let wrapped = r#"{"pg_stats":[{"pgid":"1.0","state":"active+clean","up":[0],"acting":[0]}]}"#;
+        let wrapped =
+            r#"{"pg_stats":[{"pgid":"1.0","state":"active+clean","up":[0],"acting":[0]}]}"#;
         assert_eq!(parse_pgs_brief("x", bare).unwrap().len(), 1);
         assert_eq!(parse_pgs_brief("x", wrapped).unwrap().len(), 1);
         assert!(parse_pgs_brief("x", r#"{"nope": 1}"#).is_err());

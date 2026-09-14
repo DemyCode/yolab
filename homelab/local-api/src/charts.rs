@@ -443,10 +443,7 @@ impl crate::runtime::Controller for ChartSyncController {
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    async fn reconcile(
-        &self,
-        _ctx: &crate::runtime::Ctx,
-    ) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut failed = Vec::new();
         for repo in list_repos().await {
             match sync_repo(&repo).await {

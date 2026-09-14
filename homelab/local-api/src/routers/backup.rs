@@ -141,8 +141,10 @@ async fn record_running(id: &str, triggered_by: &str) -> anyhow::Result<()> {
         services: vec![],
         claim: Claim::mine(Utc::now()),
     };
-    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| upsert(sets, set.clone()))
-        .await?;
+    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| {
+        upsert(sets, set.clone())
+    })
+    .await?;
     Ok(())
 }
 
@@ -586,8 +588,7 @@ async fn snapshot_cluster_inner(
         // the backup was then recorded restorable without that app's objects —
         // discovered only when a restore could not find them. A namespace that
         // vanished since it was listed is the one legitimate absence.
-        let Some(ns_obj) =
-            crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"]).await?
+        let Some(ns_obj) = crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"]).await?
         else {
             continue;
         };
@@ -1017,7 +1018,10 @@ mod tests {
 
     #[test]
     fn a_succeeded_set_is_restorable_regardless_of_in_flight() {
-        assert_eq!(classify(&set("a", "succeeded"), Liveness::Driving), SetState::Restorable);
+        assert_eq!(
+            classify(&set("a", "succeeded"), Liveness::Driving),
+            SetState::Restorable
+        );
         assert_eq!(
             classify(&set("a", "succeeded"), Liveness::Abandoned),
             SetState::Restorable
@@ -1026,19 +1030,34 @@ mod tests {
 
     #[test]
     fn a_failed_set_is_crashed() {
-        assert_eq!(classify(&set("a", "failed"), Liveness::Driving), SetState::Crashed);
+        assert_eq!(
+            classify(&set("a", "failed"), Liveness::Driving),
+            SetState::Crashed
+        );
     }
 
     #[test]
     fn a_running_set_is_running_only_while_someone_drives_it() {
-        assert_eq!(classify(&set("a", "running"), Liveness::Driving), SetState::Running);
-        assert_eq!(classify(&set("a", "running"), Liveness::Remote), SetState::Running);
-        assert_eq!(classify(&set("a", "running"), Liveness::Abandoned), SetState::Crashed);
+        assert_eq!(
+            classify(&set("a", "running"), Liveness::Driving),
+            SetState::Running
+        );
+        assert_eq!(
+            classify(&set("a", "running"), Liveness::Remote),
+            SetState::Running
+        );
+        assert_eq!(
+            classify(&set("a", "running"), Liveness::Abandoned),
+            SetState::Crashed
+        );
     }
 
     #[test]
     fn an_unknown_state_reads_as_crashed_when_not_in_flight() {
-        assert_eq!(classify(&set("a", "weird"), Liveness::Abandoned), SetState::Crashed);
+        assert_eq!(
+            classify(&set("a", "weird"), Liveness::Abandoned),
+            SetState::Crashed
+        );
     }
 
     #[test]

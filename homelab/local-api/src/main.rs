@@ -36,8 +36,8 @@ use tower_http::cors::{Any, CorsLayer};
 use auth::{auth_middleware, AuthState};
 use config::Config;
 use routers::{
-    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, packs, reboot, rebuild, status,
-    terminal, update,
+    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, packs, reboot,
+    rebuild, status, terminal, update,
 };
 
 /// Single shared state threaded through all handlers.

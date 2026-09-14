@@ -44,10 +44,9 @@ pub async fn run<H: Host>(host: &H) -> Result<()> {
         return Ok(());
     }
 
-    let known = host
-        .osd_ids()
-        .await
-        .ok_or_warn("osd-activate: the cluster's OSD list is unreadable — starting every prepared OSD");
+    let known = host.osd_ids().await.ok_or_warn(
+        "osd-activate: the cluster's OSD list is unreadable — starting every prepared OSD",
+    );
     for id in prepared {
         if !should_start(id, known.as_deref()) {
             tracing::info!(

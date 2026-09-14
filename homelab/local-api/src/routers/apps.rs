@@ -1390,7 +1390,10 @@ pub async fn update_app(
         Ok(Some(v)) => v,
         Ok(None) => return (StatusCode::NOT_FOUND, "Instance not found").into_response(),
         Err(e) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, format!("cannot read the app right now: {e}"))
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("cannot read the app right now: {e}"),
+            )
                 .into_response()
         }
     };
@@ -1957,10 +1960,7 @@ impl crate::runtime::Controller for UninstallWatchdogController {
         // a restart has had its chance to be re-driven by the client first.
         std::time::Duration::from_secs(90)
     }
-    async fn reconcile(
-        &self,
-        _ctx: &crate::runtime::Ctx,
-    ) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let abandoned = abandoned_uninstalls().await?;
         if abandoned.is_empty() {
             return Ok(crate::runtime::Tick::Idle("no abandoned uninstalls".into()));
