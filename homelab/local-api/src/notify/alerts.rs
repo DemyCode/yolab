@@ -7,6 +7,15 @@
 //! it — and a notification ntfy did not accept is not recorded, so it is tried
 //! again next tick.
 //!
+//! ONE SENDER PER PROBLEM. Every notification reaches every machine (see
+//! `notify`), so a problem must be sent by one machine only, or the phone gets
+//! it once per machine. A problem of this machine (one of its disks) is sent by
+//! it; a problem of the whole cluster (a machine gone, a failed backup) by the
+//! machine with the lowest name among those that answer — decided from the same
+//! survey FORCE HEAL uses, so it needs neither Kubernetes nor Ceph, which a
+//! leader election would. The others follow the problems silently, so the one
+//! that takes over when the sender is gone does not repeat them.
+//!
 //! A SOURCE THAT CANNOT ANSWER CHANGES NOTHING. Its earlier problems are neither
 //! repeated nor called resolved: "cannot read the backup records" is not "the
 //! backup is fine again".
@@ -18,7 +27,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{publish, topic, Notification, Tunnel};
+use super::{publish_everywhere, topic, Notification, Tunnel};
 use crate::runtime::{Controller, Ctx, Scope, Tick};
 
 const NAME: &str = "notifier";
@@ -39,6 +48,20 @@ pub(crate) struct Source {
     /// Every key this source produces starts with it.
     pub prefix: &'static str,
     pub alerts: Option<Vec<Alert>>,
+    /// Followed without sending: another machine sends these.
+    pub silent: bool,
+}
+
+/// Problems of the whole cluster, sent by one machine; the rest are this
+/// machine's own.
+fn is_cluster_wide(key: &str) -> bool {
+    key.starts_with("heal:") || key.starts_with("backup:")
+}
+
+/// Whether this machine sends the cluster's problems: it has the lowest name
+/// among the machines that answer.
+fn sends_for_cluster(me: &str, answering: &[String]) -> bool {
+    answering.iter().map(String::as_str).min().is_none_or(|lowest| lowest == me)
 }
 
 #[derive(Debug, PartialEq)]
@@ -72,18 +95,30 @@ fn changes(sent: &BTreeMap<String, Alert>, sources: &[Source]) -> Vec<Change> {
 }
 
 fn notification(change: &Change, tunnel: &Tunnel) -> Notification {
-    let machine = tunnel.machine_label();
-    let click = |page: &str| Some(format!("https://{}{page}", tunnel.host));
+    let alert = match change {
+        Change::Raised(a) | Change::Cleared(a) => a,
+    };
+    // A cluster problem is about no machine in particular, and opens the address
+    // that reaches whichever machine answers.
+    let (who, host) = if is_cluster_wide(&alert.key) {
+        (
+            "YoLab".to_string(),
+            tunnel.shared_host("cluster").unwrap_or_else(|| tunnel.host.clone()),
+        )
+    } else {
+        (tunnel.machine_label(), tunnel.host.clone())
+    };
+    let click = |page: &str| Some(format!("https://{host}{page}"));
     match change {
         Change::Raised(a) => Notification {
-            title: format!("{machine}: {}", a.title),
+            title: format!("{who}: {}", a.title),
             message: a.message.clone(),
             priority: 4,
             tags: vec!["warning".into()],
             click: click(&a.page),
         },
         Change::Cleared(a) => Notification {
-            title: format!("{machine}: resolved"),
+            title: format!("{who}: resolved"),
             message: a.title.clone(),
             priority: 3,
             tags: vec!["white_check_mark".into()],
@@ -127,11 +162,11 @@ fn heal_alert(problem: &str) -> Alert {
     }
 }
 
-async fn heal_source(cfg: &crate::config::Config) -> Source {
-    let problems = crate::heal::current_problems(cfg).await;
+fn heal_source(problems: &[&str], silent: bool) -> Source {
     Source {
         prefix: "heal:",
         alerts: Some(problems.iter().copied().map(heal_alert).collect()),
+        silent,
     }
 }
 
@@ -156,7 +191,7 @@ fn backup_alerts(sets: &[serde_json::Value]) -> Vec<Alert> {
     }]
 }
 
-async fn backup_source() -> Source {
+async fn backup_source(silent: bool) -> Source {
     let alerts = match crate::routers::backup::list().await {
         Ok(sets) => Some(backup_alerts(&sets)),
         Err(e) => {
@@ -167,6 +202,7 @@ async fn backup_source() -> Source {
     Source {
         prefix: "backup:",
         alerts,
+        silent,
     }
 }
 
@@ -184,6 +220,7 @@ fn disk_source() -> Source {
                 })
                 .collect(),
         ),
+        silent: false,
     }
 }
 
@@ -208,39 +245,52 @@ impl Controller for NotifierController {
         // The disk controller's view of a disk settles after its first ticks.
         Duration::from_secs(180)
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let root = Path::new("/");
-        let Some(topic) = topic(root)? else {
-            return Ok(Tick::Idle("notifications are not set up on this machine".into()));
-        };
         let tunnel = Tunnel::read(&self.config.config_path)?;
+        if !tunnel.enabled {
+            return Ok(Tick::Idle(
+                "this machine is not connected to the YoLab platform".into(),
+            ));
+        }
+        let topic = topic(&self.config.config_path)?;
+        let view = crate::heal::current_view(&self.config).await;
+        let quiet = !sends_for_cluster(&ctx.node, &view.answering);
         let sources = [
-            heal_source(&self.config).await,
-            backup_source().await,
+            heal_source(&view.problems, quiet),
+            backup_source(quiet).await,
             disk_source(),
         ];
         let mut sent = load(root)?;
-        let pending = changes(&sent, &sources);
-        if pending.is_empty() {
-            return Ok(Tick::Idle(format!("{} problem(s) already sent", sent.len())));
-        }
         let mut failed = None;
-        for change in pending {
-            match publish(&topic, &notification(&change, &tunnel)).await {
-                Ok(()) => match change {
+        let mut delivered = 0;
+        for source in &sources {
+            for change in changes(&sent, std::slice::from_ref(source)) {
+                if !source.silent {
+                    let n = notification(&change, &tunnel);
+                    if let Err(e) = publish_everywhere(&self.config, &topic, &n, &view.peer_addrs).await {
+                        failed = Some(e);
+                        continue;
+                    }
+                    delivered += 1;
+                }
+                match change {
                     Change::Raised(a) => {
                         sent.insert(a.key.clone(), a);
                     }
                     Change::Cleared(a) => {
                         sent.remove(&a.key);
                     }
-                },
-                Err(e) => failed = Some(e),
+                }
             }
         }
         save(root, &sent)?;
         match failed {
             Some(e) => Err(e.context("send a notification (retried next tick)")),
+            None if delivered == 0 => Ok(Tick::Idle(format!(
+                "nothing new; {} problem(s) followed",
+                sent.len()
+            ))),
             None => Ok(Tick::Done),
         }
     }
@@ -269,6 +319,7 @@ mod tests {
         let now = [Source {
             prefix: "heal:",
             alerts: Some(vec![alert("heal:kubernetes_down")]),
+            silent: false,
         }];
         assert_eq!(
             changes(&sent(&[]), &now),
@@ -279,6 +330,7 @@ mod tests {
         let gone = [Source {
             prefix: "heal:",
             alerts: Some(vec![]),
+            silent: false,
         }];
         assert_eq!(
             changes(&sent(&["heal:kubernetes_down"]), &gone),
@@ -291,6 +343,7 @@ mod tests {
         let unknown = [Source {
             prefix: "backup:",
             alerts: None,
+            silent: false,
         }];
         assert!(changes(&sent(&["backup:bk-1"]), &unknown).is_empty());
     }
@@ -300,6 +353,7 @@ mod tests {
         let disks = [Source {
             prefix: "disk:",
             alerts: Some(vec![]),
+            silent: false,
         }];
         let before = sent(&["disk:sdb", "heal:machines_gone", "backup:bk-1"]);
         assert_eq!(
@@ -328,22 +382,45 @@ mod tests {
         assert!(backup_alerts(&[]).is_empty());
     }
 
-    #[test]
-    fn a_notification_names_the_machine_and_opens_its_page() {
-        let tunnel = Tunnel {
+    fn tunnel() -> Tunnel {
+        Tunnel {
             enabled: true,
             platform_api_url: String::new(),
             account_token: String::new(),
             tunnel_id: "25".into(),
-            sub_ipv6: String::new(),
             host: "node1.6.yolab.io".into(),
-        };
-        let raised = notification(&Change::Raised(heal_alert("data_unreachable")), &tunnel);
-        assert_eq!(raised.title, "node1: Some of your files have no reachable copy");
+        }
+    }
+
+    #[test]
+    fn a_cluster_problem_opens_the_shared_address_a_machine_problem_its_own() {
+        let raised = notification(&Change::Raised(heal_alert("data_unreachable")), &tunnel());
+        assert_eq!(raised.title, "YoLab: Some of your files have no reachable copy");
         assert_eq!(raised.priority, 4);
-        assert_eq!(raised.click.as_deref(), Some("https://node1.6.yolab.io/box/storage"));
-        let cleared = notification(&Change::Cleared(heal_alert("data_unreachable")), &tunnel);
-        assert_eq!(cleared.title, "node1: resolved");
+        assert_eq!(raised.click.as_deref(), Some("https://cluster.6.yolab.io/box/storage"));
+        let cleared = notification(&Change::Cleared(heal_alert("data_unreachable")), &tunnel());
+        assert_eq!(cleared.title, "YoLab: resolved");
+
+        let disk = Alert {
+            key: "disk:sdb".into(),
+            title: "A disk could not be added".into(),
+            message: "busy".into(),
+            page: "/box/storage".into(),
+        };
+        let n = notification(&Change::Raised(disk), &tunnel());
+        assert_eq!(n.title, "node1: A disk could not be added");
+        assert_eq!(n.click.as_deref(), Some("https://node1.6.yolab.io/box/storage"));
+    }
+
+    #[test]
+    fn the_lowest_answering_machine_sends_the_clusters_problems() {
+        let answering = vec!["node2".to_string(), "node1".to_string(), "node3".to_string()];
+        assert!(sends_for_cluster("node1", &answering));
+        assert!(!sends_for_cluster("node2", &answering));
+        // node1 is gone: node2 takes over.
+        assert!(sends_for_cluster("node2", &["node2".into(), "node3".into()]));
+        assert!(sends_for_cluster("node1", &[]), "nothing answers: speak up");
+        assert!(is_cluster_wide("backup:bk-1") && !is_cluster_wide("disk:sdb"));
     }
 
     #[test]

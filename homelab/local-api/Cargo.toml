@@ -20,6 +20,9 @@ toml = "0.8"
 # Chart.yaml parsing. serde_yaml is deprecated upstream; serde_norway is the
 # maintained fork with the same API.
 serde_norway = "0.9"
+# SHA-256 for the notification topic (notify). 0.9: the version pwhash already
+# brings in, so nothing new is downloaded.
+sha2 = "0.9"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
