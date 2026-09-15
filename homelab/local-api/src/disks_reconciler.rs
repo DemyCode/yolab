@@ -908,10 +908,22 @@ async fn reconcile_local_osds<H: Host + 'static>(
     let Some(disk_to_osd) = disk_to_osd else {
         return;
     };
+    let forgotten = erase_forgotten_osds(host, node, meta, desired, disk_to_osd).await;
+    // Everything below acts only on OSDs the cluster still has.
+    let live: HashMap<String, i64> = disk_to_osd
+        .iter()
+        .filter(|(disk_id, _)| !forgotten.contains(*disk_id))
+        .map(|(d, id)| (d.clone(), *id))
+        .collect();
+    let disk_to_osd = &live;
 
     // Create OSDs for disks switched ON that do not have one yet. This is the
     // half Rook used to do in response to a CephCluster patch.
     for (disk_id, m) in meta {
+        if forgotten.contains(disk_id) {
+            // Erased this tick; it reads as blank on the next one.
+            continue;
+        }
         let creating = CREATING
             .lock()
             .map(|c| c.contains(disk_id))
@@ -1915,6 +1927,72 @@ async fn stop_foreign_osd_units<H: Host>(host: &H) {
     }
 }
 
+/// Disks carrying an OSD of THIS cluster that the cluster no longer has — purged
+/// while the disk was away, or by a heal. Returns them, so the rest of the tick
+/// leaves them alone.
+///
+/// Such an OSD can never start again: its daemon fails for good, and a weight
+/// set on it is refused ("does not appear in the crush map"). Treated as a live
+/// OSD it stays "could not be added" forever. Its data is unreachable by
+/// definition, so a disk switched ON is erased and made a new OSD on the next
+/// tick; one switched OFF is simply not in use.
+///
+/// Only on the cluster's own answer: when `ceph osd ls` does not answer, nothing
+/// is called forgotten. The system LV has its own path (`lv_osd_attempt`).
+async fn erase_forgotten_osds<H: Host>(
+    host: &H,
+    node: &str,
+    meta: &HashMap<String, Disk>,
+    desired: &HashMap<String, String>,
+    disk_to_osd: &HashMap<String, i64>,
+) -> std::collections::HashSet<String> {
+    let mut forgotten = std::collections::HashSet::new();
+    let Ok(ids) = host.osd_ids().await else {
+        return forgotten;
+    };
+    for (disk_id, &osd_id) in disk_to_osd {
+        if disk_id == SYSTEM_OSD_ID || ids.contains(&osd_id) {
+            continue;
+        }
+        if CREATING.lock().map(|c| c.contains(disk_id)).unwrap_or(true) {
+            continue;
+        }
+        forgotten.insert(disk_id.clone());
+        let unit = format!("yolab-ceph-osd@{osd_id}.service");
+        host.systemctl(&["stop", &unit])
+            .await
+            .warn_on_err(format!("stop {unit}"));
+        if !wants_on(desired, node, disk_id) {
+            set_phase(disk_id, Phase::Removable, "Not in use. Safe to unplug.");
+            continue;
+        }
+        let Some(dev_path) = meta.get(disk_id).and_then(Disk::dev_path) else {
+            continue;
+        };
+        tracing::warn!(
+            "{disk_id}: {dev_path} carries osd.{osd_id}, which this cluster no longer has — erasing it for a new one"
+        );
+        match destructive::zap(
+            host,
+            &dev_path,
+            destructive::ZapWarrant::ForgottenByCluster { osd: osd_id },
+        )
+        .await
+        {
+            Ok(()) => set_phase(disk_id, Phase::Creating, "Erasing old data before adding this disk."),
+            Err(e) => {
+                tracing::warn!("{disk_id}: erasing {dev_path} failed: {e}");
+                set_phase(
+                    disk_id,
+                    Phase::Retrying,
+                    "Could not erase this disk yet. YoLab will keep trying.",
+                );
+            }
+        }
+    }
+    forgotten
+}
+
 /// Start this OSD's unit if it is not already running. Cheap enough to call on
 /// every tick: `is-active` is a bus query, and the start only runs when
 /// something is actually wrong.
@@ -2803,6 +2881,8 @@ mod tests {
                 "inactive",
             )
             .ok("ceph osd purge", "purged osd.7")
+            // Listed while it drains, gone once purged.
+            .ok("ceph osd ls", "[7]")
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm zap", "");
 
@@ -2818,6 +2898,47 @@ mod tests {
             host.calls()
         );
         assert_eq!(progress_of("disk-purge").phase, Phase::Removable);
+    }
+
+    /// A disk switched ON that still carries an OSD this cluster purged while it
+    /// was away (live on node1: "easystore … could not be added", osd.1 flapping,
+    /// "does not appear in the crush map"). It is erased for a new OSD — never
+    /// started, never weighted.
+    #[tokio::test]
+    async fn a_switched_on_disk_whose_osd_the_cluster_forgot_is_erased_not_started() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd ls", "[0]")
+            .ok("systemctl stop yolab-ceph-osd@1.service", "")
+            .ok("ceph-volume lvm zap", "");
+        let meta = HashMap::from([("disk-old".to_string(), disk(Ownership::Ours))]);
+        let desired = HashMap::from([(record_key("node1", "disk-old"), "ON".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-old".to_string(), 1i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+
+        assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdb"), "{:?}", host.calls());
+        assert!(host.ran("systemctl stop yolab-ceph-osd@1.service"));
+        assert!(!host.ran("systemctl start yolab-ceph-osd@1"));
+        assert!(!host.ran("crush reweight") && !host.ran("osd in"));
+        assert!(!host.ran("lvm create"), "created on the next tick, once it reads blank");
+    }
+
+    /// The same disk switched OFF has nothing left to purge: it is just not in use.
+    #[tokio::test]
+    async fn a_switched_off_disk_whose_osd_the_cluster_forgot_is_left_alone() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd ls", "[0]")
+            .ok("systemctl stop yolab-ceph-osd@3.service", "");
+        let meta = HashMap::from([("disk-off".to_string(), disk(Ownership::Ours))]);
+        let desired = HashMap::from([(record_key("node1", "disk-off"), "OFF".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-off".to_string(), 3i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+
+        assert!(!host.ran("zap") && !host.ran("osd purge") && !host.ran("osd out"));
+        assert_eq!(progress_of("disk-off").phase, Phase::Removable);
     }
 
     /// The other half of 240cdde: `ceph osd ls` still listing the id after a
