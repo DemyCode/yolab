@@ -645,6 +645,11 @@ async fn restore_volume(
     annotate_ns_privileged_movers(namespace).await;
     ensure_destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany").await?;
 
+    // The mover reads the repository from this Secret. Backups create it, but an
+    // app added back from backup onto a new cluster (after a FORCE HEAL) has never
+    // been backed up there: without it VolSync stops at `Secret "…-restic" not
+    // found` and the restore waits out its whole timeout with the app scaled to 0.
+    ensure_restic_secret(namespace, pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let mut restic_spec = json!({
         "repository": secret_name,
