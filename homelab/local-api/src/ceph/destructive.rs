@@ -663,7 +663,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_edit_still_starts_the_mon_again() {
-        let host = offline_host().fail("monmaptool", "no such mon");
+        // Not `offline_host()`: its successful monmaptool answer would be used
+        // first, since answers to one command are queued in order.
+        let host = FakeHost::new()
+            .ok("systemctl stop ceph-mon-node1.service", "")
+            .ok("systemctl start ceph-mon-node1.service", "")
+            .ok("ceph-mon -i node1", "")
+            .fail("monmaptool", "no such mon");
         let gone = vec!["node2".to_string()];
         assert!(remove_mons_offline(&host, &mandate(), "node1", &gone, "/m")
             .await
