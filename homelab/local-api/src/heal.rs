@@ -277,16 +277,17 @@ impl RealNetwork {
 impl Network for RealNetwork {
     fn answers<'a>(&'a self, machine: &'a Machine) -> impl Future<Output = bool> + Send + 'a {
         async move {
-            for port in [3300, self.port] {
+            // Both ports at once: a machine that is gone costs one timeout, not
+            // two, on every page load.
+            let reach = |port: u16| async move {
                 let connect = tokio::net::TcpStream::connect((machine.addr.as_str(), port));
-                if matches!(
+                matches!(
                     tokio::time::timeout(Duration::from_secs(3), connect).await,
                     Ok(Ok(_))
-                ) {
-                    return true;
-                }
-            }
-            false
+                )
+            };
+            let (mon, api) = tokio::join!(reach(3300), reach(self.port));
+            mon || api
         }
     }
 
@@ -512,8 +513,18 @@ async fn start_heal<H: Host, N: Network>(
     id: String,
     now: u64,
 ) -> Result<Heal> {
-    if local.load().await?.is_some_and(|h| h.running()) {
-        bail!("this machine is already healing the cluster");
+    if let Some(running) = local.load().await?.filter(Heal::running) {
+        // Past the restart, what is left only talks to Kubernetes and is safe to
+        // start over — and starting over is the way out when it cannot finish (a
+        // machine that answered at the start died before k3s came back).
+        if running.step < Step::ForgetNodes {
+            bail!("this machine is already healing the cluster");
+        }
+        tracing::warn!(
+            "heal {}: replaced by a new heal while at {:?}",
+            running.id,
+            running.step
+        );
     }
     let s = survey(host, net, me, uptime_secs).await?;
     if let Some(why) = s.refusal() {
@@ -531,9 +542,12 @@ async fn start_heal<H: Host, N: Network>(
         );
     }
     if s.ceph_quorum {
+        // A record whose driver is this machine (checked above) or is itself gone
+        // will never finish: refusing on it would leave the cluster paused for
+        // good, with no way to heal it.
         if let Some(other) = settings::get_json::<_, Heal>(host, settings::HEAL)
             .await?
-            .filter(Heal::running)
+            .filter(|h| h.running() && h.driver != me && !gone.contains(&h.driver))
         {
             bail!("{} is already healing the cluster", other.driver);
         }
@@ -678,12 +692,29 @@ async fn tick<H: Host, N: Network>(
 
 /// The last copy into Ceph may have failed; other machines stay paused until it
 /// lands, so it is retried while the record is here.
+///
+/// Only over this same heal: a machine keeps its record of a heal it drove long
+/// after, and must never write it over a later one another machine started.
 async fn publish_finished<H: Host>(host: &H, heal: &Heal) {
-    let stored = settings::get_json::<_, Heal>(host, settings::HEAL).await;
-    if !matches!(&stored, Ok(Some(h)) if h == heal) {
+    let needed = match settings::get_json::<_, Heal>(host, settings::HEAL).await {
+        Ok(None) => true,
+        Ok(Some(stored)) => stored.id == heal.id && stored != *heal,
+        Err(_) => false,
+    };
+    if needed {
         settings::set_json(host, settings::HEAL, heal)
             .await
             .debug_on_err("heal: copy the finished record into Ceph");
+    }
+}
+
+/// The heal to show: this machine's own record or Ceph's, whichever started
+/// last. A machine that drove a heal weeks ago still has that record, and it
+/// must not hide the one running now.
+fn newest(local: Option<Heal>, stored: Option<Heal>) -> Option<Heal> {
+    match (local, stored) {
+        (Some(l), Some(s)) => Some(if s.started_at > l.started_at { s } else { l }),
+        (l, s) => l.or(s),
     }
 }
 
@@ -754,7 +785,7 @@ async fn run_step<H: Host, N: Network>(
             destructive::reset_kubernetes_membership(host, &mandate).await?;
             Ok(Done)
         }
-        Step::PurgeDisks => purge_disks(host, &mandate, heal).await,
+        Step::PurgeDisks => purge_disks(host, local, &mandate, heal).await,
         Step::DeleteStorage => {
             let fs_exists = {
                 let ls: Vec<model::FsEntry> =
@@ -773,10 +804,24 @@ async fn run_step<H: Host, N: Network>(
             Ok(Done)
         }
         Step::RestartMachines => {
+            // Every pool is gone, so a machine left running keeps an image store
+            // on a pool that no longer exists. One that did not take the request
+            // but still answers is asked again next tick; one that no longer
+            // answers is down, and gets a fresh store whenever it boots.
+            let mut refused = Vec::new();
             for peer in &heal.peers {
-                net.restart(peer)
-                    .await
-                    .warn_on_err(format!("heal: restart {}", peer.name));
+                if let Err(e) = net.restart(peer).await {
+                    tracing::warn!("heal: restart {}: {e:#}", peer.name);
+                    if net.answers(peer).await {
+                        refused.push(peer.name.clone());
+                    }
+                }
+            }
+            if !refused.is_empty() {
+                return Ok(NotYet(format!(
+                    "{} did not accept the restart — trying again",
+                    refused.join(", ")
+                )));
             }
             heal.step = Step::ForgetNodes;
             heal.restart_boot_id = Some(boot_id.to_string());
@@ -856,6 +901,7 @@ fn records_to_switch_off(
 
 async fn purge_disks<H: Host>(
     host: &H,
+    local: &LocalRecord,
     mandate: &HealMandate,
     heal: &mut Heal,
 ) -> Result<StepResult> {
@@ -866,15 +912,22 @@ async fn purge_disks<H: Host>(
         // Its machine is gone; Ceph has not noticed yet.
         host.ceph(&["osd", "down", &format!("osd.{id}")]).await?;
     }
-    let targets: BTreeSet<i64> = dump.down().union(&on_gone).copied().collect();
+    let statuses = settings::dump(host, settings::DISK_STATUS).await?;
+    let spared = system_osds_of(&statuses, &heal.gone);
+    let targets: BTreeSet<i64> = dump
+        .down()
+        .union(&on_gone)
+        .copied()
+        .filter(|id| !spared.contains(id))
+        .collect();
     if !targets.is_subset(&heal.purged) {
-        // Recorded before anything is purged: once purged, an OSD is no longer
-        // in the tree or the dump to be found again.
+        // Saved before anything is purged: once purged, an OSD is no longer in
+        // the tree or the dump to be found again, and its disk would never be
+        // switched OFF.
         heal.purged.extend(targets);
-        save_quietly(host, heal).await;
+        save(host, local, heal).await?;
     }
 
-    let statuses = settings::dump(host, settings::DISK_STATUS).await?;
     for key in records_to_switch_off(&statuses, &heal.purged, &heal.gone) {
         settings::set(host, &format!("{}{key}", settings::DISKS), "OFF").await?;
     }
@@ -912,12 +965,22 @@ async fn purge_disks<H: Host>(
     })
 }
 
-/// The purge set is saved by the caller's next save as well; this one only
-/// narrows the window in which a crash could forget it.
-async fn save_quietly<H: Host>(host: &H, heal: &Heal) {
-    settings::set_json(host, settings::HEAL, heal)
-        .await
-        .debug_on_err("heal: copy the purge list into Ceph");
+/// The system-disk OSDs of the machines that still answer. Never purged: a
+/// machine that answers still has its system disk, so a down OSD there is a
+/// daemon that stopped, not a disk that is gone. Purged, it could never come
+/// back — the volume still carries this cluster's OSD, which the boot step
+/// neither restarts nor overwrites — and that machine would be left without
+/// an OSD of its own.
+fn system_osds_of(
+    statuses: &std::collections::BTreeMap<String, String>,
+    gone: &BTreeSet<String>,
+) -> BTreeSet<i64> {
+    statuses
+        .iter()
+        .filter(|(node, _)| !gone.contains(*node))
+        .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
+        .filter_map(|status| status["disks"]["system"]["osd_id"].as_i64())
+        .collect()
 }
 
 /// Tears every app down without waiting on anything the deleted filesystem held:
@@ -1078,15 +1141,19 @@ pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) 
         Ok(v) => v,
         Err(e) => return unavailable(format!("{e:#}")),
     };
-    let heal = match LocalRecord::under(Path::new("/")).load().await {
-        Ok(Some(h)) => Some(h),
-        Ok(None) if survey.ceph_quorum => settings::get_json::<_, Heal>(&host, settings::HEAL)
-            .await
-            .ok()
-            .flatten(),
-        Ok(None) => None,
+    let local = match LocalRecord::under(Path::new("/")).load().await {
+        Ok(h) => h,
         Err(e) => return unavailable(format!("{e:#}")),
     };
+    let stored = if survey.ceph_quorum {
+        settings::get_json::<_, Heal>(&host, settings::HEAL)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let heal = newest(local, stored);
     (StatusCode::OK, Json(status_json(&survey, heal.as_ref())))
 }
 
@@ -1145,6 +1212,8 @@ mod tests {
     #[derive(Default)]
     struct FakeNetwork {
         answering: BTreeSet<String>,
+        /// Answer, but reject the restart request.
+        refusing: BTreeSet<String>,
         restarted: Mutex<Vec<String>>,
     }
 
@@ -1165,7 +1234,7 @@ mod tests {
         fn restart<'a>(&'a self, m: &'a Machine) -> impl Future<Output = Result<()>> + Send + 'a {
             async move {
                 self.restarted.lock().unwrap().push(m.name.clone());
-                if self.answering.contains(&m.name) {
+                if self.answering.contains(&m.name) && !self.refusing.contains(&m.name) {
                     Ok(())
                 } else {
                     bail!("no answer")
@@ -2009,6 +2078,161 @@ mod tests {
         assert!(
             serde_json::from_str::<HealRequest>("{}").is_err(),
             "the confirmation is explicit"
+        );
+    }
+
+    // ── Review fixes ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_heal_stuck_after_the_restart_can_be_started_again() {
+        let (_d, rec) = local();
+        rec.save(&heal_at(Step::ForgetNodes)).await.unwrap();
+        let host = survey_host("leader", &["node1", "node2"], true)
+            .fail(HEAL_GET, NO_KEY)
+            .ok(HEAL_SET, "");
+        let heal = start_heal(
+            &host,
+            &FakeNetwork::default(),
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h2".into(),
+            NOW,
+        )
+        .await
+        .unwrap();
+        assert_eq!(heal.id, "h2");
+        assert_eq!(rec.load().await.unwrap().unwrap().id, "h2");
+    }
+
+    #[tokio::test]
+    async fn a_heal_whose_driver_is_gone_does_not_block_the_next_one() {
+        let (_d, rec) = local();
+        let mut orphaned = heal_at(Step::DeleteStorage);
+        orphaned.driver = "node2".into();
+        let host = survey_host("leader", &["node1", "node2", "node3"], true)
+            .ok(HEAL_GET, &serde_json::to_string(&orphaned).unwrap())
+            .ok(HEAL_SET, "");
+        start_heal(
+            &host,
+            &FakeNetwork::answering(&["node3"]),
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h2".into(),
+            NOW,
+        )
+        .await
+        .unwrap();
+        assert!(host.ran(HEAL_SET));
+
+        let (_d, rec) = local();
+        let mut mine_but_lost = heal_at(Step::DeleteStorage);
+        mine_but_lost.driver = "node1".into();
+        let host = survey_host("leader", &["node1", "node2", "node3"], true)
+            .ok(HEAL_GET, &serde_json::to_string(&mine_but_lost).unwrap())
+            .ok(HEAL_SET, "");
+        start_heal(
+            &host,
+            &FakeNetwork::answering(&["node3"]),
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h2".into(),
+            NOW,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_answers_but_refuses_the_restart_is_asked_again() {
+        let (_d, rec) = local();
+        let host = FakeHost::new().ok(HEAL_SET, "").ok("systemctl reboot", "");
+        let net = FakeNetwork {
+            answering: names(&["node3"]),
+            refusing: names(&["node3"]),
+            ..Default::default()
+        };
+        let mut h = heal_at(Step::RestartMachines);
+        let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
+        assert!(matches!(r, StepResult::NotYet(ref why) if why.contains("node3")), "{r:?}");
+        assert!(!host.ran("systemctl reboot"), "this machine waits for it");
+        assert_eq!(h.step, Step::RestartMachines);
+    }
+
+    #[tokio::test]
+    async fn an_old_record_never_overwrites_a_newer_heal_in_ceph() {
+        let (_d, rec) = local();
+        let mut old = heal_at(Step::RemoveApps);
+        old.finished_at = Some(NOW);
+        rec.save(&old).await.unwrap();
+        let mut newer = heal_at(Step::PurgeDisks);
+        newer.id = "h9".into();
+        newer.started_at = NOW + 100;
+        let host = FakeHost::new()
+            .ok(HEAL_GET, &serde_json::to_string(&newer).unwrap())
+            .ok(HEAL_SET, "");
+        tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
+        assert!(!host.ran(HEAL_SET));
+    }
+
+    #[test]
+    fn the_page_shows_whichever_heal_started_last() {
+        let mut old = heal_at(Step::RemoveApps);
+        old.finished_at = Some(NOW);
+        let mut newer = heal_at(Step::PurgeDisks);
+        newer.id = "h9".into();
+        newer.started_at = NOW + 100;
+        assert_eq!(newest(Some(old.clone()), Some(newer.clone())).unwrap().id, "h9");
+        assert_eq!(newest(Some(newer.clone()), Some(old.clone())).unwrap().id, "h9");
+        assert_eq!(newest(None, Some(old.clone())).unwrap().id, "h1");
+        assert_eq!(newest(Some(old), None).unwrap().id, "h1");
+        assert_eq!(newest(None, None), None);
+    }
+
+    #[tokio::test]
+    async fn the_system_osd_of_a_machine_that_answers_is_never_purged() {
+        let statuses = json!({
+            "yolab/disk-status/node1": json!({"disks": {"system": {"osd_id": 0}}}).to_string(),
+            "yolab/disk-status/node2": json!({"disks": {"system": {"osd_id": 2}}}).to_string(),
+        })
+        .to_string();
+        let host = FakeHost::new()
+            .ok("ceph osd tree", &tree())
+            .ok("ceph osd dump", &dump(&[(0, false), (1, false), (2, true)]))
+            .ok("ceph osd dump", &dump(&[(0, false), (1, false), (2, false)]))
+            .ok("ceph osd down", "")
+            .ok(HEAL_SET, "")
+            .ok("ceph config-key dump yolab/disk-status/", &statuses)
+            .ok("ceph config-key set yolab/disks/", "")
+            .ok("ceph osd ls", "[0, 1, 2]")
+            .ok("ceph osd ls", "[0, 1, 2]")
+            .ok("ceph osd ls", "[0]")
+            .ok("ceph osd purge", "")
+            .ok("ceph osd crush rm", "")
+            .ok("ceph auth del", "")
+            .ok("ceph config-key rm", "")
+            .ok("ceph config-key set yolab/removed-machines/", "");
+        let (_d, rec) = local();
+        let mut h = heal_at(Step::PurgeDisks);
+        let r = run_step(&host, &FakeNetwork::default(), &rec, &mut h, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
+        assert_eq!(r, StepResult::Done);
+        assert_eq!(h.purged, BTreeSet::from([1, 2]), "node1's system OSD is spared");
+        assert!(!host.ran("purge osd.0"));
+        assert_eq!(
+            rec.load().await.unwrap().unwrap().purged,
+            BTreeSet::from([1, 2]),
+            "saved on this machine before purging"
         );
     }
 }

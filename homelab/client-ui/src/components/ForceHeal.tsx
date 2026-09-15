@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CheckCircle, Circle, RefreshCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -58,8 +58,9 @@ export function HealBanner({ className }: { className?: string }) {
       </Banner>
     );
   }
-  if (recentlyFinished(heal)) {
-    return (
+  // A new problem outranks the note that the last heal finished.
+  if (status.problems.length === 0) {
+    return recentlyFinished(heal) ? (
       <Banner
         tone="info"
         title="Your home server was healed"
@@ -68,9 +69,8 @@ export function HealBanner({ className }: { className?: string }) {
       >
         Add your apps back with “Add from backup”.
       </Banner>
-    );
+    ) : null;
   }
-  if (status.problems.length === 0) return null;
   return (
     <Banner
       tone="error"
@@ -128,7 +128,14 @@ function StepList({ heal }: { heal: Heal }) {
   );
 }
 
-function HealProgress({ heal }: { heal: Heal }) {
+function HealProgress({
+  heal,
+  action,
+}: {
+  heal: Heal;
+  /** Shown under the steps: starting again, when this heal cannot finish. */
+  action?: ReactNode;
+}) {
   return (
     <Card>
       <CardContent className="space-y-4 pt-5 pb-5">
@@ -157,6 +164,7 @@ function HealProgress({ heal }: { heal: Heal }) {
             Add apps from backup
           </Link>
         )}
+        {action}
       </CardContent>
     </Card>
   );
@@ -295,14 +303,48 @@ function HealDialog({
 
 /** The Storage page section: what is wrong, the FORCE HEAL button, and progress. */
 export function ForceHealCard() {
-  const status = useHealStatus(5_000);
+  // Not faster: every answer probes each machine that does not answer, which
+  // takes seconds by itself.
+  const status = useHealStatus(10_000);
   const [confirming, setConfirming] = useState(false);
   const s = status.data;
   if (!s) return null;
-  if (s.heal && (s.heal.running || recentlyFinished(s.heal))) {
-    return <HealProgress heal={s.heal} />;
+  const heal = s.heal;
+
+  if (heal?.running) {
+    // Past the restart only Kubernetes steps are left, and they can wait
+    // forever on a machine that died meanwhile. The server accepts a new heal
+    // from there, so offer one.
+    const stuck =
+      (heal.step === "forget_nodes" || heal.step === "remove_apps") &&
+      s.problems.length > 0 &&
+      !s.refusal;
+    return (
+      <HealProgress
+        heal={heal}
+        action={
+          stuck && (
+            <>
+              <Button variant="danger" onClick={() => setConfirming(true)}>
+                FORCE HEAL again
+              </Button>
+              <HealDialog
+                open={confirming}
+                onClose={() => setConfirming(false)}
+                status={s}
+                onStarted={() => void status.refresh()}
+              />
+            </>
+          )
+        }
+      />
+    );
   }
-  if (s.problems.length === 0) return null;
+  // A finished heal is shown until something is wrong again — never in place of
+  // the button a new problem needs.
+  if (s.problems.length === 0) {
+    return heal && recentlyFinished(heal) ? <HealProgress heal={heal} /> : null;
+  }
 
   const gone = s.survey.machines.filter((m) => !m.answers);
   return (
