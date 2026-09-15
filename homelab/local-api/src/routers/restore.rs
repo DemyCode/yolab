@@ -627,7 +627,8 @@ pub(crate) async fn reinstall_from_backup(
     result?;
     tracing::info!("add {namespace} from backup {snapshot_id}: done");
 
-    // Unchanged by this rewrite: backups are wired up once the data is back.
+    // Only once the data is back: a backup before that would upload an empty
+    // volume as the newest copy of this app.
     crate::routers::backups::setup_namespace_backup(namespace).await?;
     Ok(())
 }
