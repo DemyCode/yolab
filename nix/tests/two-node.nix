@@ -120,16 +120,17 @@
 
     # `yolabConfigPath` is what Nix EVALUATES the config from; this is where the
     # running system READS it at runtime, and they are not the same thing. Several
-    # units resolve `${config.yolab.repoPath}/homelab/ignored/config.toml` (default
-    # /etc/nixos) and parse it themselves — the Ceph join is one, and it needs
+    # units resolve `${config.yolab.machineDir}/config.toml` and parse it
+    # themselves — the Ceph join is one, and it needs
     # tunnel.account_token from there to authenticate to the seed node.
     #
     # Without this the join fails with "no tunnel.account_token in
-    # /etc/nixos/homelab/ignored/config.toml — cannot authenticate", retries every
+    # /var/lib/yolab/machine/config.toml — cannot authenticate", retries every
     # two minutes forever, and node2's mon never starts because it is `requiredBy`
-    # the join. A real install has the repo checked out at that path, so this is
+    # the join. A real install has its config.toml in that directory, so this is
     # the harness standing in for it rather than a fixture inventing anything.
-    environment.etc."nixos/homelab/ignored/config.toml".source = configPath;
+    yolab.machineDir = "/etc/yolab-machine";
+    environment.etc."yolab-machine/config.toml".source = configPath;
   };
 in
   pkgs.testers.nixosTest {

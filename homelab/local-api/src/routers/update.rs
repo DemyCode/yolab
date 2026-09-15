@@ -320,12 +320,8 @@ async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bo
     // and systemd refuses to start a unit that is still loaded-and-failed.
     clear_stale_rebuild_unit();
 
-    let flake = format!("path:{}#{}", cfg.repo_path, cfg.flake_target);
-    emit(
-        out,
-        format!("$ nixos-rebuild switch --flake {flake} --print-build-logs"),
-    )
-    .await;
+    let args = rebuild_args(cfg);
+    emit(out, format!("$ nixos-rebuild {}", args.join(" "))).await;
     emit(
         out,
         "[INFO] nixos-rebuild launched — this service will restart shortly",
@@ -340,21 +336,8 @@ async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bo
         return false;
     };
 
-    // --cores 1 --max-jobs 1: a homelab node is also serving the UI that is
-    // watching this, and an unrestricted build starves it.
     let child = std::process::Command::new("nixos-rebuild")
-        .args([
-            "switch",
-            "--flake",
-            &flake,
-            "--no-update-lock-file",
-            "--print-build-logs",
-            "--accept-flake-config",
-            "--cores",
-            "1",
-            "--max-jobs",
-            "1",
-        ])
+        .args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log2)
@@ -455,6 +438,34 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
     Json(serde_json::json!({"status": "started"}))
 }
 
+/// The `nixos-rebuild` arguments for this machine.
+///
+/// The repo is a git flake (`/etc/nixos#yolab`, never `path:`): only tracked
+/// files are copied into the store. This machine's own files come in as the
+/// `yolab-machine` input, from `machine_dir` — see flake.nix. The lock file is
+/// not written: the override is this machine's, and the repo's flake.lock stays
+/// exactly as `git reset` left it for the next update.
+///
+/// `--cores 1 --max-jobs 1`: a homelab node is also serving the UI that is
+/// watching this, and an unrestricted build starves it.
+fn rebuild_args(cfg: &Config) -> Vec<String> {
+    vec![
+        "switch".into(),
+        "--flake".into(),
+        format!("{}#{}", cfg.repo_path, cfg.flake_target),
+        "--override-input".into(),
+        "yolab-machine".into(),
+        format!("path:{}", cfg.machine_dir),
+        "--no-write-lock-file".into(),
+        "--print-build-logs".into(),
+        "--accept-flake-config".into(),
+        "--cores".into(),
+        "1".into(),
+        "--max-jobs".into(),
+        "1".into(),
+    ]
+}
+
 /// Clear the leftover of an interrupted `nixos-rebuild`.
 ///
 /// nixos-rebuild runs switch-to-configuration inside a transient systemd unit
@@ -549,6 +560,23 @@ mod tests {
     // `reset_target` in the streaming path and `has_remote`/`target` in the
     // background one — so a fix to either would silently not reach the other.
     // Now there is one, and these pin its behaviour.
+
+    #[test]
+    fn a_rebuild_uses_the_git_flake_and_this_machines_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_in(&dir);
+        cfg.repo_path = "/etc/nixos".into();
+        cfg.machine_dir = "/var/lib/yolab/machine".into();
+        let args = rebuild_args(&cfg);
+        let after = |flag: &str| {
+            let i = args.iter().position(|a| a == flag).unwrap();
+            args[i + 1..].to_vec()
+        };
+        assert_eq!(after("--flake")[0], "/etc/nixos#yolab", "never path:, which copies the whole tree");
+        assert_eq!(after("--override-input")[..2], ["yolab-machine", "path:/var/lib/yolab/machine"]);
+        assert!(args.iter().any(|a| a == "--no-write-lock-file"));
+        assert!(!args.iter().any(|a| a == "--no-update-lock-file"), "the override changes the lock in memory");
+    }
 
     #[test]
     fn a_resolvable_remote_ref_wins() {

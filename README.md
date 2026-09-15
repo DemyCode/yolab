@@ -86,10 +86,12 @@ WSL and macOS configs are included:
 
 ```bash
 sudo nixos-rebuild switch --flake .#yolab-wsl
-# path:. here and not `.`, because the Darwin config reads the gitignored
-# homelab/ignored/config.toml. Everywhere else prefer `.`: path:. copies the
-# whole working directory into the store (8.6G against 4.8M) every time.
-darwin-rebuild switch --flake path:.#yolab-mac
+# A machine's own config.toml lives outside the repo, in /var/lib/yolab/machine,
+# and comes in as the `yolab-machine` flake input (see flake.nix). Never use
+# `path:.`: it copies the whole working directory into the store (8.6G against
+# 4.8M) every time.
+darwin-rebuild switch --flake .#yolab-mac \
+  --override-input yolab-machine path:/var/lib/yolab/machine --no-write-lock-file
 ```
 
 ---

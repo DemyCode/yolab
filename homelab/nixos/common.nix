@@ -78,6 +78,15 @@ in {
       default = "/etc/nixos";
       description = "Absolute path to the yolab repo on this machine.";
     };
+    machineDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/yolab/machine";
+      description = ''
+        Absolute path to this machine's own files (config.toml,
+        hardware-configuration.nix) — the directory every rebuild passes as the
+        `yolab-machine` flake input. Kept outside the repo; see flake.nix.
+      '';
+    };
   };
 
   config = {
@@ -479,7 +488,8 @@ in {
             + "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
           );
           YOLAB_REPO_PATH = config.yolab.repoPath;
-          YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+          YOLAB_MACHINE_DIR = config.yolab.machineDir;
+          YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
           YOLAB_PLATFORM = config.yolab.platform;
           YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
           YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
@@ -587,7 +597,7 @@ in {
       # The config.toml parsing (a real TOML parse now, not a regex) and the
       # banner text now live in homelab/local-api/src/boot/banner.rs.
       path = [pkgs.qrencode];
-      environment.YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+      environment.YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
     };
 
     services.getty.extraArgs = [
@@ -639,6 +649,9 @@ in {
     # any YAML placed there.  Symlinks into the Nix store so updates
     # propagate on nixos-rebuild without manual kubectl apply.
     systemd.tmpfiles.rules = [
+      # This machine's config.toml holds its tunnel keys and account token: root
+      # only.
+      "d ${config.yolab.machineDir} 0700 root root -"
       # Kubelet's drop-in config directory. k3s writes its own
       # 00-k3s-defaults.conf here fresh on every start; this coexists with it
       # (higher sort order = applied on top) rather than fighting it — the

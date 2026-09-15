@@ -1,19 +1,18 @@
 {
   modulesPath,
-  lib,
   yolabConfigPath,
   ...
 }: let
   homelabConfig = builtins.fromTOML (builtins.readFile yolabConfigPath);
   bootMode = homelabConfig.homelab.boot_mode or "uefi";
 in {
-  imports =
-    [
-      (modulesPath + "/installer/scan/not-detected.nix")
-      (modulesPath + "/profiles/qemu-guest.nix")
-      ./common.nix
-    ]
-    ++ lib.optional (builtins.pathExists ../ignored/hardware-configuration.nix) ../ignored/hardware-configuration.nix;
+  # The machine's hardware-configuration.nix is added by flake.nix, from the
+  # `yolab-machine` input.
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+    (modulesPath + "/profiles/qemu-guest.nix")
+    ./common.nix
+  ];
 
   # GRUB works on both BIOS and UEFI.
   # On BIOS: disko auto-sets grub.devices from the EF02 partition — don't also set grub.device or it duplicates mirroredBoots.

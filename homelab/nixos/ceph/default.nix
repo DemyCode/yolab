@@ -257,7 +257,7 @@ in {
         YOLAB_CEPH_MON_ADDR = cfg.monAddr;
         # "" on the machine that creates the cluster.
         YOLAB_CEPH_JOIN_SEED_ADDR = cfg.joinSeedAddr;
-        YOLAB_CONFIG = "${config.yolab.repoPath}/homelab/ignored/config.toml";
+        YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
       };
       # At boot this is redundant — systemd already orders ceph-mon after us.
       # It matters on a *retry*: when the first attempt failed, the mon's start

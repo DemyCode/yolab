@@ -5,6 +5,10 @@ set -euo pipefail
 
 YOLAB_REPO="${YOLAB_REPO:-https://github.com/DemyCode/yolab.git}"
 YOLAB_DIR="/opt/yolab"
+# This machine's own files, passed to every build as the `yolab-machine` flake
+# input (see flake.nix). setup.py writes config.toml there.
+MACHINE_DIR="/var/lib/yolab/machine"
+MACHINE_FLAGS=(--override-input yolab-machine "path:$MACHINE_DIR" --no-write-lock-file)
 NIX_INSTALLER_URL="https://install.determinate.systems/nix"
 
 ARCH=$(uname -m)
@@ -75,11 +79,11 @@ step "Bootstrapping nix-darwin"
 
 if command -v darwin-rebuild &>/dev/null; then
     ok "nix-darwin already installed"
-    darwin-rebuild switch --flake "$YOLAB_DIR#$FLAKE_TARGET"
+    darwin-rebuild switch --flake "$YOLAB_DIR#$FLAKE_TARGET" "${MACHINE_FLAGS[@]}"
 else
     echo "    Installing nix-darwin for the first time..."
     # First-time nix-darwin bootstrap
-    nix run nix-darwin -- switch --flake "$YOLAB_DIR#$FLAKE_TARGET"
+    nix run nix-darwin -- switch --flake "$YOLAB_DIR#$FLAKE_TARGET" "${MACHINE_FLAGS[@]}"
 fi
 ok "nix-darwin applied: $FLAKE_TARGET"
 
@@ -99,5 +103,5 @@ echo "========================================"
 echo
 echo "  UI: http://localhost"
 echo "  To update: click 'Update homelab' in the UI"
-echo "         or: darwin-rebuild switch --flake $YOLAB_DIR#$FLAKE_TARGET"
+echo "         or: darwin-rebuild switch --flake $YOLAB_DIR#$FLAKE_TARGET ${MACHINE_FLAGS[*]}"
 echo

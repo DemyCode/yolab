@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 YoLab macOS interactive setup — stdlib only, no external deps.
-Writes homelab/ignored/config.toml from user input.
+Writes this machine's config.toml (outside the repo, see flake.nix) from user input.
 """
 
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+
+# The `yolab-machine` flake input: this machine's own files, never in the repo.
+MACHINE_DIR = Path("/var/lib/yolab/machine")
 
 # ─── TOML writer (simple, only handles our config shape) ──────────────────────
 
@@ -75,7 +78,7 @@ def main():
 
     yolab_dir = Path(sys.argv[1])
     flake_target = sys.argv[2] if len(sys.argv) > 2 else "yolab-mac"
-    config_path = yolab_dir / "homelab" / "ignored" / "config.toml"
+    config_path = MACHINE_DIR / "config.toml"
 
     if config_path.exists():
         overwrite = prompt_bool(
@@ -198,6 +201,9 @@ def main():
     }
 
     write_toml(config, config_path)
+    # Tunnel keys and the account token: root only.
+    MACHINE_DIR.chmod(0o700)
+    config_path.chmod(0o600)
     print(f"\nConfiguration written to: {config_path}")
 
 

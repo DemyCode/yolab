@@ -10,6 +10,11 @@ use crate::app::AppEvent;
 
 const GIT_REMOTE: &str = "https://github.com/DemyCode/yolab.git";
 const CODE_DIR: &str = "/tmp/yolab-install";
+/// Where the flake's default `yolab-machine` input points, inside the repo.
+const CLONE_MACHINE_DIR: &str = "homelab/machine";
+/// Where an installed machine keeps its own files: `yolab.machineDir`.
+const MACHINE_DIR: &str = "/var/lib/yolab/machine";
+const MACHINE_FILES: [&str; 2] = ["config.toml", "hardware-configuration.nix"];
 
 pub struct InstallParams {
     pub disk: String,
@@ -360,13 +365,34 @@ async fn do_install(
         return Err(e);
     }
 
-    // ── Copy repo to installed system ─────────────────────────────────────────
+    // ── Copy this machine's files and the repo to the installed system ────────
+    // The machine's files first, and out of the repo copy: on the installed
+    // system they live in MACHINE_DIR and the repo in /etc/nixos stays exactly
+    // what git has (see flake.nix, `yolab-machine`).
+    log!("Copying this machine's configuration to the installed system…");
+    install_machine_files(tx).await?;
     log!("Copying repository to installed system…");
     let src = format!("{CODE_DIR}/");
     stream_command("rsync", &["-a", &src, "/mnt/etc/nixos"], tx).await?;
     log!("✓ Complete — remove the USB and reboot");
 
     Ok(tunnel.dns_url)
+}
+
+/// Moves config.toml and hardware-configuration.nix from the install clone to
+/// MACHINE_DIR on the installed system, readable by root only.
+async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::Result<()> {
+    let target = format!("/mnt{MACHINE_DIR}");
+    stream_command("install", &["-d", "-m", "0700", &target], tx).await?;
+    for file in MACHINE_FILES {
+        let from = format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{file}");
+        let to = format!("{target}/{file}");
+        stream_command("install", &["-m", "0600", &from, &to], tx).await?;
+        tokio::fs::remove_file(&from)
+            .await
+            .with_context(|| format!("remove {from} from the repo copy"))?;
+    }
+    Ok(())
 }
 
 /// Everything from password hashing through a completed `nixos-install`.
@@ -398,14 +424,18 @@ async fn partition_and_install(
     stream_command("git", &["clone", GIT_REMOTE, CODE_DIR], tx).await?;
     log!("✓ Repository cloned");
 
-    // ── Write config.toml ─────────────────────────────────────────────────────
+    // ── Write this machine's files ────────────────────────────────────────────
+    // Into the install clone's `homelab/machine`, the directory the flake's
+    // `yolab-machine` input points at by default — so disko and nixos-install,
+    // neither of which can pass `--override-input`, see them. `install_machine_files`
+    // moves them to MACHINE_DIR once the install has succeeded.
     log!("Writing config.toml…");
-    let ignored_dir = format!("{CODE_DIR}/homelab/ignored");
-    tokio::fs::create_dir_all(&ignored_dir).await?;
+    let machine_dir = format!("{CODE_DIR}/{CLONE_MACHINE_DIR}");
+    tokio::fs::create_dir_all(&machine_dir).await?;
 
     let toml_str = render_config_toml(req, tunnel, service_name, &password_hash)
         .context("serialize config")?;
-    tokio::fs::write(format!("{ignored_dir}/config.toml"), toml_str).await?;
+    tokio::fs::write(format!("{machine_dir}/config.toml"), toml_str).await?;
     log!("✓ Config written");
 
     // ── Generate hardware config ──────────────────────────────────────────────
@@ -417,10 +447,11 @@ async fn partition_and_install(
     )
     .await
     .context("nixos-generate-config")?;
-    tokio::fs::write(format!("{ignored_dir}/hardware-configuration.nix"), hw_nix).await?;
+    tokio::fs::write(format!("{machine_dir}/hardware-configuration.nix"), hw_nix).await?;
     log!("✓ Hardware config generated");
 
-    // path: not git+file:// — config.toml and hardware-configuration.nix are gitignored.
+    // path:, not the git flake: the machine's files are untracked in this clone.
+    // It is a fresh clone with nothing built in it, so copying it whole is cheap.
     let flake_ref = format!("path:{CODE_DIR}#yolab");
 
     // ── Partition disk ────────────────────────────────────────────────────────

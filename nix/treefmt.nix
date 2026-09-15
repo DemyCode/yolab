@@ -60,8 +60,9 @@ in {
     "node_modules/**"
     "result"
     "result-*"
-    # Secrets. Gitignored already; named here so a change there cannot quietly
-    # start feeding config.toml to a formatter.
-    "homelab/ignored/**"
+    # A machine's files, should one be misplaced into the default
+    # `yolab-machine` directory. Gitignored already; named here so a change there
+    # cannot quietly start feeding config.toml to a formatter.
+    "homelab/machine/**"
   ];
 }
