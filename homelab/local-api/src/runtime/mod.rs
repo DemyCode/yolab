@@ -95,28 +95,6 @@ pub enum Tick {
 /// Everything a tick is told about the world by the runtime.
 pub struct Ctx {
     pub node: String,
-    leader: Option<leader::Leadership>,
-}
-
-impl Ctx {
-    fn new(node: String, scope: Scope, leader: &leader::Leadership) -> Self {
-        Self {
-            node,
-            leader: (scope == Scope::Cluster).then(|| leader.clone()),
-        }
-    }
-
-    /// Whether this tick may still act. The runtime checks leadership only
-    /// BEFORE a tick; a cluster-scoped tick that runs for minutes (a storage
-    /// recovery reinstalling every app) must ask again between steps, or a node
-    /// that lost the lease halfway keeps acting while the new leader starts the
-    /// same work — two drivers of one destructive operation. Always true for a
-    /// node-scoped controller.
-    pub fn still_in_charge(&self) -> bool {
-        self.leader
-            .as_ref()
-            .is_none_or(leader::Leadership::is_leader)
-    }
 }
 
 pub trait Controller: Send + Sync + 'static {
@@ -268,7 +246,7 @@ async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: lea
         last_start = Some(Instant::now());
         reg.started(name);
         let c = controller.clone();
-        let ctx = Ctx::new(node.clone(), controller.scope(), &leader);
+        let ctx = Ctx { node: node.clone() };
         let outcome = tokio::spawn(async move { c.reconcile(&ctx).await }).await;
 
         let interval = controller.interval();
@@ -322,12 +300,7 @@ pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
     if let activity::Gate::Paused(why) = activity::gate(controller.pauses_during()).await {
         anyhow::bail!("not running {}: {why}", controller.name());
     }
-    // The lease was just seen live, and nothing renews it from this process: past
-    // the same window the daemon allows itself, a long manual tick stops acting.
-    let leader = leader::Leadership::confirmed_now();
-    controller
-        .reconcile(&Ctx::new(node, controller.scope(), &leader))
-        .await
+    controller.reconcile(&Ctx { node }).await
 }
 
 #[cfg(test)]
@@ -463,15 +436,6 @@ mod tests {
         wake("test-woken");
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert_eq!(runs.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn only_a_cluster_tick_can_lose_the_right_to_act() {
-        let lost = leader::Leadership::fixed_for_tests(false);
-        let held = leader::Leadership::fixed_for_tests(true);
-        assert!(Ctx::new("n1".into(), Scope::Node, &lost).still_in_charge());
-        assert!(!Ctx::new("n1".into(), Scope::Cluster, &lost).still_in_charge());
-        assert!(Ctx::new("n1".into(), Scope::Cluster, &held).still_in_charge());
     }
 
     struct Impatient {

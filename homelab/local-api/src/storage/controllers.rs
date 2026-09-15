@@ -295,7 +295,7 @@ async fn once_per_boot<H: Host>(marker: &std::path::Path, host: &H) -> Result<Ti
     if !crate::csi::plugin_daemonset_exists(host).await? {
         return Ok(Tick::RequeueAfter(Duration::from_secs(15)));
     }
-    crate::csi::restart_plugins(host, crate::csi::Which::ThisNode).await?;
+    crate::csi::restart_local_plugin(host).await?;
     if let Some(dir) = marker.parent() {
         std::fs::create_dir_all(dir)?;
     }

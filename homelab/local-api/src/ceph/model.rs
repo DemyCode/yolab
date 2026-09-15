@@ -65,26 +65,11 @@ impl OsdDump {
         self.osds.iter().filter(|o| !o.up).map(|o| o.osd).collect()
     }
 
-    pub fn is_in(&self) -> BTreeSet<i64> {
-        self.osds
-            .iter()
-            .filter(|o| o.is_in)
-            .map(|o| o.osd)
-            .collect()
-    }
-
     pub fn pool_names(&self) -> HashMap<i64, String> {
         self.pools
             .iter()
             .map(|p| (p.pool, p.pool_name.clone()))
             .collect()
-    }
-
-    pub fn pool_id(&self, name: &str) -> Option<i64> {
-        self.pools
-            .iter()
-            .find(|p| p.pool_name == name)
-            .map(|p| p.pool)
     }
 }
 
@@ -103,10 +88,6 @@ pub struct PgBrief {
 impl PgBrief {
     pub fn pool(&self) -> Option<i64> {
         pool_of(&self.pgid)
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.state.split('+').any(|s| s == "active")
     }
 
     /// Where the data lives: the acting set, or the up set when Ceph has not
@@ -245,8 +226,6 @@ mod tests {
         let d: OsdDump = serde_json::from_str(DUMP).unwrap();
         assert_eq!(d.up(), BTreeSet::from([0]));
         assert_eq!(d.down(), BTreeSet::from([1]));
-        assert_eq!(d.is_in(), BTreeSet::from([0, 1]));
-        assert_eq!(d.pool_id("yolab-fs-data0"), Some(3));
     }
 
     #[test]
