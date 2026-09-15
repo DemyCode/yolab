@@ -12,20 +12,19 @@
 //! disks that still answer. Every app and every stored file is gone; apps come
 //! back through "Add from backup" on the home page.
 //!
-//!   1. claim               make sure no other machine drives a heal
-//!   2. ceph_quorum         remove the gone machines' mons — offline, from this
-//!                          machine's monmap, when there is no quorum to ask
-//!   3. kubernetes_members  when this machine is the only one left and k3s has no
-//!                          quorum, reset k3s to this machine
-//!   4. purge_disks         purge every OSD that is down or on a gone machine,
-//!                          switch their disks OFF, forget the gone machines
-//!   5. delete_storage      delete the app filesystem and every pool
-//!   6. restart_machines    restart every machine that answers, this one last. At
-//!                          boot each creates a fresh image store before k3s
-//!                          starts, the mgr recreates its pool, and the
-//!                          filesystem controller the app filesystem
-//!   7. forget_nodes        delete the gone machines from Kubernetes
-//!   8. remove_apps         remove every app
+//!   1. `claim`: make sure no other machine drives a heal.
+//!   2. `ceph_quorum`: remove the gone machines' mons — offline, from this
+//!      machine's monmap, when there is no quorum to ask.
+//!   3. `kubernetes_members`: when this machine is the only one left and k3s
+//!      has no quorum, reset k3s to this machine.
+//!   4. `purge_disks`: purge every OSD that is down or on a gone machine,
+//!      switch their disks OFF, forget the gone machines.
+//!   5. `delete_storage`: delete the app filesystem and every pool.
+//!   6. `restart_machines`: restart every machine that answers, this one last.
+//!      At boot each creates a fresh image store before k3s starts, the mgr
+//!      recreates its pool, and the filesystem controller the app filesystem.
+//!   7. `forget_nodes`: delete the gone machines from Kubernetes.
+//!   8. `remove_apps`: remove every app.
 //!
 //! THE MACHINE YOU CLICK DRIVES IT. A heal must work exactly when the leader
 //! election and the Ceph key-value store may not, so it is not a cluster-scoped
