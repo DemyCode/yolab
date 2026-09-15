@@ -257,6 +257,24 @@ fn set_phase(disk_id: &str, phase: Phase, message: impl Into<String>) {
     e.message = message.into();
 }
 
+/// Disks on this machine that are switched on and cannot be added — refused,
+/// or failed three times — with the reason shown on the Storage page. For
+/// notifications (`notify::alerts`).
+pub(crate) fn stuck_disks() -> Vec<(String, String)> {
+    let Ok(progress) = PROGRESS.lock() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = progress
+        .iter()
+        .filter(|(_, p)| {
+            p.phase == Phase::Blocked || (p.phase == Phase::Retrying && p.attempts >= 3)
+        })
+        .map(|(disk, p)| (disk.clone(), p.message.clone()))
+        .collect();
+    out.sort();
+    out
+}
+
 fn progress_of(disk_id: &str) -> DiskProgress {
     PROGRESS
         .lock()

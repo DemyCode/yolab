@@ -435,6 +435,15 @@ in {
             file_server
           }
         }
+
+        # Phone notifications (ntfy, below). A site of its own: ntfy only serves
+        # from the root of a host. Subscriptions are long-lived streams, so every
+        # event is passed straight through.
+        ntfy-${tunnelDomain} {
+          reverse_proxy [::1]:2586 {
+            flush_interval -1
+          }
+        }
       '';
     };
 
@@ -442,6 +451,44 @@ in {
       after = ["wireguard-wg0.service"];
       wants = ["wireguard-wg0.service"];
     };
+
+    # ── Phone notifications (ntfy) ────────────────────────────────────────
+    # On the machine, not in Kubernetes: the notifications that matter most are
+    # about Kubernetes or Ceph not working. Served by the Caddy above under a
+    # second name on the same tunnel — ntfy only serves from the root of a host —
+    # whose DNS record local-api creates (`ntfy-dns` controller). See
+    # homelab/local-api/src/notify/.
+    services.ntfy-sh = {
+      enable = true;
+      settings = {
+        base-url = "https://ntfy-${tunnelDomain}";
+        listen-http = "[::1]:2586";
+        behind-proxy = true;
+        # Every topic denied, except this machine's own random topic, opened in
+        # the environment file `yolab-ntfy-credentials` writes.
+        auth-default-access = "deny-all";
+        # iOS gets instant notifications only through ntfy.sh's push relay, which
+        # receives a hash of the topic, never the messages.
+        upstream-base-url = "https://ntfy.sh";
+      };
+      environmentFile = "/var/lib/yolab/ntfy/ntfy.env";
+    };
+
+    systemd.services.yolab-ntfy-credentials = {
+      description = "Generate this machine's notification topic";
+      wantedBy = ["multi-user.target"];
+      before = ["ntfy-sh.service"];
+      requiredBy = ["ntfy-sh.service"];
+      after = ["local-fs.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "60s";
+        ExecStart = "${s.localApiEnv}/bin/local-api notify credentials";
+      };
+    };
+
+
 
     # ── System-disk OSD ───────────────────────────────────────────────────────
     # The system OSD is now a dedicated LVM logical volume (/dev/pool/ceph),

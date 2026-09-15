@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
+import { NotificationsCard } from "@/components/NotificationsCard";
 
 type Phase = "idle" | "git" | "rebuild" | "done";
 
@@ -316,6 +317,8 @@ export function SystemPage() {
           <p className="text-sm text-danger">{status.error}</p>
         </div>
       )}
+
+      <NotificationsCard />
 
       {/* Update action + channel */}
       <Card>

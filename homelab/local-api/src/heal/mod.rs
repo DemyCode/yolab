@@ -1202,6 +1202,16 @@ async fn uptime_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// What `GET /api/heal` calls wrong on this machine right now, for
+/// notifications (`notify::alerts`).
+pub(crate) async fn current_problems(cfg: &crate::config::Config) -> Vec<&'static str> {
+    let net = RealNetwork::from_config(cfg);
+    let me = crate::system::hostname();
+    survey(&RealHost, &net, &me, &cfg.node_ipv6, uptime_secs().await)
+        .await
+        .problems()
+}
+
 /// `GET /api/heal` — what is wrong, what a heal would do, and the heal this
 /// machine drives or drove last. Served whether or not Ceph or Kubernetes answer.
 pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {

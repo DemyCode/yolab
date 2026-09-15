@@ -15,6 +15,7 @@ mod heal;
 mod host;
 mod kubectl;
 mod mesh;
+mod notify;
 mod ops;
 mod proc;
 mod records;
@@ -79,6 +80,9 @@ async fn main() {
     }
     if args.get(1).map(String::as_str) == Some("boot") {
         std::process::exit(boot::run(&args[2..]).await);
+    }
+    if args.get(1).map(String::as_str) == Some("notify") {
+        std::process::exit(notify::run(&args[2..]).await);
     }
     // Drives exactly one controller's tick and exits — so a person over SSH can
     // run what the daemon would, without waiting for its interval.
@@ -184,6 +188,9 @@ async fn main() {
         .route("/api/heal/peer/prepare", post(heal::post_peer_prepare))
         .route("/api/heal/peer/arm", post(heal::post_peer_arm))
         .route("/api/heal/peer/undo", post(heal::post_peer_undo))
+        // Phone notifications — see notify/mod.rs.
+        .route("/api/notifications", get(notify::get_subscription))
+        .route("/api/notifications/test", post(notify::post_test))
         // Storage topology policy (auto/manual)
         .route(
             "/api/storage/policy",

@@ -23,6 +23,8 @@ pub const NAMES: &[&str] = &[
     "topology",
     "heal",
     "backup-credentials",
+    "notifier",
+    "ntfy-dns",
     "mesh-paths",
     "mesh-discovery",
     "chart-sync",
@@ -85,6 +87,19 @@ pub fn spawn_all(leader: Leadership) {
         crate::heal::credentials::BackupCredentialsController,
         &leader,
     );
+    // Phone notifications: what is wrong, sent once, and the server's DNS name.
+    spawn(
+        crate::notify::alerts::NotifierController {
+            config: crate::config::Config::from_env(),
+        },
+        &leader,
+    );
+    spawn(
+        crate::notify::dns::NtfyDnsController {
+            config: crate::config::Config::from_env(),
+        },
+        &leader,
+    );
 
     // The storage agent's own jobs, which used to be eleven systemd timers. Only
     // on a machine whose storage settings reached the process: a dev box must not
@@ -132,6 +147,18 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         }
         "backup-credentials" => {
             runtime::run_once(&crate::heal::credentials::BackupCredentialsController).await
+        }
+        "notifier" => {
+            runtime::run_once(&crate::notify::alerts::NotifierController {
+                config: crate::config::Config::from_env(),
+            })
+            .await
+        }
+        "ntfy-dns" => {
+            runtime::run_once(&crate::notify::dns::NtfyDnsController {
+                config: crate::config::Config::from_env(),
+            })
+            .await
         }
         "mesh-paths" => runtime::run_once(&crate::mesh::MeshPathsController::new()).await,
         "mesh-discovery" => runtime::run_once(&crate::mesh::MeshDiscoveryController::new()).await,
