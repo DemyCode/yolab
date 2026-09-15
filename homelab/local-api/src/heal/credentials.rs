@@ -71,7 +71,7 @@ fn read_copy(root: &Path) -> Result<Option<Credentials>> {
 }
 
 fn write_copy(root: &Path, credentials: &Credentials) -> Result<()> {
-    super::member::write_file(&copy_path(root), &serde_json::to_vec(credentials)?)
+    crate::config::write_private_file(&copy_path(root), &serde_json::to_vec(credentials)?)
 }
 
 pub struct BackupCredentialsController;

@@ -14,7 +14,7 @@ const NODES: &str = "kubectl get nodes -o json";
 struct FakeMachine {
     name: String,
     reset: Option<ResetView>,
-    /// Refuses to build or commit, with this error.
+    /// Refuses to prepare or arm, with this error.
     refuses: Option<String>,
 }
 
@@ -106,34 +106,34 @@ impl Network for FakeNetwork {
         }
     }
 
-    fn build<'a>(
+    fn prepare<'a>(
         &'a self,
         addr: &'a str,
-        request: &'a BuildRequest,
+        request: &'a PrepareRequest,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
         async move {
-            self.record(format!("build {addr} {}", request.server_addr));
+            self.record(format!("prepare {addr} {}", request.server_addr));
             let m = self.answering(addr)?;
             if let Some(why) = m.refuses {
                 bail!("{why}");
             }
-            self.set_phase(addr, &request.heal_id, PhaseView::Building, None);
+            self.set_phase(addr, &request.heal_id, PhaseView::Preparing, None);
             Ok(())
         }
     }
 
-    fn commit<'a>(
+    fn arm<'a>(
         &'a self,
         addr: &'a str,
         heal_id: &'a str,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
         async move {
-            self.record(format!("commit {addr}"));
+            self.record(format!("arm {addr}"));
             let m = self.answering(addr)?;
             if let Some(why) = m.refuses {
                 bail!("{why}");
             }
-            self.set_phase(addr, heal_id, PhaseView::Committed, None);
+            self.set_phase(addr, heal_id, PhaseView::Armed, None);
             Ok(())
         }
     }
@@ -329,7 +329,7 @@ async fn a_healthy_cluster_has_nothing_to_heal() {
 #[tokio::test]
 async fn a_heal_another_answering_machine_drives_is_not_started_over() {
     let (host, net) = broken_cluster();
-    net.set_phase("fd00::3", "ffff", PhaseView::Building, None);
+    net.set_phase("fd00::3", "ffff", PhaseView::Preparing, None);
     net.machines.lock().unwrap().get_mut("fd00::3").unwrap().reset.as_mut().unwrap().driver = "node3".into();
     let s = survey(&host, &net, "node1", "fd00::1", 5_000).await;
     assert!(s.refusal(None).unwrap().contains("node3 is already healing"));
@@ -357,7 +357,7 @@ async fn a_heal_starts_only_on_what_the_owner_saw() {
     assert!(record.load().unwrap().is_none());
 
     let heal = started(&host, &net, &record).await;
-    assert_eq!(heal.step, Step::Build);
+    assert_eq!(heal.step, Step::Prepare);
     assert_eq!(
         heal.members,
         vec![
@@ -382,7 +382,7 @@ fn the_driver_creates_the_cluster_and_every_other_machine_joins_it() {
         driver: "node1".into(),
         started_at: NOW,
         finished_at: None,
-        step: Step::Build,
+        step: Step::Prepare,
         fsid: new_fsid(),
         members: vec![
             Member { name: "node3".into(), addr: "fd00::3".into() },
@@ -403,29 +403,34 @@ fn the_driver_creates_the_cluster_and_every_other_machine_joins_it() {
 // ── Running ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn a_heal_builds_everywhere_switches_over_restarts_and_waits_for_the_new_cluster() {
+async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_cluster() {
     let (host, net) = broken_cluster();
     let (_d, record) = local();
     started(&host, &net, &record).await;
     let host = host.ok("systemctl reboot", "");
 
-    // Build: every machine is asked, then waited for.
+    // Prepare: every machine is asked, this one too, then waited for.
     tick(&host, &net, &record, "boot1", NOW + 10).await.unwrap();
     let calls = net.calls();
-    assert!(calls.contains(&"build fd00::3 https://[fd00::1]:6443".to_string()), "{calls:?}");
-    assert!(calls.contains(&"build fd00::1 ".to_string()), "{calls:?}");
+    assert!(calls.contains(&"prepare fd00::3 https://[fd00::1]:6443".to_string()), "{calls:?}");
+    assert!(calls.contains(&"prepare fd00::1 ".to_string()), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with("arm")), "nothing is armed before all are prepared");
     let heal = record.load().unwrap().unwrap();
-    assert_eq!(heal.step, Step::Build);
-    assert!(heal.waiting.unwrap().contains("building"));
+    assert_eq!(heal.step, Step::Prepare);
+    assert!(heal.waiting.unwrap().contains("preparing"));
 
-    // Built everywhere: commit (the driver last), restart the others, then itself.
-    net.set_phase("fd00::3", "ab12", PhaseView::Built, None);
-    net.set_phase("fd00::1", "ab12", PhaseView::Built, None);
+    // One is prepared, the other not yet: still nothing armed.
+    net.set_phase("fd00::3", "ab12", PhaseView::Prepared, None);
+    tick(&host, &net, &record, "boot1", NOW + 15).await.unwrap();
+    assert!(!net.calls().iter().any(|c| c.starts_with("arm")));
+
+    // Prepared everywhere: arm (the driver last), then restart everyone.
+    net.set_phase("fd00::1", "ab12", PhaseView::Prepared, None);
     tick(&host, &net, &record, "boot1", NOW + 20).await.unwrap();
     let calls = net.calls();
     let at = |c: &str| calls.iter().position(|x| x == c).unwrap();
-    assert!(at("commit fd00::3") < at("commit fd00::1"));
-    assert!(at("commit fd00::1") < at("reboot fd00::3"));
+    assert!(at("arm fd00::3") < at("arm fd00::1"));
+    assert!(at("arm fd00::1") < at("reboot fd00::3"));
     assert!(!calls.contains(&"reboot fd00::1".to_string()), "this machine restarts itself");
     assert!(host.ran("systemctl reboot"));
     let heal = record.load().unwrap().unwrap();
@@ -477,7 +482,7 @@ async fn a_machine_that_did_not_restart_is_asked_again() {
     heal.step = Step::Rebuild;
     heal.restart_boot_id = Some("boot1".into());
     record.save(&heal).unwrap();
-    net.set_phase("fd00::3", "ab12", PhaseView::Committed, None);
+    net.set_phase("fd00::3", "ab12", PhaseView::Armed, None);
     let host = FakeHost::new().ok(READYZ, "ok").ok(NODES, &nodes_json(&["node1"]));
     tick(&host, &net, &record, "boot2", NOW + 30).await.unwrap();
     assert!(net.calls().contains(&"reboot fd00::3".to_string()));
@@ -485,11 +490,11 @@ async fn a_machine_that_did_not_restart_is_asked_again() {
 }
 
 #[tokio::test]
-async fn a_failed_build_undoes_the_heal_on_every_machine() {
+async fn a_failed_prepare_undoes_the_heal_on_every_machine() {
     let (host, net) = broken_cluster();
     let (_d, record) = local();
     started(&host, &net, &record).await;
-    net.set_phase("fd00::1", "ab12", PhaseView::Built, None);
+    net.set_phase("fd00::1", "ab12", PhaseView::Prepared, None);
     net.set_phase("fd00::3", "ab12", PhaseView::Failed, Some("no space left on device"));
 
     tick(&host, &net, &record, "boot1", NOW + 10).await.unwrap();
@@ -499,28 +504,28 @@ async fn a_failed_build_undoes_the_heal_on_every_machine() {
     assert_eq!(heal.finished_at, Some(NOW + 10));
     let calls = net.calls();
     assert!(calls.contains(&"undo fd00::3".to_string()) && calls.contains(&"undo fd00::1".to_string()));
-    assert!(!calls.iter().any(|c| c.starts_with("commit") || c.starts_with("reboot")));
+    assert!(!calls.iter().any(|c| c.starts_with("arm") || c.starts_with("reboot")));
     assert!(!host.ran("systemctl reboot"));
 }
 
 #[tokio::test]
-async fn a_machine_that_cannot_switch_over_undoes_the_ones_that_did() {
+async fn a_machine_that_cannot_be_armed_undoes_the_ones_that_were() {
     let (host, net) = broken_cluster();
     let (_d, record) = local();
     started(&host, &net, &record).await;
-    net.set_phase("fd00::3", "ab12", PhaseView::Built, None);
-    net.set_phase("fd00::1", "ab12", PhaseView::Built, None);
-    net.refuse("fd00::1", "bootctl: no space left");
+    net.set_phase("fd00::3", "ab12", PhaseView::Prepared, None);
+    net.set_phase("fd00::1", "ab12", PhaseView::Prepared, None);
+    net.refuse("fd00::1", "read-only file system");
     let mut heal = record.load().unwrap().unwrap();
-    heal.step = Step::Commit;
+    heal.step = Step::Arm;
     record.save(&heal).unwrap();
 
     tick(&host, &net, &record, "boot1", NOW + 10).await.unwrap();
 
     let heal = record.load().unwrap().unwrap();
-    assert!(heal.failed.as_deref().unwrap().contains("node1 could not switch"));
+    assert!(heal.failed.as_deref().unwrap().contains("node1 could not be armed"));
     let calls = net.calls();
-    assert!(calls.contains(&"commit fd00::3".to_string()));
+    assert!(calls.contains(&"arm fd00::3".to_string()));
     assert!(calls.contains(&"undo fd00::3".to_string()));
     assert!(!calls.iter().any(|c| c.starts_with("reboot")));
 }
@@ -531,7 +536,7 @@ async fn an_undo_keeps_trying_a_machine_that_does_not_answer() {
     let (_d, record) = local();
     let mut heal = started(&host, &net, &record).await;
     heal.step = Step::Undo;
-    heal.failed = Some("node3 could not switch".into());
+    heal.failed = Some("node3 could not be armed".into());
     record.save(&heal).unwrap();
     net.disconnect("fd00::3");
 
@@ -542,19 +547,19 @@ async fn an_undo_keeps_trying_a_machine_that_does_not_answer() {
 
     // A new heal may replace it: nothing is half-done any more.
     assert!(Step::Undo.replaceable() && Step::Rebuild.replaceable());
-    assert!(!Step::Commit.replaceable() && !Step::Build.replaceable());
+    assert!(!Step::Arm.replaceable() && !Step::Prepare.replaceable());
 }
 
 #[tokio::test]
-async fn a_build_that_never_finishes_is_given_up() {
+async fn a_prepare_that_never_finishes_is_given_up() {
     let (host, net) = broken_cluster();
     let (_d, record) = local();
     started(&host, &net, &record).await;
-    net.set_phase("fd00::1", "ab12", PhaseView::Built, None);
-    net.set_phase("fd00::3", "ab12", PhaseView::Building, None);
-    tick(&host, &net, &record, "boot1", NOW + BUILD_WAIT_SECS).await.unwrap();
+    net.set_phase("fd00::1", "ab12", PhaseView::Prepared, None);
+    net.set_phase("fd00::3", "ab12", PhaseView::Preparing, None);
+    tick(&host, &net, &record, "boot1", NOW + PREPARE_WAIT_SECS).await.unwrap();
     let heal = record.load().unwrap().unwrap();
-    assert!(heal.failed.unwrap().contains("did not finish building"));
+    assert!(heal.failed.unwrap().contains("did not finish preparing"));
 }
 
 #[test]

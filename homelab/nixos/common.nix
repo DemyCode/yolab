@@ -527,17 +527,18 @@ in {
     };
 
     # ── FORCE HEAL: the wipe at boot ──────────────────────────────────────
-    # A heal switches every machine it keeps to a system built for the new
-    # cluster and leaves this marker; the boot that follows erases the machine's
-    # OSDs, Ceph state and k3s state before anything that would use them starts,
-    # and the ordinary create-or-join path takes over. See
-    # homelab/local-api/src/storage/reset_wipe.rs and heal/.
+    # A heal rebuilds the boot entry of every machine it keeps for the new
+    # cluster and sets `[node] wipe_condition = true` in its config.toml; the
+    # boot that follows erases the machine's OSDs, Ceph state and k3s state
+    # before anything that would use them starts, clears the flag, and the
+    # ordinary create-or-join path takes over. The flag is read here, at boot —
+    # never at eval time — so every boot runs this unit and it does nothing
+    # without it. See homelab/local-api/src/storage/reset_wipe.rs and heal/.
     systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (let
       host = config.networking.hostName;
     in {
       description = "Wipe this machine's cluster state for a FORCE HEAL";
       wantedBy = ["multi-user.target"];
-      unitConfig.ConditionPathExists = "/var/lib/yolab/reset-wipe";
       after = ["local-fs.target" "systemd-tmpfiles-setup.service"];
       before = [
         "yolab-ceph-bootstrap.service"
@@ -561,6 +562,7 @@ in {
       # Runs at boot only; a rebuild must never start it.
       restartIfChanged = false;
       path = with pkgs; [ceph lvm2 util-linux coreutils];
+      environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

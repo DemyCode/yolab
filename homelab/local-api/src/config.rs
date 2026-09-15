@@ -30,6 +30,28 @@ pub fn machine_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/machine"))
 }
 
+/// Writes `content` whole to a temporary file, root-only, and renames it over
+/// `path`: a crash mid-write leaves the previous content, never half of the new
+/// one. For config.toml and the other files a FORCE HEAL keeps on disk.
+pub fn write_private_file(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let dir = path.parent().context("a path without a directory")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let tmp = path.with_extension("tmp");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("open {}", tmp.display()))?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub repo_path: String,

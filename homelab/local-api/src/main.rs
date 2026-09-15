@@ -181,8 +181,8 @@ async fn main() {
         .route("/api/heal", get(heal::get_status).post(heal::post_heal))
         // Node to node, from the machine driving a heal (heal/member.rs).
         .route("/api/heal/peer", get(heal::get_peer))
-        .route("/api/heal/peer/build", post(heal::post_peer_build))
-        .route("/api/heal/peer/commit", post(heal::post_peer_commit))
+        .route("/api/heal/peer/prepare", post(heal::post_peer_prepare))
+        .route("/api/heal/peer/arm", post(heal::post_peer_arm))
         .route("/api/heal/peer/undo", post(heal::post_peer_undo))
         // Storage topology policy (auto/manual)
         .route(
