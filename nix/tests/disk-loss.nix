@@ -74,7 +74,9 @@
     };
     networking.useDHCP = lib.mkDefault false;
     environment.systemPackages = [pkgs.curl pkgs.jq];
-    environment.etc."nixos/homelab/ignored/config.toml".source = configPath;
+    # Where the running system reads config.toml (see two-node.nix).
+    yolab.machineDir = "/etc/yolab-machine";
+    environment.etc."yolab-machine/config.toml".source = configPath;
   };
 in
   pkgs.testers.nixosTest {

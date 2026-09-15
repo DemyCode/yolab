@@ -34,6 +34,25 @@
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+
+    # THIS MACHINE's own files: config.toml (secrets, tunnel keys, tokens) and
+    # hardware-configuration.nix. They are not in the repo, so the repo can stay a
+    # git flake — `.#` copies only tracked files (MBs), where `path:.#` copied the
+    # whole working tree, build outputs included (GBs), on every evaluation.
+    #
+    # The default is an empty directory in the repo, which defines no machine: CI
+    # and a fresh clone evaluate without any secrets. A machine points it at its
+    # own directory on every build:
+    #
+    #   nixos-rebuild switch --flake /etc/nixos#yolab \
+    #     --override-input yolab-machine path:/var/lib/yolab/machine \
+    #     --no-write-lock-file
+    #
+    # --no-write-lock-file keeps the machine's files out of flake.lock.
+    yolab-machine = {
+      url = "path:./homelab/machine";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -52,6 +71,12 @@
     treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs (
       import ./nix/treefmt.nix {inherit (rust) rustToolchain;}
     );
+
+    # The machine's files, when `yolab-machine` points at a real machine (see the
+    # input's comment). The in-repo default holds neither.
+    machineConfig = "${inputs.yolab-machine}/config.toml";
+    machineHardware = "${inputs.yolab-machine}/hardware-configuration.nix";
+    isMachine = builtins.pathExists machineConfig;
 
     # The config.toml path is an argument so the CI stubs can be evaluated
     # without a node's real config.toml being touched.
@@ -103,13 +128,16 @@
           specialArgs = {inherit inputs rust;};
         };
       }
-      # Guarded so `nix flake check` works on a clone that has no config.toml.
-      # Where it is absent you get "flake output does not provide attribute"
-      # rather than a readFile error three modules deep.
-      // lib.optionalAttrs (builtins.pathExists ./homelab/ignored/config.toml) {
+      # Only when `yolab-machine` points at a real machine. Without the override
+      # you get "flake output does not provide attribute 'yolab'" rather than a
+      # readFile error three modules deep — and CI, which never overrides it, can
+      # run `nix flake check` without any machine's secrets.
+      // lib.optionalAttrs isMachine {
         yolab = mkYolabSystem {
-          configPath = ./homelab/ignored/config.toml;
-          modules = baseModules;
+          configPath = machineConfig;
+          modules =
+            baseModules
+            ++ lib.optional (builtins.pathExists machineHardware) machineHardware;
         };
       };
 
@@ -155,7 +183,7 @@
         modules = [./homelab/darwin/configuration.nix];
         specialArgs = {
           inherit inputs rust;
-          yolabConfigPath = ./homelab/ignored/config.toml;
+          yolabConfigPath = machineConfig;
         };
       };
   in {
@@ -183,7 +211,7 @@
 
     # Guarded like `yolab`: these import shared.nix too. No CI stub variant,
     # because a Darwin toplevel cannot be built from x86_64-linux checks.
-    darwinConfigurations = lib.optionalAttrs (builtins.pathExists ./homelab/ignored/config.toml) {
+    darwinConfigurations = lib.optionalAttrs isMachine {
       "yolab-mac" = mkDarwinSystem "aarch64-darwin";
       "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
     };

@@ -9,7 +9,7 @@ on:
 jobs:
   # The 22 flake checks, split across runners that go in parallel.
   #
-  # This was one job running `nix run path:.#ci`, which is a single derivation
+  # This was one job running `nix run .#ci`, which is a single derivation
   # depending on every check — so nix built all 22 back to back on one runner and
   # the job took as long as their sum.
   #
@@ -78,12 +78,12 @@ jobs:
           # schedules the lot together and realises their shared dependencies
           # once, which is the entire reason these are grouped.
           #
-          # `path:.#` here MUST match every other nix invocation in this
-          # workflow — see the note in the cache step below for what diverging
-          # costs.
+          # `.#` here MUST match every other nix invocation in this workflow —
+          # and what the machines build with — see the note in the ISO step below
+          # for what diverging costs.
           targets=()
           for c in ${{ matrix.checks }}; do
-            targets+=("path:.#checks.x86_64-linux.$c")
+            targets+=(".#checks.x86_64-linux.$c")
           done
           nix build --no-link --print-build-logs --print-out-paths \
             "${targets[@]}" > /tmp/bucket-out-paths.txt
@@ -384,8 +384,8 @@ jobs:
           # persists between commands, so whatever these two share is realised
           # once regardless, and naming one output per call avoids depending on
           # the order `--print-out-paths` happens to print them in.
-          UI_OUT=$(nix build path:.#homelab-ui --no-link --print-build-logs --print-out-paths)
-          API_OUT=$(nix build path:.#homelab-api --no-link --print-build-logs --print-out-paths)
+          UI_OUT=$(nix build .#homelab-ui --no-link --print-build-logs --print-out-paths)
+          API_OUT=$(nix build .#homelab-api --no-link --print-build-logs --print-out-paths)
           echo "ui_store_path=$UI_OUT" >> "$GITHUB_OUTPUT"
           echo "api_store_path=$API_OUT" >> "$GITHUB_OUTPUT"
 
@@ -424,14 +424,16 @@ jobs:
       - name: Build ISO
         id: build_iso
         run: |
-          # `path:.#`, NOT `.#`. These resolve to different flake sources — the
-          # git flake copies only tracked files, `path:` copies the directory —
-          # so their source hashes differ and so does every derivation built from
-          # them. This job used `.#iso` while the checks used `path:.#ci`, which
-          # meant local-api was two distinct derivations
-          # (cn8cc3y… vs vnb0nah…) built from scratch on both runners, with
-          # neither able to use the cache the other had just filled.
-          ISO_OUT=$(nix build path:.#iso --no-link --print-build-logs --print-out-paths)
+          # `.#`, the git flake, like every nix invocation in this workflow and
+          # every machine's rebuild. `.#` and `path:.#` resolve to different flake
+          # sources — the git flake copies only tracked files, `path:` copies the
+          # directory — so their source hashes differ and so does every derivation
+          # built from them: when this job and the checks disagreed, local-api was
+          # two distinct derivations (cn8cc3y… vs vnb0nah…) built from scratch on
+          # both runners, neither able to use the cache the other had just filled.
+          # A machine's own files come in through the `yolab-machine` input
+          # instead (see flake.nix), which is why nothing needs `path:` any more.
+          ISO_OUT=$(nix build .#iso --no-link --print-build-logs --print-out-paths)
           echo "store_path=$ISO_OUT" >> "$GITHUB_OUTPUT"
           echo "ISO store path: $ISO_OUT"
 

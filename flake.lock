@@ -116,7 +116,8 @@
         "nixos-wsl": "nixos-wsl",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
-        "treefmt-nix": "treefmt-nix"
+        "treefmt-nix": "treefmt-nix",
+        "yolab-machine": "yolab-machine"
       }
     },
     "rust-overlay": {
@@ -158,6 +159,18 @@
         "repo": "treefmt-nix",
         "type": "github"
       }
+    },
+    "yolab-machine": {
+      "flake": false,
+      "locked": {
+        "path": "./homelab/machine",
+        "type": "path"
+      },
+      "original": {
+        "path": "./homelab/machine",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",
