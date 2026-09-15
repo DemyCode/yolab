@@ -101,8 +101,8 @@ pub(crate) struct Tunnel {
 
 impl Tunnel {
     pub fn read(config_path: &str) -> Result<Self> {
-        let text = std::fs::read_to_string(config_path)
-            .with_context(|| format!("read {config_path}"))?;
+        let text =
+            std::fs::read_to_string(config_path).with_context(|| format!("read {config_path}"))?;
         Self::parse(&text)
     }
 
@@ -130,7 +130,10 @@ impl Tunnel {
     /// The user's own zone: the machine's host without its first label,
     /// `6.yolab.io` for `node1.6.yolab.io` — built the same way in common.nix.
     pub fn user_domain(&self) -> Option<&str> {
-        self.host.split_once('.').map(|(_, rest)| rest).filter(|r| !r.is_empty())
+        self.host
+            .split_once('.')
+            .map(|(_, rest)| rest)
+            .filter(|r| !r.is_empty())
     }
 
     /// A name every machine of the user shares, e.g. `notify.6.yolab.io`.
@@ -140,7 +143,11 @@ impl Tunnel {
 
     /// The machine's name for people: the first label of its own host.
     pub fn machine_label(&self) -> String {
-        self.host.split('.').next().unwrap_or(&self.host).to_string()
+        self.host
+            .split('.')
+            .next()
+            .unwrap_or(&self.host)
+            .to_string()
     }
 }
 
@@ -201,7 +208,10 @@ pub(crate) async fn publish_everywhere(
     let token = cfg.cluster_token();
     let deliveries = peer_addrs.iter().map(|addr| {
         let request = client
-            .post(format!("http://[{addr}]:{}/api/notifications/deliver", cfg.port))
+            .post(format!(
+                "http://[{addr}]:{}/api/notifications/deliver",
+                cfg.port
+            ))
             .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
             .timeout(Duration::from_secs(10))
             .json(n);
@@ -278,7 +288,9 @@ pub async fn post_test(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
             message: format!("Notifications work. Sent from {}.", tunnel.machine_label()),
             priority: 3,
             tags: vec!["white_check_mark".into()],
-            click: tunnel.shared_host("cluster").map(|h| format!("https://{h}/")),
+            click: tunnel
+                .shared_host("cluster")
+                .map(|h| format!("https://{h}/")),
         };
         publish_everywhere(&s.config, &topic, &n, &view.peer_addrs).await
     }
@@ -334,7 +346,10 @@ token = "abcdef0123456789"
         assert!(t.enabled);
         assert_eq!(t.platform_api_url, "https://api.yolab.io");
         assert_eq!(t.user_domain(), Some("6.yolab.io"));
-        assert_eq!(t.shared_host("notify").as_deref(), Some("notify.6.yolab.io"));
+        assert_eq!(
+            t.shared_host("notify").as_deref(),
+            Some("notify.6.yolab.io")
+        );
         assert_eq!(t.machine_label(), "node1");
         assert!(Tunnel::parse("[homelab]\n").is_err());
         let bare = Tunnel {
@@ -371,7 +386,10 @@ token = "abcdef0123456789"
     fn the_subscribe_link_uses_the_shared_name() {
         let t = Tunnel::parse(CONFIG).unwrap();
         let sub = subscription(&t, "yolab-abc").unwrap();
-        assert_eq!(sub.subscribe_url, "ntfy://notify.6.yolab.io/yolab-abc?display=YoLab");
+        assert_eq!(
+            sub.subscribe_url,
+            "ntfy://notify.6.yolab.io/yolab-abc?display=YoLab"
+        );
         assert_eq!(sub.web_url, "https://notify.6.yolab.io/yolab-abc");
     }
 }
