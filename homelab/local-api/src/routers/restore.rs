@@ -16,6 +16,7 @@
 //! ran on every node: node2 saw node1's live restore as crashed and scaled the
 //! app back up in the middle of node1 replacing its volumes.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -117,12 +118,12 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
-    match crate::storage_heal::recovery_running().await {
+    match crate::heal::heal_running().await {
         Ok(false) => {}
         Ok(true) => anyhow::bail!(
-            "storage is being recovered from backup — every app is restored as part of it"
+            "the cluster is being healed — add apps back from backup once it finishes"
         ),
-        Err(e) => anyhow::bail!("cannot tell whether a storage recovery is running: {e:#}"),
+        Err(e) => anyhow::bail!("cannot tell whether the cluster is being healed: {e:#}"),
     }
 
     // Resolve the snapshot up front so the record (and the page) always shows the
@@ -385,66 +386,166 @@ fn parse_snapshots(v: &Value) -> Vec<SnapshotEntry> {
 
 // ── Reinstalling from backup ───────────────────────────────────────────────────
 
-/// What the newest backup holds.
-pub(crate) struct BackupContents {
-    pub taken_at: Option<String>,
-    /// Every app it can reinstall, by namespace.
-    pub apps: Vec<String>,
+/// One point in time an app can be reinstalled from: a `cluster-backup` snapshot
+/// that holds the app's saved objects.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct AppVersion {
+    pub snapshot_id: String,
+    pub time: String,
 }
 
-/// Empty when backups were never enabled or nothing has been backed up.
-pub(crate) async fn backup_contents() -> anyhow::Result<BackupContents> {
-    let empty = BackupContents {
-        taken_at: None,
-        apps: Vec::new(),
-    };
-    let Some(cfg) = read_master_config().await else {
-        return Ok(empty);
-    };
-    let Some(snapshot_id) = resolve_snapshot(&cfg, None).await? else {
-        return Ok(empty);
-    };
-    let repo = cfg.restic_repo("cluster-backup");
-    let catalog = extract_json_file(&repo, &cfg, &snapshot_id, "catalog.json").await?;
-    Ok(BackupContents {
-        taken_at: snapshot_time(&repo, &cfg, &snapshot_id).await,
-        apps: catalog_apps(&catalog)
-            .into_iter()
-            .map(|a| a.namespace)
-            .collect(),
-    })
+/// What the backups hold, app by app.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct BackupVersions {
+    /// Whether backups were ever enabled.
+    pub configured: bool,
+    /// Every backed-up app by namespace, with its versions newest first.
+    pub apps: BTreeMap<String, Vec<AppVersion>>,
 }
 
-/// Install an app that is not on this machine from the newest backup: its chart
-/// with the settings it had, then its volumes, then its saved objects.
-pub(crate) async fn reinstall_from_backup(namespace: &str) -> anyhow::Result<()> {
-    let Some(cfg) = read_master_config().await else {
-        anyhow::bail!("backup not configured");
-    };
-    let Some(snapshot_id) = resolve_snapshot(&cfg, None).await? else {
-        anyhow::bail!("no backup to restore from");
+/// Every app in any backup, and every point in time it can go back to.
+///
+/// Two restic calls whatever the number of snapshots: the list of snapshots, and
+/// one `find` across all of them for the per-app files a backup writes
+/// (`<namespace>.yaml`, see `backup::snapshot_cluster_inner`).
+///
+/// An unreadable backup config or repository is an error, never an empty
+/// answer: "nothing is backed up" on a recovery screen reads as "every app is
+/// gone", and would be the reason someone clicks through.
+pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
+    let Some(cfg) = load_master_config().await? else {
+        return Ok(BackupVersions::default());
     };
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
-    let catalog = extract_json_file(&repo, &cfg, &snapshot_id, "catalog.json").await?;
+    let Some(snapshots) = restic_json(
+        &repo,
+        &cfg,
+        &["snapshots", "--no-lock", "--json", "--tag", "cluster-backup"],
+    )
+    .await?
+    else {
+        return Ok(BackupVersions {
+            configured: true,
+            apps: BTreeMap::new(),
+        });
+    };
+    let found = restic_json(
+        &repo,
+        &cfg,
+        &["find", "--no-lock", "--json", "--tag", "cluster-backup", "*.yaml"],
+    )
+    .await?
+    .unwrap_or(Value::Null);
+    Ok(BackupVersions {
+        configured: true,
+        apps: versions_by_app(&snapshots, &found),
+    })
+}
+
+/// `Ok(None)` when the repository was never created — backups enabled, none
+/// taken yet.
+async fn restic_json(repo: &str, cfg: &BackupConfig, args: &[&str]) -> anyhow::Result<Option<Value>> {
+    let out = restic(repo, cfg, args).await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
+            return Ok(None);
+        }
+        anyhow::bail!("restic {}: {}", args.join(" "), stderr.trim());
+    }
+    Ok(Some(serde_json::from_slice(&out.stdout).map_err(|e| {
+        anyhow::anyhow!("restic {}: unreadable output: {e}", args.join(" "))
+    })?))
+}
+
+/// Joins `restic snapshots --json` with `restic find --json` into each app's
+/// versions, newest first.
+///
+/// `find` names a snapshot by its short id in some restic versions and by its
+/// full id in others, so the two are matched by prefix either way round. A find
+/// entry with no matches, or naming a snapshot the list does not have, adds
+/// nothing.
+fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<AppVersion>> {
+    let listed: Vec<(String, chrono::DateTime<Utc>, String)> = snapshots
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let id = s["id"].as_str()?.to_string();
+            let raw = s["time"].as_str()?;
+            let time = chrono::DateTime::parse_from_rfc3339(raw).ok()?.with_timezone(&Utc);
+            Some((id, time, raw.to_string()))
+        })
+        .collect();
+    let mut apps: BTreeMap<String, Vec<(chrono::DateTime<Utc>, AppVersion)>> = BTreeMap::new();
+    for entry in found.as_array().into_iter().flatten() {
+        let Some(named) = entry["snapshot"].as_str().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let Some((id, time, raw)) = listed
+            .iter()
+            .find(|(id, _, _)| id.starts_with(named) || named.starts_with(id.as_str()))
+        else {
+            continue;
+        };
+        for m in entry["matches"].as_array().into_iter().flatten() {
+            let Some(namespace) = m["path"]
+                .as_str()
+                .and_then(|p| p.rsplit('/').next())
+                .and_then(|file| file.strip_suffix(".yaml"))
+                .filter(|ns| !ns.is_empty())
+            else {
+                continue;
+            };
+            let versions = apps.entry(namespace.to_string()).or_default();
+            if versions.iter().all(|(_, v)| &v.snapshot_id != id) {
+                versions.push((
+                    *time,
+                    AppVersion {
+                        snapshot_id: id.clone(),
+                        time: raw.clone(),
+                    },
+                ));
+            }
+        }
+    }
+    apps.into_iter()
+        .map(|(ns, mut versions)| {
+            versions.sort_by(|a, b| b.0.cmp(&a.0));
+            (ns, versions.into_iter().map(|(_, v)| v).collect())
+        })
+        .collect()
+}
+
+/// Install an app that is not on this machine from one backup: its chart with
+/// the settings it had then, then its volumes as that backup pinned them, then
+/// its saved objects.
+pub(crate) async fn reinstall_from_backup(namespace: &str, snapshot_id: &str) -> anyhow::Result<()> {
+    let Some(cfg) = load_master_config().await? else {
+        anyhow::bail!("backup not configured");
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock("cluster-backup").await;
+    let catalog = extract_json_file(&repo, &cfg, snapshot_id, "catalog.json").await?;
     let Some(app) = catalog_apps(&catalog)
         .into_iter()
         .find(|a| a.namespace == namespace)
     else {
-        anyhow::bail!("{namespace} is not in the newest backup");
+        anyhow::bail!("{namespace} is not in backup {snapshot_id}");
     };
     let Some(path) =
-        extract_file(&repo, &cfg, &snapshot_id, &format!("**/{namespace}.yaml")).await?
+        extract_file(&repo, &cfg, snapshot_id, &format!("**/{namespace}.yaml")).await?
     else {
-        anyhow::bail!("the backup has no saved settings for {namespace}");
+        anyhow::bail!("backup {snapshot_id} has no saved settings for {namespace}");
     };
     let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
     let config = saved_config(&objects).unwrap_or_default();
 
     crate::routers::apps::install_now(&app.app_id, &app.instance_name, &config).await?;
 
-    let (id, original, _guard) = begin(namespace, &snapshot_id).await?;
-    let result = run_restore(namespace, &snapshot_id, &cfg, &original).await;
+    let (id, original, _guard) = begin(namespace, snapshot_id).await?;
+    let result = run_restore(namespace, snapshot_id, &cfg, &original).await;
     record_done(&id, &result).await;
     result?;
 
@@ -1243,5 +1344,42 @@ mod tests {
             {"kind": "Secret", "metadata": {"name": "yolab-config"}, "data": {"config.json": "!!!"}}
         ]});
         assert_eq!(saved_config(&bad), None);
+    }
+
+    // ── backup_versions ──────────────────────────────────────────────────────
+
+    #[test]
+    fn each_app_lists_the_snapshots_holding_it_newest_first() {
+        let snapshots = json!([
+            {"id": "aaaa1111", "short_id": "aaaa", "time": "2026-09-10T02:00:00+02:00"},
+            {"id": "bbbb2222", "short_id": "bbbb", "time": "2026-09-12T02:00:00Z"},
+            {"id": "cccc3333", "short_id": "cccc", "time": "2026-09-11T02:00:00Z"},
+            {"id": "broken"},
+        ]);
+        let found = json!([
+            {"snapshot": "aaaa", "matches": [
+                {"path": "/var/lib/yolab/backup-staging/yolab-a.yaml"},
+            ]},
+            {"snapshot": "bbbb2222", "matches": [
+                {"path": "/var/lib/yolab/backup-staging/yolab-a.yaml"},
+                {"path": "/var/lib/yolab/backup-staging/yolab-b.yaml"},
+                {"path": "/var/lib/yolab/backup-staging/yolab-b.yaml"},
+            ]},
+            {"snapshot": "cccc3333", "matches": []},
+            {"snapshot": "dddd", "matches": [{"path": "/x/yolab-ghost.yaml"}]},
+            {"snapshot": "cccc", "matches": [{"path": "/x/.yaml"}, {"path": "/x/catalog.json"}]},
+        ]);
+        let v = versions_by_app(&snapshots, &found);
+        let ids = |ns: &str| -> Vec<&str> { v[ns].iter().map(|x| x.snapshot_id.as_str()).collect() };
+        assert_eq!(v.keys().collect::<Vec<_>>(), ["yolab-a", "yolab-b"]);
+        assert_eq!(ids("yolab-a"), ["bbbb2222", "aaaa1111"], "newest first, full ids");
+        assert_eq!(ids("yolab-b"), ["bbbb2222"], "listed once");
+        assert_eq!(v["yolab-a"][1].time, "2026-09-10T02:00:00+02:00");
+    }
+
+    #[test]
+    fn no_snapshots_or_unreadable_find_output_means_no_versions() {
+        assert!(versions_by_app(&json!([]), &json!([])).is_empty());
+        assert!(versions_by_app(&json!([{"id": "a", "time": "2026-09-10T02:00:00Z"}]), &Value::Null).is_empty());
     }
 }

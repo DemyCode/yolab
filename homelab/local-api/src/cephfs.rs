@@ -49,7 +49,7 @@ impl Controller for CephFsController {
         &[Requirement::Ceph, Requirement::KubeApi]
     }
     fn pauses_during(&self) -> &'static [Activity] {
-        &[Activity::Restore, Activity::StorageRecovery]
+        &[Activity::Restore, Activity::Heal]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
         ensure().await

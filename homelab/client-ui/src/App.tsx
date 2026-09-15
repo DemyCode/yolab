@@ -1,7 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
-import { RepairGate } from "@/components/RepairScreen";
 import { Spinner } from "@/components/ui/feedback";
 import { LoginPage } from "@/pages/LoginPage";
 import { HomePage } from "@/pages/HomePage";
@@ -76,7 +75,7 @@ export default function App() {
   if (!loggedIn) return <LoginPage onLogin={() => setLoggedIn(true)} />;
 
   return (
-    <RepairGate>
+    <>
       <BrowserRouter>
         <Routes>
           <Route element={<AppShell onLogout={handleLogout} />}>
@@ -171,6 +170,6 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
-    </RepairGate>
+    </>
   );
 }

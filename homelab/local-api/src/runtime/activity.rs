@@ -5,7 +5,7 @@
 //! optimistically: `restore::is_running()` read the restore records, and when the
 //! read failed it saw no records and said "no restore" — so a brief API outage
 //! during a restore let the disk reconciler purge OSDs underneath it.
-//! `storage_heal::is_recovering()` did the same with `.is_ok_and(..)`.
+//! The storage recovery check did the same with `.is_ok_and(..)`.
 //!
 //! Here "cannot tell" is its own answer, and it pauses.
 
@@ -20,22 +20,22 @@ use super::Requirement;
 pub enum Activity {
     /// An app restore is replacing PVCs and scaling deployments.
     Restore,
-    /// A "recover from backup" run is purging OSDs and replacing the filesystem.
-    StorageRecovery,
+    /// FORCE HEAL is removing machines and disks and deleting every pool.
+    Heal,
 }
 
 impl Activity {
     fn describe(self) -> &'static str {
         match self {
             Activity::Restore => "an app restore is running",
-            Activity::StorageRecovery => "storage is being recovered from backup",
+            Activity::Heal => "the cluster is being healed",
         }
     }
 
     fn unknown(self) -> &'static str {
         match self {
             Activity::Restore => "cannot tell whether an app restore is running",
-            Activity::StorageRecovery => "cannot tell whether a storage recovery is running",
+            Activity::Heal => "cannot tell whether the cluster is being healed",
         }
     }
 }
@@ -125,7 +125,7 @@ pub async fn gate(activities: &[Activity]) -> Gate {
         let answer = cached(Key::Act(*a), async {
             let r = match a {
                 Activity::Restore => crate::routers::restore::running_anywhere().await,
-                Activity::StorageRecovery => crate::storage_heal::recovery_running().await,
+                Activity::Heal => crate::heal::heal_running().await,
             };
             r.map_err(|e| tracing::debug!("activity {a:?}: {e:#}")).ok()
         })
@@ -160,9 +160,9 @@ mod tests {
             Gate::Paused(why) => assert!(why.contains("restore is running")),
             Gate::Clear => panic!("a running restore must pause"),
         }
-        match decide(Activity::StorageRecovery, None) {
+        match decide(Activity::Heal, None) {
             Gate::Paused(why) => assert!(why.contains("cannot tell")),
-            Gate::Clear => panic!("an unknown recovery state must pause"),
+            Gate::Clear => panic!("an unknown heal state must pause"),
         }
     }
 

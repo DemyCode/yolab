@@ -155,6 +155,11 @@ fn policy_for(path: &str) -> Option<Policy> {
     ) {
         return None;
     }
+    // What FORCE HEAL would remove. A remembered "this machine does not answer"
+    // shown for even a second is a destructive decision made on stale facts.
+    if path == "/api/heal" {
+        return None;
+    }
     // Log bodies, live and large. Covers /api/logs, /api/rebuild-log and
     // /api/apps/:id/logs/:pod_name.
     if path == "/api/logs" || path == "/api/rebuild-log" || path.contains("/logs/") {
@@ -788,6 +793,9 @@ mod tests {
         ] {
             assert!(policy_for(path).is_none(), "{path} is a secret");
         }
+
+        // The heal survey is never shown stale.
+        assert!(policy_for("/api/heal").is_none());
 
         // Log bodies: live, large, and watched while something is happening.
         for path in [

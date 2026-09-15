@@ -81,24 +81,6 @@ in {
       default = "xfs";
       description = "xfs matches what containerd expects and what most k8s distros use.";
     };
-
-    # The guard against mistaking a blip for a lost disk. `down` means no copy is
-    # available RIGHT NOW, not that one is gone: a nixos-rebuild takes an OSD's LV
-    # down for ~90s and a node reboot for a few minutes, and both recover on their
-    # own. Rebuilding on those would cost every node its image cache and force a
-    # simultaneous re-pull across the uplink — worse than the outage being fixed.
-    # 15 minutes clears both with room to spare while still being far short of the
-    # 23 hours the cluster sat waiting on 2026-09-10.
-    recoverGraceSeconds = mkOption {
-      type = types.int;
-      default = 900;
-      description = ''
-        How long the images pool must stay unable to serve reads before its
-        unrecoverable placement groups are rebuilt empty. Only ever applies to the
-        images pool, whose every object is a container layer a registry will send
-        again — never to the pools holding the owner's data.
-      '';
-    };
   };
 
   config = mkIf (cephCfg.enable && cfg.enable) {

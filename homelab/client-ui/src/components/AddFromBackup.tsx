@@ -1,0 +1,139 @@
+import { useState } from "react";
+import { History } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/input";
+import { Sheet } from "@/components/ui/sheet";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/useResource";
+
+/** `GET /api/backups/apps` — see backups.rs `backed_up_apps_json`. */
+interface BackedUpApps {
+  configured: boolean;
+  apps: {
+    namespace: string;
+    instance_name: string;
+    installed: boolean;
+    adding: { snapshot_id: string; error: string | null; done: boolean } | null;
+    /** Newest first. */
+    versions: { snapshot_id: string; time: string }[];
+  }[];
+}
+
+function formatWhen(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function AppRow({
+  app,
+  onStarted,
+}: {
+  app: BackedUpApps["apps"][number];
+  onStarted: () => void;
+}) {
+  const [snapshot, setSnapshot] = useState(app.versions[0]?.snapshot_id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const running = app.adding !== null && !app.adding.done;
+
+  async function add() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/api/backups/apps/add", {
+        namespace: app.namespace,
+        snapshot_id: snapshot,
+      });
+      onStarted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add the app");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <li className="space-y-2 border-b border-border py-3 last:border-0">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium text-fg">{app.instance_name}</span>
+        {app.installed ? (
+          <span className="text-sm text-fg-muted">Installed</span>
+        ) : running ? (
+          <span className="text-sm text-fg-muted">Adding…</span>
+        ) : null}
+      </div>
+      {!app.installed && !running && (
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select
+            value={snapshot}
+            onChange={(e) => setSnapshot(e.target.value)}
+            aria-label={`Version of ${app.instance_name}`}
+          >
+            {app.versions.map((v, i) => (
+              <option key={v.snapshot_id} value={v.snapshot_id}>
+                {i === 0 ? "Latest — " : ""}
+                {formatWhen(v.time)}
+              </option>
+            ))}
+          </Select>
+          <Button onClick={() => void add()} loading={busy} disabled={!snapshot}>
+            Add
+          </Button>
+        </div>
+      )}
+      {app.adding?.error && (
+        <p className="text-sm text-danger">Last try failed: {app.adding.error}</p>
+      )}
+      {error && <p className="text-sm text-danger">{error}</p>}
+    </li>
+  );
+}
+
+/** Home page: install an app from any of its backups instead of from the store. */
+export function AddFromBackupButton() {
+  const [open, setOpen] = useState(false);
+  const res = useApi<BackedUpApps>(
+    open ? "backed-up-apps" : null,
+    "/api/backups/apps",
+    { pollMs: 5_000 },
+  );
+  const data = res.data;
+  return (
+    <>
+      <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
+        <History className="h-4 w-4" />
+        Add from backup
+      </Button>
+      <Sheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Add from backup"
+        subtitle="Bring an app back with its settings and files, as they were at the moment you pick."
+        wide
+      >
+        {res.loading && <p className="text-sm text-fg-muted">Reading your backups…</p>}
+        {res.error && !data && (
+          <p className="text-sm text-danger">Your backups could not be read: {res.error}</p>
+        )}
+        {data && !data.configured && (
+          <p className="text-sm text-fg-muted">Backups are not turned on yet.</p>
+        )}
+        {data && data.configured && data.apps.length === 0 && (
+          <p className="text-sm text-fg-muted">No app has been backed up yet.</p>
+        )}
+        {data && data.apps.length > 0 && (
+          <ul>
+            {data.apps.map((app) => (
+              <AppRow key={app.namespace} app={app} onStarted={() => void res.refresh()} />
+            ))}
+          </ul>
+        )}
+      </Sheet>
+    </>
+  );
+}

@@ -21,7 +21,7 @@ pub const NAMES: &[&str] = &[
     "disks",
     "cephfs",
     "topology",
-    "storage-heal",
+    "heal",
     "mesh-paths",
     "mesh-discovery",
     "chart-sync",
@@ -68,13 +68,17 @@ pub fn spawn_all(leader: Leadership) {
     spawn(crate::disks_reconciler::DisksController, &leader);
     spawn(crate::cephfs::CephFsController, &leader);
     spawn(crate::topology::TopologyController, &leader);
-    // Records lost disks, rebuilds the image store and mgr pool, and runs a
-    // recovery from backup once the owner asks for one.
-    spawn(crate::storage_heal::StorageHealController, &leader);
     spawn(crate::mesh::MeshPathsController::new(), &leader);
     spawn(crate::mesh::MeshDiscoveryController::new(), &leader);
     // Keeps the app catalog current without a nixos-rebuild.
     spawn(crate::charts::ChartSyncController, &leader);
+    // Drives a FORCE HEAL started from this machine, across its own restart.
+    spawn(
+        crate::heal::HealController {
+            config: crate::config::Config::from_env(),
+        },
+        &leader,
+    );
 
     // The storage agent's own jobs, which used to be eleven systemd timers. Only
     // on a machine whose storage settings reached the process: a dev box must not
@@ -114,7 +118,12 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "disks" => runtime::run_once(&crate::disks_reconciler::DisksController).await,
         "cephfs" => runtime::run_once(&crate::cephfs::CephFsController).await,
         "topology" => runtime::run_once(&crate::topology::TopologyController).await,
-        "storage-heal" => runtime::run_once(&crate::storage_heal::StorageHealController).await,
+        "heal" => {
+            runtime::run_once(&crate::heal::HealController {
+                config: crate::config::Config::from_env(),
+            })
+            .await
+        }
         "mesh-paths" => runtime::run_once(&crate::mesh::MeshPathsController::new()).await,
         "mesh-discovery" => runtime::run_once(&crate::mesh::MeshDiscoveryController::new()).await,
         "chart-sync" => runtime::run_once(&crate::charts::ChartSyncController).await,

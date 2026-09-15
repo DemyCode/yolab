@@ -1,17 +1,14 @@
-# Disk-loss VM test: pull a disk out of a one-copy cluster and watch it heal.
+# Disk-loss VM test: pull a disk out of a one-copy cluster and FORCE HEAL it.
 #
 # One machine, two OSD disks, every pool at one copy — so each placement group
 # lives on exactly one disk and hot-unplugging either loses data for real. The
-# test then asserts, without any operator action, that storage_heal:
+# test asserts that nothing happens on its own, and that FORCE HEAL (heal.rs):
 #
-#   * declares the unplugged OSD lost once its disk has been absent past the
-#     (shortened) grace period,
-#   * rebuilds the lost placement groups and the CephFS filesystem,
-#   * replaces the stand-in app's volume with a fresh claim and scales the app
-#     back to its original replicas,
-#   * marks that app corrupted, both in its ConfigMap and on the API the home
-#     page reads,
-#   * purges the lost OSD, leaving every placement group active.
+#   * reports the unreachable data and plans to remove no machine,
+#   * purges the unplugged OSD and switches its disk OFF,
+#   * deletes every pool and the stand-in app, restarts the machine,
+#   * comes back with the app filesystem recreated, the image store recreated,
+#     every placement group active, and the heal recorded as finished.
 #
 # The unplug is done from inside the guest by unbinding the disk's virtio PCI
 # device, which removes the block device the way a yanked USB cable does. The
@@ -78,10 +75,6 @@
     networking.useDHCP = lib.mkDefault false;
     environment.systemPackages = [pkgs.curl pkgs.jq];
     environment.etc."nixos/homelab/ignored/config.toml".source = configPath;
-
-    # A minute instead of fifteen: long enough to prove the grace period is
-    # honoured, short enough for a test.
-    systemd.services.yolab-local-api.environment.YOLAB_STORAGE_HEAL_DISK_GRACE_SECS = "60";
   };
 in
   pkgs.testers.nixosTest {
@@ -101,10 +94,10 @@ in
 
       def dump_heal_log():
           print(node1.execute(
-              "journalctl -u yolab-local-api --no-pager | grep -E 'storage-heal|disk' | tail -80"
+              "journalctl -u yolab-local-api --no-pager | grep -E 'heal|disk' | tail -120"
           )[1])
           print(node1.execute("ceph -s; ceph osd tree; ceph fs ls")[1])
-          print(node1.execute(f"{K} get cm yolab-storage-heal -n kube-system -o yaml")[1])
+          print(node1.execute("cat /var/lib/yolab/heal.json")[1])
 
       start_all()
       node1.wait_for_unit("multi-user.target", timeout=900)
@@ -161,34 +154,46 @@ in
       node1.fail(f"test -e /dev/{dev}")
       node1.wait_until_succeeds("ceph osd tree -f json | jq -e '.nodes[] | select(.id==1) | .status==\"down\"'", timeout=600)
 
-      # Inside the grace period nothing may have been declared.
-      node1.sleep(20)
-      node1.succeed("ceph osd dump -f json | jq -e '.osds[] | select(.osd==1) | .lost_at == 0'")
+      # ── Nothing heals on its own ──────────────────────────────────────────
+      node1.sleep(60)
+      node1.succeed("ceph osd ls -f json | jq -e 'index(1) != null'")
+      node1.succeed(f"{K} get namespace yolab-demo")
 
-      # ── It heals on its own ───────────────────────────────────────────────
+      # ── FORCE HEAL ────────────────────────────────────────────────────────
+      jq_ok(f"curl -sf {AUTH} {API}/api/heal",
+            '(.problems | index("data_unreachable") != null) and .refusal == null '
+            'and .plan.remove_machines == [] and .plan.reset_kubernetes == false', 600)
+      node1.succeed(
+          f"curl -sf -X POST {AUTH} -H 'content-type: application/json' "
+          f"-d '{{\"remove_machines\":[]}}' {API}/api/heal"
+      )
       try:
-          jq_ok("ceph osd ls -f json", "index(1) == null", 2400)
-          jq_ok("ceph pg dump pgs_brief -f json",
-                '[.pg_stats[] | select(.state | test("active") | not)] | length == 0', 900)
-          jq_ok(f"{K} get cm yolab-storage-heal -n kube-system -o json",
-                '.data.state | fromjson | .rebuild == null', 900)
+          # The heal restarts the machine last; the test driver sees that as a
+          # shutdown and starts it again.
+          node1.wait_for_shutdown()
+      except Exception:
+          dump_heal_log()
+          raise
+      node1.start()
+      node1.wait_for_unit("multi-user.target", timeout=900)
+      node1.wait_for_open_port(3001, timeout=600)
+
+      try:
+          jq_ok(f"curl -sf {AUTH} {API}/api/heal", '.heal.running == false', 1800)
       except Exception:
           dump_heal_log()
           raise
 
-      jq_ok("ceph fs ls -f json", 'map(.name) | index("yolab-fs") != null', 60)
+      node1.succeed("ceph osd ls -f json | jq -e 'index(1) == null'")
+      node1.fail(f"{K} get namespace yolab-demo")
+      jq_ok("ceph config-key dump yolab/disks/", 'to_entries | map(select(.value == "OFF")) | length == 1', 60)
+      jq_ok("ceph fs ls -f json", 'map(.name) | index("yolab-fs") != null', 900)
       node1.wait_until_succeeds("ceph mds stat | grep -q 'up:active'", timeout=600)
-      node1.succeed("ceph fs subvolumegroup ls yolab-fs | grep -q csi")
-
-      new_uid = node1.succeed(f"{K} get pvc data -n yolab-demo -o jsonpath='{{.metadata.uid}}'").strip()
-      assert new_uid and new_uid != old_uid, f"the claim was not replaced ({old_uid} -> {new_uid})"
-      node1.succeed(f"{K} get deploy web -n yolab-demo -o jsonpath='{{.spec.replicas}}' | grep -qx 2")
-
-      jq_ok(f"{K} get cm yolab-data-loss -n kube-system -o json",
-            '.data.apps | fromjson | index("yolab-demo") != null', 60)
-      jq_ok(f"curl -sf {AUTH} {API}/api/backups/damage",
-            '.apps | map(.namespace) | index("yolab-demo") != null', 120)
-
+      node1.wait_until_succeeds("ceph fs subvolumegroup ls yolab-fs | grep -q csi", timeout=600)
+      node1.succeed("ceph osd pool ls | grep -qx images")
+      node1.succeed("findmnt /var/lib/rancher/k3s/agent/containerd")
+      jq_ok("ceph pg dump pgs_brief -f json",
+            '[.pg_stats[] | select(.state | test("active") | not)] | length == 0', 900)
       node1.succeed("ceph osd stat | grep -E '1 osds: 1 up'")
     '';
   }
