@@ -871,6 +871,44 @@ fn osds_on_hosts(tree: &Value, hosts: &BTreeSet<String>) -> BTreeSet<i64> {
         .collect()
 }
 
+/// The ON disk records of disks no answering machine has right now — unplugged,
+/// or dead enough to have dropped off the bus. A purged OSD is found through the
+/// disk list its machine publishes, and a disk that is gone is no longer on it,
+/// so without this its record stayed ON (observed on node1, 2026-09-15): plugged
+/// back in, the disk carried this cluster's old label, which the disk
+/// controller refuses to overwrite, under a switch that said to use it.
+///
+/// Empty unless every answering machine has published its list: one that has
+/// not would have all its disks read as absent.
+fn absent_disk_records(
+    records: &std::collections::BTreeMap<String, String>,
+    statuses: &std::collections::BTreeMap<String, String>,
+    answering: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut present = BTreeSet::new();
+    for node in answering {
+        let Some(status) = statuses
+            .get(node)
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        else {
+            return BTreeSet::new();
+        };
+        for disk_id in status["disks"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(id, _)| id)
+        {
+            present.insert(crate::disks_reconciler::record_key(node, disk_id));
+        }
+    }
+    records
+        .iter()
+        .filter(|(key, desired)| desired.as_str() == "ON" && !present.contains(*key))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// The disk records to switch OFF: those of the purged OSDs and every disk of a
 /// gone machine. The system disk is never switched — it is always ON, and a
 /// machine that answers makes a fresh OSD on it at its next boot.
@@ -928,7 +966,14 @@ async fn purge_disks<H: Host>(
         save(host, local, heal).await?;
     }
 
-    for key in records_to_switch_off(&statuses, &heal.purged, &heal.gone) {
+    let records = settings::dump(host, settings::DISKS).await?;
+    let mut answering: BTreeSet<String> = heal.peers.iter().map(|p| p.name.clone()).collect();
+    answering.insert(heal.driver.clone());
+    let off: BTreeSet<String> = records_to_switch_off(&statuses, &heal.purged, &heal.gone)
+        .into_iter()
+        .chain(absent_disk_records(&records, &statuses, &answering))
+        .collect();
+    for key in off {
         settings::set(host, &format!("{}{key}", settings::DISKS), "OFF").await?;
     }
 
@@ -1785,6 +1830,7 @@ mod tests {
             .ok("ceph osd down", "")
             .ok(HEAL_SET, "")
             .ok("ceph config-key dump yolab/disk-status/", &statuses())
+            .ok("ceph config-key dump yolab/disks/", "{}")
             .ok("ceph config-key set yolab/disks/", "")
             .ok("ceph osd ls", osd_ls_before)
             .ok("ceph osd ls", osd_ls_before)
@@ -2224,6 +2270,7 @@ mod tests {
             .ok("ceph osd down", "")
             .ok(HEAL_SET, "")
             .ok("ceph config-key dump yolab/disk-status/", &statuses)
+            .ok("ceph config-key dump yolab/disks/", "{}")
             .ok("ceph config-key set yolab/disks/", "")
             .ok("ceph osd ls", "[0, 1, 2]")
             .ok("ceph osd ls", "[0, 1, 2]")
@@ -2257,6 +2304,29 @@ mod tests {
             rec.load().await.unwrap().unwrap().purged,
             BTreeSet::from([1, 2]),
             "saved on this machine before purging"
+        );
+    }
+
+    #[test]
+    fn disks_no_answering_machine_has_are_switched_off() {
+        let statuses: BTreeMap<String, String> = BTreeMap::from([(
+            "node1".to_string(),
+            json!({"disks": {"system": {"osd_id": 0}, "dev-sdc": {}}}).to_string(),
+        )]);
+        let records: BTreeMap<String, String> = BTreeMap::from([
+            ("node1--system".to_string(), "ON".to_string()),
+            ("node1--dev-sdc".to_string(), "ON".to_string()),
+            ("serial-wwn-unplugged".to_string(), "ON".to_string()),
+            ("serial-wwn-already-off".to_string(), "OFF".to_string()),
+        ]);
+        assert_eq!(
+            absent_disk_records(&records, &statuses, &names(&["node1"])),
+            names(&["serial-wwn-unplugged"])
+        );
+        assert!(
+            absent_disk_records(&records, &statuses, &names(&["node1", "node3"]))
+                .is_empty(),
+            "node3 has not published its disks: nothing can be called absent"
         );
     }
 }
