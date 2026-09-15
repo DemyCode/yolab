@@ -31,15 +31,7 @@ export interface HealStatus {
 export type HealProblem =
   "machines_gone" | "ceph_no_quorum" | "kubernetes_down" | "data_unreachable";
 
-export type HealStep =
-  | "claim"
-  | "ceph_quorum"
-  | "kubernetes_members"
-  | "purge_disks"
-  | "delete_storage"
-  | "restart_machines"
-  | "forget_nodes"
-  | "remove_apps";
+export type HealStep = "claim" | "consensus" | "wipe" | "restart" | "finish";
 
 export interface Heal {
   id: string;
@@ -52,20 +44,16 @@ export interface Heal {
   removed_machines: string[];
   restarted_machines: string[];
   reset_kubernetes: boolean;
-  purged_osds: number[];
   /** What the current step is waiting for, or why it failed last. */
   waiting: string | null;
 }
 
 export const HEAL_STEP_LABELS: Record<HealStep, string> = {
   claim: "Making sure no other machine is healing",
-  ceph_quorum: "Removing the missing machines from storage",
-  kubernetes_members: "Making this machine the cluster's control plane",
-  purge_disks: "Forgetting the disks that stopped answering",
-  delete_storage: "Deleting all stored data",
-  restart_machines: "Restarting the machines",
-  forget_nodes: "Removing the missing machines from the cluster",
-  remove_apps: "Removing the apps",
+  consensus: "Getting the remaining machines to agree again",
+  wipe: "Deleting everything that is stored",
+  restart: "Restarting the machines",
+  finish: "Removing the old apps and the missing machines",
 };
 
 export const HEAL_PROBLEM_LABELS: Record<HealProblem, string> = {

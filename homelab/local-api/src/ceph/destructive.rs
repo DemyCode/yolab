@@ -420,6 +420,11 @@ pub enum ZapWarrant {
     /// The owner switched it ON, no OSD of ours is on it, and `ceph-volume lvm
     /// create` refused it for a stale signature.
     StaleSignature,
+    /// The system volume carries this cluster's osd.N, and the cluster's own
+    /// OSD list — read, not assumed — no longer has it: purged, typically by a
+    /// FORCE HEAL. Nothing can ever read that data again, and the system volume
+    /// exists to be this machine's OSD.
+    ForgottenByCluster { osd: i64 },
 }
 
 impl ZapWarrant {
@@ -438,7 +443,11 @@ impl ZapWarrant {
 pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Result<(), CmdError> {
     let door = Door(());
     let is_lv = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
-    let destroy = !is_lv && !matches!(warrant, ZapWarrant::StaleSignature);
+    let destroy = !is_lv
+        && !matches!(
+            warrant,
+            ZapWarrant::StaleSignature | ZapWarrant::ForgottenByCluster { .. }
+        );
     let mut args = vec!["lvm", "zap"];
     if destroy {
         args.push("--destroy");
@@ -448,6 +457,9 @@ pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Resu
         ZapWarrant::AfterPurge(purged) => format!("after purging osd.{}", purged.osd),
         ZapWarrant::ForeignCluster { osd } => format!("foreign cluster's osd.{osd}"),
         ZapWarrant::StaleSignature => "stale signature".to_string(),
+        ZapWarrant::ForgottenByCluster { osd } => {
+            format!("osd.{osd}, which this cluster no longer has")
+        }
     };
     tracing::warn!("zapping {dev_path}: {why}");
     host.ceph_volume_destructive(&door, &args).await.map(|_| ())
@@ -764,6 +776,18 @@ mod tests {
         .unwrap();
         assert!(host.ran("ceph-volume lvm zap /dev/mapper/pool-ceph"));
         assert!(!host.ran("--destroy"));
+    }
+
+    #[tokio::test]
+    async fn a_volume_the_cluster_forgot_is_erased_but_never_with_its_volume_group() {
+        for dev in ["/dev/mapper/pool-ceph", "/dev/pool/ceph"] {
+            let host = FakeHost::new().ok("ceph-volume lvm zap", "");
+            zap(&host, dev, ZapWarrant::ForgottenByCluster { osd: 4 })
+                .await
+                .unwrap();
+            assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
+            assert!(!host.ran("--destroy"), "{dev}");
+        }
     }
 
     #[test]

@@ -361,8 +361,32 @@ async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::
     };
 
     if let Some(id) = find(&local_osds(host).await?) {
-        start_osd_unit(host, id).await;
-        return Ok(Attempt::Ready(()));
+        // An OSD the cluster still has is started. One it no longer has — purged
+        // by a FORCE HEAL — can never start again, and its label would block a
+        // new one here forever: this volume exists to be this machine's OSD, so
+        // it is erased and made again. Only on the cluster's own answer.
+        match host.osd_ids().await {
+            Err(e) => {
+                return Ok(Attempt::NotYet(format!(
+                    "cannot tell whether osd.{id} on {dev} still exists ({e})"
+                )))
+            }
+            Ok(ids) if ids.contains(&id) => {
+                start_osd_unit(host, id).await;
+                return Ok(Attempt::Ready(()));
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "{dev}: carries osd.{id}, which this cluster no longer has — erasing it for a new one"
+                );
+                destructive::zap(
+                    host,
+                    dev,
+                    destructive::ZapWarrant::ForgottenByCluster { osd: id },
+                )
+                .await?;
+            }
+        }
     }
     if let Some(reason) = refuse_osd_creation(&lv_osd_meta(dev, &our_fsid)) {
         return Ok(Attempt::NotYet(format!("{dev}: {reason}")));
@@ -2109,9 +2133,11 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
 
 /// Records a switch for every disk on this node that has none yet.
 ///
-/// A new disk is OFF until the owner asks for it — except one already running
-/// one of OUR OSDs, which is ON: that OSD is itself the evidence somebody switched
-/// it on, and registering a live OSD's disk OFF would drain, purge and wipe it.
+/// Every new disk is OFF until the owner switches it on from the Storage page —
+/// whatever is on it. A disk only lacks a record on a fresh machine or after a
+/// FORCE HEAL, which deletes every record so that only the system disks stay in
+/// use; a disk still carrying an OSD then goes through the OFF path, which moves
+/// its data away and waits for Ceph's safe-to-destroy before purging anything.
 /// (The system LV needs no record; `wants_on` treats it as always on.)
 async fn auto_register_all_disks<H: Host>(
     host: &H,
@@ -2136,11 +2162,11 @@ fn new_disk_records(
     desired: &HashMap<String, String>,
 ) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = meta
-        .iter()
-        .filter(|(disk_id, _)| disk_id.as_str() != SYSTEM_OSD_ID)
-        .map(|(disk_id, m)| (record_key(node, disk_id), m))
-        .filter(|(key, _)| !desired.contains_key(key))
-        .map(|(key, m)| (key, if m.ownership.is_ours() { "ON" } else { "OFF" }))
+        .keys()
+        .filter(|disk_id| disk_id.as_str() != SYSTEM_OSD_ID)
+        .map(|disk_id| record_key(node, disk_id))
+        .filter(|key| !desired.contains_key(key))
+        .map(|key| (key, "OFF"))
         .collect();
     out.sort();
     out
@@ -3305,7 +3331,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_disk_is_registered_off_and_one_running_our_osd_on() {
+    fn every_new_disk_is_registered_off_whatever_it_holds() {
         let meta = HashMap::from([
             ("dev-sdb".to_string(), disk(Ownership::Blank)),
             ("dev-sdc".to_string(), disk(Ownership::Ours)),
@@ -3315,7 +3341,7 @@ mod tests {
             new_disk_records("node1", &meta, &HashMap::new()),
             vec![
                 ("node1--dev-sdb".to_string(), "OFF"),
-                ("node1--dev-sdc".to_string(), "ON"),
+                ("node1--dev-sdc".to_string(), "OFF"),
                 ("node1--dev-sdd".to_string(), "OFF"),
             ]
         );
@@ -4389,6 +4415,7 @@ mod tests {
         let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph-volume lvm list", &listed_on(&dev, 0))
+            .ok("ceph osd ls", "[0, 1]")
             .ok("systemctl start yolab-ceph-osd@0.service", "");
 
         let ready = lv_osd_attempt(&host, &dev).await.unwrap();
@@ -4396,6 +4423,46 @@ mod tests {
         assert_eq!(ready, crate::storage::wait::Attempt::Ready(()));
         assert!(host.ran("systemctl start yolab-ceph-osd@0.service"));
         assert!(!host.ran("lvm create") && !host.ran("zap"));
+    }
+
+    #[tokio::test]
+    async fn a_system_osd_the_cluster_forgot_is_erased_and_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let host = our_fsid_host()
+            // osd.3 is still on the volume, but a heal purged it…
+            .ok("ceph-volume lvm list", &listed_on(&dev, 3))
+            .ok("ceph osd ls", "[]")
+            .ok("ceph-volume lvm zap", "")
+            // …then gone from the volume (create_osd's own look), and a new one
+            // once created.
+            .ok("ceph-volume lvm list", "{}")
+            .ok("ceph-volume lvm list", &listed_on(&dev, 0))
+            .ok("wipefs --all", "")
+            .ok("ceph-volume lvm create", "")
+            .ok("systemctl start yolab-ceph-osd@0.service", "");
+
+        let ready = lv_osd_attempt(&host, &dev).await.unwrap();
+
+        assert_eq!(ready, crate::storage::wait::Attempt::Ready(()));
+        assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
+        assert!(!host.ran("--destroy"));
+        assert!(!host.ran("yolab-ceph-osd@3"), "a forgotten OSD is never started");
+        assert!(host.position("lvm zap") < host.position("lvm create"));
+    }
+
+    #[tokio::test]
+    async fn a_system_osd_is_never_erased_when_the_cluster_cannot_say() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let host = our_fsid_host()
+            .ok("ceph-volume lvm list", &listed_on(&dev, 3))
+            .fail("ceph osd ls", "timed out");
+
+        let attempt = lv_osd_attempt(&host, &dev).await.unwrap();
+
+        assert!(not_yet(attempt).contains("osd.3"));
+        assert!(!host.ran("zap") && !host.ran("systemctl"));
     }
 
     #[tokio::test]

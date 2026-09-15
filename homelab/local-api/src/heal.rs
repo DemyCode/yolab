@@ -1,5 +1,4 @@
-//! FORCE HEAL: rebuild the cluster without the machines and disks that stopped
-//! answering.
+//! FORCE HEAL: rebuild the cluster from the machines that still answer.
 //!
 //! NOTHING HEALS ITSELF. An offline machine looks exactly like a departed one,
 //! and a disk being moved looks like a dead one, so only a person decides. The
@@ -7,24 +6,25 @@
 //! quorum, Kubernetes not answering, data with no reachable copy — and FORCE
 //! HEAL is offered whenever any of it is true.
 //!
-//! ONE PATH, AND IT IS DESTRUCTIVE. Whatever went wrong, a heal ends in the same
-//! place: a cluster as a fresh installation has it, made of the machines and
-//! disks that still answer. Every app and every stored file is gone; apps come
-//! back through "Add from backup" on the home page.
+//! KEEP THE MACHINES THAT ANSWER, THROW EVERYTHING ELSE AWAY. However the
+//! cluster broke, a heal ends in the same place: the machines that still answer,
+//! each with only its system disk in use, no pools, no apps — a fresh
+//! installation of those machines. Apps come back through "Add from backup" on
+//! the home page; other disks show up OFF on the Storage page, to be switched
+//! on again.
 //!
 //!   1. `claim`: make sure no other machine drives a heal.
-//!   2. `ceph_quorum`: remove the gone machines' mons — offline, from this
-//!      machine's monmap, when there is no quorum to ask.
-//!   3. `kubernetes_members`: when this machine is the only one left and k3s
-//!      has no quorum, reset k3s to this machine.
-//!   4. `purge_disks`: purge every OSD that is down or on a gone machine,
-//!      switch their disks OFF, forget the gone machines.
-//!   5. `delete_storage`: delete the app filesystem and every pool.
-//!   6. `restart_machines`: restart every machine that answers, this one last.
-//!      At boot each creates a fresh image store before k3s starts, the mgr
-//!      recreates its pool, and the filesystem controller the app filesystem.
-//!   7. `forget_nodes`: delete the gone machines from Kubernetes.
-//!   8. `remove_apps`: remove every app.
+//!   2. `consensus`: get Ceph and Kubernetes to agree again without the gone
+//!      machines — their mons removed (offline, from this machine's monmap, when
+//!      there is no quorum to ask), and k3s reset to this machine when it is the
+//!      only one left.
+//!   3. `wipe`: purge every OSD that is not up, forget the gone machines, delete
+//!      every pool and the app filesystem, and every disk switch and disk list.
+//!   4. `restart`: restart every machine that answers, this one last. At boot
+//!      each makes its system disk an OSD again if it has to, creates a fresh
+//!      image store before k3s starts, and registers its other disks OFF; the mgr
+//!      recreates its pool and the filesystem controller the app filesystem.
+//!   5. `finish`: delete the gone machines from Kubernetes and every app.
 //!
 //! THE MACHINE YOU CLICK DRIVES IT. A heal must work exactly when the leader
 //! election and the Ceph key-value store may not, so it is not a cluster-scoped
@@ -86,25 +86,19 @@ pub struct Machine {
 #[serde(rename_all = "snake_case")]
 enum Step {
     Claim,
-    CephQuorum,
-    KubernetesMembers,
-    PurgeDisks,
-    DeleteStorage,
-    RestartMachines,
-    ForgetNodes,
-    RemoveApps,
+    Consensus,
+    Wipe,
+    Restart,
+    Finish,
 }
 
 impl Step {
-    const ALL: [Step; 8] = [
+    const ALL: [Step; 5] = [
         Step::Claim,
-        Step::CephQuorum,
-        Step::KubernetesMembers,
-        Step::PurgeDisks,
-        Step::DeleteStorage,
-        Step::RestartMachines,
-        Step::ForgetNodes,
-        Step::RemoveApps,
+        Step::Consensus,
+        Step::Wipe,
+        Step::Restart,
+        Step::Finish,
     ];
 
     fn next(self) -> Option<Step> {
@@ -131,8 +125,6 @@ struct Heal {
     /// When the claim may be read back. None when Ceph could not be written at
     /// the start, in which case no other machine could have claimed either.
     claim_after: Option<u64>,
-    /// OSDs purged, decided when `purge_disks` first runs.
-    purged: BTreeSet<i64>,
     /// The boot the driver restarted from, so the next boot knows it happened.
     restart_boot_id: Option<String>,
     /// What the current step is waiting for, or why it failed last.
@@ -150,9 +142,9 @@ impl Heal {
     }
 
     /// Whether Ceph can be expected to answer, so the record is worth copying
-    /// there. Before the quorum step, trying would block each save on a timeout.
+    /// there. Before consensus, trying would block each save on a timeout.
     fn publishable(&self) -> bool {
-        self.claim_after.is_some() || self.step > Step::CephQuorum
+        self.claim_after.is_some() || self.step > Step::Consensus
     }
 }
 
@@ -517,7 +509,7 @@ async fn start_heal<H: Host, N: Network>(
         // Past the restart, what is left only talks to Kubernetes and is safe to
         // start over — and starting over is the way out when it cannot finish (a
         // machine that answered at the start died before k3s came back).
-        if running.step < Step::ForgetNodes {
+        if running.step < Step::Finish {
             bail!("this machine is already healing the cluster");
         }
         tracing::warn!(
@@ -562,7 +554,6 @@ async fn start_heal<H: Host, N: Network>(
         peers: s.answering_peers(),
         reset_kubernetes: s.reset_kubernetes(),
         claim_after: s.ceph_quorum.then_some(now + CLAIM_SETTLE_SECS),
-        purged: BTreeSet::new(),
         restart_boot_id: None,
         waiting: None,
     };
@@ -745,65 +736,21 @@ async fn run_step<H: Host, N: Network>(
                 _ => Abandon,
             })
         }
-        Step::CephQuorum => {
-            if host
-                .ceph_json(&["--connect-timeout", "10", "mon", "dump"])
-                .await
-                .is_ok()
-            {
-                let status = mon_status(host, me).await?;
-                for m in status
-                    .machines
-                    .iter()
-                    .filter(|m| heal.gone.contains(&m.name))
-                {
-                    destructive::remove_mon(host, &mandate, &m.name).await?;
+        Step::Consensus => {
+            if let Some(waiting) = ceph_consensus(host, &mandate, heal, me).await? {
+                return Ok(NotYet(waiting));
+            }
+            if heal.reset_kubernetes && !kubernetes_answers(host).await {
+                let out = host.systemctl(&["stop", "k3s.service"]).await?;
+                if !out.success {
+                    bail!("systemctl stop k3s: {}", out.stderr.trim());
                 }
-                return Ok(Done);
+                destructive::reset_kubernetes_membership(host, &mandate).await?;
             }
-            let status = mon_status(host, me).await?;
-            let listed: Vec<String> = status
-                .machines
-                .iter()
-                .filter(|m| heal.gone.contains(&m.name))
-                .map(|m| m.name.clone())
-                .collect();
-            if listed.is_empty() {
-                return Ok(NotYet("waiting for Ceph to form a quorum".into()));
-            }
-            destructive::remove_mons_offline(host, &mandate, me, &listed, MONMAP_PATH).await?;
-            Ok(NotYet("waiting for Ceph to form a quorum".into()))
-        }
-        Step::KubernetesMembers => {
-            if !heal.reset_kubernetes || kubernetes_answers(host).await {
-                return Ok(Done);
-            }
-            let out = host.systemctl(&["stop", "k3s.service"]).await?;
-            if !out.success {
-                bail!("systemctl stop k3s: {}", out.stderr.trim());
-            }
-            destructive::reset_kubernetes_membership(host, &mandate).await?;
             Ok(Done)
         }
-        Step::PurgeDisks => purge_disks(host, local, &mandate, heal).await,
-        Step::DeleteStorage => {
-            let fs_exists = {
-                let ls: Vec<model::FsEntry> =
-                    serde_json::from_value(host.ceph_json(&["fs", "ls"]).await?)
-                        .context("ceph fs ls")?;
-                ls.iter().any(|f| f.name == RECOVERABLE_FS)
-            };
-            let pools: Vec<String> = host
-                .ceph(&["osd", "pool", "ls"])
-                .await?
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect();
-            destructive::delete_all_storage(host, &mandate, fs_exists, &pools).await?;
-            Ok(Done)
-        }
-        Step::RestartMachines => {
+        Step::Wipe => wipe(host, &mandate, heal).await,
+        Step::Restart => {
             // Every pool is gone, so a machine left running keeps an image store
             // on a pool that no longer exists. One that did not take the request
             // but still answers is asked again next tick; one that no longer
@@ -823,14 +770,14 @@ async fn run_step<H: Host, N: Network>(
                     refused.join(", ")
                 )));
             }
-            heal.step = Step::ForgetNodes;
+            heal.step = Step::Finish;
             heal.restart_boot_id = Some(boot_id.to_string());
             heal.waiting = Some("restarting this machine".into());
             save(host, local, heal).await?;
             restart_this_machine(host).await?;
             Ok(Restarting)
         }
-        Step::ForgetNodes => {
+        Step::Finish => {
             if heal.restart_boot_id.as_deref() == Some(boot_id) {
                 // Saved, but the restart never happened.
                 restart_this_machine(host).await?;
@@ -843,10 +790,39 @@ async fn run_step<H: Host, N: Network>(
                 host.kubectl(&["delete", "node", machine, "--ignore-not-found"])
                     .await?;
             }
-            Ok(Done)
+            remove_apps(host).await
         }
-        Step::RemoveApps => remove_apps(host).await,
     }
+}
+
+/// Removes the gone machines' mons. `Some(reason)` while Ceph has no quorum yet.
+async fn ceph_consensus<H: Host>(
+    host: &H,
+    mandate: &HealMandate,
+    heal: &Heal,
+    me: &str,
+) -> Result<Option<String>> {
+    let status = mon_status(host, me).await?;
+    let listed: Vec<String> = status
+        .machines
+        .iter()
+        .filter(|m| heal.gone.contains(&m.name))
+        .map(|m| m.name.clone())
+        .collect();
+    let quorum = host
+        .ceph_json(&["--connect-timeout", "10", "mon", "dump"])
+        .await
+        .is_ok();
+    if quorum {
+        for machine in &listed {
+            destructive::remove_mon(host, mandate, machine).await?;
+        }
+        return Ok(None);
+    }
+    if !listed.is_empty() {
+        destructive::remove_mons_offline(host, mandate, me, &listed, MONMAP_PATH).await?;
+    }
+    Ok(Some("waiting for Ceph to form a quorum".into()))
 }
 
 async fn restart_this_machine<H: Host>(host: &H) -> Result<()> {
@@ -871,124 +847,37 @@ fn osds_on_hosts(tree: &Value, hosts: &BTreeSet<String>) -> BTreeSet<i64> {
         .collect()
 }
 
-/// The ON disk records of disks no answering machine has right now — unplugged,
-/// or dead enough to have dropped off the bus. A purged OSD is found through the
-/// disk list its machine publishes, and a disk that is gone is no longer on it,
-/// so without this its record stayed ON (observed on node1, 2026-09-15): plugged
-/// back in, the disk carried this cluster's old label, which the disk
-/// controller refuses to overwrite, under a switch that said to use it.
+/// Everything but the machines: every OSD that is not up, the gone machines'
+/// traces, every pool and the app filesystem, and every disk switch and list.
 ///
-/// Empty unless every answering machine has published its list: one that has
-/// not would have all its disks read as absent.
-fn absent_disk_records(
-    records: &std::collections::BTreeMap<String, String>,
-    statuses: &std::collections::BTreeMap<String, String>,
-    answering: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut present = BTreeSet::new();
-    for node in answering {
-        let Some(status) = statuses
-            .get(node)
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        else {
-            return BTreeSet::new();
-        };
-        for disk_id in status["disks"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(id, _)| id)
-        {
-            present.insert(crate::disks_reconciler::record_key(node, disk_id));
-        }
-    }
-    records
-        .iter()
-        .filter(|(key, desired)| desired.as_str() == "ON" && !present.contains(*key))
-        .map(|(key, _)| key.clone())
-        .collect()
-}
-
-/// The disk records to switch OFF: those of the purged OSDs and every disk of a
-/// gone machine. The system disk is never switched — it is always ON, and a
-/// machine that answers makes a fresh OSD on it at its next boot.
-fn records_to_switch_off(
-    statuses: &std::collections::BTreeMap<String, String>,
-    purged: &BTreeSet<i64>,
-    gone: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut keys = BTreeSet::new();
-    for (node, raw) in statuses {
-        let Ok(status) = serde_json::from_str::<Value>(raw) else {
-            continue;
-        };
-        for (disk_id, meta) in status["disks"].as_object().into_iter().flatten() {
-            if disk_id == "system" {
-                continue;
-            }
-            let on_purged = meta["osd_id"]
-                .as_i64()
-                .is_some_and(|id| purged.contains(&id));
-            if on_purged || gone.contains(node) {
-                keys.insert(crate::disks_reconciler::record_key(node, disk_id));
-            }
-        }
-    }
-    keys
-}
-
-async fn purge_disks<H: Host>(
-    host: &H,
-    local: &LocalRecord,
-    mandate: &HealMandate,
-    heal: &mut Heal,
-) -> Result<StepResult> {
+/// No bookkeeping of which disk was which. OSDs that still run keep running on
+/// empty storage; after the restart each machine's disk controller finds no
+/// switch for its disks and registers them OFF, which empties and purges any
+/// such OSD through its ordinary, safe-to-destroy path. A system disk whose OSD
+/// was purged here is made an OSD again at boot (`disks_reconciler`).
+///
+/// Idempotent, so a crash anywhere repeats it from the top.
+async fn wipe<H: Host>(host: &H, mandate: &HealMandate, heal: &Heal) -> Result<StepResult> {
     let tree = host.ceph_json(&["osd", "tree"]).await?;
     let on_gone = osds_on_hosts(&tree, &heal.gone);
     let dump = host.osd_dump().await?;
-    for id in on_gone.iter().filter(|id| dump.up().contains(id)) {
+    let up = dump.up();
+    for id in on_gone.iter().filter(|id| up.contains(id)) {
         // Its machine is gone; Ceph has not noticed yet.
         host.ceph(&["osd", "down", &format!("osd.{id}")]).await?;
     }
-    let statuses = settings::dump(host, settings::DISK_STATUS).await?;
-    let spared = system_osds_of(&statuses, &heal.gone);
-    let targets: BTreeSet<i64> = dump
-        .down()
-        .union(&on_gone)
-        .copied()
-        .filter(|id| !spared.contains(id))
-        .collect();
-    if !targets.is_subset(&heal.purged) {
-        // Saved before anything is purged: once purged, an OSD is no longer in
-        // the tree or the dump to be found again, and its disk would never be
-        // switched OFF.
-        heal.purged.extend(targets);
-        save(host, local, heal).await?;
-    }
-
-    let records = settings::dump(host, settings::DISKS).await?;
-    let mut answering: BTreeSet<String> = heal.peers.iter().map(|p| p.name.clone()).collect();
-    answering.insert(heal.driver.clone());
-    let off: BTreeSet<String> = records_to_switch_off(&statuses, &heal.purged, &heal.gone)
-        .into_iter()
-        .chain(absent_disk_records(&records, &statuses, &answering))
-        .collect();
-    for key in off {
-        settings::set(host, &format!("{}{key}", settings::DISKS), "OFF").await?;
-    }
-
-    let existing = host.osd_ids().await?;
-    for id in heal.purged.iter().filter(|id| existing.contains(id)) {
+    let targets: BTreeSet<i64> = dump.down().union(&on_gone).copied().collect();
+    for id in &targets {
         destructive::purge_down(host, mandate, *id)
             .await
             .warn_on_err(format!("heal: purge osd.{id}"));
     }
+
     for machine in &heal.gone {
         host.ceph(&["osd", "crush", "rm", machine])
             .await
             .warn_on_err(format!("heal: remove host {machine} from the CRUSH map"));
         destructive::forget_daemons(host, mandate, machine).await?;
-        settings::remove(host, &format!("{}{machine}", settings::DISK_STATUS)).await?;
         settings::set(
             host,
             &format!("{}{machine}", settings::REMOVED_MACHINES),
@@ -997,35 +886,37 @@ async fn purge_disks<H: Host>(
         .await?;
     }
 
+    let fs_exists = {
+        let ls: Vec<model::FsEntry> = serde_json::from_value(host.ceph_json(&["fs", "ls"]).await?)
+            .context("ceph fs ls")?;
+        ls.iter().any(|f| f.name == RECOVERABLE_FS)
+    };
+    let pools: Vec<String> = host
+        .ceph(&["osd", "pool", "ls"])
+        .await?
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    destructive::delete_all_storage(host, mandate, fs_exists, &pools).await?;
+
+    for prefix in [settings::DISKS, settings::DISK_STATUS] {
+        for key in settings::dump(host, prefix).await?.into_keys() {
+            settings::remove(host, &format!("{prefix}{key}")).await?;
+        }
+    }
+
     let left: Vec<i64> = host
         .osd_ids()
         .await?
         .into_iter()
-        .filter(|id| heal.purged.contains(id))
+        .filter(|id| targets.contains(id))
         .collect();
     Ok(if left.is_empty() {
         StepResult::Done
     } else {
         StepResult::NotYet(format!("waiting for {left:?} to be purged"))
     })
-}
-
-/// The system-disk OSDs of the machines that still answer. Never purged: a
-/// machine that answers still has its system disk, so a down OSD there is a
-/// daemon that stopped, not a disk that is gone. Purged, it could never come
-/// back — the volume still carries this cluster's OSD, which the boot step
-/// neither restarts nor overwrites — and that machine would be left without
-/// an OSD of its own.
-fn system_osds_of(
-    statuses: &std::collections::BTreeMap<String, String>,
-    gone: &BTreeSet<String>,
-) -> BTreeSet<i64> {
-    statuses
-        .iter()
-        .filter(|(node, _)| !gone.contains(*node))
-        .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
-        .filter_map(|status| status["disks"]["system"]["osd_id"].as_i64())
-        .collect()
 }
 
 /// Tears every app down without waiting on anything the deleted filesystem held:
@@ -1141,7 +1032,6 @@ fn heal_json(heal: &Heal) -> Value {
         "removed_machines": heal.gone,
         "restarted_machines": heal.peers.iter().map(|p| &p.name).collect::<Vec<_>>(),
         "reset_kubernetes": heal.reset_kubernetes,
-        "purged_osds": heal.purged,
         "waiting": heal.waiting,
     })
 }
@@ -1234,7 +1124,6 @@ pub async fn post_heal(
 mod tests {
     use super::*;
     use crate::host::fake::FakeHost;
-    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     const NOW: u64 = 1_000_000;
@@ -1322,7 +1211,6 @@ mod tests {
             peers: vec![machine("node3", "fd00::3")],
             reset_kubernetes: false,
             claim_after: Some(NOW - 50),
-            purged: BTreeSet::new(),
             restart_boot_id: None,
             waiting: None,
         }
@@ -1576,7 +1464,7 @@ mod tests {
     #[tokio::test]
     async fn a_heal_already_running_here_or_elsewhere_is_refused() {
         let (_d, rec) = local();
-        rec.save(&heal_at(Step::PurgeDisks)).await.unwrap();
+        rec.save(&heal_at(Step::Wipe)).await.unwrap();
         let host = survey_host("leader", &["node1", "node2"], true);
         let err = start_heal(
             &host,
@@ -1593,7 +1481,7 @@ mod tests {
         assert!(err.to_string().contains("already healing"));
 
         let (_d, rec) = local();
-        let mut elsewhere = heal_at(Step::PurgeDisks);
+        let mut elsewhere = heal_at(Step::Wipe);
         elsewhere.driver = "node3".into();
         let host = survey_host("leader", &["node1", "node2", "node3"], true)
             .ok(HEAL_GET, &serde_json::to_string(&elsewhere).unwrap());
@@ -1622,7 +1510,7 @@ mod tests {
     async fn the_local_record_round_trips_and_junk_is_an_error() {
         let (dir, rec) = local();
         assert_eq!(rec.load().await.unwrap(), None);
-        let heal = heal_at(Step::RemoveApps);
+        let heal = heal_at(Step::Finish);
         rec.save(&heal).await.unwrap();
         assert_eq!(rec.load().await.unwrap(), Some(heal));
         std::fs::write(dir.path().join("var/lib/yolab/heal.json"), "{nope").unwrap();
@@ -1642,11 +1530,11 @@ mod tests {
         }
         assert_eq!(order, Step::ALL.to_vec());
 
-        let mut h = heal_at(Step::CephQuorum);
+        let mut h = heal_at(Step::Consensus);
         assert!(h.publishable(), "Ceph answered at the start");
         h.claim_after = None;
         assert!(!h.publishable());
-        h.step = Step::KubernetesMembers;
+        h.step = Step::Wipe;
         assert!(h.publishable());
     }
 
@@ -1654,7 +1542,7 @@ mod tests {
     async fn heal_state_gates_backups() {
         let host = FakeHost::new().ok(
             HEAL_GET,
-            &serde_json::to_string(&heal_at(Step::PurgeDisks)).unwrap(),
+            &serde_json::to_string(&heal_at(Step::Wipe)).unwrap(),
         );
         assert!(backup_block(&host).await.unwrap().is_some());
 
@@ -1725,10 +1613,11 @@ mod tests {
                 &mon_status_json("leader", &["node1", "node2", "node3"]),
             )
             .ok("ceph mon remove", "");
-        let mut h = heal_at(Step::CephQuorum);
+        let mut h = heal_at(Step::Consensus);
         assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
         assert!(host.ran("ceph mon remove node2"));
         assert!(!host.ran("mon remove node3") && !host.ran("monmaptool"));
+        assert!(!host.ran("cluster-reset"), "k3s was not to be reset");
     }
 
     #[tokio::test]
@@ -1739,7 +1628,7 @@ mod tests {
             .ok("systemctl", "")
             .ok("ceph-mon", "")
             .ok("monmaptool", "");
-        let mut h = heal_at(Step::CephQuorum);
+        let mut h = heal_at(Step::Consensus);
         assert!(matches!(
             step(&host, &mut h).await.unwrap(),
             StepResult::NotYet(_)
@@ -1758,17 +1647,18 @@ mod tests {
 
     #[tokio::test]
     async fn k3s_is_reset_only_when_the_heal_decided_so_and_it_still_does_not_answer() {
-        let mut h = heal_at(Step::KubernetesMembers);
-        let host = FakeHost::new();
-        assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
-        assert!(host.calls().is_empty());
-
+        let quorum = || {
+            FakeHost::new()
+                .ok("ceph --connect-timeout 10 mon dump", "{}")
+                .ok(MON_STATUS, &mon_status_json("leader", &["node1"]))
+        };
+        let mut h = heal_at(Step::Consensus);
         h.reset_kubernetes = true;
-        let answering = FakeHost::new().ok("kubectl get --raw /readyz", "ok");
+        let answering = quorum().ok("kubectl get --raw /readyz", "ok");
         assert_eq!(step(&answering, &mut h).await.unwrap(), StepResult::Done);
         assert!(!answering.ran("cluster-reset"));
 
-        let down = FakeHost::new()
+        let down = quorum()
             .fail("kubectl get --raw /readyz", "refused")
             .ok("systemctl stop k3s.service", "")
             .ok("k3s server --cluster-reset", "");
@@ -1776,6 +1666,18 @@ mod tests {
         assert!(
             down.position("systemctl stop k3s.service")
                 < down.position("k3s server --cluster-reset")
+        );
+
+        let no_quorum = FakeHost::new()
+            .fail("ceph --connect-timeout 10 mon dump", "timed out")
+            .ok(MON_STATUS, &mon_status_json("electing", &["node1"]));
+        assert!(matches!(
+            step(&no_quorum, &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
+        assert!(
+            !no_quorum.ran("cluster-reset"),
+            "Ceph first, Kubernetes after"
         );
     }
 
@@ -1788,20 +1690,6 @@ mod tests {
         .to_string()
     }
 
-    fn statuses() -> String {
-        json!({
-            "yolab/disk-status/node1": json!({"disks": {
-                "system": {"osd_id": 0},
-                "dev-sdb": {"osd_id": 1},
-            }}).to_string(),
-            "yolab/disk-status/node2": json!({"disks": {
-                "serial-wwn-9": {"osd_id": 2},
-                "system": {"osd_id": 3},
-            }}).to_string(),
-        })
-        .to_string()
-    }
-
     #[test]
     fn osds_are_found_under_their_host() {
         let t: Value = serde_json::from_str(&tree()).unwrap();
@@ -1809,90 +1697,73 @@ mod tests {
         assert!(osds_on_hosts(&t, &names(&["node9"])).is_empty());
     }
 
-    #[test]
-    fn disks_of_purged_osds_and_of_gone_machines_are_switched_off_but_never_the_system_disk() {
-        let raw: BTreeMap<String, String> =
-            serde_json::from_str::<BTreeMap<String, String>>(&statuses())
-                .unwrap()
-                .into_iter()
-                .map(|(k, v)| (k.trim_start_matches("yolab/disk-status/").to_string(), v))
-                .collect();
-        let keys = records_to_switch_off(&raw, &BTreeSet::from([0, 1]), &names(&["node2"]));
-        assert_eq!(keys, names(&["node1--dev-sdb", "serial-wwn-9"]));
-    }
-
-    fn purge_host(osd_ls_before: &str, osd_ls_after: &str) -> FakeHost {
+    fn wipe_host(osd_ls_after: &str) -> FakeHost {
         FakeHost::new()
             .ok("ceph osd tree", &tree())
             .ok("ceph osd dump", &dump(&[(0, true), (1, false), (2, true)]))
             // After `osd down`, the gone machine's OSD reads down.
             .ok("ceph osd dump", &dump(&[(0, true), (1, false), (2, false)]))
             .ok("ceph osd down", "")
-            .ok(HEAL_SET, "")
-            .ok("ceph config-key dump yolab/disk-status/", &statuses())
-            .ok("ceph config-key dump yolab/disks/", "{}")
-            .ok("ceph config-key set yolab/disks/", "")
-            .ok("ceph osd ls", osd_ls_before)
-            .ok("ceph osd ls", osd_ls_before)
-            .ok("ceph osd ls", osd_ls_after)
             .ok("ceph osd purge", "")
+            .ok("ceph osd ls", osd_ls_after)
             .ok("ceph osd crush rm", "")
             .ok("ceph auth del", "")
-            .ok("ceph config-key rm yolab/disk-status/node2", "")
             .ok("ceph config-key set yolab/removed-machines/node2", "")
+            .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
+            .ok("ceph fs", "")
+            .ok(
+                "ceph osd pool ls",
+                ".mgr\nimages\nyolab-fs-metadata\nyolab-fs-data0\n",
+            )
+            .ok("ceph config set mon", "")
+            .ok("ceph osd pool delete", "")
+            .ok(
+                "ceph config-key dump yolab/disks/",
+                r#"{"yolab/disks/serial-wwn-9": "ON", "yolab/disks/node1--dev-sdb": "OFF"}"#,
+            )
+            .ok(
+                "ceph config-key dump yolab/disk-status/",
+                r#"{"yolab/disk-status/node1": "{}", "yolab/disk-status/node2": "{}"}"#,
+            )
+            .ok("ceph config-key rm", "")
     }
 
     #[tokio::test]
-    async fn purge_disks_purges_down_osds_and_the_gone_machines_then_forgets_them() {
-        let host = purge_host("[0, 1, 2]", "[0]");
-        let mut h = heal_at(Step::PurgeDisks);
+    async fn wipe_keeps_only_what_runs_and_throws_everything_else_away() {
+        let host = wipe_host("[0]");
+        let mut h = heal_at(Step::Wipe);
         assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
-        assert_eq!(h.purged, BTreeSet::from([1, 2]));
+
         assert!(
             host.ran("ceph osd down osd.2"),
             "node2 is gone even if Ceph thinks osd.2 is up"
         );
         assert!(host.ran("ceph osd purge osd.1") && host.ran("ceph osd purge osd.2"));
-        assert!(!host.ran("purge osd.0"));
-        assert!(host.ran("ceph config-key set yolab/disks/node1--dev-sdb OFF"));
-        assert!(host.ran("ceph config-key set yolab/disks/serial-wwn-9 OFF"));
-        assert!(!host.ran("yolab/disks/node1--system"));
+        assert!(!host.ran("purge osd.0"), "osd.0 is up");
         assert!(host.ran("ceph osd crush rm node2"));
         assert!(host.ran("ceph auth del mgr.node2"));
-        assert!(host.ran("ceph config-key rm yolab/disk-status/node2"));
         assert!(host.ran("ceph config-key set yolab/removed-machines/node2 h1"));
-        assert!(
-            host.position(HEAL_SET) < host.position("ceph osd purge"),
-            "the purge list is saved first"
-        );
-    }
-
-    #[tokio::test]
-    async fn purge_disks_waits_while_a_purged_osd_is_still_listed() {
-        let host = purge_host("[0, 1, 2]", "[0, 2]").fail("ceph osd purge osd.2", "EBUSY");
-        let mut h = heal_at(Step::PurgeDisks);
-        assert!(matches!(
-            step(&host, &mut h).await.unwrap(),
-            StepResult::NotYet(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn delete_storage_deletes_every_pool() {
-        let host = FakeHost::new()
-            .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
-            .ok(
-                "ceph osd pool ls",
-                ".mgr\nimages\nyolab-fs-metadata\nyolab-fs-data0\n",
-            )
-            .ok("ceph fs", "")
-            .ok("ceph config set mon", "")
-            .ok("ceph osd pool delete", "");
-        let mut h = heal_at(Step::DeleteStorage);
-        assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
         for pool in [".mgr", "images", "yolab-fs-metadata", "yolab-fs-data0"] {
             assert!(host.ran(&format!("pool delete {pool} {pool}")), "{pool}");
         }
+        for key in [
+            "yolab/disks/serial-wwn-9",
+            "yolab/disks/node1--dev-sdb",
+            "yolab/disk-status/node1",
+            "yolab/disk-status/node2",
+        ] {
+            assert!(host.ran(&format!("ceph config-key rm {key}")), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn wipe_waits_while_a_purged_osd_is_still_listed() {
+        let host = wipe_host("[0, 2]").fail("ceph osd purge osd.2", "EBUSY");
+        let mut h = heal_at(Step::Wipe);
+        assert!(matches!(
+            step(&host, &mut h).await.unwrap(),
+            StepResult::NotYet(ref why) if why.contains('2')
+        ));
     }
 
     #[tokio::test]
@@ -1900,7 +1771,7 @@ mod tests {
         let (_d, rec) = local();
         let host = FakeHost::new().ok(HEAL_SET, "").ok("systemctl reboot", "");
         let net = FakeNetwork::default();
-        let mut h = heal_at(Step::RestartMachines);
+        let mut h = heal_at(Step::Restart);
         let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW)
             .await
             .unwrap();
@@ -1908,17 +1779,38 @@ mod tests {
         assert_eq!(
             *net.restarted.lock().unwrap(),
             vec!["node3".to_string()],
-            "a failed ask is not fatal"
+            "a machine that no longer answers is not waited on"
         );
         let saved = rec.load().await.unwrap().unwrap();
-        assert_eq!(saved.step, Step::ForgetNodes);
+        assert_eq!(saved.step, Step::Finish);
         assert_eq!(saved.restart_boot_id.as_deref(), Some("boot-a"));
         assert!(host.position(HEAL_SET) < host.position("systemctl reboot"));
     }
 
     #[tokio::test]
-    async fn forget_nodes_restarts_again_if_the_restart_never_happened() {
-        let mut h = heal_at(Step::ForgetNodes);
+    async fn a_machine_that_answers_but_refuses_the_restart_is_asked_again() {
+        let (_d, rec) = local();
+        let host = FakeHost::new().ok(HEAL_SET, "").ok("systemctl reboot", "");
+        let net = FakeNetwork {
+            answering: names(&["node3"]),
+            refusing: names(&["node3"]),
+            ..Default::default()
+        };
+        let mut h = heal_at(Step::Restart);
+        let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
+        assert!(
+            matches!(r, StepResult::NotYet(ref why) if why.contains("node3")),
+            "{r:?}"
+        );
+        assert!(!host.ran("systemctl reboot"), "this machine waits for it");
+        assert_eq!(h.step, Step::Restart);
+    }
+
+    #[tokio::test]
+    async fn finish_restarts_again_if_the_restart_never_happened() {
+        let mut h = heal_at(Step::Finish);
         h.restart_boot_id = Some("boot-a".into());
         let host = FakeHost::new().ok("systemctl reboot", "");
         assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Restarting);
@@ -1929,18 +1821,13 @@ mod tests {
             step(&starting, &mut h).await.unwrap(),
             StepResult::NotYet(_)
         ));
-
-        let up = FakeHost::new()
-            .ok("kubectl get --raw /readyz", "ok")
-            .ok("kubectl delete node", "");
-        assert_eq!(step(&up, &mut h).await.unwrap(), StepResult::Done);
-        assert!(up.ran("kubectl delete node node2 --ignore-not-found"));
-        assert!(!up.ran("systemctl"));
+        assert!(!starting.ran("systemctl"));
     }
 
     #[tokio::test]
-    async fn remove_apps_forces_every_app_off_and_is_done_when_none_is_left() {
+    async fn finish_forgets_the_gone_machines_and_removes_every_app() {
         let host = FakeHost::new()
+            .ok("kubectl get --raw /readyz", "ok")
             .ok(
                 "kubectl get namespaces -l yolab.io/managed=true",
                 r#"{"items": [{"metadata": {"name": "yolab-a"}}]}"#,
@@ -1956,11 +1843,13 @@ mod tests {
                 "kubectl get pvc -n yolab-a",
                 r#"{"items": [{"metadata": {"name": "data"}, "spec": {"volumeName": "pv1"}}]}"#,
             );
-        let mut h = heal_at(Step::RemoveApps);
+        let mut h = heal_at(Step::Finish);
+        h.restart_boot_id = Some("boot-z".into());
         assert!(matches!(
             step(&host, &mut h).await.unwrap(),
             StepResult::NotYet(_)
         ));
+        assert!(host.ran("kubectl delete node node2 --ignore-not-found"));
         assert!(
             host.ran("kubectl delete pod --all -n yolab-a --force --grace-period=0 --wait=false")
         );
@@ -1971,7 +1860,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_step_runs_for_a_finished_heal() {
-        let mut h = heal_at(Step::DeleteStorage);
+        let mut h = heal_at(Step::Wipe);
         h.finished_at = Some(NOW);
         let host = FakeHost::new();
         assert!(step(&host, &mut h).await.is_err());
@@ -1994,7 +1883,7 @@ mod tests {
     #[tokio::test]
     async fn a_finished_heal_is_copied_into_ceph_until_it_lands() {
         let (_d, rec) = local();
-        let mut h = heal_at(Step::RemoveApps);
+        let mut h = heal_at(Step::Finish);
         h.finished_at = Some(NOW);
         rec.save(&h).await.unwrap();
         let host = FakeHost::new().fail(HEAL_GET, NO_KEY).ok(HEAL_SET, "");
@@ -2020,9 +1909,9 @@ mod tests {
     #[tokio::test]
     async fn a_failing_step_is_recorded_and_retried() {
         let (_d, rec) = local();
-        rec.save(&heal_at(Step::DeleteStorage)).await.unwrap();
+        rec.save(&heal_at(Step::Wipe)).await.unwrap();
         let host = FakeHost::new()
-            .fail("ceph fs ls", "timed out")
+            .fail("ceph osd tree", "timed out")
             .ok(HEAL_SET, "");
         assert!(
             tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
@@ -2030,7 +1919,7 @@ mod tests {
                 .is_err()
         );
         let saved = rec.load().await.unwrap().unwrap();
-        assert_eq!(saved.step, Step::DeleteStorage);
+        assert_eq!(saved.step, Step::Wipe);
         assert!(saved.waiting.unwrap().contains("timed out"));
     }
 
@@ -2052,29 +1941,29 @@ mod tests {
         let (_d, rec) = local();
         let mut h = heal_at(Step::Claim);
         h.claim_after = None;
-        h.step = Step::KubernetesMembers;
         rec.save(&h).await.unwrap();
         let host = FakeHost::new()
             .ok(HEAL_SET, "")
-            .ok("ceph osd tree", &tree())
-            .fail("ceph osd dump", "timed out");
+            .ok("ceph --connect-timeout 10 mon dump", "{}")
+            .ok(
+                MON_STATUS,
+                &mon_status_json("leader", &["node1", "node2", "node3"]),
+            )
+            .ok("ceph mon remove", "")
+            .fail("ceph osd tree", "timed out");
         assert!(
             tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
                 .await
                 .is_err()
         );
         let saved = rec.load().await.unwrap().unwrap();
-        assert_eq!(
-            saved.step,
-            Step::PurgeDisks,
-            "kubernetes_members was done and saved"
-        );
+        assert_eq!(saved.step, Step::Wipe, "claim and consensus were saved");
     }
 
     #[tokio::test]
     async fn a_tick_refuses_to_run_without_a_boot_id() {
         let (_d, rec) = local();
-        rec.save(&heal_at(Step::RestartMachines)).await.unwrap();
+        rec.save(&heal_at(Step::Restart)).await.unwrap();
         assert!(tick(
             &FakeHost::new(),
             &FakeNetwork::default(),
@@ -2097,7 +1986,7 @@ mod tests {
             true,
             2,
         );
-        let v = status_json(&s, Some(&heal_at(Step::PurgeDisks)));
+        let v = status_json(&s, Some(&heal_at(Step::Wipe)));
         assert_eq!(v["problems"], json!(["machines_gone", "data_unreachable"]));
         assert_eq!(v["refusal"], Value::Null);
         assert_eq!(
@@ -2108,12 +1997,12 @@ mod tests {
             v["survey"]["machines"][1],
             json!({"name": "node2", "addr": "fd00::2", "this_machine": false, "answers": false})
         );
-        assert_eq!(v["heal"]["step"], "purge_disks");
-        assert_eq!(v["heal"]["running"], true);
+        assert_eq!(v["heal"]["step"], "wipe");
         assert_eq!(
-            v["heal"]["steps"].as_array().unwrap().len(),
-            Step::ALL.len()
+            v["heal"]["steps"],
+            json!(["claim", "consensus", "wipe", "restart", "finish"])
         );
+        assert_eq!(v["heal"]["running"], true);
         assert_eq!(status_json(&s, None)["heal"], Value::Null);
     }
 
@@ -2127,12 +2016,12 @@ mod tests {
         );
     }
 
-    // ── Review fixes ─────────────────────────────────────────────────────────
+    // ── Starting again, and old records ──────────────────────────────────────
 
     #[tokio::test]
     async fn a_heal_stuck_after_the_restart_can_be_started_again() {
         let (_d, rec) = local();
-        rec.save(&heal_at(Step::ForgetNodes)).await.unwrap();
+        rec.save(&heal_at(Step::Finish)).await.unwrap();
         let host = survey_host("leader", &["node1", "node2"], true)
             .fail(HEAL_GET, NO_KEY)
             .ok(HEAL_SET, "");
@@ -2155,7 +2044,7 @@ mod tests {
     #[tokio::test]
     async fn a_heal_whose_driver_is_gone_does_not_block_the_next_one() {
         let (_d, rec) = local();
-        let mut orphaned = heal_at(Step::DeleteStorage);
+        let mut orphaned = heal_at(Step::Wipe);
         orphaned.driver = "node2".into();
         let host = survey_host("leader", &["node1", "node2", "node3"], true)
             .ok(HEAL_GET, &serde_json::to_string(&orphaned).unwrap())
@@ -2175,7 +2064,7 @@ mod tests {
         assert!(host.ran(HEAL_SET));
 
         let (_d, rec) = local();
-        let mut mine_but_lost = heal_at(Step::DeleteStorage);
+        let mut mine_but_lost = heal_at(Step::Wipe);
         mine_but_lost.driver = "node1".into();
         let host = survey_host("leader", &["node1", "node2", "node3"], true)
             .ok(HEAL_GET, &serde_json::to_string(&mine_but_lost).unwrap())
@@ -2195,33 +2084,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_that_answers_but_refuses_the_restart_is_asked_again() {
-        let (_d, rec) = local();
-        let host = FakeHost::new().ok(HEAL_SET, "").ok("systemctl reboot", "");
-        let net = FakeNetwork {
-            answering: names(&["node3"]),
-            refusing: names(&["node3"]),
-            ..Default::default()
-        };
-        let mut h = heal_at(Step::RestartMachines);
-        let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW)
-            .await
-            .unwrap();
-        assert!(
-            matches!(r, StepResult::NotYet(ref why) if why.contains("node3")),
-            "{r:?}"
-        );
-        assert!(!host.ran("systemctl reboot"), "this machine waits for it");
-        assert_eq!(h.step, Step::RestartMachines);
-    }
-
-    #[tokio::test]
     async fn an_old_record_never_overwrites_a_newer_heal_in_ceph() {
         let (_d, rec) = local();
-        let mut old = heal_at(Step::RemoveApps);
+        let mut old = heal_at(Step::Finish);
         old.finished_at = Some(NOW);
         rec.save(&old).await.unwrap();
-        let mut newer = heal_at(Step::PurgeDisks);
+        let mut newer = heal_at(Step::Wipe);
         newer.id = "h9".into();
         newer.started_at = NOW + 100;
         let host = FakeHost::new()
@@ -2235,9 +2103,9 @@ mod tests {
 
     #[test]
     fn the_page_shows_whichever_heal_started_last() {
-        let mut old = heal_at(Step::RemoveApps);
+        let mut old = heal_at(Step::Finish);
         old.finished_at = Some(NOW);
-        let mut newer = heal_at(Step::PurgeDisks);
+        let mut newer = heal_at(Step::Wipe);
         newer.id = "h9".into();
         newer.started_at = NOW + 100;
         assert_eq!(
@@ -2251,82 +2119,5 @@ mod tests {
         assert_eq!(newest(None, Some(old.clone())).unwrap().id, "h1");
         assert_eq!(newest(Some(old), None).unwrap().id, "h1");
         assert_eq!(newest(None, None), None);
-    }
-
-    #[tokio::test]
-    async fn the_system_osd_of_a_machine_that_answers_is_never_purged() {
-        let statuses = json!({
-            "yolab/disk-status/node1": json!({"disks": {"system": {"osd_id": 0}}}).to_string(),
-            "yolab/disk-status/node2": json!({"disks": {"system": {"osd_id": 2}}}).to_string(),
-        })
-        .to_string();
-        let host = FakeHost::new()
-            .ok("ceph osd tree", &tree())
-            .ok("ceph osd dump", &dump(&[(0, false), (1, false), (2, true)]))
-            .ok(
-                "ceph osd dump",
-                &dump(&[(0, false), (1, false), (2, false)]),
-            )
-            .ok("ceph osd down", "")
-            .ok(HEAL_SET, "")
-            .ok("ceph config-key dump yolab/disk-status/", &statuses)
-            .ok("ceph config-key dump yolab/disks/", "{}")
-            .ok("ceph config-key set yolab/disks/", "")
-            .ok("ceph osd ls", "[0, 1, 2]")
-            .ok("ceph osd ls", "[0, 1, 2]")
-            .ok("ceph osd ls", "[0]")
-            .ok("ceph osd purge", "")
-            .ok("ceph osd crush rm", "")
-            .ok("ceph auth del", "")
-            .ok("ceph config-key rm", "")
-            .ok("ceph config-key set yolab/removed-machines/", "");
-        let (_d, rec) = local();
-        let mut h = heal_at(Step::PurgeDisks);
-        let r = run_step(
-            &host,
-            &FakeNetwork::default(),
-            &rec,
-            &mut h,
-            "node1",
-            "boot-a",
-            NOW,
-        )
-        .await
-        .unwrap();
-        assert_eq!(r, StepResult::Done);
-        assert_eq!(
-            h.purged,
-            BTreeSet::from([1, 2]),
-            "node1's system OSD is spared"
-        );
-        assert!(!host.ran("purge osd.0"));
-        assert_eq!(
-            rec.load().await.unwrap().unwrap().purged,
-            BTreeSet::from([1, 2]),
-            "saved on this machine before purging"
-        );
-    }
-
-    #[test]
-    fn disks_no_answering_machine_has_are_switched_off() {
-        let statuses: BTreeMap<String, String> = BTreeMap::from([(
-            "node1".to_string(),
-            json!({"disks": {"system": {"osd_id": 0}, "dev-sdc": {}}}).to_string(),
-        )]);
-        let records: BTreeMap<String, String> = BTreeMap::from([
-            ("node1--system".to_string(), "ON".to_string()),
-            ("node1--dev-sdc".to_string(), "ON".to_string()),
-            ("serial-wwn-unplugged".to_string(), "ON".to_string()),
-            ("serial-wwn-already-off".to_string(), "OFF".to_string()),
-        ]);
-        assert_eq!(
-            absent_disk_records(&records, &statuses, &names(&["node1"])),
-            names(&["serial-wwn-unplugged"])
-        );
-        assert!(
-            absent_disk_records(&records, &statuses, &names(&["node1", "node3"]))
-                .is_empty(),
-            "node3 has not published its disks: nothing can be called absent"
-        );
     }
 }
