@@ -52,12 +52,7 @@ impl Leadership {
         last > 0 && now_ms() - last < ACT_WITHIN_MS
     }
 
-    /// A handle for a lease this process has just seen live but does not renew
-    /// (`local-api run`): leader for `ACT_WITHIN` from now, then not.
-    pub fn confirmed_now() -> Self {
-        Self::renewed_at(now_ms())
-    }
-
+    #[cfg(test)]
     fn renewed_at(ms: i64) -> Self {
         Self {
             last_renewed_ms: Arc::new(AtomicI64::new(ms)),
@@ -79,34 +74,6 @@ pub fn current_holder_is_me() -> bool {
     IS_ME.load(Ordering::SeqCst)
 }
 
-/// This process's election handle, once `start` has run.
-static PROCESS: std::sync::OnceLock<Leadership> = std::sync::OnceLock::new();
-
-/// Whether THIS process leads the cluster right now, by the same rule every
-/// cluster-scoped controller acts on. For request handlers that must only act on
-/// the leader (a storage recovery); false before the election has started.
-pub fn this_process_leads() -> bool {
-    PROCESS.get().is_some_and(Leadership::is_leader)
-}
-
-/// The identity currently written in the lease, if any — where to send work that
-/// only the leader may do. `Err` when the API did not answer. The receiver checks
-/// `this_process_leads` itself, so a stale answer costs a refused request, never a
-/// second writer.
-pub async fn holder() -> Result<Option<String>, CmdError> {
-    let lease =
-        crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
-            .await?;
-    Ok(lease.and_then(|l| holder_of(&l)))
-}
-
-fn holder_of(lease: &Value) -> Option<String> {
-    lease["spec"]["holderIdentity"]
-        .as_str()
-        .filter(|h| may_stand(h))
-        .map(str::to_string)
-}
-
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
@@ -119,9 +86,6 @@ pub fn start(identity: String) -> Leadership {
         last_renewed_ms: last.clone(),
         fixed: None,
     };
-    if PROCESS.set(handle.clone()).is_err() {
-        tracing::warn!("leader: the election was started twice in one process");
-    }
     if !may_stand(&identity) {
         // An empty holder reads as a RELEASED lease to `decide`, so a node with
         // no name would be taken over by everyone and take over from everyone:
@@ -409,14 +373,6 @@ mod tests {
     }
 
     #[test]
-    fn the_holder_is_read_from_the_lease_and_a_released_one_has_none() {
-        let now = Utc::now();
-        assert_eq!(holder_of(&lease("node2", 5, now)).as_deref(), Some("node2"));
-        assert_eq!(holder_of(&lease("", 5, now)), None);
-        assert_eq!(holder_of(&json!({})), None);
-    }
-
-    #[test]
     fn a_node_without_a_name_never_stands_for_leader() {
         assert!(!may_stand(""));
         assert!(!may_stand("  "));
@@ -455,8 +411,8 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_confirmation_lasts_only_as_long_as_the_daemon_would_trust_it() {
-        assert!(Leadership::confirmed_now().is_leader());
+    fn a_renewal_is_trusted_only_for_the_act_within_window() {
+        assert!(Leadership::renewed_at(now_ms()).is_leader());
         assert!(!Leadership::renewed_at(now_ms() - ACT_WITHIN_MS - 1).is_leader());
         assert!(!Leadership::renewed_at(0).is_leader());
     }
