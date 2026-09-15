@@ -61,7 +61,11 @@ fn is_cluster_wide(key: &str) -> bool {
 /// Whether this machine sends the cluster's problems: it has the lowest name
 /// among the machines that answer.
 fn sends_for_cluster(me: &str, answering: &[String]) -> bool {
-    answering.iter().map(String::as_str).min().is_none_or(|lowest| lowest == me)
+    answering
+        .iter()
+        .map(String::as_str)
+        .min()
+        .is_none_or(|lowest| lowest == me)
 }
 
 #[derive(Debug, PartialEq)]
@@ -103,7 +107,9 @@ fn notification(change: &Change, tunnel: &Tunnel) -> Notification {
     let (who, host) = if is_cluster_wide(&alert.key) {
         (
             "YoLab".to_string(),
-            tunnel.shared_host("cluster").unwrap_or_else(|| tunnel.host.clone()),
+            tunnel
+                .shared_host("cluster")
+                .unwrap_or_else(|| tunnel.host.clone()),
         )
     } else {
         (tunnel.machine_label(), tunnel.host.clone())
@@ -268,7 +274,9 @@ impl Controller for NotifierController {
             for change in changes(&sent, std::slice::from_ref(source)) {
                 if !source.silent {
                     let n = notification(&change, &tunnel);
-                    if let Err(e) = publish_everywhere(&self.config, &topic, &n, &view.peer_addrs).await {
+                    if let Err(e) =
+                        publish_everywhere(&self.config, &topic, &n, &view.peer_addrs).await
+                    {
                         failed = Some(e);
                         continue;
                     }
@@ -325,7 +333,10 @@ mod tests {
             changes(&sent(&[]), &now),
             vec![Change::Raised(alert("heal:kubernetes_down"))]
         );
-        assert!(changes(&sent(&["heal:kubernetes_down"]), &now).is_empty(), "not repeated");
+        assert!(
+            changes(&sent(&["heal:kubernetes_down"]), &now).is_empty(),
+            "not repeated"
+        );
 
         let gone = [Source {
             prefix: "heal:",
@@ -395,9 +406,15 @@ mod tests {
     #[test]
     fn a_cluster_problem_opens_the_shared_address_a_machine_problem_its_own() {
         let raised = notification(&Change::Raised(heal_alert("data_unreachable")), &tunnel());
-        assert_eq!(raised.title, "YoLab: Some of your files have no reachable copy");
+        assert_eq!(
+            raised.title,
+            "YoLab: Some of your files have no reachable copy"
+        );
         assert_eq!(raised.priority, 4);
-        assert_eq!(raised.click.as_deref(), Some("https://cluster.6.yolab.io/box/storage"));
+        assert_eq!(
+            raised.click.as_deref(),
+            Some("https://cluster.6.yolab.io/box/storage")
+        );
         let cleared = notification(&Change::Cleared(heal_alert("data_unreachable")), &tunnel());
         assert_eq!(cleared.title, "YoLab: resolved");
 
@@ -409,16 +426,26 @@ mod tests {
         };
         let n = notification(&Change::Raised(disk), &tunnel());
         assert_eq!(n.title, "node1: A disk could not be added");
-        assert_eq!(n.click.as_deref(), Some("https://node1.6.yolab.io/box/storage"));
+        assert_eq!(
+            n.click.as_deref(),
+            Some("https://node1.6.yolab.io/box/storage")
+        );
     }
 
     #[test]
     fn the_lowest_answering_machine_sends_the_clusters_problems() {
-        let answering = vec!["node2".to_string(), "node1".to_string(), "node3".to_string()];
+        let answering = vec![
+            "node2".to_string(),
+            "node1".to_string(),
+            "node3".to_string(),
+        ];
         assert!(sends_for_cluster("node1", &answering));
         assert!(!sends_for_cluster("node2", &answering));
         // node1 is gone: node2 takes over.
-        assert!(sends_for_cluster("node2", &["node2".into(), "node3".into()]));
+        assert!(sends_for_cluster(
+            "node2",
+            &["node2".into(), "node3".into()]
+        ));
         assert!(sends_for_cluster("node1", &[]), "nothing answers: speak up");
         assert!(is_cluster_wide("backup:bk-1") && !is_cluster_wide("disk:sdb"));
     }

@@ -134,8 +134,8 @@ export function NotificationsCard() {
                 </a>
               </p>
               <p className="text-xs text-fg-subtle">
-                Anyone with this code can read these notifications. Share it only
-                with people who look after this machine.
+                Anyone with this code can read these notifications. Share it
+                only with people who look after this machine.
               </p>
               <div className="flex flex-wrap items-center gap-3">
                 <Button
