@@ -421,7 +421,13 @@ pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
     let Some(snapshots) = restic_json(
         &repo,
         &cfg,
-        &["snapshots", "--no-lock", "--json", "--tag", "cluster-backup"],
+        &[
+            "snapshots",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+        ],
     )
     .await?
     else {
@@ -433,7 +439,14 @@ pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
     let found = restic_json(
         &repo,
         &cfg,
-        &["find", "--no-lock", "--json", "--tag", "cluster-backup", "*.yaml"],
+        &[
+            "find",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+            "*.yaml",
+        ],
     )
     .await?
     .unwrap_or(Value::Null);
@@ -445,7 +458,11 @@ pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
 
 /// `Ok(None)` when the repository was never created — backups enabled, none
 /// taken yet.
-async fn restic_json(repo: &str, cfg: &BackupConfig, args: &[&str]) -> anyhow::Result<Option<Value>> {
+async fn restic_json(
+    repo: &str,
+    cfg: &BackupConfig,
+    args: &[&str],
+) -> anyhow::Result<Option<Value>> {
     let out = restic(repo, cfg, args).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -474,7 +491,9 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
         .filter_map(|s| {
             let id = s["id"].as_str()?.to_string();
             let raw = s["time"].as_str()?;
-            let time = chrono::DateTime::parse_from_rfc3339(raw).ok()?.with_timezone(&Utc);
+            let time = chrono::DateTime::parse_from_rfc3339(raw)
+                .ok()?
+                .with_timezone(&Utc);
             Some((id, time, raw.to_string()))
         })
         .collect();
@@ -521,7 +540,10 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
 /// Install an app that is not on this machine from one backup: its chart with
 /// the settings it had then, then its volumes as that backup pinned them, then
 /// its saved objects.
-pub(crate) async fn reinstall_from_backup(namespace: &str, snapshot_id: &str) -> anyhow::Result<()> {
+pub(crate) async fn reinstall_from_backup(
+    namespace: &str,
+    snapshot_id: &str,
+) -> anyhow::Result<()> {
     let Some(cfg) = load_master_config().await? else {
         anyhow::bail!("backup not configured");
     };
@@ -1370,9 +1392,14 @@ mod tests {
             {"snapshot": "cccc", "matches": [{"path": "/x/.yaml"}, {"path": "/x/catalog.json"}]},
         ]);
         let v = versions_by_app(&snapshots, &found);
-        let ids = |ns: &str| -> Vec<&str> { v[ns].iter().map(|x| x.snapshot_id.as_str()).collect() };
+        let ids =
+            |ns: &str| -> Vec<&str> { v[ns].iter().map(|x| x.snapshot_id.as_str()).collect() };
         assert_eq!(v.keys().collect::<Vec<_>>(), ["yolab-a", "yolab-b"]);
-        assert_eq!(ids("yolab-a"), ["bbbb2222", "aaaa1111"], "newest first, full ids");
+        assert_eq!(
+            ids("yolab-a"),
+            ["bbbb2222", "aaaa1111"],
+            "newest first, full ids"
+        );
         assert_eq!(ids("yolab-b"), ["bbbb2222"], "listed once");
         assert_eq!(v["yolab-a"][1].time, "2026-09-10T02:00:00+02:00");
     }
@@ -1380,6 +1407,10 @@ mod tests {
     #[test]
     fn no_snapshots_or_unreadable_find_output_means_no_versions() {
         assert!(versions_by_app(&json!([]), &json!([])).is_empty());
-        assert!(versions_by_app(&json!([{"id": "a", "time": "2026-09-10T02:00:00Z"}]), &Value::Null).is_empty());
+        assert!(versions_by_app(
+            &json!([{"id": "a", "time": "2026-09-10T02:00:00Z"}]),
+            &Value::Null
+        )
+        .is_empty());
     }
 }
