@@ -46,8 +46,8 @@ impl Config {
     pub fn from_env() -> Self {
         let repo_path = std::env::var("YOLAB_REPO_PATH").unwrap_or_else(|_| "/etc/nixos".into());
         let built_dir = PathBuf::from("/var/lib/yolab");
-        let machine_dir = std::env::var("YOLAB_MACHINE_DIR")
-            .unwrap_or_else(|_| "/var/lib/yolab/machine".into());
+        let machine_dir =
+            std::env::var("YOLAB_MACHINE_DIR").unwrap_or_else(|_| "/var/lib/yolab/machine".into());
         Self {
             config_path: std::env::var("YOLAB_CONFIG")
                 .unwrap_or_else(|_| format!("{machine_dir}/config.toml")),

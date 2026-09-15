@@ -572,10 +572,20 @@ mod tests {
             let i = args.iter().position(|a| a == flag).unwrap();
             args[i + 1..].to_vec()
         };
-        assert_eq!(after("--flake")[0], "/etc/nixos#yolab", "never path:, which copies the whole tree");
-        assert_eq!(after("--override-input")[..2], ["yolab-machine", "path:/var/lib/yolab/machine"]);
+        assert_eq!(
+            after("--flake")[0],
+            "/etc/nixos#yolab",
+            "never path:, which copies the whole tree"
+        );
+        assert_eq!(
+            after("--override-input")[..2],
+            ["yolab-machine", "path:/var/lib/yolab/machine"]
+        );
         assert!(args.iter().any(|a| a == "--no-write-lock-file"));
-        assert!(!args.iter().any(|a| a == "--no-update-lock-file"), "the override changes the lock in memory");
+        assert!(
+            !args.iter().any(|a| a == "--no-update-lock-file"),
+            "the override changes the lock in memory"
+        );
     }
 
     #[test]
