@@ -1,97 +1,84 @@
 //! Phone notifications, through an ntfy server on every machine.
 //!
 //! WHY ON THE MACHINE, NOT IN KUBERNETES. The notifications that matter most are
-//! the ones about Kubernetes or Ceph not working, so the server and the sender
-//! must not depend on either. ntfy runs as a NixOS service (see
-//! homelab/nixos/common.nix), reached through the machine's own Caddy and
-//! WireGuard tunnel under a second name, `ntfy-<machine>.<account domain>`:
-//! ntfy only serves from the root of a host, never under a path.
+//! about Kubernetes or Ceph not working, so neither the server nor the sender
+//! may depend on them. ntfy runs as a NixOS service on every machine (see
+//! homelab/nixos/common.nix).
 //!
-//! EVERY MACHINE IS ITS OWN SERVER. The phone subscribes to each machine, and
-//! each machine sends what it sees — a machine that is down cannot take the
-//! notifications about it down too. A problem the whole cluster has is sent by
-//! every machine that sees it.
+//! ONE ADDRESS, EVERY MACHINE. The phone subscribes once, to
+//! `notify.<user>.<domain>`, a name every machine shares (`shared_names`): the
+//! platform's DNS answers with the machines that are up. So every machine must
+//! hold every notification — whichever one the phone reaches. A notification is
+//! published on this machine's ntfy and delivered to every other machine that
+//! answers (`POST /api/notifications/deliver`).
 //!
-//! THE TOPIC IS THE SECRET. The phone app subscribes from a `ntfy://host/topic`
-//! link, which carries no credentials. So the server denies every topic but one
-//! with a long random name, generated once per machine
-//! (`/var/lib/yolab/ntfy/topic`), readable and writable by whoever knows it —
-//! the same model as ntfy.sh itself. The page shows it only to the signed-in
-//! owner, as a QR code.
+//! THE TOPIC IS THE SECRET, AND THE SAME EVERYWHERE. The `ntfy://host/topic` link
+//! the phone app subscribes from carries no credentials, so every topic is denied
+//! but one with an unguessable name, readable and writable by whoever knows it.
+//! It is derived from the cluster's k3s token, which every machine of the cluster
+//! already has and a FORCE HEAL keeps: identical on every machine without being
+//! copied anywhere, different for every cluster, and never revealing the token.
 
 pub(crate) mod alerts;
-pub(crate) mod dns;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use axum::{extract::State, http::StatusCode, Json};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::AppState;
 
-/// Where ntfy listens: loopback only, Caddy is its one client from outside.
+/// Where ntfy listens: loopback only. Caddy and local-api are its only clients.
 const NTFY_LOCAL: &str = "http://[::1]:2586";
 /// The ntfy environment file the NixOS service reads (`environmentFile`).
 const ENV_FILE: &str = "var/lib/yolab/ntfy/ntfy.env";
-const TOPIC_FILE: &str = "var/lib/yolab/ntfy/topic";
 
-fn topic_path(root: &Path) -> PathBuf {
-    root.join(TOPIC_FILE)
+/// The cluster's notification topic, derived from its k3s token.
+pub(crate) fn topic_from_config(text: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let table: toml::Table = toml::from_str(text).context("config.toml is not TOML")?;
+    let token = table
+        .get("node")
+        .and_then(|n| n.get("k3s"))
+        .and_then(|k| k.get("token"))
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .context("config.toml has no [node.k3s] token")?;
+    let digest = Sha256::digest(format!("yolab-ntfy-topic:{token}").as_bytes());
+    Ok(format!("yolab-{}", &hex::encode(digest)[..32]))
 }
 
-/// This machine's topic, if notifications were set up on it.
-pub(crate) fn topic(root: &Path) -> Result<Option<String>> {
-    match std::fs::read_to_string(topic_path(root)) {
-        Ok(t) => {
-            let t = t.trim().to_string();
-            if !valid_topic(&t) {
-                bail!("{} does not hold a valid topic", topic_path(root).display());
-            }
-            Ok(Some(t))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("read {}", topic_path(root).display())),
-    }
+pub(crate) fn topic(config_path: &str) -> Result<String> {
+    let text =
+        std::fs::read_to_string(config_path).with_context(|| format!("read {config_path}"))?;
+    topic_from_config(&text)
 }
 
-/// ntfy's own rule for topic names.
-fn valid_topic(t: &str) -> bool {
-    !t.is_empty()
-        && t.len() <= 64
-        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-/// Boot step, before ntfy starts: the topic, generated once and kept, and the
-/// access rules ntfy reads from its environment file — every topic denied
-/// (`auth-default-access`), this one open to whoever knows its name.
-pub(crate) fn ensure_credentials(root: &Path) -> Result<String> {
-    let topic = match topic(root)? {
-        Some(t) => t,
-        None => {
-            let t = format!("yolab-{}", crate::routers::backup_common::random_hex(16));
-            crate::config::write_private_file(&topic_path(root), t.as_bytes())?;
-            tracing::info!("notifications: generated this machine's topic");
-            t
-        }
-    };
+/// Boot step, before ntfy starts: the access rule ntfy reads from its
+/// environment file — every topic denied (`auth-default-access`), the cluster's
+/// topic open to whoever knows its name.
+pub(crate) fn write_ntfy_env(root: &Path, config_path: &str) -> Result<()> {
+    let topic = topic(config_path)?;
     let env = format!("NTFY_AUTH_ACCESS='*:{topic}:rw'\n");
-    crate::config::write_private_file(&root.join(ENV_FILE), env.as_bytes())?;
-    Ok(topic)
+    crate::config::write_private_file(&root.join(ENV_FILE), env.as_bytes())
 }
 
 /// `local-api notify <subcommand>`.
 pub async fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
-        Some("credentials") => match ensure_credentials(Path::new("/")) {
-            Ok(_) => 0,
-            Err(e) => {
-                tracing::error!("notify credentials: {e:#}");
-                1
+        Some("credentials") => {
+            let config = crate::config::machine_dir().join("config.toml");
+            match write_ntfy_env(Path::new("/"), &config.to_string_lossy()) {
+                Ok(()) => 0,
+                Err(e) => {
+                    tracing::error!("notify credentials: {e:#}");
+                    1
+                }
             }
-        },
+        }
         other => {
             eprintln!("notify: unknown subcommand {other:?} (known: credentials)");
             2
@@ -101,14 +88,13 @@ pub async fn run(args: &[String]) -> i32 {
 
 // ── This machine's public names ───────────────────────────────────────────────
 
-/// The parts of `[tunnel]` in config.toml notifications need.
+/// The parts of `[tunnel]` in config.toml the shared names need.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Tunnel {
     pub enabled: bool,
     pub platform_api_url: String,
     pub account_token: String,
     pub tunnel_id: String,
-    pub sub_ipv6: String,
     /// The machine's own host name, e.g. `node1.6.yolab.io`.
     pub host: String,
 }
@@ -127,8 +113,7 @@ impl Tunnel {
             .and_then(|t| t.as_table())
             .context("config.toml has no [tunnel]")?;
         let s = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let dns_url = s("dns_url");
-        let host = dns_url
+        let host = s("dns_url")
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .trim_end_matches('/')
@@ -138,21 +123,19 @@ impl Tunnel {
             platform_api_url: s("platform_api_url").trim_end_matches('/').to_string(),
             account_token: s("account_token"),
             tunnel_id: s("tunnel_id"),
-            sub_ipv6: s("sub_ipv6"),
             host,
         })
     }
 
-    /// The notification server's host name — the same one Caddy serves, built
-    /// the same way in homelab/nixos/common.nix: `ntfy-` before the machine's.
-    pub fn ntfy_host(&self) -> Option<String> {
-        (!self.host.is_empty()).then(|| format!("ntfy-{}", self.host))
+    /// The user's own zone: the machine's host without its first label,
+    /// `6.yolab.io` for `node1.6.yolab.io` — built the same way in common.nix.
+    pub fn user_domain(&self) -> Option<&str> {
+        self.host.split_once('.').map(|(_, rest)| rest).filter(|r| !r.is_empty())
     }
 
-    /// The DNS record name of that host on the platform: its first label.
-    pub fn ntfy_record_name(&self) -> Option<String> {
-        let host = self.ntfy_host()?;
-        host.split('.').next().map(str::to_string)
+    /// A name every machine of the user shares, e.g. `notify.6.yolab.io`.
+    pub fn shared_host(&self, name: &str) -> Option<String> {
+        Some(format!("{name}.{}", self.user_domain()?))
     }
 
     /// The machine's name for people: the first label of its own host.
@@ -163,7 +146,7 @@ impl Tunnel {
 
 // ── Sending ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Notification {
     pub title: String,
     pub message: String,
@@ -174,9 +157,9 @@ pub(crate) struct Notification {
     pub click: Option<String>,
 }
 
-/// Publishes to this machine's own server. JSON rather than headers, so titles
+/// Publishes on this machine's own server. JSON rather than headers, so titles
 /// and messages are not limited to ASCII.
-pub(crate) async fn publish(topic: &str, n: &Notification) -> Result<()> {
+async fn publish_local(topic: &str, n: &Notification) -> Result<()> {
     let mut body = json!({
         "topic": topic,
         "title": n.title,
@@ -202,11 +185,43 @@ pub(crate) async fn publish(topic: &str, n: &Notification) -> Result<()> {
     Ok(())
 }
 
+/// Publishes on this machine and delivers to every other machine that answers,
+/// so whichever machine the phone reaches through the shared name has it.
+///
+/// Succeeds when this machine has it. A machine that does not take it is down or
+/// unreachable — and then the phone is not connected to it either.
+pub(crate) async fn publish_everywhere(
+    cfg: &crate::config::Config,
+    topic: &str,
+    n: &Notification,
+    peer_addrs: &[String],
+) -> Result<()> {
+    publish_local(topic, n).await?;
+    let client = reqwest::Client::new();
+    let token = cfg.cluster_token();
+    let deliveries = peer_addrs.iter().map(|addr| {
+        let request = client
+            .post(format!("http://[{addr}]:{}/api/notifications/deliver", cfg.port))
+            .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
+            .timeout(Duration::from_secs(10))
+            .json(n);
+        async move {
+            match request.send().await.map(|r| r.error_for_status()) {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) | Err(e) => {
+                    tracing::warn!("notifications: deliver to [{addr}]: {e}")
+                }
+            }
+        }
+    });
+    futures::future::join_all(deliveries).await;
+    Ok(())
+}
+
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq, Serialize)]
 struct Subscription {
-    machine: String,
     topic: String,
     /// Opens the ntfy app and subscribes: what the QR code holds.
     subscribe_url: String,
@@ -215,73 +230,81 @@ struct Subscription {
 }
 
 fn subscription(tunnel: &Tunnel, topic: &str) -> Option<Subscription> {
-    let host = tunnel.ntfy_host()?;
-    let machine = tunnel.machine_label();
+    let host = tunnel.shared_host("notify")?;
     Some(Subscription {
-        subscribe_url: format!(
-            "ntfy://{host}/{topic}?display={}",
-            format!("YoLab {machine}").replace(' ', "+")
-        ),
+        subscribe_url: format!("ntfy://{host}/{topic}?display=YoLab"),
         web_url: format!("https://{host}/{topic}"),
         topic: topic.to_string(),
-        machine,
     })
 }
 
-fn not_set_up(why: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
+fn unavailable(why: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     (
         StatusCode::OK,
         Json(json!({ "available": false, "reason": why.to_string() })),
     )
 }
 
-/// `GET /api/notifications` — how to subscribe to this machine's notifications.
+/// `GET /api/notifications` — how to subscribe to the cluster's notifications.
 pub async fn get_subscription(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let tunnel = match Tunnel::read(&s.config.config_path) {
         Ok(t) => t,
-        Err(e) => return not_set_up(format!("{e:#}")),
+        Err(e) => return unavailable(format!("{e:#}")),
     };
     if !tunnel.enabled {
-        return not_set_up("this machine is not connected to the YoLab platform");
+        return unavailable("this machine is not connected to the YoLab platform");
     }
-    let topic = match topic(Path::new("/")) {
-        Ok(Some(t)) => t,
-        Ok(None) => return not_set_up("notifications are not set up on this machine yet"),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("{e:#}") })),
-            )
-        }
+    let topic = match topic(&s.config.config_path) {
+        Ok(t) => t,
+        Err(e) => return unavailable(format!("{e:#}")),
     };
     match subscription(&tunnel, &topic) {
         Some(sub) => (
             StatusCode::OK,
             Json(json!({ "available": true, "subscription": sub })),
         ),
-        None => not_set_up("this machine has no public name"),
+        None => unavailable("this machine has no public name"),
     }
 }
 
-/// `POST /api/notifications/test` — sends a test notification from this machine.
+/// `POST /api/notifications/test` — a test notification, to every machine.
 pub async fn post_test(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let result = async {
         let tunnel = Tunnel::read(&s.config.config_path)?;
-        let Some(topic) = topic(Path::new("/"))? else {
-            bail!("notifications are not set up on this machine yet");
-        };
+        let topic = topic(&s.config.config_path)?;
+        let view = crate::heal::current_view(&s.config).await;
         let n = Notification {
-            title: format!("YoLab {}", tunnel.machine_label()),
-            message: "Notifications from this machine work.".into(),
+            title: "YoLab".into(),
+            message: format!("Notifications work. Sent from {}.", tunnel.machine_label()),
             priority: 3,
             tags: vec!["white_check_mark".into()],
-            click: Some(format!("https://{}/", tunnel.host)),
+            click: tunnel.shared_host("cluster").map(|h| format!("https://{h}/")),
         };
-        publish(&topic, &n).await
+        publish_everywhere(&s.config, &topic, &n, &view.peer_addrs).await
     }
     .await;
     match result {
         Ok(()) => (StatusCode::OK, Json(json!({ "sent": true }))),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": format!("{e:#}") })),
+        ),
+    }
+}
+
+/// `POST /api/notifications/deliver` — another machine hands this one a
+/// notification to publish on its own server. Node to node (cluster token).
+pub async fn post_deliver(
+    State(s): State<AppState>,
+    Json(n): Json<Notification>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let topic = topic(&s.config.config_path)?;
+        publish_local(&topic, &n).await
+    }
+    .await;
+    match result {
+        Ok(()) => (StatusCode::OK, Json(json!({ "published": true }))),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": format!("{e:#}") })),
@@ -299,53 +322,56 @@ enabled = true
 platform_api_url = "https://api.yolab.io/"
 account_token = "tok"
 tunnel_id = "25"
-sub_ipv6 = "2a01:4f8::20"
 dns_url = "https://node1.6.yolab.io"
+
+[node.k3s]
+token = "abcdef0123456789"
 "#;
 
     #[test]
-    fn the_server_name_is_the_machine_name_with_a_prefix() {
+    fn shared_names_live_in_the_users_zone() {
         let t = Tunnel::parse(CONFIG).unwrap();
         assert!(t.enabled);
         assert_eq!(t.platform_api_url, "https://api.yolab.io");
-        assert_eq!(t.ntfy_host().as_deref(), Some("ntfy-node1.6.yolab.io"));
-        assert_eq!(t.ntfy_record_name().as_deref(), Some("ntfy-node1"));
+        assert_eq!(t.user_domain(), Some("6.yolab.io"));
+        assert_eq!(t.shared_host("notify").as_deref(), Some("notify.6.yolab.io"));
         assert_eq!(t.machine_label(), "node1");
         assert!(Tunnel::parse("[homelab]\n").is_err());
+        let bare = Tunnel {
+            host: "localhost".into(),
+            ..t
+        };
+        assert_eq!(bare.shared_host("notify"), None);
     }
 
     #[test]
-    fn the_topic_is_generated_once_and_only_it_is_opened() {
+    fn the_topic_is_the_same_for_the_same_cluster_and_hides_the_token() {
+        let a = topic_from_config(CONFIG).unwrap();
+        assert_eq!(a, topic_from_config(CONFIG).unwrap());
+        assert!(a.starts_with("yolab-") && a.len() == 38, "{a}");
+        assert!(a[6..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!a.contains("abcdef0123456789"));
+        let other = CONFIG.replace("abcdef0123456789", "another-cluster");
+        assert_ne!(a, topic_from_config(&other).unwrap());
+        assert!(topic_from_config("[node.k3s]\ntoken = \"\"\n").is_err());
+    }
+
+    #[test]
+    fn only_the_clusters_topic_is_opened() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(topic(dir.path()).unwrap(), None);
-        let first = ensure_credentials(dir.path()).unwrap();
-        assert!(first.starts_with("yolab-") && first.len() == 38, "{first}");
-        assert!(valid_topic(&first));
-        assert_eq!(ensure_credentials(dir.path()).unwrap(), first, "kept across boots");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, CONFIG).unwrap();
+        write_ntfy_env(dir.path(), &config.to_string_lossy()).unwrap();
         let env = std::fs::read_to_string(dir.path().join(ENV_FILE)).unwrap();
-        assert_eq!(env, format!("NTFY_AUTH_ACCESS='*:{first}:rw'\n"));
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(topic_path(dir.path())).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        let topic = topic_from_config(CONFIG).unwrap();
+        assert_eq!(env, format!("NTFY_AUTH_ACCESS='*:{topic}:rw'\n"));
     }
 
     #[test]
-    fn a_damaged_topic_file_is_an_error_not_a_new_topic() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(topic_path(dir.path()).parent().unwrap()).unwrap();
-        std::fs::write(topic_path(dir.path()), "not a topic/../x").unwrap();
-        assert!(topic(dir.path()).is_err());
-        assert!(ensure_credentials(dir.path()).is_err());
-    }
-
-    #[test]
-    fn the_subscribe_link_opens_the_app_on_this_machines_server() {
+    fn the_subscribe_link_uses_the_shared_name() {
         let t = Tunnel::parse(CONFIG).unwrap();
         let sub = subscription(&t, "yolab-abc").unwrap();
-        assert_eq!(
-            sub.subscribe_url,
-            "ntfy://ntfy-node1.6.yolab.io/yolab-abc?display=YoLab+node1"
-        );
-        assert_eq!(sub.web_url, "https://ntfy-node1.6.yolab.io/yolab-abc");
+        assert_eq!(sub.subscribe_url, "ntfy://notify.6.yolab.io/yolab-abc?display=YoLab");
+        assert_eq!(sub.web_url, "https://notify.6.yolab.io/yolab-abc");
     }
 }

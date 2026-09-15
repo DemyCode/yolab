@@ -21,6 +21,7 @@ mod proc;
 mod records;
 mod routers;
 mod runtime;
+mod shared_names;
 mod storage;
 
 mod system;
@@ -83,6 +84,9 @@ async fn main() {
     }
     if args.get(1).map(String::as_str) == Some("notify") {
         std::process::exit(notify::run(&args[2..]).await);
+    }
+    if args.get(1).map(String::as_str) == Some("shared-names") {
+        std::process::exit(shared_names::run(&args[2..]).await);
     }
     // Drives exactly one controller's tick and exits — so a person over SSH can
     // run what the daemon would, without waiting for its interval.
@@ -191,6 +195,7 @@ async fn main() {
         // Phone notifications — see notify/mod.rs.
         .route("/api/notifications", get(notify::get_subscription))
         .route("/api/notifications/test", post(notify::post_test))
+        .route("/api/notifications/deliver", post(notify::post_deliver))
         // Storage topology policy (auto/manual)
         .route(
             "/api/storage/policy",

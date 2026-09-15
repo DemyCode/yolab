@@ -23,6 +23,11 @@
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
+  # The user's own zone, `6.yolab.io` for `node1.6.yolab.io`: where the names
+  # every machine shares live (`cluster.`, `notify.`). Built the same way in
+  # homelab/local-api/src/notify/mod.rs (`Tunnel::user_domain`).
+  userDomain = lib.concatStringsSep "." (lib.drop 1 (lib.splitString "." tunnelDomain));
+  platformApiUrl = lib.removeSuffix "/" (s.tunnelCfg.platform_api_url or "https://api.yolab.io");
 
   # Ceph runs as host daemons rather than Rook pods so containerd's image store
   # can live on an RBD — see homelab/nixos/ceph/default.nix for why that is not
@@ -394,8 +399,31 @@ in {
     # over private WireGuard addresses inside the cluster subnet.
     services.caddy = {
       enable = true;
+      # With the DNS provider that gets certificates for the names every machine
+      # shares: an HTTP challenge for them reaches whichever machine it reaches,
+      # so they use DNS-01, through the platform's acme-dns endpoint.
+      package = pkgs.caddy.withPlugins {
+        plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
+        hash = lib.fakeHash;
+      };
       configFile = pkgs.writeText "Caddyfile" ''
-        ${tunnelDomain} {
+        # A certificate for a shared name: `import shared_tls <name>`. The key is
+        # the account token, from the environment file yolab-caddy-credentials
+        # writes — never in the Nix store.
+        (shared_tls) {
+          tls {
+            dns acmedns {
+              username yolab
+              password {env.YOLAB_ACCOUNT_TOKEN}
+              subdomain {args[0]}
+              server_url ${platformApiUrl}/acme-dns
+            }
+          }
+        }
+
+        # The interface, served identically under this machine's own name and
+        # under the name every machine shares.
+        (yolab_ui) {
           handle /api/* {
             reverse_proxy [::1]:3001
           }
@@ -436,10 +464,22 @@ in {
           }
         }
 
-        # Phone notifications (ntfy, below). A site of its own: ntfy only serves
-        # from the root of a host. Subscriptions are long-lived streams, so every
-        # event is passed straight through.
-        ntfy-${tunnelDomain} {
+        ${tunnelDomain} {
+          import yolab_ui
+        }
+
+        # Whichever machine is up: the platform's DNS answers with every machine
+        # whose tunnel is (see homelab/local-api/src/shared_names.rs).
+        cluster.${userDomain} {
+          import shared_tls cluster
+          import yolab_ui
+        }
+
+        # Phone notifications (ntfy, below), from whichever machine is up. A site
+        # of its own: ntfy only serves from the root of a host. Subscriptions are
+        # long-lived streams, so every event is passed straight through.
+        notify.${userDomain} {
+          import shared_tls notify
           reverse_proxy [::1]:2586 {
             flush_interval -1
           }
@@ -448,24 +488,40 @@ in {
     };
 
     systemd.services.caddy = {
-      after = ["wireguard-wg0.service"];
-      wants = ["wireguard-wg0.service"];
+      after = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
+      wants = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
+      # Optional (`-`): without it only the shared names lack a certificate, and
+      # this machine's own address keeps working.
+      serviceConfig.EnvironmentFile = "-/var/lib/yolab/caddy/acme.env";
+    };
+
+    systemd.services.yolab-caddy-credentials = {
+      description = "Give Caddy the key for certificates of the shared names";
+      wantedBy = ["multi-user.target"];
+      before = ["caddy.service"];
+      after = ["local-fs.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "60s";
+        ExecStart = "${s.localApiEnv}/bin/local-api shared-names credentials";
+      };
     };
 
     # ── Phone notifications (ntfy) ────────────────────────────────────────
     # On the machine, not in Kubernetes: the notifications that matter most are
-    # about Kubernetes or Ceph not working. Served by the Caddy above under a
-    # second name on the same tunnel — ntfy only serves from the root of a host —
-    # whose DNS record local-api creates (`ntfy-dns` controller). See
+    # about Kubernetes or Ceph not working. Served by the Caddy above as
+    # notify.<user>, a name every machine shares; every notification is delivered
+    # to every machine, so the phone subscribes once. See
     # homelab/local-api/src/notify/.
     services.ntfy-sh = {
       enable = true;
       settings = {
-        base-url = "https://ntfy-${tunnelDomain}";
+        base-url = "https://notify.${userDomain}";
         listen-http = "[::1]:2586";
         behind-proxy = true;
-        # Every topic denied, except this machine's own random topic, opened in
-        # the environment file `yolab-ntfy-credentials` writes.
+        # Every topic denied, except the cluster's topic (derived from its k3s
+        # token), opened in the environment file `yolab-ntfy-credentials` writes.
         auth-default-access = "deny-all";
         # iOS gets instant notifications only through ntfy.sh's push relay, which
         # receives a hash of the topic, never the messages.
@@ -475,7 +531,7 @@ in {
     };
 
     systemd.services.yolab-ntfy-credentials = {
-      description = "Generate this machine's notification topic";
+      description = "Open the cluster's notification topic in ntfy";
       wantedBy = ["multi-user.target"];
       before = ["ntfy-sh.service"];
       requiredBy = ["ntfy-sh.service"];

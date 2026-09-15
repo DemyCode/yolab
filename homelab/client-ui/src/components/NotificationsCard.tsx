@@ -11,7 +11,6 @@ type NotificationsStatus =
   | {
       available: true;
       subscription: {
-        machine: string;
         topic: string;
         subscribe_url: string;
         web_url: string;
@@ -42,7 +41,7 @@ function QrCode({ value, size = 184 }: { value: string; size?: number }) {
       height={size}
       viewBox={`${-quiet} ${-quiet} ${count + quiet * 2} ${count + quiet * 2}`}
       role="img"
-      aria-label="QR code to subscribe to this machine's notifications"
+      aria-label="QR code to subscribe to notifications"
       className="rounded-md bg-white"
       shapeRendering="crispEdges"
     >
@@ -58,7 +57,7 @@ function QrCode({ value, size = 184 }: { value: string; size?: number }) {
   );
 }
 
-/** The System page section: subscribe a phone to this machine's notifications. */
+/** The System page section: subscribe a phone to the cluster's notifications. */
 export function NotificationsCard() {
   const status = useApi<NotificationsStatus>(
     "notifications",
@@ -119,9 +118,8 @@ export function NotificationsCard() {
                   on the phone.
                 </li>
                 <li>
-                  Do the same on the System page of every other machine: each
-                  machine sends its own notifications, so one that is down
-                  cannot silence them.
+                  That is all: every machine sends to the same address, so a
+                  machine that is down does not silence the others.
                 </li>
               </ol>
               <p>

@@ -1202,14 +1202,29 @@ async fn uptime_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// What `GET /api/heal` calls wrong on this machine right now, for
-/// notifications (`notify::alerts`).
-pub(crate) async fn current_problems(cfg: &crate::config::Config) -> Vec<&'static str> {
+/// What `GET /api/heal` sees from this machine right now, for notifications
+/// (`notify`): what is wrong, and which machines answer.
+pub(crate) struct View {
+    pub problems: Vec<&'static str>,
+    /// Names of every machine that answers, this one included.
+    pub answering: Vec<String>,
+    /// Cluster addresses of the OTHER machines that answer.
+    pub peer_addrs: Vec<String>,
+}
+
+pub(crate) async fn current_view(cfg: &crate::config::Config) -> View {
     let net = RealNetwork::from_config(cfg);
     let me = crate::system::hostname();
-    survey(&RealHost, &net, &me, &cfg.node_ipv6, uptime_secs().await)
-        .await
-        .problems()
+    let s = survey(&RealHost, &net, &me, &cfg.node_ipv6, uptime_secs().await).await;
+    View {
+        problems: s.problems(),
+        answering: s.kept().map(MachineState::label).collect(),
+        peer_addrs: s
+            .kept()
+            .filter(|m| !m.this_machine)
+            .map(|m| m.addr.clone())
+            .collect(),
+    }
 }
 
 /// `GET /api/heal` — what is wrong, what a heal would do, and the heal this

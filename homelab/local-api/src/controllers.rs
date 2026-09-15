@@ -24,7 +24,7 @@ pub const NAMES: &[&str] = &[
     "heal",
     "backup-credentials",
     "notifier",
-    "ntfy-dns",
+    "shared-names",
     "mesh-paths",
     "mesh-discovery",
     "chart-sync",
@@ -87,7 +87,7 @@ pub fn spawn_all(leader: Leadership) {
         crate::heal::credentials::BackupCredentialsController,
         &leader,
     );
-    // Phone notifications: what is wrong, sent once, and the server's DNS name.
+    // Phone notifications, and the names every machine shares (cluster, notify).
     spawn(
         crate::notify::alerts::NotifierController {
             config: crate::config::Config::from_env(),
@@ -95,7 +95,7 @@ pub fn spawn_all(leader: Leadership) {
         &leader,
     );
     spawn(
-        crate::notify::dns::NtfyDnsController {
+        crate::shared_names::SharedNamesController {
             config: crate::config::Config::from_env(),
         },
         &leader,
@@ -154,8 +154,8 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
             })
             .await
         }
-        "ntfy-dns" => {
-            runtime::run_once(&crate::notify::dns::NtfyDnsController {
+        "shared-names" => {
+            runtime::run_once(&crate::shared_names::SharedNamesController {
                 config: crate::config::Config::from_env(),
             })
             .await
