@@ -240,7 +240,10 @@ mod tests {
         let host = FakeHost::new()
             .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
             .ok("ceph --connect-timeout 10 -s", "")
-            .ok("ceph --connect-timeout 10 mon dump", &dump_with(&["yolab-n1"]))
+            .ok(
+                "ceph --connect-timeout 10 mon dump",
+                &dump_with(&["yolab-n1"]),
+            )
             .ok("ceph config-key get yolab/removed-machines/yolab-n2", "h1")
             .ok("ceph --connect-timeout 10 mon add", "");
         let dir = tempfile::tempdir().unwrap();
@@ -254,8 +257,14 @@ mod tests {
         let unknown = FakeHost::new()
             .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
             .ok("ceph --connect-timeout 10 -s", "")
-            .ok("ceph --connect-timeout 10 mon dump", &dump_with(&["yolab-n1"]))
-            .fail("ceph config-key get yolab/removed-machines/yolab-n2", "timed out")
+            .ok(
+                "ceph --connect-timeout 10 mon dump",
+                &dump_with(&["yolab-n1"]),
+            )
+            .fail(
+                "ceph config-key get yolab/removed-machines/yolab-n2",
+                "timed out",
+            )
             .ok("ceph --connect-timeout 10 mon add", "");
         run(&unknown, dir.path(), "yolab-n2", &args).await.unwrap();
         assert!(!unknown.ran("mon add"), "not knowing is not permission");
@@ -270,7 +279,10 @@ mod tests {
                 "ceph --connect-timeout 10 mon dump",
                 &dump_with(&["yolab-n1"]),
             ) // not in it yet
-            .fail("ceph config-key get yolab/removed-machines/yolab-n2", "Error ENOENT: key doesn't exist")
+            .fail(
+                "ceph config-key get yolab/removed-machines/yolab-n2",
+                "Error ENOENT: key doesn't exist",
+            )
             .ok("ceph --connect-timeout 10 mon add", "")
             .ok(
                 "ceph --connect-timeout 10 mon dump",
