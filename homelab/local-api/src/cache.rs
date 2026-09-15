@@ -152,6 +152,7 @@ fn policy_for(path: &str) -> Option<Policy> {
             | "/api/backups/recovery-key"
             | "/api/ceph/dashboard"
             | "/api/cluster/ceph-join"
+            | "/api/notifications"
     ) {
         return None;
     }
@@ -790,6 +791,7 @@ mod tests {
             "/api/backups/recovery-key",
             "/api/ceph/dashboard",
             "/api/cluster/ceph-join",
+            "/api/notifications",
         ] {
             assert!(policy_for(path).is_none(), "{path} is a secret");
         }
