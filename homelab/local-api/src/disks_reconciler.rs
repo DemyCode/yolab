@@ -2992,9 +2992,17 @@ mod tests {
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), false).await;
 
-        assert!(!host.ran("lvm create") && !host.ran("wipefs"), "{:?}", host.calls());
+        assert!(
+            !host.ran("lvm create") && !host.ran("wipefs"),
+            "{:?}",
+            host.calls()
+        );
         assert!(!CREATING.lock().unwrap().contains("disk-new-osd"));
-        assert!(host.ran("systemctl start yolab-ceph-osd@5.service"), "{:?}", host.calls());
+        assert!(
+            host.ran("systemctl start yolab-ceph-osd@5.service"),
+            "{:?}",
+            host.calls()
+        );
     }
 
     #[tokio::test]
@@ -3002,7 +3010,10 @@ mod tests {
         let meta = HashMap::from([("disk-b".to_string(), disk(Ownership::Blank))]);
 
         let busy = FakeHost::new()
-            .fail("ceph-volume lvm list", "skipped, already running on this node")
+            .fail(
+                "ceph-volume lvm list",
+                "skipped, already running on this node",
+            )
             .ok(
                 "ceph osd metadata",
                 r#"[{"id": 2, "hostname": "node1", "devices": "sdb"}]"#,
@@ -3011,9 +3022,10 @@ mod tests {
         assert_eq!(source, OsdMapSource::Mon);
         assert_eq!(map.get("disk-b"), Some(&2));
 
-        let local = FakeHost::new()
-            .ok("ceph-volume lvm list", "{}")
-            .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#);
+        let local = FakeHost::new().ok("ceph-volume lvm list", "{}").ok(
+            "ceph fsid",
+            r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#,
+        );
         let (_, source) = fetch_disk_to_osd(&local, "node1", &meta).await.unwrap();
         assert_eq!(source, OsdMapSource::CephVolume);
     }
