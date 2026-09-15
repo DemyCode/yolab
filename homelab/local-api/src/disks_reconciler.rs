@@ -4444,7 +4444,10 @@ mod tests {
         assert_eq!(ready, crate::storage::wait::Attempt::Ready(()));
         assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
         assert!(!host.ran("--destroy"));
-        assert!(!host.ran("yolab-ceph-osd@3"), "a forgotten OSD is never started");
+        assert!(
+            !host.ran("yolab-ceph-osd@3"),
+            "a forgotten OSD is never started"
+        );
         assert!(host.position("lvm zap") < host.position("lvm create"));
     }
 

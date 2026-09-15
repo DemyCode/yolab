@@ -63,7 +63,11 @@ export function HealBanner({ className }: { className?: string }) {
   const from = healedFrom(status);
   if (from) {
     return (
-      <Banner tone="info" title="Your home server is being healed" className={className}>
+      <Banner
+        tone="info"
+        title="Your home server is being healed"
+        className={className}
+      >
         {from.driver} is rebuilding the cluster. Follow it on {from.driver}
         &apos;s Storage page.
       </Banner>
@@ -75,9 +79,7 @@ export function HealBanner({ className }: { className?: string }) {
       <Banner
         tone={heal?.failed ? "warning" : "info"}
         title={
-          heal?.failed
-            ? "The heal was stopped"
-            : "Your home server was healed"
+          heal?.failed ? "The heal was stopped" : "Your home server was healed"
         }
         className={className}
         action={link("Details")}
@@ -285,8 +287,8 @@ function HealDialog({
             switch on again.
           </li>
           <li>
-            Your backup settings are kept. The storage settings (how many
-            copies to keep) go back to the defaults.
+            Your backup settings are kept. The storage settings (how many copies
+            to keep) go back to the defaults.
           </li>
           <li>
             First, every machine prepares its new system, which can take a

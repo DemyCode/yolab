@@ -393,7 +393,11 @@ async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bo
 /// `GET /api/update` — a person clicked Update; stream the progress back.
 pub async fn update(State(state): State<AppState>) -> Response {
     if let Some(why) = heal_holds(&state.config) {
-        return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": why }))).into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": why })),
+        )
+            .into_response();
     }
     if IS_UPDATING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

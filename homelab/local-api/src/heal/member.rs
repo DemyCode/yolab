@@ -299,7 +299,10 @@ pub(crate) async fn begin_prepare<H: Host>(
             if reset.request.heal_id == request.heal_id {
                 return Ok(Begin::Already(v));
             }
-            bail!("heal {} is being prepared on this machine", reset.request.heal_id);
+            bail!(
+                "heal {} is being prepared on this machine",
+                reset.request.heal_id
+            );
         }
         if reset.request.heal_id == request.heal_id {
             if reset.request != *request {
@@ -309,7 +312,10 @@ pub(crate) async fn begin_prepare<H: Host>(
                 return Ok(Begin::Already(v));
             }
             // Failed: the driver abandons the heal on it. Asked again, try again.
-        } else if matches!(v.phase, PhaseView::Prepared | PhaseView::Armed | PhaseView::Failed) {
+        } else if matches!(
+            v.phase,
+            PhaseView::Prepared | PhaseView::Armed | PhaseView::Failed
+        ) {
             tracing::warn!(
                 "heal {}: putting back heal {} from {} first",
                 request.heal_id,
@@ -370,8 +376,8 @@ async fn rewrite_and_rebuild<H: Host>(
         }
         write_private_file(&layout.config_before(), &current)?;
     }
-    let before = std::fs::read_to_string(layout.config_before())
-        .context("read the copy of config.toml")?;
+    let before =
+        std::fs::read_to_string(layout.config_before()).context("read the copy of config.toml")?;
     let new = rewrite_config(&before, &request.server_addr, &request.fsid)?;
     write_private_file(&layout.config(), new.as_bytes())?;
     if let Err(e) = rebuild(host, layout).await {
@@ -412,9 +418,12 @@ pub(crate) fn rewrite_config(config: &str, server_addr: &str, fsid: &str) -> Res
 async fn rebuild<H: Host>(host: &H, layout: &Layout) -> Result<()> {
     // An interrupted rebuild leaves its transient unit behind, and systemd
     // refuses to start it again (see routers/update.rs).
-    host.systemctl(&["reset-failed", "nixos-rebuild-switch-to-configuration.service"])
-        .await
-        .ok();
+    host.systemctl(&[
+        "reset-failed",
+        "nixos-rebuild-switch-to-configuration.service",
+    ])
+    .await
+    .ok();
     let flake = format!("{}#{}", layout.repo, layout.flake_target);
     let input = format!("path:{}", layout.machine_dir.display());
     let out = host
@@ -496,7 +505,9 @@ pub(crate) async fn undo<H: Host>(
     match view(&reset, boot_id, preparing.running().as_deref()).phase {
         PhaseView::Undone => return Ok(()),
         PhaseView::Restarted => bail!("this machine already restarted into the new cluster"),
-        PhaseView::Preparing => bail!("this machine is still preparing — try again when it is done"),
+        PhaseView::Preparing => {
+            bail!("this machine is still preparing — try again when it is done")
+        }
         PhaseView::Prepared | PhaseView::Failed | PhaseView::Armed => {}
     }
     if !may_rebuild {
@@ -614,7 +625,9 @@ mod tests {
         let preparing = Preparing::default();
         let req = request(heal_id);
         assert_eq!(
-            begin_prepare(host, &m.layout, &req, "boot1", &preparing).await.unwrap(),
+            begin_prepare(host, &m.layout, &req, "boot1", &preparing)
+                .await
+                .unwrap(),
             Begin::Start
         );
         prepare(host, &m.layout, &req, &preparing).await;
@@ -623,7 +636,8 @@ mod tests {
     #[test]
     fn the_config_gets_the_new_cluster_and_keeps_everything_else() {
         let before = "[homelab]\nhostname = \"node2\"\n[node]\nsub_ipv6_private = \"fd00::2\"\nwipe_condition = true\n[node.k3s]\ntoken = \"tok\"\nserver_addr = \"https://[fd00::1]:6443\"\n[ceph]\nfsid = \"old\"\n";
-        let after: toml::Table = toml::from_str(&rewrite_config(before, "", FSID).unwrap()).unwrap();
+        let after: toml::Table =
+            toml::from_str(&rewrite_config(before, "", FSID).unwrap()).unwrap();
         assert_eq!(after["node"]["k3s"]["server_addr"].as_str(), Some(""));
         assert_eq!(after["node"]["k3s"]["token"].as_str(), Some("tok"));
         assert_eq!(after["ceph"]["fsid"].as_str(), Some(FSID));
@@ -635,23 +649,46 @@ mod tests {
             toml::from_str(&rewrite_config(without_ceph, "https://[fd00::1]:6443", FSID).unwrap())
                 .unwrap();
         assert_eq!(after["ceph"]["fsid"].as_str(), Some(FSID));
-        assert!(rewrite_config("[homelab]\n", "", FSID).is_err(), "no [node.k3s] to set");
+        assert!(
+            rewrite_config("[homelab]\n", "", FSID).is_err(),
+            "no [node.k3s] to set"
+        );
     }
 
     #[test]
     fn a_request_is_checked_before_anything_is_written_from_it() {
         assert!(request("ab12").validate().is_ok());
         let bad = [
-            PrepareRequest { heal_id: "../x".into(), ..request("ab12") },
-            PrepareRequest { fsid: "not-a-uuid".into(), ..request("ab12") },
-            PrepareRequest { server_addr: "https://fd00::1:6443".into(), ..request("ab12") },
-            PrepareRequest { server_addr: "https://[fd00::1]:6443\"\n[x]".into(), ..request("ab12") },
-            PrepareRequest { driver: "".into(), ..request("ab12") },
+            PrepareRequest {
+                heal_id: "../x".into(),
+                ..request("ab12")
+            },
+            PrepareRequest {
+                fsid: "not-a-uuid".into(),
+                ..request("ab12")
+            },
+            PrepareRequest {
+                server_addr: "https://fd00::1:6443".into(),
+                ..request("ab12")
+            },
+            PrepareRequest {
+                server_addr: "https://[fd00::1]:6443\"\n[x]".into(),
+                ..request("ab12")
+            },
+            PrepareRequest {
+                driver: "".into(),
+                ..request("ab12")
+            },
         ];
         for r in bad {
             assert!(r.validate().is_err(), "{r:?}");
         }
-        assert!(PrepareRequest { server_addr: "".into(), ..request("ab12") }.validate().is_ok());
+        assert!(PrepareRequest {
+            server_addr: "".into(),
+            ..request("ab12")
+        }
+        .validate()
+        .is_ok());
     }
 
     #[tokio::test]
@@ -663,7 +700,10 @@ mod tests {
         assert_eq!(phase(&m, "boot1"), PhaseView::Prepared);
         assert!(config(&m).contains(FSID) && config(&m).contains("https://[fd00::1]:6443"));
         assert!(!armed(&m));
-        assert_eq!(std::fs::read_to_string(m.layout.config_before()).unwrap(), ORIGINAL);
+        assert_eq!(
+            std::fs::read_to_string(m.layout.config_before()).unwrap(),
+            ORIGINAL
+        );
         assert!(host.ran(&format!(
             "{REBUILD} --override-input yolab-machine path:{}",
             m.layout.machine_dir.display()
@@ -680,7 +720,9 @@ mod tests {
             .fail("nixos-rebuild boot", "error: no space left on device");
         prepared(&m, &host, "ab12").await;
 
-        let v = current(&m.layout, "boot1", &Preparing::default()).unwrap().unwrap();
+        let v = current(&m.layout, "boot1", &Preparing::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(v.phase, PhaseView::Failed);
         assert!(v.error.unwrap().contains("no space left"));
         assert_eq!(config(&m), ORIGINAL);
@@ -692,17 +734,28 @@ mod tests {
         let host = FakeHost::new();
         let preparing = Preparing::default();
         let req = request("ab12");
-        begin_prepare(&host, &m.layout, &req, "boot1", &preparing).await.unwrap();
+        begin_prepare(&host, &m.layout, &req, "boot1", &preparing)
+            .await
+            .unwrap();
         assert!(matches!(
-            begin_prepare(&host, &m.layout, &req, "boot1", &preparing).await.unwrap(),
-            Begin::Already(ResetView { phase: PhaseView::Preparing, .. })
+            begin_prepare(&host, &m.layout, &req, "boot1", &preparing)
+                .await
+                .unwrap(),
+            Begin::Already(ResetView {
+                phase: PhaseView::Preparing,
+                ..
+            })
         ));
         assert!(
-            begin_prepare(&host, &m.layout, &request("cd34"), "boot1", &preparing).await.is_err(),
+            begin_prepare(&host, &m.layout, &request("cd34"), "boot1", &preparing)
+                .await
+                .is_err(),
             "one heal at a time"
         );
         // local-api restarted: nothing runs any more.
-        let v = current(&m.layout, "boot1", &Preparing::default()).unwrap().unwrap();
+        let v = current(&m.layout, "boot1", &Preparing::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(v.phase, PhaseView::Failed);
         assert_eq!(v.error.as_deref(), Some("preparing was interrupted"));
     }
@@ -717,13 +770,18 @@ mod tests {
             ..request("cd34")
         };
         let preparing = Preparing::default();
-        begin_prepare(&host, &m.layout, &other, "boot1", &preparing).await.unwrap();
+        begin_prepare(&host, &m.layout, &other, "boot1", &preparing)
+            .await
+            .unwrap();
         // The first heal was put back before the second started.
         assert_eq!(config(&m), ORIGINAL);
         assert!(!m.layout.config_before().exists());
         prepare(&host, &m.layout, &other, &preparing).await;
         assert!(config(&m).contains("99999999") && !config(&m).contains(FSID));
-        assert_eq!(std::fs::read_to_string(m.layout.config_before()).unwrap(), ORIGINAL);
+        assert_eq!(
+            std::fs::read_to_string(m.layout.config_before()).unwrap(),
+            ORIGINAL
+        );
     }
 
     #[tokio::test]
@@ -755,20 +813,55 @@ mod tests {
         let host = host();
         prepared(&m, &host, "ab12").await;
         arm(&m.layout, "ab12", "boot1").unwrap();
-        let rebuilds = host.calls().iter().filter(|c| c.starts_with("nixos-rebuild")).count();
+        let rebuilds = host
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("nixos-rebuild"))
+            .count();
 
-        undo(&host, &m.layout, "ab12", "boot1", &Preparing::default(), true).await.unwrap();
+        undo(
+            &host,
+            &m.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(config(&m), ORIGINAL);
         assert!(!armed(&m));
         assert!(!m.layout.config_before().exists());
         assert!(!holds_config(&m.layout), "updates may run again");
-        let after = host.calls().iter().filter(|c| c.starts_with("nixos-rebuild")).count();
+        let after = host
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("nixos-rebuild"))
+            .count();
         assert_eq!(after, rebuilds + 1);
         assert_eq!(phase(&m, "boot1"), PhaseView::Undone);
         // Again, and for a heal this machine never heard of: nothing to do.
-        undo(&host, &m.layout, "ab12", "boot1", &Preparing::default(), true).await.unwrap();
-        undo(&host, &m.layout, "ffff", "boot1", &Preparing::default(), true).await.unwrap();
+        undo(
+            &host,
+            &m.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true,
+        )
+        .await
+        .unwrap();
+        undo(
+            &host,
+            &m.layout,
+            "ffff",
+            "boot1",
+            &Preparing::default(),
+            true,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -777,15 +870,30 @@ mod tests {
         let profiles = m.layout.root.join("nix/var/nix/profiles");
         std::fs::create_dir_all(&profiles).unwrap();
         std::os::unix::fs::symlink("system-7-link", profiles.join("system")).unwrap();
-        let rebuilds = |h: &FakeHost| h.calls().iter().filter(|c| c.starts_with("nixos-rebuild")).count();
+        let rebuilds = |h: &FakeHost| {
+            h.calls()
+                .iter()
+                .filter(|c| c.starts_with("nixos-rebuild"))
+                .count()
+        };
 
         // The repo is broken: preparing fails, and so would any rebuild.
-        let broken = FakeHost::new()
-            .ok("systemctl reset-failed", "")
-            .fail("nixos-rebuild boot", "error: flake has no attribute 'yolab'");
+        let broken = FakeHost::new().ok("systemctl reset-failed", "").fail(
+            "nixos-rebuild boot",
+            "error: flake has no attribute 'yolab'",
+        );
         prepared(&m, &broken, "ab12").await;
         assert_eq!(phase(&m, "boot1"), PhaseView::Failed);
-        undo(&broken, &m.layout, "ab12", "boot1", &Preparing::default(), true).await.unwrap();
+        undo(
+            &broken,
+            &m.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(rebuilds(&broken), 1, "only the prepare rebuilt");
         assert_eq!(config(&m), ORIGINAL);
         assert!(!holds_config(&m.layout));
@@ -795,7 +903,16 @@ mod tests {
         prepared(&m, &host, "cd34").await;
         std::fs::remove_file(profiles.join("system")).unwrap();
         std::os::unix::fs::symlink("system-8-link", profiles.join("system")).unwrap();
-        undo(&host, &m.layout, "cd34", "boot1", &Preparing::default(), true).await.unwrap();
+        undo(
+            &host,
+            &m.layout,
+            "cd34",
+            "boot1",
+            &Preparing::default(),
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(rebuilds(&host), 2);
     }
 
@@ -804,12 +921,21 @@ mod tests {
         let m = machine();
         let host = host();
         let preparing = Preparing::default();
-        begin_prepare(&host, &m.layout, &request("ab12"), "boot1", &preparing).await.unwrap();
-        assert!(undo(&host, &m.layout, "ab12", "boot1", &preparing, true).await.is_err());
+        begin_prepare(&host, &m.layout, &request("ab12"), "boot1", &preparing)
+            .await
+            .unwrap();
+        assert!(undo(&host, &m.layout, "ab12", "boot1", &preparing, true)
+            .await
+            .is_err());
 
         prepare(&host, &m.layout, &request("ab12"), &preparing).await;
-        assert!(undo(&host, &m.layout, "ab12", "boot1", &preparing, false).await.is_err());
-        assert!(armed(&m) || config(&m).contains(FSID), "nothing was put back");
+        assert!(undo(&host, &m.layout, "ab12", "boot1", &preparing, false)
+            .await
+            .is_err());
+        assert!(
+            armed(&m) || config(&m).contains(FSID),
+            "nothing was put back"
+        );
     }
 
     #[tokio::test]
@@ -818,7 +944,16 @@ mod tests {
         let host = host();
         prepared(&m, &host, "ab12").await;
         arm(&m.layout, "ab12", "boot1").unwrap();
-        assert!(undo(&host, &m.layout, "ab12", "boot2", &Preparing::default(), true).await.is_err());
+        assert!(undo(
+            &host,
+            &m.layout,
+            "ab12",
+            "boot2",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -828,9 +963,15 @@ mod tests {
         prepared(&m, &host, "ab12").await;
         arm(&m.layout, "ab12", "boot1").unwrap();
 
-        let begin = begin_prepare(&host, &m.layout, &request("cd34"), "boot1", &Preparing::default())
-            .await
-            .unwrap();
+        let begin = begin_prepare(
+            &host,
+            &m.layout,
+            &request("cd34"),
+            "boot1",
+            &Preparing::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(begin, Begin::Start);
         assert!(!armed(&m));

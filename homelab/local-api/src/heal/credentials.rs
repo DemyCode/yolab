@@ -130,23 +130,39 @@ mod tests {
 
     #[test]
     fn the_secret_is_copied_whenever_it_changes() {
-        assert_eq!(decide(Some(creds("p", "k")), None), Action::Save(creds("p", "k")));
+        assert_eq!(
+            decide(Some(creds("p", "k")), None),
+            Action::Save(creds("p", "k"))
+        );
         assert_eq!(
             decide(Some(creds("p", "rotated")), Some(creds("p", "k"))),
             Action::Save(creds("p", "rotated"))
         );
-        assert_eq!(decide(Some(creds("p", "k")), Some(creds("p", "k"))), Action::Nothing);
+        assert_eq!(
+            decide(Some(creds("p", "k")), Some(creds("p", "k"))),
+            Action::Nothing
+        );
     }
 
     #[test]
     fn a_missing_secret_comes_back_from_the_copy() {
-        assert_eq!(decide(None, Some(creds("p", "k"))), Action::Restore(creds("p", "k")));
-        assert_eq!(decide(None, None), Action::Nothing, "backups were never enabled");
+        assert_eq!(
+            decide(None, Some(creds("p", "k"))),
+            Action::Restore(creds("p", "k"))
+        );
+        assert_eq!(
+            decide(None, None),
+            Action::Nothing,
+            "backups were never enabled"
+        );
     }
 
     #[test]
     fn nothing_without_a_password_is_ever_copied_or_restored() {
-        assert_eq!(decide(Some(creds("", "k")), Some(creds("p", "k"))), Action::Nothing);
+        assert_eq!(
+            decide(Some(creds("", "k")), Some(creds("p", "k"))),
+            Action::Nothing
+        );
         assert_eq!(decide(None, Some(creds("", "k"))), Action::Nothing);
     }
 
@@ -157,7 +173,10 @@ mod tests {
         assert_eq!(read_copy(dir.path()).unwrap(), None);
         write_copy(dir.path(), &creds("p", "k")).unwrap();
         assert_eq!(read_copy(dir.path()).unwrap(), Some(creds("p", "k")));
-        let mode = std::fs::metadata(copy_path(dir.path())).unwrap().permissions().mode();
+        let mode = std::fs::metadata(copy_path(dir.path()))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
 }
