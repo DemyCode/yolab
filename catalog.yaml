@@ -8,150 +8,150 @@ apiVersion: yolab.io/v1
 registry: oci://ghcr.io/demycode/charts
 charts:
   - name: 2fauth
-    version: "0.1.0"
+    version: "0.1.1"
   - name: actual
-    version: "0.1.0"
+    version: "0.1.1"
   - name: appflowy
-    version: "0.2.0"
+    version: "0.2.1"
   - name: audiobookshelf
-    version: "0.1.0"
+    version: "0.1.1"
   - name: babybuddy
-    version: "0.1.0"
+    version: "0.1.1"
   - name: bookstack
-    version: "0.1.0"
+    version: "0.1.1"
   - name: calibre-web
-    version: "0.1.0"
+    version: "0.1.1"
   - name: changedetection
-    version: "0.1.0"
+    version: "0.1.1"
   - name: cinny
-    version: "0.1.0"
+    version: "0.1.1"
   - name: code-server
-    version: "0.1.0"
+    version: "0.1.1"
   - name: dawarich
-    version: "0.1.0"
+    version: "0.1.1"
   - name: docmost
-    version: "0.1.0"
+    version: "0.1.1"
   - name: emulatorjs
-    version: "0.1.0"
+    version: "0.1.1"
   - name: excalidraw
-    version: "0.1.0"
+    version: "0.1.1"
   - name: filebrowser
-    version: "0.1.1"
+    version: "0.1.2"
   - name: firefly-iii
-    version: "0.1.0"
-  - name: freshrss
-    version: "0.1.0"
-  - name: frigate
-    version: "0.1.0"
-  - name: ghost
-    version: "0.1.0"
-  - name: gitea
-    version: "0.1.0"
-  - name: grafana
-    version: "0.1.0"
-  - name: grocy
-    version: "0.1.0"
-  - name: healthchecks
-    version: "0.1.0"
-  - name: home-assistant
-    version: "0.1.0"
-  - name: homepage
-    version: "0.1.0"
-  - name: immich
-    version: "0.1.0"
-  - name: it-tools
-    version: "0.1.0"
-  - name: jellyfin
-    version: "0.1.0"
-  - name: jellyseerr
-    version: "0.1.0"
-  - name: karakeep
-    version: "0.1.0"
-  - name: kavita
-    version: "0.1.0"
-  - name: kimai
-    version: "0.1.0"
-  - name: librespeed
-    version: "0.1.0"
-  - name: linkwarden
-    version: "0.1.0"
-  - name: mastodon
-    version: "0.1.0"
-  - name: mealie
-    version: "0.1.0"
-  - name: memos
-    version: "0.1.0"
-  - name: metube
-    version: "0.1.0"
-  - name: minecraft
-    version: "0.1.0"
-  - name: miniflux
-    version: "0.1.0"
-  - name: monica
-    version: "0.1.0"
-  - name: n8n
-    version: "0.1.0"
-  - name: navidrome
-    version: "0.1.0"
-  - name: nextcloud
-    version: "0.1.0"
-  - name: ntfy
-    version: "0.1.0"
-  - name: onlyoffice
-    version: "0.1.0"
-  - name: open-webui
-    version: "0.1.0"
-  - name: openclaw
-    version: "0.1.0"
-  - name: pairdrop
-    version: "0.1.0"
-  - name: paperless-ngx
-    version: "0.1.0"
-  - name: photoprism
-    version: "0.1.0"
-  - name: planka
-    version: "0.1.0"
-  - name: prowlarr
-    version: "0.1.0"
-  - name: qbittorrent
     version: "0.1.1"
+  - name: freshrss
+    version: "0.1.1"
+  - name: frigate
+    version: "0.1.1"
+  - name: ghost
+    version: "0.1.1"
+  - name: gitea
+    version: "0.1.1"
+  - name: grafana
+    version: "0.1.1"
+  - name: grocy
+    version: "0.1.1"
+  - name: healthchecks
+    version: "0.1.1"
+  - name: home-assistant
+    version: "0.1.1"
+  - name: homepage
+    version: "0.1.1"
+  - name: immich
+    version: "0.1.1"
+  - name: it-tools
+    version: "0.1.1"
+  - name: jellyfin
+    version: "0.1.1"
+  - name: jellyseerr
+    version: "0.1.1"
+  - name: karakeep
+    version: "0.1.1"
+  - name: kavita
+    version: "0.1.1"
+  - name: kimai
+    version: "0.1.1"
+  - name: librespeed
+    version: "0.1.1"
+  - name: linkwarden
+    version: "0.1.1"
+  - name: mastodon
+    version: "0.1.1"
+  - name: mealie
+    version: "0.1.1"
+  - name: memos
+    version: "0.1.1"
+  - name: metube
+    version: "0.1.1"
+  - name: minecraft
+    version: "0.1.1"
+  - name: miniflux
+    version: "0.1.1"
+  - name: monica
+    version: "0.1.1"
+  - name: n8n
+    version: "0.1.1"
+  - name: navidrome
+    version: "0.1.1"
+  - name: nextcloud
+    version: "0.1.1"
+  - name: ntfy
+    version: "0.1.1"
+  - name: onlyoffice
+    version: "0.1.1"
+  - name: open-webui
+    version: "0.1.1"
+  - name: openclaw
+    version: "0.1.1"
+  - name: pairdrop
+    version: "0.1.1"
+  - name: paperless-ngx
+    version: "0.1.1"
+  - name: photoprism
+    version: "0.1.1"
+  - name: planka
+    version: "0.1.1"
+  - name: prowlarr
+    version: "0.1.1"
+  - name: qbittorrent
+    version: "0.1.2"
   - name: radarr
-    version: "0.1.0"
+    version: "0.1.1"
   - name: reactive-resume
-    version: "0.1.0"
+    version: "0.1.1"
   - name: romm
-    version: "0.1.0"
+    version: "0.1.1"
   - name: searxng
-    version: "0.1.0"
+    version: "0.1.1"
   - name: shlink
-    version: "0.1.0"
+    version: "0.1.1"
   - name: sonarr
-    version: "0.1.0"
+    version: "0.1.1"
   - name: speedtest-tracker
-    version: "0.1.0"
+    version: "0.1.1"
   - name: stirling-pdf
-    version: "0.1.0"
+    version: "0.1.1"
   - name: strfry
-    version: "0.1.0"
+    version: "0.1.1"
   - name: synapse
-    version: "0.1.0"
+    version: "0.1.1"
   - name: syncthing
-    version: "0.1.0"
+    version: "0.1.1"
   - name: umami
-    version: "0.1.0"
+    version: "0.1.1"
   - name: unifi
-    version: "0.1.0"
+    version: "0.1.1"
   - name: uptime-kuma
-    version: "0.1.0"
+    version: "0.1.1"
   - name: valheim
-    version: "0.1.0"
+    version: "0.1.1"
   - name: vaultwarden
-    version: "0.1.0"
+    version: "0.1.1"
   - name: vikunja
-    version: "0.1.0"
+    version: "0.1.1"
   - name: wallabag
-    version: "0.1.0"
+    version: "0.1.1"
   - name: wallos
-    version: "0.1.0"
+    version: "0.1.1"
   - name: your-spotify
-    version: "0.1.0"
+    version: "0.1.1"
