@@ -443,6 +443,20 @@ impl crate::runtime::Controller for DisksController {
     }
 }
 
+/// Where a tick's disk → OSD map came from, which decides what it may be used for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OsdMapSource {
+    /// ceph-volume's LVM tags on this host: every OSD prepared here, whether or
+    /// not it ever booted. Complete, so a disk missing from it has no OSD.
+    CephVolume,
+    /// The mon's metadata, used when ceph-volume cannot answer. The mon records
+    /// an OSD's devices only once it has booted, so an OSD that never did is
+    /// missing — the map is right about every OSD in it and silent about the
+    /// rest. Live: a USB stick too slow for its new OSD to finish booting read
+    /// as a disk with no OSD, and a create was started on it every tick.
+    Mon,
+}
+
 /// Build a disk_id → osd_id map from `ceph-volume lvm list`, which reads the
 /// LVM tags ceph-volume itself wrote when it created each OSD.
 ///
@@ -456,7 +470,7 @@ async fn fetch_disk_to_osd<H: Host>(
     host: &H,
     _node: &str,
     meta: &HashMap<String, Disk>,
-) -> Option<HashMap<String, i64>> {
+) -> Option<(HashMap<String, i64>, OsdMapSource)> {
     // Build full device path → disk_id from our local inventory.
     // Index both the stored path and its canonical (symlink-resolved) path so
     // that /dev/mapper/pool-ceph (a symlink → /dev/dm-1) matches whichever
@@ -487,8 +501,8 @@ async fn fetch_disk_to_osd<H: Host>(
     // unrelated failure modes, and needing both is not hypothetical — a wedged
     // `lvs` took ceph-volume out on node1 and left an OSD marked `out` with no
     // way back in, because marking it in needs this map.
-    let local = match local_osds(host).await {
-        Ok(v) => v,
+    let (local, source) = match local_osds(host).await {
+        Ok(v) => (v, OsdMapSource::CephVolume),
         Err(e) => {
             tracing::warn!("fetch_disk_to_osd: ceph-volume failed ({e}) — asking the mon instead");
             match host.ceph_json(&["osd", "metadata"]).await {
@@ -508,7 +522,7 @@ async fn fetch_disk_to_osd<H: Host>(
                         "fetch_disk_to_osd: recovered {} OSD(s) from the mon",
                         from_mon.len()
                     );
-                    from_mon
+                    (from_mon, OsdMapSource::Mon)
                 }
                 Err(e2) => {
                     tracing::warn!(
@@ -534,7 +548,7 @@ async fn fetch_disk_to_osd<H: Host>(
             result.insert(disk_id.clone(), osd_id);
         }
     }
-    Some(result)
+    Some((result, source))
 }
 
 /// Parse `ceph osd metadata -f json` into (device identity, osd id) pairs for
@@ -630,11 +644,13 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
     // None means "could not tell", which is NOT the same as "no OSDs" and must
     // never be flattened into one. An empty fsid means the cluster is
     // unreachable, which is equally unknown.
-    let disk_to_osd: Option<HashMap<String, i64>> = if our_fsid.is_empty() {
+    let fetched = if our_fsid.is_empty() {
         None
     } else {
         fetch_disk_to_osd(host, node, &meta).await
     };
+    let can_create = matches!(fetched, Some((_, OsdMapSource::CephVolume)));
+    let disk_to_osd: Option<HashMap<String, i64>> = fetched.map(|(map, _)| map);
     if let Some(map) = &disk_to_osd {
         mark_known_osds(&mut meta, map);
     }
@@ -650,7 +666,7 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
             // 30 seconds before its real state is known.
             auto_register_all_disks(host, node, &meta, d).await;
             let d = read_desired(host).await.unwrap_or_else(|| d.clone());
-            reconcile_local_osds(host, node, &meta, &d, disk_to_osd.as_ref()).await;
+            reconcile_local_osds(host, node, &meta, &d, disk_to_osd.as_ref(), can_create).await;
         }
         None => {
             tracing::warn!(
@@ -878,6 +894,10 @@ async fn reconcile_local_osds<H: Host + 'static>(
     meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
     disk_to_osd: Option<&HashMap<String, i64>>,
+    // Whether the map is complete (`OsdMapSource::CephVolume`). Everything else
+    // this tick does acts on OSDs IN the map, which any source gets right;
+    // creating acts on disks MISSING from it, which only a complete map proves.
+    can_create: bool,
 ) {
     // The two guards that stand between a bad answer and `ceph-volume lvm
     // create` over live data. See `plan_tick`, where they are asserted.
@@ -922,7 +942,13 @@ async fn reconcile_local_osds<H: Host + 'static>(
 
     // Create OSDs for disks switched ON that do not have one yet. This is the
     // half Rook used to do in response to a CephCluster patch.
-    for (disk_id, m) in meta {
+    if !can_create {
+        tracing::info!(
+            "reconcile_local_osds: this tick's OSD list is the mon's, which omits OSDs that never \
+             booted — creating nothing until ceph-volume answers"
+        );
+    }
+    for (disk_id, m) in meta.iter().filter(|_| can_create) {
         if forgotten.contains(disk_id) {
             // Erased this tick; it reads as blank on the next one.
             continue;
@@ -2900,7 +2926,7 @@ mod tests {
         let desired = HashMap::from([("disk-purge".to_string(), "OFF".to_string())]);
         let disk_to_osd = HashMap::from([("disk-purge".to_string(), 7i64)]);
 
-        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
         assert!(
             host.ran("lvm zap"),
@@ -2925,7 +2951,7 @@ mod tests {
         let desired = HashMap::from([(record_key("node1", "disk-old"), "ON".to_string())]);
         let disk_to_osd = HashMap::from([("disk-old".to_string(), 1i64)]);
 
-        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
         assert!(
             host.ran("ceph-volume lvm zap --destroy /dev/sdb"),
@@ -2941,6 +2967,57 @@ mod tests {
         );
     }
 
+    /// A tick whose OSD list is the mon's creates nothing — the disk holding a new
+    /// OSD that never booted is missing from that list — and still does
+    /// everything else for the OSDs it does list.
+    #[tokio::test]
+    async fn a_tick_on_the_mons_list_creates_nothing_but_still_starts_known_osds() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd ls", "[5]")
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@5.service",
+                "inactive",
+            )
+            .ok("systemctl start yolab-ceph-osd@5.service", "");
+        let meta = HashMap::from([
+            ("disk-new-osd".to_string(), disk(Ownership::Blank)),
+            ("disk-known".to_string(), disk(Ownership::Ours)),
+        ]);
+        let desired = HashMap::from([
+            (record_key("node1", "disk-new-osd"), "ON".to_string()),
+            (record_key("node1", "disk-known"), "ON".to_string()),
+        ]);
+        let disk_to_osd = HashMap::from([("disk-known".to_string(), 5i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), false).await;
+
+        assert!(!host.ran("lvm create") && !host.ran("wipefs"), "{:?}", host.calls());
+        assert!(!CREATING.lock().unwrap().contains("disk-new-osd"));
+        assert!(host.ran("systemctl start yolab-ceph-osd@5.service"), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn the_osd_list_says_where_it_came_from() {
+        let meta = HashMap::from([("disk-b".to_string(), disk(Ownership::Blank))]);
+
+        let busy = FakeHost::new()
+            .fail("ceph-volume lvm list", "skipped, already running on this node")
+            .ok(
+                "ceph osd metadata",
+                r#"[{"id": 2, "hostname": "node1", "devices": "sdb"}]"#,
+            );
+        let (map, source) = fetch_disk_to_osd(&busy, "node1", &meta).await.unwrap();
+        assert_eq!(source, OsdMapSource::Mon);
+        assert_eq!(map.get("disk-b"), Some(&2));
+
+        let local = FakeHost::new()
+            .ok("ceph-volume lvm list", "{}")
+            .ok("ceph fsid", r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#);
+        let (_, source) = fetch_disk_to_osd(&local, "node1", &meta).await.unwrap();
+        assert_eq!(source, OsdMapSource::CephVolume);
+    }
+
     /// The same disk switched OFF has nothing left to purge: it is just not in use.
     #[tokio::test]
     async fn a_switched_off_disk_whose_osd_the_cluster_forgot_is_left_alone() {
@@ -2952,7 +3029,7 @@ mod tests {
         let desired = HashMap::from([(record_key("node1", "disk-off"), "OFF".to_string())]);
         let disk_to_osd = HashMap::from([("disk-off".to_string(), 3i64)]);
 
-        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
         assert!(!host.ran("zap") && !host.ran("osd purge") && !host.ran("osd out"));
         assert_eq!(progress_of("disk-off").phase, Phase::Removable);
@@ -2982,7 +3059,7 @@ mod tests {
         let desired = HashMap::from([("disk-stuck".to_string(), "OFF".to_string())]);
         let disk_to_osd = HashMap::from([("disk-stuck".to_string(), 9i64)]);
 
-        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
         assert!(
             !host.ran("lvm zap"),
@@ -2999,7 +3076,7 @@ mod tests {
         let desired = HashMap::from([("disk-a".to_string(), "ON".to_string())]);
         let disk_to_osd = HashMap::new();
 
-        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
         assert_eq!(progress_of("disk-a").phase, Phase::Unknown);
         assert_eq!(*host.ceph_volume_calls.lock().unwrap(), 0);
