@@ -404,7 +404,7 @@ in {
       # so they use DNS-01, through the platform's acme-dns endpoint.
       package = pkgs.caddy.withPlugins {
         plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
-        hash = lib.fakeHash;
+        hash = "sha256-iKExEW87Jd6DXrNBxqvkWkKjkh3KwpNZsBIf1HmSGE4=";
       };
       configFile = pkgs.writeText "Caddyfile" ''
         # A certificate for a shared name: `import shared_tls <name>`. The key is
