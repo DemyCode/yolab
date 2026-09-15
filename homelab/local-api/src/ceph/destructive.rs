@@ -193,14 +193,23 @@ impl ZapWarrant {
 /// ceph-volume built its own LVM stack on and wrong for the system LV disko owns
 /// (the OS depends on the volume group around it). Device-mapper paths are
 /// therefore never `--destroy`ed, whatever the warrant.
+///
+/// A forgotten OSD is found on either: the system volume, by its volume path,
+/// is only erased; a whole disk is destroyed, or its leftover volume group would
+/// make the next `ceph-volume lvm create` refuse it.
 pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Result<(), CmdError> {
     let door = Door(());
     let is_lv = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
+    // `/dev/<vg>/<lv>`: one more path segment than a whole disk has.
+    let is_volume_path = dev_path
+        .strip_prefix("/dev/")
+        .is_some_and(|rest| rest.contains('/'));
     let destroy = !is_lv
-        && !matches!(
-            warrant,
-            ZapWarrant::StaleSignature | ZapWarrant::ForgottenByCluster { .. }
-        );
+        && match warrant {
+            ZapWarrant::StaleSignature => false,
+            ZapWarrant::ForgottenByCluster { .. } => !is_volume_path,
+            _ => true,
+        };
     let mut args = vec!["lvm", "zap"];
     if destroy {
         args.push("--destroy");
@@ -381,6 +390,12 @@ mod tests {
             assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
             assert!(!host.ran("--destroy"), "{dev}");
         }
+        // A whole disk loses its leftover volume group, or it cannot be used again.
+        let host = FakeHost::new().ok("ceph-volume lvm zap", "");
+        zap(&host, "/dev/sdb", ZapWarrant::ForgottenByCluster { osd: 1 })
+            .await
+            .unwrap();
+        assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdb"));
     }
 
     #[test]
