@@ -29,10 +29,7 @@ export interface HealStatus {
 }
 
 export type HealProblem =
-  | "machines_gone"
-  | "ceph_no_quorum"
-  | "kubernetes_down"
-  | "data_unreachable";
+  "machines_gone" | "ceph_no_quorum" | "kubernetes_down" | "data_unreachable";
 
 export type HealStep =
   | "claim"

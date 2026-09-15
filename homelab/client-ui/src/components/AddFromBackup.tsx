@@ -81,13 +81,19 @@ function AppRow({
               </option>
             ))}
           </Select>
-          <Button onClick={() => void add()} loading={busy} disabled={!snapshot}>
+          <Button
+            onClick={() => void add()}
+            loading={busy}
+            disabled={!snapshot}
+          >
             Add
           </Button>
         </div>
       )}
       {app.adding?.error && (
-        <p className="text-sm text-danger">Last try failed: {app.adding.error}</p>
+        <p className="text-sm text-danger">
+          Last try failed: {app.adding.error}
+        </p>
       )}
       {error && <p className="text-sm text-danger">{error}</p>}
     </li>
@@ -116,20 +122,32 @@ export function AddFromBackupButton() {
         subtitle="Bring an app back with its settings and files, as they were at the moment you pick."
         wide
       >
-        {res.loading && <p className="text-sm text-fg-muted">Reading your backups…</p>}
+        {res.loading && (
+          <p className="text-sm text-fg-muted">Reading your backups…</p>
+        )}
         {res.error && !data && (
-          <p className="text-sm text-danger">Your backups could not be read: {res.error}</p>
+          <p className="text-sm text-danger">
+            Your backups could not be read: {res.error}
+          </p>
         )}
         {data && !data.configured && (
-          <p className="text-sm text-fg-muted">Backups are not turned on yet.</p>
+          <p className="text-sm text-fg-muted">
+            Backups are not turned on yet.
+          </p>
         )}
         {data && data.configured && data.apps.length === 0 && (
-          <p className="text-sm text-fg-muted">No app has been backed up yet.</p>
+          <p className="text-sm text-fg-muted">
+            No app has been backed up yet.
+          </p>
         )}
         {data && data.apps.length > 0 && (
           <ul>
             {data.apps.map((app) => (
-              <AppRow key={app.namespace} app={app} onStarted={() => void res.refresh()} />
+              <AppRow
+                key={app.namespace}
+                app={app}
+                onStarted={() => void res.refresh()}
+              />
             ))}
           </ul>
         )}

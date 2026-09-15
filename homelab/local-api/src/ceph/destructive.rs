@@ -194,7 +194,11 @@ impl HealMandate {
 
 /// Purges an OSD that is down — and refuses one that is up. A disk that
 /// answers is not unresponsive, whatever was decided earlier.
-pub async fn purge_down<H: Host>(host: &H, mandate: &HealMandate, osd: i64) -> Result<(), CmdError> {
+pub async fn purge_down<H: Host>(
+    host: &H,
+    mandate: &HealMandate,
+    osd: i64,
+) -> Result<(), CmdError> {
     let dump = host.osd_dump().await?;
     if dump.up().contains(&osd) {
         return Err(CmdError::Forbidden {
@@ -206,7 +210,11 @@ pub async fn purge_down<H: Host>(host: &H, mandate: &HealMandate, osd: i64) -> R
 }
 
 /// Removes a confirmed-gone machine's mon from a monmap that still has quorum.
-pub async fn remove_mon<H: Host>(host: &H, mandate: &HealMandate, machine: &str) -> Result<(), CmdError> {
+pub async fn remove_mon<H: Host>(
+    host: &H,
+    mandate: &HealMandate,
+    machine: &str,
+) -> Result<(), CmdError> {
     mandate.refuse_live(machine, &format!("ceph mon remove {machine}"))?;
     let door = Door(());
     host.ceph_destructive(&door, &["mon", "remove", machine])
@@ -239,17 +247,22 @@ pub async fn remove_mons_offline<H: Host>(
             cmd: format!("monmaptool --rm {me} (this machine's own mon)"),
         });
     }
-    tracing::warn!("heal {}: removing {gone:?} from {me}'s monmap offline", mandate.id);
+    tracing::warn!(
+        "heal {}: removing {gone:?} from {me}'s monmap offline",
+        mandate.id
+    );
     let unit = format!("ceph-mon-{me}.service");
     checked(host.systemctl(&["stop", &unit]).await, "systemctl stop")?;
     let edited: Result<(), CmdError> = async {
         checked(
-            host.run_cmd("ceph-mon", &["-i", me, "--extract-monmap", monmap_path]).await,
+            host.run_cmd("ceph-mon", &["-i", me, "--extract-monmap", monmap_path])
+                .await,
             "ceph-mon --extract-monmap",
         )?;
         for machine in gone {
             checked(
-                host.run_cmd("monmaptool", &[monmap_path, "--rm", machine]).await,
+                host.run_cmd("monmaptool", &[monmap_path, "--rm", machine])
+                    .await,
                 "monmaptool --rm",
             )?;
         }
@@ -292,11 +305,18 @@ fn checked(out: Result<crate::host::CommandOutput, CmdError>, what: &str) -> Res
 
 /// Deletes the cephx keys of a confirmed-gone machine's mgr and MDS, so the
 /// machine cannot come back as those daemons without being set up again.
-pub async fn forget_daemons<H: Host>(host: &H, mandate: &HealMandate, machine: &str) -> Result<(), CmdError> {
+pub async fn forget_daemons<H: Host>(
+    host: &H,
+    mandate: &HealMandate,
+    machine: &str,
+) -> Result<(), CmdError> {
     mandate.refuse_live(machine, &format!("ceph auth del mgr.{machine}"))?;
     let door = Door(());
     for entity in [format!("mgr.{machine}"), format!("mds.{machine}")] {
-        match host.ceph_destructive(&door, &["auth", "del", &entity]).await {
+        match host
+            .ceph_destructive(&door, &["auth", "del", &entity])
+            .await
+        {
             Ok(_) => {}
             Err(e) if e.is_not_found() => {}
             Err(e) => return Err(e),
@@ -308,7 +328,10 @@ pub async fn forget_daemons<H: Host>(host: &H, mandate: &HealMandate, machine: &
 /// Resets this machine's embedded etcd to a single member — itself — keeping its
 /// data, so k3s can run again after the other members are gone for good.
 /// `k3s` must not be running; the caller stops it first.
-pub async fn reset_kubernetes_membership<H: Host>(host: &H, mandate: &HealMandate) -> Result<(), CmdError> {
+pub async fn reset_kubernetes_membership<H: Host>(
+    host: &H,
+    mandate: &HealMandate,
+) -> Result<(), CmdError> {
     tracing::warn!("heal {}: resetting k3s to a single member", mandate.id);
     checked(
         host.run_cmd_bounded(
@@ -336,7 +359,10 @@ pub async fn delete_all_storage<H: Host>(
     existing_pools: &[String],
 ) -> Result<(), CmdError> {
     let door = Door(());
-    tracing::warn!("heal {}: deleting the app filesystem and every pool", mandate.id);
+    tracing::warn!(
+        "heal {}: deleting the app filesystem and every pool",
+        mandate.id
+    );
     if fs_exists {
         host.ceph_destructive(&door, &["fs", "fail", RECOVERABLE_FS])
             .await?;
@@ -565,7 +591,10 @@ mod tests {
         assert!(!up.ran("osd purge"));
 
         let down = FakeHost::new()
-            .ok("ceph osd dump", r#"{"osds":[{"osd":3,"up":0,"in":1}],"pools":[]}"#)
+            .ok(
+                "ceph osd dump",
+                r#"{"osds":[{"osd":3,"up":0,"in":1}],"pools":[]}"#,
+            )
             .ok("ceph osd purge", "")
             .ok("ceph osd ls", "[]");
         purge_down(&down, &mandate(), 3).await.unwrap();
@@ -574,7 +603,9 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_confirmed_gone_machine_loses_its_mon_and_keys() {
-        let host = FakeHost::new().ok("ceph mon remove", "").ok("ceph auth del", "");
+        let host = FakeHost::new()
+            .ok("ceph mon remove", "")
+            .ok("ceph auth del", "");
         assert!(remove_mon(&host, &mandate(), "node1").await.is_err());
         assert!(forget_daemons(&host, &mandate(), "node1").await.is_err());
         assert!(host.calls().is_empty(), "{:?}", host.calls());
@@ -588,7 +619,10 @@ mod tests {
     #[tokio::test]
     async fn a_key_that_is_already_gone_is_not_an_error() {
         let host = FakeHost::new()
-            .fail("ceph auth del mgr.node2", "Error ENOENT: failed to find mgr.node2 in keyring")
+            .fail(
+                "ceph auth del mgr.node2",
+                "Error ENOENT: failed to find mgr.node2 in keyring",
+            )
             .ok("ceph auth del mds.node2", "");
         forget_daemons(&host, &mandate(), "node2").await.unwrap();
     }
@@ -617,7 +651,13 @@ mod tests {
         ];
         for w in order.windows(2) {
             let (a, b) = (host.position(w[0]), host.position(w[1]));
-            assert!(a.is_some() && a < b, "{} before {}: {:?}", w[0], w[1], host.calls());
+            assert!(
+                a.is_some() && a < b,
+                "{} before {}: {:?}",
+                w[0],
+                w[1],
+                host.calls()
+            );
         }
     }
 
@@ -625,7 +665,9 @@ mod tests {
     async fn a_failed_edit_still_starts_the_mon_again() {
         let host = offline_host().fail("monmaptool", "no such mon");
         let gone = vec!["node2".to_string()];
-        assert!(remove_mons_offline(&host, &mandate(), "node1", &gone, "/m").await.is_err());
+        assert!(remove_mons_offline(&host, &mandate(), "node1", &gone, "/m")
+            .await
+            .is_err());
         assert!(host.ran("systemctl start ceph-mon-node1.service"));
         assert!(!host.ran("--inject-monmap"));
     }
@@ -634,9 +676,11 @@ mod tests {
     async fn the_offline_edit_refuses_live_machines_and_this_one() {
         let not_confirmed = vec!["node3".to_string()];
         let host = offline_host();
-        assert!(remove_mons_offline(&host, &mandate(), "node1", &not_confirmed, "/m")
-            .await
-            .is_err());
+        assert!(
+            remove_mons_offline(&host, &mandate(), "node1", &not_confirmed, "/m")
+                .await
+                .is_err()
+        );
         assert!(host.calls().is_empty(), "{:?}", host.calls());
 
         let both = HealMandate::from_persisted_heal(
@@ -651,7 +695,9 @@ mod tests {
         assert!(host.calls().is_empty(), "{:?}", host.calls());
 
         let host = FakeHost::new();
-        remove_mons_offline(&host, &mandate(), "node1", &[], "/m").await.unwrap();
+        remove_mons_offline(&host, &mandate(), "node1", &[], "/m")
+            .await
+            .unwrap();
         assert!(host.calls().is_empty());
     }
 
@@ -670,8 +716,14 @@ mod tests {
             .ok("ceph fs rm", "")
             .ok("ceph config set mon mon_allow_pool_delete", "")
             .ok("ceph osd pool delete", "");
-        let pools = vec![".mgr".to_string(), "images".to_string(), "yolab-fs-data0".to_string()];
-        delete_all_storage(&host, &mandate(), true, &pools).await.unwrap();
+        let pools = vec![
+            ".mgr".to_string(),
+            "images".to_string(),
+            "yolab-fs-data0".to_string(),
+        ];
+        delete_all_storage(&host, &mandate(), true, &pools)
+            .await
+            .unwrap();
         let pos = |n: &str| host.position(n).unwrap_or_else(|| panic!("{n}"));
         assert!(pos("ceph fs fail yolab-fs") < pos("ceph fs rm yolab-fs"));
         assert!(pos("mon_allow_pool_delete true") < pos("pool delete .mgr .mgr"));
@@ -681,12 +733,16 @@ mod tests {
         let failing = FakeHost::new()
             .ok("ceph config set mon mon_allow_pool_delete", "")
             .fail("ceph osd pool delete .mgr", "EBUSY");
-        assert!(delete_all_storage(&failing, &mandate(), false, &pools).await.is_err());
+        assert!(delete_all_storage(&failing, &mandate(), false, &pools)
+            .await
+            .is_err());
         assert!(failing.ran("mon_allow_pool_delete false"));
         assert!(!failing.ran("pool delete images") && !failing.ran("fs fail"));
 
         let nothing = FakeHost::new();
-        delete_all_storage(&nothing, &mandate(), false, &[]).await.unwrap();
+        delete_all_storage(&nothing, &mandate(), false, &[])
+            .await
+            .unwrap();
         assert!(nothing.calls().is_empty());
     }
 
