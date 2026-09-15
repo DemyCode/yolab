@@ -2161,7 +2161,10 @@ mod tests {
         let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW)
             .await
             .unwrap();
-        assert!(matches!(r, StepResult::NotYet(ref why) if why.contains("node3")), "{r:?}");
+        assert!(
+            matches!(r, StepResult::NotYet(ref why) if why.contains("node3")),
+            "{r:?}"
+        );
         assert!(!host.ran("systemctl reboot"), "this machine waits for it");
         assert_eq!(h.step, Step::RestartMachines);
     }
@@ -2191,8 +2194,14 @@ mod tests {
         let mut newer = heal_at(Step::PurgeDisks);
         newer.id = "h9".into();
         newer.started_at = NOW + 100;
-        assert_eq!(newest(Some(old.clone()), Some(newer.clone())).unwrap().id, "h9");
-        assert_eq!(newest(Some(newer.clone()), Some(old.clone())).unwrap().id, "h9");
+        assert_eq!(
+            newest(Some(old.clone()), Some(newer.clone())).unwrap().id,
+            "h9"
+        );
+        assert_eq!(
+            newest(Some(newer.clone()), Some(old.clone())).unwrap().id,
+            "h9"
+        );
         assert_eq!(newest(None, Some(old.clone())).unwrap().id, "h1");
         assert_eq!(newest(Some(old), None).unwrap().id, "h1");
         assert_eq!(newest(None, None), None);
@@ -2208,7 +2217,10 @@ mod tests {
         let host = FakeHost::new()
             .ok("ceph osd tree", &tree())
             .ok("ceph osd dump", &dump(&[(0, false), (1, false), (2, true)]))
-            .ok("ceph osd dump", &dump(&[(0, false), (1, false), (2, false)]))
+            .ok(
+                "ceph osd dump",
+                &dump(&[(0, false), (1, false), (2, false)]),
+            )
             .ok("ceph osd down", "")
             .ok(HEAL_SET, "")
             .ok("ceph config-key dump yolab/disk-status/", &statuses)
@@ -2223,11 +2235,23 @@ mod tests {
             .ok("ceph config-key set yolab/removed-machines/", "");
         let (_d, rec) = local();
         let mut h = heal_at(Step::PurgeDisks);
-        let r = run_step(&host, &FakeNetwork::default(), &rec, &mut h, "node1", "boot-a", NOW)
-            .await
-            .unwrap();
+        let r = run_step(
+            &host,
+            &FakeNetwork::default(),
+            &rec,
+            &mut h,
+            "node1",
+            "boot-a",
+            NOW,
+        )
+        .await
+        .unwrap();
         assert_eq!(r, StepResult::Done);
-        assert_eq!(h.purged, BTreeSet::from([1, 2]), "node1's system OSD is spared");
+        assert_eq!(
+            h.purged,
+            BTreeSet::from([1, 2]),
+            "node1's system OSD is spared"
+        );
         assert!(!host.ran("purge osd.0"));
         assert_eq!(
             rec.load().await.unwrap().unwrap().purged,
