@@ -257,7 +257,8 @@ pub(crate) trait Network: Send + Sync {
     ) -> impl Future<Output = Result<()>> + Send + 'a;
     fn reboot<'a>(&'a self, addr: &'a str) -> impl Future<Output = Result<()>> + Send + 'a;
     /// `None` when this machine is not connected to the platform.
-    fn platform_nodes(&self) -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_;
+    fn platform_nodes(&self)
+        -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_;
     fn delete_platform_node(&self, id: i64) -> impl Future<Output = Result<()>> + Send + '_;
 }
 
@@ -293,7 +294,11 @@ impl RealNetwork {
     }
 
     /// Sends a node-to-node request; a refusal comes back as its `error`.
-    async fn send(&self, request: reqwest::RequestBuilder, timeout: Duration) -> Result<reqwest::Response> {
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        timeout: Duration,
+    ) -> Result<reqwest::Response> {
         let response = request
             .header(crate::auth::CLUSTER_AUTH_HEADER, &self.token)
             .timeout(timeout)
@@ -317,7 +322,11 @@ impl Network for RealNetwork {
     fn peer<'a>(&'a self, addr: &'a str) -> impl Future<Output = Result<PeerInfo>> + Send + 'a {
         async move {
             let request = self.client.get(self.url(addr, "/api/heal/peer"));
-            Ok(self.send(request, Duration::from_secs(5)).await?.json().await?)
+            Ok(self
+                .send(request, Duration::from_secs(5))
+                .await?
+                .json()
+                .await?)
         }
     }
 
@@ -327,7 +336,10 @@ impl Network for RealNetwork {
         request: &'a PrepareRequest,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
         async move {
-            let r = self.client.post(self.url(addr, "/api/heal/peer/prepare")).json(request);
+            let r = self
+                .client
+                .post(self.url(addr, "/api/heal/peer/prepare"))
+                .json(request);
             self.send(r, Duration::from_secs(30)).await.map(|_| ())
         }
     }
@@ -368,7 +380,9 @@ impl Network for RealNetwork {
         }
     }
 
-    fn platform_nodes(&self) -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_ {
+    fn platform_nodes(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_ {
         async move {
             if self.platform_url.is_empty() || self.token.is_empty() {
                 return Ok(None);
@@ -475,7 +489,9 @@ async fn kubernetes_nodes<H: Host>(host: &H) -> Result<Vec<(String, Option<Strin
     let v = host
         .kubectl_json(&["get", "nodes", "-o", "json", "--request-timeout=10s"])
         .await?;
-    let items = v["items"].as_array().context("kubectl get nodes: no items list")?;
+    let items = v["items"]
+        .as_array()
+        .context("kubectl get nodes: no items list")?;
     Ok(items
         .iter()
         .filter_map(|n| {
@@ -484,7 +500,10 @@ async fn kubernetes_nodes<H: Host>(host: &H) -> Result<Vec<(String, Option<Strin
                 .as_array()
                 .into_iter()
                 .flatten()
-                .find(|a| a["type"] == "InternalIP" && a["address"].as_str().is_some_and(|s| s.contains(':')))
+                .find(|a| {
+                    a["type"] == "InternalIP"
+                        && a["address"].as_str().is_some_and(|s| s.contains(':'))
+                })
                 .and_then(|a| a["address"].as_str())
                 .map(str::to_string);
             Some((name, addr))
@@ -605,7 +624,10 @@ async fn survey<H: Host, N: Network>(
         Ok(Some(nodes)) => {
             any_list = true;
             for n in nodes {
-                listed.entry(normalize(&n.sub_ipv6)).or_default().platform_id = Some(n.node_id);
+                listed
+                    .entry(normalize(&n.sub_ipv6))
+                    .or_default()
+                    .platform_id = Some(n.node_id);
             }
         }
         Ok(None) => {}
@@ -679,7 +701,13 @@ async fn survey<H: Host, N: Network>(
     let ceph_quorum = mon.as_ref().is_ok_and(|m| m.in_quorum);
     let lost_groups = if ceph_quorum {
         match (host.osd_dump().await, host.pgs_brief().await) {
-            (Ok(dump), Ok(pgs)) => Some(model::lost_pgs(&dump, &pgs).0.values().map(BTreeSet::len).sum()),
+            (Ok(dump), Ok(pgs)) => Some(
+                model::lost_pgs(&dump, &pgs)
+                    .0
+                    .values()
+                    .map(BTreeSet::len)
+                    .sum(),
+            ),
             _ => None,
         }
     } else {
@@ -750,7 +778,11 @@ async fn start_heal<H: Host, N: Network>(
         addr: driver_addr.to_string(),
     });
     if let Some(prev) = previous.filter(Heal::running) {
-        tracing::warn!("heal {}: replaced by a new heal while at {:?}", prev.id, prev.step);
+        tracing::warn!(
+            "heal {}: replaced by a new heal while at {:?}",
+            prev.id,
+            prev.step
+        );
     }
     let heal = Heal {
         id,
@@ -797,7 +829,14 @@ fn new_fsid() -> String {
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let h = hex::encode(b);
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 // ── Running ───────────────────────────────────────────────────────────────────
@@ -901,7 +940,11 @@ async fn tick<H: Host, N: Network>(
                         tracing::warn!(
                             "heal {}: {}",
                             heal.id,
-                            if heal.failed.is_some() { "undone" } else { "finished" }
+                            if heal.failed.is_some() {
+                                "undone"
+                            } else {
+                                "finished"
+                            }
                         );
                     }
                 }
@@ -1028,7 +1071,10 @@ async fn prepare_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<Step
                 )))
             }
             PhaseView::Undone | PhaseView::Restarted => {
-                return Ok(StepResult::Fail(format!("{} abandoned its part in the heal", m.name)))
+                return Ok(StepResult::Fail(format!(
+                    "{} abandoned its part in the heal",
+                    m.name
+                )))
             }
         }
     }
@@ -1165,7 +1211,14 @@ pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) 
         Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")),
     };
     let me = crate::system::hostname();
-    let survey = survey(&RealHost, &net, &me, &s.config.node_ipv6, uptime_secs().await).await;
+    let survey = survey(
+        &RealHost,
+        &net,
+        &me,
+        &s.config.node_ipv6,
+        uptime_secs().await,
+    )
+    .await;
     (StatusCode::OK, Json(status_json(&survey, local.as_ref())))
 }
 
@@ -1239,7 +1292,10 @@ pub async fn post_peer_prepare(
     }
     // Held while preparing: an update rebuilding this machine meanwhile would race it.
     let Some(update) = crate::routers::update::exclusive() else {
-        return error(StatusCode::CONFLICT, "an update is rebuilding this machine's system");
+        return error(
+            StatusCode::CONFLICT,
+            "an update is rebuilding this machine's system",
+        );
     };
     match member::begin_prepare(&RealHost, &layout, &request, &boot, Preparing::global()).await {
         Ok(Begin::Already(v)) => (StatusCode::OK, Json(json!(v))),
@@ -1259,9 +1315,11 @@ pub async fn post_peer_arm(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
 ) -> (StatusCode, Json<Value>) {
-    peer_change(&s, &request.heal_id, |layout, boot, id, _may_rebuild| async move {
-        member::arm(&layout, &id, &boot)
-    })
+    peer_change(
+        &s,
+        &request.heal_id,
+        |layout, boot, id, _may_rebuild| async move { member::arm(&layout, &id, &boot) },
+    )
     .await
 }
 
@@ -1270,9 +1328,21 @@ pub async fn post_peer_undo(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
 ) -> (StatusCode, Json<Value>) {
-    peer_change(&s, &request.heal_id, |layout, boot, id, may_rebuild| async move {
-        member::undo(&RealHost, &layout, &id, &boot, Preparing::global(), may_rebuild).await
-    })
+    peer_change(
+        &s,
+        &request.heal_id,
+        |layout, boot, id, may_rebuild| async move {
+            member::undo(
+                &RealHost,
+                &layout,
+                &id,
+                &boot,
+                Preparing::global(),
+                may_rebuild,
+            )
+            .await
+        },
+    )
     .await
 }
 

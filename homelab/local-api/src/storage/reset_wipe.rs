@@ -121,7 +121,10 @@ pub async fn run<H: Host>(host: &H, root: &Path, config_path: &Path) -> Result<(
     // Read again: only the flag changes, whatever else happened to the file.
     let config = std::fs::read_to_string(config_path)
         .with_context(|| format!("read {}", config_path.display()))?;
-    crate::config::write_private_file(config_path, with_wipe_condition(&config, false)?.as_bytes())?;
+    crate::config::write_private_file(
+        config_path,
+        with_wipe_condition(&config, false)?.as_bytes(),
+    )?;
     tracing::warn!("reset-wipe: done — this machine now boots as a fresh one");
     Ok(())
 }
@@ -284,7 +287,11 @@ mod tests {
         assert!(wipe_condition("[node]\nwipe_condition = true\n").unwrap());
         assert!(wipe_condition("[node]\nwipe_condition = \"yes\"\n").is_err());
         assert!(wipe_condition("not toml {{").is_err());
-        let set = with_wipe_condition("[node]\nnode_id = \"n1\"\n[node.k3s]\ntoken = \"t\"\n", true).unwrap();
+        let set = with_wipe_condition(
+            "[node]\nnode_id = \"n1\"\n[node.k3s]\ntoken = \"t\"\n",
+            true,
+        )
+        .unwrap();
         let t: toml::Table = toml::from_str(&set).unwrap();
         assert_eq!(t["node"]["wipe_condition"].as_bool(), Some(true));
         assert_eq!(t["node"]["node_id"].as_str(), Some("n1"));
@@ -338,7 +345,9 @@ mod tests {
         assert!(!r.join("var/lib/rancher/k3s/server/db").exists());
         assert!(r.join("var/lib/rancher/k3s/server/manifests").exists());
         assert!(!r.join("var/lib/rancher/k3s/agent/client-ca").exists());
-        assert!(r.join("var/lib/rancher/k3s/agent/etc/kubelet.conf.d").exists());
+        assert!(r
+            .join("var/lib/rancher/k3s/agent/etc/kubelet.conf.d")
+            .exists());
         assert!(!r.join("etc/ceph/ceph.client.admin.keyring").exists());
         assert!(r.join("etc/ceph/ceph.conf").exists());
         assert!(!flag(&cfg), "the next boot wipes nothing");
@@ -346,7 +355,10 @@ mod tests {
             std::fs::read_to_string(&cfg).unwrap().contains("fd00::1"),
             "the rest of config.toml stays"
         );
-        assert!(r.join("var/lib/yolab/heal.json").exists(), "the heal's record stays");
+        assert!(
+            r.join("var/lib/yolab/heal.json").exists(),
+            "the heal's record stays"
+        );
     }
 
     #[tokio::test]

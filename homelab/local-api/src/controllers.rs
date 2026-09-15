@@ -81,7 +81,10 @@ pub fn spawn_all(leader: Leadership) {
         &leader,
     );
     // Keeps the backup credentials on this machine's disk, which a heal keeps.
-    spawn(crate::heal::credentials::BackupCredentialsController, &leader);
+    spawn(
+        crate::heal::credentials::BackupCredentialsController,
+        &leader,
+    );
 
     // The storage agent's own jobs, which used to be eleven systemd timers. Only
     // on a machine whose storage settings reached the process: a dev box must not
