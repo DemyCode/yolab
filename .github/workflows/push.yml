@@ -346,8 +346,9 @@ jobs:
             echo "catalog unchanged"
             exit 0
           fi
-          # [skip ci] because this push lands on main and would otherwise re-trigger.
-          git commit -m "Update catalog manifest from ${GITHUB_SHA::7} [skip ci]"
+          # No [skip ci]: the run this push triggers regenerates the same manifest,
+          # finds it unchanged above, and stops there.
+          git commit -m "Update catalog manifest from ${GITHUB_SHA::7}"
           git push
 
       - name: Report unpublished charts
