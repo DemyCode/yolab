@@ -544,8 +544,6 @@ in {
       };
     };
 
-
-
     # ── System-disk OSD ───────────────────────────────────────────────────────
     # The system OSD is now a dedicated LVM logical volume (/dev/pool/ceph),
     # created by disko at install time and activated automatically by LVM on

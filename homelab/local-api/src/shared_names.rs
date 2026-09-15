@@ -153,7 +153,13 @@ mod tests {
         .unwrap();
         write_caddy_env(dir.path(), &config.to_string_lossy()).unwrap();
         let path = dir.path().join(CADDY_ENV);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "YOLAB_ACCOUNT_TOKEN=tok\n");
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "YOLAB_ACCOUNT_TOKEN=tok\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
