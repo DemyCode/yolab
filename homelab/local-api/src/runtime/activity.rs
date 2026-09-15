@@ -20,22 +20,18 @@ use super::Requirement;
 pub enum Activity {
     /// An app restore is replacing PVCs and scaling deployments.
     Restore,
-    /// FORCE HEAL is removing machines and disks and deleting every pool.
-    Heal,
 }
 
 impl Activity {
     fn describe(self) -> &'static str {
         match self {
             Activity::Restore => "an app restore is running",
-            Activity::Heal => "the cluster is being healed",
         }
     }
 
     fn unknown(self) -> &'static str {
         match self {
             Activity::Restore => "cannot tell whether an app restore is running",
-            Activity::Heal => "cannot tell whether the cluster is being healed",
         }
     }
 }
@@ -125,7 +121,6 @@ pub async fn gate(activities: &[Activity]) -> Gate {
         let answer = cached(Key::Act(*a), async {
             let r = match a {
                 Activity::Restore => crate::routers::restore::running_anywhere().await,
-                Activity::Heal => crate::heal::heal_running().await,
             };
             r.map_err(|e| tracing::debug!("activity {a:?}: {e:#}")).ok()
         })
@@ -160,9 +155,9 @@ mod tests {
             Gate::Paused(why) => assert!(why.contains("restore is running")),
             Gate::Clear => panic!("a running restore must pause"),
         }
-        match decide(Activity::Heal, None) {
+        match decide(Activity::Restore, None) {
             Gate::Paused(why) => assert!(why.contains("cannot tell")),
-            Gate::Clear => panic!("an unknown heal state must pause"),
+            Gate::Clear => panic!("an unknown restore state must pause"),
         }
     }
 

@@ -2,13 +2,15 @@
 #
 # One machine, two OSD disks, every pool at one copy — so each placement group
 # lives on exactly one disk and hot-unplugging either loses data for real. The
-# test asserts that nothing happens on its own, and that FORCE HEAL (heal.rs):
+# test asserts that nothing happens on its own, and then the two halves of a
+# FORCE HEAL (homelab/local-api/src/heal/) a VM can run:
 #
-#   * reports the unreachable data and plans to remove no machine,
-#   * purges the unplugged OSD and switches its disk OFF,
-#   * deletes every pool and the stand-in app, restarts the machine,
-#   * comes back with the app filesystem recreated, the image store recreated,
-#     every placement group active, and the heal recorded as finished.
+#   * a heal that cannot build the machine's new system is undone, and leaves
+#     the machine exactly as it was — the VM has no flake repo to build from,
+#     which is as real a build failure as any;
+#   * the boot-time wipe (storage/reset_wipe.rs) turns the machine into a fresh
+#     one: every OSD erased, no disk switched on, no apps, and the cluster
+#     created again.
 #
 # The unplug is done from inside the guest by unbinding the disk's virtio PCI
 # device, which removes the block device the way a yanked USB cable does. The
@@ -96,10 +98,10 @@ in
 
       def dump_heal_log():
           print(node1.execute(
-              "journalctl -u yolab-local-api --no-pager | grep -E 'heal|disk' | tail -120"
+              "journalctl -u yolab-local-api -u yolab-reset-wipe --no-pager | grep -E 'heal|disk|reset' | tail -120"
           )[1])
           print(node1.execute("ceph -s; ceph osd tree; ceph fs ls")[1])
-          print(node1.execute("cat /var/lib/yolab/heal.json")[1])
+          print(node1.execute("cat /var/lib/yolab/heal.json /var/lib/yolab/reset/state.json")[1])
 
       start_all()
       node1.wait_for_unit("multi-user.target", timeout=900)
@@ -161,41 +163,46 @@ in
       node1.succeed("ceph osd ls -f json | jq -e 'index(1) != null'")
       node1.succeed(f"{K} get namespace yolab-demo")
 
-      # ── FORCE HEAL ────────────────────────────────────────────────────────
+      # ── FORCE HEAL that cannot build: undone ──────────────────────────────
       jq_ok(f"curl -sf {AUTH} {API}/api/heal",
             '(.problems | index("data_unreachable") != null) and .refusal == null '
-            'and .plan.remove_machines == [] and .plan.reset_kubernetes == false', 600)
+            'and .plan.keep_machines == ["yolab-n1"] and .plan.remove_machines == []', 600)
       node1.succeed(
           f"curl -sf -X POST {AUTH} -H 'content-type: application/json' "
-          f"-d '{{\"remove_machines\":[]}}' {API}/api/heal"
+          f"-d '{{\"keep_machines\":[\"yolab-n1\"],\"remove_machines\":[]}}' {API}/api/heal"
       )
       try:
-          # The heal restarts the machine last; the test driver sees that as a
-          # shutdown and starts it again.
-          node1.wait_for_shutdown()
+          jq_ok(f"curl -sf {AUTH} {API}/api/heal",
+                '.heal.running == false and (.heal.failed | test("could not build"))', 900)
       except Exception:
           dump_heal_log()
           raise
+      node1.fail("test -e /var/lib/yolab/reset-wipe")
+      node1.succeed("ceph osd ls -f json | jq -e 'index(1) != null'")
+      node1.succeed(f"{K} get namespace yolab-demo")
+      node1.succeed("grep -q 11111111-2222-3333-4444-555555555555 /etc/yolab-machine/config.toml")
+
+      # ── The wipe at boot: a fresh machine ─────────────────────────────────
+      node1.succeed("echo test > /var/lib/yolab/reset-wipe")
+      node1.shutdown()
       node1.start()
       node1.wait_for_unit("multi-user.target", timeout=900)
-      node1.wait_for_open_port(3001, timeout=600)
-
       try:
-          jq_ok(f"curl -sf {AUTH} {API}/api/heal", '.heal.running == false', 1800)
+          node1.wait_until_succeeds("systemctl show -p Result yolab-reset-wipe | grep -q success", timeout=300)
+          node1.fail("test -e /var/lib/yolab/reset-wipe")
+          node1.wait_until_succeeds("systemctl is-active ceph-mon-yolab-n1.service", timeout=600)
+          node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
       except Exception:
           dump_heal_log()
           raise
-
-      node1.succeed("ceph osd ls -f json | jq -e 'index(1) == null'")
+      node1.succeed(f"{K} create namespace rook-ceph --dry-run=client -o yaml | {K} apply -f -")
+      node1.succeed("ceph osd ls -f json | jq -e 'length == 0'")
       node1.fail(f"{K} get namespace yolab-demo")
-      jq_ok("ceph config-key dump yolab/disks/", 'to_entries | map(select(.value == "OFF")) | length == 1', 60)
-      jq_ok("ceph fs ls -f json", 'map(.name) | index("yolab-fs") != null', 900)
-      node1.wait_until_succeeds("ceph mds stat | grep -q 'up:active'", timeout=600)
-      node1.wait_until_succeeds("ceph fs subvolumegroup ls yolab-fs | grep -q csi", timeout=600)
-      node1.succeed("ceph osd pool ls | grep -qx images")
-      node1.succeed("findmnt /var/lib/rancher/k3s/agent/containerd")
-      jq_ok("ceph pg dump pgs_brief -f json",
-            '[.pg_stats[] | select(.state | test("active") | not)] | length == 0', 900)
-      node1.succeed("ceph osd stat | grep -E '1 osds: 1 up'")
+      node1.wait_for_open_port(3001, timeout=300)
+      # Both disks are blank again, and nothing switches them on.
+      jq_ok(f"curl -sf {AUTH} {API}/api/disks", f"[.[][] | {SPARE}] | length == 2", 600)
+      jq_ok("ceph config-key dump yolab/disks/", 'to_entries | map(select(.value == "OFF")) | length == 2', 600)
+      # The k3s manifests tmpfiles links in survive the wipe.
+      node1.succeed("test -e /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml")
     '';
   }

@@ -1,27 +1,22 @@
 //! Storage configuration, kept in Ceph's own key-value store (`ceph config-key`).
 //!
-//! WHY NOT KUBERNETES. Which disks are switched on, how many copies to keep, and
-//! the state of a storage recovery describe STORAGE, and storage sits below
-//! Kubernetes: k3s cannot start until this node's image store is on Ceph (see
-//! `storage::containerd_store`). Kept in ConfigMaps, the settings for the layer
-//! k3s depends on were unreadable exactly when k3s was down — which is when
-//! storage most needs to be acted on. In Ceph they are readable whenever the
-//! cluster they configure is.
+//! WHY NOT KUBERNETES. Which disks are switched on and how many copies to keep
+//! describe STORAGE, and storage sits below Kubernetes: k3s cannot start until
+//! this node's image store is on Ceph (see `storage::containerd_store`). Kept
+//! in ConfigMaps, the settings for the layer k3s depends on were unreadable
+//! exactly when k3s was down — which is when storage most needs to be acted on.
+//! In Ceph they are readable whenever the cluster they configure is.
 //!
 //! The keys, all under `yolab/`:
 //!
 //!   yolab/disks/<record key>        "ON" | "OFF" — the owner's switch per disk
 //!   yolab/disk-status/<node>        JSON — what that node's disks look like now
 //!   yolab/storage-policy            JSON — copies and failure domain
-//!   yolab/heal                      JSON — the current or last FORCE HEAL
-//!   yolab/removed-machines/<node>   the heal that removed that machine
 //!
 //! ONE WRITER PER KEY, because config-key has no compare-and-swap: a disk switch
-//! is written only by the API and a heal, a node's status only by that node and
-//! a heal removing it, the policy only by the API, and the heal record and the
-//! removed machines only by the machine driving the heal. Readers never infer
-//! anything from a read that failed: absent (`Ok(None)`, an empty map) and
-//! unreadable (`Err`) are different answers.
+//! is written only by the API, a node's status only by that node, and the policy
+//! only by the API. Readers never infer anything from a read that failed: absent
+//! (`Ok(None)`, an empty map) and unreadable (`Err`) are different answers.
 
 use std::collections::BTreeMap;
 
@@ -33,8 +28,6 @@ use crate::host::Host;
 pub const DISKS: &str = "yolab/disks/";
 pub const DISK_STATUS: &str = "yolab/disk-status/";
 pub const STORAGE_POLICY: &str = "yolab/storage-policy";
-pub const HEAL: &str = "yolab/heal";
-pub const REMOVED_MACHINES: &str = "yolab/removed-machines/";
 
 /// The value at `key`; `Ok(None)` only when Ceph says it does not exist.
 pub async fn get<H: Host>(host: &H, key: &str) -> Result<Option<String>, CmdError> {
@@ -49,15 +42,6 @@ pub async fn set<H: Host>(host: &H, key: &str, value: &str) -> Result<(), CmdErr
     host.ceph(&["config-key", "set", key, value])
         .await
         .map(|_| ())
-}
-
-/// Deletes `key`. Deleting a key that is not there is not an error.
-pub async fn remove<H: Host>(host: &H, key: &str) -> Result<(), CmdError> {
-    match host.ceph(&["config-key", "rm", key]).await {
-        Ok(_) => Ok(()),
-        Err(e) if e.is_not_found() => Ok(()),
-        Err(e) => Err(e),
-    }
 }
 
 /// Every key under `prefix`, with the prefix stripped. Empty when there are none.
@@ -161,17 +145,6 @@ mod tests {
         assert_eq!(strip_prefix(&v, DISKS).unwrap().len(), 1);
         assert!(strip_prefix(&serde_json::json!([]), DISKS).is_err());
         assert!(strip_prefix(&serde_json::json!({"yolab/disks/a": 1}), DISKS).is_err());
-    }
-
-    #[tokio::test]
-    async fn removing_a_missing_key_is_fine_and_an_unreachable_cluster_is_not() {
-        let gone = FakeHost::new().fail(
-            "ceph config-key rm yolab/disk-status/node2",
-            "Error ENOENT: key 'yolab/disk-status/node2' doesn't exist",
-        );
-        remove(&gone, "yolab/disk-status/node2").await.unwrap();
-        let down = FakeHost::new().fail("ceph config-key rm", "error connecting to the cluster");
-        assert!(remove(&down, "yolab/disk-status/node2").await.is_err());
     }
 
     #[tokio::test]

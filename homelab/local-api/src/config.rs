@@ -21,6 +21,15 @@ pub fn read_account_token(config_path: &str) -> String {
         .to_string()
 }
 
+/// This machine's own files (config.toml, hardware-configuration.nix): the
+/// `yolab-machine` flake input every rebuild passes. `YOLAB_MACHINE_DIR`, set by
+/// `yolab.machineDir`.
+pub fn machine_dir() -> PathBuf {
+    std::env::var("YOLAB_MACHINE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/machine"))
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub repo_path: String,
@@ -46,8 +55,7 @@ impl Config {
     pub fn from_env() -> Self {
         let repo_path = std::env::var("YOLAB_REPO_PATH").unwrap_or_else(|_| "/etc/nixos".into());
         let built_dir = PathBuf::from("/var/lib/yolab");
-        let machine_dir =
-            std::env::var("YOLAB_MACHINE_DIR").unwrap_or_else(|_| "/var/lib/yolab/machine".into());
+        let machine_dir = machine_dir().to_string_lossy().into_owned();
         Self {
             config_path: std::env::var("YOLAB_CONFIG")
                 .unwrap_or_else(|_| format!("{machine_dir}/config.toml")),

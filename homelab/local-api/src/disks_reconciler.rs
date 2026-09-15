@@ -361,8 +361,8 @@ async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::
     };
 
     if let Some(id) = find(&local_osds(host).await?) {
-        // An OSD the cluster still has is started. One it no longer has — purged
-        // by a FORCE HEAL — can never start again, and its label would block a
+        // An OSD the cluster still has is started. One it no longer has — left
+        // from a cluster that was created again — can never start again, and its label would block a
         // new one here forever: this volume exists to be this machine's OSD, so
         // it is erased and made again. Only on the cluster's own answer.
         match host.osd_ids().await {
@@ -429,10 +429,7 @@ impl crate::runtime::Controller for DisksController {
         &[crate::runtime::Requirement::Ceph]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
-        &[
-            crate::runtime::Activity::Restore,
-            crate::runtime::Activity::Heal,
-        ]
+        &[crate::runtime::Activity::Restore]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         if ctx.node.is_empty() {
@@ -2134,10 +2131,10 @@ fn weight_tib_from(kb: u64, size_bytes: u64) -> f64 {
 /// Records a switch for every disk on this node that has none yet.
 ///
 /// Every new disk is OFF until the owner switches it on from the Storage page —
-/// whatever is on it. A disk only lacks a record on a fresh machine or after a
-/// FORCE HEAL, which deletes every record so that only the system disks stay in
-/// use; a disk still carrying an OSD then goes through the OFF path, which moves
-/// its data away and waits for Ceph's safe-to-destroy before purging anything.
+/// whatever is on it. A disk only lacks a record on a fresh machine — which is
+/// what a FORCE HEAL makes of every machine it keeps; a disk still carrying an
+/// OSD goes through the OFF path, which moves its data away and waits for Ceph's
+/// safe-to-destroy before purging anything.
 /// (The system LV needs no record; `wants_on` treats it as always on.)
 async fn auto_register_all_disks<H: Host>(
     host: &H,

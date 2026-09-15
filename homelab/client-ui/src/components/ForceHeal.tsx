@@ -12,8 +12,10 @@ import { cn } from "@/lib/utils";
 import {
   HEAL_PROBLEM_LABELS,
   HEAL_STEP_LABELS,
+  healedFrom,
   useHealStatus,
   type Heal,
+  type HealStep,
   type HealStatus,
 } from "@/lib/heal";
 
@@ -58,16 +60,31 @@ export function HealBanner({ className }: { className?: string }) {
       </Banner>
     );
   }
+  const from = healedFrom(status);
+  if (from) {
+    return (
+      <Banner tone="info" title="Your home server is being healed" className={className}>
+        {from.driver} is rebuilding the cluster. Follow it on {from.driver}
+        &apos;s Storage page.
+      </Banner>
+    );
+  }
   // A new problem outranks the note that the last heal finished.
   if (status.problems.length === 0) {
     return recentlyFinished(heal) ? (
       <Banner
-        tone="info"
-        title="Your home server was healed"
+        tone={heal?.failed ? "warning" : "info"}
+        title={
+          heal?.failed
+            ? "The heal was stopped"
+            : "Your home server was healed"
+        }
         className={className}
         action={link("Details")}
       >
-        Add your apps back with “Add from backup”.
+        {heal?.failed
+          ? "Every machine was put back as it was."
+          : "Add your apps back with “Add from backup”."}
       </Banner>
     ) : null;
   }
@@ -86,10 +103,12 @@ export function HealBanner({ className }: { className?: string }) {
 }
 
 function StepList({ heal }: { heal: Heal }) {
-  const at = heal.steps.indexOf(heal.step);
+  // Undoing is not a step of the way forward: it replaces the list.
+  const steps: HealStep[] = heal.step === "undo" ? ["undo"] : heal.steps;
+  const at = steps.indexOf(heal.step);
   return (
     <ol className="space-y-2.5">
-      {heal.steps.map((step, i) => {
+      {steps.map((step, i) => {
         const state = !heal.running
           ? "done"
           : i < at
@@ -142,24 +161,30 @@ function HealProgress({
         <div>
           <p className="text-base font-medium text-fg">
             {heal.running
-              ? `Healing the cluster from ${heal.driver}`
-              : "The cluster was healed"}
+              ? heal.failed
+                ? "Stopping the heal"
+                : `Healing the cluster from ${heal.driver}`
+              : heal.failed
+                ? "The heal was stopped"
+                : "The cluster was healed"}
           </p>
           <p className="mt-1 text-sm text-fg-muted">
-            {heal.running
-              ? "This page updates by itself. Machines restart along the way, so it may stop answering for a few minutes."
-              : "Storage and the cluster are as fresh as a new installation. Add your apps back from backup on the home page."}
+            {heal.failed
+              ? `${heal.failed}. Nothing was deleted: every machine is put back as it was.`
+              : heal.running
+                ? "This page updates by itself. Machines restart along the way, so it may stop answering for a few minutes."
+                : "The cluster is as fresh as a new installation. Add your apps back from backup on the home page, and switch your disks back on here."}
           </p>
         </div>
         <StepList heal={heal} />
-        {heal.removed_machines.length > 0 && (
+        {!heal.failed && heal.removed_machines.length > 0 && (
           <p className="text-sm text-fg-muted">
-            Removed:{" "}
+            Left out:{" "}
             <span className="text-fg">{heal.removed_machines.join(", ")}</span>.
             To use them again, install them again.
           </p>
         )}
-        {!heal.running && (
+        {!heal.running && !heal.failed && (
           <Link to="/" className={buttonClass({ size: "sm" })}>
             Add apps from backup
           </Link>
@@ -196,7 +221,10 @@ function HealDialog({
     setBusy(true);
     setError(null);
     try {
-      await api.post("/api/heal", { remove_machines: plan.remove_machines });
+      await api.post("/api/heal", {
+        keep_machines: plan.keep_machines,
+        remove_machines: plan.remove_machines,
+      });
       onStarted();
       onClose();
     } catch (e) {
@@ -223,54 +251,62 @@ function HealDialog({
             disabled={!ready}
             loading={busy}
           >
-            Delete everything and heal
+            Erase everything and heal
           </Button>
         </div>
       }
     >
       <div className="space-y-4 text-sm text-fg-muted">
         <p>
-          The cluster is rebuilt from what still answers, as if it were freshly
-          installed.{" "}
+          A new cluster is installed on the machines that still answer, as if
+          they were brand new.{" "}
           <span className="font-medium text-fg">
-            Every app and every stored file is deleted.
+            Every app and every stored file on them is erased.
           </span>{" "}
-          Afterwards, add your apps back from backup on the home page. This
-          cannot be undone.
+          Afterwards, add your apps back from backup on the home page. Once the
+          machines restart this cannot be undone.
         </p>
         <ul className="list-disc space-y-1 pl-5">
+          <li>
+            The new cluster:{" "}
+            <span className="text-fg">{plan.keep_machines.join(", ")}</span>,
+            created by {status.survey.me}. Every one of them restarts.
+          </li>
           {plan.remove_machines.length > 0 && (
             <li>
-              Removed for good:{" "}
+              Left out for good:{" "}
               <span className="text-fg">{plan.remove_machines.join(", ")}</span>
               . They must be installed again to rejoin.
             </li>
           )}
           <li>
-            Only each machine&apos;s system disk stays in use. Your other disks
-            show up switched off on the Storage page, to switch on again.
+            Every disk is erased. Only each machine&apos;s system disk is used
+            at first; the others show up switched off on the Storage page, to
+            switch on again.
           </li>
-          {plan.reset_kubernetes && (
-            <li>
-              {status.survey.me} becomes the only member of the cluster&apos;s
-              control plane.
-            </li>
-          )}
           <li>
-            Restarted:{" "}
-            <span className="text-fg">
-              {[...plan.restart_machines, `${status.survey.me} (last)`].join(
-                ", ",
-              )}
-            </span>
+            Your backup settings are kept. The storage settings (how many
+            copies to keep) go back to the defaults.
+          </li>
+          <li>
+            First, every machine prepares its new system, which can take a
+            while. If any of them cannot, nothing is erased and everything is
+            put back.
           </li>
         </ul>
+        {status.survey.unreadable.length > 0 && (
+          <p>
+            Could not read: {status.survey.unreadable.join("; ")}. The list of
+            machines comes from the others.
+          </p>
+        )}
         {plan.remove_machines.length > 0 && (
           <div className="space-y-2 rounded-card border border-danger/25 bg-danger-soft p-3">
             <p className="text-fg">
               Make sure each of these machines is really gone — powered off or
-              broken. If one is only disconnected and comes back, you will have
-              two separate clusters. Type each name to confirm.
+              broken. One that is only disconnected keeps running the old
+              cluster on its own, and must be installed again. Type each name to
+              confirm.
             </p>
             {plan.remove_machines.map((m) => (
               <Input
@@ -313,11 +349,11 @@ export function ForceHealCard() {
   const heal = s.heal;
 
   if (heal?.running) {
-    // Past the restart only Kubernetes steps are left, and they can wait
-    // forever on a machine that died meanwhile. The server accepts a new heal
-    // from there, so offer one.
+    // Past the restart, or while putting machines back, a heal can wait forever
+    // on a machine that died meanwhile. The server accepts a new heal from
+    // there, so offer one.
     const stuck =
-      heal.step === "finish" &&
+      (heal.step === "rebuild" || heal.step === "undo") &&
       s.problems.length > 0 &&
       !s.refusal;
     return (
@@ -341,6 +377,22 @@ export function ForceHealCard() {
       />
     );
   }
+  const from = healedFrom(s);
+  if (from) {
+    return (
+      <Card>
+        <CardContent className="space-y-1 pt-5 pb-5 text-sm">
+          <p className="text-base font-medium text-fg">
+            {from.driver} is healing the cluster
+          </p>
+          <p className="text-fg-muted">
+            This machine is part of the new cluster and restarts when every
+            machine is ready. Follow the progress on {from.driver}.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
   // A finished heal is shown until something is wrong again — never in place of
   // the button a new problem needs.
   if (s.problems.length === 0) {
@@ -361,7 +413,7 @@ export function ForceHealCard() {
             <p>
               Not answering:{" "}
               <span className="text-fg">
-                {gone.map((m) => m.name).join(", ")}
+                {gone.map((m) => m.label).join(", ")}
               </span>
             </p>
           )}

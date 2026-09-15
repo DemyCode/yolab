@@ -19,7 +19,7 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
-    auth::CLUSTER_AUTH_HEADER, config::read_account_token, error::Outcome, host::Host,
+    auth::CLUSTER_AUTH_HEADER, config::read_account_token, host::Host,
     routers::ceph_join::CephJoinBundle,
 };
 
@@ -337,16 +337,7 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &BootstrapArg
         join_cluster(host, root, node, &bundle).await?;
     }
 
-    finish_mkfs(host, root, node).await?;
-    if !args.join_seed_addr.is_empty() {
-        // A fresh store on a machine that joins IS the reinstall a machine removed
-        // by a FORCE HEAL needs, so it may add its mon again (see mon_member.rs).
-        let removed = format!("{}{node}", super::settings::REMOVED_MACHINES);
-        super::settings::remove(host, &removed)
-            .await
-            .warn_on_err(format!("clear {removed}"));
-    }
-    Ok(())
+    finish_mkfs(host, root, node).await
 }
 
 #[cfg(test)]
