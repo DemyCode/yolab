@@ -3,11 +3,11 @@ name: healthchecks
 description: "Watches the jobs that are supposed to run, and tells you when one silently stops"
 home: https://healthchecks.io
 type: application
-version: 0.1.0
+version: 0.1.1
 
 dependencies:
   - name: yolab-common
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

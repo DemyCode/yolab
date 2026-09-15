@@ -8,7 +8,7 @@ silently move underneath running apps. Charts may override any of them via
 */}}
 
 {{- define "yolab-common.image.wgRegister" -}}
-{{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:7c914fd218a480edc831867346a02eb5f9806c8cf7a76e6c0af8ae8de8bf9da7" -}}
+{{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:1f68d09b5e4ef2a83b0b50df83633ca397be772cd8d72ebdf8c971f1677f414a" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.wgSidecar" -}}
