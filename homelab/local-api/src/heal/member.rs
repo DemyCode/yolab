@@ -708,7 +708,10 @@ mod tests {
             "{REBUILD} --override-input yolab-machine path:{}",
             m.layout.machine_dir.display()
         )));
-        assert!(!host.ran("nixos-rebuild switch"), "the running system is left alone");
+        assert!(
+            !host.ran("nixos-rebuild switch"),
+            "the running system is left alone"
+        );
         assert!(holds_config(&m.layout), "updates wait");
     }
 
