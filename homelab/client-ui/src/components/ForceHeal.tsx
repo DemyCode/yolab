@@ -247,7 +247,8 @@ function HealDialog({
             </li>
           )}
           <li>
-            Every disk that does not answer is forgotten and switched off.
+            Only each machine&apos;s system disk stays in use. Your other disks
+            show up switched off on the Storage page, to switch on again.
           </li>
           {plan.reset_kubernetes && (
             <li>
@@ -316,7 +317,7 @@ export function ForceHealCard() {
     // forever on a machine that died meanwhile. The server accepts a new heal
     // from there, so offer one.
     const stuck =
-      (heal.step === "forget_nodes" || heal.step === "remove_apps") &&
+      heal.step === "finish" &&
       s.problems.length > 0 &&
       !s.refusal;
     return (
