@@ -592,14 +592,7 @@ pub(crate) async fn reinstall_from_backup(
 
     let mut filled = Ok(());
     for (pvc, as_of) in &volumes {
-        filled = fill_volume(
-            namespace,
-            &app.instance_name,
-            pvc,
-            &cfg,
-            as_of.as_deref(),
-        )
-        .await;
+        filled = fill_volume(namespace, &app.instance_name, pvc, &cfg, as_of.as_deref()).await;
         if filled.is_err() {
             break;
         }
@@ -607,7 +600,9 @@ pub(crate) async fn reinstall_from_backup(
     if let Err(e) = filled {
         crate::kubectl::run(&["delete", "namespace", namespace, "--wait=false"])
             .await
-            .warn_on_err(format!("add {namespace} from backup failed; remove its namespace"));
+            .warn_on_err(format!(
+                "add {namespace} from backup failed; remove its namespace"
+            ));
         let failed = Err(e);
         record_done(&id, &failed).await;
         return failed.map(|_: bool| ());
