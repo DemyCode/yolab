@@ -1393,7 +1393,7 @@ mod tests {
         ]);
         let v = versions_by_app(&snapshots, &found);
         let ids =
-            |ns: &str| -> Vec<&str> { v[ns].iter().map(|x| x.snapshot_id.as_str()).collect() };
+            |ns: &str| -> Vec<String> { v[ns].iter().map(|x| x.snapshot_id.clone()).collect() };
         assert_eq!(v.keys().collect::<Vec<_>>(), ["yolab-a", "yolab-b"]);
         assert_eq!(
             ids("yolab-a"),

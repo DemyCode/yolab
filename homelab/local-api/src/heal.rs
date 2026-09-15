@@ -1292,7 +1292,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!s.ceph_quorum && !s.kubernetes);
-        assert_eq!((s.down_osds, s.lost_groups), (None, None));
+        assert_eq!((&s.down_osds, s.lost_groups), (&None, None));
         assert!(!host.ran("osd dump"));
         assert_eq!(
             s.problems(),
