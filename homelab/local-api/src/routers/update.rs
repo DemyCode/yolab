@@ -25,6 +25,15 @@ impl Drop for UpdateGuard {
     }
 }
 
+/// Why this machine must not update now: a FORCE HEAL rewrote its config.toml
+/// for the new cluster, and switching to it would start that cluster on the old
+/// state, without the wipe.
+fn heal_holds(cfg: &Config) -> Option<String> {
+    crate::heal::member::holds_config(&crate::heal::member::Layout::from_config(cfg)).then(|| {
+        "a FORCE HEAL has prepared this machine for a new cluster — updates wait until it restarts or the heal is undone".to_string()
+    })
+}
+
 /// Holds off updates for as long as the guard lives, or `None` when one is
 /// running. For a FORCE HEAL building or switching this machine's system, which
 /// an update doing the same at the same time would race.
@@ -383,6 +392,9 @@ async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bo
 
 /// `GET /api/update` — a person clicked Update; stream the progress back.
 pub async fn update(State(state): State<AppState>) -> Response {
+    if let Some(why) = heal_holds(&state.config) {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": why }))).into_response();
+    }
     if IS_UPDATING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -415,6 +427,9 @@ pub async fn update(State(state): State<AppState>) -> Response {
 /// cancelling the work, and the same progress lines go to the rebuild log
 /// instead of to a browser.
 pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::Value> {
+    if let Some(why) = heal_holds(&state.config) {
+        return Json(serde_json::json!({ "error": why }));
+    }
     if IS_UPDATING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()

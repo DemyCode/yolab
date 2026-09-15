@@ -270,7 +270,7 @@ function HealDialog({
           <li>
             The new cluster:{" "}
             <span className="text-fg">{plan.keep_machines.join(", ")}</span>,
-            created by {status.survey.me}. Every one of them restarts.
+            created by {status.survey.me}. They all restart at the same time.
           </li>
           {plan.remove_machines.length > 0 && (
             <li>

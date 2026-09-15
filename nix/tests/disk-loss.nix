@@ -5,12 +5,12 @@
 # test asserts that nothing happens on its own, and then the two halves of a
 # FORCE HEAL (homelab/local-api/src/heal/) a VM can run:
 #
-#   * a heal that cannot build the machine's new system is undone, and leaves
-#     the machine exactly as it was — the VM has no flake repo to build from,
-#     which is as real a build failure as any;
-#   * the boot-time wipe (storage/reset_wipe.rs) turns the machine into a fresh
-#     one: every OSD erased, no disk switched on, no apps, and the cluster
-#     created again.
+#   * a heal whose `nixos-rebuild boot` fails is undone, and leaves the machine
+#     exactly as it was — the VM has no flake repo to rebuild from, which is as
+#     real a failure as any;
+#   * `[node] wipe_condition = true` makes the next boot (storage/reset_wipe.rs)
+#     turn the machine into a fresh one: every OSD erased, no disk switched
+#     on, no apps, the flag cleared, and the cluster created again.
 #
 # The unplug is done from inside the guest by unbinding the disk's virtio PCI
 # device, which removes the block device the way a yanked USB cable does. The
@@ -76,9 +76,9 @@
     };
     networking.useDHCP = lib.mkDefault false;
     environment.systemPackages = [pkgs.curl pkgs.jq];
-    # Where the running system reads config.toml (see two-node.nix).
-    yolab.machineDir = "/etc/yolab-machine";
-    environment.etc."yolab-machine/config.toml".source = configPath;
+    # A writable machine directory, as on a real machine: a heal rewrites
+    # config.toml, and the wipe clears its flag.
+    systemd.tmpfiles.rules = ["C /var/lib/yolab/machine/config.toml 0600 root root - ${configPath}"];
   };
 in
   pkgs.testers.nixosTest {
@@ -173,23 +173,26 @@ in
       )
       try:
           jq_ok(f"curl -sf {AUTH} {API}/api/heal",
-                '.heal.running == false and (.heal.failed | test("could not build"))', 900)
+                '.heal.running == false and (.heal.failed | test("could not prepare"))', 900)
       except Exception:
           dump_heal_log()
           raise
-      node1.fail("test -e /var/lib/yolab/reset-wipe")
+      MACHINE_CONFIG = "/var/lib/yolab/machine/config.toml"
+      node1.fail(f"grep -q wipe_condition.*true {MACHINE_CONFIG}")
+      node1.fail("test -e /var/lib/yolab/reset/config.toml.before")
       node1.succeed("ceph osd ls -f json | jq -e 'index(1) != null'")
       node1.succeed(f"{K} get namespace yolab-demo")
-      node1.succeed("grep -q 11111111-2222-3333-4444-555555555555 /etc/yolab-machine/config.toml")
+      node1.succeed(f"grep -q 11111111-2222-3333-4444-555555555555 {MACHINE_CONFIG}")
 
       # ── The wipe at boot: a fresh machine ─────────────────────────────────
-      node1.succeed("echo test > /var/lib/yolab/reset-wipe")
+      node1.succeed(f"sed -i 's/^\\[node\\]$/[node]\\nwipe_condition = true/' {MACHINE_CONFIG}")
+      node1.succeed(f"grep -q '^wipe_condition = true' {MACHINE_CONFIG}")
       node1.shutdown()
       node1.start()
       node1.wait_for_unit("multi-user.target", timeout=900)
       try:
           node1.wait_until_succeeds("systemctl show -p Result yolab-reset-wipe | grep -q success", timeout=300)
-          node1.fail("test -e /var/lib/yolab/reset-wipe")
+          node1.succeed(f"grep -q 'wipe_condition = false' {MACHINE_CONFIG}")
           node1.wait_until_succeeds("systemctl is-active ceph-mon-yolab-n1.service", timeout=600)
           node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
       except Exception:

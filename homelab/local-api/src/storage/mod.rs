@@ -254,7 +254,10 @@ pub async fn run(args: &[String]) -> i32 {
         "images-grow" => images_grow::run(&host, root(), &node, &env.grow_policy()).await,
         "dashboard" => dashboard::run(&host, &node, &env.dashboard_policy()).await,
         "csi-secrets" => csi_secrets::run(&host).await,
-        "reset-wipe" => reset_wipe::run(&host, root()).await,
+        "reset-wipe" => {
+            let config = crate::config::machine_dir().join("config.toml");
+            reset_wipe::run(&host, root(), &config).await
+        }
         _ => unreachable!("checked against `known` above"),
     };
 

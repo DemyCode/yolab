@@ -24,13 +24,15 @@
 //! directly, on its API, whether it is there. One that answers is kept; one that
 //! does not is left out of the new cluster and removed from the platform.
 //!
-//!   1. `build`: every machine that is kept builds its system for the new
-//!      cluster (`member`). Nothing changes on any machine.
-//!   2. `commit`: every machine switches its next boot to that system, the
-//!      creator last.
-//!   3. `restart`: every machine restarts, the creator last. At boot each
-//!      wipes its Ceph and Kubernetes state (`storage::reset_wipe`) and then
-//!      creates or joins the cluster.
+//!   1. `prepare`: every machine that is kept, the creator included, writes
+//!      the new cluster into its config.toml and runs `nixos-rebuild boot`
+//!      (`member`). Nothing is wiped.
+//!   2. `arm`: once every machine is prepared, each sets `[node]
+//!      wipe_condition = true`, the creator last.
+//!   3. `restart`: every machine restarts at the same time. At boot each wipes
+//!      its Ceph and Kubernetes state (`storage::reset_wipe`), clears the flag,
+//!      and creates or joins the cluster — a machine that joins retries until
+//!      the creator is up, as at install time.
 //!   4. `rebuild`: wait for every machine to be in the new Kubernetes cluster,
 //!      then remove the ones left behind from the platform.
 //!
@@ -61,16 +63,16 @@ use crate::error::Outcome;
 use crate::host::{Host, RealHost};
 use crate::runtime::{Controller, Ctx, Scope, Tick};
 use crate::AppState;
-use member::{Begin, BuildRequest, Builds, Layout, PhaseView, ResetView};
+use member::{Begin, Layout, PhaseView, PrepareRequest, Preparing, ResetView};
 
 const NAME: &str = "heal";
 const TICK: Duration = Duration::from_secs(10);
 /// Kubernetes not answering is normal for a few minutes after a boot — k3s waits
 /// for the image store — so it is only called a problem after this much uptime.
 const KUBERNETES_GRACE_SECS: u64 = 600;
-/// How long the machines may take to build, all together. Past it the heal is
+/// How long the machines may take to prepare, all together. Past it the heal is
 /// undone rather than left waiting on a machine that will never finish.
-const BUILD_WAIT_SECS: u64 = 3 * 3600;
+const PREPARE_WAIT_SECS: u64 = 3 * 3600;
 
 // ── The record ────────────────────────────────────────────────────────────────
 
@@ -95,8 +97,8 @@ pub struct Gone {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Step {
-    Build,
-    Commit,
+    Prepare,
+    Arm,
     Restart,
     Rebuild,
     /// Only after a failure: every machine back as it was.
@@ -105,7 +107,7 @@ enum Step {
 
 impl Step {
     /// The steps of a heal that succeeds, in order.
-    const PATH: [Step; 4] = [Step::Build, Step::Commit, Step::Restart, Step::Rebuild];
+    const PATH: [Step; 4] = [Step::Prepare, Step::Arm, Step::Restart, Step::Rebuild];
 
     fn next(self) -> Option<Step> {
         let i = Self::PATH.iter().position(|s| *s == self)?;
@@ -152,13 +154,13 @@ impl Heal {
             .context("the heal's record does not list the machine driving it")
     }
 
-    fn request_for(&self, member: &Member) -> Result<BuildRequest> {
+    fn request_for(&self, member: &Member) -> Result<PrepareRequest> {
         let server_addr = if member.name == self.driver {
             String::new()
         } else {
             format!("https://[{}]:6443", self.driver_member()?.addr)
         };
-        Ok(BuildRequest {
+        Ok(PrepareRequest {
             heal_id: self.id.clone(),
             driver: self.driver.clone(),
             fsid: self.fsid.clone(),
@@ -191,7 +193,7 @@ impl LocalRecord {
     }
 
     fn save(&self, heal: &Heal) -> Result<()> {
-        member::write_file(&self.path, &serde_json::to_vec_pretty(heal)?)
+        crate::config::write_private_file(&self.path, &serde_json::to_vec_pretty(heal)?)
     }
 }
 
@@ -238,12 +240,12 @@ pub(crate) struct PlatformNode {
 /// survey and the steps can be tested.
 pub(crate) trait Network: Send + Sync {
     fn peer<'a>(&'a self, addr: &'a str) -> impl Future<Output = Result<PeerInfo>> + Send + 'a;
-    fn build<'a>(
+    fn prepare<'a>(
         &'a self,
         addr: &'a str,
-        request: &'a BuildRequest,
+        request: &'a PrepareRequest,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
-    fn commit<'a>(
+    fn arm<'a>(
         &'a self,
         addr: &'a str,
         heal_id: &'a str,
@@ -319,18 +321,18 @@ impl Network for RealNetwork {
         }
     }
 
-    fn build<'a>(
+    fn prepare<'a>(
         &'a self,
         addr: &'a str,
-        request: &'a BuildRequest,
+        request: &'a PrepareRequest,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
         async move {
-            let r = self.client.post(self.url(addr, "/api/heal/peer/build")).json(request);
+            let r = self.client.post(self.url(addr, "/api/heal/peer/prepare")).json(request);
             self.send(r, Duration::from_secs(30)).await.map(|_| ())
         }
     }
 
-    fn commit<'a>(
+    fn arm<'a>(
         &'a self,
         addr: &'a str,
         heal_id: &'a str,
@@ -338,9 +340,9 @@ impl Network for RealNetwork {
         async move {
             let r = self
                 .client
-                .post(self.url(addr, "/api/heal/peer/commit"))
+                .post(self.url(addr, "/api/heal/peer/arm"))
                 .json(&json!({ "heal_id": heal_id }));
-            self.send(r, Duration::from_secs(900)).await.map(|_| ())
+            self.send(r, Duration::from_secs(30)).await.map(|_| ())
         }
     }
 
@@ -354,7 +356,8 @@ impl Network for RealNetwork {
                 .client
                 .post(self.url(addr, "/api/heal/peer/undo"))
                 .json(&json!({ "heal_id": heal_id }));
-            self.send(r, Duration::from_secs(900)).await.map(|_| ())
+            // Undoing rebuilds the boot entry.
+            self.send(r, Duration::from_secs(3600)).await.map(|_| ())
         }
     }
 
@@ -754,7 +757,7 @@ async fn start_heal<H: Host, N: Network>(
         driver: me.to_string(),
         started_at: now,
         finished_at: None,
-        step: Step::Build,
+        step: Step::Prepare,
         fsid: new_fsid(),
         members,
         gone: s
@@ -919,37 +922,40 @@ async fn run_step<H: Host, N: Network>(
 ) -> Result<StepResult> {
     use StepResult::*;
     match heal.step {
-        Step::Build => build_step(net, heal, now).await,
-        Step::Commit => {
-            // The driver last: if another machine cannot switch over, the
-            // machine that would create the cluster has not either.
+        Step::Prepare => prepare_step(net, heal, now).await,
+        Step::Arm => {
+            // The driver last: if another machine cannot be armed, the machine
+            // that would create the cluster is not either.
             for m in &heal.members {
                 let info = match net.peer(&m.addr).await {
                     Ok(info) => info,
                     Err(e) => return Ok(Fail(format!("{} stopped answering: {e:#}", m.name))),
                 };
                 match info.reset.filter(|r| r.heal_id == heal.id).map(|r| r.phase) {
-                    Some(PhaseView::Committed) => continue,
-                    Some(PhaseView::Built) => {}
+                    Some(PhaseView::Armed) => continue,
+                    Some(PhaseView::Prepared) => {}
                     other => {
                         return Ok(Fail(format!(
-                            "{} is no longer ready to switch over ({})",
+                            "{} is no longer prepared ({})",
                             m.name,
-                            other.map_or("it has no build".to_string(), |p| format!("{p:?}").to_lowercase())
+                            other.map_or("it has nothing for this heal".to_string(), |p| {
+                                format!("{p:?}").to_lowercase()
+                            })
                         )))
                     }
                 }
-                if let Err(e) = net.commit(&m.addr, &heal.id).await {
-                    return Ok(Fail(format!("{} could not switch to its new system: {e:#}", m.name)));
+                if let Err(e) = net.arm(&m.addr, &heal.id).await {
+                    return Ok(Fail(format!("{} could not be armed: {e:#}", m.name)));
                 }
             }
             Ok(Done)
         }
         Step::Restart => {
+            // All at once: each machine restarts a few seconds after it answers
+            // (routers/reboot.rs), this one straight after asking them.
             for m in heal.members.iter().filter(|m| m.name != heal.driver) {
                 // Not fatal: one that does not restart now is asked again after
-                // this machine is back, and restarts into the new cluster
-                // whenever it does.
+                // this machine is back, and wipes itself whenever it restarts.
                 net.reboot(&m.addr)
                     .await
                     .warn_on_err(format!("heal: restart {}", m.name));
@@ -980,7 +986,7 @@ async fn run_step<H: Host, N: Network>(
                 Done
             } else {
                 NotYet(format!(
-                    "putting back {} — a machine left switched over wipes itself at its next restart",
+                    "putting back {} — a machine left armed wipes itself at its next restart",
                     stuck.join(", ")
                 ))
             })
@@ -988,7 +994,7 @@ async fn run_step<H: Host, N: Network>(
     }
 }
 
-async fn build_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<StepResult> {
+async fn prepare_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<StepResult> {
     let mut waiting = Vec::new();
     for m in &heal.members {
         let info = match net.peer(&m.addr).await {
@@ -1005,18 +1011,18 @@ async fn build_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<StepRe
             )));
         }
         let Some(reset) = info.reset.filter(|r| r.heal_id == heal.id) else {
-            match net.build(&m.addr, &heal.request_for(m)?).await {
-                Ok(()) => waiting.push(format!("{} is building its new system", m.name)),
-                Err(e) => waiting.push(format!("{} did not start building ({e:#})", m.name)),
+            match net.prepare(&m.addr, &heal.request_for(m)?).await {
+                Ok(()) => waiting.push(format!("{} is preparing", m.name)),
+                Err(e) => waiting.push(format!("{} did not start preparing ({e:#})", m.name)),
             }
             continue;
         };
         match reset.phase {
-            PhaseView::Building => waiting.push(format!("{} is building its new system", m.name)),
-            PhaseView::Built | PhaseView::Committed => {}
+            PhaseView::Preparing => waiting.push(format!("{} is preparing", m.name)),
+            PhaseView::Prepared | PhaseView::Armed => {}
             PhaseView::Failed => {
                 return Ok(StepResult::Fail(format!(
-                    "{} could not build its new system: {}",
+                    "{} could not prepare: {}",
                     m.name,
                     reset.error.unwrap_or_default()
                 )))
@@ -1029,10 +1035,10 @@ async fn build_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<StepRe
     if waiting.is_empty() {
         return Ok(StepResult::Done);
     }
-    if now >= heal.started_at + BUILD_WAIT_SECS {
+    if now >= heal.started_at + PREPARE_WAIT_SECS {
         return Ok(StepResult::Fail(format!(
-            "the machines did not finish building in {} hours: {}",
-            BUILD_WAIT_SECS / 3600,
+            "the machines did not finish preparing in {} hours: {}",
+            PREPARE_WAIT_SECS / 3600,
             waiting.join("; ")
         )));
     }
@@ -1047,7 +1053,7 @@ async fn rebuild_step<H: Host, N: Network>(host: &H, net: &N, heal: &Heal) -> Re
         };
         let pending = info
             .reset
-            .is_some_and(|r| r.heal_id == heal.id && r.phase == PhaseView::Committed);
+            .is_some_and(|r| r.heal_id == heal.id && r.phase == PhaseView::Armed);
         if pending {
             net.reboot(&m.addr)
                 .await
@@ -1201,7 +1207,7 @@ pub async fn get_peer(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     };
     let layout = Layout::from_config(&s.config);
-    match member::current(&layout, &boot, Builds::global()) {
+    match member::current(&layout, &boot, Preparing::global()) {
         Ok(reset) => (
             StatusCode::OK,
             Json(json!(PeerInfo {
@@ -1214,11 +1220,11 @@ pub async fn get_peer(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     }
 }
 
-/// `POST /api/heal/peer/build` — start building this machine's system for a
-/// heal. Returns as soon as the build has started.
-pub async fn post_peer_build(
+/// `POST /api/heal/peer/prepare` — prepare this machine for a heal's new
+/// cluster. Returns as soon as preparing has started.
+pub async fn post_peer_prepare(
     State(s): State<AppState>,
-    Json(request): Json<BuildRequest>,
+    Json(request): Json<PrepareRequest>,
 ) -> (StatusCode, Json<Value>) {
     let boot = match boot_id().await {
         Ok(b) => b,
@@ -1226,38 +1232,35 @@ pub async fn post_peer_build(
     };
     let layout = Layout::from_config(&s.config);
     let _held = member::lock().lock().await;
-    if let Ok(Some(v)) = member::current(&layout, &boot, Builds::global()) {
+    if let Ok(Some(v)) = member::current(&layout, &boot, Preparing::global()) {
         if v.heal_id == request.heal_id && v.phase != PhaseView::Failed {
             return (StatusCode::OK, Json(json!(v)));
         }
     }
-    // Held by the build: an update switching this machine meanwhile would race it.
+    // Held while preparing: an update rebuilding this machine meanwhile would race it.
     let Some(update) = crate::routers::update::exclusive() else {
-        return error(StatusCode::CONFLICT, "an update or another heal is using this machine's system");
+        return error(StatusCode::CONFLICT, "an update is rebuilding this machine's system");
     };
-    match member::begin_build(&RealHost, &layout, &request, &boot, Builds::global()).await {
+    match member::begin_prepare(&RealHost, &layout, &request, &boot, Preparing::global()).await {
         Ok(Begin::Already(v)) => (StatusCode::OK, Json(json!(v))),
         Ok(Begin::Start) => {
             tokio::spawn(async move {
                 let _update = update;
-                member::build(&RealHost, &layout, &request, Builds::global()).await;
+                member::prepare(&RealHost, &layout, &request, Preparing::global()).await;
             });
-            (StatusCode::ACCEPTED, Json(json!({ "status": "building" })))
+            (StatusCode::ACCEPTED, Json(json!({ "status": "preparing" })))
         }
         Err(e) => error(StatusCode::CONFLICT, format!("{e:#}")),
     }
 }
 
-/// `POST /api/heal/peer/commit` — switch this machine's next boot over.
-pub async fn post_peer_commit(
+/// `POST /api/heal/peer/arm` — have this machine's next boot wipe it.
+pub async fn post_peer_arm(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
 ) -> (StatusCode, Json<Value>) {
-    peer_change(&s, &request.heal_id, |layout, boot, id, may_switch| async move {
-        if !may_switch {
-            bail!("an update or a build is using this machine's system — try again");
-        }
-        member::commit(&RealHost, &layout, &id, &boot).await
+    peer_change(&s, &request.heal_id, |layout, boot, id, _may_rebuild| async move {
+        member::arm(&layout, &id, &boot)
     })
     .await
 }
@@ -1267,8 +1270,8 @@ pub async fn post_peer_undo(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
 ) -> (StatusCode, Json<Value>) {
-    peer_change(&s, &request.heal_id, |layout, boot, id, may_switch| async move {
-        member::undo(&RealHost, &layout, &id, &boot, may_switch).await
+    peer_change(&s, &request.heal_id, |layout, boot, id, may_rebuild| async move {
+        member::undo(&RealHost, &layout, &id, &boot, Preparing::global(), may_rebuild).await
     })
     .await
 }
@@ -1284,10 +1287,10 @@ where
     };
     let layout = Layout::from_config(&s.config);
     let _held = member::lock().lock().await;
-    // Held while the system is switched: an update doing the same would race it.
+    // Held while the boot entry is rebuilt: an update doing the same would race it.
     let update = crate::routers::update::exclusive();
-    let may_switch = update.is_some();
-    match change(layout, boot, heal_id.to_string(), may_switch).await {
+    let may_rebuild = update.is_some();
+    match change(layout, boot, heal_id.to_string(), may_rebuild).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "status": "ok" }))),
         Err(e) => error(StatusCode::CONFLICT, format!("{e:#}")),
     }

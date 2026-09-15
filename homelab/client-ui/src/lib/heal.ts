@@ -4,7 +4,7 @@ import { useApi } from "@/lib/useResource";
 export interface MachineReset {
   heal_id: string;
   driver: string;
-  phase: "building" | "built" | "failed" | "committed" | "restarted" | "undone";
+  phase: "preparing" | "prepared" | "failed" | "armed" | "restarted" | "undone";
   error: string | null;
 }
 
@@ -43,7 +43,7 @@ export interface HealStatus {
 export type HealProblem =
   "machines_gone" | "ceph_no_quorum" | "kubernetes_down" | "data_unreachable";
 
-export type HealStep = "build" | "commit" | "restart" | "rebuild" | "undo";
+export type HealStep = "prepare" | "arm" | "restart" | "rebuild" | "undo";
 
 export interface Heal {
   id: string;
@@ -63,9 +63,9 @@ export interface Heal {
 }
 
 export const HEAL_STEP_LABELS: Record<HealStep, string> = {
-  build: "Preparing every machine for the new cluster",
-  commit: "Switching every machine over",
-  restart: "Restarting the machines",
+  prepare: "Preparing every machine for the new cluster",
+  arm: "Setting every machine to start fresh",
+  restart: "Restarting every machine",
   rebuild: "Starting the new cluster",
   undo: "Putting every machine back as it was",
 };
@@ -81,7 +81,7 @@ export const HEAL_PROBLEM_LABELS: Record<HealProblem, string> = {
 export function healedFrom(status: HealStatus): MachineReset | null {
   const me = status.survey.machines.find((m) => m.this_machine);
   const reset = me?.reset;
-  return reset && ["building", "built", "committed"].includes(reset.phase)
+  return reset && ["preparing", "prepared", "armed"].includes(reset.phase)
     ? reset
     : null;
 }

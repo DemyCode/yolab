@@ -1,9 +1,9 @@
 //! Boot step: the part of a FORCE HEAL that destroys this machine's cluster state.
 //!
 //! A heal rebuilds the cluster from the machines that still answer as a fresh
-//! installation (see `heal`). Every one of them first switches its boot to a
-//! system built from its rewritten config.toml, leaves `/var/lib/yolab/reset-wipe`,
-//! and restarts. This runs early in that next boot — before the Ceph bootstrap, any
+//! installation (see `heal`). Every one of them first rebuilds its boot entry
+//! from its rewritten config.toml, then sets `[node] wipe_condition = true` in
+//! it, and restarts. This runs early in every boot — before the Ceph bootstrap, any
 //! Ceph daemon, the image store or k3s — and turns the machine back into one that
 //! has never been part of a cluster:
 //!
@@ -21,7 +21,11 @@
 //! by their own path: those in a volume group ceph-volume made itself
 //! (`ceph-…`) together with that group, any other in place.
 //!
-//! Idempotent: the marker is removed only once everything is gone, so an
+//! THE FLAG IS READ AT BOOT, never at build time: nothing in the NixOS
+//! configuration depends on it, so setting it needs no rebuild, and clearing it
+//! here takes effect for the very next boot.
+//!
+//! Idempotent: the flag is cleared only once everything is gone, so an
 //! interrupted wipe simply runs again at the next boot.
 
 use std::collections::BTreeSet;
@@ -33,9 +37,8 @@ use serde_json::Value;
 use crate::ceph::destructive::{self, ZapWarrant};
 use crate::host::Host;
 
-/// The file whose presence asks for the wipe. Not in the machine directory:
-/// everything there is copied into the Nix store by the next rebuild.
-pub const MARKER: &str = "var/lib/yolab/reset-wipe";
+/// The config.toml key, in `[node]`, that asks for the wipe.
+pub const FLAG: &str = "wipe_condition";
 
 /// Directories whose CONTENTS are removed, except the named entry. The
 /// directories themselves stay, with the owners and modes tmpfiles gave them.
@@ -62,11 +65,38 @@ const REMOVED_FILES: &[&str] = &[
     "etc/rancher/k3s/k3s.yaml",
     "etc/rancher/node/password",
     "var/lib/yolab/mesh-peers.json",
+    // The heal's copies of what was before it: that cluster is gone.
+    "var/lib/yolab/reset/config.toml.before",
+    "var/lib/yolab/reset/system.before",
 ];
 
-pub async fn run<H: Host>(host: &H, root: &Path) -> Result<()> {
-    let marker = root.join(MARKER);
-    if !marker.exists() {
+/// Whether `config` asks for the wipe. A missing key is no.
+pub fn wipe_condition(config: &str) -> Result<bool> {
+    let table: toml::Table = toml::from_str(config).context("config.toml is not TOML")?;
+    match table.get("node").and_then(|n| n.get(FLAG)) {
+        None => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .with_context(|| format!("[node] {FLAG} is not true or false")),
+    }
+}
+
+/// `config` with the flag set to `value`, everything else as it was.
+pub fn with_wipe_condition(config: &str, value: bool) -> Result<String> {
+    let mut table: toml::Table = toml::from_str(config).context("config.toml is not TOML")?;
+    table
+        .get_mut("node")
+        .and_then(|n| n.as_table_mut())
+        .context("config.toml has no [node]")?
+        .insert(FLAG.into(), value.into());
+    toml::to_string(&table).context("write config.toml")
+}
+
+/// `config_path`: this machine's config.toml.
+pub async fn run<H: Host>(host: &H, root: &Path, config_path: &Path) -> Result<()> {
+    let config = std::fs::read_to_string(config_path)
+        .with_context(|| format!("read {}", config_path.display()))?;
+    if !wipe_condition(&config)? {
         tracing::info!("reset-wipe: no heal asked for a wipe");
         return Ok(());
     }
@@ -88,7 +118,10 @@ pub async fn run<H: Host>(host: &H, root: &Path) -> Result<()> {
         remove_file(&root.join(file))?;
     }
 
-    remove_file(&marker)?;
+    // Read again: only the flag changes, whatever else happened to the file.
+    let config = std::fs::read_to_string(config_path)
+        .with_context(|| format!("read {}", config_path.display()))?;
+    crate::config::write_private_file(config_path, with_wipe_condition(&config, false)?.as_bytes())?;
     tracing::warn!("reset-wipe: done — this machine now boots as a fresh one");
     Ok(())
 }
@@ -227,24 +260,50 @@ mod tests {
         assert!(volumes_to_erase(r#"--> noise{}"#).unwrap().is_empty());
     }
 
-    fn mark(root: &Path) {
-        let marker = root.join(MARKER);
-        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        std::fs::write(marker, "h1").unwrap();
+    const CONFIG: &str = "var/lib/yolab/machine/config.toml";
+
+    /// A config.toml with the flag set to `wipe`.
+    fn config(root: &Path, wipe: bool) -> PathBuf {
+        let path = root.join(CONFIG);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("[node]\nsub_ipv6_private = \"fd00::1\"\n{FLAG} = {wipe}\n[node.k3s]\ntoken = \"t\"\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    fn flag(path: &Path) -> bool {
+        wipe_condition(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_flag_is_read_and_written_without_touching_the_rest() {
+        assert!(!wipe_condition("[node]\n").unwrap(), "missing is no");
+        assert!(wipe_condition("[node]\nwipe_condition = true\n").unwrap());
+        assert!(wipe_condition("[node]\nwipe_condition = \"yes\"\n").is_err());
+        assert!(wipe_condition("not toml {{").is_err());
+        let set = with_wipe_condition("[node]\nnode_id = \"n1\"\n[node.k3s]\ntoken = \"t\"\n", true).unwrap();
+        let t: toml::Table = toml::from_str(&set).unwrap();
+        assert_eq!(t["node"]["wipe_condition"].as_bool(), Some(true));
+        assert_eq!(t["node"]["node_id"].as_str(), Some("n1"));
+        assert_eq!(t["node"]["k3s"]["token"].as_str(), Some("t"));
     }
 
     #[tokio::test]
-    async fn without_the_marker_nothing_is_touched() {
+    async fn without_the_flag_nothing_is_touched() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("var/lib/ceph/mon/ceph-node1")).unwrap();
+        let cfg = config(root.path(), false);
         let host = FakeHost::new();
-        run(&host, root.path()).await.unwrap();
+        run(&host, root.path(), &cfg).await.unwrap();
         assert!(host.calls().is_empty());
         assert!(root.path().join("var/lib/ceph/mon/ceph-node1").exists());
     }
 
     #[tokio::test]
-    async fn the_wipe_erases_every_osd_and_the_state_then_removes_its_marker() {
+    async fn the_wipe_erases_every_osd_and_the_state_then_clears_its_flag() {
         let root = tempfile::tempdir().unwrap();
         let r = root.path();
         for dir in [
@@ -262,14 +321,13 @@ mod tests {
         std::fs::write(r.join("var/lib/ceph/mon/ceph-node1/keyring"), "k").unwrap();
         std::fs::write(r.join("etc/ceph/ceph.client.admin.keyring"), "k").unwrap();
         std::fs::write(r.join("etc/ceph/ceph.conf"), "conf").unwrap();
-        std::fs::write(r.join("var/lib/yolab/machine/config.toml"), "x").unwrap();
         std::fs::write(r.join("var/lib/yolab/heal.json"), "{}").unwrap();
-        mark(r);
+        let cfg = config(r, true);
         let host = FakeHost::new()
             .ok("ceph-volume lvm list", &listing())
             .ok("ceph-volume lvm zap", "");
 
-        run(&host, r).await.unwrap();
+        run(&host, r, &cfg).await.unwrap();
 
         assert!(host.ran("ceph-volume lvm zap --destroy /dev/ceph-da2f6e97/osd-block-0d0a35b2"));
         assert!(host.ran("ceph-volume lvm zap /dev/mapper/pool-ceph"));
@@ -283,22 +341,22 @@ mod tests {
         assert!(r.join("var/lib/rancher/k3s/agent/etc/kubelet.conf.d").exists());
         assert!(!r.join("etc/ceph/ceph.client.admin.keyring").exists());
         assert!(r.join("etc/ceph/ceph.conf").exists());
-        assert!(!r.join(MARKER).exists());
+        assert!(!flag(&cfg), "the next boot wipes nothing");
         assert!(
-            r.join("var/lib/yolab/machine/config.toml").exists(),
-            "the machine's own files stay"
+            std::fs::read_to_string(&cfg).unwrap().contains("fd00::1"),
+            "the rest of config.toml stays"
         );
         assert!(r.join("var/lib/yolab/heal.json").exists(), "the heal's record stays");
     }
 
     #[tokio::test]
-    async fn a_failed_erase_keeps_the_marker_for_the_next_boot() {
+    async fn a_failed_erase_keeps_the_flag_for_the_next_boot() {
         let root = tempfile::tempdir().unwrap();
-        mark(root.path());
+        let cfg = config(root.path(), true);
         let host = FakeHost::new()
             .ok("ceph-volume lvm list", &listing())
             .fail("ceph-volume lvm zap", "device busy");
-        assert!(run(&host, root.path()).await.is_err());
-        assert!(root.path().join(MARKER).exists());
+        assert!(run(&host, root.path(), &cfg).await.is_err());
+        assert!(flag(&cfg), "the next boot tries again");
     }
 }
