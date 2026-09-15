@@ -847,9 +847,7 @@ fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
 /// Restores recorded running whose driver is gone.
 fn abandoned(sets: &[RestoreSet], me: &str) -> Vec<RestoreSet> {
     sets.iter()
-        .filter(|s| {
-            s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
-        })
+        .filter(|s| s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned)
         .cloned()
         .collect()
 }

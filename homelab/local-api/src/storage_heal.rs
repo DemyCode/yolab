@@ -496,20 +496,20 @@ async fn start_recovery<H: Host>(host: &H, now: u64) -> Result<()> {
     // Decided again under the state lock, against the state as it is at the
     // moment of writing: two requests cannot both start one.
     let started = update_state(host, |s| {
-            if let Some(why) = recovery_refusal(s, &up) {
-                return Err(why);
-            }
-            let osds = s.loss.as_ref().map(|l| l.osds.clone()).unwrap_or_default();
-            s.recovery = Some(Recovery {
-                step: Step::PurgeOsds,
-                started_at: now,
-                finished_at: None,
-                osds,
-                removed: removed.clone(),
-                apps: None,
-                outcomes: BTreeMap::new(),
-            });
-            Ok(())
+        if let Some(why) = recovery_refusal(s, &up) {
+            return Err(why);
+        }
+        let osds = s.loss.as_ref().map(|l| l.osds.clone()).unwrap_or_default();
+        s.recovery = Some(Recovery {
+            step: Step::PurgeOsds,
+            started_at: now,
+            finished_at: None,
+            osds,
+            removed: removed.clone(),
+            apps: None,
+            outcomes: BTreeMap::new(),
+        });
+        Ok(())
     })
     .await?;
     started.map_err(|why| anyhow::anyhow!(why))?;
@@ -1059,14 +1059,22 @@ pub async fn post_recover(
     State(s): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> (StatusCode, Json<Value>) {
-    match recovery_route(crate::runtime::leader::this_process_leads(), headers.contains_key(FORWARDED_FROM)) {
+    match recovery_route(
+        crate::runtime::leader::this_process_leads(),
+        headers.contains_key(FORWARDED_FROM),
+    ) {
         Route::Here => match start_recovery(&RealHost, now_secs()).await {
             Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
-            Err(e) => (StatusCode::CONFLICT, Json(json!({ "error": e.to_string() }))),
+            Err(e) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": e.to_string() })),
+            ),
         },
         Route::Refuse => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "this machine stopped leading the cluster while the request was on its way — try again" })),
+            Json(
+                json!({ "error": "this machine stopped leading the cluster while the request was on its way — try again" }),
+            ),
         ),
         Route::ToLeader => forward_to_leader(&s.config).await,
     }
@@ -1088,10 +1096,17 @@ fn recovery_route(leads: bool, already_forwarded: bool) -> Route {
 }
 
 async fn forward_to_leader(cfg: &crate::config::Config) -> (StatusCode, Json<Value>) {
-    let unavailable = |why: String| (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": why })));
+    let unavailable = |why: String| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": why })),
+        )
+    };
     let holder = match crate::runtime::leader::holder().await {
         Ok(Some(h)) => h,
-        Ok(None) => return unavailable("no machine leads the cluster right now — try again shortly".into()),
+        Ok(None) => {
+            return unavailable("no machine leads the cluster right now — try again shortly".into())
+        }
         Err(e) => return unavailable(format!("cannot tell which machine leads the cluster: {e}")),
     };
     let nodes = match crate::kubectl::get_nodes().await {
@@ -1099,7 +1114,9 @@ async fn forward_to_leader(cfg: &crate::config::Config) -> (StatusCode, Json<Val
         Err(e) => return unavailable(format!("cannot list the cluster's machines: {e}")),
     };
     let Some(addr) = crate::kubectl::node_ipv6(&nodes, &holder) else {
-        return unavailable(format!("{holder} leads the cluster but has no cluster address"));
+        return unavailable(format!(
+            "{holder} leads the cluster but has no cluster address"
+        ));
     };
     let url = format!("http://[{addr}]:{}/api/storage/recovery", cfg.port);
     let sent = reqwest::Client::new()
@@ -1113,12 +1130,15 @@ async fn forward_to_leader(cfg: &crate::config::Config) -> (StatusCode, Json<Val
         Ok(r) => r,
         Err(e) => return unavailable(format!("{holder} (the leader) did not answer: {e}")),
     };
-    let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     match response.json::<Value>().await {
         Ok(body) => (status, Json(body)),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("{holder} (the leader) sent an unreadable answer: {e}") })),
+            Json(
+                json!({ "error": format!("{holder} (the leader) sent an unreadable answer: {e}") }),
+            ),
         ),
     }
 }
@@ -1397,7 +1417,11 @@ mod tests {
         assert_eq!(recovery_route(true, false), Route::Here);
         assert_eq!(recovery_route(true, true), Route::Here);
         assert_eq!(recovery_route(false, false), Route::ToLeader);
-        assert_eq!(recovery_route(false, true), Route::Refuse, "never forwarded twice");
+        assert_eq!(
+            recovery_route(false, true),
+            Route::Refuse,
+            "never forwarded twice"
+        );
     }
 
     #[test]
@@ -1425,17 +1449,13 @@ mod tests {
     fn cluster_host(state: &Value, dump: &Value, pgs: &Value) -> FakeHost {
         FakeHost::new()
             .ok("ceph -s", "")
-            .ok(
-                "ceph config-key get yolab/storage-heal",
-                &state.to_string(),
-            )
+            .ok("ceph config-key get yolab/storage-heal", &state.to_string())
             .ok("ceph osd dump", &dump.to_string())
             .ok("ceph pg dump pgs_brief", &pgs.to_string())
             .ok("ceph config-key set yolab/storage-heal", "")
     }
 
-    const NO_STATE_MAP: &str =
-        "Error ENOENT: key 'yolab/storage-heal' doesn't exist";
+    const NO_STATE_MAP: &str = "Error ENOENT: key 'yolab/storage-heal' doesn't exist";
 
     /// A host with no state map yet, where every state write succeeds.
     fn fresh_state_host() -> FakeHost {
@@ -1582,10 +1602,7 @@ mod tests {
     async fn an_unreadable_pg_dump_is_an_error_and_records_nothing() {
         let host = FakeHost::new()
             .ok("ceph -s", "")
-            .ok(
-                "ceph config-key get yolab/storage-heal",
-                "{}",
-            )
+            .ok("ceph config-key get yolab/storage-heal", "{}")
             .ok("ceph osd dump", &dump().to_string())
             .fail("ceph pg dump pgs_brief", "timeout");
         assert!(tick(&host, &FakeApps::default(), GRACE, NOW, &always)
@@ -2141,7 +2158,10 @@ mod tests {
         state.recovery.as_mut().unwrap().apps = Some(strings(&["yolab-a", "yolab-b"]));
         let host = FakeHost::new()
             .fail("ceph config-key get yolab/storage-heal", NO_STATE_MAP)
-            .fail("ceph config-key set yolab/storage-heal", "error connecting to the cluster");
+            .fail(
+                "ceph config-key set yolab/storage-heal",
+                "error connecting to the cluster",
+            );
         assert!(continue_recovery(&host, &apps, &mut state, NOW, &always)
             .await
             .is_err());

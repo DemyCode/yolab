@@ -174,7 +174,9 @@ fn cluster_ipv6(node: &Value) -> Option<String> {
     node["status"]["addresses"]
         .as_array()?
         .iter()
-        .find(|a| a["type"] == "InternalIP" && a["address"].as_str().is_some_and(|s| s.contains(':')))
+        .find(|a| {
+            a["type"] == "InternalIP" && a["address"].as_str().is_some_and(|s| s.contains(':'))
+        })
         .and_then(|a| a["address"].as_str())
         .map(String::from)
 }
@@ -228,7 +230,10 @@ mod tests {
         };
         let nodes = [
             named("node1", &[("InternalIP", "fd00:cafe::5")]),
-            named("node2", &[("InternalIP", "10.0.0.7"), ("InternalIP", "fd00:cafe::6")]),
+            named(
+                "node2",
+                &[("InternalIP", "10.0.0.7"), ("InternalIP", "fd00:cafe::6")],
+            ),
             named("node3", &[("InternalIP", "10.0.0.8")]),
         ];
         assert_eq!(node_ipv6(&nodes, "node2").as_deref(), Some("fd00:cafe::6"));

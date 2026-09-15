@@ -711,7 +711,10 @@ mod tests {
             "ceph config-key get yolab/storage-policy",
             "Error ENOENT: key 'yolab/storage-policy' doesn't exist",
         );
-        assert!(matches!(read_policy_from(&fresh).await, Some(PolicyState::NotChosen)));
+        assert!(matches!(
+            read_policy_from(&fresh).await,
+            Some(PolicyState::NotChosen)
+        ));
 
         let down = FakeHost::new().fail(
             "ceph config-key get yolab/storage-policy",
@@ -719,8 +722,14 @@ mod tests {
         );
         assert!(read_policy_from(&down).await.is_none());
 
-        let junk = FakeHost::new().ok("ceph config-key get yolab/storage-policy", r#"{"size":"two"}"#);
-        assert!(read_policy_from(&junk).await.is_none(), "unreadable is not 'not chosen'");
+        let junk = FakeHost::new().ok(
+            "ceph config-key get yolab/storage-policy",
+            r#"{"size":"two"}"#,
+        );
+        assert!(
+            read_policy_from(&junk).await.is_none(),
+            "unreadable is not 'not chosen'"
+        );
     }
 
     #[tokio::test]
@@ -728,6 +737,7 @@ mod tests {
         use crate::host::fake::FakeHost;
         let host = FakeHost::new().ok("ceph config-key set yolab/storage-policy", "");
         write_policy(&host, &policy(3, "osd")).await.unwrap();
-        assert!(host.ran(r#"ceph config-key set yolab/storage-policy {"size":3,"failure_domain":"osd"}"#));
+        assert!(host
+            .ran(r#"ceph config-key set yolab/storage-policy {"size":3,"failure_domain":"osd"}"#));
     }
 }
