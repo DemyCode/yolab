@@ -426,7 +426,10 @@ impl Survey {
 
     fn refusal(&self) -> Option<String> {
         if !self.machines.iter().any(|m| m.this_machine) {
-            return Some(format!("{} is not in its own monmap — it cannot drive a heal", self.me));
+            return Some(format!(
+                "{} is not in its own monmap — it cannot drive a heal",
+                self.me
+            ));
         }
         if self.problems().is_empty() {
             return Some("nothing is wrong — there is nothing to heal".into());
@@ -447,7 +450,12 @@ impl Survey {
     }
 }
 
-async fn survey<H: Host, N: Network>(host: &H, net: &N, me: &str, uptime_secs: u64) -> Result<Survey> {
+async fn survey<H: Host, N: Network>(
+    host: &H,
+    net: &N,
+    me: &str,
+    uptime_secs: u64,
+) -> Result<Survey> {
     let mon = mon_status(host, me).await?;
     let mut machines = Vec::with_capacity(mon.machines.len());
     for m in &mon.machines {
@@ -464,7 +472,10 @@ async fn survey<H: Host, N: Network>(host: &H, net: &N, me: &str, uptime_secs: u
         match (host.osd_dump().await, host.pgs_brief().await) {
             (Ok(dump), Ok(pgs)) => {
                 let lost = model::lost_pgs(&dump, &pgs).0;
-                (Some(dump.down()), Some(lost.values().map(BTreeSet::len).sum()))
+                (
+                    Some(dump.down()),
+                    Some(lost.values().map(BTreeSet::len).sum()),
+                )
             }
             _ => (None, None),
         }
@@ -642,7 +653,10 @@ async fn tick<H: Host, N: Network>(
                 return Ok(Tick::Done);
             }
             Ok(StepResult::Abandon) => {
-                tracing::warn!("heal {}: another machine's heal won the claim — stopping", heal.id);
+                tracing::warn!(
+                    "heal {}: another machine's heal won the claim — stopping",
+                    heal.id
+                );
                 local.remove().await?;
                 return Ok(Tick::Idle("another machine drives the heal".into()));
             }
@@ -708,7 +722,11 @@ async fn run_step<H: Host, N: Network>(
                 .is_ok()
             {
                 let status = mon_status(host, me).await?;
-                for m in status.machines.iter().filter(|m| heal.gone.contains(&m.name)) {
+                for m in status
+                    .machines
+                    .iter()
+                    .filter(|m| heal.gone.contains(&m.name))
+                {
                     destructive::remove_mon(host, &mandate, &m.name).await?;
                 }
                 return Ok(Done);
@@ -826,7 +844,9 @@ fn records_to_switch_off(
             if disk_id == "system" {
                 continue;
             }
-            let on_purged = meta["osd_id"].as_i64().is_some_and(|id| purged.contains(&id));
+            let on_purged = meta["osd_id"]
+                .as_i64()
+                .is_some_and(|id| purged.contains(&id));
             if on_purged || gone.contains(node) {
                 keys.insert(crate::disks_reconciler::record_key(node, disk_id));
             }
@@ -835,7 +855,11 @@ fn records_to_switch_off(
     keys
 }
 
-async fn purge_disks<H: Host>(host: &H, mandate: &HealMandate, heal: &mut Heal) -> Result<StepResult> {
+async fn purge_disks<H: Host>(
+    host: &H,
+    mandate: &HealMandate,
+    heal: &mut Heal,
+) -> Result<StepResult> {
     let tree = host.ceph_json(&["osd", "tree"]).await?;
     let on_gone = osds_on_hosts(&tree, &heal.gone);
     let dump = host.osd_dump().await?;
@@ -868,7 +892,12 @@ async fn purge_disks<H: Host>(host: &H, mandate: &HealMandate, heal: &mut Heal) 
             .warn_on_err(format!("heal: remove host {machine} from the CRUSH map"));
         destructive::forget_daemons(host, mandate, machine).await?;
         settings::remove(host, &format!("{}{machine}", settings::DISK_STATUS)).await?;
-        settings::set(host, &format!("{}{machine}", settings::REMOVED_MACHINES), &heal.id).await?;
+        settings::set(
+            host,
+            &format!("{}{machine}", settings::REMOVED_MACHINES),
+            &heal.id,
+        )
+        .await?;
     }
 
     let left: Vec<i64> = host
@@ -903,13 +932,32 @@ async fn remove_apps<H: Host>(host: &H) -> Result<StepResult> {
     let live = managed_namespaces(host).await?;
     for ns in &live {
         let ns = ns.as_str();
-        host.kubectl(&["scale", "deployment,statefulset", "--all", "-n", ns, "--replicas=0"])
+        host.kubectl(&[
+            "scale",
+            "deployment,statefulset",
+            "--all",
+            "-n",
+            ns,
+            "--replicas=0",
+        ])
+        .await
+        .warn_on_err(format!("heal: scale down {ns}"));
+        host.kubectl(&[
+            "delete",
+            "pod",
+            "--all",
+            "-n",
+            ns,
+            "--force",
+            "--grace-period=0",
+            "--wait=false",
+        ])
+        .await
+        .warn_on_err(format!("heal: delete pods in {ns}"));
+        let pvcs = match host
+            .kubectl_json(&["get", "pvc", "-n", ns, "-o", "json"])
             .await
-            .warn_on_err(format!("heal: scale down {ns}"));
-        host.kubectl(&["delete", "pod", "--all", "-n", ns, "--force", "--grace-period=0", "--wait=false"])
-            .await
-            .warn_on_err(format!("heal: delete pods in {ns}"));
-        let pvcs = match host.kubectl_json(&["get", "pvc", "-n", ns, "-o", "json"]).await {
+        {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("heal: list PVCs in {ns}: {e}");
@@ -920,9 +968,19 @@ async fn remove_apps<H: Host>(host: &H) -> Result<StepResult> {
             let Some(name) = p["metadata"]["name"].as_str() else {
                 continue;
             };
-            host.kubectl(&["patch", "pvc", name, "-n", ns, "--type", "merge", "-p", NO_FINALIZERS])
-                .await
-                .debug_on_err(format!("heal: clear finalizers on pvc {ns}/{name}"));
+            host.kubectl(&[
+                "patch",
+                "pvc",
+                name,
+                "-n",
+                ns,
+                "--type",
+                "merge",
+                "-p",
+                NO_FINALIZERS,
+            ])
+            .await
+            .debug_on_err(format!("heal: clear finalizers on pvc {ns}/{name}"));
             if let Some(pv) = p["spec"]["volumeName"].as_str() {
                 host.kubectl(&["patch", "pv", pv, "--type", "merge", "-p", NO_FINALIZERS])
                     .await
@@ -932,9 +990,15 @@ async fn remove_apps<H: Host>(host: &H) -> Result<StepResult> {
                     .warn_on_err(format!("heal: delete pv {pv}"));
             }
         }
-        host.kubectl(&["delete", "namespace", ns, "--wait=false", "--ignore-not-found"])
-            .await
-            .warn_on_err(format!("heal: delete namespace {ns}"));
+        host.kubectl(&[
+            "delete",
+            "namespace",
+            ns,
+            "--wait=false",
+            "--ignore-not-found",
+        ])
+        .await
+        .warn_on_err(format!("heal: delete namespace {ns}"));
     }
     Ok(if live.is_empty() {
         StepResult::Done
@@ -990,7 +1054,10 @@ fn status_json(survey: &Survey, heal: Option<&Heal>) -> Value {
 }
 
 fn unavailable(e: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
-    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e.to_string() })))
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": e.to_string() })),
+    )
 }
 
 async fn uptime_secs() -> u64 {
@@ -1045,7 +1112,10 @@ pub async fn post_heal(
     .await
     {
         Ok(heal) => (StatusCode::OK, Json(heal_json(&heal))),
-        Err(e) => (StatusCode::CONFLICT, Json(json!({ "error": format!("{e:#}") }))),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": format!("{e:#}") })),
+        ),
     }
 }
 
@@ -1157,11 +1227,24 @@ mod tests {
     fn mon_status_gives_quorum_and_every_machine_with_its_address() {
         let s = parse_mon_status(&mon_status_json("peon", &["node1", "node2"])).unwrap();
         assert!(s.in_quorum);
-        assert_eq!(s.machines, vec![machine("node1", "fd00::1"), machine("node2", "fd00::2")]);
-        assert!(!parse_mon_status(&mon_status_json("probing", &["node1"])).unwrap().in_quorum);
-        assert!(!parse_mon_status(&mon_status_json("electing", &["node1"])).unwrap().in_quorum);
+        assert_eq!(
+            s.machines,
+            vec![machine("node1", "fd00::1"), machine("node2", "fd00::2")]
+        );
+        assert!(
+            !parse_mon_status(&mon_status_json("probing", &["node1"]))
+                .unwrap()
+                .in_quorum
+        );
+        assert!(
+            !parse_mon_status(&mon_status_json("electing", &["node1"]))
+                .unwrap()
+                .in_quorum
+        );
         assert!(parse_mon_status("{}").is_err());
-        assert!(parse_mon_status(r#"{"state":"leader","monmap":{"mons":[{"name":"x"}]}}"#).is_err());
+        assert!(
+            parse_mon_status(r#"{"state":"leader","monmap":{"mons":[{"name":"x"}]}}"#).is_err()
+        );
     }
 
     #[test]
@@ -1189,7 +1272,9 @@ mod tests {
     #[tokio::test]
     async fn a_survey_sees_who_answers_and_what_is_lost() {
         let host = survey_host("leader", &["node1", "node2", "node3"], true);
-        let s = survey(&host, &FakeNetwork::answering(&["node3"]), "node1", 3600).await.unwrap();
+        let s = survey(&host, &FakeNetwork::answering(&["node3"]), "node1", 3600)
+            .await
+            .unwrap();
         assert_eq!(s.gone(), names(&["node2"]));
         assert_eq!(s.answering_peers(), vec![machine("node3", "fd00::3")]);
         assert!(s.ceph_quorum && s.kubernetes);
@@ -1203,21 +1288,36 @@ mod tests {
     #[tokio::test]
     async fn without_quorum_the_survey_does_not_ask_ceph_about_disks() {
         let host = survey_host("probing", &["node1", "node2"], false);
-        let s = survey(&host, &FakeNetwork::default(), "node1", 3600).await.unwrap();
+        let s = survey(&host, &FakeNetwork::default(), "node1", 3600)
+            .await
+            .unwrap();
         assert!(!s.ceph_quorum && !s.kubernetes);
         assert_eq!((s.down_osds, s.lost_groups), (None, None));
         assert!(!host.ran("osd dump"));
-        assert_eq!(s.problems(), vec!["machines_gone", "ceph_no_quorum", "kubernetes_down"]);
-        assert!(s.reset_kubernetes(), "the only machine left, and k3s has no quorum");
+        assert_eq!(
+            s.problems(),
+            vec!["machines_gone", "ceph_no_quorum", "kubernetes_down"]
+        );
+        assert!(
+            s.reset_kubernetes(),
+            "the only machine left, and k3s has no quorum"
+        );
     }
 
     #[tokio::test]
     async fn a_machine_whose_mon_does_not_answer_cannot_survey() {
         let host = FakeHost::new().fail(MON_STATUS, "admin socket not found");
-        assert!(survey(&host, &FakeNetwork::default(), "node1", 0).await.is_err());
+        assert!(survey(&host, &FakeNetwork::default(), "node1", 0)
+            .await
+            .is_err());
     }
 
-    fn survey_of(machines: &[(&str, bool)], ceph_quorum: bool, kubernetes: bool, lost: usize) -> Survey {
+    fn survey_of(
+        machines: &[(&str, bool)],
+        ceph_quorum: bool,
+        kubernetes: bool,
+        lost: usize,
+    ) -> Survey {
         Survey {
             me: "node1".into(),
             machines: machines
@@ -1256,7 +1356,10 @@ mod tests {
         let s = survey_of(&[("node1", true), ("node2", true)], true, false, 3);
         assert_eq!(s.refusal(), None);
         assert!(s.gone().is_empty());
-        assert!(!s.reset_kubernetes(), "the other member answers: k3s comes back after restarts");
+        assert!(
+            !s.reset_kubernetes(),
+            "the other member answers: k3s comes back after restarts"
+        );
     }
 
     #[test]
@@ -1289,9 +1392,18 @@ mod tests {
             .ok(HEAL_SET, "");
         let (_d, rec) = local();
         let net = FakeNetwork::answering(&["node3"]);
-        let heal = start_heal(&host, &net, &rec, "node1", &request(&["node2"]), 3600, "h1".into(), NOW)
-            .await
-            .unwrap();
+        let heal = start_heal(
+            &host,
+            &net,
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h1".into(),
+            NOW,
+        )
+        .await
+        .unwrap();
         assert_eq!(heal.step, Step::Claim);
         assert_eq!(heal.gone, names(&["node2"]));
         assert_eq!(heal.peers, vec![machine("node3", "fd00::3")]);
@@ -1299,16 +1411,28 @@ mod tests {
         assert!(!heal.reset_kubernetes);
         assert!(host.ran(HEAL_SET));
         assert_eq!(rec.load().await.unwrap(), Some(heal));
-        assert!(!host.ran("mon remove") && !host.ran("osd purge"), "the controller does the work");
+        assert!(
+            !host.ran("mon remove") && !host.ran("osd purge"),
+            "the controller does the work"
+        );
     }
 
     #[tokio::test]
     async fn starting_without_quorum_saves_only_locally() {
         let host = survey_host("probing", &["node1", "node2"], false);
         let (_d, rec) = local();
-        let heal = start_heal(&host, &FakeNetwork::default(), &rec, "node1", &request(&["node2"]), 3600, "h1".into(), NOW)
-            .await
-            .unwrap();
+        let heal = start_heal(
+            &host,
+            &FakeNetwork::default(),
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h1".into(),
+            NOW,
+        )
+        .await
+        .unwrap();
         assert_eq!(heal.claim_after, None);
         assert!(heal.reset_kubernetes);
         assert!(!host.ran("config-key"));
@@ -1341,9 +1465,18 @@ mod tests {
         let (_d, rec) = local();
         rec.save(&heal_at(Step::PurgeDisks)).await.unwrap();
         let host = survey_host("leader", &["node1", "node2"], true);
-        let err = start_heal(&host, &FakeNetwork::default(), &rec, "node1", &request(&["node2"]), 3600, "h2".into(), NOW)
-            .await
-            .unwrap_err();
+        let err = start_heal(
+            &host,
+            &FakeNetwork::default(),
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h2".into(),
+            NOW,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("already healing"));
 
         let (_d, rec) = local();
@@ -1351,10 +1484,22 @@ mod tests {
         elsewhere.driver = "node3".into();
         let host = survey_host("leader", &["node1", "node2", "node3"], true)
             .ok(HEAL_GET, &serde_json::to_string(&elsewhere).unwrap());
-        let err = start_heal(&host, &FakeNetwork::answering(&["node3"]), &rec, "node1", &request(&["node2"]), 3600, "h2".into(), NOW)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("node3 is already healing"), "{err}");
+        let err = start_heal(
+            &host,
+            &FakeNetwork::answering(&["node3"]),
+            &rec,
+            "node1",
+            &request(&["node2"]),
+            3600,
+            "h2".into(),
+            NOW,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("node3 is already healing"),
+            "{err}"
+        );
         assert!(!host.ran(HEAL_SET));
     }
 
@@ -1394,14 +1539,24 @@ mod tests {
 
     #[tokio::test]
     async fn heal_state_gates_backups() {
-        let host = FakeHost::new().ok(HEAL_GET, &serde_json::to_string(&heal_at(Step::PurgeDisks)).unwrap());
+        let host = FakeHost::new().ok(
+            HEAL_GET,
+            &serde_json::to_string(&heal_at(Step::PurgeDisks)).unwrap(),
+        );
         assert!(backup_block(&host).await.unwrap().is_some());
 
         let host = FakeHost::new()
             .fail(HEAL_GET, NO_KEY)
             .ok("ceph osd dump", &dump(&[(0, true), (1, false)]))
-            .ok("ceph pg dump pgs_brief", r#"[{"pgid": "3.1", "state": "stale", "acting": [1]}]"#);
-        assert!(backup_block(&host).await.unwrap().unwrap().contains("FORCE HEAL"));
+            .ok(
+                "ceph pg dump pgs_brief",
+                r#"[{"pgid": "3.1", "state": "stale", "acting": [1]}]"#,
+            );
+        assert!(backup_block(&host)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("FORCE HEAL"));
 
         let host = FakeHost::new().fail(HEAL_GET, "timed out");
         assert!(backup_block(&host).await.is_err());
@@ -1411,14 +1566,26 @@ mod tests {
 
     async fn step(host: &FakeHost, heal: &mut Heal) -> Result<StepResult> {
         let (_d, rec) = local();
-        run_step(host, &FakeNetwork::answering(&["node3"]), &rec, heal, "node1", "boot-a", NOW).await
+        run_step(
+            host,
+            &FakeNetwork::answering(&["node3"]),
+            &rec,
+            heal,
+            "node1",
+            "boot-a",
+            NOW,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn the_claim_waits_and_then_yields_to_a_later_claim() {
         let mut h = heal_at(Step::Claim);
         h.claim_after = Some(NOW + 1);
-        assert!(matches!(step(&FakeHost::new(), &mut h).await.unwrap(), StepResult::NotYet(_)));
+        assert!(matches!(
+            step(&FakeHost::new(), &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
 
         h.claim_after = Some(NOW);
         let mine = FakeHost::new().ok(HEAL_GET, &serde_json::to_string(&h).unwrap());
@@ -1430,14 +1597,20 @@ mod tests {
         assert_eq!(step(&lost, &mut h).await.unwrap(), StepResult::Abandon);
 
         h.claim_after = None;
-        assert_eq!(step(&FakeHost::new(), &mut h).await.unwrap(), StepResult::Done);
+        assert_eq!(
+            step(&FakeHost::new(), &mut h).await.unwrap(),
+            StepResult::Done
+        );
     }
 
     #[tokio::test]
     async fn with_quorum_the_gone_machines_mons_are_removed_online() {
         let host = FakeHost::new()
             .ok("ceph --connect-timeout 10 mon dump", "{}")
-            .ok(MON_STATUS, &mon_status_json("leader", &["node1", "node2", "node3"]))
+            .ok(
+                MON_STATUS,
+                &mon_status_json("leader", &["node1", "node2", "node3"]),
+            )
             .ok("ceph mon remove", "");
         let mut h = heal_at(Step::CephQuorum);
         assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
@@ -1454,13 +1627,19 @@ mod tests {
             .ok("ceph-mon", "")
             .ok("monmaptool", "");
         let mut h = heal_at(Step::CephQuorum);
-        assert!(matches!(step(&host, &mut h).await.unwrap(), StepResult::NotYet(_)));
+        assert!(matches!(
+            step(&host, &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
         assert!(host.ran(&format!("monmaptool {MONMAP_PATH} --rm node2")));
 
         let edited = FakeHost::new()
             .fail("ceph --connect-timeout 10 mon dump", "timed out")
             .ok(MON_STATUS, &mon_status_json("electing", &["node1"]));
-        assert!(matches!(step(&edited, &mut h).await.unwrap(), StepResult::NotYet(_)));
+        assert!(matches!(
+            step(&edited, &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
         assert!(!edited.ran("monmaptool") && !edited.ran("systemctl"));
     }
 
@@ -1481,7 +1660,10 @@ mod tests {
             .ok("systemctl stop k3s.service", "")
             .ok("k3s server --cluster-reset", "");
         assert_eq!(step(&down, &mut h).await.unwrap(), StepResult::Done);
-        assert!(down.position("systemctl stop k3s.service") < down.position("k3s server --cluster-reset"));
+        assert!(
+            down.position("systemctl stop k3s.service")
+                < down.position("k3s server --cluster-reset")
+        );
     }
 
     fn tree() -> String {
@@ -1516,11 +1698,12 @@ mod tests {
 
     #[test]
     fn disks_of_purged_osds_and_of_gone_machines_are_switched_off_but_never_the_system_disk() {
-        let raw: BTreeMap<String, String> = serde_json::from_str::<BTreeMap<String, String>>(&statuses())
-            .unwrap()
-            .into_iter()
-            .map(|(k, v)| (k.trim_start_matches("yolab/disk-status/").to_string(), v))
-            .collect();
+        let raw: BTreeMap<String, String> =
+            serde_json::from_str::<BTreeMap<String, String>>(&statuses())
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| (k.trim_start_matches("yolab/disk-status/").to_string(), v))
+                .collect();
         let keys = records_to_switch_off(&raw, &BTreeSet::from([0, 1]), &names(&["node2"]));
         assert_eq!(keys, names(&["node1--dev-sdb", "serial-wwn-9"]));
     }
@@ -1551,7 +1734,10 @@ mod tests {
         let mut h = heal_at(Step::PurgeDisks);
         assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
         assert_eq!(h.purged, BTreeSet::from([1, 2]));
-        assert!(host.ran("ceph osd down osd.2"), "node2 is gone even if Ceph thinks osd.2 is up");
+        assert!(
+            host.ran("ceph osd down osd.2"),
+            "node2 is gone even if Ceph thinks osd.2 is up"
+        );
         assert!(host.ran("ceph osd purge osd.1") && host.ran("ceph osd purge osd.2"));
         assert!(!host.ran("purge osd.0"));
         assert!(host.ran("ceph config-key set yolab/disks/node1--dev-sdb OFF"));
@@ -1561,21 +1747,30 @@ mod tests {
         assert!(host.ran("ceph auth del mgr.node2"));
         assert!(host.ran("ceph config-key rm yolab/disk-status/node2"));
         assert!(host.ran("ceph config-key set yolab/removed-machines/node2 h1"));
-        assert!(host.position(HEAL_SET) < host.position("ceph osd purge"), "the purge list is saved first");
+        assert!(
+            host.position(HEAL_SET) < host.position("ceph osd purge"),
+            "the purge list is saved first"
+        );
     }
 
     #[tokio::test]
     async fn purge_disks_waits_while_a_purged_osd_is_still_listed() {
         let host = purge_host("[0, 1, 2]", "[0, 2]").fail("ceph osd purge osd.2", "EBUSY");
         let mut h = heal_at(Step::PurgeDisks);
-        assert!(matches!(step(&host, &mut h).await.unwrap(), StepResult::NotYet(_)));
+        assert!(matches!(
+            step(&host, &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
     }
 
     #[tokio::test]
     async fn delete_storage_deletes_every_pool() {
         let host = FakeHost::new()
             .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
-            .ok("ceph osd pool ls", ".mgr\nimages\nyolab-fs-metadata\nyolab-fs-data0\n")
+            .ok(
+                "ceph osd pool ls",
+                ".mgr\nimages\nyolab-fs-metadata\nyolab-fs-data0\n",
+            )
             .ok("ceph fs", "")
             .ok("ceph config set mon", "")
             .ok("ceph osd pool delete", "");
@@ -1592,9 +1787,15 @@ mod tests {
         let host = FakeHost::new().ok(HEAL_SET, "").ok("systemctl reboot", "");
         let net = FakeNetwork::default();
         let mut h = heal_at(Step::RestartMachines);
-        let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW).await.unwrap();
+        let r = run_step(&host, &net, &rec, &mut h, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
         assert_eq!(r, StepResult::Restarting);
-        assert_eq!(*net.restarted.lock().unwrap(), vec!["node3".to_string()], "a failed ask is not fatal");
+        assert_eq!(
+            *net.restarted.lock().unwrap(),
+            vec!["node3".to_string()],
+            "a failed ask is not fatal"
+        );
         let saved = rec.load().await.unwrap().unwrap();
         assert_eq!(saved.step, Step::ForgetNodes);
         assert_eq!(saved.restart_boot_id.as_deref(), Some("boot-a"));
@@ -1610,9 +1811,14 @@ mod tests {
 
         h.restart_boot_id = Some("boot-z".into());
         let starting = FakeHost::new().fail("kubectl get --raw /readyz", "refused");
-        assert!(matches!(step(&starting, &mut h).await.unwrap(), StepResult::NotYet(_)));
+        assert!(matches!(
+            step(&starting, &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
 
-        let up = FakeHost::new().ok("kubectl get --raw /readyz", "ok").ok("kubectl delete node", "");
+        let up = FakeHost::new()
+            .ok("kubectl get --raw /readyz", "ok")
+            .ok("kubectl delete node", "");
         assert_eq!(step(&up, &mut h).await.unwrap(), StepResult::Done);
         assert!(up.ran("kubectl delete node node2 --ignore-not-found"));
         assert!(!up.ran("systemctl"));
@@ -1621,15 +1827,29 @@ mod tests {
     #[tokio::test]
     async fn remove_apps_forces_every_app_off_and_is_done_when_none_is_left() {
         let host = FakeHost::new()
-            .ok("kubectl get namespaces -l yolab.io/managed=true", r#"{"items": [{"metadata": {"name": "yolab-a"}}]}"#)
-            .ok("kubectl get namespaces -l yolab.io/managed=true", r#"{"items": []}"#)
+            .ok(
+                "kubectl get namespaces -l yolab.io/managed=true",
+                r#"{"items": [{"metadata": {"name": "yolab-a"}}]}"#,
+            )
+            .ok(
+                "kubectl get namespaces -l yolab.io/managed=true",
+                r#"{"items": []}"#,
+            )
             .ok("kubectl scale", "")
             .ok("kubectl delete", "")
             .ok("kubectl patch", "")
-            .ok("kubectl get pvc -n yolab-a", r#"{"items": [{"metadata": {"name": "data"}, "spec": {"volumeName": "pv1"}}]}"#);
+            .ok(
+                "kubectl get pvc -n yolab-a",
+                r#"{"items": [{"metadata": {"name": "data"}, "spec": {"volumeName": "pv1"}}]}"#,
+            );
         let mut h = heal_at(Step::RemoveApps);
-        assert!(matches!(step(&host, &mut h).await.unwrap(), StepResult::NotYet(_)));
-        assert!(host.ran("kubectl delete pod --all -n yolab-a --force --grace-period=0 --wait=false"));
+        assert!(matches!(
+            step(&host, &mut h).await.unwrap(),
+            StepResult::NotYet(_)
+        ));
+        assert!(
+            host.ran("kubectl delete pod --all -n yolab-a --force --grace-period=0 --wait=false")
+        );
         assert!(host.ran("kubectl patch pv pv1 --type merge"));
         assert!(host.ran("kubectl delete namespace yolab-a --wait=false"));
         assert_eq!(step(&host, &mut h).await.unwrap(), StepResult::Done);
@@ -1650,7 +1870,9 @@ mod tests {
     async fn without_a_local_record_the_tick_does_nothing() {
         let (_d, rec) = local();
         let host = FakeHost::new();
-        let t = tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW).await.unwrap();
+        let t = tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
         assert!(matches!(t, Tick::Idle(_)));
         assert!(host.calls().is_empty());
     }
@@ -1662,11 +1884,22 @@ mod tests {
         h.finished_at = Some(NOW);
         rec.save(&h).await.unwrap();
         let host = FakeHost::new().fail(HEAL_GET, NO_KEY).ok(HEAL_SET, "");
-        tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW).await.unwrap();
+        tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
         assert!(host.ran(HEAL_SET));
 
         let landed = FakeHost::new().ok(HEAL_GET, &serde_json::to_string(&h).unwrap());
-        tick(&landed, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW).await.unwrap();
+        tick(
+            &landed,
+            &FakeNetwork::default(),
+            &rec,
+            "node1",
+            "boot-a",
+            NOW,
+        )
+        .await
+        .unwrap();
         assert!(!landed.ran(HEAL_SET));
     }
 
@@ -1674,8 +1907,14 @@ mod tests {
     async fn a_failing_step_is_recorded_and_retried() {
         let (_d, rec) = local();
         rec.save(&heal_at(Step::DeleteStorage)).await.unwrap();
-        let host = FakeHost::new().fail("ceph fs ls", "timed out").ok(HEAL_SET, "");
-        assert!(tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW).await.is_err());
+        let host = FakeHost::new()
+            .fail("ceph fs ls", "timed out")
+            .ok(HEAL_SET, "");
+        assert!(
+            tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
+                .await
+                .is_err()
+        );
         let saved = rec.load().await.unwrap().unwrap();
         assert_eq!(saved.step, Step::DeleteStorage);
         assert!(saved.waiting.unwrap().contains("timed out"));
@@ -1688,7 +1927,9 @@ mod tests {
         let mut theirs = heal_at(Step::Claim);
         theirs.id = "h2".into();
         let host = FakeHost::new().ok(HEAL_GET, &serde_json::to_string(&theirs).unwrap());
-        tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW).await.unwrap();
+        tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
+            .await
+            .unwrap();
         assert_eq!(rec.load().await.unwrap(), None);
     }
 
@@ -1703,23 +1944,45 @@ mod tests {
             .ok(HEAL_SET, "")
             .ok("ceph osd tree", &tree())
             .fail("ceph osd dump", "timed out");
-        assert!(tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW).await.is_err());
+        assert!(
+            tick(&host, &FakeNetwork::default(), &rec, "node1", "boot-a", NOW)
+                .await
+                .is_err()
+        );
         let saved = rec.load().await.unwrap().unwrap();
-        assert_eq!(saved.step, Step::PurgeDisks, "kubernetes_members was done and saved");
+        assert_eq!(
+            saved.step,
+            Step::PurgeDisks,
+            "kubernetes_members was done and saved"
+        );
     }
 
     #[tokio::test]
     async fn a_tick_refuses_to_run_without_a_boot_id() {
         let (_d, rec) = local();
         rec.save(&heal_at(Step::RestartMachines)).await.unwrap();
-        assert!(tick(&FakeHost::new(), &FakeNetwork::default(), &rec, "node1", "", NOW).await.is_err());
+        assert!(tick(
+            &FakeHost::new(),
+            &FakeNetwork::default(),
+            &rec,
+            "node1",
+            "",
+            NOW
+        )
+        .await
+        .is_err());
     }
 
     // ── What the page is told ────────────────────────────────────────────────
 
     #[test]
     fn status_names_the_problems_the_plan_and_the_heal() {
-        let s = survey_of(&[("node1", true), ("node2", false), ("node3", true)], true, true, 2);
+        let s = survey_of(
+            &[("node1", true), ("node2", false), ("node3", true)],
+            true,
+            true,
+            2,
+        );
         let v = status_json(&s, Some(&heal_at(Step::PurgeDisks)));
         assert_eq!(v["problems"], json!(["machines_gone", "data_unreachable"]));
         assert_eq!(v["refusal"], Value::Null);
@@ -1727,10 +1990,16 @@ mod tests {
             v["plan"],
             json!({"remove_machines": ["node2"], "restart_machines": ["node3"], "reset_kubernetes": false})
         );
-        assert_eq!(v["survey"]["machines"][1], json!({"name": "node2", "addr": "fd00::2", "this_machine": false, "answers": false}));
+        assert_eq!(
+            v["survey"]["machines"][1],
+            json!({"name": "node2", "addr": "fd00::2", "this_machine": false, "answers": false})
+        );
         assert_eq!(v["heal"]["step"], "purge_disks");
         assert_eq!(v["heal"]["running"], true);
-        assert_eq!(v["heal"]["steps"].as_array().unwrap().len(), Step::ALL.len());
+        assert_eq!(
+            v["heal"]["steps"].as_array().unwrap().len(),
+            Step::ALL.len()
+        );
         assert_eq!(status_json(&s, None)["heal"], Value::Null);
     }
 
@@ -1738,6 +2007,9 @@ mod tests {
     fn a_request_is_read_from_the_json_the_page_sends() {
         let r: HealRequest = serde_json::from_str(r#"{"remove_machines": ["node2"]}"#).unwrap();
         assert_eq!(r.remove_machines, names(&["node2"]));
-        assert!(serde_json::from_str::<HealRequest>("{}").is_err(), "the confirmation is explicit");
+        assert!(
+            serde_json::from_str::<HealRequest>("{}").is_err(),
+            "the confirmation is explicit"
+        );
     }
 }

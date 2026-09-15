@@ -342,7 +342,9 @@ fn backed_up_apps_json(
 }
 
 /// GET /api/backups/apps
-pub async fn list_backed_up_apps(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+pub async fn list_backed_up_apps(
+    State(_state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
     let versions = restore::backup_versions().await?;
     let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
     Ok(Json(backed_up_apps_json(&versions, &installed, &adding())))
@@ -386,7 +388,9 @@ pub async fn add_from_backup(
     Json(request): Json<AddFromBackupRequest>,
 ) -> Result<Json<serde_json::Value>> {
     if crate::heal::heal_running().await? {
-        return Err(anyhow::anyhow!("the cluster is being healed — add apps once it finishes").into());
+        return Err(
+            anyhow::anyhow!("the cluster is being healed — add apps once it finishes").into(),
+        );
     }
     let versions = restore::backup_versions().await?;
     let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
@@ -402,7 +406,11 @@ pub async fn add_from_backup(
     tokio::spawn(async move {
         let result = restore::reinstall_from_backup(&request.namespace, &request.snapshot_id).await;
         if let Err(e) = &result {
-            tracing::warn!("add {} from backup {}: {e:#}", request.namespace, request.snapshot_id);
+            tracing::warn!(
+                "add {} from backup {}: {e:#}",
+                request.namespace,
+                request.snapshot_id
+            );
         }
         set_adding(
             &request.namespace,
@@ -775,13 +783,20 @@ mod tests {
     fn an_app_is_added_only_from_a_backup_that_holds_it_and_only_when_absent() {
         let none = std::collections::BTreeMap::new();
         let installed: HashSet<String> = ["yolab-b".to_string()].into();
-        assert_eq!(add_refusal(&add("yolab-a", "old"), &versions(), &installed, &none), None);
-        assert!(add_refusal(&add("yolab-a", "gone"), &versions(), &installed, &none)
-            .unwrap()
-            .contains("no backup gone"));
-        assert!(add_refusal(&add("yolab-b", "old"), &versions(), &installed, &none)
-            .unwrap()
-            .contains("already installed"));
+        assert_eq!(
+            add_refusal(&add("yolab-a", "old"), &versions(), &installed, &none),
+            None
+        );
+        assert!(
+            add_refusal(&add("yolab-a", "gone"), &versions(), &installed, &none)
+                .unwrap()
+                .contains("no backup gone")
+        );
+        assert!(
+            add_refusal(&add("yolab-b", "old"), &versions(), &installed, &none)
+                .unwrap()
+                .contains("already installed")
+        );
         let running = std::collections::BTreeMap::from([(
             "yolab-a".to_string(),
             Adding {
@@ -790,9 +805,11 @@ mod tests {
                 done: false,
             },
         )]);
-        assert!(add_refusal(&add("yolab-a", "new"), &versions(), &installed, &running)
-            .unwrap()
-            .contains("already being added"));
+        assert!(
+            add_refusal(&add("yolab-a", "new"), &versions(), &installed, &running)
+                .unwrap()
+                .contains("already being added")
+        );
         let failed = std::collections::BTreeMap::from([(
             "yolab-a".to_string(),
             Adding {
@@ -801,7 +818,11 @@ mod tests {
                 done: true,
             },
         )]);
-        assert_eq!(add_refusal(&add("yolab-a", "new"), &versions(), &installed, &failed), None, "a failed add can be retried");
+        assert_eq!(
+            add_refusal(&add("yolab-a", "new"), &versions(), &installed, &failed),
+            None,
+            "a failed add can be retried"
+        );
     }
 
     #[test]

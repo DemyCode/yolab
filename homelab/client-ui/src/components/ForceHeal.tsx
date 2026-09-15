@@ -148,8 +148,8 @@ function HealProgress({ heal }: { heal: Heal }) {
         {heal.removed_machines.length > 0 && (
           <p className="text-sm text-fg-muted">
             Removed:{" "}
-            <span className="text-fg">{heal.removed_machines.join(", ")}</span>
-            . To use them again, install them again.
+            <span className="text-fg">{heal.removed_machines.join(", ")}</span>.
+            To use them again, install them again.
           </p>
         )}
         {!heal.running && (
@@ -223,9 +223,12 @@ function HealDialog({
       <div className="space-y-4 text-sm text-fg-muted">
         <p>
           The cluster is rebuilt from what still answers, as if it were freshly
-          installed. <span className="font-medium text-fg">Every app and every
-          stored file is deleted.</span> Afterwards, add your apps back from
-          backup on the home page. This cannot be undone.
+          installed.{" "}
+          <span className="font-medium text-fg">
+            Every app and every stored file is deleted.
+          </span>{" "}
+          Afterwards, add your apps back from backup on the home page. This
+          cannot be undone.
         </p>
         <ul className="list-disc space-y-1 pl-5">
           {plan.remove_machines.length > 0 && (
@@ -235,7 +238,9 @@ function HealDialog({
               . They must be installed again to rejoin.
             </li>
           )}
-          <li>Every disk that does not answer is forgotten and switched off.</li>
+          <li>
+            Every disk that does not answer is forgotten and switched off.
+          </li>
           {plan.reset_kubernetes && (
             <li>
               {status.survey.me} becomes the only member of the cluster&apos;s
@@ -320,8 +325,8 @@ export function ForceHealCard() {
           {s.survey.lost_groups !== null && s.survey.lost_groups > 0 && (
             <p>
               {s.survey.lost_groups} group
-              {s.survey.lost_groups === 1 ? "" : "s"} of files have no copy on
-              a disk that answers.
+              {s.survey.lost_groups === 1 ? "" : "s"} of files have no copy on a
+              disk that answers.
             </p>
           )}
           <p>

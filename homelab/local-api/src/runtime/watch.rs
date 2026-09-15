@@ -123,12 +123,7 @@ pub fn standard() -> Vec<Watch> {
             label: "restores",
             bin: "kubectl",
             args: kube_watch("configmap", "yolab-restores", "kube-system"),
-            targets: &[
-                "restore-watchdog",
-                "disks",
-                "topology",
-                "cephfs",
-            ],
+            targets: &["restore-watchdog", "disks", "topology", "cephfs"],
             filter: any_line,
         },
     ]
