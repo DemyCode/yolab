@@ -328,7 +328,7 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
     };
 
     let chart_yaml = format!(
-        "apiVersion: v2\nname: {id}\ndescription: {desc}\ntype: application\nversion: 0.1.0\n\ndependencies:\n  - name: yolab-common\n    version: \"0.1.0\"\n    repository: \"oci://ghcr.io/demycode/charts\"\n\nannotations:\n  yolab.io/display-name: {display}\n  yolab.io/icon: {icon}\n  yolab.io/category: \"custom\"\n  yolab.io/uischema: |\n    {{ \"subdomain\": {{ \"ui:widget\": \"TunnelWidget\" }} }}\n",
+        "apiVersion: v2\nname: {id}\ndescription: {desc}\ntype: application\nversion: 0.1.0\n\ndependencies:\n  - name: yolab-common\n    version: \"0.1.1\"\n    repository: \"oci://ghcr.io/demycode/charts\"\n\nannotations:\n  yolab.io/display-name: {display}\n  yolab.io/icon: {icon}\n  yolab.io/category: \"custom\"\n  yolab.io/uischema: |\n    {{ \"subdomain\": {{ \"ui:widget\": \"TunnelWidget\" }} }}\n",
         id = app.id,
         desc = serde_json::to_string(&app.description).unwrap_or_else(|_| "\"\"".into()),
         display = serde_json::to_string(&app.display_name).unwrap_or_else(|_| "\"\"".into()),
