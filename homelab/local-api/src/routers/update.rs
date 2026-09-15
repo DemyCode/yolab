@@ -18,11 +18,21 @@ use crate::{config::Config, kubectl, proc::KillOnDrop, AppState};
 
 static IS_UPDATING: AtomicBool = AtomicBool::new(false);
 
-struct UpdateGuard;
+pub(crate) struct UpdateGuard;
 impl Drop for UpdateGuard {
     fn drop(&mut self) {
         IS_UPDATING.store(false, Ordering::SeqCst);
     }
+}
+
+/// Holds off updates for as long as the guard lives, or `None` when one is
+/// running. For a FORCE HEAL building or switching this machine's system, which
+/// an update doing the same at the same time would race.
+pub(crate) fn exclusive() -> Option<UpdateGuard> {
+    IS_UPDATING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| UpdateGuard)
 }
 
 #[derive(Serialize, Deserialize, Clone)]

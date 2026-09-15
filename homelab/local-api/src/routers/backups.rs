@@ -387,11 +387,6 @@ pub async fn add_from_backup(
     State(_state): State<AppState>,
     Json(request): Json<AddFromBackupRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    if crate::heal::heal_running().await? {
-        return Err(
-            anyhow::anyhow!("the cluster is being healed — add apps once it finishes").into(),
-        );
-    }
     let versions = restore::backup_versions().await?;
     let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
     if let Some(why) = add_refusal(&request, &versions, &installed, &adding()) {

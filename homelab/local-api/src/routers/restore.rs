@@ -118,14 +118,6 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
-    match crate::heal::heal_running().await {
-        Ok(false) => {}
-        Ok(true) => anyhow::bail!(
-            "the cluster is being healed — add apps back from backup once it finishes"
-        ),
-        Err(e) => anyhow::bail!("cannot tell whether the cluster is being healed: {e:#}"),
-    }
-
     // Resolve the snapshot up front so the record (and the page) always shows the
     // concrete id being restored, even for "restore latest".
     let resolved = resolve_snapshot(&cfg, snapshot_id).await?;

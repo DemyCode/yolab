@@ -474,8 +474,6 @@ in {
                 with pkgs; [
                   ceph
                   ceph-client
-                  # `k3s server --cluster-reset`, run by a FORCE HEAL (heal.rs).
-                  config.services.k3s.package
                   lvm2
                   util-linux
                   xfsprogs
@@ -527,6 +525,51 @@ in {
         ExecStart = "${s.localApiEnv}/bin/local-api";
       };
     };
+
+    # ── FORCE HEAL: the wipe at boot ──────────────────────────────────────
+    # A heal switches every machine it keeps to a system built for the new
+    # cluster and leaves this marker; the boot that follows erases the machine's
+    # OSDs, Ceph state and k3s state before anything that would use them starts,
+    # and the ordinary create-or-join path takes over. See
+    # homelab/local-api/src/storage/reset_wipe.rs and heal/.
+    systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (let
+      host = config.networking.hostName;
+    in {
+      description = "Wipe this machine's cluster state for a FORCE HEAL";
+      wantedBy = ["multi-user.target"];
+      unitConfig.ConditionPathExists = "/var/lib/yolab/reset-wipe";
+      after = ["local-fs.target" "systemd-tmpfiles-setup.service"];
+      before = [
+        "yolab-ceph-bootstrap.service"
+        "ceph-mon-${host}.service"
+        "ceph-mgr-${host}.service"
+        "ceph-mds-${host}.service"
+        "yolab-ceph-system-osd.service"
+        "yolab-ceph-osd-activate.service"
+        "yolab-images-rbd.service"
+        "yolab-containerd-store.service"
+        "k3s-node-ip.service"
+        "k3s.service"
+        "yolab-local-api.service"
+      ];
+      # The same boot must not run the cluster on a half-wiped machine: every
+      # unit above waits for this one, and fails with it.
+      requiredBy = [
+        "yolab-ceph-bootstrap.service"
+        "k3s.service"
+      ];
+      # Runs at boot only; a rebuild must never start it.
+      restartIfChanged = false;
+      path = with pkgs; [ceph lvm2 util-linux coreutils];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Erasing a disk is quick, but a disk that does not answer must not
+        # hold the boot forever.
+        TimeoutStartSec = "1800s";
+        ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
+      };
+    });
 
     # No storage-class default management here any more.
     #

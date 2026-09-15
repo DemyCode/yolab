@@ -22,6 +22,7 @@ pub const NAMES: &[&str] = &[
     "cephfs",
     "topology",
     "heal",
+    "backup-credentials",
     "mesh-paths",
     "mesh-discovery",
     "chart-sync",
@@ -79,6 +80,8 @@ pub fn spawn_all(leader: Leadership) {
         },
         &leader,
     );
+    // Keeps the backup credentials on this machine's disk, which a heal keeps.
+    spawn(crate::heal::credentials::BackupCredentialsController, &leader);
 
     // The storage agent's own jobs, which used to be eleven systemd timers. Only
     // on a machine whose storage settings reached the process: a dev box must not
@@ -123,6 +126,9 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
                 config: crate::config::Config::from_env(),
             })
             .await
+        }
+        "backup-credentials" => {
+            runtime::run_once(&crate::heal::credentials::BackupCredentialsController).await
         }
         "mesh-paths" => runtime::run_once(&crate::mesh::MeshPathsController::new()).await,
         "mesh-discovery" => runtime::run_once(&crate::mesh::MeshDiscoveryController::new()).await,

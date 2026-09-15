@@ -1908,10 +1908,6 @@ impl crate::runtime::Controller for UninstallWatchdogController {
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
-        // A heal removes every app itself.
-        &[crate::runtime::Activity::Heal]
-    }
     fn not_before_uptime(&self) -> std::time::Duration {
         // Long enough after boot that a legitimate in-flight uninstall from before
         // a restart has had its chance to be re-driven by the client first.

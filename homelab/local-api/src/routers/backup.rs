@@ -857,7 +857,7 @@ impl Controller for BackupSchedulerController {
         &[Requirement::KubeApi]
     }
     fn pauses_during(&self) -> &'static [Activity] {
-        &[Activity::Restore, Activity::Heal]
+        &[Activity::Restore]
     }
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(60)

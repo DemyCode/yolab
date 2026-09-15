@@ -35,6 +35,7 @@ pub mod keys;
 pub mod mon_member;
 pub mod noout;
 pub mod osd;
+pub mod reset_wipe;
 pub mod settings;
 pub mod wait;
 
@@ -195,6 +196,7 @@ pub async fn run(args: &[String]) -> i32 {
         "images-grow",
         "dashboard",
         "csi-secrets",
+        "reset-wipe",
     ];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
@@ -252,6 +254,7 @@ pub async fn run(args: &[String]) -> i32 {
         "images-grow" => images_grow::run(&host, root(), &node, &env.grow_policy()).await,
         "dashboard" => dashboard::run(&host, &node, &env.dashboard_policy()).await,
         "csi-secrets" => csi_secrets::run(&host).await,
+        "reset-wipe" => reset_wipe::run(&host, root()).await,
         _ => unreachable!("checked against `known` above"),
     };
 

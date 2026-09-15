@@ -176,9 +176,14 @@ async fn main() {
             axum::routing::put(disks::set_disk_state),
         )
         .route("/api/disks/:node/:id/erase", post(disks::erase_disk))
-        // FORCE HEAL — see heal.rs. Served by every machine, with or without Ceph
+        // FORCE HEAL — see heal/mod.rs. Served by every machine, with or without Ceph
         // or Kubernetes answering; the machine that receives the POST drives it.
         .route("/api/heal", get(heal::get_status).post(heal::post_heal))
+        // Node to node, from the machine driving a heal (heal/member.rs).
+        .route("/api/heal/peer", get(heal::get_peer))
+        .route("/api/heal/peer/build", post(heal::post_peer_build))
+        .route("/api/heal/peer/commit", post(heal::post_peer_commit))
+        .route("/api/heal/peer/undo", post(heal::post_peer_undo))
         // Storage topology policy (auto/manual)
         .route(
             "/api/storage/policy",

@@ -248,10 +248,7 @@ impl crate::runtime::Controller for TopologyController {
         ]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
-        &[
-            crate::runtime::Activity::Restore,
-            crate::runtime::Activity::Heal,
-        ]
+        &[crate::runtime::Activity::Restore]
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         tick().await?;

@@ -22,14 +22,11 @@
 //!     construct.
 //!   - Each function here that opens the door demands a proof value naming WHY
 //!     the destruction is allowed — `SafeToDestroy` (Ceph itself confirmed it),
-//!     `HealMandate` (the owner pressed FORCE HEAL), a `ZapWarrant`, or a
-//!     `Purged` receipt — and those proofs can only be obtained by performing the
-//!     check they stand for.
+//!     a `ZapWarrant`, or a `Purged` receipt — and those proofs can only be
+//!     obtained by performing the check they stand for.
 //!
 //! A future bug can still pass the wrong proof. It can no longer forget to
 //! have one.
-
-use std::collections::BTreeSet;
 
 use crate::ceph::model::SafeToDestroyReport;
 use crate::exec::{CmdError, Failure};
@@ -39,9 +36,8 @@ use crate::host::Host;
 /// nothing outside this module can build one.
 pub struct Door(());
 
-/// The app filesystem, which a heal fails before deleting its pools.
-pub const RECOVERABLE_FS: &str = "yolab-fs";
-pub const RECOVERABLE_FS_POOLS: &[&str] = &["yolab-fs-metadata", "yolab-fs-data0"];
+/// The app filesystem's pools: where app data lives.
+pub const APP_DATA_POOLS: &[&str] = &["yolab-fs-metadata", "yolab-fs-data0"];
 
 /// Whether `bin args` destroys data. Matched on the command words, skipping
 /// leading `--option value` pairs such as `--connect-timeout 10`.
@@ -159,254 +155,6 @@ async fn purge<H: Host>(host: &H, osd: i64) -> Result<Option<Purged>, CmdError> 
     Ok((!still.contains(&osd)).then_some(Purged { osd }))
 }
 
-// ── Proof: the owner pressed FORCE HEAL ──────────────────────────────────────
-
-/// Issued from a persisted heal record that a person started with FORCE HEAL,
-/// after confirming by name every machine that stopped answering. A heal
-/// rebuilds the cluster without what did not answer, so its mandate allows
-/// exactly that: forgetting those machines, purging disks that are down,
-/// deleting every pool, and resetting k3s to this machine — nothing aimed at a
-/// machine or a disk that still answers.
-#[derive(Debug, Clone)]
-pub struct HealMandate {
-    id: String,
-    dead_machines: BTreeSet<String>,
-}
-
-impl HealMandate {
-    /// Only a running, persisted heal may call this — see `heal::Heal::mandate`.
-    pub fn from_persisted_heal(id: &str, dead_machines: BTreeSet<String>) -> Self {
-        Self {
-            id: id.to_string(),
-            dead_machines,
-        }
-    }
-
-    fn refuse_live(&self, machine: &str, what: &str) -> Result<(), CmdError> {
-        if self.dead_machines.contains(machine) {
-            return Ok(());
-        }
-        Err(CmdError::Forbidden {
-            cmd: format!("{what} ({machine} was not confirmed gone)"),
-        })
-    }
-}
-
-/// Purges an OSD that is down — and refuses one that is up. A disk that
-/// answers is not unresponsive, whatever was decided earlier.
-pub async fn purge_down<H: Host>(
-    host: &H,
-    mandate: &HealMandate,
-    osd: i64,
-) -> Result<(), CmdError> {
-    let dump = host.osd_dump().await?;
-    if dump.up().contains(&osd) {
-        return Err(CmdError::Forbidden {
-            cmd: format!("ceph osd purge osd.{osd} (it is up)"),
-        });
-    }
-    tracing::warn!("heal {}: purging osd.{osd}", mandate.id);
-    purge(host, osd).await.map(|_| ())
-}
-
-/// Removes a confirmed-gone machine's mon from a monmap that still has quorum.
-pub async fn remove_mon<H: Host>(
-    host: &H,
-    mandate: &HealMandate,
-    machine: &str,
-) -> Result<(), CmdError> {
-    mandate.refuse_live(machine, &format!("ceph mon remove {machine}"))?;
-    let door = Door(());
-    host.ceph_destructive(&door, &["mon", "remove", machine])
-        .await
-        .map(|_| ())
-}
-
-/// Removes confirmed-gone machines from THIS machine's monmap while there is no
-/// quorum to ask — the only way back to a quorum once a majority of mons is
-/// gone. The local mon is stopped, its map edited in its own store, and started
-/// again; the result is a monmap in which the remaining mons are a majority.
-///
-/// Every step is attempted in order and the mon is started again whatever
-/// happened, so a failure leaves the machine as it was rather than monless.
-pub async fn remove_mons_offline<H: Host>(
-    host: &H,
-    mandate: &HealMandate,
-    me: &str,
-    gone: &[String],
-    monmap_path: &str,
-) -> Result<(), CmdError> {
-    if gone.is_empty() {
-        return Ok(());
-    }
-    for machine in gone {
-        mandate.refuse_live(machine, &format!("monmaptool --rm {machine}"))?;
-    }
-    if gone.iter().any(|g| g == me) {
-        return Err(CmdError::Forbidden {
-            cmd: format!("monmaptool --rm {me} (this machine's own mon)"),
-        });
-    }
-    tracing::warn!(
-        "heal {}: removing {gone:?} from {me}'s monmap offline",
-        mandate.id
-    );
-    let unit = format!("ceph-mon-{me}.service");
-    checked(host.systemctl(&["stop", &unit]).await, "systemctl stop")?;
-    let edited: Result<(), CmdError> = async {
-        checked(
-            host.run_cmd("ceph-mon", &["-i", me, "--extract-monmap", monmap_path])
-                .await,
-            "ceph-mon --extract-monmap",
-        )?;
-        for machine in gone {
-            checked(
-                host.run_cmd("monmaptool", &[monmap_path, "--rm", machine])
-                    .await,
-                "monmaptool --rm",
-            )?;
-        }
-        checked(
-            host.run_cmd(
-                "ceph-mon",
-                &[
-                    "-i",
-                    me,
-                    "--inject-monmap",
-                    monmap_path,
-                    "--setuser",
-                    "ceph",
-                    "--setgroup",
-                    "ceph",
-                ],
-            )
-            .await,
-            "ceph-mon --inject-monmap",
-        )
-    }
-    .await;
-    let started = checked(host.systemctl(&["start", &unit]).await, "systemctl start");
-    edited?;
-    started
-}
-
-fn checked(out: Result<crate::host::CommandOutput, CmdError>, what: &str) -> Result<(), CmdError> {
-    let out = out?;
-    if out.success {
-        return Ok(());
-    }
-    let stderr = out.stderr.trim().to_string();
-    Err(CmdError::Failed {
-        kind: crate::exec::classify(what.split_whitespace().next().unwrap_or(""), &stderr),
-        cmd: what.to_string(),
-        stderr,
-    })
-}
-
-/// Deletes the cephx keys of a confirmed-gone machine's mgr and MDS, so the
-/// machine cannot come back as those daemons without being set up again.
-pub async fn forget_daemons<H: Host>(
-    host: &H,
-    mandate: &HealMandate,
-    machine: &str,
-) -> Result<(), CmdError> {
-    mandate.refuse_live(machine, &format!("ceph auth del mgr.{machine}"))?;
-    let door = Door(());
-    for entity in [format!("mgr.{machine}"), format!("mds.{machine}")] {
-        match host
-            .ceph_destructive(&door, &["auth", "del", &entity])
-            .await
-        {
-            Ok(_) => {}
-            Err(e) if e.is_not_found() => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-/// Resets this machine's embedded etcd to a single member — itself — keeping its
-/// data, so k3s can run again after the other members are gone for good.
-/// `k3s` must not be running; the caller stops it first.
-pub async fn reset_kubernetes_membership<H: Host>(
-    host: &H,
-    mandate: &HealMandate,
-) -> Result<(), CmdError> {
-    tracing::warn!("heal {}: resetting k3s to a single member", mandate.id);
-    checked(
-        host.run_cmd_bounded(
-            "k3s",
-            &["server", "--cluster-reset"],
-            std::time::Duration::from_secs(600),
-        )
-        .await,
-        "k3s server --cluster-reset",
-    )
-}
-
-/// Fails and removes the app filesystem, then deletes EVERY pool. A heal leaves
-/// storage as a fresh installation has it: the mgr recreates `.mgr`, each
-/// machine's boot creates the image store, and the filesystem controller the app
-/// filesystem.
-///
-/// The `mon_allow_pool_delete` switch is turned on for exactly this and off
-/// again whatever happened in between — pool deletion must stay impossible
-/// everywhere else, or every app's data is within reach of any bug.
-pub async fn delete_all_storage<H: Host>(
-    host: &H,
-    mandate: &HealMandate,
-    fs_exists: bool,
-    existing_pools: &[String],
-) -> Result<(), CmdError> {
-    let door = Door(());
-    tracing::warn!(
-        "heal {}: deleting the app filesystem and every pool",
-        mandate.id
-    );
-    if fs_exists {
-        host.ceph_destructive(&door, &["fs", "fail", RECOVERABLE_FS])
-            .await?;
-        host.ceph_destructive(
-            &door,
-            &["fs", "rm", RECOVERABLE_FS, "--yes-i-really-mean-it"],
-        )
-        .await?;
-    }
-    if existing_pools.is_empty() {
-        return Ok(());
-    }
-    host.ceph_destructive(
-        &door,
-        &["config", "set", "mon", "mon_allow_pool_delete", "true"],
-    )
-    .await?;
-    let mut result = Ok(());
-    for pool in existing_pools {
-        if let Err(e) = host
-            .ceph_destructive(
-                &door,
-                &[
-                    "osd",
-                    "pool",
-                    "delete",
-                    pool,
-                    pool,
-                    "--yes-i-really-really-mean-it",
-                ],
-            )
-            .await
-        {
-            result = Err(e);
-            break;
-        }
-    }
-    let off = host
-        .ceph(&["config", "set", "mon", "mon_allow_pool_delete", "false"])
-        .await;
-    result?;
-    off.map(|_| ())
-}
-
 // ── Proof: this disk may be zapped ───────────────────────────────────────────
 
 /// Why a disk may be returned to blank.
@@ -421,10 +169,15 @@ pub enum ZapWarrant {
     /// create` refused it for a stale signature.
     StaleSignature,
     /// The system volume carries this cluster's osd.N, and the cluster's own
-    /// OSD list — read, not assumed — no longer has it: purged, typically by a
-    /// FORCE HEAL. Nothing can ever read that data again, and the system volume
-    /// exists to be this machine's OSD.
+    /// OSD list — read, not assumed — no longer has it: purged, or left from a
+    /// cluster that was created again. Nothing can ever read that data again,
+    /// and the system volume exists to be this machine's OSD.
     ForgottenByCluster { osd: i64 },
+    /// A FORCE HEAL rebuilds the cluster from scratch, and this machine is being
+    /// reset to take part: every OSD on it goes. A volume in a group ceph-volume
+    /// made is destroyed with that group; the system volume (a device-mapper
+    /// path) is only erased.
+    MachineReset,
 }
 
 impl ZapWarrant {
@@ -460,6 +213,7 @@ pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Resu
         ZapWarrant::ForgottenByCluster { osd } => {
             format!("osd.{osd}, which this cluster no longer has")
         }
+        ZapWarrant::MachineReset => "this machine is being reset by a FORCE HEAL".to_string(),
     };
     tracing::warn!("zapping {dev_path}: {why}");
     host.ceph_volume_destructive(&door, &args).await.map(|_| ())
@@ -589,181 +343,6 @@ mod tests {
         assert!(purge_safe(&lingering, proof).await.unwrap().is_none());
     }
 
-    fn mandate() -> HealMandate {
-        HealMandate::from_persisted_heal("h1", BTreeSet::from(["node2".to_string()]))
-    }
-
-    #[tokio::test]
-    async fn a_heal_never_purges_an_osd_that_is_up() {
-        let up = FakeHost::new().ok(
-            "ceph osd dump",
-            r#"{"osds":[{"osd":3,"up":1,"in":0}],"pools":[]}"#,
-        );
-        assert!(purge_down(&up, &mandate(), 3).await.is_err());
-        assert!(!up.ran("osd purge"));
-
-        let down = FakeHost::new()
-            .ok(
-                "ceph osd dump",
-                r#"{"osds":[{"osd":3,"up":0,"in":1}],"pools":[]}"#,
-            )
-            .ok("ceph osd purge", "")
-            .ok("ceph osd ls", "[]");
-        purge_down(&down, &mandate(), 3).await.unwrap();
-        assert!(down.ran("ceph osd purge osd.3 --yes-i-really-mean-it"));
-    }
-
-    #[tokio::test]
-    async fn only_a_confirmed_gone_machine_loses_its_mon_and_keys() {
-        let host = FakeHost::new()
-            .ok("ceph mon remove", "")
-            .ok("ceph auth del", "");
-        assert!(remove_mon(&host, &mandate(), "node1").await.is_err());
-        assert!(forget_daemons(&host, &mandate(), "node1").await.is_err());
-        assert!(host.calls().is_empty(), "{:?}", host.calls());
-
-        remove_mon(&host, &mandate(), "node2").await.unwrap();
-        forget_daemons(&host, &mandate(), "node2").await.unwrap();
-        assert!(host.ran("ceph mon remove node2"));
-        assert!(host.ran("ceph auth del mgr.node2") && host.ran("ceph auth del mds.node2"));
-    }
-
-    #[tokio::test]
-    async fn a_key_that_is_already_gone_is_not_an_error() {
-        let host = FakeHost::new()
-            .fail(
-                "ceph auth del mgr.node2",
-                "Error ENOENT: failed to find mgr.node2 in keyring",
-            )
-            .ok("ceph auth del mds.node2", "");
-        forget_daemons(&host, &mandate(), "node2").await.unwrap();
-    }
-
-    fn offline_host() -> FakeHost {
-        FakeHost::new()
-            .ok("systemctl stop ceph-mon-node1.service", "")
-            .ok("systemctl start ceph-mon-node1.service", "")
-            .ok("ceph-mon -i node1", "")
-            .ok("monmaptool", "")
-    }
-
-    #[tokio::test]
-    async fn the_monmap_is_edited_with_the_mon_stopped_and_started_again() {
-        let host = offline_host();
-        let gone = vec!["node2".to_string()];
-        remove_mons_offline(&host, &mandate(), "node1", &gone, "/var/lib/yolab/monmap")
-            .await
-            .unwrap();
-        let order = [
-            "systemctl stop ceph-mon-node1.service",
-            "ceph-mon -i node1 --extract-monmap /var/lib/yolab/monmap",
-            "monmaptool /var/lib/yolab/monmap --rm node2",
-            "ceph-mon -i node1 --inject-monmap /var/lib/yolab/monmap --setuser ceph --setgroup ceph",
-            "systemctl start ceph-mon-node1.service",
-        ];
-        for w in order.windows(2) {
-            let (a, b) = (host.position(w[0]), host.position(w[1]));
-            assert!(
-                a.is_some() && a < b,
-                "{} before {}: {:?}",
-                w[0],
-                w[1],
-                host.calls()
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn a_failed_edit_still_starts_the_mon_again() {
-        // Not `offline_host()`: its successful monmaptool answer would be used
-        // first, since answers to one command are queued in order.
-        let host = FakeHost::new()
-            .ok("systemctl stop ceph-mon-node1.service", "")
-            .ok("systemctl start ceph-mon-node1.service", "")
-            .ok("ceph-mon -i node1", "")
-            .fail("monmaptool", "no such mon");
-        let gone = vec!["node2".to_string()];
-        assert!(remove_mons_offline(&host, &mandate(), "node1", &gone, "/m")
-            .await
-            .is_err());
-        assert!(host.ran("systemctl start ceph-mon-node1.service"));
-        assert!(!host.ran("--inject-monmap"));
-    }
-
-    #[tokio::test]
-    async fn the_offline_edit_refuses_live_machines_and_this_one() {
-        let not_confirmed = vec!["node3".to_string()];
-        let host = offline_host();
-        assert!(
-            remove_mons_offline(&host, &mandate(), "node1", &not_confirmed, "/m")
-                .await
-                .is_err()
-        );
-        assert!(host.calls().is_empty(), "{:?}", host.calls());
-
-        let both = HealMandate::from_persisted_heal(
-            "h1",
-            BTreeSet::from(["node1".to_string(), "node2".to_string()]),
-        );
-        let itself = vec!["node2".to_string(), "node1".to_string()];
-        let host = offline_host();
-        assert!(remove_mons_offline(&host, &both, "node1", &itself, "/m")
-            .await
-            .is_err());
-        assert!(host.calls().is_empty(), "{:?}", host.calls());
-
-        let host = FakeHost::new();
-        remove_mons_offline(&host, &mandate(), "node1", &[], "/m")
-            .await
-            .unwrap();
-        assert!(host.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn the_kubernetes_reset_reports_failure() {
-        let ok = FakeHost::new().ok("k3s server --cluster-reset", "");
-        reset_kubernetes_membership(&ok, &mandate()).await.unwrap();
-        let bad = FakeHost::new().fail("k3s server --cluster-reset", "etcd data dir missing");
-        assert!(reset_kubernetes_membership(&bad, &mandate()).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn every_pool_is_deleted_and_pool_deletion_is_switched_back_off() {
-        let host = FakeHost::new()
-            .ok("ceph fs fail", "")
-            .ok("ceph fs rm", "")
-            .ok("ceph config set mon mon_allow_pool_delete", "")
-            .ok("ceph osd pool delete", "");
-        let pools = vec![
-            ".mgr".to_string(),
-            "images".to_string(),
-            "yolab-fs-data0".to_string(),
-        ];
-        delete_all_storage(&host, &mandate(), true, &pools)
-            .await
-            .unwrap();
-        let pos = |n: &str| host.position(n).unwrap_or_else(|| panic!("{n}"));
-        assert!(pos("ceph fs fail yolab-fs") < pos("ceph fs rm yolab-fs"));
-        assert!(pos("mon_allow_pool_delete true") < pos("pool delete .mgr .mgr"));
-        assert!(pos("pool delete yolab-fs-data0") < pos("mon_allow_pool_delete false"));
-        assert!(host.ran("pool delete images images --yes-i-really-really-mean-it"));
-
-        let failing = FakeHost::new()
-            .ok("ceph config set mon mon_allow_pool_delete", "")
-            .fail("ceph osd pool delete .mgr", "EBUSY");
-        assert!(delete_all_storage(&failing, &mandate(), false, &pools)
-            .await
-            .is_err());
-        assert!(failing.ran("mon_allow_pool_delete false"));
-        assert!(!failing.ran("pool delete images") && !failing.ran("fs fail"));
-
-        let nothing = FakeHost::new();
-        delete_all_storage(&nothing, &mandate(), false, &[])
-            .await
-            .unwrap();
-        assert!(nothing.calls().is_empty());
-    }
-
     #[tokio::test]
     async fn the_system_lv_is_never_destroyed_whatever_the_warrant() {
         let host = FakeHost::new().ok("ceph-volume lvm zap", "");
@@ -776,6 +355,20 @@ mod tests {
         .unwrap();
         assert!(host.ran("ceph-volume lvm zap /dev/mapper/pool-ceph"));
         assert!(!host.ran("--destroy"));
+    }
+
+    #[tokio::test]
+    async fn a_reset_destroys_ceph_volume_groups_but_never_the_system_volumes() {
+        let host = FakeHost::new().ok("ceph-volume lvm zap", "");
+        zap(&host, "/dev/ceph-abc/osd-block-1", ZapWarrant::MachineReset)
+            .await
+            .unwrap();
+        zap(&host, "/dev/mapper/pool-ceph", ZapWarrant::MachineReset)
+            .await
+            .unwrap();
+        assert!(host.ran("ceph-volume lvm zap --destroy /dev/ceph-abc/osd-block-1"));
+        assert!(host.ran("ceph-volume lvm zap /dev/mapper/pool-ceph"));
+        assert!(!host.ran("--destroy /dev/mapper"));
     }
 
     #[tokio::test]
