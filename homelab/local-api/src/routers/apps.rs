@@ -1289,16 +1289,55 @@ async fn stage_install(
     })
 }
 
-/// Install an app and wait for it, for callers that are not an HTTP request —
-/// storage recovery reinstalls every app from its backup. Backups are NOT wired
-/// up here: the caller does that once the app's data is back.
-pub(crate) async fn install_now(
+/// An app staged for installation — its namespace, tunnel credentials and values
+/// exist — and not installed yet, for callers that are not an HTTP request and
+/// put things in the namespace first: adding an app from backup restores its
+/// volumes before the chart that uses them. Backups are NOT wired up here.
+pub(crate) struct PreparedInstall {
+    cfg: Config,
+    staged: StagedInstall,
+    id: String,
+    instance_name: String,
+    config: serde_json::Map<String, Value>,
+}
+
+pub(crate) async fn prepare_install(
+    id: &str,
+    instance_name: &str,
+    config: &serde_json::Map<String, Value>,
+) -> anyhow::Result<PreparedInstall> {
+    let cfg = Config::from_env();
+    let staged = stage_install(&cfg, id, instance_name, config).await?;
+    Ok(PreparedInstall {
+        cfg,
+        staged,
+        id: id.to_string(),
+        instance_name: instance_name.to_string(),
+        config: config.clone(),
+    })
+}
+
+impl PreparedInstall {
+    /// Installs the chart and waits for Helm.
+    pub(crate) async fn run(self) -> anyhow::Result<()> {
+        let PreparedInstall {
+            cfg,
+            staged,
+            id,
+            instance_name,
+            config,
+        } = self;
+        helm_install(&cfg, &staged, &id, &instance_name, &config).await
+    }
+}
+
+async fn helm_install(
+    cfg: &Config,
+    staged: &StagedInstall,
     id: &str,
     instance_name: &str,
     config: &serde_json::Map<String, Value>,
 ) -> anyhow::Result<()> {
-    let cfg = Config::from_env();
-    let staged = stage_install(&cfg, id, instance_name, config).await?;
     const HELM_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
     let work = tokio::process::Command::new("helm")
         .args([

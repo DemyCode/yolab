@@ -529,9 +529,19 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
         .collect()
 }
 
-/// Install an app that is not on this machine from one backup: its chart with
-/// the settings it had then, then its volumes as that backup pinned them, then
-/// its saved objects.
+/// Install an app that is not on this machine from one backup.
+///
+/// DATA FIRST, THEN THE APP. Its volumes are created under the names its chart
+/// uses and filled from the backup; only then is the chart installed, and it
+/// adopts them. The app never runs on an empty volume, so nothing it does at
+/// its first start — creating an admin, registering a WireGuard tunnel — runs
+/// against data about to be replaced. (Installing first registered a second
+/// tunnel, and the restored gateway state then reused the first one while the
+/// app's name pointed at the second.)
+///
+/// Every volume is checked before anything is created, and nothing is installed
+/// before every volume is back, so a failure until then removes the namespace
+/// and leaves nothing behind.
 pub(crate) async fn reinstall_from_backup(
     namespace: &str,
     snapshot_id: &str,
@@ -553,18 +563,71 @@ pub(crate) async fn reinstall_from_backup(
     else {
         anyhow::bail!("backup {snapshot_id} has no saved settings for {namespace}");
     };
-    let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
+    let objects_raw = tokio::fs::read(&path).await?;
+    let objects: Value = serde_json::from_slice(&objects_raw)?;
     let config = saved_config(&objects).unwrap_or_default();
+    let restore_as_of = snapshot_time(&repo, &cfg, snapshot_id).await;
 
-    crate::routers::apps::install_now(&app.app_id, &app.instance_name, &config).await?;
+    let mut volumes = Vec::new();
+    for pvc in catalog_pvcs(&catalog, namespace) {
+        let snaps = volume_snapshots(namespace, &pvc.name, &cfg).await?;
+        match plan_volume(
+            &pvc.name,
+            pvc.snapshot.as_ref(),
+            &snaps,
+            restore_as_of.as_deref(),
+        ) {
+            VolumePlan::NoBackup => tracing::warn!(
+                "add {namespace} from backup: {} was never backed up — the chart creates it empty",
+                pvc.name
+            ),
+            VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
+            VolumePlan::RestoreAsOf(as_of) => volumes.push((pvc, as_of)),
+        }
+    }
 
-    let (id, original, _guard) = begin(namespace, snapshot_id).await?;
-    let result = run_restore(namespace, snapshot_id, &cfg, &original).await;
+    let install =
+        crate::routers::apps::prepare_install(&app.app_id, &app.instance_name, &config).await?;
+    let (id, _, _guard) = begin(namespace, snapshot_id).await?;
+
+    let mut filled = Ok(());
+    for (pvc, as_of) in &volumes {
+        filled = fill_volume(
+            namespace,
+            &app.instance_name,
+            pvc,
+            &cfg,
+            as_of.as_deref(),
+        )
+        .await;
+        if filled.is_err() {
+            break;
+        }
+    }
+    if let Err(e) = filled {
+        crate::kubectl::run(&["delete", "namespace", namespace, "--wait=false"])
+            .await
+            .warn_on_err(format!("add {namespace} from backup failed; remove its namespace"));
+        let failed = Err(e);
+        record_done(&id, &failed).await;
+        return failed.map(|_: bool| ());
+    }
+
+    let result = async {
+        install.run().await?;
+        // Everything else the app had — Secrets it generated at its first
+        // start, among them — as the backup saved it.
+        kubectl_apply(&String::from_utf8_lossy(&objects_raw))
+            .await
+            .map_err(|e| anyhow::anyhow!("apply {namespace}.yaml: {e}"))?;
+        anyhow::Ok(!volumes.is_empty())
+    }
+    .await;
     record_done(&id, &result).await;
     result?;
+    tracing::info!("add {namespace} from backup {snapshot_id}: done");
 
-    // Only now: wiring backups up earlier would have uploaded the empty volume the
-    // chart created, as the newest copy of this app.
+    // Unchanged by this rewrite: backups are wired up once the data is back.
     crate::routers::backups::setup_namespace_backup(namespace).await?;
     Ok(())
 }
@@ -612,6 +675,40 @@ fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
     serde_json::from_slice(&raw).ok()
 }
 
+/// Creates one volume of an app not installed yet, owned by the Helm release
+/// that will use it, and fills it from its backup.
+///
+/// Helm adopts an object it did not create only when it carries the release's
+/// marks; without them `helm install` refuses ("exists and cannot be imported").
+async fn fill_volume(
+    namespace: &str,
+    release: &str,
+    pvc: &CatalogPvc,
+    cfg: &BackupConfig,
+    restore_as_of: Option<&str>,
+) -> anyhow::Result<()> {
+    let manifest = json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": pvc.name,
+            "namespace": namespace,
+            "labels": { "app.kubernetes.io/managed-by": "Helm" },
+            "annotations": {
+                "meta.helm.sh/release-name": release,
+                "meta.helm.sh/release-namespace": namespace,
+            }
+        },
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "yolab-cephfs",
+            "resources": { "requests": { "storage": pvc.capacity } }
+        }
+    });
+    kubectl_apply(&manifest.to_string()).await?;
+    restore_into(namespace, &pvc.name, cfg, restore_as_of).await
+}
+
 async fn restore_volume(
     namespace: &str,
     pvc: &str,
@@ -619,16 +716,6 @@ async fn restore_volume(
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
-    let cid = canonical_pvc_id(pvc);
-    let pvc_repo = cfg.restic_repo(&format!("volsync/{namespace}/{cid}"));
-    restic_unlock(
-        &pvc_repo,
-        &cfg.restic_password,
-        &cfg.access_key_id,
-        &cfg.secret_access_key,
-    )
-    .await;
-
     // Delete the live PVC and wait for it to actually go away.
     crate::kubectl::run(&[
         "delete",
@@ -642,8 +729,27 @@ async fn restore_volume(
     .await?;
     wait_for_pvc_deleted(namespace, pvc).await?;
 
-    annotate_ns_privileged_movers(namespace).await;
     ensure_destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany").await?;
+    restore_into(namespace, pvc, cfg, restore_as_of).await
+}
+
+/// Fills the existing volume `pvc` from its own VolSync restic repository.
+async fn restore_into(
+    namespace: &str,
+    pvc: &str,
+    cfg: &BackupConfig,
+    restore_as_of: Option<&str>,
+) -> anyhow::Result<()> {
+    let cid = canonical_pvc_id(pvc);
+    let pvc_repo = cfg.restic_repo(&format!("volsync/{namespace}/{cid}"));
+    restic_unlock(
+        &pvc_repo,
+        &cfg.restic_password,
+        &cfg.access_key_id,
+        &cfg.secret_access_key,
+    )
+    .await;
+    annotate_ns_privileged_movers(namespace).await;
 
     // The mover reads the repository from this Secret. Backups create it, but an
     // app added back from backup onto a new cluster (after a FORCE HEAL) has never
