@@ -210,7 +210,7 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
-    if let Some(why) = crate::storage_heal::backups_blocked().await {
+    if let Some(why) = crate::heal::backups_blocked().await {
         anyhow::bail!("not backing up: {why}");
     }
     let id = new_id();
@@ -857,7 +857,7 @@ impl Controller for BackupSchedulerController {
         &[Requirement::KubeApi]
     }
     fn pauses_during(&self) -> &'static [Activity] {
-        &[Activity::Restore, Activity::StorageRecovery]
+        &[Activity::Restore, Activity::Heal]
     }
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(60)

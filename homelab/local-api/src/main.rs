@@ -10,6 +10,7 @@ mod controllers;
 mod csi;
 mod disks_reconciler;
 mod error;
+mod heal;
 mod exec;
 mod host;
 mod kubectl;
@@ -20,7 +21,7 @@ mod records;
 mod routers;
 mod runtime;
 mod storage;
-mod storage_heal;
+
 mod system;
 mod topology;
 
@@ -156,6 +157,8 @@ async fn main() {
         .route("/api/backups/runs", get(backups::list_runs))
         .route("/api/backups/restore", post(backups::restore_app))
         .route("/api/backups/restores", get(backups::list_restores))
+        .route("/api/backups/apps", get(backups::list_backed_up_apps))
+        .route("/api/backups/apps/add", post(backups::add_from_backup))
         .route(
             "/api/backups/cluster/run-now",
             post(backups::run_backup_now),
@@ -173,15 +176,9 @@ async fn main() {
             axum::routing::put(disks::set_disk_state),
         )
         .route("/api/disks/:node/:id/erase", post(disks::erase_disk))
-        // Lost disks and recovering from backup — see storage_heal.rs.
-        .route(
-            "/api/storage/recovery",
-            get(storage_heal::get_status).post(storage_heal::post_recover),
-        )
-        .route(
-            "/api/storage/recovery/preview",
-            get(storage_heal::get_preview),
-        )
+        // FORCE HEAL — see heal.rs. Served by every machine, with or without Ceph
+        // or Kubernetes answering; the machine that receives the POST drives it.
+        .route("/api/heal", get(heal::get_status).post(heal::post_heal))
         // Storage topology policy (auto/manual)
         .route(
             "/api/storage/policy",

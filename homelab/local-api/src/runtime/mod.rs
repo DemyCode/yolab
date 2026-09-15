@@ -306,7 +306,7 @@ async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: lea
 ///
 /// Under the same gates the daemon applies, or it would be a way around them:
 /// `local-api run disks` during a restore would drain and purge OSDs underneath
-/// it, and `local-api run storage-heal` on a standby would be a second writer
+/// it, and `local-api run topology` on a standby would be a second writer
 /// next to the leader. A refusal says which gate and why.
 pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
     let node = crate::system::hostname();

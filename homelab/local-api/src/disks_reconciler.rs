@@ -407,7 +407,7 @@ impl crate::runtime::Controller for DisksController {
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[
             crate::runtime::Activity::Restore,
-            crate::runtime::Activity::StorageRecovery,
+            crate::runtime::Activity::Heal,
         ]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {

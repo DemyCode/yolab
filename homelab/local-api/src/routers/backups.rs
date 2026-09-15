@@ -288,6 +288,134 @@ pub async fn list_restores(State(_state): State<AppState>) -> Result<Json<serde_
     Ok(Json(serde_json::Value::Array(restore::list().await?)))
 }
 
+// ── Add from backup ────────────────────────────────────────────────────────────
+
+/// An app being added from backup by this process, and how it went.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Adding {
+    snapshot_id: String,
+    /// None while it runs.
+    error: Option<String>,
+    done: bool,
+}
+
+/// Adds started from this machine, by namespace. In memory: an add is one long
+/// request's worth of work, and the app it produces is its lasting record.
+static ADDING: std::sync::Mutex<std::collections::BTreeMap<String, Adding>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn adding() -> std::collections::BTreeMap<String, Adding> {
+    ADDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn set_adding(namespace: &str, state: Adding) {
+    ADDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(namespace.to_string(), state);
+}
+
+/// Every app in any backup: whether it is installed, whether an add is running
+/// or failed here, and each point in time it can come back from, newest first.
+fn backed_up_apps_json(
+    versions: &restore::BackupVersions,
+    installed: &HashSet<String>,
+    adding: &std::collections::BTreeMap<String, Adding>,
+) -> serde_json::Value {
+    let apps: Vec<serde_json::Value> = versions
+        .apps
+        .iter()
+        .map(|(ns, vs)| {
+            serde_json::json!({
+                "namespace": ns,
+                "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
+                "installed": installed.contains(ns),
+                "adding": adding.get(ns),
+                "versions": vs,
+            })
+        })
+        .collect();
+    serde_json::json!({ "configured": versions.configured, "apps": apps })
+}
+
+/// GET /api/backups/apps
+pub async fn list_backed_up_apps(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let versions = restore::backup_versions().await?;
+    let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
+    Ok(Json(backed_up_apps_json(&versions, &installed, &adding())))
+}
+
+#[derive(Deserialize)]
+pub struct AddFromBackupRequest {
+    pub namespace: String,
+    pub snapshot_id: String,
+}
+
+/// Why this add cannot start, if it cannot.
+fn add_refusal(
+    request: &AddFromBackupRequest,
+    versions: &restore::BackupVersions,
+    installed: &HashSet<String>,
+    adding: &std::collections::BTreeMap<String, Adding>,
+) -> Option<String> {
+    let ns = &request.namespace;
+    if adding.get(ns).is_some_and(|a| !a.done) {
+        return Some(format!("{ns} is already being added"));
+    }
+    if installed.contains(ns) {
+        return Some(format!("{ns} is already installed — uninstall it first"));
+    }
+    let held = versions
+        .apps
+        .get(ns)
+        .is_some_and(|vs| vs.iter().any(|v| v.snapshot_id == request.snapshot_id));
+    if !held {
+        return Some(format!("no backup {} holds {ns}", request.snapshot_id));
+    }
+    None
+}
+
+/// POST /api/backups/apps/add — installs an app from one of its backups: its
+/// chart with the settings it had then, its files, and its saved objects. Starts
+/// the work and returns; `GET /api/backups/apps` reports how it went.
+pub async fn add_from_backup(
+    State(_state): State<AppState>,
+    Json(request): Json<AddFromBackupRequest>,
+) -> Result<Json<serde_json::Value>> {
+    if crate::heal::heal_running().await? {
+        return Err(anyhow::anyhow!("the cluster is being healed — add apps once it finishes").into());
+    }
+    let versions = restore::backup_versions().await?;
+    let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
+    if let Some(why) = add_refusal(&request, &versions, &installed, &adding()) {
+        return Err(anyhow::anyhow!(why).into());
+    }
+    let running = Adding {
+        snapshot_id: request.snapshot_id.clone(),
+        error: None,
+        done: false,
+    };
+    set_adding(&request.namespace, running.clone());
+    tokio::spawn(async move {
+        let result = restore::reinstall_from_backup(&request.namespace, &request.snapshot_id).await;
+        if let Err(e) = &result {
+            tracing::warn!("add {} from backup {}: {e:#}", request.namespace, request.snapshot_id);
+        }
+        set_adding(
+            &request.namespace,
+            Adding {
+                error: result.err().map(|e| format!("{e:#}")),
+                done: true,
+                ..running
+            },
+        );
+    });
+    Ok(Json(serde_json::json!({ "ok": true, "started": true })))
+}
+
 // ── Cluster backup ─────────────────────────────────────────────────────────────
 
 /// Cluster snapshot ids that actually contain `namespace`.
@@ -621,6 +749,90 @@ impl crate::runtime::Controller for LockSweeperController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn versions() -> restore::BackupVersions {
+        let v = |id: &str| restore::AppVersion {
+            snapshot_id: id.into(),
+            time: "2026-09-14T02:00:00Z".into(),
+        };
+        restore::BackupVersions {
+            configured: true,
+            apps: std::collections::BTreeMap::from([
+                ("yolab-a".to_string(), vec![v("new"), v("old")]),
+                ("yolab-b".to_string(), vec![v("old")]),
+            ]),
+        }
+    }
+
+    fn add(ns: &str, snap: &str) -> AddFromBackupRequest {
+        AddFromBackupRequest {
+            namespace: ns.into(),
+            snapshot_id: snap.into(),
+        }
+    }
+
+    #[test]
+    fn an_app_is_added_only_from_a_backup_that_holds_it_and_only_when_absent() {
+        let none = std::collections::BTreeMap::new();
+        let installed: HashSet<String> = ["yolab-b".to_string()].into();
+        assert_eq!(add_refusal(&add("yolab-a", "old"), &versions(), &installed, &none), None);
+        assert!(add_refusal(&add("yolab-a", "gone"), &versions(), &installed, &none)
+            .unwrap()
+            .contains("no backup gone"));
+        assert!(add_refusal(&add("yolab-b", "old"), &versions(), &installed, &none)
+            .unwrap()
+            .contains("already installed"));
+        let running = std::collections::BTreeMap::from([(
+            "yolab-a".to_string(),
+            Adding {
+                snapshot_id: "old".into(),
+                error: None,
+                done: false,
+            },
+        )]);
+        assert!(add_refusal(&add("yolab-a", "new"), &versions(), &installed, &running)
+            .unwrap()
+            .contains("already being added"));
+        let failed = std::collections::BTreeMap::from([(
+            "yolab-a".to_string(),
+            Adding {
+                snapshot_id: "old".into(),
+                error: Some("helm".into()),
+                done: true,
+            },
+        )]);
+        assert_eq!(add_refusal(&add("yolab-a", "new"), &versions(), &installed, &failed), None, "a failed add can be retried");
+    }
+
+    #[test]
+    fn the_list_shows_each_backed_up_app_with_its_state_and_versions() {
+        let installed: HashSet<String> = ["yolab-b".to_string()].into();
+        let adding = std::collections::BTreeMap::from([(
+            "yolab-a".to_string(),
+            Adding {
+                snapshot_id: "new".into(),
+                error: None,
+                done: false,
+            },
+        )]);
+        let v = backed_up_apps_json(&versions(), &installed, &adding);
+        assert_eq!(v["configured"], true);
+        assert_eq!(
+            v["apps"][0],
+            serde_json::json!({
+                "namespace": "yolab-a",
+                "instance_name": "a",
+                "installed": false,
+                "adding": {"snapshot_id": "new", "error": null, "done": false},
+                "versions": [
+                    {"snapshot_id": "new", "time": "2026-09-14T02:00:00Z"},
+                    {"snapshot_id": "old", "time": "2026-09-14T02:00:00Z"},
+                ],
+            })
+        );
+        assert_eq!(v["apps"][1]["installed"], true);
+        assert_eq!(v["apps"][1]["adding"], serde_json::Value::Null);
+    }
 
     #[test]
     fn format_recovery_key_groups_and_uppercases() {

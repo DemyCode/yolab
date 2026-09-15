@@ -7,7 +7,8 @@ import { Banner, EmptyState, ServiceTrouble } from "@/components/ui/feedback";
 import { buttonClass } from "@/components/ui/button-variants";
 import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
-import { StorageRecoveryBanner } from "@/components/StorageRecovery";
+import { HealBanner } from "@/components/ForceHeal";
+import { AddFromBackupButton } from "@/components/AddFromBackup";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
@@ -88,21 +89,26 @@ export function HomePage() {
 
   return (
     <Page wide>
-      <header className="mb-6">
-        <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
-          Your services
-        </h1>
-        <p className="mt-1 flex items-center gap-2 text-sm text-fg-muted">
-          Everything running at home. Tap one to open it.
-          {/* Covers the banner below and the app grid: both are drawn from
-              remembered values until their real ones land. */}
-          <CacheDot cache={health.cache ?? apps.cache} />
-        </p>
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
+            Your services
+          </h1>
+          <p className="mt-1 flex items-center gap-2 text-sm text-fg-muted">
+            Everything running at home. Tap one to open it.
+            {/* Covers the banner below and the app grid: both are drawn from
+                remembered values until their real ones land. */}
+            <CacheDot cache={health.cache ?? apps.cache} />
+          </p>
+        </div>
+        {/* Apps come back from backup here, not from the store: with the
+            settings and files they had at the moment picked. */}
+        <AddFromBackupButton />
       </header>
 
-      {/* Lost app data outranks every other concern: it is the one that needs a
-          decision, and the only place to make it is the Backups page. */}
-      <StorageRecoveryBanner className="mb-6" />
+      {/* A broken cluster outranks every other concern: it is the one that needs a
+          decision, and the place to make it is the Storage page. */}
+      <HealBanner className="mb-6" />
 
       {concern && (
         <Banner

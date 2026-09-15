@@ -89,6 +89,23 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArg
         return Ok(());
     }
 
+    // A machine a FORCE HEAL removed must not put its old mon back: the rest of
+    // the cluster was rebuilt without it (see heal.rs). Not knowing is not "no".
+    let removed = format!("{}{node}", super::settings::REMOVED_MACHINES);
+    match super::settings::get(host, &removed).await {
+        Ok(None) => {}
+        Ok(Some(heal)) => {
+            tracing::warn!(
+                "{node} was removed from the cluster by heal {heal} — it rejoins only by being installed again"
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::info!("cannot tell whether {node} was removed from the cluster ({e}) — not touching the monmap");
+            return Ok(());
+        }
+    }
+
     tracing::info!("adding {node} to the monmap");
     // Not `?`: a mon that is already joining makes `mon add` fail with EEXIST,
     // and the poll below is what decides success either way.
@@ -219,6 +236,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_machine_a_heal_removed_does_not_put_its_mon_back() {
+        let host = FakeHost::new()
+            .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
+            .ok("ceph --connect-timeout 10 -s", "")
+            .ok("ceph --connect-timeout 10 mon dump", &dump_with(&["yolab-n1"]))
+            .ok("ceph config-key get yolab/removed-machines/yolab-n2", "h1")
+            .ok("ceph --connect-timeout 10 mon add", "");
+        let dir = tempfile::tempdir().unwrap();
+        joined(&dir, "yolab-n2");
+        let args = MonMemberArgs {
+            mon_addr: "fd00:cafe::2".into(),
+        };
+        run(&host, dir.path(), "yolab-n2", &args).await.unwrap();
+        assert!(!host.ran("mon add"));
+
+        let unknown = FakeHost::new()
+            .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
+            .ok("ceph --connect-timeout 10 -s", "")
+            .ok("ceph --connect-timeout 10 mon dump", &dump_with(&["yolab-n1"]))
+            .fail("ceph config-key get yolab/removed-machines/yolab-n2", "timed out")
+            .ok("ceph --connect-timeout 10 mon add", "");
+        run(&unknown, dir.path(), "yolab-n2", &args).await.unwrap();
+        assert!(!unknown.ran("mon add"), "not knowing is not permission");
+    }
+
+    #[tokio::test]
     async fn adds_a_missing_node_and_confirms_it_joins() {
         let host = FakeHost::new()
             .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
@@ -227,6 +270,7 @@ mod tests {
                 "ceph --connect-timeout 10 mon dump",
                 &dump_with(&["yolab-n1"]),
             ) // not in it yet
+            .fail("ceph config-key get yolab/removed-machines/yolab-n2", "Error ENOENT: key doesn't exist")
             .ok("ceph --connect-timeout 10 mon add", "")
             .ok(
                 "ceph --connect-timeout 10 mon dump",

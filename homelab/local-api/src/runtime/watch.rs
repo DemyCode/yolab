@@ -128,7 +128,6 @@ pub fn standard() -> Vec<Watch> {
                 "disks",
                 "topology",
                 "cephfs",
-                "storage-heal",
             ],
             filter: any_line,
         },

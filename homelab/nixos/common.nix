@@ -465,6 +465,8 @@ in {
                 with pkgs; [
                   ceph
                   ceph-client
+                  # `k3s server --cluster-reset`, run by a FORCE HEAL (heal.rs).
+                  config.services.k3s.package
                   lvm2
                   util-linux
                   xfsprogs
@@ -506,9 +508,6 @@ in {
             if config.yolab.ceph.filesystem.enable
             then "1"
             else "0";
-          # The storage-heal controller's grace before it rebuilds a disposable
-          # pool's lost placement groups (storage_heal.rs).
-          YOLAB_STORAGE_HEAL_DISPOSABLE_GRACE_SECS = toString config.yolab.ceph.imagesStore.recoverGraceSeconds;
         };
       serviceConfig = {
         Type = "simple";

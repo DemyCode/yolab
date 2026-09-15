@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Sheet } from "@/components/ui/sheet";
 import { Banner, Skeleton } from "@/components/ui/feedback";
+import { ForceHealCard } from "@/components/ForceHeal";
 import { api } from "@/lib/api";
 import { CacheDot } from "@/components/CacheDot";
 import { useApi } from "@/lib/useResource";
@@ -1462,6 +1463,8 @@ export function StoragePage() {
 
   return (
     <div className="space-y-6">
+      <ForceHealCard />
+
       {cephError && (
         <Banner tone="error" title="Storage is not responding">
           {cephError}

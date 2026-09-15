@@ -177,7 +177,7 @@
     nixosTests = {
       boot-test = bootTest;
       two-node-test = twoNodeTest;
-      # Unplugs a disk from a one-copy cluster and asserts storage_heal restores it.
+      # Unplugs a disk from a one-copy cluster and FORCE HEALs it.
       disk-loss-test = diskLossTest;
     };
 
