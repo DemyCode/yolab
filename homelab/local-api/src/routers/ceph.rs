@@ -1221,7 +1221,10 @@ pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::
 }
 
 /// The node and disk id publishing `osd_id` in the inventory, if any.
-fn disk_of_osd(published: &std::collections::BTreeMap<String, String>, osd_id: i64) -> Option<(String, String)> {
+fn disk_of_osd(
+    published: &std::collections::BTreeMap<String, String>,
+    osd_id: i64,
+) -> Option<(String, String)> {
     published.iter().find_map(|(node, raw)| {
         let payload: Value = serde_json::from_str(raw).ok()?;
         payload["disks"]
@@ -1239,14 +1242,18 @@ async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_j
         Err(e) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")})),
+                Json(
+                    serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")}),
+                ),
             )
         }
     };
     let Some((node, disk_id)) = disk_of_osd(&published, id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"ok": false, "error": format!("osd.{id} is not in any node's disk inventory")})),
+            Json(
+                serde_json::json!({"ok": false, "error": format!("osd.{id} is not in any node's disk inventory")}),
+            ),
         );
     };
     match crate::routers::disks::record_switch(&node, &disk_id, desired).await {
@@ -1265,8 +1272,14 @@ mod osd_switch_tests {
     #[test]
     fn an_osd_is_found_in_whichever_node_publishes_it() {
         let published = std::collections::BTreeMap::from([
-            ("node1".to_string(), r#"{"disks":{"dev-sda":{"osd_id":0}}}"#.to_string()),
-            ("node2".to_string(), r#"{"disks":{"serial-wwn-0x1":{"osd_id":3}}}"#.to_string()),
+            (
+                "node1".to_string(),
+                r#"{"disks":{"dev-sda":{"osd_id":0}}}"#.to_string(),
+            ),
+            (
+                "node2".to_string(),
+                r#"{"disks":{"serial-wwn-0x1":{"osd_id":3}}}"#.to_string(),
+            ),
             ("node3".to_string(), "not json".to_string()),
         ]);
         assert_eq!(

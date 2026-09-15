@@ -3338,7 +3338,10 @@ mod tests {
             r#"{"yolab/disks/node1--dev-sdb":"ON"}"#,
         );
         let desired = read_desired(&host).await.expect("readable");
-        assert_eq!(desired.get("node1--dev-sdb").map(String::as_str), Some("ON"));
+        assert_eq!(
+            desired.get("node1--dev-sdb").map(String::as_str),
+            Some("ON")
+        );
 
         let down = FakeHost::new().fail("ceph config-key dump", "error connecting to the cluster");
         assert_eq!(read_desired(&down).await, None);

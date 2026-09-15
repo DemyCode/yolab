@@ -452,7 +452,11 @@ mod tests {
                 .unwrap(),
         );
         assert!(why.contains("does not exist yet"), "{why}");
-        assert!(!host.ran("rbd map") && !ran_mount(&host), "{:?}", host.calls());
+        assert!(
+            !host.ran("rbd map") && !ran_mount(&host),
+            "{:?}",
+            host.calls()
+        );
     }
 
     /// 2026-09-10: a pool that cannot answer is not a pool without the image.
