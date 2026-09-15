@@ -380,17 +380,31 @@ mod tests {
     async fn a_volume_the_cluster_forgot_is_erased_but_never_with_its_volume_group() {
         for dev in ["/dev/mapper/pool-ceph", "/dev/pool/ceph"] {
             let host = FakeHost::new().ok("ceph-volume lvm zap", "");
-            zap(&host, dev, ZapWarrant::ForgottenByCluster { osd: 4, whole_disk: false })
-                .await
-                .unwrap();
+            zap(
+                &host,
+                dev,
+                ZapWarrant::ForgottenByCluster {
+                    osd: 4,
+                    whole_disk: false,
+                },
+            )
+            .await
+            .unwrap();
             assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
             assert!(!host.ran("--destroy"), "{dev}");
         }
         // A whole disk loses its leftover volume group, or it cannot be used again.
         let host = FakeHost::new().ok("ceph-volume lvm zap", "");
-        zap(&host, "/dev/sdb", ZapWarrant::ForgottenByCluster { osd: 1, whole_disk: true })
-            .await
-            .unwrap();
+        zap(
+            &host,
+            "/dev/sdb",
+            ZapWarrant::ForgottenByCluster {
+                osd: 1,
+                whole_disk: true,
+            },
+        )
+        .await
+        .unwrap();
         assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdb"));
     }
 
