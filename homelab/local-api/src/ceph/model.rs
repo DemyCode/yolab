@@ -1,5 +1,4 @@
-//! Typed shapes impl OsdDump {
-f the Ceph JSON this crate acts on.
+//! Typed shapes of the Ceph JSON this crate acts on.
 //!
 //! Before this, every reader indexed a `serde_json::Value`:
 //! `v["num_up_osds"].as_u64().unwrap_or(0)`. A renamed field, a Ceph release
