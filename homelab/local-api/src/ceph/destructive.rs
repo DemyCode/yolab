@@ -282,7 +282,12 @@ fn checked(out: Result<crate::host::CommandOutput, CmdError>, what: &str) -> Res
     if out.success {
         return Ok(());
     }
-    Err(CmdError::failed(what, out.stderr.trim()))
+    let stderr = out.stderr.trim().to_string();
+    Err(CmdError::Failed {
+        kind: crate::exec::classify(what.split_whitespace().next().unwrap_or(""), &stderr),
+        cmd: what.to_string(),
+        stderr,
+    })
 }
 
 /// Deletes the cephx keys of a confirmed-gone machine's mgr and MDS, so the
