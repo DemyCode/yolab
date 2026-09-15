@@ -233,6 +233,10 @@ in {
       wantedBy = ["multi-user.target"];
       before = ["ceph-mon-${host}.service"];
       requiredBy = ["ceph-mon-${host}.service"];
+      # It runs once, to create or join the cluster; a changed unit must not run
+      # it again. Restarting it on a rebuild restarted the mon through
+      # requiredBy, and everything that required the mon with it.
+      restartIfChanged = false;
       after = ["network-online.target" "wireguard-wg1.service"];
       wants = ["network-online.target"];
       serviceConfig = {
@@ -350,8 +354,12 @@ in {
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
       after = ["network-online.target" "ceph-mon-${host}.service"];
-      wants = ["network-online.target"];
-      requires = ["ceph-mon-${host}.service"];
+      # Wants, not Requires, on the mon. Requires also propagates a STOP: on
+      # 2026-09-15 a rebuild restarted the mon (its bootstrap unit had changed),
+      # which stopped every OSD on node1 — restartIfChanged below notwithstanding
+      # — and their restart deadlocked on LVM (see images-store.nix). A running
+      # OSD rides out a mon restart on its own.
+      wants = ["network-online.target" "ceph-mon-${host}.service"];
       # No wantedBy: enablement is per-instance and owned by local-api.
       #
       # restartIfChanged = false because the default cycles EVERY OSD on the

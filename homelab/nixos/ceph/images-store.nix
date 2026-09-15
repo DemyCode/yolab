@@ -102,10 +102,20 @@ in {
     # No OSD ever lives on an RBD, so LVM has no reason to read one.
     # global_filter rather than filter because only the former covers every
     # command including udev-triggered scans, which is where this bites.
+    #
+    # EVERY NAME OF A DEVICE IS CHECKED, AND ONE ACCEPTED NAME ACCEPTS IT. The
+    # first version rejected only `^/dev/rbd[0-9]+`, and LVM still scanned
+    # /dev/rbd0 through its other name, /dev/block/253:0, which `a|.*|`
+    # accepted. Observed on node1, 2026-09-15: a rebuild restarted the OSDs,
+    # `lvs` and a udev `pvscan` sat on rbd0 in io_getevents while the OSDs'
+    # own activation waited on that `lvs` — the same circle as above. So every
+    # alias directory is rejected too: a real disk is still accepted by its
+    # kernel name (/dev/sda, /dev/nvme0n1, /dev/dm-N), and an RBD has no name
+    # left that is not rejected.
     # Flat `section/key` form to match how the upstream NixOS module
     # contributes its own settings.
     environment.etc."lvm/lvm.conf".text = lib.mkAfter ''
-      devices/global_filter = [ "r|^/dev/rbd[0-9]+|", "a|.*|" ]
+      devices/global_filter = [ "r|^/dev/rbd|", "r|^/dev/block/|", "r|^/dev/disk/|", "a|.*|" ]
     '';
 
     # ── The boot line to k3s ─────────────────────────────────────────────────
@@ -130,8 +140,9 @@ in {
       description = "Ensure the Ceph images pool and this node's RBD image exist";
       wantedBy = ["multi-user.target"];
       after = ["yolab-ceph-system-osd.service" "ceph-mon-${host}.service" "ceph-mgr-${host}.service"];
-      wants = ["yolab-ceph-system-osd.service"];
-      requires = ["ceph-mon-${host}.service"];
+      # Wants, not Requires, on the mon: Requires also propagates a STOP, so a
+      # rebuild that restarted the mon stopped this too.
+      wants = ["yolab-ceph-system-osd.service" "ceph-mon-${host}.service"];
       restartIfChanged = false;
       serviceConfig = {
         Type = "oneshot";
