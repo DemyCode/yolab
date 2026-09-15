@@ -642,7 +642,7 @@ async fn survey<H: Host, N: Network>(
         }
     }
 
-    let probes = listed.iter().map(|(addr, _)| net.peer(addr));
+    let probes = listed.keys().map(|addr| net.peer(addr));
     let answers = futures::future::join_all(probes).await;
     let machines = listed
         .into_iter()
