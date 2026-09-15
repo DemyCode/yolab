@@ -531,7 +531,7 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
     }
     apps.into_iter()
         .map(|(ns, mut versions)| {
-            versions.sort_by(|a, b| b.0.cmp(&a.0));
+            versions.sort_by_key(|v| std::cmp::Reverse(v.0));
             (ns, versions.into_iter().map(|(_, v)| v).collect())
         })
         .collect()
