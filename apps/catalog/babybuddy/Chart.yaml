@@ -3,11 +3,11 @@ name: babybuddy
 description: "Track feeds, sleep and nappies without handing a startup your baby's data"
 home: https://docs.baby-buddy.net
 type: application
-version: 0.1.0
+version: 0.1.1
 
 dependencies:
   - name: yolab-common
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

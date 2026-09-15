@@ -3,10 +3,10 @@ name: speedtest-tracker
 description: "Measures your internet speed on a schedule and keeps the history"
 home: https://speedtest-tracker.dev
 type: application
-version: 0.1.0
+version: 0.1.1
 dependencies:
   - name: yolab-common
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 annotations:
   yolab.io/outputs: |

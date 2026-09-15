@@ -3,10 +3,10 @@ name: your-spotify
 description: "Your own listening history and statistics, kept off Spotify's servers"
 home: https://github.com/Yooooomi/your_spotify
 type: application
-version: 0.1.0
+version: 0.1.1
 dependencies:
   - name: yolab-common
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 annotations:
   yolab.io/outputs: |

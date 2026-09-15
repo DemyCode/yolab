@@ -3,12 +3,12 @@ name: grocy
 description: "Groceries, chores, and household inventory manager"
 home: https://grocy.info
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "latest"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

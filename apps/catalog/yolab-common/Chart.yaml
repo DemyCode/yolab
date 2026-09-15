@@ -8,4 +8,4 @@ description: >-
   18-file edit and a policy like "only the gateway may run privileged" was
   unexpressible.
 type: library
-version: 0.1.0
+version: 0.1.1

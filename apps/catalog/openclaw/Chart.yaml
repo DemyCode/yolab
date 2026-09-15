@@ -3,12 +3,12 @@ name: openclaw
 description: "Personal AI assistant that connects to WhatsApp, Telegram, Discord, and more"
 home: https://github.com/pjasicek/OpenClaw
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "latest"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
