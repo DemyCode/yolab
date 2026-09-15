@@ -58,10 +58,6 @@ fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 }
 
 impl OsdDump {
-    pub fn up(&self) -> BTreeSet<i64> {
-        self.osds.iter().filter(|o| o.up).map(|o| o.osd).collect()
-    }
-
     pub fn down(&self) -> BTreeSet<i64> {
         self.osds.iter().filter(|o| !o.up).map(|o| o.osd).collect()
     }
