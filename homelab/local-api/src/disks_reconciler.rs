@@ -1979,7 +1979,11 @@ async fn erase_forgotten_osds<H: Host>(
         )
         .await
         {
-            Ok(()) => set_phase(disk_id, Phase::Creating, "Erasing old data before adding this disk."),
+            Ok(()) => set_phase(
+                disk_id,
+                Phase::Creating,
+                "Erasing old data before adding this disk.",
+            ),
             Err(e) => {
                 tracing::warn!("{disk_id}: erasing {dev_path} failed: {e}");
                 set_phase(
@@ -2917,11 +2921,18 @@ mod tests {
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd)).await;
 
-        assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdb"), "{:?}", host.calls());
+        assert!(
+            host.ran("ceph-volume lvm zap --destroy /dev/sdb"),
+            "{:?}",
+            host.calls()
+        );
         assert!(host.ran("systemctl stop yolab-ceph-osd@1.service"));
         assert!(!host.ran("systemctl start yolab-ceph-osd@1"));
         assert!(!host.ran("crush reweight") && !host.ran("osd in"));
-        assert!(!host.ran("lvm create"), "created on the next tick, once it reads blank");
+        assert!(
+            !host.ran("lvm create"),
+            "created on the next tick, once it reads blank"
+        );
     }
 
     /// The same disk switched OFF has nothing left to purge: it is just not in use.
