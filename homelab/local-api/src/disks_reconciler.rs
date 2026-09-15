@@ -382,7 +382,10 @@ async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::
                 destructive::zap(
                     host,
                     dev,
-                    destructive::ZapWarrant::ForgottenByCluster { osd: id },
+                    destructive::ZapWarrant::ForgottenByCluster {
+                        osd: id,
+                        whole_disk: false,
+                    },
                 )
                 .await?;
             }
@@ -1975,7 +1978,10 @@ async fn erase_forgotten_osds<H: Host>(
         match destructive::zap(
             host,
             &dev_path,
-            destructive::ZapWarrant::ForgottenByCluster { osd: osd_id },
+            destructive::ZapWarrant::ForgottenByCluster {
+                osd: osd_id,
+                whole_disk: true,
+            },
         )
         .await
         {

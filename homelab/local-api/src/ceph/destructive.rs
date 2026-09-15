@@ -168,11 +168,15 @@ pub enum ZapWarrant {
     /// The owner switched it ON, no OSD of ours is on it, and `ceph-volume lvm
     /// create` refused it for a stale signature.
     StaleSignature,
-    /// The system volume carries this cluster's osd.N, and the cluster's own
-    /// OSD list — read, not assumed — no longer has it: purged, or left from a
-    /// cluster that was created again. Nothing can ever read that data again,
-    /// and the system volume exists to be this machine's OSD.
-    ForgottenByCluster { osd: i64 },
+    /// A disk or the system volume carries this cluster's osd.N, and the
+    /// cluster's own OSD list — read, not assumed — no longer has it: purged
+    /// while the disk was away, or by a heal. Nothing can ever read that data
+    /// again, and the disk was switched on to be an OSD.
+    ///
+    /// `whole_disk`: the OSD is on a disk of its own, whose leftover volume group
+    /// would make the next `ceph-volume lvm create` refuse it — so it goes too.
+    /// Never for the system volume, whose volume group holds the OS.
+    ForgottenByCluster { osd: i64, whole_disk: bool },
     /// A FORCE HEAL rebuilds the cluster from scratch, and this machine is being
     /// reset to take part: every OSD on it goes. A volume in a group ceph-volume
     /// made is destroyed with that group; the system volume (a device-mapper
@@ -193,21 +197,13 @@ impl ZapWarrant {
 /// ceph-volume built its own LVM stack on and wrong for the system LV disko owns
 /// (the OS depends on the volume group around it). Device-mapper paths are
 /// therefore never `--destroy`ed, whatever the warrant.
-///
-/// A forgotten OSD is found on either: the system volume, by its volume path,
-/// is only erased; a whole disk is destroyed, or its leftover volume group would
-/// make the next `ceph-volume lvm create` refuse it.
 pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Result<(), CmdError> {
     let door = Door(());
     let is_lv = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
-    // `/dev/<vg>/<lv>`: one more path segment than a whole disk has.
-    let is_volume_path = dev_path
-        .strip_prefix("/dev/")
-        .is_some_and(|rest| rest.contains('/'));
     let destroy = !is_lv
         && match warrant {
             ZapWarrant::StaleSignature => false,
-            ZapWarrant::ForgottenByCluster { .. } => !is_volume_path,
+            ZapWarrant::ForgottenByCluster { whole_disk, .. } => whole_disk,
             _ => true,
         };
     let mut args = vec!["lvm", "zap"];
@@ -219,7 +215,7 @@ pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Resu
         ZapWarrant::AfterPurge(purged) => format!("after purging osd.{}", purged.osd),
         ZapWarrant::ForeignCluster { osd } => format!("foreign cluster's osd.{osd}"),
         ZapWarrant::StaleSignature => "stale signature".to_string(),
-        ZapWarrant::ForgottenByCluster { osd } => {
+        ZapWarrant::ForgottenByCluster { osd, .. } => {
             format!("osd.{osd}, which this cluster no longer has")
         }
         ZapWarrant::MachineReset => "this machine is being reset by a FORCE HEAL".to_string(),
@@ -384,7 +380,7 @@ mod tests {
     async fn a_volume_the_cluster_forgot_is_erased_but_never_with_its_volume_group() {
         for dev in ["/dev/mapper/pool-ceph", "/dev/pool/ceph"] {
             let host = FakeHost::new().ok("ceph-volume lvm zap", "");
-            zap(&host, dev, ZapWarrant::ForgottenByCluster { osd: 4 })
+            zap(&host, dev, ZapWarrant::ForgottenByCluster { osd: 4, whole_disk: false })
                 .await
                 .unwrap();
             assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
@@ -392,7 +388,7 @@ mod tests {
         }
         // A whole disk loses its leftover volume group, or it cannot be used again.
         let host = FakeHost::new().ok("ceph-volume lvm zap", "");
-        zap(&host, "/dev/sdb", ZapWarrant::ForgottenByCluster { osd: 1 })
+        zap(&host, "/dev/sdb", ZapWarrant::ForgottenByCluster { osd: 1, whole_disk: true })
             .await
             .unwrap();
         assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdb"));
