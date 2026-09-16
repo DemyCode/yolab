@@ -16,13 +16,9 @@ export interface RebuildLog {
   log: string[];
 }
 
-export interface RemoteEntry {
-  name: string;
-  url: string;
-}
-
 export interface ChannelInfo {
-  remote: string;
+  /** The flake this machine builds from, e.g. `github:DemyCode/yolab`. */
+  url: string;
+  /** Branch, tag or commit within it, e.g. `main`. */
   ref: string;
-  remotes: RemoteEntry[];
 }

@@ -48,27 +48,25 @@ pub(crate) fn console_url_from_api(api_url: &str) -> Option<String> {
     Some(format!("{scheme}://console.{rest}"))
 }
 
-fn built_or_git(state: &AppState, filename: &str, args: &[&str]) -> String {
-    let v = std::fs::read_to_string(state.config.built_dir.join(filename))
+/// One of the `built-*` files the activation script writes, which record the
+/// flake revision this system was built from.
+///
+/// There is no fallback to git: this node keeps no checkout. The revision is
+/// whatever the flake carried at build time (see flake.nix's `yolabVersion`
+/// activation), so it is correct for a machine built from a URL and for one
+/// built locally.
+fn built(state: &AppState, filename: &str) -> String {
+    std::fs::read_to_string(state.config.built_dir.join(filename))
         .unwrap_or_default()
         .trim()
-        .to_string();
-    if !v.is_empty() {
-        return v;
-    }
-    std::process::Command::new("git")
-        .args(args)
-        .current_dir(&state.config.repo_path)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+        .to_string()
 }
 
 pub async fn handler(State(state): State<AppState>) -> Result<Json<StatusInfo>> {
     Ok(Json(StatusInfo {
-        commit_hash: built_or_git(&state, "built-hash", &["rev-parse", "HEAD"]),
-        commit_message: built_or_git(&state, "built-message", &["log", "-1", "--pretty=%s"]),
-        commit_date: built_or_git(&state, "built-date", &["log", "-1", "--pretty=%cI"]),
+        commit_hash: built(&state, "built-hash"),
+        commit_message: built(&state, "built-message"),
+        commit_date: built(&state, "built-date"),
         platform: state.config.platform.clone(),
         flake_target: state.config.flake_target.clone(),
         // Read here rather than held on `Config` because this is the only

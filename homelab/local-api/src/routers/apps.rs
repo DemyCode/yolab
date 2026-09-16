@@ -673,7 +673,7 @@ fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
 /// it rather than refusing to open. The response says whether the refresh
 /// actually happened so the UI can tell "current" from "possibly stale".
 pub async fn refresh_catalog_app(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
     let mut refreshed = false;
@@ -690,8 +690,7 @@ pub async fn refresh_catalog_app(
         }
     }
 
-    let catalog_dir = state.config.catalog_dir();
-    let entry = crate::charts::chart_sources(&catalog_dir)
+    let entry = crate::charts::chart_sources()
         .await
         .into_iter()
         .find_map(|(repo, dir)| {
@@ -706,12 +705,11 @@ pub async fn refresh_catalog_app(
     }))
 }
 
-pub async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogApp>> {
-    let catalog_dir = state.config.catalog_dir();
+pub async fn catalog(State(_state): State<AppState>) -> Json<Vec<CatalogApp>> {
     let mut apps: Vec<CatalogApp> = vec![];
     let mut seen: std::collections::HashSet<String> = Default::default();
 
-    for (repo, dir) in crate::charts::chart_sources(&catalog_dir).await {
+    for (repo, dir) in crate::charts::chart_sources().await {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -1255,8 +1253,7 @@ async fn stage_install(
 ) -> anyhow::Result<StagedInstall> {
     let tunnel_cfg =
         tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
-    let Some((repo, chart_dir)) = crate::charts::resolve_chart(&cfg.catalog_dir(), id, None).await
-    else {
+    let Some((repo, chart_dir)) = crate::charts::resolve_chart(id, None).await else {
         anyhow::bail!("no chart named {id} in any configured repository");
     };
     let Some(meta) = read_chart(&chart_dir) else {
@@ -1455,7 +1452,7 @@ pub async fn update_app(
             return;
         };
         let installed_repo = ann.get(ANN_CHART_REPO).and_then(|v| v.as_str()).map(String::from);
-        let Some((_, chart_dir)) = crate::charts::resolve_chart(&state.config.catalog_dir(), &id, installed_repo.as_deref()).await else {
+        let Some((_, chart_dir)) = crate::charts::resolve_chart(&id, installed_repo.as_deref()).await else {
             yield Ok(Event::default().data(format!("[ERROR] chart {id} is no longer available in {:?}", installed_repo)));
             return;
         };

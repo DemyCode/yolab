@@ -306,6 +306,21 @@ jobs:
             echo "# being listed."
             echo "apiVersion: yolab.io/v1"
             echo "registry: ${REGISTRY}"
+            # The library chart apps and custom apps depend on. A node pulls it
+            # so a chart built on yolab-common renders with OUR copy, never one a
+            # chart's own `repository:` line names. Only named if it is actually
+            # readable, so the manifest never points at a missing package.
+            lib_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${registry_path}/yolab-common:pull")
+            if [ "$lib_code" = "200" ]; then
+              echo "# The library chart apps and custom apps depend on. Pulled into the cache so a"
+              echo "# chart built on it renders on a node, but never listed on the storefront."
+              echo "library:"
+              echo "  name: yolab-common"
+              echo "  version: \"${LIB_VERSION}\""
+            else
+              echo "::warning::yolab-common is not readable in the registry (HTTP ${lib_code}) — custom apps built on it will not render" >&2
+            fi
             echo "charts:"
             for chart in apps/catalog/*/; do
               [ -f "$chart/Chart.yaml" ] || continue

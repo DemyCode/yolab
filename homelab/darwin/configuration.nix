@@ -120,7 +120,6 @@ in {
       StandardOutPath = "/var/log/yolab-local-api.log";
       StandardErrorPath = "/var/log/yolab-local-api-error.log";
       EnvironmentVariables = {
-        YOLAB_REPO_PATH = s.repoPath;
         YOLAB_PLATFORM = "darwin";
         YOLAB_FLAKE_TARGET = s.flakeTarget;
         PATH = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin";

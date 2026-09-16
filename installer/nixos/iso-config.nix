@@ -58,7 +58,6 @@ in {
     vim
     curl
     git
-    rsync
     parted
     gptfdisk
     util-linux

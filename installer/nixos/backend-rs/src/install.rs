@@ -357,23 +357,21 @@ async fn do_install(
     // the tunnel/node peer just registered above stranded — see
     // `wireguard::deregister`'s doc comment for why. Once `nixos-install`
     // itself succeeds, the installed system's own config.toml depends on this
-    // registration existing, so a later failure (e.g. the final rsync below)
-    // must NOT roll it back — only errors from this call should.
+    // registration existing, so a later failure (e.g. copying the machine's
+    // files below) must NOT roll it back — only errors from this call should.
     if let Err(e) = partition_and_install(req, tx, &service_name, &tunnel).await {
         log!("Install failed — deregistering the tunnel and node peer so the name and DNS record aren't stranded…");
         crate::wireguard::deregister(&req.account_token, &tunnel, tx).await;
         return Err(e);
     }
 
-    // ── Copy this machine's files and the repo to the installed system ────────
-    // The machine's files first, and out of the repo copy: on the installed
-    // system they live in MACHINE_DIR and the repo in /etc/nixos stays exactly
-    // what git has (see flake.nix, `yolab-machine`).
+    // ── Copy this machine's files to the installed system ─────────────────────
+    // Only the machine's own files. The installed node keeps no checkout of the
+    // repo — it builds from a flake URL (see local-api's `Channel`) — so there
+    // is nothing to rsync to /etc/nixos. The install itself ran from the clone
+    // in CODE_DIR, a temp directory that never reaches the installed system.
     log!("Copying this machine's configuration to the installed system…");
     install_machine_files(tx).await?;
-    log!("Copying repository to installed system…");
-    let src = format!("{CODE_DIR}/");
-    stream_command("rsync", &["-a", &src, "/mnt/etc/nixos"], tx).await?;
     log!("✓ Complete — remove the USB and reboot");
 
     Ok(tunnel.dns_url)
@@ -381,6 +379,10 @@ async fn do_install(
 
 /// Moves config.toml and hardware-configuration.nix from the install clone to
 /// MACHINE_DIR on the installed system, readable by root only.
+///
+/// The originals are removed from the clone afterwards: they carry the account
+/// token, WireGuard keys and the password hash, and the clone is a temp
+/// directory left on disk until the machine reboots.
 async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::Result<()> {
     let target = format!("/mnt{MACHINE_DIR}");
     stream_command("install", &["-d", "-m", "0700", &target], tx).await?;
@@ -390,7 +392,7 @@ async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::
         stream_command("install", &["-m", "0600", &from, &to], tx).await?;
         tokio::fs::remove_file(&from)
             .await
-            .with_context(|| format!("remove {from} from the repo copy"))?;
+            .with_context(|| format!("remove {from} from the install clone"))?;
     }
     Ok(())
 }
@@ -398,7 +400,7 @@ async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::
 /// Everything from password hashing through a completed `nixos-install`.
 ///
 /// Split out of `do_install` so its errors can be told apart from the tunnel
-/// registration that must be undone on failure, and from the final rsync copy
+/// registration that must be undone on failure, and from the machine-file copy
 /// that must not be (see `do_install`'s comment).
 async fn partition_and_install(
     req: &InstallParams,

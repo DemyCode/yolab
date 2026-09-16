@@ -36,15 +36,16 @@
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
 
     # THIS MACHINE's own files: config.toml (secrets, tunnel keys, tokens) and
-    # hardware-configuration.nix. They are not in the repo, so the repo can stay a
-    # git flake — `.#` copies only tracked files (MBs), where `path:.#` copied the
-    # whole working tree, build outputs included (GBs), on every evaluation.
+    # hardware-configuration.nix. They are not in the repo, so a machine builds
+    # from a flake URL and keeps these as the only local files — the node no
+    # longer holds a checkout of the repo at all. The channel in local-api names
+    # the URL and ref; see homelab/local-api/src/config.rs.
     #
     # The default is an empty directory in the repo, which defines no machine: CI
     # and a fresh clone evaluate without any secrets. A machine points it at its
     # own directory on every build:
     #
-    #   nixos-rebuild switch --flake /etc/nixos#yolab \
+    #   nixos-rebuild switch --flake github:DemyCode/yolab/main#yolab \
     #     --override-input yolab-machine path:/var/lib/yolab/machine \
     #     --no-write-lock-file
     #
@@ -91,6 +92,11 @@
           inherit rust;
           yolabConfigPath = configPath;
           localApiEnv = rust.crates.local-api.package;
+          # The revision this system is built from, for the version shown on the
+          # System page. A node builds from a flake URL and keeps no git tree, so
+          # the flake itself is the only place the revision can come from.
+          yolabRev = self.rev or self.dirtyRev or "";
+          yolabLastModified = self.lastModified or null;
         };
       };
 

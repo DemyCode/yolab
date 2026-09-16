@@ -5,6 +5,12 @@
   yolabConfigPath,
   rust,
   localApiEnv,
+  # The revision this system is being built from. Passed by flake.nix from
+  # `self.rev`/`self.lastModified` rather than read from a checkout, because a
+  # machine now builds from a flake URL and has no git tree of its own. Used only
+  # for the version shown on the System page.
+  yolabRev ? "",
+  yolabLastModified ? null,
   ...
 }: let
   s = import ../shared.nix {
@@ -77,11 +83,6 @@ in {
       type = lib.types.str;
       default = "yolab";
       description = "Flake output name used by nixos-rebuild switch.";
-    };
-    repoPath = lib.mkOption {
-      type = lib.types.str;
-      default = "/etc/nixos";
-      description = "Absolute path to the yolab repo on this machine.";
     };
     machineDir = lib.mkOption {
       type = lib.types.str;
@@ -586,7 +587,6 @@ in {
             }:"
             + "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
           );
-          YOLAB_REPO_PATH = config.yolab.repoPath;
           YOLAB_MACHINE_DIR = config.yolab.machineDir;
           YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
           YOLAB_PLATFORM = config.yolab.platform;
@@ -824,11 +824,19 @@ in {
       "L+ /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml           - - - - ${./volsync/snapshotclass.yaml}"
     ];
 
+    # The revision this system was built from, for the System page. Taken from
+    # the flake itself (see `yolabRev`), not from a checkout: a node builds from
+    # a flake URL and keeps no git tree. There is no commit message in a flake,
+    # so that file is written empty and the UI shows a dash.
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
-      ${pkgs.git}/bin/git -C ${config.yolab.repoPath} rev-parse HEAD        > /var/lib/yolab/built-hash    2>/dev/null || true
-      ${pkgs.git}/bin/git -C ${config.yolab.repoPath} log -1 --pretty=%s    > /var/lib/yolab/built-message 2>/dev/null || true
-      ${pkgs.git}/bin/git -C ${config.yolab.repoPath} log -1 --pretty=%cI   > /var/lib/yolab/built-date    2>/dev/null || true
+      printf '%s' ${lib.escapeShellArg yolabRev} > /var/lib/yolab/built-hash
+      ${
+        lib.optionalString (yolabLastModified != null) ''
+          ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
+        ''
+      }
+      : > /var/lib/yolab/built-message
     '';
 
     nix.settings.experimental-features = [

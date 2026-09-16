@@ -5,16 +5,18 @@ use std::{
 };
 
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
-use serde::{Deserialize, Serialize};
 // StreamExt for `.map` over the progress receiver — see `update`.
 use tokio_stream::StreamExt;
 
-use crate::{config::Config, kubectl, proc::KillOnDrop, AppState};
+use crate::{
+    config::{Channel, Config},
+    kubectl, AppState,
+};
 
 static IS_UPDATING: AtomicBool = AtomicBool::new(false);
 
@@ -44,174 +46,17 @@ pub(crate) fn exclusive() -> Option<UpdateGuard> {
         .map(|_| UpdateGuard)
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Channel {
-    pub remote: String,
-    #[serde(rename = "ref")]
-    pub ref_: String,
-}
-
-impl Default for Channel {
-    fn default() -> Self {
-        Self {
-            remote: "origin".into(),
-            ref_: "main".into(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub struct RemoteEntry {
-    pub name: String,
-    pub url: String,
-}
-
-#[derive(Serialize)]
-pub struct ChannelInfo {
-    pub remote: String,
-    #[serde(rename = "ref")]
-    pub ref_: String,
-    pub remotes: Vec<RemoteEntry>,
-}
-
-#[derive(Deserialize)]
-pub struct RemoteBody {
-    pub name: String,
-    pub url: String,
-}
-
-fn read_channel(cfg: &Config) -> Channel {
-    std::fs::read_to_string(&cfg.channel_file)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            Some(Channel {
-                remote: v["remote"].as_str()?.to_string(),
-                ref_: v["ref"].as_str()?.to_string(),
-            })
-        })
-        .unwrap_or_default()
-}
-
-fn write_channel(cfg: &Config, ch: &Channel) -> anyhow::Result<()> {
-    std::fs::create_dir_all(&cfg.built_dir)?;
-    let v = serde_json::json!({"remote": ch.remote, "ref": ch.ref_});
-    std::fs::write(&cfg.channel_file, v.to_string())?;
-    Ok(())
-}
-
-fn list_remotes(cfg: &Config) -> Vec<RemoteEntry> {
-    let Ok(out) = std::process::Command::new("git")
-        .args(["-C", &cfg.repo_path, "remote", "-v"])
-        .output()
-    else {
-        return vec![];
-    };
-    parse_remotes(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// Parses `git remote -v` output. Split from `list_remotes` so the line handling
-/// is testable without a git binary or a real repository.
-///
-/// `git remote -v` prints two lines per remote (fetch and push); only the fetch
-/// line is taken, so each remote appears once.
-fn parse_remotes(text: &str) -> Vec<RemoteEntry> {
-    let mut seen = std::collections::HashSet::new();
-    text.lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 && line.contains("(fetch)") {
-                let name = parts[0].to_string();
-                if seen.insert(name.clone()) {
-                    return Some(RemoteEntry {
-                        name,
-                        url: parts[1].to_string(),
-                    });
-                }
-            }
-            None
-        })
-        .collect()
-}
-
-pub async fn get_channel(State(state): State<AppState>) -> Json<ChannelInfo> {
-    let ch = read_channel(&state.config);
-    Json(ChannelInfo {
-        remote: ch.remote,
-        ref_: ch.ref_,
-        remotes: list_remotes(&state.config),
-    })
+pub async fn get_channel(State(state): State<AppState>) -> Json<Channel> {
+    Json(state.config.channel())
 }
 
 pub async fn set_channel(
     State(state): State<AppState>,
     Json(ch): Json<Channel>,
 ) -> impl IntoResponse {
-    match write_channel(&state.config, &ch) {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"remote": ch.remote, "ref": ch.ref_})),
-        )
-            .into_response(),
+    match state.config.write_channel(&ch) {
+        Ok(_) => (StatusCode::OK, Json(ch)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-pub async fn add_remote(
-    State(state): State<AppState>,
-    Json(body): Json<RemoteBody>,
-) -> impl IntoResponse {
-    let out = std::process::Command::new("git")
-        .args([
-            "-C",
-            &state.config.repo_path,
-            "remote",
-            "add",
-            &body.name,
-            &body.url,
-        ])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => (
-            StatusCode::OK,
-            Json(serde_json::json!({"name": body.name, "url": body.url})),
-        )
-            .into_response(),
-        Ok(o) => (
-            StatusCode::BAD_REQUEST,
-            String::from_utf8_lossy(&o.stderr).to_string(),
-        )
-            .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-pub async fn remove_remote(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    let out = std::process::Command::new("git")
-        .args(["-C", &state.config.repo_path, "remote", "remove", &name])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
-        }
-        // Idempotent: a remote that is already gone is the end state a DELETE
-        // asked for either way, so this does not count as a failure.
-        Ok(o) if String::from_utf8_lossy(&o.stderr).contains("No such remote") => {
-            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
-        }
-        Ok(o) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "ok": false,
-                "error": String::from_utf8_lossy(&o.stderr).trim(),
-            })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"ok": false, "error": e.to_string()})),
-        )
-            .into_response(),
     }
 }
 
@@ -223,17 +68,13 @@ pub async fn remove_remote(State(state): State<AppState>, Path(name): Path<Strin
 //   update()         — a person clicked Update; stream it back over SSE
 //   trigger_update() — another node told us to; append to the rebuild log
 //
-// The work in between — fetch, resolve the ref, reset, launch nixos-rebuild — is
-// identical, and used to be written twice. That is not a style complaint: the
-// two copies had already drifted into `has_remote_ref`/`reset_target` in one and
-// `has_remote`/`target` in the other, so a fix to the ref-resolution logic in
-// one would silently not reach the other.
-//
-// It was duplicated for a real reason, though, and the reason is worth stating
-// so nobody "simplifies" it back: `update()` is built on `async_stream`, and
-// `yield` only works lexically inside the `stream!` macro. You cannot extract a
-// helper that yields. The way out is to invert it — the shared code SENDS lines
-// down a channel, and each caller decides what to do with them.
+// The work in between — resolve the flake, launch nixos-rebuild — is identical.
+// It used to be written twice, and the two copies had already drifted. It was
+// duplicated for a real reason, though, worth stating so nobody "simplifies" it
+// back: `update()` is built on `async_stream`, and `yield` only works lexically
+// inside the `stream!` macro. You cannot extract a helper that yields. The way
+// out is to invert it — the shared code SENDS lines down a channel, and each
+// caller decides what to do with them.
 
 /// One line of progress.
 async fn emit(out: &tokio::sync::mpsc::Sender<String>, msg: impl Into<String>) {
@@ -244,102 +85,32 @@ async fn emit(out: &tokio::sync::mpsc::Sender<String>, msg: impl Into<String>) {
     let _ = out.send(msg.into()).await;
 }
 
-/// Runs a git subcommand, streaming both its streams line by line.
+/// Launch the rebuild. Returns false if it stopped early.
 ///
-/// stderr as well as stdout, and interleaved: git writes progress ("Receiving
-/// objects…") to stderr, so a version that forwarded only stdout showed a blank
-/// screen for the entire clone and then a result.
-async fn run_git(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>, args: &[&str]) -> bool {
-    let mut full = vec!["-C", cfg.repo_path.as_str()];
-    full.extend_from_slice(args);
-    emit(out, format!("$ git {}", full.join(" "))).await;
-
-    let child = tokio::process::Command::new("git")
-        .args(&full)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    let mut guard = match child {
-        Ok(c) => KillOnDrop(c),
-        Err(e) => {
-            emit(out, format!("[ERROR] could not launch git: {e}")).await;
-            return false;
-        }
-    };
-
-    use tokio::io::AsyncBufReadExt;
-    let stdout = guard.0.stdout.take();
-    let stderr = guard.0.stderr.take();
-    if let Some(s) = stdout {
-        let mut lines = tokio::io::BufReader::new(s).lines();
-        while let Ok(Some(l)) = lines.next_line().await {
-            emit(out, l).await;
-        }
-    }
-    if let Some(s) = stderr {
-        let mut lines = tokio::io::BufReader::new(s).lines();
-        while let Ok(Some(l)) = lines.next_line().await {
-            emit(out, l).await;
-        }
-    }
-    guard.0.wait().await.map(|s| s.success()).unwrap_or(false)
-}
-
-/// Which ref to reset to.
-///
-/// Prefers `<remote>/<ref>` when git can resolve it, and falls back to the bare
-/// ref otherwise — which is what makes a tag or a local branch work as a channel
-/// alongside a remote branch. Pure, so the choice is testable without a repo;
-/// the resolution itself is the caller's `rev-parse`.
-fn reset_target(ch: &Channel, remote_ref_exists: bool) -> String {
-    if remote_ref_exists {
-        format!("{}/{}", ch.remote, ch.ref_)
-    } else {
-        ch.ref_.clone()
-    }
-}
-
-/// Whether git can resolve `<remote>/<ref>`.
-fn remote_ref_exists(cfg: &Config, ch: &Channel) -> bool {
-    std::process::Command::new("git")
-        .args([
-            "-C",
-            &cfg.repo_path,
-            "rev-parse",
-            "--verify",
-            &format!("{}/{}", ch.remote, ch.ref_),
-        ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Fetch, reset, and launch the rebuild. Returns false if it stopped early.
+/// There is no checkout to fetch or reset: the flake is named by its URL (see
+/// `Channel`), and `nixos-rebuild` fetches the revision itself. That is the whole
+/// reason this node no longer needs the repo on disk, and the same shape a
+/// community catalog takes — point at a URL, keep this machine's own files as
+/// the only local override.
 ///
 /// The rebuild itself is deliberately NOT awaited: it is spawned detached with
 /// its output going to `cfg.rebuild_log`, so it survives this service being
 /// restarted by the very switch it just started. That is the normal case, not an
 /// edge one — a nixos-rebuild restarts local-api.
 async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bool {
-    let ch = read_channel(cfg);
+    let ch = cfg.channel();
 
-    if !run_git(cfg, out, &["fetch", &ch.remote, "--tags"]).await {
-        emit(out, "[ERROR] git fetch failed").await;
-        return false;
-    }
-
-    let target = reset_target(&ch, remote_ref_exists(cfg, &ch));
-    if !run_git(cfg, out, &["reset", "--hard", &target]).await {
-        emit(out, "[ERROR] git reset failed").await;
-        return false;
-    }
+    emit(
+        out,
+        format!("[INFO] building {}#{}", ch.flake(), cfg.flake_target),
+    )
+    .await;
 
     // A previous rebuild that was interrupted leaves its transient unit behind,
     // and systemd refuses to start a unit that is still loaded-and-failed.
     clear_stale_rebuild_unit();
 
-    let args = rebuild_args(cfg);
+    let args = rebuild_args(cfg, &ch);
     emit(out, format!("$ nixos-rebuild {}", args.join(" "))).await;
     emit(
         out,
@@ -469,19 +240,20 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 
 /// The `nixos-rebuild` arguments for this machine.
 ///
-/// The repo is a git flake (`/etc/nixos#yolab`, never `path:`): only tracked
-/// files are copied into the store. This machine's own files come in as the
-/// `yolab-machine` input, from `machine_dir` — see flake.nix. The lock file is
-/// not written: the override is this machine's, and the repo's flake.lock stays
-/// exactly as `git reset` left it for the next update.
+/// The flake is a URL (`github:owner/repo/<ref>`), never a path: there is no
+/// checkout on this node, so `nixos-rebuild` fetches the revision named by the
+/// channel. This machine's own files still come in as the `yolab-machine` input
+/// from `machine_dir` — see flake.nix — so the only thing local is the config.
+/// The lock file is not written: the override is this machine's, and the
+/// published flake's own lock stays the one the revision carries.
 ///
 /// `--cores 1 --max-jobs 1`: a homelab node is also serving the UI that is
 /// watching this, and an unrestricted build starves it.
-fn rebuild_args(cfg: &Config) -> Vec<String> {
+fn rebuild_args(cfg: &Config, ch: &Channel) -> Vec<String> {
     vec![
         "switch".into(),
         "--flake".into(),
-        format!("{}#{}", cfg.repo_path, cfg.flake_target),
+        format!("{}#{}", ch.flake(), cfg.flake_target),
         "--override-input".into(),
         "yolab-machine".into(),
         format!("path:{}", cfg.machine_dir),
@@ -534,9 +306,9 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
     let self_ip = cfg.node_ipv6.clone();
 
     // Read this node's channel and push it to every other node before rebuilding,
-    // so all machines converge to the same remote/ref.
-    let ch = read_channel(&cfg);
-    let channel_body = serde_json::json!({ "remote": ch.remote, "ref": ch.ref_ });
+    // so all machines converge to the same source/ref.
+    let ch = cfg.channel();
+    let channel_body = serde_json::json!({ "url": ch.url, "ref": ch.ref_ });
     let cluster_token = cfg.cluster_token();
 
     // kubectl::peer_ipv6 rather than a fourth hand-rolled copy of this filter.
@@ -583,28 +355,24 @@ mod tests {
         cfg
     }
 
-    // ── reset_target ──────────────────────────────────────────────────────────
-    //
-    // This logic existed in two copies before the rewrite — `has_remote_ref`/
-    // `reset_target` in the streaming path and `has_remote`/`target` in the
-    // background one — so a fix to either would silently not reach the other.
-    // Now there is one, and these pin its behaviour.
-
     #[test]
-    fn a_rebuild_uses_the_git_flake_and_this_machines_own_files() {
+    fn a_rebuild_uses_the_flake_url_and_this_machines_own_files() {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = cfg_in(&dir);
-        cfg.repo_path = "/etc/nixos".into();
         cfg.machine_dir = "/var/lib/yolab/machine".into();
-        let args = rebuild_args(&cfg);
+        let ch = Channel {
+            url: "github:DemyCode/yolab".into(),
+            ref_: "main".into(),
+        };
+        let args = rebuild_args(&cfg, &ch);
         let after = |flag: &str| {
             let i = args.iter().position(|a| a == flag).unwrap();
             args[i + 1..].to_vec()
         };
         assert_eq!(
             after("--flake")[0],
-            "/etc/nixos#yolab",
-            "never path:, which copies the whole tree"
+            "github:DemyCode/yolab/main#yolab",
+            "a URL, never a path — there is no checkout on this node"
         );
         assert_eq!(
             after("--override-input")[..2],
@@ -617,257 +385,18 @@ mod tests {
         );
     }
 
+    /// The channel is what the UI edits, so a non-default source must reach the
+    /// command line rather than being silently ignored.
     #[test]
-    fn a_resolvable_remote_ref_wins() {
+    fn a_rebuild_honours_a_custom_source_and_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_in(&dir);
         let ch = Channel {
-            remote: "origin".into(),
-            ref_: "main".into(),
-        };
-        assert_eq!(reset_target(&ch, true), "origin/main");
-    }
-
-    /// The fallback is what lets a TAG or a purely local branch work as a
-    /// channel: `origin/v2.1.0` does not resolve, but `v2.1.0` does.
-    #[test]
-    fn an_unresolvable_remote_ref_falls_back_to_the_bare_ref() {
-        let ch = Channel {
-            remote: "origin".into(),
+            url: "github:someone/fork".into(),
             ref_: "v2.1.0".into(),
         };
-        assert_eq!(reset_target(&ch, false), "v2.1.0");
-    }
-
-    #[test]
-    fn a_non_origin_remote_is_honoured() {
-        let ch = Channel {
-            remote: "upstream".into(),
-            ref_: "release".into(),
-        };
-        assert_eq!(reset_target(&ch, true), "upstream/release");
-    }
-
-    // ── read_channel / write_channel ──────────────────────────────────────────
-
-    /// The channel decides which git ref this node builds itself from. Defaulting
-    /// to origin/main is what keeps an unreadable or corrupted file from pointing
-    /// a machine at nothing — or worse, at a partially-parsed ref.
-    #[test]
-    fn an_absent_channel_file_reads_as_origin_main() {
-        let dir = tempfile::tempdir().unwrap();
-        let ch = read_channel(&cfg_in(&dir));
-        assert_eq!(ch.remote, "origin");
-        assert_eq!(ch.ref_, "main");
-    }
-
-    #[test]
-    fn a_written_channel_reads_back_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_in(&dir);
-        let written = Channel {
-            remote: "upstream".into(),
-            ref_: "v2.1.0".into(),
-        };
-        write_channel(&cfg, &written).unwrap();
-
-        let read = read_channel(&cfg);
-        assert_eq!(read.remote, "upstream");
-        assert_eq!(read.ref_, "v2.1.0");
-    }
-
-    #[test]
-    fn writing_a_channel_creates_the_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_in(&dir);
-        assert!(!cfg.built_dir.exists());
-        write_channel(&cfg, &Channel::default()).unwrap();
-        assert!(cfg.channel_file.exists());
-    }
-
-    /// A half-written or hand-edited file must fall back wholesale rather than
-    /// mix a parsed remote with a defaulted ref — that combination points at a
-    /// ref that may not exist on that remote.
-    #[test]
-    fn a_malformed_channel_file_falls_back_completely() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_in(&dir);
-        std::fs::create_dir_all(&cfg.built_dir).unwrap();
-
-        for body in [
-            "",
-            "not json at all",
-            r#"{"remote": "upstream"}"#,     // ref missing
-            r#"{"ref": "v2"}"#,              // remote missing
-            r#"{"remote": 5, "ref": "v2"}"#, // wrong type
-            r#"{"remote": null, "ref": null}"#,
-            "[]",
-        ] {
-            std::fs::write(&cfg.channel_file, body).unwrap();
-            let ch = read_channel(&cfg);
-            assert_eq!(
-                (ch.remote.as_str(), ch.ref_.as_str()),
-                ("origin", "main"),
-                "body: {body}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_channel_file_with_extra_keys_still_parses() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_in(&dir);
-        std::fs::create_dir_all(&cfg.built_dir).unwrap();
-        std::fs::write(
-            &cfg.channel_file,
-            r#"{"remote":"origin","ref":"dev","note":"hi"}"#,
-        )
-        .unwrap();
-        assert_eq!(read_channel(&cfg).ref_, "dev");
-    }
-
-    // ── parse_remotes ─────────────────────────────────────────────────────────
-
-    const GIT_REMOTE_V: &str = "\
-origin\thttps://github.com/DemyCode/yolab.git (fetch)
-origin\thttps://github.com/DemyCode/yolab.git (push)
-fork\tgit@github.com:someone/yolab.git (fetch)
-fork\tgit@github.com:someone/yolab.git (push)
-";
-
-    /// git prints a fetch and a push line per remote; listing both would show
-    /// every remote twice in the update UI.
-    #[test]
-    fn each_remote_is_listed_once() {
-        let remotes = parse_remotes(GIT_REMOTE_V);
-        let names: Vec<&str> = remotes.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, vec!["origin", "fork"]);
-    }
-
-    #[test]
-    fn remote_urls_are_read_from_the_fetch_line() {
-        let remotes = parse_remotes(GIT_REMOTE_V);
-        assert_eq!(remotes[0].url, "https://github.com/DemyCode/yolab.git");
-        assert_eq!(remotes[1].url, "git@github.com:someone/yolab.git");
-    }
-
-    /// A push-only remote cannot be updated from, so it does not belong in the
-    /// list of things you can switch your channel to.
-    #[test]
-    fn a_push_only_remote_is_not_listed() {
-        let text = "backup\tgit@example.com:mirror.git (push)\n";
-        assert!(parse_remotes(text).is_empty());
-    }
-
-    #[test]
-    fn parsing_survives_empty_and_ragged_output() {
-        assert!(parse_remotes("").is_empty());
-        assert!(parse_remotes("\n\n  \n").is_empty());
-        assert!(parse_remotes("origin\n").is_empty()); // name with no url
-        assert!(parse_remotes("fatal: not a git repository").is_empty());
-    }
-
-    #[test]
-    fn remotes_keep_gits_own_ordering() {
-        // The first entry is what the UI preselects, so ordering is load-bearing.
-        let text = "zebra\turl-z (fetch)\nalpha\turl-a (fetch)\n";
-        let names: Vec<String> = parse_remotes(text).into_iter().map(|r| r.name).collect();
-        assert_eq!(names, vec!["zebra", "alpha"]);
-    }
-
-    // ── remove_remote ────────────────────────────────────────────────────────
-    //
-    // This used to be `let _ = ...output(); Json({"ok": true})` — every call
-    // reported success, whether or not git did anything at all. These run a
-    // real git against a throwaway repo (see nix/rust.nix's gitMinimal note on
-    // the local-api crate) rather than mocking the subprocess, because the bug
-    // was specifically in what happens when that subprocess fails.
-
-    fn git_repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(dir.path())
-            .status()
-            .expect("git init");
-        assert!(status.success());
-        dir
-    }
-
-    fn state_in(dir: &tempfile::TempDir) -> crate::AppState {
-        let mut cfg = Config::for_test(&dir.path().join("config.toml"));
-        cfg.repo_path = dir.path().to_string_lossy().into_owned();
-        let cfg = std::sync::Arc::new(cfg);
-        crate::AppState {
-            auth: crate::auth::AuthState {
-                sessions: crate::auth::new_sessions(),
-                config: std::sync::Arc::clone(&cfg),
-            },
-            config: cfg,
-        }
-    }
-
-    async fn body_json(res: Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
-    }
-
-    #[tokio::test]
-    async fn remove_remote_deletes_a_remote_that_exists() {
-        let dir = git_repo();
-        std::process::Command::new("git")
-            .args([
-                "remote",
-                "add",
-                "origin",
-                "https://example.invalid/repo.git",
-            ])
-            .current_dir(dir.path())
-            .status()
-            .unwrap();
-        let state = state_in(&dir);
-
-        let res = remove_remote(State(state.clone()), Path("origin".to_string())).await;
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(body_json(res).await["ok"], true);
-
-        let list = std::process::Command::new("git")
-            .args(["remote"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        assert!(String::from_utf8_lossy(&list.stdout).trim().is_empty());
-    }
-
-    /// DELETE is idempotent: a remote that is already gone is the end state
-    /// being asked for, not a failure — the caller should not have to check
-    /// "does it exist?" before every delete just to avoid a spurious error.
-    #[tokio::test]
-    async fn remove_remote_on_a_nonexistent_remote_still_reports_ok() {
-        let dir = git_repo();
-        let state = state_in(&dir);
-
-        let res = remove_remote(State(state), Path("never-existed".to_string())).await;
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(body_json(res).await["ok"], true);
-    }
-
-    /// A real failure — not "already gone" — must be reported, not swallowed
-    /// into the same {"ok": true} every call used to return.
-    #[tokio::test]
-    async fn remove_remote_reports_a_real_git_failure() {
-        // Not a git repository at all: `git remote remove` fails with something
-        // other than "No such remote", which is the case that must surface.
-        let dir = tempfile::tempdir().unwrap();
-        let state = state_in(&dir);
-
-        let res = remove_remote(State(state), Path("origin".to_string())).await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = body_json(res).await;
-        assert_eq!(body["ok"], false);
-        assert!(
-            body["error"].as_str().unwrap().contains("git"),
-            "expected git's own error text, got: {body}"
-        );
+        let args = rebuild_args(&cfg, &ch);
+        let i = args.iter().position(|a| a == "--flake").unwrap();
+        assert_eq!(args[i + 1], "github:someone/fork/v2.1.0#yolab");
     }
 }

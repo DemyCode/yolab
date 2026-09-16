@@ -146,8 +146,6 @@ async fn main() {
             "/api/update/channel",
             get(update::get_channel).put(update::set_channel),
         )
-        .route("/api/update/remotes", post(update::add_remote))
-        .route("/api/update/remotes/:name", delete(update::remove_remote))
         // Rebuild log
         .route("/api/rebuild-log", get(rebuild::rebuild_log))
         // Backups

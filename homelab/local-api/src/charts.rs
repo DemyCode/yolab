@@ -3,8 +3,9 @@
 //! Phase 1 resolved charts from a single directory baked into the NixOS closure, which
 //! meant adding or fixing an app required `git reset --hard` plus a full `nixos-rebuild`
 //! on every node. This module decouples the two: charts are pulled from Helm repositories
-//! into a cache, and the bundled directory becomes the pre-warmed cache for the official
-//! repo rather than the only place charts can live.
+//! into a cache, and that cache is the only place a chart is ever read from. There is no
+//! bundled copy — the official catalog is just another repo in the list, resolved the
+//! same way a community one is.
 //!
 //! ## Distribution and discovery are separate problems
 //!
@@ -211,11 +212,26 @@ fn cache_dir_for(repo: &str) -> PathBuf {
     PathBuf::from(CACHE_DIR).join(repo)
 }
 
+/// Where the official catalog's charts are unpacked.
+///
+/// The storefront, the install path and custom-app vendoring all read from here.
+/// It is the same cache every other repo uses, so the official catalog is not
+/// special-cased to a directory beside the source — a node reads what the
+/// marketplace pulled, nothing else.
+pub fn official_dir() -> PathBuf {
+    cache_dir_for(OFFICIAL)
+}
+
 /// What a repo's catalog manifest declares: where the charts are, and which exist.
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct CatalogManifest {
     /// OCI reference the charts live under, e.g. `oci://ghcr.io/demycode/charts`.
     pub registry: String,
+    /// The library chart apps depend on, when the repo publishes one. Pulled
+    /// into the cache so a chart built on it renders here, but never listed on
+    /// the storefront — `read_chart` filters library charts.
+    #[serde(default)]
+    pub library: Option<CatalogEntry>,
     #[serde(default)]
     pub charts: Vec<CatalogEntry>,
 }
@@ -242,54 +258,10 @@ fn valid_chart_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Fetches a repo's catalog manifest and pulls every chart it names into the cache.
-///
-/// Pulling eagerly rather than on demand keeps install latency predictable, and means an
-/// install does not fail because the registry is briefly unreachable at exactly the wrong
-/// moment. The catalog is small — tens of charts at a few KB each — so this is cheap.
-/// Refresh a SINGLE chart from its repo.
-///
-/// The background sync runs hourly, which means a chart published minutes ago is
-/// invisible until the next tick — and the failure mode is silent: the install
-/// form renders the previous schema, so a field you just added simply is not
-/// there. That reads as "my change did not work" rather than "the node has an
-/// hour-old copy", and it has cost real debugging time.
-///
-/// So the install path refreshes just the chart being installed. One pull, on a
-/// flow that is already slow, in exchange for the form always matching what is
-/// actually published.
-pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
-    if !valid_chart_name(name) {
-        anyhow::bail!("unusable chart name {name:?}");
-    }
-
-    let body = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?
-        .get(&repo.url)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    let manifest: CatalogManifest = serde_norway::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("{}: catalog manifest is not valid: {e}", repo.name))?;
-
-    if !valid_registry(&manifest.registry) {
-        anyhow::bail!("{}: registry must be an oci:// reference", repo.name);
-    }
-    let entry = manifest
-        .charts
-        .iter()
-        .find(|c| c.name == name)
-        .ok_or_else(|| anyhow::anyhow!("{name} is not in {}", repo.name))?;
-
-    let dir = cache_dir_for(&repo.name);
-    tokio::fs::create_dir_all(&dir).await?;
-    let reference = format!("{}/{}", manifest.registry.trim_end_matches('/'), entry.name);
-
-    // Same clean-slate untar as the full sync: a chart that lost files between
-    // versions must not keep stale templates from the previous pull.
+/// Pulls one chart into `dir`, over a clean copy: a chart that lost files between
+/// versions must not keep stale templates from the previous pull.
+async fn pull_into(dir: &Path, registry: &str, entry: &CatalogEntry) -> anyhow::Result<()> {
+    let reference = format!("{}/{}", registry.trim_end_matches('/'), entry.name);
     let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
     let out = Command::new("helm")
         .args([
@@ -313,7 +285,8 @@ pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
+/// Fetches a repo's catalog manifest, or explains why it could not be read.
+async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
     let body = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?
@@ -325,22 +298,73 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
         .await?;
     let manifest: CatalogManifest = serde_norway::from_str(&body)
         .map_err(|e| anyhow::anyhow!("{}: catalog manifest is not valid: {e}", repo.name))?;
-
     if !valid_registry(&manifest.registry) {
         anyhow::bail!("{}: registry must be an oci:// reference", repo.name);
     }
+    Ok(manifest)
+}
+
+/// Refresh a SINGLE chart from its repo.
+///
+/// The background sync runs hourly, which means a chart published minutes ago is
+/// invisible until the next tick — and the failure mode is silent: the install
+/// form renders the previous schema, so a field you just added simply is not
+/// there. That reads as "my change did not work" rather than "the node has an
+/// hour-old copy", and it has cost real debugging time.
+///
+/// So the install path refreshes just the chart being installed. One pull, on a
+/// flow that is already slow, in exchange for the form always matching what is
+/// actually published.
+pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
+    if !valid_chart_name(name) {
+        anyhow::bail!("unusable chart name {name:?}");
+    }
+
+    let manifest = fetch_manifest(repo).await?;
+    let entry = manifest
+        .charts
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| anyhow::anyhow!("{name} is not in {}", repo.name))?;
 
     let dir = cache_dir_for(&repo.name);
     tokio::fs::create_dir_all(&dir).await?;
-    let registry = manifest.registry.trim_end_matches('/').to_string();
+    pull_into(&dir, &manifest.registry, entry).await
+}
+
+/// Fetches a repo's manifest and pulls everything it names into the cache.
+///
+/// Pulling eagerly rather than on demand keeps install latency predictable, and
+/// means an install does not fail because the registry is briefly unreachable at
+/// exactly the wrong moment. The catalog is small — tens of charts at a few KB
+/// each — so this is cheap.
+///
+/// The library chart, when the manifest declares one, is pulled too: a custom
+/// chart that depends on it is rendered here and must get OUR copy, not whatever
+/// a `repository:` line in an uploaded chart points at. It never reaches the
+/// storefront because `read_chart` filters library charts.
+pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
+    let manifest = fetch_manifest(repo).await?;
+
+    let dir = cache_dir_for(&repo.name);
+    tokio::fs::create_dir_all(&dir).await?;
+
+    if let Some(library) = &manifest.library {
+        if valid_chart_name(&library.name) {
+            if let Err(e) = pull_into(&dir, &manifest.registry, library).await {
+                tracing::warn!("{}: library pull: {e}", repo.name);
+            }
+        } else {
+            tracing::warn!(
+                "{}: skipping library with unusable name {:?}",
+                repo.name,
+                library.name
+            );
+        }
+    }
 
     let mut pulled = 0usize;
     for entry in &manifest.charts {
-        // The library chart is a dependency, not an app. It is published so downstream
-        // charts can resolve it, but it must never reach the storefront.
-        if entry.name == "yolab-common" {
-            continue;
-        }
         if !valid_chart_name(&entry.name) {
             tracing::warn!(
                 "{}: skipping chart with unusable name {:?}",
@@ -349,30 +373,9 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
             );
             continue;
         }
-        let reference = format!("{registry}/{}", entry.name);
-        // Untar over a clean directory so a chart that lost files between versions does
-        // not keep stale templates from the previous pull.
-        let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
-        let out = Command::new("helm")
-            .args([
-                "pull",
-                &reference,
-                "--version",
-                &entry.version,
-                "--untar",
-                "--untardir",
-                &dir.to_string_lossy(),
-            ])
-            .output()
-            .await;
-        match out {
-            Ok(o) if o.status.success() => pulled += 1,
-            Ok(o) => tracing::warn!(
-                "chart pull {reference}:{}: {}",
-                entry.version,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-            Err(e) => tracing::warn!("chart pull {reference}: {e}"),
+        match pull_into(&dir, &manifest.registry, entry).await {
+            Ok(()) => pulled += 1,
+            Err(e) => tracing::warn!("{e}"),
         }
     }
     Ok(pulled)
@@ -380,10 +383,12 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
 
 /// Every directory that may contain charts, in resolution order.
 ///
-/// The cache wins over the bundled copy so a published fix reaches users without waiting
-/// for an OS rebuild — which is the reason this module exists. The bundled directory
-/// remains as the seed: a node that has never synced still has the full official catalog.
-pub async fn chart_sources(catalog_dir: &Path) -> Vec<(String, PathBuf)> {
+/// The cache is the only source. Charts are pulled from the repositories'
+/// manifests into it, so a node never reads a chart from beside the source —
+/// there is no bundled copy left to drift from what was published. Charts the
+/// owner wrote here come first, then each configured repo (the official catalog
+/// among them).
+pub async fn chart_sources() -> Vec<(String, PathBuf)> {
     let mut sources = Vec::new();
     // Charts the owner wrote here, first. Not a repo — it is never in the ConfigMap,
     // so `sync_repo` never sees it and cannot delete a chart nobody can re-download.
@@ -397,17 +402,12 @@ pub async fn chart_sources(catalog_dir: &Path) -> Vec<(String, PathBuf)> {
             sources.push((repo.name.clone(), dir));
         }
     }
-    sources.push((OFFICIAL.to_string(), catalog_dir.to_path_buf()));
     sources
 }
 
 /// Locates a chart by id, preferring `repo` when given. Returns (repo name, chart dir).
-pub async fn resolve_chart(
-    catalog_dir: &Path,
-    id: &str,
-    repo: Option<&str>,
-) -> Option<(String, PathBuf)> {
-    for (name, dir) in chart_sources(catalog_dir).await {
+pub async fn resolve_chart(id: &str, repo: Option<&str>) -> Option<(String, PathBuf)> {
+    for (name, dir) in chart_sources().await {
         if let Some(want) = repo {
             if want != name {
                 continue;
@@ -539,5 +539,28 @@ mod tests {
         let m: CatalogManifest =
             serde_norway::from_str("registry: oci://ghcr.io/x/charts\n").unwrap();
         assert!(m.charts.is_empty());
+        assert!(m.library.is_none());
+    }
+
+    #[test]
+    fn manifest_reads_the_library_when_it_declares_one() {
+        let m: CatalogManifest = serde_norway::from_str(
+            "registry: oci://ghcr.io/demycode/charts\n\
+             library:\n\
+             \x20 name: yolab-common\n\
+             \x20 version: \"0.1.1\"\n\
+             charts:\n\
+             \x20 - name: gitea\n\
+             \x20   version: \"0.1.1\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.library,
+            Some(CatalogEntry {
+                name: "yolab-common".into(),
+                version: "0.1.1".into()
+            })
+        );
+        assert_eq!(m.charts.len(), 1);
     }
 }
