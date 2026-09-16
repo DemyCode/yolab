@@ -82,7 +82,7 @@ export function AppIcon({
  * a white background, and a fair number are near-black — on a dark surface
  * they simply disappear. A phone home screen has the same problem and solves
  * it the same way: the icon carries its own plate rather than inheriting the
- * page. The dark-theme plate is a warm off-white rather than pure white so a
+ * page. The dark-theme plate is a soft off-white rather than pure white so a
  * grid of them does not glare.
  */
 export function AppIconTile({
