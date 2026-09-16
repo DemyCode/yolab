@@ -10,22 +10,21 @@
    internet — which is precisely when someone opens this dashboard to find out
    why. A CDN font would leave them reading a fallback at the worst moment,
    and would also tell a third party each time a household looked at its own
-   server. 15 KB and 61 KB respectively.
+   server.
 
-   Fraunces is doing the identity work. It is a soft, slightly wonky old-style
-   serif, and it is the reason a page of this app does not look like every
-   other admin console: a grid of neutral cards under a geometric sans is what
-   a dashboard looks like, and this is not meant to be one. */
+   Geist is the identity: a precise neo-grotesque that reads as a product
+   rather than a control panel, and the same family the marketing site sets
+   its promise in. Geist Mono carries the numbers, addresses and status. */
 @font-face {
-  font-family: "Fraunces";
-  src: url("/fonts/fraunces-semibold.woff2") format("woff2");
-  font-weight: 600;
+  font-family: "Geist";
+  src: url("/fonts/geist.woff2") format("woff2");
+  font-weight: 100 900;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: "InterVar";
-  src: url("/fonts/inter.woff2") format("woff2");
+  font-family: "Geist Mono";
+  src: url("/fonts/geist-mono.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -34,89 +33,83 @@
 /* ── Tokens ───────────────────────────────────────────────────────────────
    Every colour in the app comes from here.
 
-   The palette is deliberately warm: paper rather than white, ink rather than
-   black, and a deep pine green rather than the violet every other self-hosted
-   dashboard reaches for. The product's whole claim is that this is a thing in
-   your home, not a rack in a datacentre, and cold neutral greys quietly say
-   the opposite on every screen.
-
-   Green as the primary does collide with green-as-success. That is survivable
-   here and nowhere else: this UI shows almost no success indicators by design
-   (see `topConcern` — silence is the success case), so the two rarely meet. */
+   The palette is neutral and cool: a soft off-white page, white surfaces,
+   near-black ink, and one saturated Signal Blue for anything you can act on.
+   It is the same world as the marketing site, so the first screen someone
+   sees and the app they live in are recognisably one product — and it stays
+   out of the way of the thing the product is actually about, which is the
+   photographs, films and files on the box. */
 :root {
-  --bg: #f6f3ed;
-  --surface: #fffdf9;
-  --surface-2: #efeae1;
-  --surface-3: #e3dcd0;
-  --border: #e5ded2;
-  --border-strong: #d0c7b7;
-  --fg: #1e1b16;
-  --fg-muted: #6b6459;
-  --fg-subtle: #9a9184;
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --surface-3: #e9e9ec;
+  --border: #e7e7ea;
+  --border-strong: #d4d4d8;
+  --fg: #0b0b0d;
+  --fg-muted: #52525b;
+  --fg-subtle: #8a8a94;
 
-  --primary: #1f6f52;
-  --primary-fg: #fffdf9;
-  --primary-soft: #e2efe8;
+  --primary: #2b56f5;
+  --primary-fg: #ffffff;
+  --primary-soft: #eaefff;
 
-  --success: #2c7a51;
-  --success-soft: #e2efe8;
-  --warning: #a2620f;
-  --warning-soft: #f7ecd9;
-  --danger: #ad3a2b;
-  --danger-soft: #f8e7e3;
+  --success: #16a34a;
+  --success-soft: #f0fdf4;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
 
-  /* Brown-tinted rather than neutral black, so shadows sit in the same warm
-     world as everything else. */
-  --shadow-card: 0 1px 2px rgb(60 45 25 / 0.06);
-  --shadow-lift: 0 4px 14px -4px rgb(60 45 25 / 0.12);
-  --shadow-pop: 0 16px 40px -12px rgb(40 30 15 / 0.22);
-
-  --grain-opacity: 0.035;
+  /* Neutral rather than warm: the shadows belong to the same cool world as
+     the ink. */
+  --shadow-card: 0 1px 2px rgb(9 9 11 / 0.06), 0 1px 3px rgb(9 9 11 / 0.04);
+  --shadow-lift:
+    0 4px 12px -2px rgb(9 9 11 / 0.08), 0 2px 6px -2px rgb(9 9 11 / 0.05);
+  --shadow-pop: 0 24px 48px -12px rgb(9 9 11 / 0.18);
 
   /* App logos sit on their own plate — see AppIconTile. */
   --icon-plate: #ffffff;
 }
 
 .dark {
-  --bg: #14120f;
-  --surface: #1c1917;
-  --surface-2: #262220;
-  --surface-3: #332d29;
-  --border: #2e2926;
-  --border-strong: #453e38;
-  --fg: #f4f0e8;
-  --fg-muted: #a49b8e;
-  --fg-subtle: #6e665c;
+  --bg: #0b0b0d;
+  --surface: #131316;
+  --surface-2: #1b1b1f;
+  --surface-3: #26262b;
+  --border: #26262b;
+  --border-strong: #3f3f46;
+  --fg: #f4f4f5;
+  --fg-muted: #a1a1aa;
+  --fg-subtle: #71717a;
 
-  --primary: #6dd3a4;
-  --primary-fg: #10251c;
-  --primary-soft: #172f25;
+  --primary: #5b7cff;
+  --primary-fg: #ffffff;
+  --primary-soft: #1a2242;
 
-  --success: #6dd3a4;
-  --success-soft: #172f25;
-  --warning: #eeb44f;
-  --warning-soft: #2d2312;
-  --danger: #ef8b78;
-  --danger-soft: #2f1b16;
+  --success: #4ade80;
+  --success-soft: #0f2417;
+  --warning: #fbbf24;
+  --warning-soft: #2a1f08;
+  --danger: #f87171;
+  --danger-soft: #2a1212;
 
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5);
   --shadow-lift: 0 4px 14px -4px rgb(0 0 0 / 0.5);
   --shadow-pop: 0 16px 40px -12px rgb(0 0 0 / 0.65);
 
-  --grain-opacity: 0.05;
-
-  /* A warm off-white rather than pure white, so a grid of plates on a dark
-     page does not glare. */
-  --icon-plate: #ece8e1;
+  /* A light plate keeps third-party logos legible on a dark page; dimmed off
+     pure white so a grid of them does not glare. */
+  --icon-plate: #e4e4e7;
 }
 
 /* `inline` so the generated utilities dereference the custom property at use
    time — that is what makes `.dark` overrides apply without regenerating any
    classes. */
 @theme inline {
-  --font-sans: "InterVar", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-display: "Fraunces", ui-serif, Georgia, serif;
-  --font-mono: ui-monospace, "SF Mono", "Fira Code", monospace;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Fira Code", monospace;
 
   --color-bg: var(--bg);
   --color-surface: var(--surface);
@@ -139,8 +132,8 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
 
-  --radius-card: 1rem;
-  --radius-tile: 1.125rem;
+  --radius-card: 0.875rem;
+  --radius-tile: 1rem;
 }
 
 *,
@@ -164,26 +157,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Paper grain.
-   A 120px tile so the browser rasterises it once and repeats it, rather than
-   re-running the filter over a full-screen element on every paint. Barely
-   visible on its own; what it removes is the flat, printed-from-a-spec look
-   of a UI built entirely from solid fills. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  pointer-events: none;
-  opacity: var(--grain-opacity);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
 /* Headings carry the identity; body text stays out of the way. */
 .font-display {
   font-family: var(--font-display);
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
 }
 
 ::-webkit-scrollbar {
@@ -221,7 +199,7 @@ body::after {
   background: linear-gradient(
     90deg,
     transparent,
-    rgb(140 130 115 / 0.14),
+    rgb(120 120 130 / 0.12),
     transparent
   );
   animation: shimmer 1.6s infinite;
