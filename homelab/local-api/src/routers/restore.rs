@@ -611,10 +611,15 @@ pub(crate) async fn reinstall_from_backup(
     let result = async {
         install.run().await?;
         // Everything else the app had — Secrets it generated at its first
-        // start, among them — as the backup saved it.
-        kubectl_apply(&String::from_utf8_lossy(&objects_raw))
-            .await
-            .map_err(|e| anyhow::anyhow!("apply {namespace}.yaml: {e}"))?;
+        // start, among them — as the backup saved it. Never the chart's own
+        // Deployments/Services or Helm's release bookkeeping: those must come
+        // from the install that just ran, not from whatever was live when the
+        // backup was taken (see `keep_for_reinstall`).
+        if let Some(reapply) = objects_to_reapply(&objects) {
+            kubectl_apply(&reapply.to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!("apply {namespace}.yaml: {e}"))?;
+        }
         anyhow::Ok(!volumes.is_empty())
     }
     .await;
@@ -669,6 +674,47 @@ fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
         .decode(secret["data"]["config.json"].as_str()?)
         .ok()?;
     serde_json::from_slice(&raw).ok()
+}
+
+/// Whether a backed-up object is worth bringing back after a fresh install, or
+/// must be left as the install that just ran created it.
+///
+/// A Deployment/StatefulSet/DaemonSet/Service is the CHART'S, and the chart just
+/// installed it — from the current chart version, on the current cluster.
+/// Re-applying the backup's copy puts back whatever was live when the backup was
+/// taken: an old container image (a fix released since was silently undone this
+/// way), a clusterIP that may not even be free any more. Helm's own release
+/// Secret (`helm.sh/release.v1`) is its bookkeeping for the install that just
+/// ran; overwriting it with the backup's copy corrupts that bookkeeping for
+/// every `helm upgrade` after.
+///
+/// What IS worth restoring: Secrets and ConfigMaps the app itself generated at
+/// its first start (an admin password, an app key) — nothing recreates those,
+/// and the restored data was encrypted or signed with them.
+fn keep_for_reinstall(item: &Value) -> bool {
+    let kind = item["kind"].as_str().unwrap_or("");
+    if matches!(kind, "Deployment" | "StatefulSet" | "DaemonSet" | "Service") {
+        return false;
+    }
+    if kind == "Secret" && item["type"].as_str() == Some("helm.sh/release.v1") {
+        return false;
+    }
+    true
+}
+
+/// The backed-up namespace objects to re-apply after `reinstall_from_backup`'s
+/// install, or `None` when none are worth applying.
+fn objects_to_reapply(objects: &Value) -> Option<Value> {
+    let items: Vec<Value> = objects["items"]
+        .as_array()?
+        .iter()
+        .filter(|i| keep_for_reinstall(i))
+        .cloned()
+        .collect();
+    if items.is_empty() {
+        return None;
+    }
+    Some(json!({ "apiVersion": "v1", "kind": "List", "items": items }))
 }
 
 /// Creates one volume of an app not installed yet, owned by the Helm release
@@ -1161,6 +1207,49 @@ mod tests {
             scaled_deployments: vec![],
             claim: Claim::default(),
         }
+    }
+
+    /// Regression test: `helm upgrade --install` on `reinstall_from_backup`
+    /// correctly deployed the CURRENT chart (new image, new tunnel), and this
+    /// re-apply then overwrote its Deployment and Helm's own release Secret
+    /// with the backup's copy — putting the old image and a stale, already
+    /// deleted WireGuard tunnel straight back. Live: an app added back from
+    /// backup silently unreachable (`filebrowser.6.yolab.io`), and another's
+    /// shown connection address not the one that actually worked (Minecraft).
+    #[test]
+    fn a_reinstall_never_overwrites_the_charts_own_objects_or_helms_bookkeeping() {
+        let backed_up = json!({"items": [
+            {"kind": "Deployment", "metadata": {"name": "gateway"}},
+            {"kind": "StatefulSet", "metadata": {"name": "db"}},
+            {"kind": "DaemonSet", "metadata": {"name": "d"}},
+            {"kind": "Service", "metadata": {"name": "filebrowser"}},
+            {"kind": "Secret", "type": "helm.sh/release.v1", "metadata": {"name": "sh.helm.release.v1.filebrowser-yrrx.v1"}},
+            {"kind": "Secret", "type": "Opaque", "metadata": {"name": "filebrowser-yrrx-admin"}},
+            {"kind": "ConfigMap", "metadata": {"name": "filebrowser-yrrx-caddy"}},
+        ]});
+        let kept = objects_to_reapply(&backed_up).unwrap();
+        let names: Vec<&str> = kept["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["metadata"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["filebrowser-yrrx-admin", "filebrowser-yrrx-caddy"],
+            "only what the app generated for itself survives"
+        );
+        assert_eq!(kept["kind"], "List");
+    }
+
+    #[test]
+    fn nothing_worth_reapplying_applies_nothing() {
+        let only_chart_owned = json!({"items": [
+            {"kind": "Deployment", "metadata": {"name": "gateway"}},
+            {"kind": "Secret", "type": "helm.sh/release.v1", "metadata": {"name": "sh.helm.release.v1.x.v1"}},
+        ]});
+        assert!(objects_to_reapply(&only_chart_owned).is_none());
+        assert!(objects_to_reapply(&json!({"items": []})).is_none());
     }
 
     #[test]
