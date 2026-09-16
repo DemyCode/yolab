@@ -6,8 +6,6 @@ import {
   Calendar,
   AlertCircle,
   ChevronDown,
-  Plus,
-  Trash2,
   GitBranch,
   Power,
 } from "lucide-react";
@@ -55,11 +53,8 @@ export function SystemPage() {
   // Channel state
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   const [channelOpen, setChannelOpen] = useState(false);
-  const [editRemote, setEditRemote] = useState("");
+  const [editUrl, setEditUrl] = useState("");
   const [editRef, setEditRef] = useState("");
-  const [newRemoteName, setNewRemoteName] = useState("");
-  const [newRemoteUrl, setNewRemoteUrl] = useState("");
-  const [addingRemote, setAddingRemote] = useState(false);
   const [channelSaving, setChannelSaving] = useState(false);
 
   // Reboot. Two-step on purpose — see the button.
@@ -112,7 +107,7 @@ export function SystemPage() {
       .then((r) => r.json())
       .then((d: ChannelInfo) => {
         setChannel(d);
-        setEditRemote(d.remote);
+        setEditUrl(d.url);
         setEditRef(d.ref);
       })
       .catch(() => {});
@@ -193,14 +188,14 @@ export function SystemPage() {
   }
 
   async function saveChannelAndUpdate() {
-    if (!editRemote.trim() || !editRef.trim()) return;
+    if (!editUrl.trim() || !editRef.trim()) return;
     setChannelSaving(true);
     try {
       await fetch("/api/update/channel", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          remote: editRemote.trim(),
+          url: editUrl.trim(),
           ref: editRef.trim(),
         }),
       });
@@ -212,36 +207,8 @@ export function SystemPage() {
     void runUpdate();
   }
 
-  async function handleAddRemote() {
-    if (!newRemoteName.trim() || !newRemoteUrl.trim()) return;
-    setAddingRemote(true);
-    try {
-      const r = await fetch("/api/update/remotes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newRemoteName.trim(),
-          url: newRemoteUrl.trim(),
-        }),
-      });
-      if (r.ok) {
-        setNewRemoteName("");
-        setNewRemoteUrl("");
-        loadChannel();
-      }
-    } finally {
-      setAddingRemote(false);
-    }
-  }
-
-  async function handleRemoveRemote(name: string) {
-    await fetch(`/api/update/remotes/${name}`, { method: "DELETE" });
-    if (editRemote === name) setEditRemote("origin");
-    loadChannel();
-  }
-
   const updating = phase === "git" || phase === "rebuild";
-  const shortHash = status?.commit_hash?.slice(0, 8) ?? "—";
+  const shortHash = status?.commit_hash?.slice(0, 8) || "—";
   const commitDate = status?.commit_date
     ? new Date(status.commit_date).toLocaleString(undefined, {
         month: "short",
@@ -252,8 +219,8 @@ export function SystemPage() {
       })
     : "—";
   const channelLabel = channel
-    ? `${channel.remote} / ${channel.ref}`
-    : "origin / main";
+    ? `${channel.url} / ${channel.ref}`
+    : "github:DemyCode/yolab / main";
 
   const logTitle =
     phase === "git"
@@ -293,7 +260,7 @@ export function SystemPage() {
                 {shortHash}
               </p>
               <p className="text-xs text-fg-subtle truncate">
-                {status?.commit_message ?? "—"}
+                {status?.commit_message || "—"}
               </p>
             </div>
           </CardContent>
@@ -386,21 +353,16 @@ export function SystemPage() {
           {channelOpen && (
             <div className="border-t border-border pt-4 space-y-4">
               <div className="flex gap-2 flex-wrap">
-                <div className="flex-1 min-w-[120px]">
+                <div className="flex-[2] min-w-[220px]">
                   <label className="text-xs text-fg-muted mb-1 block">
-                    Remote
+                    Flake source
                   </label>
-                  <select
-                    value={editRemote}
-                    onChange={(e) => setEditRemote(e.target.value)}
-                    className="w-full rounded-md border border-border bg-bg text-fg text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    {(channel?.remotes ?? []).map((r) => (
-                      <option key={r.name} value={r.name}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
+                  <input
+                    value={editUrl}
+                    onChange={(e) => setEditUrl(e.target.value)}
+                    placeholder="github:DemyCode/yolab"
+                    className="w-full rounded-md border border-border bg-bg text-fg text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                  />
                 </div>
                 <div className="flex-1 min-w-[120px]">
                   <label className="text-xs text-fg-muted mb-1 block">
@@ -419,7 +381,7 @@ export function SystemPage() {
                     disabled={
                       channelSaving ||
                       updating ||
-                      !editRemote.trim() ||
+                      !editUrl.trim() ||
                       !editRef.trim()
                     }
                     size="sm"
@@ -429,68 +391,11 @@ export function SystemPage() {
                 </div>
               </div>
 
-              {(channel?.remotes ?? []).length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-xs text-fg-subtle uppercase tracking-wider font-semibold">
-                    Remotes
-                  </p>
-                  {channel!.remotes.map((r) => (
-                    <div
-                      key={r.name}
-                      className="flex items-center gap-2 text-xs"
-                    >
-                      <span className="font-mono text-primary w-24 truncate">
-                        {r.name}
-                      </span>
-                      <span className="text-fg-subtle truncate flex-1">
-                        {r.url}
-                      </span>
-                      {r.name !== "origin" && (
-                        <button
-                          onClick={() => void handleRemoveRemote(r.name)}
-                          className="text-fg-subtle hover:text-danger transition-colors flex-shrink-0"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <p className="text-xs text-fg-subtle uppercase tracking-wider font-semibold">
-                  Add remote
-                </p>
-                <div className="flex gap-2 flex-wrap">
-                  <input
-                    value={newRemoteName}
-                    onChange={(e) => setNewRemoteName(e.target.value)}
-                    placeholder="name"
-                    className="w-28 rounded-md border border-border bg-bg text-fg text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                  />
-                  <input
-                    value={newRemoteUrl}
-                    onChange={(e) => setNewRemoteUrl(e.target.value)}
-                    placeholder="https://github.com/user/yolab"
-                    className="flex-1 min-w-[200px] rounded-md border border-border bg-bg text-fg text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void handleAddRemote()}
-                    disabled={
-                      addingRemote ||
-                      !newRemoteName.trim() ||
-                      !newRemoteUrl.trim()
-                    }
-                    className="gap-1.5"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Add
-                  </Button>
-                </div>
-              </div>
+              <p className="text-xs text-fg-subtle">
+                This machine builds from the flake URL, not a checkout — its own
+                config.toml is the only local file. A community fork is the same
+                shape: point it at its own URL.
+              </p>
             </div>
           )}
         </CardContent>

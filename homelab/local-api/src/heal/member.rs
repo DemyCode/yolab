@@ -44,7 +44,9 @@ pub(crate) struct Layout {
     pub root: PathBuf,
     /// This machine's own files: the `yolab-machine` flake input.
     pub machine_dir: PathBuf,
-    pub repo: String,
+    /// The flake this machine builds from — a URL (see `Config::flake_ref`),
+    /// not a checkout. A heal rebuilds from the same revision an update would.
+    pub flake: String,
     pub flake_target: String,
 }
 
@@ -53,7 +55,7 @@ impl Layout {
         Self {
             root: PathBuf::from("/"),
             machine_dir: PathBuf::from(&cfg.machine_dir),
-            repo: cfg.repo_path.clone(),
+            flake: cfg.flake_ref(),
             flake_target: cfg.flake_target.clone(),
         }
     }
@@ -424,7 +426,7 @@ async fn rebuild<H: Host>(host: &H, layout: &Layout) -> Result<()> {
     ])
     .await
     .ok();
-    let flake = format!("{}#{}", layout.repo, layout.flake_target);
+    let flake = format!("{}#{}", layout.flake, layout.flake_target);
     let input = format!("path:{}", layout.machine_dir.display());
     let out = host
         .run_cmd_bounded(
@@ -566,7 +568,7 @@ mod tests {
     use crate::host::fake::FakeHost;
 
     const FSID: &str = "0a1b2c3d-1111-4222-8333-444455556666";
-    const REBUILD: &str = "nixos-rebuild boot --flake /etc/nixos#yolab";
+    const REBUILD: &str = "nixos-rebuild boot --flake github:DemyCode/yolab/main#yolab";
     const ORIGINAL: &str = "[node]\nsub_ipv6_private = \"fd00::2\"\n\n[node.k3s]\ntoken = \"t\"\nserver_addr = \"\"\n\n[ceph]\nfsid = \"old\"\n";
 
     struct Machine {
@@ -584,7 +586,7 @@ mod tests {
             layout: Layout {
                 root,
                 machine_dir,
-                repo: "/etc/nixos".into(),
+                flake: "github:DemyCode/yolab/main".into(),
                 flake_target: "yolab".into(),
             },
             _dir: dir,
