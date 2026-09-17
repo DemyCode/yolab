@@ -653,6 +653,26 @@ pub async fn run_app_backup_now(Path(namespace): Path<String>) -> Result<Json<se
     ))
 }
 
+/// GET /api/backups/apps/:namespace/definition?snapshot_id= — the app's
+/// definition as of a backup, credentials redacted, for prefilling the install
+/// form when restoring or duplicating with data.
+#[derive(Deserialize)]
+pub struct DefinitionQuery {
+    pub snapshot_id: String,
+}
+
+pub async fn app_definition_from_backup(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<DefinitionQuery>,
+) -> Result<Json<serde_json::Value>> {
+    let def = restore::definition_from_backup(&namespace, &q.snapshot_id).await?;
+    let redacted = crate::routers::apps::redact_definition(&def, &state.config.catalog_dir());
+    Ok(Json(
+        serde_json::to_value(redacted).unwrap_or(serde_json::Value::Null),
+    ))
+}
+
 // ── Per-namespace install-time hook ───────────────────────────────────────────
 
 /// Creates the restic secret and ReplicationSource for a single namespace at install

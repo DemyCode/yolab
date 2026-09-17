@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
@@ -29,29 +30,31 @@ function formatWhen(iso: string): string {
   });
 }
 
-function AppRow({
-  app,
-  onStarted,
-}: {
-  app: BackedUpApps["apps"][number];
-  onStarted: () => void;
-}) {
+function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
+  const navigate = useNavigate();
   const [snapshot, setSnapshot] = useState(app.versions[0]?.snapshot_id ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const running = app.adding !== null && !app.adding.done;
 
-  async function add() {
+  /**
+   * Restoring opens the install form, prefilled from the backup, rather than
+   * running a background job. The person gets to see — and change — the name and
+   * web address the restored app will take before anything is created, which is
+   * also where a subdomain collision is caught.
+   */
+  async function restore() {
     setBusy(true);
     setError(null);
     try {
-      await api.post("/api/backups/apps/add", {
-        namespace: app.namespace,
-        snapshot_id: snapshot,
-      });
-      onStarted();
+      const def = await api.get<{ app_id: string }>(
+        `/api/backups/apps/${app.namespace}/definition?snapshot_id=${encodeURIComponent(snapshot)}`,
+      );
+      navigate(
+        `/add/${def.app_id}?restore=${encodeURIComponent(app.namespace)}&snapshot=${encodeURIComponent(snapshot)}`,
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not add the app");
+      setError(e instanceof Error ? e.message : "Could not read that backup");
     } finally {
       setBusy(false);
     }
@@ -82,11 +85,11 @@ function AppRow({
             ))}
           </Select>
           <Button
-            onClick={() => void add()}
+            onClick={() => void restore()}
             loading={busy}
             disabled={!snapshot}
           >
-            Add
+            Restore
           </Button>
         </div>
       )}
@@ -143,11 +146,7 @@ export function AddFromBackupButton() {
         {data && data.apps.length > 0 && (
           <ul>
             {data.apps.map((app) => (
-              <AppRow
-                key={app.namespace}
-                app={app}
-                onStarted={() => void res.refresh()}
-              />
+              <AppRow key={app.namespace} app={app} />
             ))}
           </ul>
         )}

@@ -39,6 +39,26 @@ export interface AppBackupStatus {
   running: boolean;
 }
 
+/** Everything an installed app is — what a duplicate or restore is prefilled from. */
+export interface AppDefinition {
+  schema: number;
+  app_id: string;
+  chart_repo: string;
+  chart_version: string;
+  instance_name: string;
+  service_name: string;
+  /** Credentials are replaced by "__redacted__" in what the browser receives. */
+  config: Record<string, unknown>;
+  volumes: { name: string; capacity: string }[];
+  resources: {
+    cpu_millicores: number;
+    memory_bytes: number;
+    gpu: number;
+    replicas: number;
+  };
+  backup: AppBackupStatus;
+}
+
 export interface CatalogApp {
   id: string;
   /// Repository the chart came from. "official" is the curated catalog; anything else

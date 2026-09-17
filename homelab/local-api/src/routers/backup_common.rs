@@ -406,9 +406,25 @@ pub(crate) async fn ensure_restic_secret(
     pvc: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<()> {
+    ensure_restic_secret_for_repo(ns, ns, pvc, cfg).await
+}
+
+/// Writes the restic Secret in `ns` but pointing at `repo_ns`'s repository.
+///
+/// Normally the two are the same. They differ for a duplicate-with-data: the
+/// mover runs in the NEW namespace but must read the SOURCE app's repository, so
+/// the Secret lives at the destination while its `RESTIC_REPOSITORY` names the
+/// source. After the data is in, `setup_namespace_backup` rewrites it to the
+/// destination's own repo.
+pub(crate) async fn ensure_restic_secret_for_repo(
+    ns: &str,
+    repo_ns: &str,
+    pvc: &str,
+    cfg: &BackupConfig,
+) -> anyhow::Result<()> {
     let cid = canonical_pvc_id(pvc);
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
-    let repo = cfg.restic_repo(&format!("volsync/{ns}/{cid}"));
+    let repo = cfg.restic_repo(&format!("volsync/{repo_ns}/{cid}"));
     kubectl_apply_secret(
         &secret_name,
         ns,
