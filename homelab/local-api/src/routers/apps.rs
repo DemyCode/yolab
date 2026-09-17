@@ -1944,6 +1944,33 @@ pub async fn update_app(
     Sse::new(stream).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct BackupPolicyRequest {
+    pub enabled: bool,
+    pub schedule: String,
+}
+
+/// PUT /api/apps/:instance/backup — set an app's own backup schedule.
+pub async fn set_backup_policy(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+    Json(body): Json<BackupPolicyRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Reject an invalid schedule here, with a message next to the field, rather
+    // than storing it and letting the scheduler skip the app forever.
+    crate::cron::Cron::parse(&body.schedule)
+        .map_err(|e| anyhow::anyhow!("that schedule is not valid: {e}"))?;
+    let ns = format!("yolab-{instance_name}");
+    let mut def = read_definition(&ns).await?;
+    def.backup = BackupPolicy {
+        enabled: body.enabled,
+        schedule: body.schedule,
+    };
+    let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
+    write_definition(&ns, &def, &uischema).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub async fn scan_outputs(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
