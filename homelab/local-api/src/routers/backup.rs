@@ -40,9 +40,8 @@ pub(crate) const SETS: Store = Store {
 };
 const MAX_SETS: usize = 50;
 
-/// How long the newest restorable backup may be un-refreshed before the scheduler
-/// starts a new one.
-const SCHEDULE_INTERVAL_HOURS: i64 = 24;
+/// How long the scheduler waits between looks. Each app's own cron decides
+/// whether it is due; this is only how often that question is asked.
 const SCHEDULE_TICK_SECS: u64 = 300;
 
 /// The one restic call that can legitimately run long: the full B2 upload of the
@@ -64,6 +63,9 @@ pub(crate) struct BackupSet {
     pub id: String,
     #[serde(default)]
     pub triggered_by: String,
+    /// The app this set backs up, or empty for a whole-cluster (DR) run.
+    #[serde(default)]
+    pub namespace: String,
     pub started_at: String,
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,6 +78,29 @@ pub(crate) struct BackupSet {
     pub services: Vec<ServiceSummary>,
     #[serde(flatten)]
     pub claim: Claim,
+}
+
+/// What a backup run covers. Every app backs up on its own schedule and its own
+/// button; the cluster-wide run stays for disaster recovery, where etcd and the
+/// cluster-scoped objects matter and a per-app snapshot would miss them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackupTarget {
+    /// etcd + every managed namespace's objects + every PVC.
+    Cluster,
+    /// One app's namespace: its objects and its PVCs, no etcd.
+    App(String),
+}
+
+impl BackupTarget {
+    fn namespace(&self) -> &str {
+        match self {
+            BackupTarget::Cluster => "",
+            BackupTarget::App(ns) => ns,
+        }
+    }
+    fn is_cluster(&self) -> bool {
+        matches!(self, BackupTarget::Cluster)
+    }
 }
 
 impl Claimed for BackupSet {
@@ -126,10 +151,11 @@ async fn read_sets() -> anyhow::Result<Vec<BackupSet>> {
     Ok(SETS.read(&RealHost).await?)
 }
 
-async fn record_running(id: &str, triggered_by: &str) -> anyhow::Result<()> {
+async fn record_running(id: &str, triggered_by: &str, target: &BackupTarget) -> anyhow::Result<()> {
     let set = BackupSet {
         id: id.to_string(),
         triggered_by: triggered_by.to_string(),
+        namespace: target.namespace().to_string(),
         started_at: Utc::now().to_rfc3339(),
         state: "running".to_string(),
         finished_at: None,
@@ -185,28 +211,44 @@ fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
     }
 }
 
-/// Whether a backup is due, based only on the age of the newest restorable one.
-/// The "is something already running" gate is separate (`running_anywhere`), so a
-/// crashed set must NOT read as "in progress" here, or a crash would stop
-/// scheduling forever.
-fn should_schedule(sets: &[BackupSet], now: DateTime<Utc>) -> bool {
-    let last_ok = sets
-        .iter()
-        .find(|s| s.state == "succeeded")
-        .and_then(|s| s.finished_at.as_deref())
+/// The newest successful set for a namespace, or `None`. A cluster-wide set
+/// (empty namespace) is not an app's backup.
+fn last_ok_for(sets: &[BackupSet], namespace: &str) -> Option<DateTime<Utc>> {
+    sets.iter()
+        .filter(|s| s.namespace == namespace && s.state == "succeeded")
+        .find_map(|s| s.finished_at.as_deref())
         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.with_timezone(&Utc));
-    match last_ok {
-        Some(t) => (now - t).num_hours() >= SCHEDULE_INTERVAL_HOURS,
-        None => true,
-    }
+        .map(|t| t.with_timezone(&Utc))
 }
+
+/// True while a set for this namespace is genuinely running (its driver is
+/// alive). A crashed set must NOT read as in progress, or a crash would stop
+/// scheduling forever.
+fn running_for(sets: &[BackupSet], namespace: &str) -> bool {
+    sets.iter()
+        .any(|s| s.namespace == namespace && s.is_running() && liveness_of(s).is_live())
+}
+
+/// The whole-cluster (DR) snapshot's schedule. Apps schedule themselves; this
+/// one exists so a total loss can be rebuilt, which needs etcd and the
+/// cluster-scoped objects a per-app snapshot does not carry.
+const DR_SCHEDULE: &str = "0 4 * * *";
 
 // ── The operation ──────────────────────────────────────────────────────────────
 
+/// Starts a whole-cluster backup set and returns immediately.
+pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
+    start_target(BackupTarget::Cluster, triggered_by).await
+}
+
+/// Starts a backup of one app's namespace.
+pub(crate) async fn start_app(namespace: &str, triggered_by: &str) -> anyhow::Result<String> {
+    start_target(BackupTarget::App(namespace.to_string()), triggered_by).await
+}
+
 /// Starts a backup set and returns immediately. The work runs detached on a spawned
 /// task, so it survives this (HTTP) caller ending and several sets can overlap.
-pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
+async fn start_target(target: BackupTarget, triggered_by: &str) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
@@ -215,13 +257,13 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
     }
     let id = new_id();
     let guard = IN_FLIGHT.claim(&id);
-    record_running(&id, triggered_by).await?;
+    record_running(&id, triggered_by, &target).await?;
 
     let task_id = id.clone();
     tokio::spawn(async move {
         // Dropped when the task ends, panics included.
         let _guard = guard;
-        let result = run_set(&task_id, &cfg).await;
+        let result = run_set(&cfg, &target).await;
         // Record the terminal state before dropping the claim, so the page never
         // briefly reads a finished set as "crashed".
         record_done(&task_id, &result).await;
@@ -233,8 +275,12 @@ pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
 /// The two halves of one backup, in order. Everything here is safe to redo and bounded
 /// by the restic timeouts, so a crash simply leaves a "running" record that the next
 /// tick classifies as crashed.
-async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    // 1. Volumes: trigger every managed PVC, then WAIT for each upload to finish.
+async fn run_set(
+    cfg: &BackupConfig,
+    target: &BackupTarget,
+) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
+    // 1. Volumes: trigger every managed PVC this target covers, then WAIT for each
+    //    upload to finish.
     //
     // This used to be fire-and-forget, and the cluster snapshot below then started
     // seconds before the volume uploads did. Restore uses the cluster snapshot's time
@@ -243,7 +289,14 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
     // only volume snapshot 12:10:05, and a restore of it would have found "No
     // eligible snapshots", exited successfully, and left the app empty.
     //
-    let pvcs = list_user_pvcs().await?;
+    let pvcs: Vec<PvcInfo> = list_user_pvcs()
+        .await?
+        .into_iter()
+        .filter(|p| match target {
+            BackupTarget::Cluster => true,
+            BackupTarget::App(ns) => &p.namespace == ns,
+        })
+        .collect();
     let mut pending = Vec::new();
     let mut failures = Vec::new();
     for pvc in &pvcs {
@@ -287,9 +340,9 @@ async fn run_set(id: &str, cfg: &BackupConfig) -> anyhow::Result<(String, Vec<Se
         }
     }
 
-    // 2. Cluster state, tagged with the set id. Taken even when a volume failed, so
-    //    every other app still has a restorable backup from this run.
-    let (snapshot_id, services) = snapshot_cluster(cfg, id, &pinned).await?;
+    // 2. Cluster state, tagged with this run's scope. Taken even when a volume
+    //    failed, so every other app still has a restorable backup from this run.
+    let (snapshot_id, services) = snapshot_cluster(cfg, &pinned, target).await?;
 
     // 3. Retention. Best-effort: if it fails or is skipped this run, the next one
     //    prunes whatever it left behind.
@@ -479,33 +532,6 @@ async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(Pv
 
 // ── Cluster-state snapshot (etcd + K8s objects + catalog) ──────────────────────
 
-/// Snapshots etcd, exports every managed namespace's objects, and pushes the staging
-/// directory to restic tagged with `tag` (and `cluster-backup`, so restore can find it).
-/// Returns the restic snapshot id and a summary of the services captured.
-async fn snapshot_cluster(
-    cfg: &BackupConfig,
-    tag: &str,
-    pinned: &PinnedVolumes,
-) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
-
-    tokio::fs::remove_dir_all(&tmp_dir)
-        .await
-        .debug_on_err("backup: clear the staging directory");
-    tokio::fs::create_dir_all(&tmp_dir).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
-    }
-
-    let result = snapshot_cluster_inner(cfg, tag, &tmp_dir, pinned).await;
-    tokio::fs::remove_dir_all(&tmp_dir)
-        .await
-        .debug_on_err("backup: clear the staging directory");
-    result
-}
-
 /// (namespace, pvc name) → the snapshot this backup took of it.
 type PinnedVolumes = HashMap<(String, String), VolumeSnapshot>;
 
@@ -521,61 +547,158 @@ fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> V
     v
 }
 
+/// Snapshots etcd and exports the target's objects, then pushes the staging
+/// directory to restic tagged with `cluster-backup` (so restore can find it) plus
+/// a scope tag. Returns the restic snapshot id and a summary of the services captured.
+async fn snapshot_cluster(
+    cfg: &BackupConfig,
+    pinned: &PinnedVolumes,
+    target: &BackupTarget,
+) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
+    let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
+
+    tokio::fs::remove_dir_all(&tmp_dir)
+        .await
+        .debug_on_err("backup: clear the staging directory");
+    tokio::fs::create_dir_all(&tmp_dir).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
+    }
+
+    let result = snapshot_cluster_inner(cfg, &tmp_dir, pinned, target).await;
+    tokio::fs::remove_dir_all(&tmp_dir)
+        .await
+        .debug_on_err("backup: clear the staging directory");
+    result
+}
+
+/// Cluster-scoped objects a rebuild needs and a per-namespace export misses.
+/// Curated rather than `kubectl api-resources`, because that also drags in
+/// events, APIServices and the like — noise that is either regenerated or
+/// harmful to re-apply.
+const CLUSTER_SCOPED_EXPORT: &[&str] = &[
+    "namespaces",
+    "customresourcedefinitions.apiextensions.k8s.io",
+    "storageclasses.storage.k8s.io",
+    "persistentvolumes",
+    "priorityclasses.scheduling.k8s.io",
+    "clusterroles.rbac.authorization.k8s.io",
+    "clusterrolebindings.rbac.authorization.k8s.io",
+    "volumeattachments.storage.k8s.io",
+    "volumesnapshotclasses.snapshot.storage.k8s.io",
+    "csidrivers.storage.k8s.io",
+    "csinodes.storage.k8s.io",
+    "mutatingwebhookconfigurations.admissionregistration.k8s.io",
+    "validatingwebhookconfigurations.admissionregistration.k8s.io",
+    "ingressclasses.networking.k8s.io",
+    "runtimeclasses.node.k8s.io",
+];
+
+/// Exports the curated cluster-scoped resources into one List. Best-effort per
+/// resource: one missing CRD must not fail the whole DR snapshot.
+async fn export_cluster_scoped(tmp_dir: &str) -> anyhow::Result<()> {
+    let mut items: Vec<Value> = Vec::new();
+    for res in CLUSTER_SCOPED_EXPORT {
+        match crate::kubectl::run(&["get", res, "-o", "json", "--ignore-not-found"]).await {
+            Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str::<Value>(&raw) {
+                Ok(v) => {
+                    if let Some(list) = v["items"].as_array() {
+                        items.extend(list.iter().cloned());
+                    } else {
+                        items.push(v);
+                    }
+                }
+                Err(e) => tracing::warn!("cluster-backup: parse {res}: {e}"),
+            },
+            Ok(_) => {}
+            Err(e) => tracing::warn!("cluster-backup: export {res}: {e}"),
+        }
+    }
+    let sanitized = sanitize_k8s_items_for_backup(&items);
+    let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
+    tokio::fs::write(
+        format!("{tmp_dir}/cluster-resources.yaml"),
+        serde_json::to_string_pretty(&list)?,
+    )
+    .await?;
+    Ok(())
+}
+
 async fn snapshot_cluster_inner(
     cfg: &BackupConfig,
-    tag: &str,
     tmp_dir: &str,
     pinned: &PinnedVolumes,
+    target: &BackupTarget,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
 
+    // A per-app run covers one namespace and skips etcd: etcd is cluster-wide,
+    // and its size and restore semantics are a DR concern, not an app's.
+    let namespaces: Vec<String> = match target {
+        BackupTarget::Cluster => list_managed_namespaces().await?,
+        BackupTarget::App(ns) => vec![ns.clone()],
+    };
+    let include_etcd = target.is_cluster();
+
     // 1. etcd snapshot — archived as etcd.db in this restic snapshot, consumed only by
     //    the external dr-restore script (restore_run restores volumes + K8s objects).
-    let snap_name = format!("yolab-cluster-{date}");
-    let snap_saved = Command::new("k3s")
-        .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
-        .kill_on_drop(true)
-        .output()
-        .await;
+    if include_etcd {
+        let snap_name = format!("yolab-cluster-{date}");
+        let snap_saved = Command::new("k3s")
+            .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
+            .kill_on_drop(true)
+            .output()
+            .await;
 
-    if let Ok(o) = &snap_saved {
-        if o.status.success() {
-            let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
-            if let Ok(entries) = std::fs::read_dir(snap_dir) {
-                for entry in entries.flatten() {
-                    let fname = entry.file_name();
-                    let fname_str = fname.to_string_lossy();
-                    if fname_str.starts_with(&snap_name) {
-                        let dst = format!("{tmp_dir}/etcd.db");
-                        if let Err(e) = std::fs::copy(entry.path(), &dst) {
-                            tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
-                        } else {
-                            std::fs::remove_file(entry.path())
-                                .warn_on_err("cluster-backup: remove the local etcd snapshot copy");
+        if let Ok(o) = &snap_saved {
+            if o.status.success() {
+                let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
+                if let Ok(entries) = std::fs::read_dir(snap_dir) {
+                    for entry in entries.flatten() {
+                        let fname = entry.file_name();
+                        let fname_str = fname.to_string_lossy();
+                        if fname_str.starts_with(&snap_name) {
+                            let dst = format!("{tmp_dir}/etcd.db");
+                            if let Err(e) = std::fs::copy(entry.path(), &dst) {
+                                tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
+                            } else {
+                                std::fs::remove_file(entry.path()).warn_on_err(
+                                    "cluster-backup: remove the local etcd snapshot copy",
+                                );
+                            }
+                            crate::kubectl::run(&[
+                                "delete",
+                                "etcdsnapshotfile",
+                                fname_str.as_ref(),
+                                "--ignore-not-found",
+                            ])
+                            .await
+                            .warn_on_err("cluster-backup: delete the etcdsnapshotfile record");
+                            break;
                         }
-                        crate::kubectl::run(&[
-                            "delete",
-                            "etcdsnapshotfile",
-                            fname_str.as_ref(),
-                            "--ignore-not-found",
-                        ])
-                        .await
-                        .warn_on_err("cluster-backup: delete the etcdsnapshotfile record");
-                        break;
                     }
                 }
+            } else {
+                tracing::warn!(
+                    "cluster-backup: etcd-snapshot: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
             }
-        } else {
-            tracing::warn!(
-                "cluster-backup: etcd-snapshot: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
         }
     }
 
-    // 2. Export K8s objects for all yolab-managed namespaces.
-    let namespaces = list_managed_namespaces().await?;
+    // 1b. Cluster-scoped objects, for a rebuild. Only the DR tier: an app
+    //     snapshot must not carry cluster-wide state.
+    if include_etcd {
+        if let Err(e) = export_cluster_scoped(tmp_dir).await {
+            tracing::warn!("cluster-backup: cluster-scoped export: {e}");
+        }
+    }
+
+    // 2. Export K8s objects for the target's namespaces.
     let mut services: Vec<Value> = Vec::new();
 
     for ns in &namespaces {
@@ -661,12 +784,30 @@ async fn snapshot_cluster_inner(
 
         let images = collect_images(&workloads);
 
+        // The app's own record, embedded so restore/duplicate do not have to
+        // reverse-engineer it back out of the backed-up Secret.
+        let definition = crate::routers::apps::read_definition_opt(ns).await;
+        let (service_name, resources, volumes, backup_policy) = match &definition {
+            Some(d) => (
+                d.service_name.clone(),
+                serde_json::to_value(&d.resources).unwrap_or(Value::Null),
+                serde_json::to_value(&d.volumes).unwrap_or(Value::Null),
+                serde_json::to_value(&d.backup).unwrap_or(Value::Null),
+            ),
+            None => (String::new(), Value::Null, Value::Null, Value::Null),
+        };
+
         services.push(json!({
             "namespace": ns,
             "app_id": app_id,
             "chart_repo": chart_repo,
             "chart_version": chart_version,
             "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
+            "service_name": service_name,
+            "resources": resources,
+            "volumes": volumes,
+            "backup": backup_policy,
+            "definition": definition,
             "pvcs": pvcs,
             "images": images,
         }));
@@ -686,6 +827,16 @@ async fn snapshot_cluster_inner(
     });
     tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await?;
 
+    // What a rebuild needs, aggregated: nodes, and every app's footprint and
+    // volumes. The point of a DR backup is to answer "what do I need to bring
+    // everything back", and that answer should not require reading the catalog.
+    let manifest = rebuild_manifest(&services).await;
+    tokio::fs::write(
+        format!("{tmp_dir}/manifest.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )
+    .await?;
+
     // 3. Init restic repo if needed.
     cfg.unlock("cluster-backup").await;
     let check = restic(&repo, cfg, &["snapshots", "--no-lock"]).await;
@@ -699,12 +850,26 @@ async fn snapshot_cluster_inner(
         }
     }
 
-    // 4. Backup, tagged with the set id and the stable `cluster-backup` tag restore
-    //    looks for.
+    // 4. Backup. The stable `cluster-backup` tag is what restore looks for; the
+    //    scope tag (`scope:cluster` or `namespace:<ns>`) is what retention groups
+    //    by, so one busy app cannot prune another's history. The per-run set id is
+    //    deliberately NOT a tag: `forget --group-by tags` would then see every run
+    //    as its own group and prune nothing.
+    let scope_tag = match target {
+        BackupTarget::Cluster => "scope:cluster".to_string(),
+        BackupTarget::App(ns) => format!("namespace:{ns}"),
+    };
     let backup = restic_timeout(
         &repo,
         cfg,
-        &["backup", tmp_dir, "--tag", "cluster-backup", "--tag", tag],
+        &[
+            "backup",
+            tmp_dir,
+            "--tag",
+            "cluster-backup",
+            "--tag",
+            &scope_tag,
+        ],
         Duration::from_secs(CLUSTER_BACKUP_TIMEOUT_SECS),
     )
     .await?;
@@ -715,10 +880,60 @@ async fn snapshot_cluster_inner(
         );
     }
 
-    newest_snapshot_id(&repo, cfg, tag)
+    newest_snapshot_id(&repo, cfg, &scope_tag)
         .await
         .ok_or_else(|| anyhow::anyhow!("backup completed but no snapshot id could be read"))
         .map(|snapshot_id| (snapshot_id, summarize_services(&services)))
+}
+
+/// A manifest of what rebuilding this cluster needs: node capacity, and every
+/// app's resource footprint, volumes and schedule. Written into a DR snapshot so
+/// the answer to "the hardware is gone, what do I need" is in the backup itself.
+async fn rebuild_manifest(services: &[Value]) -> Value {
+    let (nodes, node_cpu_millicores, node_memory_bytes) =
+        match crate::kubectl::get_json(&["get", "nodes", "-o", "json"]).await {
+            Ok(v) => {
+                let items = v["items"].as_array().cloned().unwrap_or_default();
+                let mut cpu = 0u64;
+                let mut mem = 0u64;
+                for n in &items {
+                    if let Some(c) = n["status"]["allocatable"]["cpu"].as_str() {
+                        cpu += crate::routers::apps::parse_cpu_millicores(c);
+                    }
+                    if let Some(m) = n["status"]["allocatable"]["memory"].as_str() {
+                        mem += crate::routers::apps::parse_memory_bytes(m);
+                    }
+                }
+                (items.len(), cpu, mem)
+            }
+            Err(_) => (0, 0, 0),
+        };
+
+    let apps: Vec<Value> = services
+        .iter()
+        .map(|s| {
+            json!({
+                "instance_name": s["instance_name"],
+                "app_id": s["app_id"],
+                "chart_repo": s["chart_repo"],
+                "chart_version": s["chart_version"],
+                "service_name": s["service_name"],
+                "resources": s["resources"],
+                "volumes": s["volumes"],
+                "backup": s["backup"],
+            })
+        })
+        .collect();
+
+    json!({
+        "generated_at": Utc::now().to_rfc3339(),
+        "cluster": {
+            "nodes": nodes,
+            "allocatable_cpu_millicores": node_cpu_millicores,
+            "allocatable_memory_bytes": node_memory_bytes,
+        },
+        "apps": apps,
+    })
 }
 
 fn summarize_services(services: &[Value]) -> Vec<ServiceSummary> {
@@ -790,6 +1005,7 @@ pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
             json!({
                 "id": s.id,
                 "triggered_by": s.triggered_by,
+                "namespace": s.namespace,
                 "started_at": s.started_at,
                 "finished_at": s.finished_at,
                 "snapshot_id": s.snapshot_id,
@@ -802,13 +1018,26 @@ pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
         .collect())
 }
 
-/// Whether any set is running on any node — the single-flight gate for "start
-/// another". `Err` when the records cannot be read.
-pub(crate) async fn running_anywhere() -> anyhow::Result<bool> {
-    let sets = read_sets().await?;
-    Ok(sets
-        .iter()
-        .any(|s| s.is_running() && liveness_of(s).is_live()))
+/// Per-namespace backup status for the app list: (last successful time, running).
+/// One read of the sets, so `list_apps` pays nothing per app.
+pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool)> {
+    let Ok(sets) = read_sets().await else {
+        return HashMap::new();
+    };
+    let mut map: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    for s in &sets {
+        if s.namespace.is_empty() {
+            continue;
+        }
+        let e = map.entry(s.namespace.clone()).or_insert((None, false));
+        if s.is_running() && liveness_of(s).is_live() {
+            e.1 = true;
+        }
+        if e.0.is_none() && s.state == "succeeded" {
+            e.0 = s.finished_at.clone();
+        }
+    }
+    map
 }
 
 /// Hours since the newest restorable backup, or `None` if none ever succeeded or
@@ -839,8 +1068,8 @@ pub(crate) async fn volsync_mover_running() -> bool {
     .unwrap_or(false)
 }
 
-/// Starts a scheduled backup when the newest restorable one is older than the
-/// interval and nothing is running anywhere. Cluster-scoped: one node schedules.
+/// Starts each app's scheduled backup when its own cron is due, plus the
+/// whole-cluster DR snapshot on its own clock. Cluster-scoped: one node schedules.
 pub struct BackupSchedulerController;
 
 impl Controller for BackupSchedulerController {
@@ -866,16 +1095,67 @@ impl Controller for BackupSchedulerController {
         if read_master_config().await.is_none() {
             return Ok(Tick::Idle("backups are not enabled".into()));
         }
-        if running_anywhere().await? {
-            return Ok(Tick::Idle("a backup is already running".into()));
-        }
         let sets = read_sets().await?;
-        if !should_schedule(&sets, Utc::now()) {
-            return Ok(Tick::Idle("the newest backup is recent enough".into()));
+        let now = Utc::now();
+
+        let live = |s: &BackupSet| s.is_running() && liveness_of(s).is_live();
+        // A whole-cluster run touches every PVC, so app backups wait for it.
+        let cluster_running = sets.iter().any(|s| s.namespace.is_empty() && live(s));
+        // The DR snapshot waits for everything: it is the heaviest run.
+        let any_running = sets.iter().any(live);
+
+        let mut started = 0usize;
+
+        if !cluster_running {
+            for ns in list_managed_namespaces().await? {
+                if running_for(&sets, &ns) {
+                    continue;
+                }
+                let Some(def) = crate::routers::apps::read_definition_opt(&ns).await else {
+                    continue;
+                };
+                if !def.backup.enabled {
+                    continue;
+                }
+                let Ok(schedule) = crate::cron::Cron::parse(&def.backup.schedule) else {
+                    tracing::warn!(
+                        "{ns}: backup schedule {:?} is not a valid cron expression — skipping",
+                        def.backup.schedule
+                    );
+                    continue;
+                };
+                if !schedule.due(last_ok_for(&sets, &ns), now) {
+                    continue;
+                }
+                match start_app(&ns, "schedule").await {
+                    Ok(id) => {
+                        tracing::info!("backup: scheduled {ns} ({id})");
+                        started += 1;
+                    }
+                    Err(e) => tracing::warn!("backup: could not schedule {ns}: {e}"),
+                }
+            }
         }
-        let id = start("schedule").await?;
-        tracing::info!("backup: scheduled {id}");
-        Ok(Tick::Done)
+
+        if !any_running {
+            if let Ok(schedule) = crate::cron::Cron::parse(DR_SCHEDULE) {
+                if schedule.due(last_ok_for(&sets, ""), now) {
+                    match start("schedule-dr").await {
+                        Ok(id) => {
+                            tracing::info!("backup: scheduled DR snapshot ({id})");
+                            started += 1;
+                        }
+                        Err(e) => tracing::warn!("backup: could not schedule DR snapshot: {e}"),
+                    }
+                }
+            }
+        }
+
+        if started == 0 {
+            Ok(Tick::Idle("no app is due for a backup".into()))
+        } else {
+            Ok(Tick::Done)
+        }
     }
 }
 
@@ -999,6 +1279,7 @@ mod tests {
         BackupSet {
             id: id.into(),
             triggered_by: "manual".into(),
+            namespace: "yolab-a".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
             state: state.into(),
             finished_at: if state == "running" {
@@ -1083,7 +1364,7 @@ mod tests {
         assert!(new_id().starts_with("bk-"));
     }
 
-    // ── should_schedule ────────────────────────────────────────────────────────
+    // ── per-app due / running ──────────────────────────────────────────────────
 
     fn at(iso: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(iso)
@@ -1092,32 +1373,39 @@ mod tests {
     }
 
     #[test]
-    fn never_backed_up_means_due() {
-        assert!(should_schedule(&[], at("2026-01-01T00:00:00Z")));
+    fn last_ok_is_scoped_to_the_namespace() {
+        let mut a = set("a", "succeeded");
+        a.namespace = "yolab-a".into();
+        a.finished_at = Some("2026-01-01T00:00:00Z".into());
+        let mut b = set("b", "succeeded");
+        b.namespace = "yolab-b".into();
+        b.finished_at = Some("2025-12-01T00:00:00Z".into());
+        let sets = vec![a, b];
+        assert_eq!(
+            last_ok_for(&sets, "yolab-a"),
+            Some(at("2026-01-01T00:00:00Z"))
+        );
+        assert_eq!(
+            last_ok_for(&sets, "yolab-b"),
+            Some(at("2025-12-01T00:00:00Z"))
+        );
+        assert_eq!(last_ok_for(&[], "yolab-a"), None);
     }
 
     #[test]
-    fn a_recent_success_is_not_due() {
-        let mut s = set("a", "succeeded");
-        s.finished_at = Some("2025-12-31T23:00:00Z".into());
-        assert!(!should_schedule(&[s], at("2026-01-01T00:00:00Z")));
+    fn a_cluster_set_is_not_an_apps_backup() {
+        let mut cluster = set("c", "succeeded");
+        cluster.namespace = String::new();
+        assert_eq!(last_ok_for(&[cluster], "yolab-a"), None);
     }
 
     #[test]
-    fn an_old_success_is_due() {
-        let mut s = set("a", "succeeded");
-        s.finished_at = Some("2025-12-01T00:00:00Z".into());
-        assert!(should_schedule(&[s], at("2026-01-01T00:00:00Z")));
-    }
-
-    #[test]
-    fn a_crashed_set_does_not_block_scheduling() {
-        // A record left "running" by a process that died must not read as in-progress
-        // here — the running gate is is_running() — or a crash stops backups forever.
-        let mut s = set("a", "succeeded");
-        s.finished_at = Some("2025-12-01T00:00:00Z".into());
-        let crashed = set("b", "running");
-        assert!(should_schedule(&[crashed, s], at("2026-01-01T00:00:00Z")));
+    fn running_is_scoped_to_the_namespace() {
+        // A set's own namespace is the only one it holds back; another app's
+        // scheduled run must not be suppressed by it.
+        assert!(running_for(&[set("a", "running")], "yolab-a"));
+        assert!(!running_for(&[set("a", "running")], "yolab-b"));
+        assert!(!running_for(&[set("a", "succeeded")], "yolab-a"));
     }
 
     // ── collect_images ─────────────────────────────────────────────────────────
