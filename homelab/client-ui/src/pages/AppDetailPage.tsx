@@ -443,7 +443,13 @@ function backupWhen(iso: string | null): string {
  * homelab wants, and the backend validates it so a typo is rejected here rather
  * than silently skipped forever.
  */
-function BackupCard({ app, onChanged }: { app: AppInfo; onChanged: () => void }) {
+function BackupCard({
+  app,
+  onChanged,
+}: {
+  app: AppInfo;
+  onChanged: () => void;
+}) {
   const [enabled, setEnabled] = useState(app.backup.enabled);
   const [schedule, setSchedule] = useState(app.backup.schedule);
   const [saving, setSaving] = useState(false);
@@ -482,9 +488,7 @@ function BackupCard({ app, onChanged }: { app: AppInfo; onChanged: () => void })
     setRunning(true);
     setError(null);
     try {
-      await api.post(
-        `/api/backups/apps/yolab-${app.instance_name}/run-now`,
-      );
+      await api.post(`/api/backups/apps/yolab-${app.instance_name}/run-now`);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start a backup");
@@ -564,9 +568,9 @@ function BackupCard({ app, onChanged }: { app: AppInfo; onChanged: () => void })
             </Button>
           </div>
           <p className="text-xs text-fg-subtle">
-            A five-field cron expression: minute hour day month weekday. Times are
-            the server's local time. For example, <code>0 3 * * *</code> is every
-            day at 03:00.
+            A five-field cron expression: minute hour day month weekday. Times
+            are the server's local time. For example, <code>0 3 * * *</code> is
+            every day at 03:00.
           </p>
           {saved && !dirty && (
             <p className="text-xs text-success">Schedule saved.</p>
@@ -913,6 +917,16 @@ export function AppDetailPage() {
         >
           <RefreshCw className="h-4 w-4" />
           Check for updates
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() =>
+            navigate(`/add/${app.app_id}?from=${app.instance_name}`)
+          }
+          className="flex-1"
+        >
+          <Copy className="h-4 w-4" />
+          Duplicate
         </Button>
         <Button
           variant="secondary"

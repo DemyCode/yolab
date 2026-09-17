@@ -158,6 +158,58 @@ pub struct DomainResponse {
 pub struct InstallRequest {
     pub instance_name: String,
     pub config: serde_json::Map<String, Value>,
+    /// Set when this install is not a fresh catalog pick: a duplicate of a live
+    /// app, or a restore of one from a backup.
+    #[serde(default)]
+    pub source: Option<InstallSource>,
+}
+
+/// Where a non-catalog install gets its app from.
+#[derive(Deserialize, Clone, Default)]
+pub struct InstallSource {
+    /// "duplicate" (a live app) or "backup" (a snapshot).
+    #[serde(default)]
+    pub kind: String,
+    /// duplicate: the live instance to copy from, without the `yolab-` prefix.
+    #[serde(default)]
+    pub from_instance: Option<String>,
+    /// backup: the namespace the snapshot holds, with the `yolab-` prefix.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// duplicate-with-data / backup: the cluster-backup snapshot to restore from.
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
+    /// duplicate: also copy the app's data (volumes), not just its settings.
+    #[serde(default)]
+    pub with_data: bool,
+}
+
+/// The source namespace and the source definition, for a source-aware install.
+async fn resolve_install_source(src: &InstallSource) -> anyhow::Result<(String, AppDefinition)> {
+    match src.kind.as_str() {
+        "backup" => {
+            let ns = src
+                .namespace
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("a namespace is required to restore from backup"))?;
+            let snapshot = src
+                .snapshot_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("a snapshot is required to restore from backup"))?;
+            let def = crate::routers::restore::definition_from_backup(&ns, &snapshot).await?;
+            Ok((ns, def))
+        }
+        "duplicate" => {
+            let from = src
+                .from_instance
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("which app should be duplicated?"))?;
+            let ns = format!("yolab-{from}");
+            let def = read_definition(&ns).await?;
+            Ok((ns, def))
+        }
+        other => anyhow::bail!("unknown install source {other:?}"),
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -391,6 +443,47 @@ pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
 /// definition as "use the default policy".
 pub(crate) async fn read_definition_opt(ns: &str) -> Option<AppDefinition> {
     read_definition(ns).await.ok()
+}
+
+/// A definition safe to hand the browser: credentials replaced by the marker the
+/// install form knows to leave alone. The real values never leave the server; the
+/// install path merges them back from the source definition.
+pub(crate) fn redact_definition(
+    def: &AppDefinition,
+    catalog_dir: &std::path::Path,
+) -> AppDefinition {
+    let ui = chart_uischema(catalog_dir, &def.app_id);
+    let mut d = def.clone();
+    d.config = redact_credentials(&def.config, &credential_fields(&ui));
+    d
+}
+
+/// Replace the form's `__redacted__` markers with the values from `stored`.
+///
+/// The install form pre-fills from a redacted copy, so a password the user did
+/// not touch comes back as the marker. Writing that through would set the app's
+/// password to the literal string — so the real value is restored from the
+/// source definition, and a marker with nothing to restore is dropped rather
+/// than passed on.
+pub(crate) fn merge_credentials(
+    mut incoming: serde_json::Map<String, Value>,
+    stored: &serde_json::Map<String, Value>,
+    uischema: &Value,
+) -> serde_json::Map<String, Value> {
+    for field in credential_fields(uischema) {
+        let untouched = incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
+        if untouched {
+            match stored.get(&field) {
+                Some(kept) => {
+                    incoming.insert(field, kept.clone());
+                }
+                None => {
+                    incoming.remove(&field);
+                }
+            }
+        }
+    }
+    incoming
 }
 
 /// The definition for an app with no `app.json`, rebuilt from what the namespace
@@ -1435,7 +1528,7 @@ async fn namespace_exists(ns: &str) -> bool {
 pub async fn install_app(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<InstallRequest>,
+    Json(mut body): Json<InstallRequest>,
 ) -> impl IntoResponse {
     if !body
         .instance_name
@@ -1465,9 +1558,59 @@ pub async fn install_app(
             .into_response();
     };
 
+    // A duplicate-with-data or a restore-from-backup restores the source's
+    // volumes, then installs the chart with the posted settings. Credentials the
+    // form left as the redaction marker are merged back from the source
+    // definition, so a copy does not reset the app's passwords.
+    if let Some(src) = body.source.clone() {
+        let with_data = src.kind == "backup" || (src.kind == "duplicate" && src.with_data);
+        if with_data {
+            let (source_ns, def) = match resolve_install_source(&src).await {
+                Ok(v) => v,
+                Err(e) => return (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
+            };
+            let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
+            let config = merge_credentials(body.config.clone(), &def.config, &uischema);
+            let Some(snapshot) = src.snapshot_id.clone().filter(|s| !s.is_empty()) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "a snapshot is required to copy an app's data",
+                )
+                    .into_response();
+            };
+            let instance_name = instance_name.clone();
+            let stream = async_stream::stream! {
+                yield Ok::<_, Infallible>(Event::default().data("Restoring this app's data from backup..."));
+                match crate::routers::restore::install_from_backup(
+                    &source_ns,
+                    &snapshot,
+                    Some((instance_name.as_str(), config)),
+                )
+                .await
+                {
+                    Ok(()) => yield Ok(Event::default().data(format!(
+                        "[DONE] {id} installed with its data"
+                    ))),
+                    Err(e) => yield Ok(Event::default().data(format!("[ERROR] {e}"))),
+                }
+            };
+            return Sse::new(stream).into_response();
+        }
+        if src.kind == "duplicate" {
+            // A fresh copy with the same settings. The data is not copied, but the
+            // credentials must be: the form shows the redaction marker, and the
+            // real values only exist on the source.
+            if let Ok((_, def)) = resolve_install_source(&src).await {
+                let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
+                body.config = merge_credentials(body.config, &def.config, &uischema);
+            }
+        }
+    }
+    let config = body.config;
+
     let stream = async_stream::stream! {
         yield Ok(Event::default().data("Preparing namespace..."));
-        let staged = match stage_install(&state.config, &id, &instance_name, &body.config).await {
+        let staged = match stage_install(&state.config, &id, &instance_name, &config).await {
             Ok(s) => s,
             Err(e) => {
                 yield Ok(Event::default().data(format!("[ERROR] {e}")));
@@ -1536,7 +1679,7 @@ pub async fn install_app(
             chart_version: chart_version.clone(),
             instance_name: instance_name.clone(),
             service_name: service_name.clone(),
-            config: body.config.clone(),
+            config: config.clone(),
             volumes,
             resources,
             backup: BackupPolicy::default(),
@@ -1969,6 +2112,17 @@ pub async fn set_backup_policy(
     let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
     write_definition(&ns, &def, &uischema).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// GET /api/apps/:instance/definition — the app's definition, credentials
+/// redacted, for prefilling a duplicate's install form.
+pub async fn app_definition(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+) -> Result<Json<AppDefinition>> {
+    let ns = format!("yolab-{instance_name}");
+    let def = read_definition(&ns).await?;
+    Ok(Json(redact_definition(&def, &state.config.catalog_dir())))
 }
 
 pub async fn scan_outputs(

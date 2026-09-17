@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { ArrowLeft, Check, ExternalLink } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
@@ -7,7 +12,7 @@ import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
 // GeneratedSecret / Select / Toggle are gone from here: RJSF renders those
 // through the widgets in components/form, chosen by the chart's own uiSchema.
-import { Field, Input } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
@@ -20,7 +25,12 @@ import { nextInstanceName } from "@/lib/apps";
 import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
-import type { AppInfo, CatalogApp, DomainResponse } from "@/types/apps";
+import type {
+  AppDefinition,
+  AppInfo,
+  CatalogApp,
+  DomainResponse,
+} from "@/types/apps";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 // Every chart in the catalog describes its install form with the same tiny
@@ -137,6 +147,76 @@ export function InstallPage() {
   }, [appId]);
 
   const app = fresh ?? cached;
+
+  // ── Duplicate / restore source ────────────────────────────────────────────
+  //
+  // The same page serves a fresh install, a duplicate of a live app (`?from=`)
+  // and a restore from a backup (`?restore=&snapshot=`). The source's definition
+  // prefills the form; credentials arrive as the redaction marker and are merged
+  // back server-side, so the real values never reach the browser.
+  const [params] = useSearchParams();
+  const fromInstance = params.get("from");
+  const restoreNs = params.get("restore");
+  const restoreSnapshot = params.get("snapshot");
+  const isRestore = Boolean(restoreNs && restoreSnapshot);
+  const [sourceDef, setSourceDef] = useState<AppDefinition | null>(null);
+  const [copyData, setCopyData] = useState(isRestore);
+  const [snapshots, setSnapshots] = useState<{ id: string; time: string }[]>(
+    [],
+  );
+  const [snapshot, setSnapshot] = useState(restoreSnapshot ?? "");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (fromInstance) {
+          const d = await api.get<AppDefinition>(
+            `/api/apps/${fromInstance}/definition`,
+          );
+          if (!cancelled) setSourceDef(d);
+        } else if (restoreNs && restoreSnapshot) {
+          const d = await api.get<AppDefinition>(
+            `/api/backups/apps/${restoreNs}/definition?snapshot_id=${encodeURIComponent(restoreSnapshot)}`,
+          );
+          if (!cancelled) setSourceDef(d);
+        }
+      } catch {
+        // No prefill available: the form falls back to the chart's own defaults.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fromInstance, restoreNs, restoreSnapshot]);
+
+  // A duplicate that copies data needs a point in time; offer the app's own
+  // backups, newest first, exactly as the restore dialog does.
+  useEffect(() => {
+    if (!fromInstance || !copyData) return;
+    let cancelled = false;
+    void fetch(
+      `/api/backups/snapshots?namespace=${encodeURIComponent(`yolab-${fromInstance}`)}`,
+    )
+      .then((r) => r.json())
+      .then((d: { snapshots?: { id: string; time: string }[] }) => {
+        if (cancelled) return;
+        const list = (d.snapshots ?? [])
+          .slice()
+          .sort(
+            (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
+          );
+        setSnapshots(list);
+        setSnapshot((s) => s || list[0]?.id || "");
+      })
+      .catch(() => {
+        if (!cancelled) setSnapshots([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fromInstance, copyData]);
+
   const schema = useMemo(() => configSchema(app?.schema), [app?.schema]);
   const required = useMemo(
     () => new Set(schema.required ?? []),
@@ -210,21 +290,37 @@ export function InstallPage() {
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const seeded = useRef<string | null>(null);
   useEffect(() => {
-    if (!appId || !schema.properties || seeded.current === appId) return;
-    seeded.current = appId;
-    const seed: Record<string, unknown> = {};
+    if (!appId || !schema.properties) return;
+    // Re-seed when the source definition arrives, so a duplicate/restore fills in
+    // once rather than staying on the chart defaults.
+    const key = `${appId}|${sourceDef ? "source" : "new"}`;
+    if (seeded.current === key) return;
+    seeded.current = key;
+    const seed: Record<string, unknown> = sourceDef
+      ? { ...(sourceDef.config as Record<string, unknown>) }
+      : {};
     for (const [name, prop] of Object.entries(schema.properties)) {
       const widget = ((
         app?.uischema as Record<string, Record<string, unknown>>
       )?.[name] ?? {})["ui:widget"];
       if (widget === "PasswordWidget") {
-        seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
-      } else if (prop.default !== undefined) {
+        // From a source, keep the redaction marker: the server swaps in the real
+        // value. Generating a new one here would silently change the password.
+        if (!sourceDef) {
+          seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
+        }
+      } else if (seed[name] === undefined && prop.default !== undefined) {
         seed[name] = prop.default;
       }
     }
+    // A copy must not try to claim the source's web address: dropping the field
+    // lets the address track the new instance name instead.
+    if (sourceDef && addressKey) delete seed[addressKey];
+    // Seeding a form from an async source is this effect's whole purpose; there
+    // is no external system to subscribe to instead.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFormData(seed);
-  }, [appId, schema.properties, app?.uischema]);
+  }, [appId, schema.properties, app?.uischema, sourceDef, addressKey]);
 
   // The address tracks the instance name until the user sets one explicitly,
   // so a second copy does not silently try to claim the first one's subdomain.
@@ -260,6 +356,8 @@ export function InstallPage() {
   const blocking =
     !instanceName ||
     nameTaken ||
+    // Copying data needs a point in time to copy from.
+    (copyData && !snapshot) ||
     // Required per the schema itself, rather than a locally-derived list.
     [...required].some((n) => !String(values[n] ?? "").trim());
 
@@ -289,11 +387,26 @@ export function InstallPage() {
       }),
     );
 
+    const source = fromInstance
+      ? {
+          kind: "duplicate",
+          from_instance: fromInstance,
+          with_data: copyData,
+          snapshot_id: copyData ? snapshot : undefined,
+        }
+      : isRestore
+        ? { kind: "backup", namespace: restoreNs, snapshot_id: restoreSnapshot }
+        : undefined;
+
     const result = await streamEvents(
       `/api/apps/${app.id}`,
       {
         method: "POST",
-        body: JSON.stringify({ instance_name: instanceName, config: payload }),
+        body: JSON.stringify({
+          instance_name: instanceName,
+          config: payload,
+          source,
+        }),
       },
       (line) => {
         setLog((l) => [...l, line]);
@@ -467,7 +580,31 @@ export function InstallPage() {
         </div>
       </div>
 
-      {isCopy && (
+      {fromInstance && (
+        <Banner
+          tone="info"
+          title={`Duplicating ${sourceDef?.instance_name ?? fromInstance}`}
+          className="mb-5"
+        >
+          This creates a separate app from the same chart and settings, with its
+          own name, storage and web address.{" "}
+          {copyData
+            ? "Its data is copied from the backup you pick below."
+            : "Its data is not copied."}
+        </Banner>
+      )}
+      {isRestore && (
+        <Banner
+          tone="info"
+          title={`Restoring ${sourceDef?.instance_name ?? restoreNs}`}
+          className="mb-5"
+        >
+          This installs a fresh copy of the app and fills it from the backup you
+          picked.
+        </Banner>
+      )}
+
+      {isCopy && !fromInstance && !isRestore && (
         <Banner
           tone="info"
           title={
@@ -559,6 +696,40 @@ export function InstallPage() {
               }
             />
           </Field>
+
+          {fromInstance && (
+            <div className="space-y-3 border-t border-border pt-5">
+              <label className="flex items-center gap-2 text-sm text-fg">
+                <input
+                  type="checkbox"
+                  checked={copyData}
+                  onChange={(e) => setCopyData(e.target.checked)}
+                  className="accent-primary"
+                />
+                Copy this app&rsquo;s data too
+              </label>
+              {copyData &&
+                (snapshots.length === 0 ? (
+                  <p className="text-xs text-fg-muted">
+                    This app has no backup yet, so there is nothing to copy. You
+                    can install it without data, or back it up first.
+                  </p>
+                ) : (
+                  <Select
+                    value={snapshot}
+                    onChange={(e) => setSnapshot(e.target.value)}
+                    aria-label="Backup to copy from"
+                  >
+                    {snapshots.map((s, i) => (
+                      <option key={s.id} value={s.id}>
+                        {i === 0 ? "Latest — " : ""}
+                        {new Date(s.time).toLocaleString()}
+                      </option>
+                    ))}
+                  </Select>
+                ))}
+            </div>
+          )}
         </div>
       </Card>
 

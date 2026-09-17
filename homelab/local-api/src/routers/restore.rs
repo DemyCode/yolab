@@ -567,6 +567,23 @@ pub(crate) async fn reinstall_from_backup(
     namespace: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<()> {
+    install_from_backup(namespace, snapshot_id, None).await
+}
+
+/// Install an app from one backup, optionally under a NEW instance name and with
+/// an edited config.
+///
+/// `target` is `(instance_name, config)`. Without it the app comes back under its
+/// backed-up name and settings — what "add from backup" does. With it, the same
+/// machinery serves a duplicate-with-data: the new app keeps the source's data
+/// and generated secrets but gets its own name, web address and (possibly)
+/// settings. The volumes are always read from the SOURCE namespace's repos, which
+/// is why source and destination are separate parameters.
+pub(crate) async fn install_from_backup(
+    source_namespace: &str,
+    snapshot_id: &str,
+    target: Option<(&str, serde_json::Map<String, Value>)>,
+) -> anyhow::Result<()> {
     let Some(cfg) = load_master_config().await? else {
         anyhow::bail!("backup not configured");
     };
@@ -575,23 +592,36 @@ pub(crate) async fn reinstall_from_backup(
     let catalog = extract_json_file(&repo, &cfg, snapshot_id, "catalog.json").await?;
     let Some(app) = catalog_apps(&catalog)
         .into_iter()
-        .find(|a| a.namespace == namespace)
+        .find(|a| a.namespace == source_namespace)
     else {
-        anyhow::bail!("{namespace} is not in backup {snapshot_id}");
+        anyhow::bail!("{source_namespace} is not in backup {snapshot_id}");
     };
-    let Some(path) =
-        extract_file(&repo, &cfg, snapshot_id, &format!("**/{namespace}.yaml")).await?
+    let Some(path) = extract_file(
+        &repo,
+        &cfg,
+        snapshot_id,
+        &format!("**/{source_namespace}.yaml"),
+    )
+    .await?
     else {
-        anyhow::bail!("backup {snapshot_id} has no saved settings for {namespace}");
+        anyhow::bail!("backup {snapshot_id} has no saved settings for {source_namespace}");
     };
     let objects_raw = tokio::fs::read(&path).await?;
     let objects: Value = serde_json::from_slice(&objects_raw)?;
-    let config = saved_config(&objects).unwrap_or_default();
+
+    let (instance_name, config) = match target {
+        Some((name, config)) => (name.to_string(), config),
+        None => (
+            app.instance_name.clone(),
+            saved_config(&objects).unwrap_or_default(),
+        ),
+    };
+    let dest_namespace = format!("yolab-{instance_name}");
     let restore_as_of = snapshot_time(&repo, &cfg, snapshot_id).await;
 
     let mut volumes = Vec::new();
-    for pvc in catalog_pvcs(&catalog, namespace) {
-        let snaps = volume_snapshots(namespace, &pvc.name, &cfg).await?;
+    for pvc in catalog_pvcs(&catalog, source_namespace) {
+        let snaps = volume_snapshots(source_namespace, &pvc.name, &cfg).await?;
         match plan_volume(
             &pvc.name,
             pvc.snapshot.as_ref(),
@@ -599,7 +629,7 @@ pub(crate) async fn reinstall_from_backup(
             restore_as_of.as_deref(),
         ) {
             VolumePlan::NoBackup => tracing::warn!(
-                "add {namespace} from backup: {} was never backed up — the chart creates it empty",
+                "install {dest_namespace} from backup: {} was never backed up — the chart creates it empty",
                 pvc.name
             ),
             VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
@@ -608,21 +638,29 @@ pub(crate) async fn reinstall_from_backup(
     }
 
     let install =
-        crate::routers::apps::prepare_install(&app.app_id, &app.instance_name, &config).await?;
-    let (id, _, _guard) = begin(namespace, snapshot_id).await?;
+        crate::routers::apps::prepare_install(&app.app_id, &instance_name, &config).await?;
+    let (id, _, _guard) = begin(&dest_namespace, snapshot_id).await?;
 
     let mut filled = Ok(());
     for (pvc, as_of) in &volumes {
-        filled = fill_volume(namespace, &app.instance_name, pvc, &cfg, as_of.as_deref()).await;
+        filled = fill_volume(
+            &dest_namespace,
+            source_namespace,
+            &instance_name,
+            pvc,
+            &cfg,
+            as_of.as_deref(),
+        )
+        .await;
         if filled.is_err() {
             break;
         }
     }
     if let Err(e) = filled {
-        crate::kubectl::run(&["delete", "namespace", namespace, "--wait=false"])
+        crate::kubectl::run(&["delete", "namespace", &dest_namespace, "--wait=false"])
             .await
             .warn_on_err(format!(
-                "add {namespace} from backup failed; remove its namespace"
+                "install {dest_namespace} from backup failed; remove its namespace"
             ));
         let failed = Err(e);
         record_done(&id, &failed).await;
@@ -639,18 +677,18 @@ pub(crate) async fn reinstall_from_backup(
         if let Some(reapply) = objects_to_reapply(&objects) {
             kubectl_apply(&reapply.to_string())
                 .await
-                .map_err(|e| anyhow::anyhow!("apply {namespace}.yaml: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("apply {source_namespace}.yaml: {e}"))?;
         }
         anyhow::Ok(!volumes.is_empty())
     }
     .await;
     record_done(&id, &result).await;
     result?;
-    tracing::info!("add {namespace} from backup {snapshot_id}: done");
+    tracing::info!("install {dest_namespace} from backup {snapshot_id}: done");
 
     // Only once the data is back: a backup before that would upload an empty
     // volume as the newest copy of this app.
-    crate::routers::backups::setup_namespace_backup(namespace).await?;
+    crate::routers::backups::setup_namespace_backup(&dest_namespace).await?;
     Ok(())
 }
 
@@ -695,6 +733,60 @@ fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
         .decode(secret["data"]["config.json"].as_str()?)
         .ok()?;
     serde_json::from_slice(&raw).ok()
+}
+
+/// The definition a backup holds for one app, for prefilling a restore/duplicate
+/// install form.
+///
+/// Newer backups embed the whole definition in `catalog.json`; older ones only
+/// have the backed-up config Secret, so the identity fields come from the
+/// catalog and the config is read out of `<namespace>.yaml`.
+pub(crate) async fn definition_from_backup(
+    namespace: &str,
+    snapshot_id: &str,
+) -> anyhow::Result<crate::routers::apps::AppDefinition> {
+    let Some(cfg) = load_master_config().await? else {
+        anyhow::bail!("backup not configured");
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock("cluster-backup").await;
+    let catalog = extract_json_file(&repo, &cfg, snapshot_id, "catalog.json").await?;
+    let Some(service) = catalog["services"]
+        .as_array()
+        .and_then(|a| a.iter().find(|s| s["namespace"] == namespace))
+    else {
+        anyhow::bail!("{namespace} is not in backup {snapshot_id}");
+    };
+
+    if let Some(def) = service.get("definition").filter(|d| !d.is_null()) {
+        if let Ok(parsed) =
+            serde_json::from_value::<crate::routers::apps::AppDefinition>(def.clone())
+        {
+            return Ok(parsed);
+        }
+    }
+
+    let config =
+        match extract_file(&repo, &cfg, snapshot_id, &format!("**/{namespace}.yaml")).await? {
+            Some(path) => {
+                let raw = tokio::fs::read(&path).await?;
+                let objects: Value = serde_json::from_slice(&raw)?;
+                saved_config(&objects).unwrap_or_default()
+            }
+            None => serde_json::Map::new(),
+        };
+    Ok(crate::routers::apps::AppDefinition {
+        schema: crate::routers::apps::DEFINITION_SCHEMA,
+        app_id: service["app_id"].as_str().unwrap_or("").to_string(),
+        chart_repo: service["chart_repo"].as_str().unwrap_or("").to_string(),
+        chart_version: service["chart_version"].as_str().unwrap_or("").to_string(),
+        instance_name: namespace.trim_start_matches("yolab-").to_string(),
+        service_name: service["service_name"].as_str().unwrap_or("").to_string(),
+        config,
+        volumes: Vec::new(),
+        resources: Default::default(),
+        backup: Default::default(),
+    })
 }
 
 /// Whether a backed-up object is worth bringing back after a fresh install, or
@@ -753,8 +845,11 @@ fn objects_to_reapply(objects: &Value) -> Option<Value> {
 ///
 /// Helm adopts an object it did not create only when it carries the release's
 /// marks; without them `helm install` refuses ("exists and cannot be imported").
+/// `source_namespace` is where the data's restic repository lives, which differs
+/// from `namespace` for a duplicate-with-data.
 async fn fill_volume(
     namespace: &str,
+    source_namespace: &str,
     release: &str,
     pvc: &CatalogPvc,
     cfg: &BackupConfig,
@@ -779,7 +874,7 @@ async fn fill_volume(
         }
     });
     kubectl_apply(&manifest.to_string()).await?;
-    restore_into(namespace, &pvc.name, cfg, restore_as_of).await
+    restore_into(namespace, source_namespace, &pvc.name, cfg, restore_as_of).await
 }
 
 async fn restore_volume(
@@ -803,18 +898,20 @@ async fn restore_volume(
     wait_for_pvc_deleted(namespace, pvc).await?;
 
     ensure_destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany").await?;
-    restore_into(namespace, pvc, cfg, restore_as_of).await
+    restore_into(namespace, namespace, pvc, cfg, restore_as_of).await
 }
 
-/// Fills the existing volume `pvc` from its own VolSync restic repository.
+/// Fills the volume `pvc` in `namespace` from the restic repository of
+/// `source_namespace`. The two differ only for a duplicate-with-data.
 async fn restore_into(
     namespace: &str,
+    source_namespace: &str,
     pvc: &str,
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
     let cid = canonical_pvc_id(pvc);
-    let pvc_repo = cfg.restic_repo(&format!("volsync/{namespace}/{cid}"));
+    let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
     restic_unlock(
         &pvc_repo,
         &cfg.restic_password,
@@ -828,7 +925,7 @@ async fn restore_into(
     // app added back from backup onto a new cluster (after a FORCE HEAL) has never
     // been backed up there: without it VolSync stops at `Secret "…-restic" not
     // found` and the restore waits out its whole timeout with the app scaled to 0.
-    ensure_restic_secret(namespace, pvc, cfg).await?;
+    ensure_restic_secret_for_repo(namespace, source_namespace, pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let mut restic_spec = json!({
         "repository": secret_name,
