@@ -13,26 +13,11 @@ __pycache__/
 .env.*
 !.env.example
 
-# Terraform
-deployment/terraform/*.tfstate
-deployment/terraform/*.tfstate.*
-deployment/terraform/.terraform/
-deployment/terraform/.terraform.lock.hcl
-deployment/terraform/terraform.tfvars
-deployment/terraform/tfplan
-
 # Secrets
 secrets/
 *.secret
 *.key
 *.pem
-
-# Deployment configuration (contains secrets)
-deployment/nixos/ignored/
-!deployment/nixos/ignored/.gitkeep
-!deployment/nixos/ignored/config.json.example
-!deployment/nixos/ignored/config-frps.json.example
-!deployment/nixos/ignored/config-services.json.example
 
 # Nix build artifacts
 result
@@ -46,16 +31,12 @@ result-*
 *~
 
 node_modules
-installer/nixos/frontend/node_modules
-installer/nixos/frontend/dist
 *.tsbuildinfo
 homelab/local-api/target
-homelab/local-api/target/
+shells/desktop/target
+shells/desktop/gen/
 
 # Vendored Helm chart dependencies, materialised by `helm dependency build` from the
 # committed Chart.lock (see the yolab-chart-deps unit). Build output, not source —
 # Chart.lock IS committed, since it pins an external artifact in the OCI registry.
 apps/catalog/*/charts/
-shells/desktop/target
-shells/desktop/target/
-shells/desktop/gen/

@@ -12,16 +12,13 @@ let baseUrl = "";
 /** Bearer token, used only by builds that cannot rely on a session cookie. */
 let authToken: string | null = null;
 
+/** Set by the desktop/phone shells, which talk to a remote box over the tunnel. */
 export function configureApi(opts: {
   baseUrl?: string;
   token?: string | null;
 }) {
   if (opts.baseUrl !== undefined) baseUrl = opts.baseUrl.replace(/\/$/, "");
   if (opts.token !== undefined) authToken = opts.token;
-}
-
-export function getApiBaseUrl(): string {
-  return baseUrl;
 }
 
 /** Thrown for any non-2xx response so callers can branch on `status`. */
@@ -68,10 +65,7 @@ function errorMessageFrom(body: string, status: number): string {
   return message;
 }
 
-async function request<T>(
-  path: string,
-  init?: RequestInit & { raw?: boolean },
-): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
   if (init?.body && !headers.has("Content-Type")) {
@@ -93,14 +87,12 @@ async function request<T>(
     throw new ApiError(res.status, errorMessageFrom(body, res.status));
   }
 
-  if (init?.raw) return (await res.text()) as T;
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  getText: (path: string) => request<string>(path, { raw: true }),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, {
       method: "POST",

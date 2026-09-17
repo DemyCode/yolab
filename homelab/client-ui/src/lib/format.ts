@@ -15,48 +15,15 @@ export function formatBytes(bytes: number, digits = 1): string {
   return `${shown} ${units[i]}`;
 }
 
-/** "just now", "3 hours ago", "yesterday", "12 Mar". */
-export function formatRelative(input: string | number | Date): string {
-  const then = new Date(input).getTime();
-  if (Number.isNaN(then)) return "unknown";
-  const seconds = Math.round((Date.now() - then) / 1000);
-
-  if (seconds < 45) return "just now";
-  if (seconds < 90) return "a minute ago";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} minutes ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
-  const days = Math.round(hours / 24);
-  if (days === 1) return "yesterday";
-  if (days < 7) return `${days} days ago`;
-  return new Date(then).toLocaleDateString(undefined, {
-    day: "numeric",
+/** "12 Mar 2026, 14:30" — a full timestamp, for a backup or restore record. */
+export function formatDateTime(input: string | number | Date): string {
+  return new Date(input).toLocaleString(undefined, {
+    year: "numeric",
     month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
-}
-
-/**
- * Kubernetes quantities ("50Gi", "200Gi") as something a person would say.
- * The install form collects these, and "50Gi" is jargon for "50 GB".
- */
-export function formatQuantity(q: string): string {
-  const m = /^(\d+(?:\.\d+)?)\s*([KMGTP]i?)?B?$/.exec(q.trim());
-  if (!m) return q;
-  const [, num, unit] = m;
-  const suffix: Record<string, string> = {
-    Ki: "KB",
-    Mi: "MB",
-    Gi: "GB",
-    Ti: "TB",
-    Pi: "PB",
-    K: "KB",
-    M: "MB",
-    G: "GB",
-    T: "TB",
-    P: "PB",
-  };
-  return unit ? `${num} ${suffix[unit] ?? unit}` : `${num} B`;
 }
 
 /**

@@ -563,22 +563,6 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
 /// Every volume is checked before anything is created, and nothing is installed
 /// before every volume is back, so a failure until then removes the namespace
 /// and leaves nothing behind.
-pub(crate) async fn reinstall_from_backup(
-    namespace: &str,
-    snapshot_id: &str,
-) -> anyhow::Result<()> {
-    install_from_backup(namespace, snapshot_id, None).await
-}
-
-/// Install an app from one backup, optionally under a NEW instance name and with
-/// an edited config.
-///
-/// `target` is `(instance_name, config)`. Without it the app comes back under its
-/// backed-up name and settings — what "add from backup" does. With it, the same
-/// machinery serves a duplicate-with-data: the new app keeps the source's data
-/// and generated secrets but gets its own name, web address and (possibly)
-/// settings. The volumes are always read from the SOURCE namespace's repos, which
-/// is why source and destination are separate parameters.
 pub(crate) async fn install_from_backup(
     source_namespace: &str,
     snapshot_id: &str,

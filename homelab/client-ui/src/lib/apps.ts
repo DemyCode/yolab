@@ -41,17 +41,6 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
   return links;
 }
 
-/**
- * Values that are not links: a server address to paste into Minecraft, an
- * IPv6 for a game client, a generated admin password. These are the whole
- * point of the app page for anything that is not a website.
- */
-export function appFacts(app: AppInfo) {
-  return (app.outputs ?? []).filter(
-    (o) => o.type !== "url" && o.type !== "hidden" && o.value,
-  );
-}
-
 export interface AppFactRow {
   key: string;
   label: string;

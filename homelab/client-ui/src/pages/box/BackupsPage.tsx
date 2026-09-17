@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { formatDateTime } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -47,16 +48,6 @@ function Shimmer({ className }: { className?: string }) {
   return (
     <div className={`animate-pulse rounded bg-border ${className ?? ""}`} />
   );
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function timeAgo(iso: string): string {
@@ -108,7 +99,7 @@ function BackupSetCard({ set: backupSet }: { set: BackupSet }) {
           )}
           <div className="flex-1 min-w-0">
             <span className="text-sm font-medium text-fg">
-              {formatDate(backupSet.started_at)}
+              {formatDateTime(backupSet.started_at)}
             </span>
             <span className="ml-2 text-xs text-fg-subtle">
               {timeAgo(backupSet.started_at)}

@@ -4,21 +4,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
-
-#[derive(Serialize)]
-pub struct CephStatus {
-    pub available: bool,
-    pub health: String,
-    pub osd_count: u32,
-    pub osd_up: u32,
-    pub total_bytes: u64,
-    pub used_bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
 
 // ── Human-readable cluster health ─────────────────────────────────────────────
 
@@ -723,71 +711,6 @@ fn translate_health_check(
     })
 }
 
-pub async fn ceph_status() -> Json<CephStatus> {
-    match cluster_status_from_k8s().await {
-        Ok((status, osd_total, osd_ready)) => {
-            let cap = status
-                .get("ceph")
-                .and_then(|c| c.get("capacity"))
-                .cloned()
-                .unwrap_or_default();
-            Json(CephStatus {
-                available: status.get("phase").and_then(|p| p.as_str()) == Some("Ready"),
-                health: status
-                    .get("ceph")
-                    .and_then(|c| c.get("health"))
-                    .and_then(|h| h.as_str())
-                    .unwrap_or("HEALTH_UNKNOWN")
-                    .to_string(),
-                osd_count: osd_total,
-                osd_up: osd_ready,
-                total_bytes: cap.get("bytesTotal").and_then(|v| v.as_u64()).unwrap_or(0),
-                used_bytes: cap.get("bytesUsed").and_then(|v| v.as_u64()).unwrap_or(0),
-                error: None,
-            })
-        }
-        Err(e) => Json(CephStatus {
-            available: false,
-            health: "HEALTH_UNKNOWN".into(),
-            osd_count: 0,
-            osd_up: 0,
-            total_bytes: 0,
-            used_bytes: 0,
-            error: Some(e.to_string()),
-        }),
-    }
-}
-
-/// Cluster status plus OSD totals.
-///
-/// Both used to be assembled from Rook: `.status` off the CephCluster CR and a
-/// count of `app=rook-ceph-osd` Deployments. Neither exists now, and counting
-/// Deployments was always a proxy anyway — it reported how many OSD *pods* Rook
-/// had scheduled, not how many OSDs Ceph actually had up. This asks Ceph.
-///
-/// Name kept so callers are untouched; nothing about it is k8s any more.
-pub async fn cluster_status_from_k8s(
-) -> anyhow::Result<(serde_json::Map<String, serde_json::Value>, u32, u32)> {
-    let stat = crate::ceph_cli::ceph_json(&["osd", "stat"]).await?;
-    let osd_total = stat["num_osds"].as_u64().unwrap_or(0) as u32;
-    let osd_ready = stat["num_up_osds"].as_u64().unwrap_or(0) as u32;
-
-    // Shaped like the old CR status so the UI contract does not change.
-    let health = crate::ceph_cli::ceph_json(&["health"])
-        .await
-        .unwrap_or_default();
-    let mut status = serde_json::Map::new();
-    status.insert(
-        "ceph".into(),
-        serde_json::json!({
-            "health": health["status"].as_str().unwrap_or(""),
-            "details": health.get("checks").cloned().unwrap_or(serde_json::json!({})),
-        }),
-    );
-
-    Ok((status, osd_total, osd_ready))
-}
-
 /// "<HEALTH_X>\n<details-json>", the shape compute_cluster_health parses.
 async fn ceph_health_and_details() -> anyhow::Result<String> {
     let h = crate::ceph_cli::ceph_json(&["health", "detail"]).await?;
@@ -844,13 +767,6 @@ pub struct StorageDetail {
     pub total_bytes: u64,
     pub avail_bytes: u64,
     pub used_bytes: u64,
-}
-
-#[derive(Deserialize)]
-pub struct SetReplicationReq {
-    pub size: u32,
-    pub min_size: u32,
-    pub failure_domain: String,
 }
 
 /// Everything the Storage page needs, in one shot.
@@ -1085,121 +1001,6 @@ pub async fn storage_detail() -> Json<serde_json::Value> {
         Ok(raw) => Json(serde_json::json!({ "ok": true, "data": parse_storage_detail(&raw) })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
-}
-
-pub async fn set_replication(
-    Json(req): Json<SetReplicationReq>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    if req.size < 1 || req.size > 3 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "size must be 1–3"})),
-        );
-    }
-    if req.min_size < 1 || req.min_size > req.size {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "min_size must be ≥1 and ≤size"})),
-        );
-    }
-    if req.failure_domain != "osd" && req.failure_domain != "host" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "failure_domain must be osd or host"})),
-        );
-    }
-
-    let rule_name = if req.failure_domain == "osd" {
-        "replicated_osd"
-    } else {
-        "replicated_rule"
-    };
-    let fd = &req.failure_domain;
-    let size = req.size;
-    let min_size = req.min_size;
-
-    // Create the OSD-level CRUSH rule if it does not exist yet
-    // (replicated_rule already covers the host domain).
-    let have_rules = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"])
-        .await
-        .unwrap_or_default();
-    if !have_rules.lines().any(|l| l.trim() == rule_name) {
-        if let Err(e) = crate::ceph_cli::ceph(&[
-            "osd",
-            "crush",
-            "rule",
-            "create-replicated",
-            rule_name,
-            "default",
-            fd,
-        ])
-        .await
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("create crush rule: {e}")})),
-            );
-        }
-    }
-
-    let pools_raw = match crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-        }
-    };
-
-    let size_s = size.to_string();
-    let min_size_s = min_size.to_string();
-    let mut output = String::new();
-
-    for pool in pools_raw.lines().map(str::trim).filter(|p| !p.is_empty()) {
-        // .nfs and .rgw.* carry stricter placement requirements and are left alone.
-        if pool.starts_with(".nfs") || pool.starts_with(".rgw") {
-            continue;
-        }
-        // The images pool is deliberately size=1 and must stay that way: every
-        // node holds its own copy of every container image, so replicating them
-        // costs 3x for data that is re-downloadable from a registry. Sweeping it
-        // up with the app-data pools would silently triple image storage.
-        if pool == "images" {
-            output.push_str("Skipped pool images (kept at size 1 by design)\n");
-            continue;
-        }
-
-        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule_name]).await;
-
-        // size=1 requires --yes-i-really-mean-it; harmless for size>1.
-        let r = if size == 1 {
-            crate::ceph_cli::ceph(&[
-                "osd",
-                "pool",
-                "set",
-                pool,
-                "size",
-                &size_s,
-                "--yes-i-really-mean-it",
-            ])
-            .await
-        } else {
-            crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &size_s]).await
-        };
-        if let Err(e) = r {
-            output.push_str(&format!("Pool {pool}: size failed: {e}\n"));
-            continue;
-        }
-
-        let _ = crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "min_size", &min_size_s]).await;
-        output.push_str(&format!("Updated pool {pool}\n"));
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"ok": true, "output": output})),
-    )
 }
 
 // ── OSD lifecycle ──────────────────────────────────────────────────────────────

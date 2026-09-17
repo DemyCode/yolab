@@ -25,6 +25,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { api, streamEvents } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
   appDisplayName,
@@ -383,15 +384,7 @@ function RestoreDialog({
                 onChange={() => setSelected(s.id)}
                 className="accent-primary"
               />
-              <span className="text-sm text-fg">
-                {new Date(s.time).toLocaleString(undefined, {
-                  year: "numeric",
-                  month: "short",
-                  day: "numeric",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
+              <span className="text-sm text-fg">{formatDateTime(s.time)}</span>
             </label>
           ))}
         </div>
@@ -425,13 +418,7 @@ const BACKUP_PRESETS: { label: string; cron: string }[] = [
 
 function backupWhen(iso: string | null): string {
   if (!iso) return "Never backed up yet";
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTime(iso);
 }
 
 /**

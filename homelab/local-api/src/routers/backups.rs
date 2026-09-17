@@ -1,11 +1,8 @@
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::collections::HashSet;
-use tokio::process::Command;
 
-use crate::error::Outcome;
 use crate::routers::backup_common::*;
 use crate::routers::{backup, restore};
 use crate::{config::Config, error::Result, AppState};
@@ -56,32 +53,6 @@ pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Va
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     Ok(Json(serde_json::json!({ "provisioned": true, "s3": body })))
-}
-
-pub async fn get_sftp(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let Some((url, token)) = ye_creds(&state.config) else {
-        return Ok(Json(
-            serde_json::json!({ "provisioned": false, "reason": "platform API not configured" }),
-        ));
-    };
-    let resp = http_client()
-        .get(format!("{url}/storage/sftp"))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(Json(serde_json::json!({ "provisioned": false })));
-    }
-    let body: serde_json::Value = resp
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!(e))?
-        .json()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(Json(
-        serde_json::json!({ "provisioned": true, "sftp": body }),
-    ))
 }
 
 /// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
@@ -161,106 +132,6 @@ pub async fn list_runs(State(_state): State<AppState>) -> Result<Json<serde_json
     Ok(Json(serde_json::Value::Array(backup::list().await?)))
 }
 
-/// A PVC hasn't synced in this long → flag it as stale rather than silently "Pending" forever.
-const STALE_AFTER_HOURS: i64 = 36;
-
-/// GET /api/backups/status — per-PVC VolSync ReplicationSource status.
-pub async fn backup_status(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let v = get_replication_sources().await;
-
-    let pvc_health_map: HashMap<(String, String), (String, Option<String>)> =
-        crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"])
-            .await
-            .ok()
-            .and_then(|v| v["items"].as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|item| {
-                let ns = item["metadata"]["namespace"].as_str()?.to_string();
-                let name = item["metadata"]["name"].as_str()?.to_string();
-                let phase = item["status"]["phase"]
-                    .as_str()
-                    .unwrap_or("Unknown")
-                    .to_string();
-                let deletion_ts = item["metadata"]["deletionTimestamp"]
-                    .as_str()
-                    .map(String::from);
-                Some(((ns, name), (phase, deletion_ts)))
-            })
-            .collect();
-
-    let pvcs: Vec<serde_json::Value> = v["items"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(|item| {
-            let namespace = item["metadata"]["namespace"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            let pvc = item["spec"]["sourcePVC"].as_str().unwrap_or("").to_string();
-            let created = item["metadata"]["creationTimestamp"]
-                .as_str()
-                .map(String::from);
-            let last_sync_time = item["status"]["lastSyncTime"].as_str().map(String::from);
-            let last_sync_duration = item["status"]["lastSyncDuration"]
-                .as_str()
-                .map(String::from);
-            let result = item["status"]["latestMoverStatus"]["result"]
-                .as_str()
-                .unwrap_or(if last_sync_time.is_some() {
-                    "Successful"
-                } else {
-                    "Pending"
-                })
-                .to_string();
-            let (pvc_phase, pvc_deletion_ts) = pvc_health_map
-                .get(&(namespace.clone(), pvc.clone()))
-                .cloned()
-                .unwrap_or(("NotFound".to_string(), None));
-
-            let stale = match &last_sync_time {
-                Some(t) => hours_since(t).is_none_or(|h| h > STALE_AFTER_HOURS),
-                None => created
-                    .as_deref()
-                    .and_then(hours_since)
-                    .is_some_and(|h| h > STALE_AFTER_HOURS),
-            };
-            let stuck_terminating = pvc_deletion_ts.is_some();
-
-            serde_json::json!({
-                "namespace": namespace,
-                "pvc": pvc,
-                "last_sync_time": last_sync_time,
-                "last_sync_duration": last_sync_duration,
-                "result": result,
-                "pvc_phase": pvc_phase,
-                "stale": stale,
-                "stuck_terminating": stuck_terminating,
-                "pvc_deletion_timestamp": pvc_deletion_ts,
-            })
-        })
-        .collect();
-
-    let backup_alert = pvcs.iter().any(|p| {
-        p["stale"].as_bool().unwrap_or(false) || p["stuck_terminating"].as_bool().unwrap_or(false)
-    });
-
-    // When cluster state (etcd) was last captured, from the newest restorable set.
-    let etcd_last = backup::list()
-        .await?
-        .into_iter()
-        .find(|s| s["state"] == "restorable")
-        .and_then(|s| s["finished_at"].as_str().map(String::from));
-
-    Ok(Json(serde_json::json!({
-        "pvcs": pvcs,
-        "etcd_last_snapshot": etcd_last,
-        "backup_alert": backup_alert,
-    })))
-}
-
 // ── Per-app restore (thin HTTP layer over restore.rs) ─────────────────────────
 
 #[derive(Deserialize)]
@@ -288,42 +159,13 @@ pub async fn list_restores(State(_state): State<AppState>) -> Result<Json<serde_
     Ok(Json(serde_json::Value::Array(restore::list().await?)))
 }
 
-// ── Add from backup ────────────────────────────────────────────────────────────
+// ── Backed-up apps ─────────────────────────────────────────────────────────────
 
-/// An app being added from backup by this process, and how it went.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-struct Adding {
-    snapshot_id: String,
-    /// None while it runs.
-    error: Option<String>,
-    done: bool,
-}
-
-/// Adds started from this machine, by namespace. In memory: an add is one long
-/// request's worth of work, and the app it produces is its lasting record.
-static ADDING: std::sync::Mutex<std::collections::BTreeMap<String, Adding>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-fn adding() -> std::collections::BTreeMap<String, Adding> {
-    ADDING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-fn set_adding(namespace: &str, state: Adding) {
-    ADDING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(namespace.to_string(), state);
-}
-
-/// Every app in any backup: whether it is installed, whether an add is running
-/// or failed here, and each point in time it can come back from, newest first.
+/// Every app in any backup: whether it is installed, and each point in time it
+/// can come back from, newest first.
 fn backed_up_apps_json(
     versions: &restore::BackupVersions,
     installed: &HashSet<String>,
-    adding: &std::collections::BTreeMap<String, Adding>,
 ) -> serde_json::Value {
     let apps: Vec<serde_json::Value> = versions
         .apps
@@ -333,7 +175,6 @@ fn backed_up_apps_json(
                 "namespace": ns,
                 "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
                 "installed": installed.contains(ns),
-                "adding": adding.get(ns),
                 "versions": vs,
             })
         })
@@ -347,76 +188,7 @@ pub async fn list_backed_up_apps(
 ) -> Result<Json<serde_json::Value>> {
     let versions = restore::backup_versions().await?;
     let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
-    Ok(Json(backed_up_apps_json(&versions, &installed, &adding())))
-}
-
-#[derive(Deserialize)]
-pub struct AddFromBackupRequest {
-    pub namespace: String,
-    pub snapshot_id: String,
-}
-
-/// Why this add cannot start, if it cannot.
-fn add_refusal(
-    request: &AddFromBackupRequest,
-    versions: &restore::BackupVersions,
-    installed: &HashSet<String>,
-    adding: &std::collections::BTreeMap<String, Adding>,
-) -> Option<String> {
-    let ns = &request.namespace;
-    if adding.get(ns).is_some_and(|a| !a.done) {
-        return Some(format!("{ns} is already being added"));
-    }
-    if installed.contains(ns) {
-        return Some(format!("{ns} is already installed — uninstall it first"));
-    }
-    let held = versions
-        .apps
-        .get(ns)
-        .is_some_and(|vs| vs.iter().any(|v| v.snapshot_id == request.snapshot_id));
-    if !held {
-        return Some(format!("no backup {} holds {ns}", request.snapshot_id));
-    }
-    None
-}
-
-/// POST /api/backups/apps/add — installs an app from one of its backups: its
-/// chart with the settings it had then, its files, and its saved objects. Starts
-/// the work and returns; `GET /api/backups/apps` reports how it went.
-pub async fn add_from_backup(
-    State(_state): State<AppState>,
-    Json(request): Json<AddFromBackupRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let versions = restore::backup_versions().await?;
-    let installed: HashSet<String> = list_managed_namespaces().await?.into_iter().collect();
-    if let Some(why) = add_refusal(&request, &versions, &installed, &adding()) {
-        return Err(anyhow::anyhow!(why).into());
-    }
-    let running = Adding {
-        snapshot_id: request.snapshot_id.clone(),
-        error: None,
-        done: false,
-    };
-    set_adding(&request.namespace, running.clone());
-    tokio::spawn(async move {
-        let result = restore::reinstall_from_backup(&request.namespace, &request.snapshot_id).await;
-        if let Err(e) = &result {
-            tracing::warn!(
-                "add {} from backup {}: {e:#}",
-                request.namespace,
-                request.snapshot_id
-            );
-        }
-        set_adding(
-            &request.namespace,
-            Adding {
-                error: result.err().map(|e| format!("{e:#}")),
-                done: true,
-                ..running
-            },
-        );
-    });
-    Ok(Json(serde_json::json!({ "ok": true, "started": true })))
+    Ok(Json(backed_up_apps_json(&versions, &installed)))
 }
 
 // ── Cluster backup ─────────────────────────────────────────────────────────────
@@ -548,81 +320,6 @@ pub async fn list_snapshots(
     Ok(Json(
         serde_json::json!({ "snapshots": snapshots, "configured": true }),
     ))
-}
-
-/// GET /api/backups/snapshots/:id/catalog
-pub async fn snapshot_catalog(
-    State(_state): State<AppState>,
-    Path(snapshot_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    let Some(cfg) = read_master_config().await else {
-        return Err(anyhow::anyhow!("backup not configured").into());
-    };
-    let repo = cfg.restic_repo("cluster-backup");
-    let target = format!("/tmp/yolab-catalog-{}", random_hex(8));
-
-    let restore_out = restic(
-        &repo,
-        &cfg,
-        &[
-            "restore",
-            &snapshot_id,
-            "--target",
-            &target,
-            "--include",
-            "**/catalog.json",
-        ],
-    )
-    .await?;
-
-    if !restore_out.status.success() {
-        tokio::fs::remove_dir_all(&target)
-            .await
-            .debug_on_err("clean up a failed catalog extraction");
-        return Err(anyhow::anyhow!(
-            "restic restore failed: {}",
-            String::from_utf8_lossy(&restore_out.stderr).trim()
-        )
-        .into());
-    }
-
-    let find_out = Command::new("find")
-        .args([&target, "-name", "catalog.json", "-type", "f"])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("find failed: {e}"))?;
-
-    let file_path = String::from_utf8_lossy(&find_out.stdout).trim().to_string();
-    let catalog: serde_json::Value = if file_path.is_empty() {
-        serde_json::json!({"namespaces": [], "timestamp": null})
-    } else {
-        let bytes = tokio::fs::read(&file_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("read catalog.json: {e}"))?;
-        serde_json::from_slice(&bytes)
-            .unwrap_or(serde_json::json!({"namespaces": [], "timestamp": null}))
-    };
-
-    tokio::fs::remove_dir_all(&target)
-        .await
-        .debug_on_err("clean up the extracted snapshot catalog");
-    Ok(Json(catalog))
-}
-
-/// POST /api/backups/credentials/refresh — re-fetches B2 credentials from
-/// yolab-external after a key rotation.
-pub async fn refresh_credentials(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    // `?` on the check itself: not knowing whether a restore runs is not "no".
-    if restore::running_anywhere().await? {
-        return Err(
-            anyhow::anyhow!("A restore is in progress — try again once it finishes.").into(),
-        );
-    }
-    let Some((url, token)) = ye_creds(&state.config) else {
-        return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
-    };
-    refresh_master_config(&url, &token).await?;
-    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// POST /api/backups/cluster/run-now — manual trigger. Starts one backup set: every
@@ -802,71 +499,10 @@ mod tests {
         }
     }
 
-    fn add(ns: &str, snap: &str) -> AddFromBackupRequest {
-        AddFromBackupRequest {
-            namespace: ns.into(),
-            snapshot_id: snap.into(),
-        }
-    }
-
-    #[test]
-    fn an_app_is_added_only_from_a_backup_that_holds_it_and_only_when_absent() {
-        let none = std::collections::BTreeMap::new();
-        let installed: HashSet<String> = ["yolab-b".to_string()].into();
-        assert_eq!(
-            add_refusal(&add("yolab-a", "old"), &versions(), &installed, &none),
-            None
-        );
-        assert!(
-            add_refusal(&add("yolab-a", "gone"), &versions(), &installed, &none)
-                .unwrap()
-                .contains("no backup gone")
-        );
-        assert!(
-            add_refusal(&add("yolab-b", "old"), &versions(), &installed, &none)
-                .unwrap()
-                .contains("already installed")
-        );
-        let running = std::collections::BTreeMap::from([(
-            "yolab-a".to_string(),
-            Adding {
-                snapshot_id: "old".into(),
-                error: None,
-                done: false,
-            },
-        )]);
-        assert!(
-            add_refusal(&add("yolab-a", "new"), &versions(), &installed, &running)
-                .unwrap()
-                .contains("already being added")
-        );
-        let failed = std::collections::BTreeMap::from([(
-            "yolab-a".to_string(),
-            Adding {
-                snapshot_id: "old".into(),
-                error: Some("helm".into()),
-                done: true,
-            },
-        )]);
-        assert_eq!(
-            add_refusal(&add("yolab-a", "new"), &versions(), &installed, &failed),
-            None,
-            "a failed add can be retried"
-        );
-    }
-
     #[test]
     fn the_list_shows_each_backed_up_app_with_its_state_and_versions() {
         let installed: HashSet<String> = ["yolab-b".to_string()].into();
-        let adding = std::collections::BTreeMap::from([(
-            "yolab-a".to_string(),
-            Adding {
-                snapshot_id: "new".into(),
-                error: None,
-                done: false,
-            },
-        )]);
-        let v = backed_up_apps_json(&versions(), &installed, &adding);
+        let v = backed_up_apps_json(&versions(), &installed);
         assert_eq!(v["configured"], true);
         assert_eq!(
             v["apps"][0],
@@ -874,7 +510,6 @@ mod tests {
                 "namespace": "yolab-a",
                 "instance_name": "a",
                 "installed": false,
-                "adding": {"snapshot_id": "new", "error": null, "done": false},
                 "versions": [
                     {"snapshot_id": "new", "time": "2026-09-14T02:00:00Z"},
                     {"snapshot_id": "old", "time": "2026-09-14T02:00:00Z"},
@@ -882,7 +517,6 @@ mod tests {
             })
         );
         assert_eq!(v["apps"][1]["installed"], true);
-        assert_eq!(v["apps"][1]["adding"], serde_json::Value::Null);
     }
 
     #[test]

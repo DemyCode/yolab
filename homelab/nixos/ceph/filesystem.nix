@@ -22,12 +22,6 @@ with lib; let
 in {
   options.yolab.ceph.filesystem = {
     enable = mkEnableOption "CephFS for PVC storage";
-
-    name = mkOption {
-      type = types.str;
-      default = "yolab-fs";
-      description = "Must match the fsName in the yolab-cephfs StorageClass.";
-    };
   };
 
   config = mkIf (cephCfg.enable && cfg.enable) {

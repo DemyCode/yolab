@@ -87,10 +87,6 @@ export interface ScanOutputsResponse {
   outputs: AppOutput[];
 }
 
-export interface DescribeResponse {
-  output: string;
-}
-
 export interface DomainResponse {
   domain: string;
 }
