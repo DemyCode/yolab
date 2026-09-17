@@ -79,10 +79,9 @@ pub async fn nodes() -> Result<Json<Vec<NodeInfo>>> {
 }
 
 pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLink>>> {
-    let text = std::fs::read_to_string(&state.config.config_path)?;
-    let table: toml::Table = toml::from_str(&text)?;
-    let tunnel = table["tunnel"]
-        .as_table()
+    let tunnel = state
+        .config
+        .tunnel_table()
         .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))?;
     let account_token = tunnel
         .get("account_token")

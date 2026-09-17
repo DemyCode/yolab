@@ -203,6 +203,18 @@ impl Config {
         read_account_token(&self.config_path)
     }
 
+    /// The parsed `config.toml`, or `None` when it cannot be read or parsed.
+    /// Several modules used to re-read and re-parse this file themselves.
+    pub fn toml(&self) -> Option<toml::Table> {
+        let text = std::fs::read_to_string(&self.config_path).ok()?;
+        toml::from_str(&text).ok()
+    }
+
+    /// The `[tunnel]` table, or `None` when it is missing.
+    pub fn tunnel_table(&self) -> Option<toml::Table> {
+        self.toml()?.get("tunnel")?.as_table().cloned()
+    }
+
     /// A Config pointing at a throwaway `config.toml`, for tests that need to
     /// exercise password/token reads without touching the real one.
     #[cfg(test)]

@@ -643,6 +643,17 @@ async fn snapshot_cluster_inner(
     };
     let include_etcd = target.is_cluster();
 
+    // One PVC inventory for the whole run, grouped by namespace — the same source
+    // the app definition and the backup layer use. `?` on purpose: a failed read
+    // must not become "this app has no volumes".
+    let mut pvcs_by_ns: HashMap<String, Vec<PvcInfo>> = HashMap::new();
+    for pvc in list_user_pvcs().await? {
+        pvcs_by_ns
+            .entry(pvc.namespace.clone())
+            .or_default()
+            .push(pvc);
+    }
+
     // 1. etcd snapshot — archived as etcd.db in this restic snapshot, consumed only by
     //    the external dr-restore script (restore_run restores volumes + K8s objects).
     if include_etcd {
@@ -762,25 +773,17 @@ async fn snapshot_cluster_inner(
             .unwrap_or("")
             .to_string();
 
-        let pvcs: Vec<Value> = crate::kubectl::get_json(&["get", "pvc", "-n", ns, "-o", "json"])
-            .await
-            .ok()
-            .and_then(|v| v["items"].as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|item| {
-                let name = item["metadata"]["name"].as_str()?.to_string();
-                if name.starts_with("volsync-") {
-                    return None;
-                }
-                let capacity = item["spec"]["resources"]["requests"]["storage"]
-                    .as_str()
-                    .unwrap_or("?")
-                    .to_string();
-                let snap = pinned.get(&(ns.clone(), name.clone()));
-                Some(catalog_pvc(&name, &capacity, snap))
+        let pvcs: Vec<Value> = pvcs_by_ns
+            .get(ns)
+            .map(|list| {
+                list.iter()
+                    .map(|p| {
+                        let snap = pinned.get(&(ns.clone(), p.name.clone()));
+                        catalog_pvc(&p.name, &p.capacity, snap)
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
 
         let images = collect_images(&workloads);
 

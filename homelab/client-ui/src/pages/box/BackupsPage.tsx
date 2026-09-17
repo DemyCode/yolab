@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/feedback";
 import { formatDateTime } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -43,12 +44,6 @@ interface RecoveryKeyResponse {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function Shimmer({ className }: { className?: string }) {
-  return (
-    <div className={`animate-pulse rounded bg-border ${className ?? ""}`} />
-  );
-}
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -499,7 +494,7 @@ export function BackupsPage() {
         <div className="space-y-3">
           <Card>
             <CardContent className="pt-5 pb-5">
-              <Shimmer className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
             </CardContent>
           </Card>
         </div>

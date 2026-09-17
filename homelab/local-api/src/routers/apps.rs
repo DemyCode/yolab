@@ -518,20 +518,18 @@ pub(crate) fn definition_from_annotations(
 /// landed, not what the schema hoped for. Best-effort: a definition without a
 /// footprint is still a definition.
 pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec) {
-    let mut volumes = Vec::new();
-    if let Ok(v) = crate::kubectl::get_json(&["get", "pvc", "-n", ns, "-o", "json"]).await {
-        for item in v["items"].as_array().into_iter().flatten() {
-            let name = item["metadata"]["name"].as_str().unwrap_or("").to_string();
-            if name.is_empty() || name.starts_with("volsync-") {
-                continue;
-            }
-            let capacity = item["spec"]["resources"]["requests"]["storage"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            volumes.push(VolumeSpec { name, capacity });
-        }
-    }
+    // The same PVC inventory the backup layer walks, so an app's definition can
+    // never list a volume the backup would not capture (or miss one it would).
+    let volumes = crate::routers::backup_common::list_user_pvcs()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.namespace == ns)
+        .map(|p| VolumeSpec {
+            name: p.name,
+            capacity: p.capacity,
+        })
+        .collect();
 
     let mut resources = ResourceSpec::default();
     if let Ok(v) = crate::kubectl::get_json(&[
@@ -613,11 +611,7 @@ pub(crate) fn parse_memory_bytes(s: &str) -> u64 {
 }
 
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
-    let text = std::fs::read_to_string(&cfg.config_path)?;
-    let table: toml::Table = toml::from_str(&text)?;
-    table["tunnel"]
-        .as_table()
-        .cloned()
+    cfg.tunnel_table()
         .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))
 }
 

@@ -5,6 +5,17 @@ export interface AppLink {
   url: string;
 }
 
+/** chart id → how many copies of it are installed. */
+export function installedByChart(
+  apps: AppInfo[] | undefined,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const a of apps ?? []) {
+    counts.set(a.app_id, (counts.get(a.app_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /**
  * Every web address an app exposes, not just the first.
  *

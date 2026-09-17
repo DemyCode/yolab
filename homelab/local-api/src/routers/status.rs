@@ -1,7 +1,7 @@
 use axum::{extract::State, Json};
 use serde::Serialize;
 
-use crate::{error::Result, AppState};
+use crate::{config::Config, error::Result, AppState};
 
 #[derive(Serialize)]
 pub struct StatusInfo {
@@ -72,7 +72,7 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<StatusInfo>> 
         // Read here rather than held on `Config` because this is the only
         // consumer, and reading the file keeps it correct after an owner edits
         // config.toml without restarting the service.
-        console_url: platform_api_url(&state.config.config_path)
+        console_url: platform_api_url(&state.config)
             .as_deref()
             .and_then(console_url_from_api),
         error: None,
@@ -82,16 +82,11 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<StatusInfo>> 
 /// `[tunnel] platform_api_url`, or None if the file is missing or malformed.
 /// Never an error: a box with no tunnel config still has a Settings page, it
 /// simply has no console to link to.
-fn platform_api_url(config_path: &str) -> Option<String> {
-    let text = std::fs::read_to_string(config_path).ok()?;
-    let table = toml::from_str::<toml::Table>(&text).ok()?;
-    Some(
-        table
-            .get("tunnel")?
-            .get("platform_api_url")?
-            .as_str()?
-            .to_string(),
-    )
+fn platform_api_url(cfg: &Config) -> Option<String> {
+    cfg.tunnel_table()?
+        .get("platform_api_url")?
+        .as_str()
+        .map(String::from)
 }
 
 #[derive(Serialize)]
@@ -149,7 +144,7 @@ fn percent_encode(s: &str) -> String {
 /// cache and any logging on the way, thousands of times a day, for a link
 /// almost nobody clicks. Here it leaves the box once per deliberate action.
 pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleLink>> {
-    let console = platform_api_url(&state.config.config_path)
+    let console = platform_api_url(&state.config)
         .as_deref()
         .and_then(console_url_from_api)
         .ok_or_else(|| anyhow::anyhow!("no console URL for this box"))?;

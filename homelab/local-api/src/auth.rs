@@ -151,14 +151,14 @@ pub async fn init_sessions(sessions: &Sessions) {
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
 fn password_hash(cfg: &Config) -> String {
-    let text = std::fs::read_to_string(&cfg.config_path).unwrap_or_default();
-    let table: toml::Table = toml::from_str(&text).unwrap_or_default();
-    table
-        .get("homelab")
-        .and_then(|h| h.get("homelab_password_hash"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
+    cfg.toml()
+        .and_then(|t| {
+            t.get("homelab")?
+                .get("homelab_password_hash")?
+                .as_str()
+                .map(String::from)
+        })
+        .unwrap_or_default()
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
