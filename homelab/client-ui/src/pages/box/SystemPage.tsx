@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { streamEvents } from "@/lib/api";
 import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
 import { NotificationsCard } from "@/components/NotificationsCard";
 
@@ -141,23 +142,9 @@ export function SystemPage() {
     setPhase("git");
     rebuildOffsetRef.current = 0;
     try {
-      const response = await fetch(url, { method: "POST" });
-      if (response.body) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const parts = buf.split("\n\n");
-          buf = parts.pop() ?? "";
-          for (const part of parts) {
-            const line = part.startsWith("data: ") ? part.slice(6) : part;
-            if (line.trim()) appendLines([line]);
-          }
-        }
-      }
+      // The shared SSE reader, so this goes through the same base-URL/auth
+      // chokepoint as every other stream rather than its own fetch.
+      await streamEvents(url, { method: "POST" }, (line) => appendLines([line]));
     } catch {
       /* service is restarting — handled by pollRebuildLog */
     }

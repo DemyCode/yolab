@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { AppCard } from "@/components/AppCard";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { useApi } from "@/lib/useResource";
+import { installedByChart } from "@/lib/apps";
 import { GROUPS, groupFor, groupLabel } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
 import { cn } from "@/lib/utils";
@@ -39,13 +40,10 @@ export function DiscoverPage() {
   const apps = useApi<AppInfo[]>("apps", "/api/apps");
 
   /** chart id → how many copies are installed. */
-  const installedCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const a of apps.data ?? []) {
-      counts.set(a.app_id, (counts.get(a.app_id) ?? 0) + 1);
-    }
-    return counts;
-  }, [apps.data]);
+  const installedCounts = useMemo(
+    () => installedByChart(apps.data),
+    [apps.data],
+  );
 
   const grouped = useMemo(() => {
     // Browsing shows everything; narrowing is the search page's job. Built

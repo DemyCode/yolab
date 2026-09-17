@@ -10,25 +10,22 @@ use crate::{config::Config, error::Result, AppState};
 // ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
 
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
-    let text = std::fs::read_to_string(&cfg.config_path).ok()?;
-    let table: toml::Table = toml::from_str(&text).ok()?;
-    if let Some(tunnel) = table.get("tunnel").and_then(|v| v.as_table()) {
-        let url = tunnel
-            .get("platform_api_url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim_end_matches('/')
-            .to_string();
-        let token = tunnel
-            .get("account_token")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !url.is_empty() && !token.is_empty() {
-            return Some((url, token));
-        }
+    let tunnel = cfg.tunnel_table()?;
+    let url = tunnel
+        .get("platform_api_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
+    let token = tunnel
+        .get("account_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if url.is_empty() || token.is_empty() {
+        return None;
     }
-    None
+    Some((url, token))
 }
 
 pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {

@@ -388,6 +388,9 @@ pub(crate) async fn ensure_restic_secret_for_repo(
 pub(crate) struct PvcInfo {
     pub namespace: String,
     pub name: String,
+    /// Requested storage, verbatim (e.g. "50Gi"), for the catalog and the app
+    /// definition. `?` when a PVC somehow has no request.
+    pub capacity: String,
 }
 
 /// Every PVC in a `yolab.io/managed=true` namespace — deliberately the SAME set the
@@ -426,6 +429,10 @@ pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
             Some(PvcInfo {
                 namespace: ns,
                 name,
+                capacity: item["spec"]["resources"]["requests"]["storage"]
+                    .as_str()
+                    .unwrap_or("?")
+                    .to_string(),
             })
         })
         .collect())

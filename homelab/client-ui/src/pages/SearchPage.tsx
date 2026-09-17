@@ -6,6 +6,7 @@ import { AppCard } from "@/components/AppCard";
 import { Input } from "@/components/ui/input";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { useApi } from "@/lib/useResource";
+import { installedByChart } from "@/lib/apps";
 import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
@@ -46,13 +47,10 @@ export default function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
-  const installedCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const a of apps.data ?? []) {
-      counts.set(a.app_id, (counts.get(a.app_id) ?? 0) + 1);
-    }
-    return counts;
-  }, [apps.data]);
+  const installedCounts = useMemo(
+    () => installedByChart(apps.data),
+    [apps.data],
+  );
 
   /** Every source present in the catalog, so the filter lists only real options. */
   const sources = useMemo(() => {
