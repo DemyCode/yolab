@@ -63,10 +63,14 @@ fi
 # still points at *this* tunnel's IPv6. After a backup restore, the cached state
 # carries an OLD tunnel/IPv6, while the live DNS record for this service name may
 # have been repointed at a newer tunnel — leaving the app unreachable even though
-# the reused tunnel is valid. POST /records is an upsert-by-name on the platform
-# (it deletes any existing record with the same name, then inserts), so re-asserting
-# here makes the DNS name always resolve to whatever tunnel we are actually running.
-# This is what makes "restore" self-healing: no manual state cleanup required.
+# the reused tunnel is valid. POST /records is idempotent for the SAME tunnel
+# (it updates that tunnel's own record in place), so re-asserting here makes the
+# DNS name always resolve to whatever tunnel we are actually running. This is
+# what makes "restore" self-healing: no manual state cleanup required.
+#
+# A name held by a DIFFERENT tunnel is now a 409, not a silent takeover. On the
+# reuse path that is deliberately non-fatal below: the other app owns the name,
+# and the next real change of name (or an uninstall) clears the conflict.
 if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
     echo "Re-asserting DNS record '$SERVICE_NAME' -> $SUB_IPV6..."
     REASSERT_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
@@ -122,6 +126,13 @@ if [ "$REUSE" = "0" ]; then
         RECORD_BODY=$(printf '%s' "$RECORD_RESP" | head -n -1)
         if [ "$RECORD_HTTP" -lt 200 ] || [ "$RECORD_HTTP" -ge 300 ]; then
             echo "ERROR: POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" >&2
+            # The tunnel was created a moment ago and exists only to carry this
+            # name. The state file is written below, so every crash-loop retry
+            # takes this same fresh path — leaving the tunnel behind would leak
+            # one tunnel + IPv6 per retry. Delete it, best-effort, then fail.
+            curl -s -o /dev/null --max-time 10 -X DELETE \
+                -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+                "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || true
             exit 1
         fi
         FQDN=$(printf '%s' "$RECORD_BODY" | jq -r .fqdn)
