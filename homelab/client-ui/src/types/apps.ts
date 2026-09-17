@@ -25,6 +25,18 @@ export interface AppInfo {
   outputs: AppOutput[];
   outputs_spec: OutputSpec[];
   config: Record<string, unknown>;
+  /** This app's own backup policy and last successful backup. */
+  backup: AppBackupStatus;
+}
+
+export interface AppBackupStatus {
+  enabled: boolean;
+  /** Five-field cron expression, e.g. "0 3 * * *". */
+  schedule: string;
+  /** RFC 3339 when this app last backed up successfully, or null if never. */
+  last_ok_at: string | null;
+  /** A backup of this app is running right now. */
+  running: boolean;
 }
 
 export interface CatalogApp {

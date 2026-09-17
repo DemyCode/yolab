@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  History,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -22,6 +23,7 @@ import {
   Spinner,
 } from "@/components/ui/feedback";
 import { Card } from "@/components/ui/card";
+import { Input, Select } from "@/components/ui/input";
 import { api, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import {
@@ -414,6 +416,168 @@ function RestoreDialog({
   );
 }
 
+const BACKUP_PRESETS: { label: string; cron: string }[] = [
+  { label: "Every day at 03:00", cron: "0 3 * * *" },
+  { label: "Every 6 hours", cron: "0 */6 * * *" },
+  { label: "Every week (Sunday 03:00)", cron: "0 3 * * 0" },
+  { label: "Every month (1st, 03:00)", cron: "0 3 1 * *" },
+];
+
+function backupWhen(iso: string | null): string {
+  if (!iso) return "Never backed up yet";
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * One app's backup: its own button and its own schedule.
+ *
+ * Backups used to be one cluster-wide run on one clock. An app page could only
+ * restore, never back up on demand, and every app shared a 24-hour interval. The
+ * schedule is a cron expression because "daily at 3am" is not the only shape a
+ * homelab wants, and the backend validates it so a typo is rejected here rather
+ * than silently skipped forever.
+ */
+function BackupCard({ app, onChanged }: { app: AppInfo; onChanged: () => void }) {
+  const [enabled, setEnabled] = useState(app.backup.enabled);
+  const [schedule, setSchedule] = useState(app.backup.schedule);
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(app.backup.running);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setEnabled(app.backup.enabled);
+    setSchedule(app.backup.schedule);
+  }, [app.backup.enabled, app.backup.schedule]);
+  useEffect(() => setRunning(app.backup.running), [app.backup.running]);
+
+  const dirty =
+    enabled !== app.backup.enabled || schedule !== app.backup.schedule;
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await api.put(`/api/apps/${app.instance_name}/backup`, {
+        enabled,
+        schedule,
+      });
+      setSaved(true);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the schedule");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function backupNow() {
+    setRunning(true);
+    setError(null);
+    try {
+      await api.post(
+        `/api/backups/apps/yolab-${app.instance_name}/run-now`,
+      );
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start a backup");
+      setRunning(false);
+    }
+  }
+
+  const isPreset = BACKUP_PRESETS.some((p) => p.cron === schedule);
+
+  return (
+    <section className="mt-6">
+      <h2 className="mb-2 text-sm font-medium text-fg">Backups</h2>
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm text-fg">
+              {running
+                ? "Backing up now…"
+                : enabled
+                  ? "Automatic backups on"
+                  : "Automatic backups off"}
+            </div>
+            <div className="mt-0.5 text-xs text-fg-muted">
+              Last backup: {backupWhen(app.backup.last_ok_at)}
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => void backupNow()}
+            loading={running}
+          >
+            <History className="h-4 w-4" />
+            Back up now
+          </Button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <label className="flex items-center gap-2 text-sm text-fg">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="accent-primary"
+            />
+            Back this app up automatically
+          </label>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Select
+              value={isPreset ? schedule : "__custom"}
+              onChange={(e) => {
+                if (e.target.value !== "__custom") setSchedule(e.target.value);
+              }}
+              aria-label="Backup frequency"
+              className="sm:w-64"
+            >
+              {BACKUP_PRESETS.map((p) => (
+                <option key={p.cron} value={p.cron}>
+                  {p.label}
+                </option>
+              ))}
+              <option value="__custom">Custom…</option>
+            </Select>
+            <Input
+              value={schedule}
+              onChange={(e) => setSchedule(e.target.value)}
+              aria-label="Backup cron expression"
+              spellCheck={false}
+              className="font-mono sm:flex-1"
+            />
+            <Button
+              onClick={() => void save()}
+              loading={saving}
+              disabled={!dirty}
+            >
+              Save
+            </Button>
+          </div>
+          <p className="text-xs text-fg-subtle">
+            A five-field cron expression: minute hour day month weekday. Times are
+            the server's local time. For example, <code>0 3 * * *</code> is every
+            day at 03:00.
+          </p>
+          {saved && !dirty && (
+            <p className="text-xs text-success">Schedule saved.</p>
+          )}
+          {error && <p className="text-xs text-danger">{error}</p>}
+        </div>
+      </Card>
+    </section>
+  );
+}
+
 export function AppDetailPage() {
   const { instanceName } = useParams<{ instanceName: string }>();
   const navigate = useNavigate();
@@ -767,6 +931,8 @@ export function AppDetailPage() {
           Remove
         </Button>
       </div>
+
+      <BackupCard app={app} onChanged={() => void apps.refresh()} />
 
       <RestoreDialog
         instanceName={app.instance_name}
