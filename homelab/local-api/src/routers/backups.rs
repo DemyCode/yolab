@@ -638,6 +638,21 @@ pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde
     ))
 }
 
+/// POST /api/backups/apps/:namespace/run-now — back up one app now. Its own PVCs
+/// and its own saved objects; no etcd, which belongs to the cluster-wide run.
+pub async fn run_app_backup_now(Path(namespace): Path<String>) -> Result<Json<serde_json::Value>> {
+    if read_master_config().await.is_none() {
+        return Err(anyhow::anyhow!("backup not configured").into());
+    }
+    if !namespace.starts_with("yolab-") {
+        return Err(anyhow::anyhow!("{namespace} is not an app namespace").into());
+    }
+    let name = backup::start_app(&namespace, "manual").await?;
+    Ok(Json(
+        serde_json::json!({ "ok": true, "started": true, "name": name }),
+    ))
+}
+
 // ── Per-namespace install-time hook ───────────────────────────────────────────
 
 /// Creates the restic secret and ReplicationSource for a single namespace at install

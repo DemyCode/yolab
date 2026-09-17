@@ -7,6 +7,7 @@ mod cephfs;
 mod charts;
 mod config;
 mod controllers;
+mod cron;
 mod csi;
 mod disks_reconciler;
 mod error;
@@ -170,6 +171,10 @@ async fn main() {
             post(backups::run_backup_now),
         )
         .route(
+            "/api/backups/apps/:namespace/run-now",
+            post(backups::run_app_backup_now),
+        )
+        .route(
             "/api/backups/snapshots/:id/catalog",
             get(backups::snapshot_catalog),
         )
@@ -263,6 +268,10 @@ async fn main() {
         .route(
             "/api/apps/catalog/:id/refresh",
             post(apps::refresh_catalog_app),
+        )
+        .route(
+            "/api/apps/install-failures",
+            get(apps::list_install_failures),
         )
         .route("/api/apps", get(apps::list_apps))
         // POST installs (uses app_id), DELETE uninstalls (uses instance_name) â same slot

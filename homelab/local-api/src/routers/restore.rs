@@ -120,7 +120,7 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     };
     // Resolve the snapshot up front so the record (and the page) always shows the
     // concrete id being restored, even for "restore latest".
-    let resolved = resolve_snapshot(&cfg, snapshot_id).await?;
+    let resolved = resolve_snapshot(&cfg, namespace, snapshot_id).await?;
     let Some(snapshot_id) = resolved else {
         anyhow::bail!("no cluster-backup snapshot to restore from");
     };
@@ -531,6 +531,27 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
 
 /// Install an app that is not on this machine from one backup.
 ///
+/// A FRESH INSTALL, NOT A REPLAY OF OLD OBJECTS. Kubernetes cannot resurrect a
+/// process — only a Pod newly scheduled from a spec, which always runs its
+/// init containers, restore or not, the same as any ordinary restart. So there
+/// is nothing to "crystallize" at the Kubernetes-object level: the Deployment,
+/// Service, and every Secret and ConfigMap in this catalog are entirely
+/// reproducible from the CURRENT chart plus two crystallized inputs —
+///
+///   - the app's DATA: its volumes, restored byte-for-byte from the backup
+///     before the chart is installed (see below for why the order matters);
+///   - the app's CONFIG: the install form's values (`saved_config`), read from
+///     the backup and handed to `helm install` exactly as a person would type
+///     them. Every credential in this catalog derives from these values or
+///     from `yolab-config` (written by the install itself, from the same
+///     values) — nothing here is chart-generated randomness with no way back.
+///
+/// So the chart is installed once, with the restored config, and nothing else
+/// from the backed-up namespace is ever applied. Doing so used to put the OLD
+/// Deployment (an old image, a WireGuard tunnel the platform had since
+/// deleted) and a stale copy of Helm's own release bookkeeping straight back
+/// over the fresh install — undoing it, silently.
+///
 /// DATA FIRST, THEN THE APP. Its volumes are created under the names its chart
 /// uses and filled from the backup; only then is the chart installed, and it
 /// adopts them. The app never runs on an empty volume, so nothing it does at
@@ -610,11 +631,11 @@ pub(crate) async fn reinstall_from_backup(
 
     let result = async {
         install.run().await?;
-        // Everything else the app had — Secrets it generated at its first
-        // start, among them — as the backup saved it. Never the chart's own
-        // Deployments/Services or Helm's release bookkeeping: those must come
-        // from the install that just ran, not from whatever was live when the
-        // backup was taken (see `keep_for_reinstall`).
+        // What the app generated for itself — an admin password, a signing key —
+        // which the chart cannot recreate and the restored data was encrypted or
+        // signed with. NEVER the chart's own Deployments/Services or Helm's
+        // release bookkeeping: those come from the install that just ran (see
+        // `keep_for_reinstall`).
         if let Some(reapply) = objects_to_reapply(&objects) {
             kubectl_apply(&reapply.to_string())
                 .await
@@ -698,6 +719,16 @@ fn keep_for_reinstall(item: &Value) -> bool {
     }
     if kind == "Secret" && item["type"].as_str() == Some("helm.sh/release.v1") {
         return false;
+    }
+    // local-api's OWN records. The install that just ran wrote the current
+    // definition and tunnel credentials; the backup's copies may describe a
+    // different name, chart or schedule. Putting those back would silently undo
+    // the install the user just confirmed.
+    if kind == "Secret" {
+        let name = item["metadata"]["name"].as_str().unwrap_or("");
+        if matches!(name, "yolab-config" | "yolab-tunnel-credentials") {
+            return false;
+        }
     }
     true
 }
@@ -911,10 +942,15 @@ fn parse_deployment_scales(v: &Value) -> anyhow::Result<Vec<DeploymentScale>> {
         .collect()
 }
 
-/// Resolves the snapshot id to restore from: the caller's explicit choice, or the
-/// newest `cluster-backup` snapshot.
+/// Resolves the snapshot id to restore from: the caller's explicit choice, or
+/// the newest `cluster-backup` snapshot that actually CONTAINS this app.
+///
+/// With per-app backups the newest snapshot in the repository is usually another
+/// app's, and restoring from it would find no `<namespace>.yaml` — so "restore
+/// latest" has to be scoped to the app, not the repo.
 async fn resolve_snapshot(
     cfg: &BackupConfig,
+    namespace: &str,
     requested: Option<String>,
 ) -> anyhow::Result<Option<String>> {
     if requested.is_some() {
@@ -922,7 +958,7 @@ async fn resolve_snapshot(
     }
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
-    let out = restic(
+    let Some(snapshots) = restic_json(
         &repo,
         cfg,
         &[
@@ -933,24 +969,29 @@ async fn resolve_snapshot(
             "cluster-backup",
         ],
     )
-    .await?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "could not list snapshots: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let v: Value = serde_json::from_slice(&out.stdout)?;
-    Ok(newest_snapshot_id(&v))
-}
-
-fn newest_snapshot_id(snapshots: &Value) -> Option<String> {
-    snapshots
-        .as_array()?
-        .iter()
-        .max_by_key(|s| s["time"].as_str().unwrap_or("").to_string())?["id"]
-        .as_str()
-        .map(String::from)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let found = restic_json(
+        &repo,
+        cfg,
+        &[
+            "find",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+            "*.yaml",
+        ],
+    )
+    .await?
+    .unwrap_or(Value::Null);
+    let apps = versions_by_app(&snapshots, &found);
+    Ok(apps
+        .get(namespace)
+        .and_then(|v| v.first())
+        .map(|v| v.snapshot_id.clone()))
 }
 
 async fn snapshot_time(repo: &str, cfg: &BackupConfig, id: &str) -> Option<String> {
@@ -1333,21 +1374,6 @@ mod tests {
         assert_eq!(sets.len(), 2);
         assert_eq!(sets[0].id, "a");
         assert_eq!(sets[0].state, "succeeded");
-    }
-
-    #[test]
-    fn newest_snapshot_id_picks_latest() {
-        let v = json!([
-            {"id": "old", "time": "2026-01-01T00:00:00Z"},
-            {"id": "new", "time": "2026-01-02T00:00:00Z"},
-        ]);
-        assert_eq!(newest_snapshot_id(&v).as_deref(), Some("new"));
-    }
-
-    #[test]
-    fn newest_snapshot_id_is_none_when_empty() {
-        assert_eq!(newest_snapshot_id(&json!([])), None);
-        assert_eq!(newest_snapshot_id(&json!({})), None);
     }
 
     fn t(s: &str) -> chrono::DateTime<Utc> {

@@ -29,6 +29,10 @@ pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
 pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 
 const ANN_CONFIG: &str = "yolab.io/config";
+/// The app's backup policy, as JSON `{enabled, schedule}`. On the namespace so
+/// `list_apps` can show it from the namespace list it already fetches, without a
+/// Secret read per app.
+const ANN_BACKUP: &str = "yolab.io/backup";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
 /// Marks a namespace as having an uninstall in flight.
 ///
@@ -82,6 +86,30 @@ pub struct AppInfo {
     pub outputs: Vec<AppOutput>,
     pub outputs_spec: Vec<OutputSpec>,
     pub config: serde_json::Map<String, Value>,
+    /// This app's backup policy and last successful backup, so its tile and page
+    /// can show both without a second request.
+    pub backup: AppBackupStatus,
+}
+
+#[derive(Serialize)]
+pub struct AppBackupStatus {
+    pub enabled: bool,
+    pub schedule: String,
+    /// When this app last backed up successfully, RFC 3339, if ever.
+    pub last_ok_at: Option<String>,
+    /// Whether a backup of this app is running right now.
+    pub running: bool,
+}
+
+impl Default for AppBackupStatus {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            schedule: "0 3 * * *".to_string(),
+            last_ok_at: None,
+            running: false,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -212,31 +240,6 @@ fn redact_credentials(
         .collect()
 }
 
-/// Persist an app's config: the real thing in a Secret, a redacted copy in the
-/// annotation (what `list_apps` reads for every app at once, without a Secret
-/// fetch per namespace).
-///
-/// The Secret is the ONLY copy of the app's credentials, so failing to write it
-/// is an error the caller reports: an app whose settings were not saved cannot
-/// be reconfigured without its passwords.
-async fn write_config(
-    ns: &str,
-    config: &serde_json::Map<String, Value>,
-    uischema: &Value,
-) -> anyhow::Result<()> {
-    let full = serde_json::to_string(config)?;
-    crate::kubectl::apply_secret(
-        CONFIG_SECRET,
-        ns,
-        &[(CONFIG_SECRET_KEY, full.as_str())],
-        &[("yolab.io/managed", "true")],
-    )
-    .await?;
-    let redacted = redact_credentials(config, &credential_fields(uischema));
-    annotate_ns(ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
-    Ok(())
-}
-
 /// An app's config, credentials included, from its Secret — the only place it
 /// lives. Never from the annotation: that copy is redacted, and an update built
 /// on it would hand helm the literal "__redacted__" as the app's password.
@@ -256,6 +259,269 @@ fn parse_saved_config(
     })?;
     serde_json::from_str(raw)
         .map_err(|e| anyhow::anyhow!("{ns}: the saved settings are unreadable: {e}"))
+}
+
+// ── The app definition ────────────────────────────────────────────────────────
+//
+// ONE RECORD OF WHAT AN APP IS, written at install and read by everything else.
+//
+// Before this, three places each carried their own idea of the app: the install
+// path wrote annotations + a config Secret, the backup path re-derived identity
+// from those annotations, and restore reverse-engineered the config back out of
+// a backed-up Secret. They could disagree, and adding a field (a schedule, a
+// resource footprint) meant teaching all three. The definition is the single
+// source of truth; the annotation remains only as a cheap redacted cache that
+// `list_apps` reads without a Secret fetch per namespace.
+//
+// It lives in the SAME `yolab-config` Secret as `config.json`, under `app.json`,
+// so there is one Secret to fetch and one to back up. `config.json` is kept
+// because it is what older readers (and `helm`-time callers) expect; the
+// definition supersedes it but does not orphan it.
+
+pub(crate) const DEFINITION_SCHEMA: u32 = 1;
+const DEFINITION_SECRET_KEY: &str = "app.json";
+
+/// One volume an app owns, as recorded at install. Name + capacity is enough to
+/// recreate it on a new cluster and to size a rebuild.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VolumeSpec {
+    pub name: String,
+    pub capacity: String,
+}
+
+/// The app's footprint, summed from its rendered workloads. This is what a
+/// "can this cluster hold everything back?" check and a rebuild manifest need,
+/// and it is deliberately taken from the chart's spec rather than from live pod
+/// usage, which is runtime noise.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResourceSpec {
+    #[serde(default)]
+    pub cpu_millicores: u64,
+    #[serde(default)]
+    pub memory_bytes: u64,
+    #[serde(default)]
+    pub gpu: u64,
+    #[serde(default)]
+    pub replicas: u64,
+}
+
+/// Whether and when this app backs itself up.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BackupPolicy {
+    pub enabled: bool,
+    /// A five-field cron expression, e.g. `0 3 * * *`. See `crate::cron`.
+    pub schedule: String,
+}
+
+impl Default for BackupPolicy {
+    fn default() -> Self {
+        // Nightly at 03:00. A homelab that never chose a schedule still gets one,
+        // and the app page makes it editable.
+        Self {
+            enabled: true,
+            schedule: "0 3 * * *".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AppDefinition {
+    pub schema: u32,
+    pub app_id: String,
+    #[serde(default)]
+    pub chart_repo: String,
+    #[serde(default)]
+    pub chart_version: String,
+    pub instance_name: String,
+    #[serde(default)]
+    pub service_name: String,
+    pub config: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub volumes: Vec<VolumeSpec>,
+    #[serde(default)]
+    pub resources: ResourceSpec,
+    #[serde(default)]
+    pub backup: BackupPolicy,
+}
+
+/// Persist the definition and the redacted annotation in one Secret write.
+pub(crate) async fn write_definition(
+    ns: &str,
+    def: &AppDefinition,
+    uischema: &Value,
+) -> anyhow::Result<()> {
+    let full = serde_json::to_string(def)?;
+    let config_json = serde_json::to_string(&def.config)?;
+    crate::kubectl::apply_secret(
+        CONFIG_SECRET,
+        ns,
+        &[
+            (CONFIG_SECRET_KEY, config_json.as_str()),
+            (DEFINITION_SECRET_KEY, full.as_str()),
+        ],
+        &[("yolab.io/managed", "true")],
+    )
+    .await?;
+    let redacted = redact_credentials(&def.config, &credential_fields(uischema));
+    annotate_ns(ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
+    annotate_ns(ns, ANN_BACKUP, &serde_json::to_string(&def.backup)?).await;
+    Ok(())
+}
+
+/// An app's definition. Falls back to reconstructing one from the config Secret
+/// and namespace annotations for apps installed before definitions existed.
+pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
+    let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
+    if let Some(raw) = data.get(DEFINITION_SECRET_KEY) {
+        if let Ok(def) = serde_json::from_str::<AppDefinition>(raw) {
+            return Ok(def);
+        }
+        tracing::warn!("{ns}: {DEFINITION_SECRET_KEY} is unreadable — falling back to annotations");
+    }
+    let config = parse_saved_config(ns, &data)?;
+    let ns_v = crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"])
+        .await?
+        .unwrap_or(Value::Null);
+    Ok(definition_from_annotations(&ns_v, config))
+}
+
+/// Best-effort read for callers (the scheduler) that can treat a missing
+/// definition as "use the default policy".
+pub(crate) async fn read_definition_opt(ns: &str) -> Option<AppDefinition> {
+    read_definition(ns).await.ok()
+}
+
+/// The definition for an app with no `app.json`, rebuilt from what the namespace
+/// annotations and config Secret already say.
+pub(crate) fn definition_from_annotations(
+    ns_v: &Value,
+    config: serde_json::Map<String, Value>,
+) -> AppDefinition {
+    let ann = ns_v["metadata"]["annotations"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let get = |k: &str| {
+        ann.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let name = ns_v["metadata"]["name"].as_str().unwrap_or("");
+    AppDefinition {
+        schema: DEFINITION_SCHEMA,
+        app_id: get(ANN_APP_ID),
+        chart_repo: get(ANN_CHART_REPO),
+        chart_version: get(ANN_CHART_VERSION),
+        instance_name: name.trim_start_matches("yolab-").to_string(),
+        service_name: String::new(),
+        config,
+        volumes: Vec::new(),
+        resources: ResourceSpec::default(),
+        backup: BackupPolicy::default(),
+    }
+}
+
+/// Read an app's volumes and resource footprint from the live cluster.
+///
+/// Called after install/update so the definition describes what actually
+/// landed, not what the schema hoped for. Best-effort: a definition without a
+/// footprint is still a definition.
+pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec) {
+    let mut volumes = Vec::new();
+    if let Ok(v) = crate::kubectl::get_json(&["get", "pvc", "-n", ns, "-o", "json"]).await {
+        for item in v["items"].as_array().into_iter().flatten() {
+            let name = item["metadata"]["name"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || name.starts_with("volsync-") {
+                continue;
+            }
+            let capacity = item["spec"]["resources"]["requests"]["storage"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            volumes.push(VolumeSpec { name, capacity });
+        }
+    }
+
+    let mut resources = ResourceSpec::default();
+    if let Ok(v) = crate::kubectl::get_json(&[
+        "get",
+        "deploy,statefulset,daemonset",
+        "-n",
+        ns,
+        "-o",
+        "json",
+    ])
+    .await
+    {
+        for item in v["items"].as_array().into_iter().flatten() {
+            let replicas = item["spec"]["replicas"].as_u64().unwrap_or(1);
+            resources.replicas += replicas;
+            for c in item["spec"]["template"]["spec"]["containers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let Some(req) = c["resources"]["requests"].as_object() else {
+                    continue;
+                };
+                if let Some(cpu) = req.get("cpu").and_then(|v| v.as_str()) {
+                    resources.cpu_millicores += parse_cpu_millicores(cpu) * replicas;
+                }
+                if let Some(mem) = req.get("memory").and_then(|v| v.as_str()) {
+                    resources.memory_bytes += parse_memory_bytes(mem) * replicas;
+                }
+                for (k, v) in req {
+                    if k.ends_with("/gpu") {
+                        if let Some(n) = v.as_str().and_then(|s| s.parse::<u64>().ok()) {
+                            resources.gpu += n * replicas;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (volumes, resources)
+}
+
+/// Kubernetes CPU quantity → millicores: `100m` = 100, `1` = 1000, `0.5` = 500.
+pub(crate) fn parse_cpu_millicores(s: &str) -> u64 {
+    let s = s.trim();
+    if let Some(m) = s.strip_suffix('m') {
+        return m.trim().parse::<f64>().unwrap_or(0.0).round() as u64;
+    }
+    if let Some(n) = s.strip_suffix('n') {
+        return (n.trim().parse::<f64>().unwrap_or(0.0) / 1_000_000.0).round() as u64;
+    }
+    (s.parse::<f64>().unwrap_or(0.0) * 1000.0).round() as u64
+}
+
+/// Kubernetes memory quantity → bytes. Binary (Ki/Mi/Gi/Ti) and decimal
+/// (k/M/G/T) suffixes, plus a bare number.
+pub(crate) fn parse_memory_bytes(s: &str) -> u64 {
+    let s = s.trim();
+    let (num, mult) = if let Some(n) = s.strip_suffix("Ki") {
+        (n, 1024u64)
+    } else if let Some(n) = s.strip_suffix("Mi") {
+        (n, 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("Gi") {
+        (n, 1024 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("Ti") {
+        (n, 1024 * 1024 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix('k') {
+        (n, 1000)
+    } else if let Some(n) = s.strip_suffix('M') {
+        (n, 1_000_000)
+    } else if let Some(n) = s.strip_suffix('G') {
+        (n, 1_000_000_000)
+    } else if let Some(n) = s.strip_suffix('T') {
+        (n, 1_000_000_000_000)
+    } else {
+        (s, 1)
+    };
+    num.trim().parse::<f64>().unwrap_or(0.0) as u64 * mult
 }
 
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
@@ -445,8 +711,14 @@ fn build_values(
 /// Helm writes progress and errors to stderr, so both are forwarded — the old
 /// `kubectl apply` streamer only forwarded stdout, which is why a failed apply surfaced
 /// as a bare exit code with no explanation.
+///
+/// `failed` is set when helm exits non-zero (or cannot be spawned). A stream cannot
+/// return a value, and the install path needs the outcome to decide whether to roll
+/// back what it just created — so the outcome is a shared flag the caller reads after
+/// draining the stream.
 fn helm_stream(
     args: Vec<String>,
+    failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
         let child = tokio::process::Command::new("helm")
@@ -457,6 +729,7 @@ fn helm_stream(
         let mut guard = match child {
             Ok(c) => KillOnDrop(c),
             Err(e) => {
+                failed.store(true, std::sync::atomic::Ordering::Relaxed);
                 yield Ok(Event::default().data(format!("[ERROR] could not run helm: {e}")));
                 return;
             }
@@ -482,6 +755,7 @@ fn helm_stream(
         }
         let rc = guard.0.wait().await.map(|s| s.code().unwrap_or(1)).unwrap_or(1);
         if rc != 0 {
+            failed.store(true, std::sync::atomic::Ordering::Relaxed);
             yield Ok(Event::default().data(format!("[ERROR] helm exited {rc}")));
         }
     }
@@ -939,6 +1213,7 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
 
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let catalog_dir = state.config.catalog_dir();
+    let backup_status = crate::routers::backup::app_backup_status().await;
     let ns_selector = format!("{LABEL_MANAGED}=true");
     let ns_args = ["get", "namespaces", "-l", &ns_selector, "-o", "json"];
     let pod_args = ["get", "pods", "--all-namespaces", "-o", "json"];
@@ -1039,6 +1314,16 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             })
             .collect();
 
+        let policy: BackupPolicy = ann
+            .get(ANN_BACKUP)
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let (last_ok_at, running) = backup_status
+            .get(&format!("yolab-{name}"))
+            .cloned()
+            .unwrap_or((None, false));
+
         apps.push(AppInfo {
             app_id: id,
             instance_id: split_instance_name(&name).1.map(str::to_string),
@@ -1048,6 +1333,12 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             outputs: normalize_outputs(&ann),
             outputs_spec,
             config,
+            backup: AppBackupStatus {
+                enabled: policy.enabled,
+                schedule: policy.schedule,
+                last_ok_at,
+                running,
+            },
         });
     }
     Ok(Json(apps))
@@ -1183,7 +1474,15 @@ pub async fn install_app(
                 return;
             }
         };
-        let StagedInstall { ns, chart_dir, values: tmp } = staged;
+        let StagedInstall {
+            ns,
+            app_id,
+            chart_repo,
+            chart_version,
+            service_name,
+            chart_dir,
+            values: tmp,
+        } = staged;
 
         yield Ok(Event::default().data("Installing chart..."));
         // `upgrade --install` rather than `install`: a retry after a partial failure then
@@ -1206,11 +1505,50 @@ pub async fn install_app(
             "-n".into(), ns.clone(),
             "--values".into(), tmp.path().to_string_lossy().to_string(),
         ];
-        let s = helm_stream(args);
+        let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s = helm_stream(args, failed.clone());
         tokio::pin!(s);
         use futures::StreamExt;
         while let Some(ev) = s.next().await { yield ev; }
         drop(tmp);
+
+        // AN INSTALL THAT FAILED IS NOT AN INSTALL. Before this, a failed helm left
+        // the namespace and tunnel-credentials Secret behind, and the app then showed
+        // up on the home page as a forever-"starting" tile nobody could retry. Roll
+        // back everything this attempt created: `helm uninstall` first so the chart's
+        // pre-delete hook deletes the WireGuard tunnel (a DNS name now belongs to
+        // exactly one tunnel, so leaving it would block the retry), then the namespace.
+        if failed.load(std::sync::atomic::Ordering::Relaxed) {
+            rollback_failed_install(&ns, &instance_name).await;
+            record_install_failure(&instance_name, &app_id, "helm install failed — see the log");
+            yield Ok(Event::default().data(format!(
+                "[ERROR] {app_id} could not be installed; nothing was left behind. The log above is helm's own."
+            )));
+            return;
+        }
+
+        // Record what actually landed, not what the schema hoped for.
+        let (volumes, resources) = collect_runtime(&ns).await;
+        let def = AppDefinition {
+            schema: DEFINITION_SCHEMA,
+            app_id: app_id.clone(),
+            chart_repo: chart_repo.clone(),
+            chart_version: chart_version.clone(),
+            instance_name: instance_name.clone(),
+            service_name: service_name.clone(),
+            config: body.config.clone(),
+            volumes,
+            resources,
+            backup: BackupPolicy::default(),
+        };
+        // The real config goes in a Secret; a copy with credentials redacted stays
+        // on the namespace, where list_apps can read every app's at once.
+        if let Err(e) = write_definition(&ns, &def, &chart_uischema(&state.config.catalog_dir(), &app_id)).await {
+            yield Ok(Event::default().data(format!(
+                "[ERROR] {app_id} was installed, but its settings could not be saved ({e}) — reinstall it before changing its settings"
+            )));
+            return;
+        }
 
         // Wire up VolSync ReplicationSource(s) for any PVCs this app created. Best-effort:
         // the hourly replication-source reconciler self-heals a failure here within the
@@ -1220,24 +1558,73 @@ pub async fn install_app(
                 "[WARN] backup was not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
             )));
         }
-        // The real config goes in a Secret; a copy with credentials redacted stays
-        // on the namespace, where list_apps can read every app's at once. See
-        // write_config for why it is no longer all in the annotation.
-        if let Err(e) = write_config(&ns, &body.config, &chart_uischema(&state.config.catalog_dir(), &id)).await {
-            yield Ok(Event::default().data(format!(
-                "[ERROR] {id} was installed, but its settings could not be saved ({e}) — reinstall it before changing its settings"
-            )));
-            return;
-        }
-        yield Ok(Event::default().data(format!("[DONE] {id} installed — run 'Scan outputs' once the pod is ready")));
+        yield Ok(Event::default().data(format!("[DONE] {app_id} installed — run 'Scan outputs' once the pod is ready")));
     };
 
     Sse::new(stream).into_response()
 }
 
+/// Removes everything a failed install created: the Helm release first (so the
+/// chart's pre-delete hook can delete the WireGuard tunnel it registered), then
+/// the namespace. Best-effort throughout — the caller has already decided the
+/// install failed, and a cleanup that itself fails must not turn into a second
+/// error the user has to reason about.
+pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
+    crate::exec::checked(
+        "helm",
+        &["uninstall", instance_name, "-n", ns],
+        std::time::Duration::from_secs(120),
+    )
+    .await
+    .debug_on_err(format!("rollback {ns}: helm uninstall"));
+    crate::kubectl::run(&["delete", "namespace", ns, "--wait=false"])
+        .await
+        .debug_on_err(format!("rollback {ns}: delete namespace"));
+}
+
+/// Records a failed install so the home page can say what happened and offer a
+/// retry, rather than the attempt vanishing with the stream.
+fn record_install_failure(instance_name: &str, app_id: &str, error: &str) {
+    INSTALL_FAILURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            instance_name.to_string(),
+            serde_json::json!({
+                "instance_name": instance_name,
+                "app_id": app_id,
+                "error": error,
+                "at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+}
+
+/// Failed installs from this process, by instance name. In memory on purpose:
+/// the app it would have produced is gone (rolled back), so there is nothing
+/// durable to hang it on — it exists to explain the most recent attempt on the
+/// node the person is looking at.
+static INSTALL_FAILURES: std::sync::Mutex<std::collections::BTreeMap<String, Value>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// GET /api/apps/install-failures — installs that rolled back, newest first.
+pub async fn list_install_failures() -> Json<Vec<Value>> {
+    let map = INSTALL_FAILURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut items: Vec<Value> = map.values().cloned().collect();
+    items.reverse();
+    Json(items)
+}
+
 /// Everything an install needs before `helm upgrade --install` runs.
 struct StagedInstall {
     ns: String,
+    /// The identity the definition records: which chart, from where, at what
+    /// version, and the tunnel name resolved from the config.
+    app_id: String,
+    chart_repo: String,
+    chart_version: String,
+    service_name: String,
     chart_dir: std::path::PathBuf,
     /// The values file; removed when dropped, so it must outlive the helm call.
     values: tempfile::NamedTempFile,
@@ -1281,6 +1668,10 @@ async fn stage_install(
     .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
     Ok(StagedInstall {
         ns,
+        app_id: id.to_string(),
+        chart_repo: repo,
+        chart_version: meta.chart.version.clone(),
+        service_name,
         chart_dir,
         values,
     })
@@ -1359,7 +1750,20 @@ async fn helm_install(
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    write_config(&staged.ns, config, &chart_uischema(&cfg.catalog_dir(), id)).await?;
+    let (volumes, resources) = collect_runtime(&staged.ns).await;
+    let def = AppDefinition {
+        schema: DEFINITION_SCHEMA,
+        app_id: staged.app_id.clone(),
+        chart_repo: staged.chart_repo.clone(),
+        chart_version: staged.chart_version.clone(),
+        instance_name: instance_name.to_string(),
+        service_name: staged.service_name.clone(),
+        config: config.clone(),
+        volumes,
+        resources,
+        backup: BackupPolicy::default(),
+    };
+    write_definition(&staged.ns, &def, &chart_uischema(&cfg.catalog_dir(), id)).await?;
     Ok(())
 }
 
@@ -1446,6 +1850,13 @@ pub async fn update_app(
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
     }
 
+    // Preserve the schedule across an update: a config change must not silently
+    // reset an app's backup policy back to the default.
+    let existing_backup = read_definition_opt(&ns)
+        .await
+        .map(|d| d.backup)
+        .unwrap_or_default();
+
     let stream = async_stream::stream! {
         let Ok(tunnel_cfg) = tunnel_config(&state.config) else {
             yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
@@ -1490,17 +1901,38 @@ pub async fn update_app(
             "-n".into(), ns.clone(),
             "--values".into(), tmp.path().to_string_lossy().to_string(),
         ];
-        let s = helm_stream(args);
+        let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s = helm_stream(args, failed.clone());
         tokio::pin!(s);
         use futures::StreamExt;
         while let Some(ev) = s.next().await { yield ev; }
         drop(tmp);
 
+        if failed.load(std::sync::atomic::Ordering::Relaxed) {
+            yield Ok(Event::default().data(format!(
+                "[ERROR] {id} was not updated — the release was left as it was"
+            )));
+            return;
+        }
+
         // No explicit `kubectl rollout restart` any more. Helm diffs the rendered
         // manifests and restarts only what actually changed — and charts that need a
         // restart on a config-only change (e.g. a password held in a Secret) carry a
         // checksum annotation on the pod template, which is the idiomatic way to say so.
-        if let Err(e) = write_config(&ns, &config, &uischema).await {
+        let (volumes, resources) = collect_runtime(&ns).await;
+        let def = AppDefinition {
+            schema: DEFINITION_SCHEMA,
+            app_id: id.clone(),
+            chart_repo: installed_repo.clone().unwrap_or_default(),
+            chart_version: meta.chart.version.clone(),
+            instance_name: instance_name.clone(),
+            service_name: service_name.clone(),
+            config: config.clone(),
+            volumes,
+            resources,
+            backup: existing_backup.clone(),
+        };
+        if let Err(e) = write_definition(&ns, &def, &uischema).await {
             yield Ok(Event::default().data(format!(
                 "[ERROR] {id} was updated, but its new settings could not be saved ({e})"
             )));
