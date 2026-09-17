@@ -59,19 +59,21 @@ Go to **Apps**, pick something from the catalog, fill in the form, click Install
 
 ## Adding an app to the catalog
 
-Each app is a directory under `apps/catalog/` with six files:
+Each app is a standard Helm chart under `apps/catalog/`:
 
 ```
 apps/catalog/my-app/
-  app.toml           # name, icon, category
-  schema.json        # config fields shown in the install form
-  uischema.json      # field labels, order, widget hints
-  manifest.yaml.j2   # Kubernetes manifest template (Jinja2)
-  outputs.json       # values to surface after install (URL, credentials…)
-  uninstall.yaml.j2  # cleanup job — tears down the tunnel and namespace
+  Chart.yaml           # name, version, and the yolab.io/* annotations below
+  values.yaml          # defaults
+  values.schema.json   # the install form, from `properties.config`
+  templates/           # the Kubernetes manifests, including the gateway
 ```
 
-The installer renders the manifest and applies it. No installer code changes needed for new apps.
+The YoLab-specific bits are chart annotations, the standard Helm escape hatch:
+`yolab.io/display-name`, `yolab.io/icon`, `yolab.io/category`, `yolab.io/uischema`
+(which fields are passwords, which is the tunnel subdomain), and `yolab.io/outputs`
+(what to surface after install). A chart that declares no `format: tunnel` field
+registers no DNS name. No installer code changes are needed for a new app.
 
 ---
 

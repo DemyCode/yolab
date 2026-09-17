@@ -140,11 +140,6 @@ pub struct PodInfo {
 }
 
 #[derive(Serialize)]
-pub struct DescribeResponse {
-    pub output: String,
-}
-
-#[derive(Serialize)]
 pub struct ScanOutputsResponse {
     pub outputs: Vec<AppOutput>,
 }
@@ -965,23 +960,6 @@ fn validate_config_values(
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
-pub struct AccountTokenResponse {
-    pub account_token: String,
-}
-
-pub async fn account_token(State(state): State<AppState>) -> Result<Json<AccountTokenResponse>> {
-    let tunnel = tunnel_config(&state.config)?;
-    let token = tunnel
-        .get("account_token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    Ok(Json(AccountTokenResponse {
-        account_token: token,
-    }))
-}
-
 /// Strip scheme and trailing slash from a dns_url, then drop the leading
 /// subdomain label to yield the apex tunnel domain. A purely numeric first
 /// label (an IP-like host) is kept as-is.
@@ -1663,7 +1641,6 @@ pub async fn install_app(
         // exactly one tunnel, so leaving it would block the retry), then the namespace.
         if failed.load(std::sync::atomic::Ordering::Relaxed) {
             rollback_failed_install(&ns, &instance_name).await;
-            record_install_failure(&instance_name, &app_id, "helm install failed — see the log");
             yield Ok(Event::default().data(format!(
                 "[ERROR] {app_id} could not be installed; nothing was left behind. The log above is helm's own."
             )));
@@ -1723,40 +1700,6 @@ pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
     crate::kubectl::run(&["delete", "namespace", ns, "--wait=false"])
         .await
         .debug_on_err(format!("rollback {ns}: delete namespace"));
-}
-
-/// Records a failed install so the home page can say what happened and offer a
-/// retry, rather than the attempt vanishing with the stream.
-fn record_install_failure(instance_name: &str, app_id: &str, error: &str) {
-    INSTALL_FAILURES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(
-            instance_name.to_string(),
-            serde_json::json!({
-                "instance_name": instance_name,
-                "app_id": app_id,
-                "error": error,
-                "at": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-}
-
-/// Failed installs from this process, by instance name. In memory on purpose:
-/// the app it would have produced is gone (rolled back), so there is nothing
-/// durable to hang it on — it exists to explain the most recent attempt on the
-/// node the person is looking at.
-static INSTALL_FAILURES: std::sync::Mutex<std::collections::BTreeMap<String, Value>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-/// GET /api/apps/install-failures — installs that rolled back, newest first.
-pub async fn list_install_failures() -> Json<Vec<Value>> {
-    let map = INSTALL_FAILURES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut items: Vec<Value> = map.values().cloned().collect();
-    items.reverse();
-    Json(items)
 }
 
 /// Everything an install needs before `helm upgrade --install` runs.
@@ -2610,37 +2553,6 @@ pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<Pod
             })
             .collect(),
     ))
-}
-
-pub async fn describe_pod(
-    Path((instance_name, pod_name)): Path<(String, String)>,
-) -> Result<Json<DescribeResponse>> {
-    // Not routed through crate::kubectl::run: unlike every other caller, this handler
-    // wants kubectl's combined stdout+stderr verbatim even on a nonzero exit (e.g. "pod
-    // not found" is itself the useful description), not an error. Still bounded and
-    // kill_on_drop for the same reason every other call site is.
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        tokio::process::Command::new("kubectl")
-            .args([
-                "describe",
-                "pod",
-                &pod_name,
-                "-n",
-                &format!("yolab-{instance_name}"),
-            ])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("kubectl describe pod: timed out"))??;
-    Ok(Json(DescribeResponse {
-        output: format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-    }))
 }
 
 pub async fn pod_logs(

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 
 /** `GET /api/backups/apps` — see backups.rs `backed_up_apps_json`. */
@@ -14,20 +15,9 @@ interface BackedUpApps {
     namespace: string;
     instance_name: string;
     installed: boolean;
-    adding: { snapshot_id: string; error: string | null; done: boolean } | null;
     /** Newest first. */
     versions: { snapshot_id: string; time: string }[];
   }[];
-}
-
-function formatWhen(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
@@ -35,7 +25,6 @@ function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
   const [snapshot, setSnapshot] = useState(app.versions[0]?.snapshot_id ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const running = app.adding !== null && !app.adding.done;
 
   /**
    * Restoring opens the install form, prefilled from the backup, rather than
@@ -66,11 +55,9 @@ function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
         <span className="font-medium text-fg">{app.instance_name}</span>
         {app.installed ? (
           <span className="text-sm text-fg-muted">Installed</span>
-        ) : running ? (
-          <span className="text-sm text-fg-muted">Adding…</span>
         ) : null}
       </div>
-      {!app.installed && !running && (
+      {!app.installed && (
         <div className="flex flex-col gap-2 sm:flex-row">
           <Select
             value={snapshot}
@@ -80,7 +67,7 @@ function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
             {app.versions.map((v, i) => (
               <option key={v.snapshot_id} value={v.snapshot_id}>
                 {i === 0 ? "Latest — " : ""}
-                {formatWhen(v.time)}
+                {formatDateTime(v.time)}
               </option>
             ))}
           </Select>
@@ -92,11 +79,6 @@ function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
             Restore
           </Button>
         </div>
-      )}
-      {app.adding?.error && (
-        <p className="text-sm text-danger">
-          Last try failed: {app.adding.error}
-        </p>
       )}
       {error && <p className="text-sm text-danger">{error}</p>}
     </li>

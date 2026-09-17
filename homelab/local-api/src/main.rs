@@ -40,8 +40,8 @@ use tower_http::cors::{Any, CorsLayer};
 use auth::{auth_middleware, AuthState};
 use config::Config;
 use routers::{
-    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, packs, reboot,
-    rebuild, status, terminal, update,
+    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot, rebuild,
+    status, terminal, update,
 };
 
 /// Single shared state threaded through all handlers.
@@ -153,19 +153,12 @@ async fn main() {
         .route("/api/backups/recovery-key", get(backups::get_recovery_key))
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
-        .route(
-            "/api/backups/credentials/refresh",
-            post(backups::refresh_credentials),
-        )
-        .route("/api/backups/sftp", get(backups::get_sftp))
-        .route("/api/backups/status", get(backups::backup_status))
         .route("/api/backups/state", get(backups::operation_state))
         .route("/api/backups/snapshots", get(backups::list_snapshots))
         .route("/api/backups/runs", get(backups::list_runs))
         .route("/api/backups/restore", post(backups::restore_app))
         .route("/api/backups/restores", get(backups::list_restores))
         .route("/api/backups/apps", get(backups::list_backed_up_apps))
-        .route("/api/backups/apps/add", post(backups::add_from_backup))
         .route(
             "/api/backups/cluster/run-now",
             post(backups::run_backup_now),
@@ -178,10 +171,6 @@ async fn main() {
             "/api/backups/apps/:namespace/definition",
             get(backups::app_definition_from_backup),
         )
-        .route(
-            "/api/backups/snapshots/:id/catalog",
-            get(backups::snapshot_catalog),
-        )
         // Logs â see routers/logs.rs for why this is a first-class page
         .route("/api/logs", get(logs::list_logs))
         // Disks
@@ -190,7 +179,6 @@ async fn main() {
             "/api/disks/:node/:id",
             axum::routing::put(disks::set_disk_state),
         )
-        .route("/api/disks/:node/:id/erase", post(disks::erase_disk))
         // FORCE HEAL — see heal/mod.rs. Served by every machine, with or without Ceph
         // or Kubernetes answering; the machine that receives the POST drives it.
         .route("/api/heal", get(heal::get_status).post(heal::post_heal))
@@ -209,9 +197,7 @@ async fn main() {
             get(topology::get_policy).put(topology::set_policy),
         )
         // Ceph
-        .route("/api/ceph/status", get(ceph_api::ceph_status))
         .route("/api/ceph/detail", get(ceph_api::storage_detail))
-        .route("/api/ceph/replication", post(ceph_api::set_replication))
         .route("/api/ceph/dashboard", get(ceph_api::dashboard_creds))
         // The dashboard itself, proxied to whichever mgr is active. Caddy sends
         // /ceph-dashboard/* here rather than to a fixed address, because the
@@ -231,7 +217,6 @@ async fn main() {
         // Nodes
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
-        .route("/api/nodes/traffic", get(nodes::traffic))
         .route("/api/cluster/join-info", get(nodes::join_info))
         // Node→node: where this node can be dialed directly. Cluster-authed and
         // never a user route — it is how the relay bootstraps its own replacement.
@@ -259,12 +244,6 @@ async fn main() {
             post(custom_app::upload_chart)
                 .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
-        .route(
-            "/api/apps/packs",
-            get(packs::list_packs).put(packs::save_pack),
-        )
-        .route("/api/apps/packs/:name", delete(packs::delete_pack))
-        .route("/api/account/token", get(apps::account_token))
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
         // Refresh one chart before its install form renders, so a just-published
@@ -272,10 +251,6 @@ async fn main() {
         .route(
             "/api/apps/catalog/:id/refresh",
             post(apps::refresh_catalog_app),
-        )
-        .route(
-            "/api/apps/install-failures",
-            get(apps::list_install_failures),
         )
         .route("/api/apps", get(apps::list_apps))
         // POST installs (uses app_id), DELETE uninstalls (uses instance_name) â same slot
@@ -288,7 +263,6 @@ async fn main() {
         .route("/api/apps/:id/backup", put(apps::set_backup_policy))
         .route("/api/apps/:id/scan-outputs", post(apps::scan_outputs))
         .route("/api/apps/:id/pods", get(apps::list_pods))
-        .route("/api/apps/:id/describe/:pod_name", get(apps::describe_pod))
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         // Terminal
         .route("/api/terminal/exec", post(terminal::exec))

@@ -1290,7 +1290,14 @@ mod tests {
             snapshot_id: None,
             error: None,
             services: vec![],
-            claim: Claim::default(),
+            // A live claim owned by ANOTHER node. The default (empty owner)
+            // happens to equal the hostname in some sandboxes, which makes the
+            // record read as this node's abandoned claim and flips the liveness
+            // assertions below depending on where the test runs.
+            claim: Claim {
+                owner: "other-node".into(),
+                heartbeat: "2026-01-01T00:00:00Z".into(),
+            },
         }
     }
 

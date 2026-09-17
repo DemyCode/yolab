@@ -329,62 +329,6 @@ pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Resu
     })
 }
 
-/// Re-fetches S3 credentials from yolab-external and overwrites the cached copy,
-/// keeping the same restic_password (it's local-only and never came from yolab-external
-/// in the first place). `ensure_master_config` caches indefinitely once a secret exists,
-/// so a B2 key rotation on yolab-external's side would otherwise 403 every backup/restore
-/// forever with no path back — this is that path, exposed as POST /api/backups/credentials/refresh.
-pub(crate) async fn refresh_master_config(url: &str, token: &str) -> anyhow::Result<BackupConfig> {
-    let resp = http_client()
-        .post(format!("{url}/storage/s3"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let s3: S3StorageInfo = resp.json().await.map_err(|e| anyhow::anyhow!(e))?;
-
-    // Preserve the existing restic_password — only the S3-side credentials rotate.
-    //
-    // The read is `?`: if the Secret cannot be read, stop. Falling through to
-    // `random_hex` here replaced the encryption password of every existing
-    // backup with a new one whenever the API blipped during a refresh.
-    let restic_password = match kubectl_get_secret(MASTER_SECRET, MASTER_NS).await? {
-        Some(data)
-            if !data
-                .get("restic_password")
-                .cloned()
-                .unwrap_or_default()
-                .is_empty() =>
-        {
-            data["restic_password"].clone()
-        }
-        _ => random_hex(32),
-    };
-
-    kubectl_apply_secret(
-        MASTER_SECRET,
-        MASTER_NS,
-        &[
-            ("access_key_id", &s3.access_key_id),
-            ("secret_access_key", &s3.secret_access_key),
-            ("bucket", &s3.bucket_name),
-            ("endpoint", &s3.endpoint),
-            ("restic_password", &restic_password),
-        ],
-    )
-    .await?;
-
-    Ok(BackupConfig {
-        access_key_id: s3.access_key_id,
-        secret_access_key: s3.secret_access_key,
-        bucket: s3.bucket_name,
-        endpoint: s3.endpoint,
-        restic_password,
-    })
-}
-
 /// Annotate a namespace to allow VolSync movers to run with elevated privileges.
 /// Required so the restic mover can call lchown to restore original file ownership.
 pub(crate) async fn annotate_ns_privileged_movers(ns: &str) {
@@ -605,15 +549,6 @@ pub(crate) async fn ensure_replication_source(
     });
     kubectl_apply(&manifest.to_string()).await?;
     Ok(Some(manual))
-}
-
-/// Raw `kubectl get replicationsource -A -o json` — callers match against this
-/// themselves (see backup_run.rs's polling loop) rather than this module
-/// prescribing a single "is it synced" answer.
-pub(crate) async fn get_replication_sources() -> serde_json::Value {
-    crate::kubectl::get_json(&["get", "replicationsource", "-A", "-o", "json"])
-        .await
-        .unwrap_or(serde_json::json!({"items": []}))
 }
 
 pub(crate) fn hours_since(timestamp: &str) -> Option<i64> {
