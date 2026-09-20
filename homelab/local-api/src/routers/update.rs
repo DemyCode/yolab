@@ -257,6 +257,11 @@ fn rebuild_args(cfg: &Config, ch: &Channel) -> Vec<String> {
         "--override-input".into(),
         "yolab-machine".into(),
         format!("path:{}", cfg.machine_dir),
+        // `main` is a mutable ref. Without --refresh, Nix can reuse a cached
+        // resolution of it and rebuild the revision it already had, so the
+        // update button appears to run and changes nothing. It happened: two
+        // updates in a row built the same stale source after a fix was pushed.
+        "--refresh".into(),
         "--no-write-lock-file".into(),
         "--print-build-logs".into(),
         "--accept-flake-config".into(),
@@ -379,6 +384,10 @@ mod tests {
             ["yolab-machine", "path:/var/lib/yolab/machine"]
         );
         assert!(args.iter().any(|a| a == "--no-write-lock-file"));
+        assert!(
+            args.iter().any(|a| a == "--refresh"),
+            "a mutable ref must be re-resolved, or an update silently rebuilds the stale revision"
+        );
         assert!(
             !args.iter().any(|a| a == "--no-update-lock-file"),
             "the override changes the lock in memory"
