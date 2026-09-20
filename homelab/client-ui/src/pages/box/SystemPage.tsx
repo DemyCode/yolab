@@ -144,7 +144,9 @@ export function SystemPage() {
     try {
       // The shared SSE reader, so this goes through the same base-URL/auth
       // chokepoint as every other stream rather than its own fetch.
-      await streamEvents(url, { method: "POST" }, (line) => appendLines([line]));
+      await streamEvents(url, { method: "POST" }, (line) =>
+        appendLines([line]),
+      );
     } catch {
       /* service is restarting — handled by pollRebuildLog */
     }
