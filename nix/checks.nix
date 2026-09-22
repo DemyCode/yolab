@@ -406,11 +406,11 @@ in let
 
         missing=""
         ${pkgs.lib.concatMapStrings (flag: ''
-          if ! grep -qE '(^|[[:space:]])${pkgs.lib.escapeShellArg flag}([[:space:]]|,|$)' help.txt; then
-            missing="$missing ${pkgs.lib.escapeShellArg flag}"
-          fi
-        '')
-        flagNames}
+            if ! grep -qE '(^|[[:space:]])${pkgs.lib.escapeShellArg flag}([[:space:]]|,|$)' help.txt; then
+              missing="$missing ${pkgs.lib.escapeShellArg flag}"
+            fi
+          '')
+          flagNames}
 
         if [ -n "$missing" ]; then
           echo "These flags are in homelab/nixos/common.nix's services.k3s.extraFlags" >&2
