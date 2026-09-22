@@ -508,6 +508,137 @@ in let
         fi
         touch $out
       '';
+
+    # A NIXOS-REBUILD MUST NOT TAKE THE STORAGE DOWN WITH IT.
+    #
+    # Two separate mechanisms, one outage. On 2026-09-15 a rebuild on node1
+    # changed yolab-ceph-bootstrap, systemd restarted ceph-mon because the mon
+    # Requires it, and every OSD on the node stopped with the mon — `Requires`
+    # propagates a STOP, which `restartIfChanged = false` on the OSD template
+    # does nothing about, because the OSDs were not restarted, they were
+    # dependency-stopped. Their restart then deadlocked on LVM (see
+    # lvm-never-scans-an-rbd), and the node had no storage until someone
+    # intervened.
+    #
+    # So both halves are asserted here:
+    #
+    #   1. Nothing of ours may `Requires=` a Ceph daemon. A daemon is a thing
+    #      that comes and goes on its own; wanting one is fine, being stopped
+    #      alongside one is not. The dependency in the other direction —
+    #      `requiredBy` on a keyring unit, so the mon refuses to start without
+    #      its key — is correct and is not what this catches.
+    #
+    #   2. The units that must not be cycled by a rebuild say so. Each one is on
+    #      this list because restarting it mid-rebuild does real damage, not
+    #      because restarting it is merely wasteful:
+    #
+    #        yolab-reset-wipe        erases this machine's cluster state
+    #        yolab-ceph-osd@         cycles EVERY OSD on the node at once
+    #        yolab-ceph-system-osd   re-runs OSD creation
+    #        yolab-ceph-bootstrap    restarts the mon underneath the OSDs (1)
+    #        yolab-images-rbd        unmaps the image store k3s is running from
+    #        yolab-containerd-store  stops k3s to move several GB of images
+    #
+    # This replaces a comment in homelab/nixos/ceph/default.nix that explained
+    # the whole thing and enforced none of it.
+    ceph-survives-a-rebuild = let
+      svcs = nixosSystems.yolab-ci.config.systemd.services;
+
+      mustNotRestart = [
+        "yolab-reset-wipe"
+        "yolab-ceph-osd@"
+        "yolab-ceph-system-osd"
+        "yolab-ceph-bootstrap"
+        "yolab-images-rbd"
+        "yolab-containerd-store"
+      ];
+      missing = builtins.filter (n: !(svcs ? ${n})) mustNotRestart;
+      restarted =
+        builtins.filter
+        (n: (svcs.${n}.restartIfChanged or true) != false)
+        (builtins.filter (n: svcs ? ${n}) mustNotRestart);
+
+      isCephDaemon = unit: builtins.match "ceph-(mon|mgr|mds|osd)[-@].*" unit != null;
+      ours = builtins.filter (n: pkgs.lib.hasPrefix "yolab-" n) (builtins.attrNames svcs);
+      hardDeps = builtins.concatMap (n:
+        map (d: "${n} has Requires=${d}")
+        (builtins.filter isCephDaemon (svcs.${n}.requires or [])))
+      ours;
+
+      problems =
+        (map (n: "${n} is on the must-not-restart list but is not a unit — rename or drop it") missing)
+        ++ (map (n: "${n} does not set restartIfChanged = false") restarted)
+        ++ hardDeps;
+    in
+      pkgs.runCommand "ceph-survives-a-rebuild" {} ''
+        ${pkgs.lib.concatMapStrings (p: "echo ${pkgs.lib.escapeShellArg p} >&2\n") problems}
+        ${pkgs.lib.optionalString (problems != []) ''
+          echo "" >&2
+          echo "See the note on this check in nix/checks.nix: a rebuild that" >&2
+          echo "restarts a Ceph daemon takes every OSD on the node with it." >&2
+          exit 1
+        ''}
+        touch $out
+      '';
+
+    # LVM MUST NOT SCAN AN RBD — BY ANY OF ITS NAMES.
+    #
+    # ceph-volume runs `lvs` to create an OSD; `lvs` scanning /dev/rbd0 blocks in
+    # io_getevents because the RBD cannot be served while the cluster has no OSD;
+    # the OSD that would fix that is the one waiting on `lvs`. Observed on node1:
+    # eight leaked `lvs` processes, yolab-local-api unstoppable, and a
+    # nixos-rebuild wedged for 17 minutes trying to stop it.
+    #
+    # The first fix rejected `^/dev/rbd` only, and LVM went on scanning the same
+    # device through /dev/block/253:0, which the trailing `a|.*|` happily
+    # accepted — same deadlock, on 2026-09-15, via a name nobody had thought of.
+    # THE LESSON IS THE ALIASES, so that is what this asserts: every directory
+    # the kernel and udev publish a block device under must be rejected, and the
+    # accept-everything rule must come last. A real disk still arrives by its
+    # kernel name (/dev/sda, /dev/nvme0n1, /dev/dm-0) and is still accepted; an
+    # RBD has no name left.
+    #
+    # No OSD ever lives on an RBD, so nothing legitimate is lost.
+    lvm-never-scans-an-rbd = let
+      conf = nixosSystems.yolab-ci.config.environment.etc."lvm/lvm.conf".source;
+    in
+      pkgs.runCommand "lvm-never-scans-an-rbd" {nativeBuildInputs = [pkgs.gnugrep];} ''
+        filter=$(grep -E '^[[:space:]]*devices/global_filter' ${conf} | tail -1)
+        if [ -z "$filter" ]; then
+          echo "lvm.conf sets no devices/global_filter at all, so LVM scans" >&2
+          echo "every block device on the node — including the image RBD." >&2
+          exit 1
+        fi
+        echo "global_filter: $filter"
+
+        missing=""
+        for alias in '/dev/rbd' '/dev/block/' '/dev/disk/'; do
+          case "$filter" in
+            *"r|^$alias"*) ;;
+            *) missing="$missing $alias" ;;
+          esac
+        done
+        if [ -n "$missing" ]; then
+          echo "devices/global_filter does not reject these names:$missing" >&2
+          echo "" >&2
+          echo "An RBD is reachable under every one of them. Rejecting only some" >&2
+          echo "is the 2026-09-15 deadlock exactly: /dev/rbd0 was rejected and" >&2
+          echo "/dev/block/253:0 was scanned anyway." >&2
+          exit 1
+        fi
+
+        # `filter` rather than `global_filter` does not cover udev-triggered
+        # scans, which is where this actually bites.
+        case "$filter" in
+          *'"a|.*|"'*) ;;
+          *)
+            echo "global_filter never accepts anything, so LVM would ignore the" >&2
+            echo "real disks too. It needs a trailing a|.*| after the rejects." >&2
+            exit 1
+            ;;
+        esac
+        touch $out
+      '';
     # statix is deliberately absent: its 39 findings are all "avoid repeated keys
     # in attribute sets", and flattening `boot.loader.grub.*` is not obviously an
     # improvement. `nix run nixpkgs#statix -- check` if you want it.

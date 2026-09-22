@@ -90,30 +90,17 @@ in {
     # including this node's /dev/rbd0. Ceph blocks rather than fails a read it
     # cannot serve and krbd retries forever, so scanning a stalled RBD parks
     # `lvs` in uninterruptible sleep, where SIGKILL is ignored and the
-    # leftovers stay in the unit's cgroup.
+    # leftovers stay in the unit's cgroup. It is circular, not merely slow:
+    # ceph-volume runs `lvs` to create an OSD, that OSD is what would let the
+    # cluster serve I/O again, and the cluster not serving I/O is what stalls
+    # the RBD `lvs` is blocked on.
     #
-    # Observed on node1: eight leaked `lvs`, yolab-local-api unstoppable, and
-    # the nixos-rebuild trying to stop it wedged for 17 minutes.
-    #
-    # It is circular, not merely slow: ceph-volume runs lvs to create an OSD,
-    # that OSD is what would let the cluster serve I/O again, and the cluster
-    # not serving I/O is what stalls the RBD lvs is blocked on.
-    #
-    # No OSD ever lives on an RBD, so LVM has no reason to read one.
-    # global_filter rather than filter because only the former covers every
-    # command including udev-triggered scans, which is where this bites.
-    #
-    # EVERY NAME OF A DEVICE IS CHECKED, AND ONE ACCEPTED NAME ACCEPTS IT. The
-    # first version rejected only `^/dev/rbd[0-9]+`, and LVM still scanned
-    # /dev/rbd0 through its other name, /dev/block/253:0, which `a|.*|`
-    # accepted. Observed on node1, 2026-09-15: a rebuild restarted the OSDs,
-    # `lvs` and a udev `pvscan` sat on rbd0 in io_getevents while the OSDs'
-    # own activation waited on that `lvs` — the same circle as above. So every
-    # alias directory is rejected too: a real disk is still accepted by its
-    # kernel name (/dev/sda, /dev/nvme0n1, /dev/dm-N), and an RBD has no name
-    # left that is not rejected.
-    # Flat `section/key` form to match how the upstream NixOS module
-    # contributes its own settings.
+    # `global_filter` rather than `filter` because only the former covers every
+    # command including udev-triggered scans, which is where this bites. Every
+    # alias directory is rejected, not just /dev/rbd — see lvm-never-scans-an-rbd
+    # in nix/checks.nix, which enforces the whole rule and records what rejecting
+    # only some of the names cost. Flat `section/key` form to match how the
+    # upstream NixOS module contributes its own settings.
     environment.etc."lvm/lvm.conf".text = lib.mkAfter ''
       devices/global_filter = [ "r|^/dev/rbd|", "r|^/dev/block/|", "r|^/dev/disk/|", "a|.*|" ]
     '';

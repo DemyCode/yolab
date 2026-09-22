@@ -53,6 +53,7 @@ jobs:
               nixos-create nixos-join nixos-wsl disko-create disko-join
               binary-contract containerd-store-after-order
               self-healing-timers-can-re-arm retry-timers-measure-from-run-end
+              ceph-survives-a-rebuild lvm-never-scans-an-rbd
     steps:
       - uses: actions/checkout@v5
 
