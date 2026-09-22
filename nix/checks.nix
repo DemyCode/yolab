@@ -389,6 +389,43 @@ in let
         touch $out
       '';
 
+    k3s-flags-exist-in-the-real-binary = let
+      k3sPackage = nixosSystems.yolab-ci.config.services.k3s.package;
+      extraFlags = nixosSystems.yolab-ci.config.services.k3s.extraFlags;
+      # "--foo=bar" -> "--foo"; a flag with no "=" (a bare boolean switch) is
+      # unaffected.
+      flagNames = map (f: builtins.elemAt (pkgs.lib.splitString "=" f) 0) extraFlags;
+    in
+      pkgs.runCommand "k3s-flags-exist-in-the-real-binary" {nativeBuildInputs = [pkgs.gnugrep];} ''
+        # k3s server --help needs no cluster and no network: it parses its own
+        # flag definitions and exits. This is the check that would have caught
+        # the bad kubelet flag that took down an embedded control plane — a
+        # flag that "should" work is only checked against the binary here, not
+        # against anyone's memory of the CLI.
+        ${k3sPackage}/bin/k3s server --help > help.txt 2>&1
+
+        missing=""
+        ${pkgs.lib.concatMapStrings (flag: ''
+          if ! grep -qE '(^|[[:space:]])${pkgs.lib.escapeShellArg flag}([[:space:]]|,|$)' help.txt; then
+            missing="$missing ${pkgs.lib.escapeShellArg flag}"
+          fi
+        '')
+        flagNames}
+
+        if [ -n "$missing" ]; then
+          echo "These flags are in homelab/nixos/common.nix's services.k3s.extraFlags" >&2
+          echo "but do not appear in '$(basename ${k3sPackage})/bin/k3s server --help':" >&2
+          echo "$missing" >&2
+          echo "" >&2
+          echo "A flag k3s does not recognize is silently fatal — it refuses to" >&2
+          echo "start rather than warning and continuing, taking the whole" >&2
+          echo "embedded control plane down with it. Check the real binary," >&2
+          echo "not what the flag used to be called." >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
     lvm-never-scans-an-rbd = let
       conf = nixosSystems.yolab-ci.config.environment.etc."lvm/lvm.conf".source;
     in
