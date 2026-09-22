@@ -1,27 +1,3 @@
-//! The storage agent: the work that keeps host Ceph and the image store on it
-//! working.
-//!
-//! Each job here runs in up to two ways, and they never overlap:
-//!
-//!   - as a `local-api storage <name>` subcommand from a systemd oneshot, when
-//!     it must happen at a fixed point in boot — before a Ceph daemon
-//!     (`bootstrap`, `mgr-key`, `mds-key`), on the straight line to k3s
-//!     (`system-osd` → `images-rbd` → `containerd-store`, each WAITING for its
-//!     preconditions rather than falling back; see `wait`), or at shutdown
-//!     (`noout-set`);
-//!   - as a controller in the long-running local-api (`controllers.rs`), for
-//!     everything that must keep being true afterwards.
-//!
-//! This replaced eleven systemd timers that re-ran the oneshots every few
-//! minutes. Timers were the wrong tool for "keep this true": a
-//! `RemainAfterExit` unit silently stops its timer forever (a 32-hour outage),
-//! a run that outlives an `OnUnitActiveSec` interval re-fires instantly, and
-//! nothing showed whether a timer's last run had worked.
-//!
-//! EVERY JOB TAKES THE SAME LOCK IN BOTH MODES (`runtime::lock`, an flock in
-//! /run/yolab/locks), so the boot unit and the controller can never run the
-//! same job at once. The boot unit waits for the lock; the controller skips a
-//! tick if the boot unit holds it.
 pub mod bootstrap;
 mod ceph_shared;
 pub mod containerd_store;
@@ -46,19 +22,10 @@ use anyhow::Result;
 
 use crate::host::RealHost;
 
-/// The real machine's root, for subcommands that build absolute paths
-/// (`/var/lib/ceph/...`) so their file-writing logic can be exercised in
-/// tests against a tempdir instead.
 fn root() -> &'static Path {
     Path::new("/")
 }
 
-/// Everything the storage jobs are configured with. The Nix side passes it
-/// through the environment — to the boot oneshots AND to yolab-local-api, from
-/// the same Nix attrset, so the two modes cannot be configured differently.
-/// Never CLI args: `join_seed_addr` is empty on the machine that creates the
-/// cluster, and an empty positional through a systemd ExecStart is not
-/// something to depend on.
 #[derive(Clone, Debug)]
 pub struct StorageEnv {
     pub fsid: String,
@@ -72,7 +39,6 @@ pub struct StorageEnv {
     pub dashboard_port: u16,
     pub dashboard_prefix: String,
     pub dashboard_password_file: String,
-    /// Whether this node runs an MDS (`yolab.ceph.filesystem.enable`).
     pub mds: bool,
 }
 
@@ -107,9 +73,6 @@ impl StorageEnv {
         }
     }
 
-    /// Whether the storage settings reached this process at all. A local-api
-    /// started without them (a dev box, WSL) must not run storage controllers
-    /// against empty addresses.
     pub fn is_configured(&self) -> bool {
         !self.fsid.is_empty() && !self.mon_addr.is_empty()
     }
@@ -163,14 +126,10 @@ impl StorageEnv {
     }
 }
 
-/// The lock name for a job, shared by its subcommand and its controller.
 pub fn lock_name(job: &str) -> String {
     format!("storage-{job}")
 }
 
-/// How long a boot unit waits for the controller to finish the same job. Below
-/// every unit's own TimeoutStartSec, so a stuck holder produces a clear error
-/// here rather than systemd killing the unit silently.
 const BOOT_LOCK_WAIT: Duration = Duration::from_secs(120);
 
 pub async fn run(args: &[String]) -> i32 {
@@ -203,7 +162,6 @@ pub async fn run(args: &[String]) -> i32 {
         return 2;
     }
 
-    // noout-set runs at shutdown and must never wait on anything.
     let _guard = if sub == "noout-set" {
         None
     } else {
@@ -282,7 +240,6 @@ mod tests {
         assert_eq!(env.dashboard_port, 7000);
         assert_eq!(env.dashboard_prefix, "/ceph-dashboard");
         assert!(!env.mds);
-        // Cluster identity has no default: an unconfigured process says so.
         assert!(!env.is_configured());
     }
 
@@ -311,7 +268,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_or_unknown_subcommand_is_a_usage_error_that_touches_nothing() {
-        // Exit 2 is returned before any lock is taken or any command is run.
         assert_eq!(run(&[]).await, 2);
         assert_eq!(run(&["images-recover".to_string()]).await, 2);
     }

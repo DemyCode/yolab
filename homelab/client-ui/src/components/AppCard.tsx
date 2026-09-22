@@ -4,19 +4,6 @@ import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
 import type { CatalogApp } from "@/types/apps";
 
-/**
- * One app in a grid.
- *
- * The link out to the project's own site is not decoration. The catalog is 70-odd
- * names — Karakeep, Vikunja, Miniflux, Navidrome — and a tagline can say what an app
- * is *like* but not what it actually looks like or whether it does the one thing you
- * need. Before this, the only way to find out was to install it.
- *
- * It is a real anchor rather than a click handler on the card so it keeps its own
- * context menu and middle-click, and `stopPropagation` keeps it from also navigating
- * into the install page — the card is a link too, and nesting anchors is exactly where
- * that goes wrong.
- */
 export function AppCard({ app, count }: { app: CatalogApp; count: number }) {
   return (
     <Link

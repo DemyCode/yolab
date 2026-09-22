@@ -1,12 +1,3 @@
-//! Start a yolab-ceph-osd@ instance for every OSD ceph-volume reports as
-//! prepared on this host, except one the cluster no longer knows (teardown
-//! purges from Ceph *before* it zaps the disk, so a half-removed OSD is still
-//! "prepared" and must not be restarted).
-//!
-//! Runs at boot as `yolab-ceph-osd-activate.service` (before k3s: the image
-//! store on Ceph needs OSDs up first), and afterwards as the `osd-activate`
-//! controller. Instances are started, never enabled — /etc/systemd/system is a
-//! read-only store path on NixOS, so this enumeration IS the persistence.
 
 use anyhow::{Context, Result};
 
@@ -14,19 +5,10 @@ use crate::ceph::model::parse_lvm_list;
 use crate::error::Outcome;
 use crate::host::Host;
 
-/// OSD ids from `ceph-volume lvm list --format json`, sorted. A listing that
-/// cannot be parsed is an error — the old version returned an empty list, which
-/// started nothing and reported success.
 fn lvm_osd_ids(raw: &str) -> Result<Vec<i64>> {
     Ok(parse_lvm_list(raw)?.into_keys().collect())
 }
 
-/// Whether a prepared OSD should be started. `known` is the cluster's OSD list:
-/// `None` means it could not be read (the boot case, before the mon answers),
-/// and an empty list means a cluster with no OSDs — both start everything.
-/// Starting an OSD the cluster no longer knows is harmless (the mon refuses
-/// its key); NOT starting a real one on a cold boot keeps the whole node's
-/// storage down.
 fn should_start(id: i64, known: Option<&[i64]>) -> bool {
     match known {
         None => true,

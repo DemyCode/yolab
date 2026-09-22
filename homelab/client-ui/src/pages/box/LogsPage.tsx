@@ -20,11 +20,6 @@ interface LogsResponse {
   truncated: boolean;
 }
 
-/**
- * journald severities. Only the three thresholds anyone actually wants are
- * offered — the eight-level syslog scale is an implementation detail, and
- * "Errors only / Warnings and worse / Everything" is the real question.
- */
 const LEVELS = [
   { label: "Everything", priority: undefined },
   { label: "Warnings", priority: 4 },
@@ -38,17 +33,12 @@ const RANGES = [
   { label: "Last 7 days", since: "7 days ago" },
 ] as const;
 
-/** Colour by severity, so a wall of text has shape before it is read. */
 function toneOf(priority: number): string {
   if (priority <= 3) return "text-danger";
   if (priority === 4) return "text-warning";
   return "text-fg-muted";
 }
 
-/**
- * Rendered in the viewer's timezone, not the machine's. Correlating a log line
- * with "the thing I just did" is the main use, and that happens in local time.
- */
 function formatTime(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -61,24 +51,10 @@ function formatTime(iso: string): string {
       });
 }
 
-/** Unit names are long and repetitive; the suffix carries no information. */
 function shortUnit(unit: string): string {
   return unit.replace(/\.service$/, "");
 }
 
-/**
- * Everything the machine has said, in one place.
- *
- * This exists because the two worst failures this platform has had were both
- * plainly visible in the journal for hours while nobody could see them without
- * SSH: a storage unit that silently could not log at all, and a timer that had
- * stopped firing days earlier. The fix for both was obvious once read.
- *
- * Deliberately not a live tail. A page that scrolls on its own is unusable for
- * the thing people actually do here — find the moment something broke and read
- * around it — and polling a full journal query every second is expensive on a
- * machine that may already be struggling. Refresh is a button.
- */
 export function LogsPage() {
   const [level, setLevel] = useState(0);
   const [range, setRange] = useState(0);
@@ -100,8 +76,6 @@ export function LogsPage() {
   const logs = useApi<LogsResponse>(`logs?${query}`, `/api/logs?${query}`);
 
   const entries = logs.data?.entries ?? [];
-  // Offered from what the journal actually contains, so the filter can never
-  // list a unit with nothing behind it.
   const units = logs.data?.units ?? [];
 
   return (
@@ -207,8 +181,8 @@ export function LogsPage() {
                 <span className="w-40 shrink-0 truncate text-fg-subtle">
                   {shortUnit(e.unit)}
                 </span>
-                {/* break-all, not truncate: a log line that has been cut off is
-                    the one thing a log page must never do. */}
+                {
+}
                 <span className={cn("min-w-0 break-all", toneOf(e.priority))}>
                   {e.message}
                 </span>

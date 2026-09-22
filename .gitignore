@@ -1,29 +1,24 @@
 .DS_Store
 .claude
 
-# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 
-# Environment files
 .env
 .env.*
 !.env.example
 
-# Secrets
 secrets/
 *.secret
 *.key
 *.pem
 
-# Nix build artifacts
 result
 result-*
 
-# IDE
 .vscode/
 .idea/
 *.swp
@@ -36,7 +31,5 @@ homelab/local-api/target
 shells/desktop/target
 shells/desktop/gen/
 
-# Vendored Helm chart dependencies, materialised by `helm dependency build` from the
-# committed Chart.lock (see the yolab-chart-deps unit). Build output, not source —
-# Chart.lock IS committed, since it pins an external artifact in the OCI registry.
 apps/catalog/*/charts/
+

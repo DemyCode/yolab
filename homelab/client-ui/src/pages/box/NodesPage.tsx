@@ -24,9 +24,6 @@ export function NodesPage() {
         setNodes(res.data);
         setStale(false);
       } else {
-        // No cache to fall back on any more — an empty list plus the banner
-        // below is more honest than either a stale number or an infinite
-        // "Loading…" once the request has actually failed.
         setStale(true);
         setNodes((prev) => prev ?? []);
       }
@@ -37,11 +34,6 @@ export function NodesPage() {
       .then((l: NodeLink[]) => setLinks((prev) => (l.length > 0 ? l : prev)))
       .catch(() => {});
 
-    // Best-effort, like links above: the whole point of the direct-path work
-    // is that the saving is checkable rather than assumed, so this is shown
-    // when available and silently omitted — via the same fallback-to-“—”
-    // the table already uses — when it is not, rather than blocking the page
-    // on a feature a node may not have deployed yet.
     fetch("/api/mesh/paths")
       .then((r) => (r.ok ? r.json() : []))
       .then((p: PathStatus[]) => setPaths(p))

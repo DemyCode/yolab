@@ -1,11 +1,3 @@
-//! Restarting this node's CephFS CSI plugin pod.
-//!
-//! After THIS node reboots, its plugin pod holds in-memory operation locks from
-//! the previous boot, and every pod mounting CephFS fails with "an operation with
-//! the given Volume ID … already exists" for ~10 minutes. Only this node's plugin
-//! pod is deleted: a whole-DaemonSet restart bounced every other node's live
-//! mounts for a problem they did not have. (Was `yolab-csi-recovery.service`; now
-//! the once-per-boot `csi-recovery` controller.)
 
 use serde_json::Value;
 
@@ -14,10 +6,6 @@ use crate::host::Host;
 
 pub const NS: &str = "rook-ceph";
 
-/// Nothing here is destructive — the DaemonSet brings the pod straight back — but
-/// a restart that did not happen is reported, never swallowed: csi-recovery
-/// records its once-per-boot marker on success, and recording it over a failed
-/// delete meant the stale plugin was never restarted at all.
 pub async fn restart_local_plugin<H: Host>(host: &H) -> Result<(), CmdError> {
     let selector = format!("spec.nodeName={}", crate::system::hostname());
     host.kubectl(&[
@@ -35,8 +23,6 @@ pub async fn restart_local_plugin<H: Host>(host: &H) -> Result<(), CmdError> {
     .map(|_| ())
 }
 
-/// Whether Rook has created the plugin DaemonSet yet. `Ok(false)` only when the
-/// API says it does not exist.
 pub async fn plugin_daemonset_exists<H: Host>(host: &H) -> Result<bool, crate::exec::CmdError> {
     let got: Option<Value> = host
         .kubectl_get_opt(&[

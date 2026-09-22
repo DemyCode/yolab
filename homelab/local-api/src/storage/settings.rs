@@ -1,22 +1,3 @@
-//! Storage configuration, kept in Ceph's own key-value store (`ceph config-key`).
-//!
-//! WHY NOT KUBERNETES. Which disks are switched on and how many copies to keep
-//! describe STORAGE, and storage sits below Kubernetes: k3s cannot start until
-//! this node's image store is on Ceph (see `storage::containerd_store`). Kept
-//! in ConfigMaps, the settings for the layer k3s depends on were unreadable
-//! exactly when k3s was down — which is when storage most needs to be acted on.
-//! In Ceph they are readable whenever the cluster they configure is.
-//!
-//! The keys, all under `yolab/`:
-//!
-//!   yolab/disks/<record key>        "ON" | "OFF" — the owner's switch per disk
-//!   yolab/disk-status/<node>        JSON — what that node's disks look like now
-//!   yolab/storage-policy            JSON — copies and failure domain
-//!
-//! ONE WRITER PER KEY, because config-key has no compare-and-swap: a disk switch
-//! is written only by the API, a node's status only by that node, and the policy
-//! only by the API. Readers never infer anything from a read that failed: absent
-//! (`Ok(None)`, an empty map) and unreadable (`Err`) are different answers.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +10,6 @@ pub const DISKS: &str = "yolab/disks/";
 pub const DISK_STATUS: &str = "yolab/disk-status/";
 pub const STORAGE_POLICY: &str = "yolab/storage-policy";
 
-/// The value at `key`; `Ok(None)` only when Ceph says it does not exist.
 pub async fn get<H: Host>(host: &H, key: &str) -> Result<Option<String>, CmdError> {
     match host.ceph(&["config-key", "get", key]).await {
         Ok(value) => Ok(Some(value)),
@@ -44,7 +24,6 @@ pub async fn set<H: Host>(host: &H, key: &str, value: &str) -> Result<(), CmdErr
         .map(|_| ())
 }
 
-/// Every key under `prefix`, with the prefix stripped. Empty when there are none.
 pub async fn dump<H: Host>(host: &H, prefix: &str) -> Result<BTreeMap<String, String>, CmdError> {
     let v = host.ceph_json(&["config-key", "dump", prefix]).await?;
     strip_prefix(&v, prefix).map_err(|detail| CmdError::parse("ceph config-key dump", detail))
@@ -54,9 +33,6 @@ fn strip_prefix(v: &serde_json::Value, prefix: &str) -> Result<BTreeMap<String, 
     let object = v.as_object().ok_or("not a JSON object")?;
     object
         .iter()
-        // `dump` matches by prefix, so `yolab/disks-old/…` would come back for
-        // `yolab/disks`; the trailing `/` in every prefix here, and this filter,
-        // keep a sibling key from being read as a member.
         .filter_map(|(k, val)| k.strip_prefix(prefix).map(|rest| (rest, val)))
         .map(|(rest, val)| {
             val.as_str()
@@ -66,7 +42,6 @@ fn strip_prefix(v: &serde_json::Value, prefix: &str) -> Result<BTreeMap<String, 
         .collect()
 }
 
-/// A JSON value at `key`. Unparseable content is an error, never "absent".
 pub async fn get_json<H: Host, T: DeserializeOwned>(
     host: &H,
     key: &str,

@@ -1,37 +1,3 @@
-//! Who is driving a long-running operation, and whether they still are.
-//!
-//! THE CROSS-NODE BUG THIS FIXES
-//!
-//! Backups and restores are recorded in ConfigMaps every node reads, but "is this
-//! one still running?" was answered from a `static IN_FLIGHT: Mutex<Vec<String>>`
-//! — memory of ONE process. So on a two-node cluster a restore driven by node1
-//! was, to node2, "recorded running but not in flight": the definition of
-//! crashed. node2's watchdog (which ran on every node) would scale the app back
-//! up in the middle of node1 replacing its volumes, and mark the restore failed.
-//! The backup scheduler, also on every node, would not see node1's backup as
-//! running and start a second one.
-//!
-//! A record now carries a `Claim`: which node drives it and when that node last
-//! said so. The driving process refreshes the heartbeat while it works. Anyone can
-//! then tell the three cases apart:
-//!
-//!   - `Driving` — this process has it in hand.
-//!   - `Remote`  — another node claims it and its heartbeat is fresh.
-//!   - `Abandoned` — this node claims it but this process does not (local-api
-//!     restarted mid-operation), or the claimant's heartbeat has gone stale (the
-//!     node died).
-//!
-//! Only `Abandoned` may be cleaned up.
-//!
-//! STALE MEANS "THIS PROCESS HAS WATCHED IT NOT CHANGE", NOT "ITS TIMESTAMP IS OLD".
-//! The heartbeat is written with the claimant's clock. Reading it against ours
-//! made a node whose clock ran ahead see every live restore as abandoned — and
-//! after an API outage longer than `STALE_AFTER`, when no heartbeat could land,
-//! every node did. The watchdog would then scale an app back up in the middle of
-//! its live restore. So staleness is timed on this process's monotonic clock,
-//! from the moment it last saw the heartbeat value change (`observed_silence`):
-//! skew cannot shorten it, and an outage restarts the count once the records
-//! can be read again.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -40,16 +6,10 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// How often a driving process refreshes its claims.
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(20);
 
-/// A claim whose heartbeat is older than this is abandoned. Several missed
-/// heartbeats, so a slow API call or a GC pause is never mistaken for death.
 pub const STALE_AFTER: Duration = Duration::from_secs(120);
 
-/// Which node drives a record, and the last time it said so. Both are written
-/// with the record (`Claim::mine`) and refreshed by the heartbeat; a record
-/// without them does not parse.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Claim {
     pub owner: String,
@@ -73,22 +33,16 @@ pub enum Liveness {
 }
 
 impl Liveness {
-    /// Still being worked on by someone.
     pub fn is_live(self) -> bool {
         matches!(self, Liveness::Driving | Liveness::Remote)
     }
 }
 
-/// Classifies a `running` record. Pure: `me` is this node, `in_flight_here`
-/// whether this process holds the id, `silent` how long this process has watched
-/// the claim's heartbeat stay unchanged (see the module header).
 pub fn liveness(claim: &Claim, me: &str, in_flight_here: bool, silent: Duration) -> Liveness {
     if in_flight_here {
         return Liveness::Driving;
     }
     if claim.owner == me {
-        // This node's own claim, and this process does not hold it: the process
-        // that did is gone.
         return Liveness::Abandoned;
     }
     if silent < STALE_AFTER {
@@ -98,15 +52,10 @@ pub fn liveness(claim: &Claim, me: &str, in_flight_here: bool, silent: Duration)
     }
 }
 
-/// Forgotten after this long unseen, so the map cannot grow for the life of the
-/// process. Far longer than any record stays `running`.
 const FORGET_AFTER: Duration = Duration::from_secs(24 * 3600);
 
-/// id → (heartbeat last seen, when it was first seen at that value, when last seen at all)
 type Seen = HashMap<String, (String, Instant, Instant)>;
 
-/// How long this process has seen `id`'s heartbeat sit at `heartbeat`. Zero the
-/// first time it is seen and whenever the value changes.
 pub fn observed_silence(id: &str, heartbeat: &str, now: Instant) -> Duration {
     static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
     let mut seen = SEEN
@@ -130,9 +79,6 @@ fn silence_in(seen: &mut Seen, id: &str, heartbeat: &str, now: Instant) -> Durat
     }
 }
 
-/// The ids one kind of operation has in flight in THIS process. A registry
-/// rather than a bare static per module, so each operation kind gets the same
-/// guard semantics.
 pub struct InFlight {
     ids: Mutex<Vec<String>>,
 }
@@ -150,11 +96,6 @@ impl InFlight {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Claims `id` for this process until the guard drops — including when the
-    /// driving task panics, which the old push/retain pairs did not survive.
-    ///
-    /// Counted: each guard holds one entry, so a second claim of the same id keeps
-    /// it in flight until BOTH guards drop.
     pub fn claim(&'static self, id: &str) -> InFlightGuard {
         self.lock().push(id.to_string());
         InFlightGuard {
@@ -167,7 +108,6 @@ impl InFlight {
         self.lock().iter().any(|i| i == id)
     }
 
-    /// Each id once, however many guards hold it.
     pub fn ids(&self) -> Vec<String> {
         let mut ids = self.lock().clone();
         ids.sort();
@@ -190,10 +130,8 @@ impl Drop for InFlightGuard {
     }
 }
 
-/// A record whose liveness is tracked by a `Claim`.
 pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync {
     fn id(&self) -> &str;
-    /// Recorded as still running (not yet succeeded or failed).
     fn is_running(&self) -> bool;
     fn claim(&self) -> &Claim;
     fn claim_mut(&mut self) -> &mut Claim;
@@ -205,9 +143,6 @@ pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync 
     }
 }
 
-/// Refreshes this node's claims on every record this process is driving, every
-/// `HEARTBEAT_EVERY`, for as long as the process lives. One task per record
-/// kind; a single compare-and-swap covers all of its ids.
 pub fn spawn_heartbeat<T: Claimed + 'static>(
     store: crate::records::Store,
     in_flight: &'static InFlight,
@@ -238,8 +173,6 @@ pub fn spawn_heartbeat<T: Claimed + 'static>(
     });
 }
 
-/// Pure half of the heartbeat: stamp `now` on the running records in `ids`,
-/// claiming them for `me`.
 pub fn beat<T: Claimed>(sets: &mut [T], ids: &[String], me: &str, now: DateTime<Utc>) {
     for s in sets.iter_mut() {
         if s.is_running() && ids.iter().any(|i| i == s.id()) {
@@ -271,7 +204,6 @@ mod tests {
 
     #[test]
     fn a_restore_driven_by_another_node_is_live_while_it_heartbeats() {
-        // The bug this module exists for: node2 looking at node1's live restore.
         let seen = liveness(&claim("node1"), "node2", false, Duration::from_secs(30));
         assert_eq!(seen, Liveness::Remote);
     }
@@ -291,7 +223,6 @@ mod tests {
 
     #[test]
     fn our_own_claim_without_our_process_is_abandoned_immediately() {
-        // local-api restarted mid-restore on this very node.
         assert_eq!(
             liveness(&claim("node1"), "node1", false, QUIET),
             Liveness::Abandoned
@@ -312,14 +243,11 @@ mod tests {
             silence_in(&mut seen, "rs-1", "h1", s(90)),
             Duration::from_secs(90)
         );
-        // A new heartbeat value restarts the count — however old its timestamp
-        // looks, which is what makes this immune to another node's clock.
         assert_eq!(silence_in(&mut seen, "rs-1", "h2", s(100)), QUIET);
         assert_eq!(
             silence_in(&mut seen, "rs-1", "h2", s(130)),
             Duration::from_secs(30)
         );
-        // Ids are timed independently.
         assert_eq!(silence_in(&mut seen, "rs-2", "h1", s(130)), QUIET);
     }
 

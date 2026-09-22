@@ -1,24 +1,3 @@
-//! What is worth a notification, and sending each one once.
-//!
-//! Every tick asks each source what is wrong right now. A problem that was not
-//! there before is sent; one that is gone is sent as resolved; one that is still
-//! there is not sent again. What was sent is kept on disk
-//! (`/var/lib/yolab/ntfy/alerts.json`), so a restart of local-api does not repeat
-//! it — and a notification ntfy did not accept is not recorded, so it is tried
-//! again next tick.
-//!
-//! ONE SENDER PER PROBLEM. Every notification reaches every machine (see
-//! `notify`), so a problem must be sent by one machine only, or the phone gets
-//! it once per machine. A problem of this machine (one of its disks) is sent by
-//! it; a problem of the whole cluster (a machine gone, a failed backup) by the
-//! machine with the lowest name among those that answer — decided from the same
-//! survey FORCE HEAL uses, so it needs neither Kubernetes nor Ceph, which a
-//! leader election would. The others follow the problems silently, so the one
-//! that takes over when the sender is gone does not repeat them.
-//!
-//! A SOURCE THAT CANNOT ANSWER CHANGES NOTHING. Its earlier problems are neither
-//! repeated nor called resolved: "cannot read the backup records" is not "the
-//! backup is fine again".
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,31 +14,22 @@ const STATE_FILE: &str = "var/lib/yolab/ntfy/alerts.json";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Alert {
-    /// Stable identity: the same problem keeps the same key while it lasts.
     pub key: String,
     pub title: String,
     pub message: String,
-    /// The page to open, relative to the machine's own address.
     pub page: String,
 }
 
-/// One source's answer this tick. `None` when it could not tell.
 pub(crate) struct Source {
-    /// Every key this source produces starts with it.
     pub prefix: &'static str,
     pub alerts: Option<Vec<Alert>>,
-    /// Followed without sending: another machine sends these.
     pub silent: bool,
 }
 
-/// Problems of the whole cluster, sent by one machine; the rest are this
-/// machine's own.
 fn is_cluster_wide(key: &str) -> bool {
     key.starts_with("heal:") || key.starts_with("backup:")
 }
 
-/// Whether this machine sends the cluster's problems: it has the lowest name
-/// among the machines that answer.
 fn sends_for_cluster(me: &str, answering: &[String]) -> bool {
     answering
         .iter()
@@ -74,7 +44,6 @@ enum Change {
     Cleared(Alert),
 }
 
-/// What changed since the problems that were sent last.
 fn changes(sent: &BTreeMap<String, Alert>, sources: &[Source]) -> Vec<Change> {
     let mut out = Vec::new();
     for source in sources {
@@ -102,8 +71,6 @@ fn notification(change: &Change, tunnel: &Tunnel) -> Notification {
     let alert = match change {
         Change::Raised(a) | Change::Cleared(a) => a,
     };
-    // A cluster problem is about no machine in particular, and opens the address
-    // that reaches whichever machine answers.
     let (who, host) = if is_cluster_wide(&alert.key) {
         (
             "YoLab".to_string(),
@@ -150,7 +117,6 @@ fn save(root: &Path, sent: &BTreeMap<String, Alert>) -> Result<()> {
     crate::config::write_private_file(&state_path(root), &serde_json::to_vec_pretty(sent)?)
 }
 
-// ── Sources ───────────────────────────────────────────────────────────────────
 
 fn heal_alert(problem: &str) -> Alert {
     let title = match problem {
@@ -176,7 +142,6 @@ fn heal_source(problems: &[&str], silent: bool) -> Source {
     }
 }
 
-/// The newest backup that is not running, when it failed.
 fn backup_alerts(sets: &[serde_json::Value]) -> Vec<Alert> {
     let Some(last) = sets.iter().find(|s| s["state"] != "running") else {
         return Vec::new();
@@ -230,7 +195,6 @@ fn disk_source() -> Source {
     }
 }
 
-// ── The controller ────────────────────────────────────────────────────────────
 
 pub struct NotifierController {
     pub config: crate::config::Config,
@@ -241,14 +205,12 @@ impl Controller for NotifierController {
         NAME
     }
     fn scope(&self) -> Scope {
-        // Every machine sends what it sees: see the module header of `notify`.
         Scope::Node
     }
     fn interval(&self) -> Duration {
         Duration::from_secs(120)
     }
     fn not_before_uptime(&self) -> Duration {
-        // The disk controller's view of a disk settles after its first ticks.
         Duration::from_secs(180)
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
@@ -441,7 +403,6 @@ mod tests {
         ];
         assert!(sends_for_cluster("node1", &answering));
         assert!(!sends_for_cluster("node2", &answering));
-        // node1 is gone: node2 takes over.
         assert!(sends_for_cluster(
             "node2",
             &["node2".into(), "node3".into()]

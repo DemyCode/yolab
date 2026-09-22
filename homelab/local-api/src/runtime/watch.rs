@@ -1,15 +1,3 @@
-//! Event sources that wake controllers early.
-//!
-//! EVENTS ARE HINTS, STATE IS THE TRUTH. A line from `udevadm monitor` or a
-//! `kubectl get --watch` only means "something you care about may have changed —
-//! look now". The controller then reads the whole current state, exactly as it
-//! would on its periodic resync. A missed event therefore costs latency, never
-//! correctness, and a duplicate costs one cheap tick (the runtime collapses
-//! bursts). This is the level-triggered model Kubernetes controllers use, and it
-//! is why this file needs no offsets, no replay and no ordering.
-//!
-//! Each watcher is a long-running subprocess, restarted with a backoff if it
-//! exits — kubectl watches end on their own every few minutes by design.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -17,13 +5,11 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-/// A command whose every output line wakes `targets`.
 pub struct Watch {
     pub label: &'static str,
     pub bin: &'static str,
     pub args: Vec<String>,
     pub targets: &'static [&'static str],
-    /// Lines for which this returns false are ignored (e.g. udev chatter).
     pub filter: fn(&str) -> bool,
 }
 
@@ -31,7 +17,6 @@ pub fn any_line(_: &str) -> bool {
     true
 }
 
-/// A block device appeared, disappeared or changed.
 pub fn udev_block_event(line: &str) -> bool {
     let l = line.trim_start();
     l.starts_with("UDEV")
@@ -83,16 +68,9 @@ async fn run_once(w: &Watch) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The watches local-api runs. Kept in one list so what can wake what is
-/// readable in one place.
 pub fn standard() -> Vec<Watch> {
     let kube_watch = |kind: &str, name: &str, ns: &str| -> Vec<String> {
         let selector = format!("metadata.name={name}");
-        // By field selector, never `get <kind> <name>`: watching a NAMED object
-        // that does not exist fails at once with NotFound, and yolab-restores does
-        // not exist until the first restore — so that watch never ran, only
-        // retried. A filtered watch of the
-        // namespace waits, and reports the object's creation too.
         [
             "get",
             kind,
@@ -169,7 +147,6 @@ mod tests {
         let woken = super::super::waker("test-watch-target");
         let watch = sh("echo EVENT; echo noise", &["test-watch-target"], is_event);
         run_once(&watch).await.unwrap();
-        // The permit from the wake is waiting for the controller's next wait.
         let notified = tokio::time::timeout(Duration::from_secs(1), woken.notified()).await;
         assert!(notified.is_ok(), "the target was woken");
     }
@@ -180,7 +157,6 @@ mod tests {
         assert!(failed.is_err());
         let finished = run_once(&sh("exit 0", &[], any_line)).await;
         assert!(finished.is_ok());
-        // kubectl watches end on their own after printing events; that is normal.
         let ended = run_once(&sh("echo event; exit 1", &[], any_line)).await;
         assert!(ended.is_ok());
     }
@@ -210,7 +186,6 @@ mod tests {
                 "{}",
                 w.label
             );
-            // `get configmap <name>` would put the name straight after the kind.
             assert_eq!(w.args[2], "-n", "{}: {:?}", w.label, w.args);
         }
     }

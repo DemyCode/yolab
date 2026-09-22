@@ -10,8 +10,6 @@ import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
-// GeneratedSecret / Select / Toggle are gone from here: RJSF renders those
-// through the widgets in components/form, chosen by the chart's own uiSchema.
 import { Field, Input, Select } from "@/components/ui/input";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
@@ -32,18 +30,6 @@ import type {
   DomainResponse,
 } from "@/types/apps";
 
-// ── Schema ──────────────────────────────────────────────────────────────────
-// Every chart in the catalog describes its install form with the same tiny
-// slice of JSON Schema: 125 string properties, one boolean, two enums, and the
-// custom `format: tunnel`. That is small enough to render deliberately, which
-// is why this replaced the generic JSON-Schema form renderer the old UI used.
-//
-// An auto-generated form is *definitionally* schema-shaped — it shows field
-// names, types and validation messages, because that is all it has. It cannot
-// know that `subdomain` is "the web address", that `app_secret` should never
-// have been asked for, or that `storage_size` is not a first question. Those
-// judgements are what makes an install feel considered, and they have to be
-// written down somewhere.
 
 interface SchemaProp {
   type?: string;
@@ -61,17 +47,6 @@ interface ConfigSchema {
   required?: string[];
 }
 
-/**
- * The API already hands us the config subtree, not the whole values schema:
- * `read_chart` (routers/apps.rs) stores `values.schema.json`'s
- * `properties.config` as the app's `schema`. Unwrapping `properties.config`
- * again here found nothing and fell through to `{}`, so the form rendered ZERO
- * fields and posted `config: {}` — every app installed with none of its options
- * set, and no subdomain, which left the gateway crash-looping on a blank FQDN.
- *
- * Tolerant of both shapes so a chart or an older node that still sends the full
- * values schema keeps working.
- */
 function configSchema(schema: object | undefined): ConfigSchema {
   if (!schema) return {};
   const s = schema as ConfigSchema & { properties?: { config?: ConfigSchema } };
@@ -82,20 +57,7 @@ function configSchema(schema: object | undefined): ConfigSchema {
   return s.properties ? s : {};
 }
 
-// Field classification by regex is gone. Which field is a password, which is
-// the web address, which wants autofocus — the chart says so in its uiSchema
-// (`ui:widget: PasswordWidget`, `TunnelWidget`, `ui:autofocus`), and RJSF reads
-// it. Guessing from names both ignored what the author declared and quietly
-// disagreed with it.
 
-/**
- * Turn the install stream into something a person can read.
- *
- * local-api streams Helm's own output, which is accurate and unreadable. We do
- * not invent progress percentages we cannot know — the bar stays indeterminate
- * — but we do name the phase, because "Setting up storage" answers the only
- * question anyone has while waiting, which is whether it is stuck.
- */
 function phaseFrom(line: string): string | null {
   const l = line.toLowerCase();
   if (l.includes("namespace") || l.includes("staging")) return "Getting ready";
@@ -116,16 +78,6 @@ export function InstallPage() {
 
   const cached = catalog.data?.find((a) => a.id === appId);
 
-  // Re-pull this one chart before rendering the form.
-  //
-  // The node syncs charts hourly, so a chart published minutes ago still serves
-  // its previous schema — and a field the author just added is simply absent.
-  // That looks like a broken change rather than a stale copy, and it is only
-  // ever noticed by the person who published it, staring at a form missing the
-  // option they wrote.
-  //
-  // Best-effort: if the registry is unreachable the cached chart is still
-  // perfectly installable, so `fresh` stays null and the cached entry renders.
   const [fresh, setFresh] = useState<CatalogApp | null>(null);
   useEffect(() => {
     if (!appId) return;
@@ -137,8 +89,6 @@ export function InstallPage() {
         );
         if (!cancelled && r?.app) setFresh(r.app);
       } catch {
-        // Offline, or the chart is only in the bundled catalog. Either way the
-        // cached copy is what we would have shown anyway.
       }
     })();
     return () => {
@@ -148,12 +98,6 @@ export function InstallPage() {
 
   const app = fresh ?? cached;
 
-  // ── Duplicate / restore source ────────────────────────────────────────────
-  //
-  // The same page serves a fresh install, a duplicate of a live app (`?from=`)
-  // and a restore from a backup (`?restore=&snapshot=`). The source's definition
-  // prefills the form; credentials arrive as the redaction marker and are merged
-  // back server-side, so the real values never reach the browser.
   const [params] = useSearchParams();
   const fromInstance = params.get("from");
   const restoreNs = params.get("restore");
@@ -182,7 +126,6 @@ export function InstallPage() {
           if (!cancelled) setSourceDef(d);
         }
       } catch {
-        // No prefill available: the form falls back to the chart's own defaults.
       }
     })();
     return () => {
@@ -190,8 +133,6 @@ export function InstallPage() {
     };
   }, [fromInstance, restoreNs, restoreSnapshot]);
 
-  // A duplicate that copies data needs a point in time; offer the app's own
-  // backups, newest first, exactly as the restore dialog does.
   useEffect(() => {
     if (!fromInstance || !copyData) return;
     let cancelled = false;
@@ -230,9 +171,6 @@ export function InstallPage() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  // A free name for this install. `nextcloud` the first time, `nextcloud-2`
-  // the next — the name is both the Kubernetes namespace and the default web
-  // address, so it has to be unused and a valid DNS label.
   const installedOfThisApp = (apps.data ?? []).filter(
     (a) => a.app_id === appId,
   );
@@ -241,17 +179,6 @@ export function InstallPage() {
   const instanceName = nameEdit ?? suggestedName;
   const isCopy = instanceName !== appId;
 
-  // ── What RJSF renders ─────────────────────────────────────────────────────
-  //
-  // The schema comes straight from the chart. The uiSchema is the chart's own
-  // `yolab.io/uischema` annotation, with two things layered on that only this
-  // page knows:
-  //
-  //   - the tunnel field's live-URL domain, which is a property of this node
-  //   - a password field's initial value, generated rather than left blank
-  //
-  // Both used to be inferred by matching field names. Now the chart declares
-  // `ui:widget` and this supplies what the widget needs.
   const addressKey = useMemo(
     () =>
       Object.entries(schema.properties ?? {}).find(
@@ -260,10 +187,6 @@ export function InstallPage() {
     [schema.properties],
   );
 
-  // Cast at the boundary: ConfigSchema is a deliberately narrow local view of
-  // the handful of JSON Schema this catalog uses, while RJSF wants the full
-  // JSONSchema7. The value really is a JSON Schema — it came from the chart —
-  // so this is a widening, not a lie.
   const rjsfSchema = useMemo(
     () => ({ type: "object", ...schema }) as RJSFSchema,
     [schema],
@@ -285,14 +208,10 @@ export function InstallPage() {
     return ui;
   }, [app?.uischema, addressKey, domain.data?.domain]);
 
-  // Seeded once per chart, then owned by the form. Regenerating on every
-  // keystroke would mint a new password after the user had copied one.
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const seeded = useRef<string | null>(null);
   useEffect(() => {
     if (!appId || !schema.properties) return;
-    // Re-seed when the source definition arrives, so a duplicate/restore fills in
-    // once rather than staying on the chart defaults.
     const key = `${appId}|${sourceDef ? "source" : "new"}`;
     if (seeded.current === key) return;
     seeded.current = key;
@@ -304,8 +223,6 @@ export function InstallPage() {
         app?.uischema as Record<string, Record<string, unknown>>
       )?.[name] ?? {})["ui:widget"];
       if (widget === "PasswordWidget") {
-        // From a source, keep the redaction marker: the server swaps in the real
-        // value. Generating a new one here would silently change the password.
         if (!sourceDef) {
           seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
         }
@@ -313,17 +230,11 @@ export function InstallPage() {
         seed[name] = prop.default;
       }
     }
-    // A copy must not try to claim the source's web address: dropping the field
-    // lets the address track the new instance name instead.
     if (sourceDef && addressKey) delete seed[addressKey];
-    // Seeding a form from an async source is this effect's whole purpose; there
-    // is no external system to subscribe to instead.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFormData(seed);
   }, [appId, schema.properties, app?.uischema, sourceDef, addressKey]);
 
-  // The address tracks the instance name until the user sets one explicitly,
-  // so a second copy does not silently try to claim the first one's subdomain.
   const values = useMemo(() => {
     if (!addressKey) return formData;
     return formData[addressKey]
@@ -331,9 +242,6 @@ export function InstallPage() {
       : { ...formData, [addressKey]: instanceName };
   }, [formData, addressKey, instanceName]);
 
-  // Shown once on the success screen: a generated password is worth copying
-  // before install and worthless afterwards. Which fields those are comes from
-  // the chart's uiSchema, not from guessing at names.
   const generatedSecrets = useMemo<[string, string][]>(() => {
     const ui = (app?.uischema ?? {}) as Record<string, Record<string, unknown>>;
     return Object.entries(schema.properties ?? {})
@@ -356,9 +264,7 @@ export function InstallPage() {
   const blocking =
     !instanceName ||
     nameTaken ||
-    // Copying data needs a point in time to copy from.
     (copyData && !snapshot) ||
-    // Required per the schema itself, rather than a locally-derived list.
     [...required].some((n) => !String(values[n] ?? "").trim());
 
   async function install() {
@@ -368,18 +274,6 @@ export function InstallPage() {
     setLog([]);
     setPhase("Getting ready");
 
-    // Drop empty values that the schema has no default for, rather than
-    // sending `""`. An empty string is a real value to Helm and would override
-    // whatever the chart's own values.yaml sets — so a field we only rendered
-    // because it exists would silently blank out a working default.
-    // Drop empty values the schema has no default for, rather than sending "".
-    // An empty string is a real value to Helm and would override whatever the
-    // chart's own values.yaml sets — so a field we only rendered because it
-    // exists would silently blank out a working default.
-    //
-    // Fields hidden by a conditional (if/then) are simply absent from formData,
-    // so a password typed and then switched off never reaches the release —
-    // RJSF prunes them, which is what the bespoke `showIf` was doing by hand.
     const payload = Object.fromEntries(
       Object.entries(values).filter(([name, v]) => {
         if (v !== "") return true;
@@ -449,7 +343,6 @@ export function InstallPage() {
     );
   }
 
-  // ── Success ───────────────────────────────────────────────────────────────
   if (done) {
     return (
       <Page>
@@ -507,7 +400,6 @@ export function InstallPage() {
     );
   }
 
-  // ── Installing ────────────────────────────────────────────────────────────
   if (installing) {
     return (
       <Page>
@@ -548,7 +440,6 @@ export function InstallPage() {
     );
   }
 
-  // ── Form ──────────────────────────────────────────────────────────────────
   return (
     <Page>
       <Link
@@ -564,8 +455,8 @@ export function InstallPage() {
         <div className="min-w-0">
           <h1 className="font-display text-3xl text-fg">{app.name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>
-          {/* The last moment before committing to an install is exactly when
-              someone wants to check what this actually is. */}
+          {
+}
           {app.home && (
             <a
               href={app.home}
@@ -642,18 +533,10 @@ export function InstallPage() {
       )}
 
       <Card className="divide-y divide-border">
-        {/* The address used to be printed here as well as under the Subdomain
-            field, so the same URL appeared twice on one page. TunnelWidget shows
-            it inline now — next to the box you edit, which is where it answers
-            the question — so this hand-written copy is gone. */}
-        {/* Every option the chart declares, rendered by RJSF from its own
-            schema and uiSchema. The catalog already ships uiSchema — 55
-            TunnelWidget, 20 PasswordWidget, 5 ui:autofocus — which the previous
-            hand-rolled renderer ignored, re-deriving the same intent by
-            matching field names against /pass|secret|key|token/. A chart author
-            writing `ui:widget: PasswordWidget` is no longer overruled by a
-            regex, and conditional fields come from the schema's own if/then
-            rather than a bespoke `showIf`. */}
+        {
+}
+        {
+}
         <div className="p-5">
           <Form
             schema={rjsfSchema}
@@ -666,9 +549,8 @@ export function InstallPage() {
             showErrorList={false}
             onChange={(e) => setFormData(e.formData ?? {})}
           >
-            {/* RJSF renders its own submit button unless given children. The
-                install action lives at the bottom of the page, not inside the
-                form. */}
+            {
+}
             <></>
           </Form>
         </div>
@@ -688,8 +570,6 @@ export function InstallPage() {
             <Input
               value={instanceName}
               onChange={(e) =>
-                // Doubles as a Kubernetes namespace, so it is restricted to
-                // what a DNS label allows.
                 setNameEdit(
                   e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
                 )

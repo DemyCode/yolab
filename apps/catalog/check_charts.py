@@ -45,16 +45,11 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIBRARY = os.path.join(HERE, "yolab-common")
 
-# Charts whose schema marks fields required cannot render from defaults alone.
-# Mirrors the --set list in .github/workflows/push.yml; keep the two in step, or
-# a chart passes here and fails to publish there.
 LINT_VALUES = {
     "config.password": "PlaceholderPw2026",
     "config.admin_password": "PlaceholderPw2026",
     "config.admin_email": "admin@example.com",
     "config.app_secret": "PlaceholderPw2026",
-    # Exactly 32 characters: Firefly III's schema pins minLength and maxLength there,
-    # and helm validates values.schema.json during template.
     "config.app_key": "PlaceholderAppKey2026Placeholder",
     "config.api_key": "PlaceholderApiKey2026",
     "config.auth_secret_key": "PlaceholderAuthSecretKey2026Placeholder",
@@ -64,9 +59,7 @@ LINT_VALUES = {
     "config.subdomain": "example",
 }
 
-# Containers the platform injects into the gateway pod, as opposed to the app's own.
 GATEWAY_CONTAINERS = ("wireguard", "caddy")
-# The only containers allowed to see the platform account token.
 TOKEN_CONTAINERS = ("wg-register", "cleanup")
 
 
@@ -128,10 +121,6 @@ def check_db_init_is_idempotent(app, script, container, fail):
     with tempfile.TemporaryDirectory() as tmp:
         stub_dir = os.path.join(tmp, "bin")
         os.makedirs(stub_dir)
-        # The stub reports what the simulated database already contains:
-        #   STATE=fresh    nothing exists yet
-        #   STATE=ready    database and admin both exist
-        #   STATE=halfway  database exists, admin does not  <- the trap
         stub = os.path.join(stub_dir, "filebrowser")
         with open(stub, "w") as fh:
             fh.write(
@@ -148,8 +137,6 @@ def check_db_init_is_idempotent(app, script, container, fail):
         db_dir = os.path.join(tmp, "db")
         os.makedirs(db_dir)
         db_path = os.path.join(db_dir, "filebrowser.db")
-        # The script hardcodes an absolute mount path; point it at the temp dir
-        # so the `[ -f ]` test observes the state each case is meant to set up.
         local = script.replace("/db/filebrowser.db", db_path)
 
         for state in ("fresh", "ready", "halfway"):
@@ -188,8 +175,6 @@ def check(app, docs, fail, chart_yaml=""):
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
 
-    # Game servers expose raw TCP/UDP through WireGuard and run no Caddy at all,
-    # so "has a Caddyfile" is a property of the shape, not a requirement.
     has_caddy = any(
         "Caddyfile" in (c.get("data") or {}) for c in kinds.get("ConfigMap", [])
     )
@@ -199,9 +184,6 @@ def check(app, docs, fail, chart_yaml=""):
         if got != want:
             fail(app, f"expected {want} {kind}, got {got}")
 
-    # The uninstall hook must run before the release's resources are torn down;
-    # as a normal manifest it would be deleted along with everything else and the
-    # tunnel would leak.
     job = (kinds.get("Job") or [{}])[0]
     if (
         job.get("metadata", {}).get("annotations", {}).get("helm.sh/hook")
@@ -211,8 +193,6 @@ def check(app, docs, fail, chart_yaml=""):
 
     deploys = {d["metadata"]["name"]: d for d in kinds.get("Deployment", [])}
 
-    # The tunnel pod is wherever wg-register runs — usually a Deployment named
-    # "gateway", but some charts fold the gateway containers into their own.
     tunnel_pods = [
         (n, d["spec"]["template"]["spec"])
         for n, d in deploys.items()
@@ -247,12 +227,6 @@ def check(app, docs, fail, chart_yaml=""):
     for dname, d in deploys.items():
         spec = d["spec"]["template"]["spec"]
 
-        # An app that needs its own public URL learns it by sourcing /yolab/env,
-        # which something has to write first: wg-register in the gateway pod, or
-        # yolab-env in a pod of its own. Reference the variable without both the
-        # mount and a writer and the app starts with it empty — which for these
-        # apps means a permanent install record built around a blank hostname,
-        # not a crash. Nothing else in the rendered YAML would show it.
         inits = {c["name"]: c for c in spec.get("initContainers") or []}
         writes_yolab_env = any(n in inits for n in ("wg-register", "yolab-env"))
         for c in spec.get("containers") or []:
@@ -272,11 +246,6 @@ def check(app, docs, fail, chart_yaml=""):
                     f"container writes /yolab/env (needs wg-register or yolab-env)",
                 )
 
-        # Several containers start with a `sh -c` script that sources /yolab/env,
-        # exports the app's own-URL variables, then execs the image's entrypoint.
-        # Those scripts carry nested quoting (Linkwarden's reproduces a CMD that
-        # itself contains an `sh -c "…"`), and a quoting mistake renders as
-        # perfectly valid YAML and crashloops the container. Parse them.
         for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
             cmd = c.get("command") or []
             if (
@@ -298,13 +267,9 @@ def check(app, docs, fail, chart_yaml=""):
                         f"shell: {syntax.stderr.strip()}",
                     )
                     continue
-                # A script that sets a database up has to survive being re-run,
-                # including from the half-finished state a failed run leaves.
                 if "users add" in cmd[2] or "users update" in cmd[2]:
                     check_db_init_is_idempotent(app, cmd[2], c["name"], fail)
 
-        # Containers in a pod share one network namespace, so two claiming the
-        # same port means whichever starts second fails to bind — silently.
         seen = {}
         for c in spec.get("containers") or []:
             for p in c.get("ports") or []:
@@ -327,7 +292,6 @@ def check(app, docs, fail, chart_yaml=""):
                         f"volume {m['name']}",
                     )
 
-    # Every Caddy upstream must resolve to this pod or to a Service that exists.
     if has_caddy:
         caddyfile = next(
             c["data"]["Caddyfile"]
@@ -339,8 +303,6 @@ def check(app, docs, fail, chart_yaml=""):
             fail(app, "Caddyfile has no reverse_proxy directive")
         svcs = {s["metadata"]["name"]: s for s in kinds.get("Service", [])}
         for up in ups:
-            # Helm does not re-render values, so a `{{ … }}` left in a value is
-            # emitted literally and Caddy proxies to a host that cannot resolve.
             if "{{" in up or "}}" in up:
                 fail(
                     app,
@@ -386,8 +348,6 @@ def check(app, docs, fail, chart_yaml=""):
     for d in list(deploys.values()) + kinds.get("Job", []):
         spec = d["spec"]["template"]["spec"]
         for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
-            # An unpinned tag means two nodes can run different code from the same
-            # release, and a restore can never reproduce what wrote the data.
             if "@sha256:" not in c["image"]:
                 fail(app, f"image not digest-pinned: {c['image']}")
             if c.get("imagePullPolicy") != "IfNotPresent":
@@ -401,34 +361,11 @@ def check(app, docs, fail, chart_yaml=""):
                 if "value" in e:
                     fail(app, f"ACCOUNT_TOKEN passed by value in {c['name']}")
 
-    # An empty credential is worse than a missing one: the app starts, and the
-    # blank password is accepted.
     for s in kinds.get("Secret", []):
         for k, v in (s.get("stringData") or {}).items():
             if v == "":
                 fail(app, f"Secret key {k} rendered empty")
 
-    # NO LIVENESS OR STARTUP PROBES, DELIBERATELY.
-    #
-    # A liveness probe cannot tell "hung" from "busy": both look like a port
-    # that will not answer. The two ways of being wrong are wildly asymmetric:
-    #
-    #   - false positive (kills a healthy-but-slow app) → the app can NEVER
-    #     start, because each restart begins the same slow load again
-    #   - false negative (misses a genuinely hung app) → it stays down until
-    #     the owner notices, which on a homelab is "you, looking at the UI"
-    #
-    # Minecraft on a live cluster (2026-09-07, and again 2026-09-08 with 55
-    # restarts) needed longer to open :25565 than its 120s delay plus 3x30s
-    # allowed: SIGTERM landed mid-boot, and the next attempt began the same
-    # slow load. A startupProbe was tried as the fix and worked, but it only
-    # existed to defer liveness — once you accept that a start cannot be timed,
-    # the honest conclusion is that nothing should be killing a container on a
-    # timer at all.
-    #
-    # Readiness is the right tool and stays: it reports "starting" vs "running"
-    # without ever shooting anything. This assertion keeps it that way — a
-    # chart that reintroduces a liveness or startup probe fails here.
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
         for c in spec.get("containers") or []:
@@ -437,18 +374,6 @@ def check(app, docs, fail, chart_yaml=""):
             if "startupProbe" in c:
                 fail(app, f"container {c['name']} has a startupProbe — none by design")
 
-    # The file explorer prints its URL and its generated password as YOLAB_OUTPUT
-    # lines, and nothing scrapes those unless the chart's own `yolab.io/outputs`
-    # names them — the whole point of making the feature chart-declared rather
-    # than platform-injected. A chart that renders it without declaring them
-    # hands the user a Basic Auth prompt and no password.
-    #
-    # This assertion used to live in local-api's Rust tests, where it read the
-    # catalog off disk via CARGO_MANIFEST_DIR/../../apps/catalog. crane builds
-    # local-api from the crate alone, so that path does not exist in the sandbox
-    # and the test failed every `nix build` — which meant `nixos-rebuild` failed
-    # on every node, with no way to ship a fix for anything. It belongs here,
-    # where the catalog is what is actually being checked.
     renders_file_explorer = any(
         c.get("name") == "file-explorer-init"
         for d in docs
@@ -511,8 +436,6 @@ def main(argv):
             app = os.path.basename(chart_dir.rstrip("/"))
             text = Path(chart_dir, "Chart.yaml").read_text()
 
-            # A chart pinned to a library version other than the one in this tree
-            # is rendered against something that is not what would ship with it.
             declared = re.search(
                 r"- name: yolab-common\s*\n\s*version:\s*\"?([^\"\n]+)", text
             )

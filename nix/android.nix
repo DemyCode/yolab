@@ -1,36 +1,8 @@
-# Building shells/desktop as an Android APK.
-#
-# Android is the one target that genuinely cross-compiles: the toolchain runs on
-# Linux and emits for `*-linux-android`, so nothing here needs a phone or a Mac.
-# What it does need is Gradle, and Gradle is the entire difficulty.
-#
-# Gradle resolves its dependencies over the network at build time. A nix sandbox
-# has no network, so the dependency download happens once in a fixed-output
-# derivation — the only kind allowed to reach the internet, in exchange for
-# declaring a hash of everything it produces up front. The real build then runs
-# offline against that cache.
-#
-# The consequence: `outputHash` below cannot be known before the first build.
-# It is left as `lib.fakeHash`; nix prints the correct value in the mismatch
-# error and it goes in the file. That is the intended workflow for a
-# fixed-output derivation, not a mistake — but it does mean the first
-# `nix build .#android-apk` after any dependency change is expected to fail,
-# and to say exactly what to paste in.
 {
   pkgs,
   rust,
   lib ? pkgs.lib,
 }: let
-  # The Android SDK is unfree — Google's licence — and the repo's main `pkgs` is
-  # plain `nixpkgs.legacyPackages`, with no allowUnfree. Evaluating it there
-  # fails with a licence refusal naming a package nobody asked for by name,
-  # which reads like a nixpkgs bug rather than a policy.
-  #
-  # A second instance scoped to this file, rather than allowUnfree on the whole
-  # flake: every other package in this repo is free and should stay that way, so
-  # the exception is confined to the one build that needs it. `accept_license`
-  # is separately required, and its absence is a different and equally opaque
-  # error.
   androidPkgs = import pkgs.path {
     inherit (pkgs) system;
     config = {
@@ -39,26 +11,7 @@
     };
   };
 
-  # Pinned, not "latest". An SDK that moves under you turns a reproducible build
-  # into one that works today; and the NDK version in particular has to match
-  # what Tauri's Gradle plugin expects, or the failure is a linker error deep in
-  # a Rust build rather than anything naming a version.
   androidSdk = androidPkgs.androidenv.composeAndroidPackages {
-    # 35 because that is what Tauri's generated Gradle project asks for:
-    #
-    #   Could not determine the dependencies of task ':app:minifyUniversalReleaseWithR8'.
-    #   > Failed to find Build Tools revision 35.0.0
-    #
-    # 34 is kept alongside it because a missing SDK component does not fail
-    # cleanly — the SDK manager goes looking for it on dl.google.com, and with
-    # no network that produces pages of UnknownHostException stack traces that
-    # bury the one line naming the actual missing revision. Carrying both costs
-    # download size and removes a whole class of misleading failure.
-    # A RANGE, not a guess at the one right version. Tauri's template asked for
-    # build-tools 35.0.0 and then, once that was there, compileSdk 36 — two
-    # rebuilds to learn two numbers, each failing the same slow way. The set
-    # spans what the template plausibly wants so a Tauri upgrade does not cost
-    # another round trip.
     platformVersions = [
       "34"
       "35"
@@ -79,8 +32,6 @@
   sdkRoot = "${androidSdk.androidsdk}/libexec/android-sdk";
   ndkRoot = "${sdkRoot}/ndk-bundle";
 
-  # The desktop crate's source, reused verbatim so the APK is built from exactly
-  # what `nix build .#desktop-client` builds.
   src = rust.crates.desktop-client.args.src;
 
   commonEnv = {
@@ -90,44 +41,8 @@
     NDK_HOME = ndkRoot;
   };
 
-  # Rust's dependencies, vendored into the store.
-  #
-  # Two ecosystems download things here, and caching only one of them is a trap
-  # worth naming: step 1 caches Gradle's jars, but `tauri android build` also
-  # runs `cargo build`, and cargo wants the crates.io index. With no network in
-  # step 2 that fails with
-  #
-  #   Updating crates.io index
-  #   Could not resolve host: index.crates.io
-  #
-  # which looks like the Gradle cache failing, and is not related to it at all.
-  #
-  # craneLib.vendorCargoDeps is the same mechanism the rest of this repo's Rust
-  # builds already use, so the crates come from the same source and the same
-  # Cargo.lock as `nix build .#desktop-client`.
   cargoVendorDir = rust.craneLib.vendorCargoDeps {inherit src;};
 
-  # Points cargo at the vendored copy instead of the network. Needed in both
-  # derivations: step 1 could reach crates.io, but using the vendored source
-  # there too means the two steps resolve identical dependencies rather than
-  # merely similar ones.
-  # A WRITABLE COPY, not the store path directly.
-  #
-  # Tauri ships its Android Gradle module inside the tauri crate — the build
-  # includes a `:tauri-android` project rooted at
-  # <vendor>/tauri-2.11.5/mobile/android — so Gradle wants to create `build/`
-  # under a vendored crate. Pointed at the store that is read-only, and the
-  # build dies with
-  #
-  #   Execution failed for task ':tauri-android:mergeReleaseJniLibFolders'.
-  #   > Failed to create parent directory '/nix/store/…/tauri-2.11.5/mobile/android/build'
-  #
-  # which names a cargo path while being a Gradle problem, and looks like a
-  # permissions bug rather than a design constraint. Copying costs a few seconds
-  # and makes the whole vendored tree writable.
-  #
-  # The config.toml is rewritten as it is copied so its `directory =` entries
-  # point at the copy rather than back at the store.
   cargoOffline = ''
     export CARGO_HOME=$TMPDIR/cargo
     mkdir -p "$CARGO_HOME"
@@ -142,16 +57,6 @@
       ${cargoVendorDir}/config.toml > "$CARGO_HOME/config.toml"
   '';
 
-  # Tauri assembles the APK by running `gen/android/gradlew`, the Gradle wrapper
-  # script — and `tauri android init` does not produce one, so the build dies
-  # with "`gradlew` not found. Make sure you have the Android SDK installed".
-  # The message is misleading: the SDK is fine, the wrapper simply is not there.
-  #
-  # The fix is a shim rather than `gradle wrapper`, because the wrapper's whole
-  # purpose is to fetch a pinned Gradle distribution at run time — exactly the
-  # network dependency this file exists to eliminate, and pointless when
-  # nixpkgs already pins one. Two lines that hand the call to the Gradle on
-  # PATH, which is the version nix chose.
   gradlewShim = ''
     printf '#!/bin/sh\nexec gradle "$@"\n' > gen/android/gradlew
     chmod +x gen/android/gradlew
@@ -167,13 +72,6 @@
     pkgs.nodejs
   ];
 
-  # ── Step 1: the dependency cache ───────────────────────────────────────────
-  #
-  # Generates the Gradle project, runs a full build WITH network, and keeps only
-  # the dependencies it downloaded. This is the one derivation allowed online.
-  #
-  # A full build rather than a cheaper dependency-resolution step, because the
-  # cheaper step does not work — see the buildPhase.
   gradleDeps = pkgs.stdenv.mkDerivation (
     {
       pname = "yolab-android-gradle-deps";
@@ -239,15 +137,12 @@
         runHook postInstall
       '';
 
-      # Fixed-output: the three attributes below are what buy network access.
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      # Pinned from a build's mismatch error; see this file's header.
       outputHash = lib.fakeHash;
     }
     // commonEnv
   );
-  # ── Step 2: the APK itself ─────────────────────────────────────────────────
 in
   pkgs.stdenv.mkDerivation (
     {

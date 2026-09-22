@@ -1,17 +1,3 @@
-//! Backup credentials outlive the cluster.
-//!
-//! The restic password in the `yolab-backup-config` Secret is generated on the
-//! cluster and exists nowhere else: without it every backup is unreadable. A
-//! FORCE HEAL starts Kubernetes from nothing — the Secret goes with etcd — and
-//! the backups are exactly what the owner then needs, to get the apps back.
-//!
-//! So every machine keeps a copy on its own disk, next to its other root-only
-//! files, and puts the Secret back when Kubernetes answers without it. The S3
-//! keys travel with it; when they have been rotated since, "refresh
-//! credentials" on the Backups page fetches new ones and keeps the password.
-//!
-//! Backups are never switched off by deleting the Secret, so a missing Secret
-//! with a copy on disk only ever means the cluster was started again.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,7 +34,6 @@ fn decide(secret: Option<Credentials>, copy: Option<Credentials>) -> Action {
                 Action::Save(secret)
             }
         }
-        // A Secret without a password is broken, not a reason to forget the copy.
         (Some(_), _) => Action::Nothing,
         (None, Some(copy)) if usable(&copy) => Action::Restore(copy),
         (None, _) => Action::Nothing,
@@ -81,7 +66,6 @@ impl Controller for BackupCredentialsController {
         NAME
     }
     fn scope(&self) -> Scope {
-        // Every machine keeps its own copy: any one of them may be the one left.
         Scope::Node
     }
     fn interval(&self) -> Duration {

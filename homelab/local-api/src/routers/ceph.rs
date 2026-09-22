@@ -8,7 +8,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-// ── Human-readable cluster health ─────────────────────────────────────────────
 
 #[derive(Serialize, Clone, PartialEq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -31,20 +30,11 @@ pub struct ClusterHealth {
     pub title: String,
     pub message: String,
     pub issues: Vec<HealthIssue>,
-    /// Some PGs have zero accessible copies — reads/writes to affected PVCs block.
     pub pg_unavailable: bool,
-    /// Ceph API (and likely MON quorum) is reachable.
     pub mon_quorum_ok: bool,
-    /// A disk or pool is full — new writes are blocked, recovery may be stalled.
     pub osd_full: bool,
-    /// Storage is still warming up after a node restart — not an error, just needs time.
     pub starting: bool,
-    /// A new disk is being prepared as an OSD — storage will grow once ready.
     pub provisioning: bool,
-    /// Data is unreadable AND cannot be rebuilt (the pools holding it keep one copy
-    /// and the disk is gone). The Backups page keys the one-click recovery off this
-    /// rather than matching on a message, so the wording can change without silently
-    /// turning the recovery path off.
     pub storage_unrecoverable: bool,
 }
 
@@ -56,27 +46,6 @@ fn system_uptime_secs() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// True while a disk is actively being turned into an OSD.
-///
-/// Rook signalled this with `rook-ceph-osd-prepare` Pods. There are none now:
-/// the reconciler runs `ceph-volume` in-process. A newly created OSD is briefly
-/// `in` but not yet `up`, so a gap between the two counts is the equivalent
-/// signal — it keeps the UI showing "provisioning" instead of "degraded" while
-/// a disk is being added.
-/// Whether a disk is in the middle of being ADDED.
-///
-/// `in > up` alone does not mean that, and reading it that way is how a dead disk got
-/// announced as routine setup. An OSD that is `in` but not `up` is the definition of a
-/// disk that has stopped answering — a new disk coming up and an old disk dying look
-/// identical from this counter, and only one of them is good news.
-///
-/// Observed live: a disk was pulled from a size=1 cluster, 63 of 81 placement groups
-/// went stale, and the home page said "Preparing a new disk — you can keep using
-/// everything while this finishes", because provisioning is checked before severity.
-///
-/// So the counter is still the signal, but it only means provisioning when nothing is
-/// actually unreachable. If data cannot be read, whatever else is true, this is not
-/// setup.
 async fn osd_provisioning_active(data_unavailable: bool) -> bool {
     if data_unavailable {
         return false;
@@ -97,11 +66,6 @@ pub async fn cluster_health() -> Json<ClusterHealth> {
 }
 
 async fn compute_cluster_health() -> ClusterHealth {
-    // Deliberately not computed yet: it depends on whether anything is unreachable,
-    // which is only known once the health details are parsed below.
-    // Straight from the mon: Ceph runs as host daemons, so there is no Rook CR
-    // status to read. Formatted as "<HEALTH_X>\n<details-json>" to keep the
-    // existing parser below unchanged.
     let raw = match ceph_health_and_details().await {
         Ok(s) => s,
         Err(_) => {
@@ -128,8 +92,6 @@ async fn compute_cluster_health() -> ClusterHealth {
                 mon_quorum_ok: false,
                 osd_full: false,
                 starting,
-                // Not known from here, and "preparing a disk" is the wrong guess when
-                // the control plane cannot be reached at all.
                 provisioning: false,
                 storage_unrecoverable: false,
             };
@@ -143,18 +105,12 @@ async fn compute_cluster_health() -> ClusterHealth {
 
     let mut issues: Vec<HealthIssue> = vec![];
 
-    // How many distinct places a copy could go, so the no-redundancy message can
-    // tell this owner what to actually do rather than guess. Unreadable topology
-    // yields 0, which takes the conservative branch (recommend backups) instead of
-    // promising disks that may not exist.
     let places = match crate::topology::observe().await {
         Some(t) if t.osd_hosts > 1 => t.osd_hosts,
         Some(t) => t.osds,
         None => 0,
     };
 
-    // Only when Ceph says something is unreadable — two extra queries, and this
-    // endpoint is polled.
     let loss = if details
         .as_object()
         .is_some_and(|o| o.contains_key("PG_AVAILABILITY") || o.contains_key("PG_DOWN"))
@@ -172,7 +128,6 @@ async fn compute_cluster_health() -> ClusterHealth {
         }
     }
 
-    // Sort: errors first, then warns
     issues.sort_by_key(|i| {
         if i.level == HealthLevel::Error {
             0u8
@@ -189,17 +144,13 @@ async fn compute_cluster_health() -> ClusterHealth {
         HealthLevel::Warn
     };
 
-    // Derive machine-readable flags from the active issue codes.
     let pg_unavailable = details
         .as_object()
         .is_some_and(|obj| obj.contains_key("PG_AVAILABILITY") || obj.contains_key("PG_DOWN"));
     let osd_full = details.as_object().is_some_and(|obj| {
         obj.contains_key("OSD_FULL") || obj.contains_key("NOSPC") || obj.contains_key("POOL_FULL")
     });
-    // "Starting" when reachable but PGs are still peering/recovering and system just booted.
     let starting = pg_unavailable && system_uptime_secs() < 900;
-    // Only now: a disk being added and a disk having died produce the same counters,
-    // and unreachable data is what tells them apart.
     let provisioning = osd_provisioning_active(pg_unavailable).await;
     let storage_unrecoverable = loss
         .as_ref()
@@ -265,89 +216,26 @@ async fn compute_cluster_health() -> ClusterHealth {
     }
 }
 
-/// Whether unreachable data can come back on its own, and how much of it there is.
-///
-/// This distinction is the whole point. Ceph reports both cases the same way — a
-/// PG_AVAILABILITY warning — because from its side they look identical: some
-/// placement groups cannot be read right now. But:
-///
-///   size >= 2, a disk down   the other copies are fine, Ceph is already rebuilding,
-///                            and the honest advice is to wait.
-///   size == 1, a disk down   there is no other copy. Nothing is rebuilding, nothing
-///                            will, and waiting accomplishes nothing at all.
-///
-/// The old message assumed the first case for both. Observed live during a deliberate
-/// disk pull at size=1: 63 of 81 placement groups went stale — 78% of the file data
-/// and 81% of the filesystem metadata — and the page said "Some data TEMPORARILY
-/// unavailable … apps will hang UNTIL RECOVERY". Red, and reassuring, during permanent
-/// loss. That is worse than saying nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PgLoss {
-    /// PGs that cannot be read right now.
     pub stuck: u32,
     pub total: u32,
-    /// True when at least one stuck PG has permanently lost its data — either its pool
-    /// keeps a single copy (so a stuck PG has no second copy to rebuild from), or the
-    /// PG is `incomplete` (every copy is gone and Ceph has marked the holding OSDs out).
-    /// This is the machine-readable answer to "can this come back on its own", and it
-    /// is correct at any replica count.
     pub unrecoverable: bool,
-    /// Pool names (e.g. `yolab-fs-metadata`, `yolab-fs-data0`, `images`) that hold at
-    /// least one unrecoverable PG. Empty unless `unrecoverable` is true. Callers that
-    /// care about app DATA filter on the CephFS pools rather than treating the
-    /// re-pullable `images` pool as data loss.
     pub unrecoverable_pools: Vec<String>,
-    /// True only when Ceph has GIVEN UP on the OSDs holding a stuck PG — they are
-    /// `out`, or the PG is `incomplete`, or nothing is acting for it at all.
-    ///
-    /// SEPARATE FROM `unrecoverable` BECAUSE THE TWO ANSWER OPPOSITE QUESTIONS,
-    /// and conflating them told an owner their intact files were gone.
-    ///
-    /// `unrecoverable` is the pessimistic one, and it must stay that way: it
-    /// guards `plan_purge`, where the cost of being wrong is destroying the last
-    /// copy of something. "This disk might hold data nothing else can serve" is
-    /// exactly the right thing to refuse a purge on.
-    ///
-    /// This one is the confident one, and the UI uses it, because there the cost
-    /// of being wrong runs the other way: the damaged-apps screen offers to
-    /// restore from backup, and restoring over data that was merely unreadable
-    /// for a minute overwrites it with something hours older. On 2026-09-11 that
-    /// screen offered to restore five apps whose placement groups were reported
-    /// `stale+active+clean` — active and CLEAN, simply unreported because their
-    /// OSD daemons were wedged — with every OSD still `in` and every disk still
-    /// plugged in. Nothing was lost; the offer would have destroyed a day of
-    /// data.
     pub confirmed_lost: bool,
-    /// Pools holding at least one confirmed-lost PG. Empty unless
-    /// `confirmed_lost`.
     pub confirmed_lost_pools: Vec<String>,
 }
 
-/// PG states that mean "the OSD holding this is not answering", as opposed to
-/// `degraded`/`undersized`/`peering`, which mean "a copy is missing but another is
-/// serving and recovery is under way".
 fn is_stuck_state(state: &str) -> bool {
     state
         .split('+')
         .any(|s| matches!(s, "stale" | "down" | "incomplete" | "unknown"))
 }
 
-/// `incomplete` is the one stuck state that is permanent regardless of the pool's
-/// replica count: unlike `down`/`stale` — which mean "the holder is not answering
-/// right now" and may return — it means every copy is gone and the OSDs have been
-/// marked out, so nothing is left to rebuild from.
 fn is_incomplete_state(state: &str) -> bool {
     state.split('+').any(|s| s == "incomplete")
 }
 
-/// OSD ids Ceph has NOT given up on: still `in` the cluster.
-///
-/// `in` is Ceph's own verdict, not ours. An OSD that is merely `down` may be a
-/// daemon that will start again in a second — the disk is still a member and its
-/// data still counts. `out` is the conclusion Ceph reaches on its own, by
-/// default ten minutes later, that the data is not coming back and must be
-/// rebuilt elsewhere. `lost_osd_count` above draws the same line for the same
-/// reason.
 fn osds_still_in(dump: &Value) -> std::collections::HashSet<i64> {
     dump["osds"]
         .as_array()
@@ -360,19 +248,11 @@ fn osds_still_in(dump: &Value) -> std::collections::HashSet<i64> {
         .unwrap_or_default()
 }
 
-/// Whether a stuck PG's data is confirmed gone rather than merely unreadable.
-///
-/// The question is only ever "is anything still holding this". If any OSD in the
-/// PG's acting set is still `in`, the answer is yes — the daemon is down, the
-/// disk is a member, the data is on it, and starting the daemon brings it back.
-///
-/// An EMPTY acting set is the opposite: nothing is holding the PG at all.
 fn pg_is_confirmed_lost(pg: &Value, still_in: &std::collections::HashSet<i64>) -> bool {
     let state = pg["state"].as_str().unwrap_or("");
     if is_incomplete_state(state) {
         return true;
     }
-    // `acting` is who is serving it; fall back to `up` for dumps that omit it.
     let acting = pg["acting"]
         .as_array()
         .filter(|a| !a.is_empty())
@@ -382,22 +262,10 @@ fn pg_is_confirmed_lost(pg: &Value, still_in: &std::collections::HashSet<i64>) -
             .iter()
             .filter_map(|v| v.as_i64())
             .any(|id| still_in.contains(&id)),
-        // Nothing acting and nothing up: no OSD claims this PG.
         None => true,
     }
 }
 
-/// Reads pool replica counts and PG placement to decide which case this is.
-///
-/// Only called when Ceph has actually raised PG_AVAILABILITY or PG_DOWN — it is two
-/// extra queries, and the endpoint they sit in is polled.
-///
-/// Per pool, not cluster-wide: a pool may legitimately sit at one copy — a
-/// fresh cluster with a single OSD does — and reading that as "any pool keeps
-/// one copy" would mark every transient blip unrecoverable.
-/// Fetches the two dumps this needs via the plain `ceph_cli` binary path, for
-/// the HTTP handlers that have no `Host` to inject. The reconciler goes
-/// through `assess_pg_loss_via`/`compute_pg_loss` instead — see there for why.
 pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
     let dump = crate::ceph_cli::ceph_json(&["osd", "dump"]).await.ok()?;
     let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"])
@@ -406,23 +274,13 @@ pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
     compute_pg_loss(&dump, &pgs)
 }
 
-/// Same, through the `Host` seam. The disk reconciler is the one caller that
-/// must never fall back to a real `ceph` binary in a test: it decides
-/// `PurgeVerdict::RefuseDataAtRisk`, the branch standing between a purge and
-/// data loss, and a test that cannot script this call cannot exercise that
-/// branch at all — it was invisible to `FakeHost` until this existed.
 pub(crate) async fn assess_pg_loss_via<H: crate::host::Host>(host: &H) -> Option<PgLoss> {
     let dump = host.ceph_json(&["osd", "dump"]).await.ok()?;
     let pgs = host.ceph_json(&["pg", "dump", "pgs_brief"]).await.ok()?;
     compute_pg_loss(&dump, &pgs)
 }
 
-/// The arithmetic, pulled out so it is testable on two JSON blobs with no
-/// process spawned at all — pure logic first, effects as a thin shell around
-/// it, same shape as `zap_args`/`Ownership::read` elsewhere in this codebase.
 fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
-    // pool id → (name, size). `size` is the pool's configured replica count, needed to
-    // tell "single copy, gone" from "a copy is missing but another serves".
     let pools: std::collections::HashMap<i64, (String, u64)> = dump["pools"]
         .as_array()?
         .iter()
@@ -437,8 +295,6 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
         })
         .collect();
 
-    // `ceph pg dump pgs_brief -f json` returns the array directly on some versions and
-    // under `pg_stats` on others.
     let items = pgs["pg_stats"]
         .as_array()
         .or_else(|| pgs.as_array())
@@ -465,9 +321,6 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
             .and_then(|id| id.split('.').next())
             .and_then(|p| p.parse::<i64>().ok());
         let pool = pool_id.and_then(|id| pools.get(&id));
-        // Permanent when there is only one copy (and it is gone) or the PG is
-        // `incomplete` (every copy gone). An unknown pool id reads as "not single
-        // copy" — do not claim loss on a pool we could not identify.
         let single_copy = pool.is_some_and(|(_, size)| *size <= 1);
         if single_copy || is_incomplete_state(state) {
             unrecoverable = true;
@@ -476,7 +329,6 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
                     unrecoverable_pools.push(name.clone());
                 }
             }
-            // Stricter: only when nothing is still holding it. See `confirmed_lost`.
             if pg_is_confirmed_lost(pg, &still_in) {
                 confirmed_lost = true;
                 if let Some((name, _)) = pool {
@@ -498,19 +350,6 @@ fn compute_pg_loss(dump: &Value, pgs: &Value) -> Option<PgLoss> {
     })
 }
 
-/// What to say about data that cannot be read.
-///
-/// THREE CASES, NOT TWO. There used to be "permanently lost" and "a copy is
-/// missing, this repairs itself", and the second was told to everyone who was
-/// not the first — including the owner of a single-copy cluster, where nothing
-/// repairs itself because there is no other copy to repair from. Both sentences
-/// were wrong on 2026-09-11: the screen said files "cannot be rebuilt" about
-/// placement groups that were `stale+active+clean`, and the alternative would
-/// have promised a self-repair that could not happen.
-///
-/// The middle case is the common one and the one worth getting right: the data
-/// is fine, its disk is still part of the cluster, and something on that machine
-/// needs to start again.
 pub(crate) fn unavailable_message(loss: Option<&PgLoss>) -> (String, String) {
     let share = |l: &PgLoss| {
         if l.total > 0 {
@@ -531,10 +370,6 @@ pub(crate) fn unavailable_message(loss: Option<&PgLoss>) -> (String, String) {
                 share(l)
             ),
         ),
-        // Unreadable, single copy, but the disk is still a cluster member: the
-        // storage service on it is down, not the disk. Nothing is lost and
-        // nothing needs restoring — which is exactly what the owner needs to be
-        // told before they reach for a backup.
         Some(l) if l.unrecoverable => (
             "Some files are unreachable right now".into(),
             format!(
@@ -555,18 +390,6 @@ pub(crate) fn unavailable_message(loss: Option<&PgLoss>) -> (String, String) {
     }
 }
 
-/// Why the no-redundancy message needs to know how many disks there are.
-///
-/// One string cannot serve both cases, and the old one served neither: it said
-/// "this is expected with a single-disk setup" unconditionally, so a cluster with
-/// three disks and one copy of everything was told its situation was expected. It
-/// was not expected, it was one dialog away from being fixed, and the sentence
-/// talked the owner out of fixing it.
-///
-/// `places` is how many distinct locations a second copy could go — OSDs, or
-/// machines when the failure domain is host. Zero or one means the machine
-/// genuinely cannot replicate and the honest advice is backups; more than one
-/// means it can, today, and the advice is to say so.
 fn no_redundancy_message(places: u32) -> String {
     if places <= 1 {
         "Everything is stored once, on the only disk this machine has. If that disk fails, \
@@ -645,18 +468,6 @@ fn translate_health_check(
             "Machine clocks out of sync".into(),
             "The clocks on your machines differ by too much. This can cause storage failures.".into(),
         ),
-        // Ceph raises both of these for the same situation from the owner's
-        // point of view: fewer copies exist than were asked for. It is now a
-        // NORMAL, indefinite state rather than a transient one — asking for
-        // more copies than there are disks is allowed, and means "make the rest
-        // when I add some". So this must not read as a fault or claim recovery
-        // is under way, and it must say the thing the owner needs to know
-        // first: everything still works.
-        //
-        // That last part is only true because min_size is 1 (see
-        // topology::MIN_SIZE). Under the old min_size = size - 1 this same
-        // state could mean every app had stopped, and saying "everything works"
-        // would have been a lie.
         "PG_DEGRADED" | "PG_UNDERSIZED" => (
             "Fewer copies than you asked for".into(),
             "Some of your files have fewer copies than your storage settings ask for — \
@@ -666,10 +477,6 @@ fn translate_health_check(
                 .into(),
         ),
         "PG_DOWN" | "PG_AVAILABILITY" => {
-            // Always critical regardless of Ceph's own severity. Every check Ceph
-            // raised during a live size=1 disk pull was HEALTH_WARN — including the
-            // one saying 78% of the data had gone — because from its side a down OSD
-            // is recoverable-in-principle until proven otherwise.
             let (title, description) = unavailable_message(loss);
             return Some(HealthIssue {
                 level: HealthLevel::Error,
@@ -686,7 +493,6 @@ fn translate_health_check(
             "Some data objects cannot be found on any disk. This is a sign of past data loss.".into(),
         ),
         "PG_PEERING" | "PG_NOT_SCRUBBED" | "PG_NOT_DEEP_SCRUBBED" | "PG_NOT_SCRUBBED_SINCE" => {
-            // Normal transient states after startup — suppress them to avoid alarm.
             return None;
         }
         "RECENT_CRASH" => (
@@ -698,7 +504,6 @@ fn translate_health_check(
             no_redundancy_message(places),
         ),
         _ => {
-            // Unknown code: surface it but don't translate
             let summary = detail["summary"]["message"].as_str().unwrap_or(code).to_string();
             (format!("Storage issue: {}", summary.split(':').next().unwrap_or(code)), summary)
         }
@@ -711,7 +516,6 @@ fn translate_health_check(
     })
 }
 
-/// "<HEALTH_X>\n<details-json>", the shape compute_cluster_health parses.
 async fn ceph_health_and_details() -> anyhow::Result<String> {
     let h = crate::ceph_cli::ceph_json(&["health", "detail"]).await?;
     let status = h["status"].as_str().unwrap_or("");
@@ -719,7 +523,6 @@ async fn ceph_health_and_details() -> anyhow::Result<String> {
     Ok(format!("{status}\n{checks}"))
 }
 
-// ── Storage detail ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct OsdInfo {
@@ -734,16 +537,9 @@ pub struct OsdInfo {
     pub var: f64,
     pub pgs: u64,
     pub status: String,
-    /// CRUSH weight (0.0 = inactive/not yet activated, >0 = participating).
     pub crush_weight: f64,
-    /// OSD reweight (0.0 = explicitly out/draining, 1.0 = in).
     pub reweight: f64,
-    /// True when `ceph osd safe-to-destroy` confirms no data remains on this OSD.
-    /// Combined with crush_weight=0 + reweight=0, this means the disk can be unplugged.
     pub safe_to_destroy: bool,
-    /// True when `ceph osd ok-to-stop` confirms losing this OSD won't block any I/O
-    /// (all its PGs still meet min_size on remaining OSDs). The disk can be lost without
-    /// service disruption — data degrades but stays accessible.
     pub ok_to_stop: bool,
 }
 
@@ -769,13 +565,6 @@ pub struct StorageDetail {
     pub used_bytes: u64,
 }
 
-/// Everything the Storage page needs, in one shot.
-///
-/// This used to be a ~40-line shell script piped into a Rook pod, hand-building
-/// JSON with `echo` and juggling per-call temp keyring paths so concurrent
-/// polls would not clobber each other. With Ceph on the host it is just a
-/// handful of subprocess calls, so all of that is gone: no pod discovery, no
-/// keyring copying, no /tmp collisions, and no shell quoting to get wrong.
 async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     use crate::ceph_cli::ceph_json;
 
@@ -788,9 +577,6 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
         .await
         .unwrap_or_default();
 
-    // Ask per OSD, never in bulk. `safe-to-destroy osd.a osd.b` answers "can all
-    // of these go at once?", which is nearly always false and would mark every
-    // disk unremovable.
     let ids: Vec<i64> = ceph_json(&["osd", "ls"])
         .await
         .ok()
@@ -803,14 +589,12 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     let mut safe_to_destroy = Vec::new();
     let mut ok_to_stop = Vec::new();
     for id in ids {
-        // Display only: an unanswered check shows as "not safe", never as safe.
         if crate::ceph::destructive::safe_to_destroy(&crate::host::RealHost, id)
             .await
             .is_ok_and(|p| p.is_some())
         {
             safe_to_destroy.push(id);
         }
-        // ok-to-stop exits 0 when losing this OSD would not block I/O.
         if crate::ceph_cli::ceph(&["osd", "ok-to-stop", &format!("osd.{id}")])
             .await
             .is_ok()
@@ -846,21 +630,16 @@ fn failure_domain_from_rule(rule: &serde_json::Value) -> String {
 }
 
 fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
-    // ── safe-to-destroy set ────────────────────────────────────────────────────
-    // ceph osd safe-to-destroy returns {"safe_to_destroy": [id, ...], "active": [...], ...}
     let safe_ids: std::collections::HashSet<i64> = v["safe_to_destroy"]["safe_to_destroy"]
         .as_array()
         .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
         .unwrap_or_default();
 
-    // ── ok-to-stop set ────────────────────────────────────────────────────────
-    // ok-to-stop exit 0 = losing this OSD won't block I/O (PGs still meet min_size)
     let ok_to_stop_ids: std::collections::HashSet<i64> = v["ok_to_stop"]["ok_to_stop"]
         .as_array()
         .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
         .unwrap_or_default();
 
-    // ── OSD tree ───────────────────────────────────────────────────────────────
     let nodes = v["osd_df"]["nodes"]
         .as_array()
         .map(|a| a.as_slice())
@@ -916,7 +695,6 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
         .collect();
     osds.sort_by(|a, b| a.host.cmp(&b.host).then(a.id.cmp(&b.id)));
 
-    // ── CRUSH rules → failure domain map ──────────────────────────────────────
     let crush_rules = v["crush_rules"]
         .as_array()
         .map(|a| a.as_slice())
@@ -938,7 +716,6 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
         })
         .collect();
 
-    // ── Pool df (max_avail, stored, used) ─────────────────────────────────────
     let df_pools = v["ceph_df"]["pools"]
         .as_array()
         .map(|a| a.as_slice())
@@ -948,7 +725,6 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
         .filter_map(|p| p["id"].as_u64().map(|id| (id, p)))
         .collect();
 
-    // ── Pool detail ────────────────────────────────────────────────────────────
     let pool_detail = v["pool_detail"]
         .as_array()
         .map(|a| a.as_slice())
@@ -1003,25 +779,15 @@ pub async fn storage_detail() -> Json<serde_json::Value> {
     }
 }
 
-// ── OSD lifecycle ──────────────────────────────────────────────────────────────
-//
-// One source of truth for whether a disk is in the cluster: the owner's switch
-// for it (`storage::settings`). These Advanced buttons set the same switch as the
-// Storage page's toggle, through the same function, and the disk controller is
-// the single actuator that drives the OSD to match.
 
-/// Re-add the disk backing this OSD.
 pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     set_desired_by_osd(id, "ON").await
 }
 
-/// Remove the disk backing this OSD safely. The disk controller drains it first;
-/// it is fine if draining takes a long time.
 pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     set_desired_by_osd(id, "OFF").await
 }
 
-/// The node and disk id publishing `osd_id` in the inventory, if any.
 fn disk_of_osd(
     published: &std::collections::BTreeMap<String, String>,
     osd_id: i64,
@@ -1091,16 +857,8 @@ mod osd_switch_tests {
     }
 }
 
-/// Where homelab/nixos/ceph/dashboard.nix writes the generated password.
 const DASHBOARD_PASSWORD_FILE: &str = "/var/lib/ceph/dashboard-password";
 
-/// The credentials shown next to the dashboard link.
-///
-/// These used to come from the `rook-ceph-dashboard-password` Secret. Ceph left
-/// Kubernetes and the Secret left with it, so this returned an empty string that
-/// the page rendered as a row of dots — credentials that looked real and could
-/// not work. The password now comes from the same file the mgr was configured
-/// with, so the two cannot drift apart.
 pub async fn dashboard_creds() -> Json<serde_json::Value> {
     let password = std::fs::read_to_string(DASHBOARD_PASSWORD_FILE)
         .map(|s| s.trim().to_string())
@@ -1109,7 +867,6 @@ pub async fn dashboard_creds() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "username": "admin",
         "password": password,
-        // The page can say "not ready yet" instead of showing empty dots.
         "ready": !password.is_empty(),
     }))
 }
@@ -1119,11 +876,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ── translate_health_check ────────────────────────────────────────────────
-    //
-    // These strings are the entire storage vocabulary a non-technical user ever
-    // sees, so what matters is that a code maps to plain language, that severity
-    // survives, and that nothing leaks Ceph jargon unfiltered.
 
     fn warn() -> serde_json::Value {
         json!({"severity": "HEALTH_WARN", "summary": {"message": "some detail"}})
@@ -1141,11 +893,6 @@ mod tests {
         assert_eq!(issue.level, HealthLevel::Warn);
     }
 
-    // ── Recoverable vs gone ───────────────────────────────────────────────────
-    //
-    // From a real disk pull at size=1: 63 of 81 PGs went `stale+active+clean`, every
-    // Ceph check said HEALTH_WARN, and the page said "temporarily unavailable … until
-    // recovery". Nothing was recovering. These pin the difference.
 
     fn loss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
         PgLoss {
@@ -1157,8 +904,6 @@ mod tests {
             } else {
                 vec![]
             },
-            // These tests predate the split and mean "permanently lost", which is
-            // what `confirmed_lost` says now.
             confirmed_lost: unrecoverable,
             confirmed_lost_pools: if unrecoverable {
                 vec!["yolab-fs-metadata".into()]
@@ -1174,16 +919,12 @@ mod tests {
         assert!(title.contains("cannot be rebuilt"), "{title}");
         assert!(!title.to_lowercase().contains("temporar"), "{title}");
         assert!(!body.to_lowercase().contains("until recovery"), "{body}");
-        // The two things a person can actually do.
         assert!(body.contains("reconnecting it"), "{body}");
         assert!(body.contains("backup"), "{body}");
-        // And what it means for them right now.
         assert!(body.contains("63 of 81"), "{body}");
         assert!(body.contains("will not start or will hang"), "{body}");
     }
 
-    /// With copies elsewhere it really is temporary, and saying so is right — this is
-    /// the case the old wording was written for.
     #[test]
     fn a_replicated_cluster_is_still_told_to_wait() {
         let (title, body) = unavailable_message(Some(&loss(5, 81, false)));
@@ -1192,7 +933,6 @@ mod tests {
         assert!(!title.contains("cannot be rebuilt"), "{title}");
     }
 
-    /// When the assessment cannot be made, do not claim data is lost.
     #[test]
     fn an_unreadable_assessment_takes_the_cautious_branch() {
         let (title, body) = unavailable_message(None);
@@ -1200,9 +940,6 @@ mod tests {
         assert!(body.contains("repairs itself"), "{body}");
     }
 
-    /// `stale` and `down` mean the holder is not answering. `degraded` and
-    /// `undersized` mean a copy is missing while another serves — Ceph is already
-    /// fixing those, and calling them lost would cry wolf on every reboot.
     #[test]
     fn only_states_meaning_nobody_is_answering_count_as_stuck() {
         for gone in [
@@ -1226,12 +963,6 @@ mod tests {
         }
     }
 
-    // ── compute_pg_loss: which losses are permanent, and on which pool ─────────
-    //
-    // With pools raised to size=2, "a disk went down" no longer means "data is gone" —
-    // the other copy serves and Ceph rebuilds. Only `incomplete` (every copy gone, OSDs
-    // marked out) is permanent. These pin that, plus the pool-name attribution the
-    // damaged-apps screen keys on.
 
     fn pg_dump(pgid: &str, state: &str) -> Value {
         json!({ "pg_stats": [{ "pgid": pgid, "state": state }] })
@@ -1245,7 +976,6 @@ mod tests {
         json!({ "pool": id, "pool_name": name, "size": size })
     }
 
-    // ── confirmed_lost: "gone" vs "nobody is answering right now" ──────────────
 
     fn osd(id: i64, is_in: i64) -> Value {
         json!({ "osd": id, "in": is_in, "up": 0, "weight": 1.0 })
@@ -1259,13 +989,6 @@ mod tests {
         json!({ "pg_stats": [{ "pgid": pgid, "state": state, "acting": acting, "up": acting }] })
     }
 
-    /// THE 2026-09-11 FALSE ALARM, exactly as the cluster reported it.
-    ///
-    /// Three OSD daemons wedged, every OSD still `in`, every disk still plugged
-    /// in, and the placement groups reported `stale+active+clean` — active and
-    /// CLEAN, merely unreported. The home page said "Your files are unreachable
-    /// and cannot be rebuilt" and offered to restore five apps from 24-hour-old
-    /// backups, over data that was completely intact.
     #[test]
     fn a_stale_pg_whose_osd_is_still_in_is_not_confirmed_lost() {
         let dump = dump_with_osds(
@@ -1287,7 +1010,6 @@ mod tests {
         assert!(loss.confirmed_lost_pools.is_empty());
     }
 
-    /// The same PG once Ceph has actually given up on the disk holding it.
     #[test]
     fn a_stale_pg_whose_osd_is_out_is_confirmed_lost() {
         let dump = dump_with_osds(
@@ -1304,7 +1026,6 @@ mod tests {
         );
     }
 
-    /// `incomplete` is permanent whatever the OSD map says — every copy is gone.
     #[test]
     fn an_incomplete_pg_is_confirmed_lost_even_with_osds_still_in() {
         let dump = dump_with_osds(
@@ -1315,7 +1036,6 @@ mod tests {
         assert!(loss.confirmed_lost);
     }
 
-    /// Nothing acting and nothing up: no OSD claims the PG at all.
     #[test]
     fn a_pg_with_no_acting_osds_is_confirmed_lost() {
         let dump = dump_with_osds(json!([pool(2, "yolab-fs-metadata", 1)]), json!([osd(0, 1)]));
@@ -1323,9 +1043,6 @@ mod tests {
         assert!(loss.confirmed_lost);
     }
 
-    /// The purge gate must keep its pessimism. `plan_purge` reads
-    /// `unrecoverable`, and weakening that would let a disk holding the only
-    /// copy of something be destroyed while its daemon was merely restarting.
     #[test]
     fn the_purge_gate_still_refuses_while_a_daemon_is_only_down() {
         let dump = dump_with_osds(
@@ -1340,7 +1057,6 @@ mod tests {
         );
     }
 
-    /// The three messages, and which one each state gets.
     #[test]
     fn the_message_distinguishes_gone_from_not_answering() {
         let gone = PgLoss {
@@ -1413,8 +1129,6 @@ mod tests {
 
     #[test]
     fn lost_image_pool_does_not_read_as_app_data_loss() {
-        // The RBD-backed `images` pool is re-pullable, not owner data. The damage
-        // screen must be able to tell "images gone" (nothing to do) from "files gone".
         let dump = osd_dump(json!([
             pool(2, "yolab-fs-metadata", 2),
             pool(3, "yolab-fs-data0", 2),
@@ -1425,8 +1139,6 @@ mod tests {
         assert_eq!(loss.unrecoverable_pools, vec!["images".to_string()]);
     }
 
-    /// The whole issue, as the page receives it: level is Error even though every Ceph
-    /// check was only a warning.
     #[test]
     fn the_page_is_told_this_is_an_error_not_a_warning() {
         let issue =
@@ -1436,17 +1148,7 @@ mod tests {
         assert!(issue.title.contains("cannot be rebuilt"), "{}", issue.title);
     }
 
-    // ── no_redundancy_message ─────────────────────────────────────────────────
-    //
-    // This is the only sentence that ever tells someone their data is unprotected,
-    // and until now it could not be shown at all: the mon check that raises
-    // POOL_NO_REDUNDANCY was disabled cluster-wide in nixos/ceph/default.nix, so a
-    // three-disk cluster keeping one copy of everything reported HEALTH_OK. These
-    // pin both halves of the repair — that it fires, and that it says something
-    // the reader can act on.
 
-    /// A machine that genuinely cannot replicate must be pointed at backups, not
-    /// told to add copies it has nowhere to put.
     #[test]
     fn with_one_disk_the_advice_is_backups() {
         for places in [0, 1] {
@@ -1459,9 +1161,6 @@ mod tests {
         }
     }
 
-    /// A machine that CAN replicate must be told so. The old text said "this is
-    /// expected with a single-disk setup" whatever the disk count, which talked
-    /// the owner out of the one action that would have protected them.
     #[test]
     fn with_several_disks_the_advice_is_to_raise_the_copy_count() {
         let m = no_redundancy_message(3);
@@ -1473,8 +1172,6 @@ mod tests {
         assert!(!m.contains("expected"), "must not call this normal: {m}");
     }
 
-    /// Both codes Ceph can raise for this condition say the same thing — they are
-    /// the same fact and used to be two separately-maintained strings.
     #[test]
     fn both_no_redundancy_codes_give_the_same_advice() {
         for code in ["POOL_NO_REDUNDANCY", "POOL_TOTAL_SIZE_MIN_SIZE_REACHED"] {
@@ -1506,9 +1203,6 @@ mod tests {
         assert_eq!(issue.level, HealthLevel::Warn);
     }
 
-    /// Ceph reports unavailable placement groups as HEALTH_WARN, but apps reading
-    /// or writing affected files hang outright. Presenting that as a yellow
-    /// warning would tell the user "minor issue" while their apps are frozen.
     #[test]
     fn unavailable_data_is_always_an_error_even_when_ceph_calls_it_a_warning() {
         for code in ["PG_DOWN", "PG_AVAILABILITY"] {
@@ -1518,8 +1212,6 @@ mod tests {
         }
     }
 
-    /// Transient post-startup states. Surfacing them would mean a freshly booted
-    /// cluster always looks broken, training users to ignore the health panel.
     #[test]
     fn routine_transient_states_are_suppressed_entirely() {
         for code in [
@@ -1532,7 +1224,6 @@ mod tests {
                 translate_health_check(code, &warn(), 3, None).is_none(),
                 "{code} should not be shown to the user"
             );
-            // Not even when Ceph escalates them.
             assert!(
                 translate_health_check(code, &err(), 3, None).is_none(),
                 "{code} (err)"
@@ -1547,7 +1238,6 @@ mod tests {
             "summary": {"message": "BLUEFS_SPILLOVER: 1 OSD(s) experiencing spillover"},
         });
         let issue = translate_health_check("BLUEFS_SPILLOVER", &detail, 3, None).unwrap();
-        // Title takes the part before the first colon; the body keeps the whole line.
         assert_eq!(issue.title, "Storage issue: BLUEFS_SPILLOVER");
         assert_eq!(
             issue.description,
@@ -1562,8 +1252,6 @@ mod tests {
         assert_eq!(issue.description, "SOMETHING_NEW");
     }
 
-    /// A blank title renders as an empty row in the UI — worse than raw jargon,
-    /// because it looks like a rendering bug rather than a storage problem.
     #[test]
     fn every_translated_code_produces_non_empty_text() {
         let codes = [
@@ -1612,7 +1300,6 @@ mod tests {
         assert_eq!(a.description, b.description);
     }
 
-    // ── failure_domain_from_rule ──────────────────────────────────────────────
 
     #[test]
     fn failure_domain_comes_from_the_choose_step() {
@@ -1642,8 +1329,6 @@ mod tests {
         assert_eq!(failure_domain_from_rule(&rule), "rack");
     }
 
-    /// `host` is the safe default: it never claims more independence between
-    /// copies than actually exists.
     #[test]
     fn failure_domain_defaults_to_host_when_it_cannot_be_determined() {
         assert_eq!(failure_domain_from_rule(&json!({})), "host");
@@ -1652,14 +1337,12 @@ mod tests {
             failure_domain_from_rule(&json!({"steps": [{"op": "emit"}]})),
             "host"
         );
-        // A choose step with no type at all.
         assert_eq!(
             failure_domain_from_rule(&json!({"steps": [{"op": "chooseleaf_firstn"}]})),
             "host"
         );
     }
 
-    // ── parse_storage_detail ──────────────────────────────────────────────────
 
     fn sample_raw() -> serde_json::Value {
         json!({
@@ -1725,15 +1408,11 @@ mod tests {
 
     #[test]
     fn storage_detail_accepts_either_class_spelling() {
-        // `osd df tree` says `device_class`; some Ceph versions emit `class`.
         let d = parse_storage_detail(&sample_raw());
         assert_eq!(d.osds.iter().find(|o| o.id == 0).unwrap().class, "ssd");
         assert_eq!(d.osds.iter().find(|o| o.id == 1).unwrap().class, "hdd");
     }
 
-    /// These two flags are what the UI turns into "safe to unplug". Getting the
-    /// set membership backwards would tell someone to pull a disk that still
-    /// holds the only copy of their data.
     #[test]
     fn storage_detail_marks_only_the_osds_ceph_cleared() {
         let d = parse_storage_detail(&sample_raw());
@@ -1745,7 +1424,6 @@ mod tests {
         assert!(osd1.ok_to_stop);
     }
 
-    /// Absent lists must read as "nothing is cleared", never "everything is".
     #[test]
     fn storage_detail_clears_nothing_when_ceph_returned_no_verdict() {
         let mut raw = sample_raw();
@@ -1784,7 +1462,6 @@ mod tests {
         assert_eq!(pool.used_bytes, 333);
         assert_eq!(pool.max_avail_bytes, 999);
 
-        // Pool 4 has no ceph df entry — usage reads as zero, not as pool 3's numbers.
         let orphan = d.pools.iter().find(|p| p.id == 4).unwrap();
         assert_eq!(orphan.stored_bytes, 0);
         assert_eq!(orphan.max_avail_bytes, 0);
@@ -1806,9 +1483,6 @@ mod tests {
         assert_eq!(d.used_bytes, 600_000_000);
     }
 
-    /// The Ceph exec can return `{}`, an error object, or a partial document when
-    /// the cluster is mid-outage — precisely when the storage page is being looked
-    /// at. Every one of those has to render as empty, not panic.
     #[test]
     fn storage_detail_survives_empty_and_malformed_input() {
         for raw in [
@@ -1824,8 +1498,6 @@ mod tests {
         }
     }
 
-    /// An OSD Ceph lists but no host claims still has to appear — a disk missing
-    /// from the UI is a disk nobody knows to replace.
     #[test]
     fn storage_detail_keeps_an_osd_with_no_parent_host() {
         let raw = json!({
@@ -1835,24 +1507,11 @@ mod tests {
         assert_eq!(d.osds.len(), 1);
         assert_eq!(d.osds[0].host, "unknown");
         assert_eq!(d.osds[0].status, "unknown");
-        // reweight defaults to 1.0 (in), not 0.0 (draining).
         assert_eq!(d.osds[0].reweight, 1.0);
     }
 }
 
-// ── Dashboard proxy ───────────────────────────────────────────────────────────
 
-/// The active mgr's dashboard base URL, e.g. "http://[fd00:cafe::30]:7000".
-///
-/// `ceph mgr services` reports the URL of the mgr that is CURRENTLY ACTIVE, and
-/// that is the whole reason this proxy exists. Every node runs a mgr, only one
-/// of them serves the dashboard, and the others answer with a redirect naming
-/// an address on the WireGuard mesh — which a browser on the internet cannot
-/// reach. Proxying straight to the local mgr therefore worked or 502'd
-/// depending on where the active mgr happened to be.
-///
-/// The returned URL already carries the configured url_prefix, which is not
-/// wanted here: the caller appends the full incoming path, prefix included.
 async fn active_dashboard_origin() -> Option<String> {
     let services = crate::ceph_cli::ceph_json(&["mgr", "services"])
         .await
@@ -1860,18 +1519,11 @@ async fn active_dashboard_origin() -> Option<String> {
     dashboard_origin_from(&services)
 }
 
-/// Split from the call above so the URL handling can be tested without a
-/// cluster. It is small and entirely made of details that are wrong by default:
-/// IPv6 literals lose their brackets, the port is optional, and the url_prefix
-/// the mgr reports has to be dropped rather than kept.
 pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<String> {
     let url = services["dashboard"].as_str().filter(|u| !u.is_empty())?;
     let parsed = reqwest::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port().unwrap_or(7000);
-    // Url::host_str strips the brackets from an IPv6 literal, and every address
-    // in this cluster is IPv6 — putting it back unbracketed produces a URL
-    // where the last ":xxxx" of the address reads as the port.
     let host = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
     } else {
@@ -1880,12 +1532,6 @@ pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<Stri
     Some(format!("{}://{}:{}", parsed.scheme(), host, port))
 }
 
-/// Reverse-proxy one request to the active mgr's dashboard.
-///
-/// Deliberately dumb: method, path, query, headers and body straight through,
-/// and the response straight back. The dashboard is a single-page app that
-/// fetches its own assets and API under the same prefix, so anything clever
-/// here — rewriting bodies, following redirects — breaks it.
 pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
     let Some(origin) = active_dashboard_origin().await else {
         return (
@@ -1903,10 +1549,6 @@ pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
         .unwrap_or_else(|| "/".into());
     let url = format!("{origin}{path_and_query}");
 
-    // Redirects are PASSED THROUGH, not followed. The dashboard issues them for
-    // its own login flow, and following one here would return the redirect
-    // target's body under the original URL — the browser would never update its
-    // address and the app would wedge.
     let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(30))
@@ -1927,8 +1569,6 @@ pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
 
     let mut upstream = client.request(parts.method.clone(), &url).body(body_bytes);
     for (name, value) in parts.headers.iter() {
-        // Host must be reset to the upstream, and the hop-by-hop headers
-        // describe THIS connection rather than the proxied one.
         let n = name.as_str().to_ascii_lowercase();
         if matches!(
             n.as_str(),
@@ -1964,8 +1604,6 @@ pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
     let mut out = Response::builder().status(status);
     for (name, value) in headers.iter() {
         let n = name.as_str().to_ascii_lowercase();
-        // content-length is recomputed from the body we actually send, and the
-        // hop-by-hop headers belong to the upstream connection.
         if matches!(
             n.as_str(),
             "connection" | "transfer-encoding" | "content-length" | "keep-alive" | "upgrade"
@@ -1983,8 +1621,6 @@ mod dashboard_tests {
     use super::*;
     use serde_json::json;
 
-    /// The shape `ceph mgr services` actually returns: an IPv6 mesh address,
-    /// and the url_prefix already appended.
     #[test]
     fn an_ipv6_mgr_url_keeps_its_brackets() {
         let v = json!({"dashboard": "http://[fd00:cafe::30]:7000/ceph-dashboard"});
@@ -1994,8 +1630,6 @@ mod dashboard_tests {
         );
     }
 
-    /// The prefix belongs to the incoming request, which already carries it.
-    /// Keeping it here would produce /ceph-dashboard/ceph-dashboard/...
     #[test]
     fn the_url_prefix_is_dropped_from_the_origin() {
         let v = json!({"dashboard": "http://[fd00:cafe::30]:7000/ceph-dashboard"});
@@ -2012,9 +1646,6 @@ mod dashboard_tests {
         );
     }
 
-    /// https is what the mgr reports when ssl is left on. The scheme has to be
-    /// carried through rather than assumed, or the proxy talks plaintext to a
-    /// TLS port and the dashboard appears to hang.
     #[test]
     fn the_scheme_is_preserved() {
         let v = json!({"dashboard": "https://[fd00:cafe::30]:8443/"});
@@ -2024,9 +1655,6 @@ mod dashboard_tests {
         );
     }
 
-    /// No active mgr, no dashboard module, or an answer we cannot read. Each
-    /// must yield None so the caller says "not available" rather than proxying
-    /// to a URL it invented.
     #[test]
     fn an_unusable_answer_yields_nothing() {
         assert!(dashboard_origin_from(&json!({})).is_none());
@@ -2036,17 +1664,6 @@ mod dashboard_tests {
     }
 }
 
-/// Which paths actually reach the dashboard proxy.
-///
-/// This exists because the migrated dashboard returned 404 — not from the
-/// proxy, which answers 503 when no mgr is active and 502 when one cannot be
-/// reached, but from the router, before any of that code ran.
-///
-/// The reason is matchit's wildcard: `/*rest` needs at least one character
-/// after the slash, so `/ceph-dashboard/*rest` does NOT match
-/// `/ceph-dashboard/` — and a trailing slash is exactly what a browser sends
-/// for a directory-style link. `/ceph-dashboard` (no slash) is a different
-/// route again. All three spellings have to be registered, and this pins that.
 #[cfg(test)]
 mod dashboard_route_tests {
     use axum::{
@@ -2061,7 +1678,6 @@ mod dashboard_route_tests {
         "reached the proxy"
     }
 
-    /// The same three patterns main.rs registers.
     fn router() -> Router {
         Router::new()
             .route("/ceph-dashboard", any(reached))
@@ -2079,7 +1695,6 @@ mod dashboard_route_tests {
 
     #[tokio::test]
     async fn the_bare_link_from_the_storage_page_reaches_the_proxy() {
-        // href="/ceph-dashboard/" — the exact URL that 404'd.
         assert_eq!(status_for("/ceph-dashboard/").await, StatusCode::OK);
     }
 
@@ -2100,9 +1715,6 @@ mod dashboard_route_tests {
         }
     }
 
-    /// Proves the wildcard alone is not enough — the shape of the original bug.
-    /// If this ever starts passing, matchit changed and the explicit
-    /// trailing-slash route can go.
     #[tokio::test]
     async fn a_wildcard_alone_does_not_match_a_bare_trailing_slash() {
         let only_wildcard = Router::new().route("/ceph-dashboard/*rest", any(reached));

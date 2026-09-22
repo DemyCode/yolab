@@ -20,7 +20,6 @@ use tokio::sync::RwLock;
 
 use crate::config::Config;
 
-// Token → expiry timestamp (unix seconds).
 pub type Sessions = Arc<RwLock<HashMap<String, i64>>>;
 
 const SESSION_DAYS: i64 = 30;
@@ -38,18 +37,6 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-// ── K8s Secret persistence ────────────────────────────────────────────────────
-//
-// The Secret is the durable copy; memory is the live one. They must never be
-// allowed to disagree by accident, and they used to: a load that failed at
-// startup (the API not up yet — local-api starts before k3s is ready) left
-// memory empty, and the next login wrote that near-empty map over the Secret,
-// logging out everyone who had been signed in.
-//
-// So nothing is written until a load has succeeded (or confirmed there is no
-// Secret yet). Until then a background task keeps trying, and when it lands the
-// stored sessions are MERGED into memory — minus any that were logged out in
-// the meantime — and the merged map is written back.
 
 static LOADED: AtomicBool = AtomicBool::new(false);
 static REVOKED_BEFORE_LOAD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -71,8 +58,6 @@ fn live_only(sessions: HashMap<String, i64>, now: i64) -> HashMap<String, i64> {
     sessions.into_iter().filter(|(_, exp)| *exp > now).collect()
 }
 
-/// Stored sessions folded into the live map: live entries win, revoked tokens
-/// stay revoked.
 fn merge_loaded(live: &mut HashMap<String, i64>, stored: HashMap<String, i64>, revoked: &[String]) {
     for (token, exp) in stored {
         if revoked.contains(&token) {
@@ -110,10 +95,7 @@ fn note_revoked(token: &str) {
     }
 }
 
-// ── Public init ───────────────────────────────────────────────────────────────
 
-/// Load persisted sessions so users survive local-api restarts. Returns at once;
-/// the load retries in the background until the API answers.
 pub async fn init_sessions(sessions: &Sessions) {
     let sessions = sessions.clone();
     tokio::spawn(async move {
@@ -148,7 +130,6 @@ pub async fn init_sessions(sessions: &Sessions) {
     });
 }
 
-// ── Auth helpers ──────────────────────────────────────────────────────────────
 
 fn password_hash(cfg: &Config) -> String {
     cfg.toml()
@@ -168,13 +149,8 @@ fn verify_password(password: &str, hash: &str) -> bool {
     pwhash::unix::verify(password, hash)
 }
 
-/// Header carrying the pre-shared cluster token on node→node calls.
 pub const CLUSTER_AUTH_HEADER: &str = "x-yolab-cluster";
 
-/// True only when the request originates from this machine's loopback
-/// interface. Caddy reverse-proxies public UI/API traffic from `[::1]`, and
-/// mac/dev setups hit `localhost` directly — both are loopback. Anything
-/// arriving from a WireGuard address (mesh peers) or a pod IP is NOT loopback.
 fn is_loopback(req: &Request<Body>) -> bool {
     req.extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -182,8 +158,6 @@ fn is_loopback(req: &Request<Body>) -> bool {
         .unwrap_or(false)
 }
 
-/// Constant-time byte comparison so token checks don't leak length/prefix via
-/// timing. Both must be non-empty to ever return true.
 fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.is_empty() || b.is_empty() || a.len() != b.len() {
@@ -196,7 +170,6 @@ fn ct_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-/// True when the request presents the shared cluster token (node→node call).
 fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
     let Some(presented) = req
         .headers()
@@ -208,7 +181,6 @@ fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
     ct_eq(presented, &cfg.cluster_token())
 }
 
-// ── State ─────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -216,7 +188,6 @@ pub struct AuthState {
     pub config: Arc<Config>,
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
 
 pub async fn auth_middleware(
     State(state): State<AuthState>,
@@ -228,20 +199,11 @@ pub async fn auth_middleware(
     if path == "/api/login" {
         return next.run(req).await;
     }
-    // Node→node calls authenticate with the pre-shared cluster token, NOT by
-    // source address. The old code trusted any peer in fc00::/7 — but pod IPs
-    // (fd00:42::/…) fall in that range, so any pod could reach a node's private
-    // address and call privileged endpoints (e.g. /api/terminal/exec) unauthed.
     if has_cluster_token(&req, &state.config) {
         return next.run(req).await;
     }
     let hash = password_hash(&state.config);
     if hash.is_empty() {
-        // No password configured (mac/dev, or a not-yet-provisioned node).
-        // Fail closed for anything off-box; only same-machine loopback callers
-        // — i.e. the Caddy reverse proxy and localhost dev — are allowed
-        // through. A provisioned NixOS node always has a hash, so this branch
-        // never opens the door remotely in production.
         if is_loopback(&req) {
             return next.run(req).await;
         }
@@ -266,7 +228,6 @@ pub async fn auth_middleware(
     next.run(req).await
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -307,8 +268,6 @@ pub async fn login(
     (jar_with(cookie), axum::Json(OkResponse { ok: true })).into_response()
 }
 
-/// Used by Caddy forward_auth to gate access to the Ceph dashboard.
-/// Returns 200 if the session cookie is valid; the middleware returns 401 otherwise.
 pub async fn check() -> StatusCode {
     StatusCode::OK
 }
@@ -342,8 +301,6 @@ mod tests {
     use std::net::SocketAddr;
     use tower::ServiceExt as _;
 
-    // "password" hashed with SHA-512 crypt, the format `openssl passwd -6` emits
-    // and what the installer writes into config.toml.
     const HASH: &str = "$6$UG3IURKt1uqugrtk$i3e3tXg2NMIXuOb9JXztEAwCcsIcfn81WYBkzsfmwA7keyOajafp/PAAlFtcrMHVXo3cXK9z03YRRLaplZZm90";
     const PASSWORD: &str = "password";
 
@@ -355,14 +312,12 @@ mod tests {
         (dir, cfg)
     }
 
-    /// A config with a password set — i.e. a provisioned node, the production shape.
     fn provisioned() -> (tempfile::TempDir, Arc<Config>) {
         write_config(&format!(
             "[homelab]\nhomelab_password_hash = \"{HASH}\"\n[tunnel]\naccount_token = \"cluster-tok\"\n"
         ))
     }
 
-    /// A config with no password — a fresh or dev machine.
     fn unprovisioned() -> (tempfile::TempDir, Arc<Config>) {
         write_config("[homelab]\nhostname = \"yolab\"\n")
     }
@@ -374,7 +329,6 @@ mod tests {
         }
     }
 
-    /// Two protected routes plus /api/login, behind the real middleware.
     fn router(state: AuthState) -> Router {
         Router::new()
             .route("/api/protected", get(|| async { "reached" }))
@@ -382,8 +336,6 @@ mod tests {
             .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
     }
 
-    /// Builds a request as if it arrived from `peer`, which is what `is_loopback`
-    /// keys off. `None` models the ConnectInfo extension being absent entirely.
     fn request(uri: &str, peer: Option<&str>) -> Request<Body> {
         let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
         if let Some(peer) = peer {
@@ -409,7 +361,6 @@ mod tests {
     const LOOPBACK: Option<&str> = Some("127.0.0.1:5000");
     const OFF_BOX: Option<&str> = Some("[fd00:42::5]:5000");
 
-    // ── ct_eq ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn ct_eq_matches_identical() {
@@ -424,13 +375,11 @@ mod tests {
 
     #[test]
     fn ct_eq_rejects_empty() {
-        // An unreadable/absent token must never authorize a caller.
         assert!(!ct_eq("", ""));
         assert!(!ct_eq("", "anything"));
         assert!(!ct_eq("anything", ""));
     }
 
-    // ── password_hash / verify_password ───────────────────────────────────────
 
     #[test]
     fn password_hash_reads_the_configured_hash() {
@@ -458,19 +407,15 @@ mod tests {
         assert!(!verify_password("", HASH));
     }
 
-    /// Without this guard an unconfigured node would accept *any* password, since
-    /// most crypt implementations treat an empty hash as a trivial match.
     #[test]
     fn verify_password_never_succeeds_against_an_empty_hash() {
         assert!(!verify_password("anything", ""));
         assert!(!verify_password("", ""));
     }
 
-    // ── Middleware: no password configured ────────────────────────────────────
 
     #[tokio::test]
     async fn loopback_is_allowed_when_no_password_is_configured() {
-        // Caddy proxies public traffic from ::1, and dev hits localhost directly.
         let (_d, cfg) = unprovisioned();
         let s = auth_state(cfg);
         assert_eq!(
@@ -483,9 +428,6 @@ mod tests {
         );
     }
 
-    /// The fail-closed branch. An unprovisioned node is reachable over the mesh
-    /// before anyone has set a password; if this returned 200 the whole API —
-    /// including /api/terminal/exec — would be open to every peer.
     #[tokio::test]
     async fn off_box_callers_are_rejected_when_no_password_is_configured() {
         let (_d, cfg) = unprovisioned();
@@ -495,9 +437,6 @@ mod tests {
         );
     }
 
-    /// `is_loopback` reads ConnectInfo out of the request extensions. If the
-    /// server is ever built without `into_make_service_with_connect_info`, that
-    /// extension is missing — and "unknown origin" has to read as "not local".
     #[tokio::test]
     async fn a_request_with_no_connect_info_is_not_treated_as_loopback() {
         let (_d, cfg) = unprovisioned();
@@ -507,8 +446,6 @@ mod tests {
         );
     }
 
-    /// A session cookie is not a substitute for a password: with no hash set, the
-    /// only door is loopback.
     #[tokio::test]
     async fn a_session_cookie_does_not_open_an_unprovisioned_node_from_off_box() {
         let (_d, cfg) = unprovisioned();
@@ -528,11 +465,7 @@ mod tests {
         );
     }
 
-    // ── Middleware: the cluster token (node → node) ───────────────────────────
 
-    /// Node→node calls authenticate with the shared token, not with a source
-    /// address. The predecessor trusted anything in fc00::/7 — which includes pod
-    /// IPs, so any pod in the cluster could call privileged endpoints unauthed.
     #[tokio::test]
     async fn the_cluster_token_authorizes_a_call_from_another_node() {
         let (_d, cfg) = provisioned();
@@ -558,9 +491,6 @@ mod tests {
         );
     }
 
-    /// `cluster_token()` returns "" when config.toml is missing or malformed. A
-    /// caller presenting an empty header must not match that — otherwise losing
-    /// the config file would turn into "everyone is a trusted node".
     #[tokio::test]
     async fn an_empty_cluster_token_never_authorizes() {
         let (_d, cfg) = write_config("[homelab]\nhomelab_password_hash = \"x\"\n");
@@ -592,7 +522,6 @@ mod tests {
         );
     }
 
-    // ── Middleware: session cookies ───────────────────────────────────────────
 
     #[tokio::test]
     async fn a_live_session_cookie_is_accepted() {
@@ -654,8 +583,6 @@ mod tests {
         );
     }
 
-    /// Loopback is *not* a bypass once a password is set: Caddy proxies the whole
-    /// public internet from ::1, so trusting it there would publish the API.
     #[tokio::test]
     async fn loopback_still_needs_a_session_once_a_password_exists() {
         let (_d, cfg) = provisioned();
@@ -669,7 +596,6 @@ mod tests {
     async fn an_empty_session_cookie_is_rejected() {
         let (_d, cfg) = provisioned();
         let state = auth_state(cfg);
-        // An empty token must not match an empty-keyed map entry, if one existed.
         state
             .sessions
             .write()
@@ -681,11 +607,9 @@ mod tests {
         );
     }
 
-    // ── Middleware: the /api/login exemption ──────────────────────────────────
 
     #[tokio::test]
     async fn login_is_reachable_without_credentials() {
-        // Otherwise there would be no way to obtain the cookie the rest needs.
         let (_d, cfg) = provisioned();
         assert_eq!(
             status_of(auth_state(cfg), request("/api/login", OFF_BOX)).await,
@@ -693,7 +617,6 @@ mod tests {
         );
     }
 
-    /// The exemption is an exact path match, so nothing else inherits it.
     #[tokio::test]
     async fn only_the_exact_login_path_is_exempt() {
         let (_d, cfg) = provisioned();
@@ -707,7 +630,6 @@ mod tests {
         }
     }
 
-    // ── login / logout handlers ───────────────────────────────────────────────
 
     fn app_state(config: Arc<Config>) -> crate::AppState {
         crate::AppState {
@@ -726,7 +648,6 @@ mod tests {
         .await
     }
 
-    /// The Set-Cookie value, if the response issued one.
     fn issued_cookie(res: &Response) -> Option<String> {
         res.headers()
             .get("set-cookie")
@@ -774,10 +695,6 @@ mod tests {
 
     #[tokio::test]
     async fn login_marks_the_cookie_http_only_secure_and_same_site_strict() {
-        // The session cookie is a bearer credential for the whole API; it must be
-        // unreadable from JS, sent only over TLS, and unattached to cross-site
-        // requests. Every real login goes through Caddy over HTTPS, so Secure
-        // costs nothing here.
         let (_d, cfg) = provisioned();
         let res = do_login(&app_state(cfg), PASSWORD).await;
         let cookie = issued_cookie(&res).expect("login should set a cookie");
@@ -800,18 +717,6 @@ mod tests {
         );
     }
 
-    /// KNOWN GAP, pinned deliberately so a fix has to come with a decision.
-    ///
-    /// `login` only rejects when a hash *exists* and does not match, so on a node
-    /// with no password configured any request to /api/login mints a valid 30-day
-    /// session — and /api/login is itself exempt from the middleware, so this is
-    /// reachable from off-box. The session stays in the map and becomes usable the
-    /// moment a password is later set.
-    ///
-    /// The middleware fails closed for off-box callers without a password, so the
-    /// hole is only exploitable in the window before provisioning finishes. Left
-    /// as-is for now at the owner's direction; when it is closed, this test will
-    /// fail and should be rewritten to assert 401.
     #[tokio::test]
     async fn login_currently_mints_a_session_when_no_password_is_configured() {
         let (_d, cfg) = unprovisioned();
@@ -863,7 +768,6 @@ mod tests {
         );
     }
 
-    /// A revoked token must stop working immediately, not merely stop being sent.
     #[tokio::test]
     async fn a_logged_out_token_no_longer_passes_the_middleware() {
         let (_d, cfg) = provisioned();
@@ -907,7 +811,6 @@ mod session_persistence_tests {
         ]);
         merge_loaded(&mut live, stored, &["logged-out".to_string()]);
         assert_eq!(live.get("old"), Some(&100));
-        // The live entry wins over the stored one.
         assert_eq!(live.get("new"), Some(&200));
         assert!(!live.contains_key("logged-out"));
     }

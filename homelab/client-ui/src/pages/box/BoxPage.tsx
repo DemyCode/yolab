@@ -24,14 +24,6 @@ import type { NodeInfo } from "@/types/nodes";
 import type { StatusInfo } from "@/types/status";
 import type { ClusterHealth } from "@/types/health";
 
-/**
- * Everything that used to be five items in the main navigation.
- *
- * Each row answers the question a person would actually ask — "how much room
- * is left", "am I backed up" — as a sentence, and only then offers the page
- * where the machinery lives. Storage, machines and backups are still fully
- * available; they have simply stopped being the product's front door.
- */
 function NavRow({
   to,
   href,
@@ -44,15 +36,11 @@ function NavRow({
 }: {
   to?: string;
   href?: string;
-  /** For destinations whose URL has to be fetched at the moment of the click
-   *  rather than rendered into the page — see the console row below. */
   onClick?: () => void;
   icon: typeof Database;
   label: string;
   detail?: string;
   tone?: "warn" | "error";
-  /** Cache state of whatever produced `detail`, so the row can mark a
-   *  remembered value while the real one is still being computed. */
   cache?: CacheMeta | null;
 }) {
   const inner = (
@@ -144,25 +132,7 @@ export function BoxPage() {
       ? "Starting up…"
       : undefined;
 
-  /**
-   * Opens the console signed in.
-   *
-   * The window is opened BEFORE the await, then pointed at the URL once it
-   * arrives. Opening it afterwards would be a popup triggered by a promise
-   * rather than by the click, which every browser blocks. Falls back to the
-   * plain console URL if the link cannot be built, so the row always goes
-   * somewhere.
-   */
   async function openConsole() {
-    // NO "noopener" HERE, deliberately. `window.open` RETURNS NULL when that
-    // flag is set — withholding the handle is precisely what the flag does — so
-    // asking for it and then using the result was self-defeating: a blank tab
-    // opened, `w` was null, and the code fell through to navigating the CURRENT
-    // tab. Which also aborted every fetch this page had in flight, surfacing as
-    // "NetworkError when attempting to fetch resource" from the pollers.
-    //
-    // The opener reference is dropped explicitly below instead, which gets the
-    // same protection without giving up the handle.
     const w = window.open("about:blank", "_blank");
 
     const go = (url: string) => {
@@ -170,8 +140,6 @@ export function BoxPage() {
         w.opener = null;
         w.location.replace(url);
       } else {
-        // Popup blocked. Navigating here is worse — it costs the settings page
-        // — but it is better than a click that does nothing at all.
         window.location.assign(url);
       }
     };
@@ -180,9 +148,6 @@ export function BoxPage() {
       const { url } = await api.get<{ url: string }>("/api/console/link");
       go(url);
     } catch {
-      // Without the token the console asks for a login, which still beats a
-      // dead button. If there is nothing at all to open, close the tab rather
-      // than leaving a blank one behind.
       const fallback = status.data?.console_url;
       if (fallback) go(fallback);
       else w?.close();
@@ -244,14 +209,9 @@ export function BoxPage() {
           label="Updates and system"
           detail={status.data?.platform}
         />
-        {/* Only when the backend worked out where the console is. Rendering it
-            unconditionally would mean a box whose config has no platform API
-            shows a link that goes nowhere.
+        {
 
-            A click handler rather than an href, because the real URL carries
-            the account token in its fragment and is fetched at the moment of
-            the click. As an href it would sit in the DOM — and in the page
-            source, and in anything that scrapes it — from first paint. */}
+}
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}
@@ -290,9 +250,8 @@ export function BoxPage() {
         wrong and someone is helping you.
       </p>
       <Card className="overflow-hidden p-0">
-        {/* Above Terminal on purpose. Reading what the machine already said
-            should be the first thing reached for when something is wrong, and
-            it is the one entry here that is safe to open out of curiosity. */}
+        {
+}
         <NavRow
           to="/box/logs"
           icon={ScrollText}

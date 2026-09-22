@@ -1,22 +1,3 @@
-//! One leader for the cluster, owned by the runtime.
-//!
-//! The Lease used to live inside the disk reconciler, renewed as a side effect of
-//! its 30-second tick, and every other single-writer loop asked "am I the disk
-//! reconciler's leader?" with an API round-trip per question. So leadership
-//! stalled whenever the disk tick did (a slow `ceph-volume`), and two loops that
-//! were supposed to be single-writer — the backup scheduler and the restore
-//! watchdog — never asked at all.
-//!
-//! Now a dedicated task renews the Lease every `RENEW_EVERY`, and
-//! `Leadership::is_leader()` is a local read: true only while the last successful
-//! renewal is younger than `ACT_WITHIN`. `ACT_WITHIN` is deliberately shorter than
-//! the Lease duration, so this node stops acting BEFORE another node is allowed to
-//! take over — the gap is what keeps two leaders from overlapping (the same rule
-//! client-go's leader election uses: renew deadline < lease duration).
-//!
-//! The Lease NAME and namespace are unchanged from the disk reconciler's, on
-//! purpose: during a rolling update an old node and a new node must still be
-//! electing the same thing.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
@@ -31,8 +12,6 @@ pub const LEASE_NAME: &str = "yolab-disk-reconciler";
 pub const LEASE_NS: &str = "rook-ceph";
 const LEASE_SECS: i64 = 30;
 const RENEW_EVERY: Duration = Duration::from_secs(10);
-/// Stop acting this long after the last confirmed renewal. Must stay below
-/// `LEASE_SECS`, so this node has stopped before anyone else may start.
 const ACT_WITHIN_MS: i64 = 20_000;
 
 static IS_ME: AtomicBool = AtomicBool::new(false);
@@ -69,7 +48,6 @@ impl Leadership {
     }
 }
 
-/// For status output only — never for a decision (use `Leadership::is_leader`).
 pub fn current_holder_is_me() -> bool {
     IS_ME.load(Ordering::SeqCst)
 }
@@ -78,8 +56,6 @@ fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
 
-/// Starts the election loop for `identity` (this node's hostname) and returns
-/// the handle controllers consult.
 pub fn start(identity: String) -> Leadership {
     let last = Arc::new(AtomicI64::new(0));
     let handle = Leadership {
@@ -87,9 +63,6 @@ pub fn start(identity: String) -> Leadership {
         fixed: None,
     };
     if !may_stand(&identity) {
-        // An empty holder reads as a RELEASED lease to `decide`, so a node with
-        // no name would be taken over by everyone and take over from everyone:
-        // no single leader at all. Better never to lead.
         tracing::error!("leader: this node has no hostname — it will never lead the cluster");
         return handle;
     }
@@ -102,8 +75,6 @@ pub fn start(identity: String) -> Leadership {
                     if !IS_ME.swap(true, Ordering::SeqCst) {
                         tracing::info!("leader: {identity} now holds the cluster lease");
                     }
-                    // The renewal counts from when it was ATTEMPTED: the time
-                    // spent waiting on kubectl already ate into the lease.
                     last.store(attempt_started, Ordering::SeqCst);
                 }
                 Ok(false) => {
@@ -113,8 +84,6 @@ pub fn start(identity: String) -> Leadership {
                     last.store(0, Ordering::SeqCst);
                 }
                 Err(e) => {
-                    // Not answered: keep the last confirmed time, so is_leader()
-                    // expires on its own after ACT_WITHIN if this persists.
                     tracing::debug!("leader: could not renew the lease: {e}");
                 }
             }
@@ -128,9 +97,6 @@ fn may_stand(identity: &str) -> bool {
     !identity.trim().is_empty()
 }
 
-/// Whether `identity` holds a live lease right now, read straight from the API —
-/// for a one-off process (`local-api run`) that takes part in no election. `Err`
-/// when the API did not answer: not knowing is not "yes".
 pub async fn held_by(identity: &str) -> Result<bool, CmdError> {
     if !may_stand(identity) {
         return Ok(false);
@@ -147,26 +113,18 @@ fn holds_live(lease: &Value, identity: &str, now: DateTime<Utc>) -> bool {
         return false;
     }
     let dur = spec["leaseDurationSeconds"].as_i64().unwrap_or(LEASE_SECS);
-    // Unlike `decide`, an unreadable renewTime is NOT live here: this answer
-    // grants permission to act, so it must be proven.
     spec["renewTime"]
         .as_str()
         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
         .is_some_and(|ts| (now - ts.with_timezone(&Utc)).num_seconds() <= dur)
 }
 
-/// What to do with the Lease as it stands. Pure, so the takeover rules are
-/// tested without a cluster.
 #[derive(Debug, PartialEq)]
 pub(crate) enum LeaseDecision {
-    /// Another holder's lease is still live.
     Yield,
-    /// Ours, or expired: write it with this acquire time.
     Take { acquire_time: DateTime<Utc> },
 }
 
-/// How long this node has watched the lease record sit at `version` unchanged,
-/// on its own monotonic clock. Starts at zero whenever the version moves.
 fn unchanged_for(seen: &mut Option<(String, Instant)>, version: &str, now: Instant) -> Duration {
     match seen {
         Some((v, since)) if v == version => now.saturating_duration_since(*since),
@@ -177,13 +135,6 @@ fn unchanged_for(seen: &mut Option<(String, Instant)>, version: &str, now: Insta
     }
 }
 
-/// EXPIRY IS OBSERVED, NOT READ. The holder's `renewTime` is a timestamp from
-/// ANOTHER machine's clock; comparing it with ours meant a node whose clock ran
-/// 10s ahead saw every live lease as expired and took it — two leaders, two
-/// writers of every cluster-scoped controller. So a lease held by someone else
-/// expires only once THIS node has watched its record stay unchanged for the
-/// lease duration (the rule client-go's leader election uses). The cost: a node
-/// that just started waits one lease duration before taking over a dead leader.
 pub(crate) fn decide(
     lease: &Value,
     identity: &str,
@@ -236,8 +187,6 @@ fn manifest(
     })
 }
 
-/// `Ok(true)` when this node holds the lease after the call, `Ok(false)` when
-/// someone else does, `Err` when the API did not answer.
 async fn try_acquire(
     identity: &str,
     now: DateTime<Utc>,
@@ -247,15 +196,12 @@ async fn try_acquire(
         crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
             .await?;
     let Some(lease) = current else {
-        // No lease yet. `create` is atomic: exactly one node wins.
         return match crate::kubectl::create(&manifest(identity, now, now, None).to_string()).await {
             Ok(()) => Ok(true),
             Err(e) if e.is_already_exists() => Ok(false),
             Err(e) => Err(e),
         };
     };
-    // The version is both what expiry is observed against and what the takeover
-    // swaps on; without it there is neither.
     let Some(version) = lease["metadata"]["resourceVersion"].as_str() else {
         return Err(CmdError::parse(
             "kubectl get lease",
@@ -267,8 +213,6 @@ async fn try_acquire(
         LeaseDecision::Yield => Ok(false),
         LeaseDecision::Take { acquire_time } => {
             let rv = Some(version);
-            // Compare-and-swap on resourceVersion: if another node renewed or
-            // took it since we read it, this is a Conflict and we are not leader.
             match crate::kubectl::replace(&manifest(identity, now, acquire_time, rv).to_string())
                 .await
             {
@@ -325,9 +269,6 @@ mod tests {
         assert_eq!(dead, LeaseDecision::Take { acquire_time: now });
     }
 
-    /// The skew bug: this node's clock runs ahead, so the holder's renewTime
-    /// LOOKS a minute old. The holder is renewing it right now, though, and
-    /// that is all that counts.
     #[test]
     fn a_clock_that_runs_ahead_does_not_steal_a_lease_that_is_being_renewed() {
         let now = Utc::now();
@@ -342,7 +283,6 @@ mod tests {
         let mut seen = None;
         assert_eq!(unchanged_for(&mut seen, "7", t0), Duration::ZERO);
         assert_eq!(unchanged_for(&mut seen, "7", t0 + SECS(20)), SECS(20));
-        // A renewal moves the version and restarts the clock.
         assert_eq!(unchanged_for(&mut seen, "8", t0 + SECS(25)), Duration::ZERO);
         assert_eq!(unchanged_for(&mut seen, "8", t0 + SECS(40)), SECS(15));
     }
@@ -381,7 +321,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_without_a_name_never_holds_the_lease_for_a_manual_run() {
-        // Answered before any API call: a released lease has an empty holder too.
         assert!(!held_by("").await.unwrap());
     }
 

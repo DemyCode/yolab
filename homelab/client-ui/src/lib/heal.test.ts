@@ -7,9 +7,6 @@ import {
   type MachineReset,
 } from "./heal";
 
-// FORCE HEAL wipes machines. Everything in this file is what the person about
-// to authorise that reads, so a missing label is not a cosmetic bug — it is a
-// blank where the consequence should be.
 
 const reset = (phase: MachineReset["phase"]): MachineReset => ({
   heal_id: "h1",
@@ -50,9 +47,6 @@ const machine = (
 
 describe("heal labels", () => {
   it("has plain-language wording for every step", () => {
-    // Record<HealStep, string> makes a MISSING key a type error, which is why
-    // the labels are typed that way. What the type cannot catch is an empty or
-    // machine-shaped one, and that is what this asserts.
     for (const [step, label] of Object.entries(HEAL_STEP_LABELS)) {
       expect(label.length, step).toBeGreaterThan(10);
       expect(label, step).not.toMatch(/ceph|k3s|systemd|etcd|osd/i);
@@ -62,8 +56,6 @@ describe("heal labels", () => {
   it("has plain-language wording for every problem", () => {
     for (const [problem, label] of Object.entries(HEAL_PROBLEM_LABELS)) {
       expect(label.length, problem).toBeGreaterThan(10);
-      // "Storage has lost its quorum" is allowed to say quorum; naming the
-      // daemon is not. Someone reading this has a laptop, not a cluster.
       expect(label, problem).not.toMatch(/ceph|k3s|kubernetes|etcd|osd|rbd/i);
     }
   });
@@ -71,8 +63,6 @@ describe("heal labels", () => {
 
 describe("healedFrom", () => {
   it("reports a heal another machine is running on this one", () => {
-    // This is what makes a machine show "another machine is resetting me"
-    // instead of an ordinary dashboard while it is about to be wiped.
     for (const phase of ["preparing", "prepared", "armed"] as const) {
       const found = healedFrom(
         status([machine({ this_machine: true, reset: reset(phase) })]),
@@ -82,8 +72,6 @@ describe("healedFrom", () => {
   });
 
   it("stops reporting once the reset is over", () => {
-    // failed / restarted / undone are all finished states. Continuing to show
-    // the banner would leave a machine looking permanently doomed.
     for (const phase of ["failed", "restarted", "undone"] as const) {
       expect(
         healedFrom(

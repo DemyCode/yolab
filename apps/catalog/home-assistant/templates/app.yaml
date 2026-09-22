@@ -35,12 +35,7 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
-      {{- /* Home Assistant refuses any request whose Host header it does not
-             recognise as coming from a trusted proxy — without this every
-             request through the tunnel gets "400: Bad Request". Caddy reaches
-             it over loopback in this same pod, so trusting 127.0.0.1 is
-             enough. Written only if absent, so a restart never overwrites a
-             person's own edits to configuration.yaml. */}}
+      
       - name: seed-config
         image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
         imagePullPolicy: IfNotPresent

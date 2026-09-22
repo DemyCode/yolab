@@ -1,10 +1,3 @@
-//! What every controller is doing, and how its last tick went.
-//!
-//! Before this, a dead reconciler was invisible: local-api answered 200 on every
-//! route while the disk loop had been gone for a week, and the only trace of a
-//! failing tick was a `tracing::warn!` in a journal nobody reads. Now each
-//! controller's phase, last success, last error and failure streak are one
-//! lookup away — over HTTP for the UI, and as a file for a person on the box.
 
 use std::collections::BTreeMap;
 use std::sync::RwLock;
@@ -18,17 +11,11 @@ use super::Scope;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "phase", content = "reason", rename_all = "snake_case")]
 pub enum Phase {
-    /// Registered; first tick not reached yet.
     Starting,
-    /// A tick is running right now.
     Running,
-    /// Between ticks, last one finished.
     Idle,
-    /// A requirement is not answering (or OnBootSec has not elapsed).
     Waiting(String),
-    /// A cluster-wide activity forbids acting right now.
     Paused(String),
-    /// A cluster-scoped controller on a machine that is not the leader.
     Standby,
 }
 
@@ -43,7 +30,6 @@ pub struct ControllerStatus {
     pub last_started_at: Option<DateTime<Utc>>,
     pub last_finished_at: Option<DateTime<Utc>>,
     pub last_ok_at: Option<DateTime<Utc>>,
-    /// Why the last successful tick had nothing to do, when it said.
     pub last_note: Option<String>,
     pub last_error: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
@@ -113,7 +99,6 @@ impl Registry {
         });
     }
 
-    /// Returns the failure streak including this one.
     pub fn failed(&self, name: &str, error: String) -> u32 {
         self.with(name, |s| {
             let now = Utc::now();
@@ -154,12 +139,6 @@ impl Registry {
 
 pub const SNAPSHOT_PATH: &str = "/run/yolab/controllers.json";
 
-/// Writes the registry to `/run/yolab/controllers.json` — tmpfs, gone at reboot,
-/// readable by root without the API's auth. What `systemctl list-timers` used to
-/// tell a person on the box, for the jobs that are no longer timers.
-///
-/// Best effort by design: failing to write a debugging aid must never affect a
-/// controller. Written to a temp file and renamed so a reader never sees half.
 pub fn publish_snapshot() {
     if cfg!(test) {
         return;
@@ -186,7 +165,6 @@ pub fn publish_snapshot() {
     }
 }
 
-/// `GET /api/system/controllers`.
 pub async fn handler() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "node": crate::system::hostname(),
@@ -214,7 +192,6 @@ mod tests {
         let s = r.get("x").unwrap();
         assert_eq!(s.consecutive_failures, 0);
         assert_eq!(s.last_note.as_deref(), Some("nothing to do"));
-        // The last error is kept for the page; only the streak resets.
         assert!(s.last_error.is_some());
     }
 

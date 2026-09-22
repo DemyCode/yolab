@@ -1,18 +1,4 @@
-#Requires -RunAsAdministrator
-<#
-.SYNOPSIS
-    YoLab Windows Installer — sets up NixOS-WSL with the YoLab homelab configuration.
 
-.DESCRIPTION
-    1. Enables WSL2 and the Virtual Machine Platform feature
-    2. Downloads and imports NixOS-WSL
-    3. Registers a Task Scheduler entry so WSL auto-starts at logon
-    4. Opens a WSL terminal where the user completes the YoLab setup
-
-.NOTES
-    Requires Windows 10 version 2004+ (build 19041+) or Windows 11.
-    Run from an elevated (Administrator) PowerShell session.
-#>
 
 $ErrorActionPreference = "Stop"
 
@@ -36,7 +22,6 @@ function Write-Warn([string]$msg) {
     Write-Host "    WARNING: $msg" -ForegroundColor Yellow
 }
 
-# ─── 1. Check Windows version ────────────────────────────────────────────────
 Write-Step "Checking Windows version"
 $build = [System.Environment]::OSVersion.Version.Build
 if ($build -lt 19041) {
@@ -45,7 +30,6 @@ if ($build -lt 19041) {
 }
 Write-Success "Windows build $build — OK"
 
-# ─── 2. Enable WSL2 features ─────────────────────────────────────────────────
 Write-Step "Enabling WSL2 features (may require a reboot)"
 
 $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux"
@@ -77,17 +61,14 @@ if ($rebootNeeded) {
     exit 0
 }
 
-# Set WSL default version to 2
 wsl --set-default-version 2 | Out-Null
 
-# ─── 3. Check if NixOS distro already exists ────────────────────────────────
 Write-Step "Checking for existing NixOS WSL distro"
 
 $existing = wsl --list --quiet 2>$null | Where-Object { $_ -match $DistroName }
 if ($existing) {
     Write-Warn "A '$DistroName' WSL distro already exists. Skipping import."
 } else {
-    # ─── 4. Download NixOS-WSL ────────────────────────────────────────────────
     Write-Step "Downloading NixOS-WSL (this may take a few minutes)"
     Write-Host "    From: $NixosWslUrl"
 
@@ -95,7 +76,6 @@ if ($existing) {
     $wc.DownloadFile($NixosWslUrl, $TarPath)
     Write-Success "Downloaded to $TarPath"
 
-    # ─── 5. Import NixOS-WSL ─────────────────────────────────────────────────
     Write-Step "Importing NixOS WSL distro"
     New-Item -ItemType Directory -Force -Path $NixosInstallDir | Out-Null
     wsl --import $DistroName $NixosInstallDir $TarPath --version 2
@@ -103,7 +83,6 @@ if ($existing) {
     Remove-Item $TarPath -ErrorAction SilentlyContinue
 }
 
-# ─── 6. Register Task Scheduler auto-start ───────────────────────────────────
 Write-Step "Setting up WSL auto-start at logon"
 
 $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -126,7 +105,6 @@ if ($existingTask) {
     Write-Success "Task Scheduler entry created: '$TaskName'"
 }
 
-# ─── 7. Run the YoLab setup inside WSL ───────────────────────────────────────
 Write-Step "Running YoLab setup inside NixOS-WSL"
 Write-Host ""
 Write-Host "    The following commands will run inside NixOS-WSL:" -ForegroundColor DarkGray
@@ -161,10 +139,10 @@ echo ''
 echo 'YoLab is ready. You can access the UI at http://localhost'
 "@
 
-# Launch WSL with the setup script
 wsl -d $DistroName -- bash -c $setupScript
 
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green
 Write-Host "YoLab will start automatically the next time you log in." -ForegroundColor Green
 Write-Host "Access the homelab UI at: http://localhost" -ForegroundColor Cyan
+

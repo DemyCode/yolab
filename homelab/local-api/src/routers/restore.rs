@@ -1,20 +1,3 @@
-//! Per-app restore — the replacement for the whole-cluster RestoreRun.
-//!
-//! Restoring one application is: scale its deployments to zero, recreate its PVCs
-//! from their VolSync restic repos, re-apply the app's backed-up K8s objects, and
-//! scale back up. The app's data and config are both taken from a chosen
-//! `cluster-backup` snapshot (the id the history picker selects).
-//!
-//! A restore is recorded in a ConfigMap with the same three-state model as a
-//! backup: *running*, *succeeded*, or *failed*. "Running" is decided by the
-//! record's `Claim` (see `ops`): the node driving it heartbeats while it works,
-//! so every node — not just the one that started it — can tell a live restore
-//! from one whose process died. The cluster-scoped watchdog scales an ABANDONED
-//! restore's app back up, and nothing else.
-//!
-//! This used to key "running" off a per-process `static` list, and the watchdog
-//! ran on every node: node2 saw node1's live restore as crashed and scaled the
-//! app back up in the middle of node1 replacing its volumes.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -38,13 +21,10 @@ pub(crate) const RESTORES: Store = Store {
 };
 const MAX_RESTORES: usize = 50;
 
-/// How long to wait for a PVC to actually disappear before failing the volume.
 const PVC_DELETE_TIMEOUT_SECS: u64 = 180;
-/// How long to wait for a VolSync ReplicationDestination to finish pulling a volume.
 const RD_TIMEOUT_SECS: u64 = 3600;
 const WATCHDOG_TICK_SECS: u64 = 30;
 
-/// Ids this process is actively restoring.
 pub(crate) static RESTORE_IN_FLIGHT: InFlight = InFlight::new();
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -86,7 +66,6 @@ impl Claimed for RestoreSet {
     }
 }
 
-// ── ConfigMap records ──────────────────────────────────────────────────────────
 
 fn upsert(sets: &mut Vec<RestoreSet>, set: RestoreSet) {
     sets.retain(|s| s.id != set.id);
@@ -98,7 +77,6 @@ async fn read_sets() -> anyhow::Result<Vec<RestoreSet>> {
     Ok(RESTORES.read(&RealHost).await?)
 }
 
-/// Compare-and-swap update of one record. `update` may run more than once.
 async fn patch_set(id: &str, mut update: impl FnMut(&mut RestoreSet)) -> anyhow::Result<()> {
     RESTORES
         .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
@@ -110,16 +88,11 @@ async fn patch_set(id: &str, mut update: impl FnMut(&mut RestoreSet)) -> anyhow:
     Ok(())
 }
 
-// ── The operation ──────────────────────────────────────────────────────────────
 
-/// Starts restoring one app and returns immediately. The work runs detached; the
-/// watchdog catches a crash and scales the app back up.
 pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
     };
-    // Resolve the snapshot up front so the record (and the page) always shows the
-    // concrete id being restored, even for "restore latest".
     let resolved = resolve_snapshot(&cfg, namespace, snapshot_id).await?;
     let Some(snapshot_id) = resolved else {
         anyhow::bail!("no cluster-backup snapshot to restore from");
@@ -129,8 +102,6 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     let task_id = id.clone();
     let ns = namespace.to_string();
     tokio::spawn(async move {
-        // Held for the whole run and dropped even if the task panics, so the
-        // claim can never outlive the work.
         let _guard = guard;
         let result = run_restore(&ns, &snapshot_id, &cfg, &original).await;
         record_done(&task_id, &result).await;
@@ -140,21 +111,13 @@ pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyho
     Ok(id)
 }
 
-/// Records a restore as running and claims it for this process.
-///
-/// Fails — before touching the app — when the record cannot be written: a
-/// restore with no record is a restore the watchdog can never bring back up.
 async fn begin(
     namespace: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<(String, Vec<DeploymentScale>, ops::InFlightGuard)> {
-    // Record the live replica counts BEFORE scaling down, so a crash mid-restore can
-    // still bring the app back to a running state.
     let scaled_deployments = read_deployment_scales(namespace).await?;
 
     let id = format!("rs-{}", random_hex(8));
-    // Claimed before the record exists, so this node's watchdog never sees the
-    // new record without the claim.
     let guard = RESTORE_IN_FLIGHT.claim(&id);
     let set = RestoreSet {
         id: id.clone(),
@@ -194,9 +157,6 @@ async fn record_done(id: &str, result: &anyhow::Result<bool>) {
     ));
 }
 
-/// The actual restore, guarded so a failure always brings the app back up. The
-/// inner work scales the app to zero and re-applies its config at the end; if any
-/// step before that fails, the app must not be left dark.
 async fn run_restore(
     namespace: &str,
     snapshot_id: &str,
@@ -217,15 +177,11 @@ async fn run_restore(
     result
 }
 
-/// Ok(true) when at least one volume was restored from backup.
 async fn restore_inner(
     namespace: &str,
     snapshot_id: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<bool> {
-    // 1. Scale the app down so its pods release the PVCs being replaced. `?`: if
-    //    this did not happen, the pods still hold the volumes about to be deleted,
-    //    and nothing has been touched yet — stop here.
     crate::kubectl::run(&[
         "scale",
         "deployment",
@@ -236,7 +192,6 @@ async fn restore_inner(
     ])
     .await?;
 
-    // 2. Pull the app's config + catalog from the chosen snapshot.
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
 
@@ -244,10 +199,6 @@ async fn restore_inner(
     let ns_yaml = extract_file(&repo, cfg, snapshot_id, &format!("**/{namespace}.yaml")).await?;
     let restore_as_of = snapshot_time(&repo, cfg, snapshot_id).await;
 
-    // 3. Check every volume BEFORE replacing any. VolSync restores the newest snapshot
-    //    no newer than `restoreAsOf`, and when none qualifies it logs "No eligible
-    //    snapshots found" and exits successfully — so an unchecked restore deleted the
-    //    live volume and reported success over an empty one.
     let pvcs = catalog_pvcs(&catalog, namespace);
     let mut backed_up = Vec::new();
     for pvc in &pvcs {
@@ -267,13 +218,10 @@ async fn restore_inner(
         }
     }
 
-    // 4. Recreate each PVC from its own VolSync restic repo.
     for (pvc, as_of) in &backed_up {
         restore_volume(namespace, &pvc.name, &pvc.capacity, cfg, as_of.as_deref()).await?;
     }
 
-    // 5. Re-apply the app's backed-up objects (deploy/secret/configmap/etc.), which
-    //    restores its config and brings it back up at its recorded replica counts.
     if let Some(path) = ns_yaml {
         if let Ok(bytes) = tokio::fs::read(&path).await {
             if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
@@ -286,31 +234,19 @@ async fn restore_inner(
     Ok(!backed_up.is_empty())
 }
 
-/// What to do with one volume of a restore.
 #[derive(Debug, PartialEq)]
 enum VolumePlan {
-    /// Nothing of it was ever backed up: leave it as it is.
     NoBackup,
-    /// Refuse the whole restore before anything is replaced.
     Refuse(String),
-    /// Hand VolSync this `restoreAsOf`.
     RestoreAsOf(Option<String>),
 }
 
-/// A snapshot as restic lists it.
 #[derive(Debug, Clone, PartialEq)]
 struct SnapshotEntry {
     id: String,
     time: chrono::DateTime<Utc>,
 }
 
-/// VolSync restores the newest snapshot no newer than `restoreAsOf`, and when none
-/// qualifies it logs "No eligible snapshots found" and exits successfully. So:
-///
-///   * a volume the backup pinned is restored at that snapshot's own time — which
-///     selects exactly it — provided it still exists (retention may have pruned it);
-///   * a volume from an older backup, with nothing pinned, is restored at the
-///     cluster snapshot's time, and only if some snapshot is old enough.
 fn plan_volume(
     pvc: &str,
     pinned: Option<&VolumeSnapshotRef>,
@@ -376,34 +312,19 @@ fn parse_snapshots(v: &Value) -> Vec<SnapshotEntry> {
         .collect()
 }
 
-// ── Reinstalling from backup ───────────────────────────────────────────────────
 
-/// One point in time an app can be reinstalled from: a `cluster-backup` snapshot
-/// that holds the app's saved objects.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct AppVersion {
     pub snapshot_id: String,
     pub time: String,
 }
 
-/// What the backups hold, app by app.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct BackupVersions {
-    /// Whether backups were ever enabled.
     pub configured: bool,
-    /// Every backed-up app by namespace, with its versions newest first.
     pub apps: BTreeMap<String, Vec<AppVersion>>,
 }
 
-/// Every app in any backup, and every point in time it can go back to.
-///
-/// Two restic calls whatever the number of snapshots: the list of snapshots, and
-/// one `find` across all of them for the per-app files a backup writes
-/// (`<namespace>.yaml`, see `backup::snapshot_cluster_inner`).
-///
-/// An unreadable backup config or repository is an error, never an empty
-/// answer: "nothing is backed up" on a recovery screen reads as "every app is
-/// gone", and would be the reason someone clicks through.
 pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
     let Some(cfg) = load_master_config().await? else {
         return Ok(BackupVersions::default());
@@ -448,8 +369,6 @@ pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
     })
 }
 
-/// `Ok(None)` when the repository was never created — backups enabled, none
-/// taken yet.
 async fn restic_json(
     repo: &str,
     cfg: &BackupConfig,
@@ -468,13 +387,6 @@ async fn restic_json(
     })?))
 }
 
-/// Joins `restic snapshots --json` with `restic find --json` into each app's
-/// versions, newest first.
-///
-/// `find` names a snapshot by its short id in some restic versions and by its
-/// full id in others, so the two are matched by prefix either way round. A find
-/// entry with no matches, or naming a snapshot the list does not have, adds
-/// nothing.
 fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<AppVersion>> {
     let listed: Vec<(String, chrono::DateTime<Utc>, String)> = snapshots
         .as_array()
@@ -529,40 +441,6 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
         .collect()
 }
 
-/// Install an app that is not on this machine from one backup.
-///
-/// A FRESH INSTALL, NOT A REPLAY OF OLD OBJECTS. Kubernetes cannot resurrect a
-/// process — only a Pod newly scheduled from a spec, which always runs its
-/// init containers, restore or not, the same as any ordinary restart. So there
-/// is nothing to "crystallize" at the Kubernetes-object level: the Deployment,
-/// Service, and every Secret and ConfigMap in this catalog are entirely
-/// reproducible from the CURRENT chart plus two crystallized inputs —
-///
-///   - the app's DATA: its volumes, restored byte-for-byte from the backup
-///     before the chart is installed (see below for why the order matters);
-///   - the app's CONFIG: the install form's values (`saved_config`), read from
-///     the backup and handed to `helm install` exactly as a person would type
-///     them. Every credential in this catalog derives from these values or
-///     from `yolab-config` (written by the install itself, from the same
-///     values) — nothing here is chart-generated randomness with no way back.
-///
-/// So the chart is installed once, with the restored config, and nothing else
-/// from the backed-up namespace is ever applied. Doing so used to put the OLD
-/// Deployment (an old image, a WireGuard tunnel the platform had since
-/// deleted) and a stale copy of Helm's own release bookkeeping straight back
-/// over the fresh install — undoing it, silently.
-///
-/// DATA FIRST, THEN THE APP. Its volumes are created under the names its chart
-/// uses and filled from the backup; only then is the chart installed, and it
-/// adopts them. The app never runs on an empty volume, so nothing it does at
-/// its first start — creating an admin, registering a WireGuard tunnel — runs
-/// against data about to be replaced. (Installing first registered a second
-/// tunnel, and the restored gateway state then reused the first one while the
-/// app's name pointed at the second.)
-///
-/// Every volume is checked before anything is created, and nothing is installed
-/// before every volume is back, so a failure until then removes the namespace
-/// and leaves nothing behind.
 pub(crate) async fn install_from_backup(
     source_namespace: &str,
     snapshot_id: &str,
@@ -653,11 +531,6 @@ pub(crate) async fn install_from_backup(
 
     let result = async {
         install.run().await?;
-        // What the app generated for itself — an admin password, a signing key —
-        // which the chart cannot recreate and the restored data was encrypted or
-        // signed with. NEVER the chart's own Deployments/Services or Helm's
-        // release bookkeeping: those come from the install that just ran (see
-        // `keep_for_reinstall`).
         if let Some(reapply) = objects_to_reapply(&objects) {
             kubectl_apply(&reapply.to_string())
                 .await
@@ -670,8 +543,6 @@ pub(crate) async fn install_from_backup(
     result?;
     tracing::info!("install {dest_namespace} from backup {snapshot_id}: done");
 
-    // Only once the data is back: a backup before that would upload an empty
-    // volume as the newest copy of this app.
     crate::routers::backups::setup_namespace_backup(&dest_namespace).await?;
     Ok(())
 }
@@ -683,7 +554,6 @@ struct CatalogApp {
     instance_name: String,
 }
 
-/// Apps a backup can reinstall — those that recorded which chart they came from.
 fn catalog_apps(catalog: &Value) -> Vec<CatalogApp> {
     catalog["services"]
         .as_array()
@@ -704,9 +574,6 @@ fn catalog_apps(catalog: &Value) -> Vec<CatalogApp> {
         .collect()
 }
 
-/// The app's full settings, credentials included, from its backed-up `yolab-config`
-/// Secret. Charts derive their passwords from these, so reinstalling with them is
-/// what lets the restored data be opened again.
 fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
     use base64::Engine as _;
     let secret = objects["items"].as_array()?.iter().find(|i| {
@@ -719,12 +586,6 @@ fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
     serde_json::from_slice(&raw).ok()
 }
 
-/// The definition a backup holds for one app, for prefilling a restore/duplicate
-/// install form.
-///
-/// Newer backups embed the whole definition in `catalog.json`; older ones only
-/// have the backed-up config Secret, so the identity fields come from the
-/// catalog and the config is read out of `<namespace>.yaml`.
 pub(crate) async fn definition_from_backup(
     namespace: &str,
     snapshot_id: &str,
@@ -773,21 +634,6 @@ pub(crate) async fn definition_from_backup(
     })
 }
 
-/// Whether a backed-up object is worth bringing back after a fresh install, or
-/// must be left as the install that just ran created it.
-///
-/// A Deployment/StatefulSet/DaemonSet/Service is the CHART'S, and the chart just
-/// installed it — from the current chart version, on the current cluster.
-/// Re-applying the backup's copy puts back whatever was live when the backup was
-/// taken: an old container image (a fix released since was silently undone this
-/// way), a clusterIP that may not even be free any more. Helm's own release
-/// Secret (`helm.sh/release.v1`) is its bookkeeping for the install that just
-/// ran; overwriting it with the backup's copy corrupts that bookkeeping for
-/// every `helm upgrade` after.
-///
-/// What IS worth restoring: Secrets and ConfigMaps the app itself generated at
-/// its first start (an admin password, an app key) — nothing recreates those,
-/// and the restored data was encrypted or signed with them.
 fn keep_for_reinstall(item: &Value) -> bool {
     let kind = item["kind"].as_str().unwrap_or("");
     if matches!(kind, "Deployment" | "StatefulSet" | "DaemonSet" | "Service") {
@@ -796,10 +642,6 @@ fn keep_for_reinstall(item: &Value) -> bool {
     if kind == "Secret" && item["type"].as_str() == Some("helm.sh/release.v1") {
         return false;
     }
-    // local-api's OWN records. The install that just ran wrote the current
-    // definition and tunnel credentials; the backup's copies may describe a
-    // different name, chart or schedule. Putting those back would silently undo
-    // the install the user just confirmed.
     if kind == "Secret" {
         let name = item["metadata"]["name"].as_str().unwrap_or("");
         if matches!(name, "yolab-config" | "yolab-tunnel-credentials") {
@@ -809,8 +651,6 @@ fn keep_for_reinstall(item: &Value) -> bool {
     true
 }
 
-/// The backed-up namespace objects to re-apply after `reinstall_from_backup`'s
-/// install, or `None` when none are worth applying.
 fn objects_to_reapply(objects: &Value) -> Option<Value> {
     let items: Vec<Value> = objects["items"]
         .as_array()?
@@ -824,13 +664,6 @@ fn objects_to_reapply(objects: &Value) -> Option<Value> {
     Some(json!({ "apiVersion": "v1", "kind": "List", "items": items }))
 }
 
-/// Creates one volume of an app not installed yet, owned by the Helm release
-/// that will use it, and fills it from its backup.
-///
-/// Helm adopts an object it did not create only when it carries the release's
-/// marks; without them `helm install` refuses ("exists and cannot be imported").
-/// `source_namespace` is where the data's restic repository lives, which differs
-/// from `namespace` for a duplicate-with-data.
 async fn fill_volume(
     namespace: &str,
     source_namespace: &str,
@@ -868,7 +701,6 @@ async fn restore_volume(
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
-    // Delete the live PVC and wait for it to actually go away.
     crate::kubectl::run(&[
         "delete",
         "pvc",
@@ -885,8 +717,6 @@ async fn restore_volume(
     restore_into(namespace, namespace, pvc, cfg, restore_as_of).await
 }
 
-/// Fills the volume `pvc` in `namespace` from the restic repository of
-/// `source_namespace`. The two differ only for a duplicate-with-data.
 async fn restore_into(
     namespace: &str,
     source_namespace: &str,
@@ -905,10 +735,6 @@ async fn restore_into(
     .await;
     annotate_ns_privileged_movers(namespace).await;
 
-    // The mover reads the repository from this Secret. Backups create it, but an
-    // app added back from backup onto a new cluster (after a FORCE HEAL) has never
-    // been backed up there: without it VolSync stops at `Secret "…-restic" not
-    // found` and the restore waits out its whole timeout with the app scaled to 0.
     ensure_restic_secret_for_repo(namespace, source_namespace, pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let mut restic_spec = json!({
@@ -990,14 +816,7 @@ async fn wait_for_rd(namespace: &str, dest_name: &str) -> anyhow::Result<()> {
     }
 }
 
-// ── Cluster observation helpers ────────────────────────────────────────────────
 
-/// The replica counts to bring an app back to if its restore dies.
-///
-/// An error, never an empty list. This used to read a failed `kubectl get` as
-/// "no deployments": the restore then scaled the app to zero anyway, and if it
-/// crashed the watchdog had nothing to scale back up — the app stayed dark for
-/// good, the exact outcome this record exists to prevent.
 async fn read_deployment_scales(ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
     let v = crate::kubectl::get_json(&["get", "deployments", "-n", ns, "-o", "json"]).await?;
     parse_deployment_scales(&v)
@@ -1013,7 +832,6 @@ fn parse_deployment_scales(v: &Value) -> anyhow::Result<Vec<DeploymentScale>> {
             let name = d["metadata"]["name"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("a deployment without a name"))?;
-            // Kubernetes defaults an unset `replicas` to 1.
             let replicas = d["spec"]["replicas"].as_u64().unwrap_or(1);
             Ok(DeploymentScale {
                 name: name.to_string(),
@@ -1023,12 +841,6 @@ fn parse_deployment_scales(v: &Value) -> anyhow::Result<Vec<DeploymentScale>> {
         .collect()
 }
 
-/// Resolves the snapshot id to restore from: the caller's explicit choice, or
-/// the newest `cluster-backup` snapshot that actually CONTAINS this app.
-///
-/// With per-app backups the newest snapshot in the repository is usually another
-/// app's, and restoring from it would find no `<namespace>.yaml` — so "restore
-/// latest" has to be scoped to the app, not the repo.
 async fn resolve_snapshot(
     cfg: &BackupConfig,
     namespace: &str,
@@ -1086,7 +898,6 @@ async fn snapshot_time(repo: &str, cfg: &BackupConfig, id: &str) -> Option<Strin
     v.as_array()?.first()?["time"].as_str().map(String::from)
 }
 
-/// Extracts a single named file from a snapshot and returns its path.
 async fn extract_file(
     repo: &str,
     cfg: &BackupConfig,
@@ -1130,7 +941,6 @@ async fn extract_file(
     }))
 }
 
-/// Extracts catalog.json (or any single JSON file) and parses it.
 async fn extract_json_file(
     repo: &str,
     cfg: &BackupConfig,
@@ -1148,7 +958,6 @@ async fn extract_json_file(
     }
 }
 
-/// The snapshot a backup pinned for one volume.
 #[derive(Debug, Clone, PartialEq)]
 struct VolumeSnapshotRef {
     id: String,
@@ -1190,13 +999,11 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
         .unwrap_or_default()
 }
 
-// ── Read side ──────────────────────────────────────────────────────────────────
 
 fn liveness_of(s: &RestoreSet) -> Liveness {
     s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT)
 }
 
-/// Every recorded restore, newest first, classified into running/succeeded/failed.
 pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
     let sets = read_sets().await?;
     Ok(sets
@@ -1216,8 +1023,6 @@ pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
         .collect())
 }
 
-/// Whether a restore is running on ANY node. `Err` when the records cannot be
-/// read — callers must not read that as "no".
 pub(crate) async fn running_anywhere() -> anyhow::Result<bool> {
     let sets = read_sets().await?;
     Ok(sets
@@ -1234,7 +1039,6 @@ fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
     }
 }
 
-/// Restores recorded running whose driver is gone.
 fn abandoned(sets: &[RestoreSet], me: &str) -> Vec<RestoreSet> {
     sets.iter()
         .filter(|s| s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned)
@@ -1242,11 +1046,6 @@ fn abandoned(sets: &[RestoreSet], me: &str) -> Vec<RestoreSet> {
         .collect()
 }
 
-/// Brings an abandoned restore's app back up so it never stays dark.
-///
-/// Cluster-scoped: one node acts. Each record is re-checked inside the
-/// compare-and-swap that marks it failed, so a heartbeat that lands in between
-/// (the driver was only slow) wins and the app is left to its driver.
 pub struct RestoreWatchdogController;
 
 impl Controller for RestoreWatchdogController {
@@ -1331,13 +1130,6 @@ mod tests {
         }
     }
 
-    /// Regression test: `helm upgrade --install` on `reinstall_from_backup`
-    /// correctly deployed the CURRENT chart (new image, new tunnel), and this
-    /// re-apply then overwrote its Deployment and Helm's own release Secret
-    /// with the backup's copy — putting the old image and a stale, already
-    /// deleted WireGuard tunnel straight back. Live: an app added back from
-    /// backup silently unreachable (`filebrowser.6.yolab.io`), and another's
-    /// shown connection address not the one that actually worked (Minecraft).
     #[test]
     fn a_reinstall_never_overwrites_the_charts_own_objects_or_helms_bookkeeping() {
         let backed_up = json!({"items": [
@@ -1399,16 +1191,12 @@ mod tests {
 
     #[test]
     fn another_nodes_heartbeating_restore_is_never_abandoned() {
-        // The bug: node2's watchdog scaling node1's live restore back up.
         let now = Utc::now();
         let mut live = set("rs-live", "running");
         live.claim = Claim {
             owner: "node1".into(),
             heartbeat: (now - chrono::Duration::seconds(10)).to_rfc3339(),
         };
-        // Its timestamp is ten minutes old — a skewed clock, or an API outage —
-        // but this process has only just seen it, so it is not yet abandoned. It
-        // becomes so after STALE_AFTER of being watched unchanged (see ops tests).
         let mut looks_old = set("rs-looks-old", "running");
         looks_old.claim = Claim {
             owner: "node1".into(),
@@ -1477,7 +1265,6 @@ mod tests {
         }
     }
 
-    // ── Which snapshot a volume is restored from ──────────────────────────────
 
     #[test]
     fn a_pinned_snapshot_is_restored_at_its_own_exact_time() {
@@ -1512,9 +1299,6 @@ mod tests {
         }
     }
 
-    /// The live case: cluster snapshot 12:10:02, the only volume snapshot 12:10:05,
-    /// and a backup from before snapshots were pinned. VolSync would restore
-    /// nothing and call it success.
     #[test]
     fn an_unpinned_volume_whose_only_snapshot_is_too_new_is_refused() {
         let snaps = [snap("a", "2026-09-14T12:10:05Z")];
@@ -1574,7 +1358,6 @@ mod tests {
         assert!(parse_snapshots(&json!({})).is_empty());
     }
 
-    // ── The catalog ──────────────────────────────────────────────────────────
 
     #[test]
     fn catalog_pvcs_read_names_capacity_and_the_pinned_snapshot() {
@@ -1663,7 +1446,6 @@ mod tests {
         assert_eq!(saved_config(&bad), None);
     }
 
-    // ── backup_versions ──────────────────────────────────────────────────────
 
     #[test]
     fn each_app_lists_the_snapshots_holding_it_newest_first() {

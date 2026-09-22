@@ -1,15 +1,3 @@
-//! The names every machine of the user shares: `cluster.<user>.<domain>` (the
-//! interface) and `notify.<user>.<domain>` (notifications).
-//!
-//! Each machine adds its own tunnel under both names on the platform, which
-//! answers DNS with the machines whose tunnel is up (yolab-external
-//! `shared_names`). Re-asserted every tick: idempotent, and it repairs a record
-//! the platform lost.
-//!
-//! Caddy gets the certificates for them by DNS-01 — an HTTP challenge would reach
-//! whichever machine it reaches — through the platform's acme-dns endpoint, with
-//! the account token as key. The token reaches Caddy through an environment file
-//! written at boot, never through the Nix store.
 
 use std::path::Path;
 use std::time::Duration;
@@ -23,7 +11,6 @@ const NAME: &str = "shared-names";
 pub const NAMES: &[&str] = &["cluster", "notify"];
 const CADDY_ENV: &str = "var/lib/yolab/caddy/acme.env";
 
-/// Caddy's environment: the key its `acmedns` DNS provider authenticates with.
 fn caddy_env(tunnel: &Tunnel) -> Result<String> {
     let token = &tunnel.account_token;
     anyhow::ensure!(
@@ -41,7 +28,6 @@ pub(crate) fn write_caddy_env(root: &Path, config_path: &str) -> Result<()> {
     crate::config::write_private_file(&root.join(CADDY_ENV), env.as_bytes())
 }
 
-/// `local-api shared-names <subcommand>`.
 pub async fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("credentials") => {
@@ -70,7 +56,6 @@ impl Controller for SharedNamesController {
         NAME
     }
     fn scope(&self) -> Scope {
-        // Each machine adds its own tunnel.
         Scope::Node
     }
     fn interval(&self) -> Duration {

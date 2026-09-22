@@ -17,9 +17,6 @@ impl std::fmt::Display for AppError {
     }
 }
 
-/// The HTTP status a failure deserves. A missing object is a 404 and a server
-/// that did not answer is a 503/504 — the UI shows those differently ("not
-/// there" vs "try again"), and before this every failure was a 500.
 fn status_for(e: &anyhow::Error) -> StatusCode {
     match e.as_cmd_error() {
         Some(CmdError::Timeout { .. }) => StatusCode::GATEWAY_TIMEOUT,
@@ -54,21 +51,9 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
-/// Handling for a result whose failure must not stop the caller.
-///
-/// `let _ = fallible().await;` is banned crate-wide (clippy
-/// `let_underscore_must_use`), because it was indistinguishable from forgetting,
-/// and several incidents were a discarded error that turned out to matter: an
-/// `osd unset noout` that failed silently, a ConfigMap write that never landed
-/// and left a restore "running" forever. These make the decision visible and
-/// leave a line in the journal when it goes wrong.
 pub trait Outcome<T> {
-    /// Best effort: log a failure at WARN with `what` for context, then continue.
     fn warn_on_err(self, what: impl Display);
-    /// Best effort, and a failure is expected often enough that WARN would be
-    /// noise (cleanup of something that may already be gone).
     fn debug_on_err(self, what: impl Display);
-    /// Keep the value, log the failure.
     fn ok_or_warn(self, what: impl Display) -> Option<T>;
 }
 
@@ -127,7 +112,6 @@ mod tests {
         let err: std::result::Result<u8, String> = Err("boom".into());
         assert_eq!(ok.clone().ok_or_warn("x"), Some(7));
         assert_eq!(err.clone().ok_or_warn("x"), None);
-        // These only log; what matters is that neither panics on either arm.
         ok.clone().warn_on_err("x");
         err.clone().warn_on_err("x");
         ok.debug_on_err("x");

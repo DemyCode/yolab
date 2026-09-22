@@ -1,39 +1,6 @@
-{{/*
-Authelia, bundled into an app's own gateway pod.
 
-WHY IT LIVES IN THE APP AND NOT ON THE PLATFORM
------------------------------------------------
-Everything in this system is an app: installed, updated, backed up and removed
-the same way. A shared auth service would be the one component with its own
-lifecycle rules, and that special-casing spreads. So an app that wants a login
-carries its own Authelia.
 
-The cost is real and worth stating: no SSO, and a separate user list per app.
-The benefit is that it is self-contained — uninstalling the app takes its auth
-with it, and nothing else can be locked out by it.
 
-WHY IT IS SIMPLER THAN A SHARED ONE
------------------------------------
-The portal lives on the app's OWN domain under /authelia, so the session cookie
-is scoped to that single host. No parent-domain cookie, no second tunnel, and
-no cross-domain redirect — which is the part that produces redirect loops that
-only show up in a real browser.
-
-THE ORDERING PROBLEM
---------------------
-Authelia needs the app's public FQDN in its config (cookie domain, portal URL,
-access-control rule), but that is not known when Helm renders: wg-register
-claims the subdomain at runtime and writes it to /yolab/env. So the config is
-rendered by an init container that runs AFTER wg-register — init containers run
-in declaration order — and lands in an emptyDir the daemon then reads.
-
-That same init container hashes the passwords. Authelia's file backend wants
-argon2id, and the only tool that produces the exact format it accepts is
-Authelia itself, so the hashing runs in the Authelia image rather than being
-reimplemented.
-*/}}
-
-{{/* True when the app has been asked for a login. */}}
 {{- define "yolab-common.auth.enabled" -}}
 {{- if (((.Values.config).auth_enabled)) -}}true{{- end -}}
 {{- end -}}
@@ -42,15 +9,7 @@ reimplemented.
 {{- (((.Values.yolab).images).authelia) | default "docker.io/authelia/authelia:4.39.1" -}}
 {{- end -}}
 
-{{/*
-Secret holding the plaintext logins exactly as typed on the install form.
 
-Plaintext, deliberately: Authelia's file backend needs an argon2id hash it
-produced itself, and hashing has to happen somewhere. Doing it here would mean
-reimplementing Authelia's exact format; doing it in the init container means
-the plaintext exists for the seconds between Secret and hash. It never reaches
-the users file, which holds only hashes.
-*/}}
 {{- define "yolab-common.autheliaSecret" -}}
 {{- if eq (include "yolab-common.auth.enabled" .) "true" -}}
 apiVersion: v1
@@ -70,14 +29,7 @@ stringData:
 {{- end -}}
 {{- end -}}
 
-{{/*
-Init container: render the config, mint the secrets, hash the logins.
 
-Runs after wg-register (declaration order) so /yolab/env carries YOLAB_FQDN.
-Everything it writes to /authelia-config is an emptyDir; the long-lived state
-(sqlite db, generated secrets) goes on the app's PVC so a restart does not log
-everyone out or invalidate the database.
-*/}}
 {{- define "yolab-common.autheliaInit" -}}
 {{- if eq (include "yolab-common.auth.enabled" .) "true" -}}
 - name: authelia-config

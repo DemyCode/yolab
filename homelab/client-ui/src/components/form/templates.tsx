@@ -5,26 +5,8 @@ import type {
 } from "@rjsf/utils";
 import { Plus, X } from "lucide-react";
 
-/**
- * Templates that keep an RJSF form looking like the rest of the product.
- *
- * The objection to RJSF was that a generated form is "definitionally
- * schema-shaped" — field names, types, validation messages. That is only true
- * of the default templates. Templates are the supported way to say how a form
- * looks, so the argument was really against RJSF's defaults, not RJSF.
- */
 
-/**
- * One field: label, help text, control, error.
- *
- * Booleans render bare, because CheckboxWidget is a switch that carries its own
- * label and help — wrapping it would print both twice.
- */
 export function FieldTemplate(props: FieldTemplateProps) {
-  // `description` is RJSF's own rendered DescriptionField. It is deliberately
-  // NOT used: schema.description is rendered directly below, and taking both
-  // printed every help line twice — "How much CephFS storage to allocate"
-  // appearing under itself.
   const { id, label, help, errors, children, schema, hidden } = props;
 
   if (hidden) return null;
@@ -47,18 +29,7 @@ export function FieldTemplate(props: FieldTemplateProps) {
   );
 }
 
-/**
- * A repeating field, as an actual list.
- *
- * RJSF handles arrays natively — add, remove, reorder — and this only supplies
- * the presentation. It matters for anything genuinely plural: a set of logins
- * is a list of people, not a textarea someone has to format correctly, and a
- * typo in "user:password" should not be a silent failure at container start.
- */
 export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
-  // No title and no description here. An array field is still wrapped by
-  // FieldTemplate, which already prints both — rendering them again showed
-  // "Logins / Who can open this app…" twice, one block under the other.
   const { items, canAdd, onAddClick } = props;
 
   return (
@@ -100,17 +71,6 @@ export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
   );
 }
 
-/**
- * The object wrapper: just the fields, spaced.
- *
- * No title, no description, no `<fieldset>` — the page already says which app
- * is being installed, and RJSF's default would repeat it above every group.
- *
- * Crucially: no collapsing. Every option the chart exposes stays on the page.
- * An app like Minecraft is nothing but these choices — creative or survival, a
- * seed, who is whitelisted — so folding them behind a second click hides the
- * entire reason someone opened the form.
- */
 export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
   const ui = (props.uiSchema ?? {}) as Record<
     string,
@@ -120,10 +80,6 @@ export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
   return (
     <div className="space-y-5">
       {props.properties.map((p) => {
-        // A field marked `attached` belongs to the one above it — Logins only
-        // exists because "Add login" is on. Rendered as a plain sibling it read
-        // as an unrelated question two rows down; the rule and the indent say
-        // "this is part of that" without needing a heading to explain it.
         const attached = ui[p.name]?.["ui:options"]?.attached;
         return attached ? (
           <div

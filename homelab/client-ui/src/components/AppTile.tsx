@@ -6,17 +6,6 @@ import { cn } from "@/lib/utils";
 import { appLabel, appState } from "@/lib/apps";
 import type { AppInfo } from "@/types/apps";
 
-/**
- * One installed app, leading to that app's page.
- *
- * An earlier version made the tile a direct link to the app itself, on the
- * theory that opening it is what people came to do. That is wrong for anything
- * that is not a website: minecraft and valheim publish a server address to
- * paste into a game client, not a URL, and several charts publish more than
- * one link — so "the" address does not always exist and, when it does, is not
- * always the only one worth having. The tile leads somewhere that can show all
- * of it.
- */
 export function AppTile({
   app,
   name,
@@ -53,10 +42,8 @@ export function AppTile({
         />
       </div>
       <span className="line-clamp-1 text-sm font-medium text-fg">{name}</span>
-      {/* Two lines, not one: these are now sentences ("Keeps stopping
-          unexpectedly — restarted 335 times. Check the logs.") rather than the
-          two-word state they replaced, and a tile that clips the reason to
-          "Keeps stopping unexpec…" has given the reader nothing. */}
+      {
+}
       {label && (
         <span className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted">
           {label}

@@ -1,15 +1,3 @@
-//! Publish the host Ceph cluster's credentials into Kubernetes for ceph-csi.
-//!
-//! Rook in external mode does not discover anything: it reads a fixed set of
-//! Secrets and one ConfigMap and hands their contents to the CSI drivers.
-//! Rook's own `import-external-cluster.sh` normally creates them, run by hand
-//! against the Ceph cluster; this does the same thing as a reconciling unit,
-//! so it survives reboots, re-runs after a mon address change, and needs no
-//! operator intervention.
-//!
-//! Runs *after* k3s, unlike every other storage subcommand — it is the one
-//! piece of the storage stack that legitimately depends on Kubernetes,
-//! because its whole job is writing Kubernetes objects.
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -19,12 +7,6 @@ use crate::host::Host;
 
 const NS: &str = "rook-ceph";
 
-/// Bare `ip:port` v1 addresses of every mon in `ceph mon dump -f json`. The
-/// v1 endpoint (6789), not v2 — that is what librados expects from a bare
-/// host:port; handing it the v2 port is a silent connection failure. Every
-/// mon, not this node's own address: hardcoding one made CSI depend on a
-/// single machine, so that machine rebooting failed PVC mounts on every
-/// *other* node too.
 fn mon_v1_addrs(dump: &Value) -> Vec<String> {
     let Some(mons) = dump["mons"].as_array() else {
         return Vec::new();
@@ -41,7 +23,6 @@ fn mon_v1_addrs(dump: &Value) -> Vec<String> {
         .collect()
 }
 
-/// `"name=addr,name=addr"` — Rook's own bookkeeping ConfigMap format.
 fn mon_endpoints(dump: &Value) -> String {
     let Some(mons) = dump["mons"].as_array() else {
         return String::new();
@@ -60,7 +41,6 @@ fn mon_endpoints(dump: &Value) -> String {
         .join(",")
 }
 
-/// The config ceph-csi's plugin pods actually mount, as `csi-cluster-config-json`.
 fn csi_cluster_config_json(mon_addrs: &[String]) -> String {
     json!([{
         "clusterID": NS,
@@ -71,11 +51,6 @@ fn csi_cluster_config_json(mon_addrs: &[String]) -> String {
     .to_string()
 }
 
-/// Rook creates these same Secrets with type `kubernetes.io/rook`, and a
-/// Secret's type is IMMUTABLE — creating one as the default `Opaque` means
-/// Rook can never update it, and its CephCluster reconcile fails on every
-/// pass. `""` (does not exist) is not a mismatch: there is nothing to fix,
-/// `kubectl apply` on a fresh manifest creates it with the right type already.
 fn needs_type_fix(current_type: &str) -> bool {
     !current_type.is_empty() && current_type != "kubernetes.io/rook"
 }
@@ -97,14 +72,6 @@ async fn replace_if_wrong_type<H: Host>(host: &H, name: &str) {
     }
 }
 
-/// Create only what is missing, then read the key back. `ceph auth
-/// get-or-create` does NOT return an existing key when the requested caps
-/// differ — it fails with "key for <entity> exists but cap mon does not
-/// match", which is exactly what happens here because Rook's own operator
-/// creates these same users too (it can: the rook-ceph-mon secret hands it
-/// admin credentials). Re-asserting our caps on every run would start a
-/// tug-of-war with Rook's reconcile loop, flipping caps back and forth every
-/// few minutes — whoever created the user owns its caps.
 async fn ensure_key<H: Host>(host: &H, entity: &str, caps: &[&str]) -> Result<String> {
     if host.ceph(&["auth", "get-key", entity]).await.is_err() {
         let mut args = vec!["auth", "get-or-create", entity];
@@ -175,12 +142,6 @@ async fn apply_mon_endpoints_configmap<H: Host>(
     Ok(host.kubectl_apply(&manifest.to_string()).await?)
 }
 
-/// The ConfigMap the CSI drivers ACTUALLY read (both plugin pods mount
-/// `rook-ceph-csi-config`; `rook-ceph-mon-endpoints` is not mounted by them
-/// at all — writing only that one left this at "[]" and every PVC failed
-/// with "missing configuration for cluster ID rook-ceph"). Patched rather
-/// than replaced: Rook owns this ConfigMap and puts other keys in it, and a
-/// merge patch does not fight it over this one.
 async fn apply_csi_config_map<H: Host>(host: &H, csi_cfg: &str) -> Result<()> {
     let patch = json!({"data": {"csi-cluster-config-json": csi_cfg}}).to_string();
     if host
@@ -210,8 +171,6 @@ async fn apply_csi_config_map<H: Host>(host: &H, csi_cfg: &str) -> Result<()> {
 }
 
 pub async fn run<H: Host>(host: &H) -> Result<()> {
-    // Both sides have to be up. Neither being ready is an ordinary state on a
-    // fresh boot; the timer retries.
     if !host.reachable().await {
         tracing::info!("csi-secrets: ceph not reachable yet");
         return Ok(());
@@ -265,13 +224,6 @@ pub async fn run<H: Host>(host: &H) -> Result<()> {
         ],
     )
     .await?;
-    // No client.csi-rbd-provisioner/-node keys or Secrets: operator.yaml sets
-    // enableRbdDriver: false and no StorageClass here is RBD-backed (only
-    // yolab-cephfs, in rook/cluster-external.yaml), so no CSI pod would ever
-    // read them — minting them would just be two more standing cephx
-    // credentials against the cluster with nothing consuming them. If an
-    // RBD-backed StorageClass is ever added, restore this alongside enabling
-    // the driver in operator.yaml.
 
     apply_rook_secret(
         host,
@@ -292,7 +244,6 @@ pub async fn run<H: Host>(host: &H) -> Result<()> {
     )
     .await?;
 
-    // The operator reads fsid + admin credentials from here.
     let admin_key = host.ceph(&["auth", "get-key", "client.admin"]).await?;
     apply_rook_ceph_mon_secret(host, &fsid, admin_key.trim())
         .await
@@ -324,7 +275,6 @@ mod tests {
         })).collect::<Vec<_>>()})
     }
 
-    // ── pure JSON-shape helpers ────────────────────────────────────────────────
 
     #[test]
     fn mon_v1_addrs_picks_only_the_v1_endpoint() {
@@ -368,7 +318,6 @@ mod tests {
         assert!(needs_type_fix("Opaque"));
     }
 
-    // ── run(): sequencing against a FakeHost ──────────────────────────────────
 
     fn scripted_ok_host() -> FakeHost {
         FakeHost::new()
@@ -384,7 +333,7 @@ mod tests {
                 "cephfsprovkey",
             )
             .ok("ceph auth get-key client.csi-cephfs-node", "cephfsnodekey")
-            .ok("kubectl get secret", "") // no secrets exist yet — never wrong-typed
+            .ok("kubectl get secret", "")
             .ok("kubectl-apply", "")
             .ok("kubectl patch configmap", "")
     }
@@ -426,9 +375,6 @@ mod tests {
         run(&host).await.unwrap();
 
         let calls = host.calls();
-        // No rook-csi-rbd-provisioner/-node: enableRbdDriver is false and no
-        // StorageClass here is RBD-backed, so nothing should ever mint or
-        // publish RBD credentials.
         for name in [
             "rook-csi-cephfs-provisioner",
             "rook-csi-cephfs-node",
@@ -490,11 +436,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_secret_of_the_wrong_type_is_deleted_before_being_reapplied() {
-        // The base host scripts a bare "kubectl get secret" -> "" (not found,
-        // nothing to fix) for every secret; this pushes a longer, more
-        // specific prefix for ONE of them, which wins the match for that call
-        // only — rook-csi-cephfs-node and rook-ceph-mon still see the generic
-        // "not found" answer.
         let host = scripted_ok_host()
             .ok("ceph auth get-key client.admin", "adminkey")
             .ok(

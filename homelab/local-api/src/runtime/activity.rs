@@ -1,13 +1,3 @@
-//! Requirements (is the thing a tick needs answering?) and activities (is the
-//! cluster in the middle of something a tick must not interfere with?).
-//!
-//! Both used to be asked by each loop for itself, and both were answered
-//! optimistically: `restore::is_running()` read the restore records, and when the
-//! read failed it saw no records and said "no restore" — so a brief API outage
-//! during a restore let the disk reconciler purge OSDs underneath it.
-//! The storage recovery check did the same with `.is_ok_and(..)`.
-//!
-//! Here "cannot tell" is its own answer, and it pauses.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -15,10 +5,8 @@ use std::time::{Duration, Instant};
 
 use super::Requirement;
 
-/// A cluster-wide operation during which some controllers must stand still.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Activity {
-    /// An app restore is replacing PVCs and scaling deployments.
     Restore,
 }
 
@@ -41,8 +29,6 @@ pub enum Gate {
     Paused(String),
 }
 
-/// Answers are cached this long, so twenty controllers checking the same thing
-/// in the same second cost one kubectl call, not twenty.
 const CACHE_FOR: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,7 +37,6 @@ enum Key {
     Act(Activity),
 }
 
-/// `Some(true)`/`Some(false)` for a known answer, `None` for "could not tell".
 type Answer = Option<bool>;
 
 fn cache() -> &'static Mutex<HashMap<Key, (Instant, Answer)>> {
@@ -98,7 +83,6 @@ async fn ceph_ready() -> Answer {
     )
 }
 
-/// The first requirement that is not answering, if any.
 pub async fn unmet(requires: &[Requirement]) -> Option<Requirement> {
     for r in requires {
         let answer = cached(Key::Req(*r), async {
@@ -115,7 +99,6 @@ pub async fn unmet(requires: &[Requirement]) -> Option<Requirement> {
     None
 }
 
-/// Whether any of `activities` is running — or cannot be ruled out.
 pub async fn gate(activities: &[Activity]) -> Gate {
     for a in activities {
         let answer = cached(Key::Act(*a), async {

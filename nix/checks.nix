@@ -25,10 +25,6 @@ in let
 
     local-api-tests = crates.local-api.tests;
     installer-tests = crates.installer.tests;
-    # Included from the day the crate landed, deliberately. An app nothing builds
-    # is an app that is broken the next time anyone touches it, and this repo
-    # already has one file sitting unverified because it was committed ahead of
-    # its check.
     desktop-client-tests = crates.desktop-client.tests;
 
     clippy-local-api = crates.local-api.clippy;
@@ -77,19 +73,6 @@ in let
     nixos-join = toplevel "yolab-ci-join";
     nixos-wsl = toplevel "yolab-wsl";
 
-    # The Nix<->Rust binary contract. Every `Command::new("x")` /
-    # `Host::run_cmd("x", ...)` call site in local-api names an OS binary the
-    # crate assumes is on PATH at runtime — and nothing else checks that: a
-    # typo, or a shell-out added without adding it to any systemd unit's `path`,
-    # compiles, passes clippy and cargo test, and only fails on a real node.
-    #
-    # `allBins` is the union of every yolab-owned systemd unit's own `path`
-    # (each unit's PATH is that list PLUS the default `/run/current-system/sw`,
-    # which is `environment.systemPackages` — see common.nix's yolab-local-api
-    # unit, the one exception, for why that default cannot just be assumed
-    # instead of read from real config) — built from the REAL Nix values every
-    # unit already uses, not a hand-maintained parallel list, so it can't drift
-    # from what a node actually gets.
     binary-contract = let
       allBins = pkgs.symlinkJoin {
         name = "yolab-all-unit-bins";
@@ -123,17 +106,6 @@ in let
     disko-join = nixosSystems.yolab-ci-join.config.system.build.diskoScript;
     formatting = treefmtEval.config.build.check treeSrc;
 
-    # No `-s sh`: forcing one dialect made installer/macos/install.sh fail as
-    # THE BOOT LINE TO K3S, pinned at the Nix level where no Rust test can see it:
-    #
-    #   yolab-ceph-system-osd → yolab-images-rbd → yolab-containerd-store → k3s
-    #
-    # Each arrow is After= AND Wants=: After alone orders a unit only if something
-    # else starts it, Wants alone starts it without waiting. Losing either lets k3s
-    # start with containerd's data-root on the root disk — the state the whole
-    # store-moving machinery existed to undo, and removed so it can never be
-    # entered. yolab-local-api must NOT be After=k3s: while k3s waits on storage,
-    # local-api is how anyone sees why.
     containerd-store-after-order = let
       svcs = nixosSystems.yolab-ci.config.systemd.services;
       edges = [
@@ -160,36 +132,6 @@ in let
         touch $out
       '';
 
-    # A TIMER CANNOT RE-ARM WHILE THE UNIT IT TRIGGERS IS STILL ACTIVE.
-    #
-    # systemd moves a timer back to TIMER_WAITING — the only state from which it
-    # computes a next elapse — when the unit it triggers becomes inactive or
-    # failed, and at no other moment (timer.c, `timer_trigger_notify`). A
-    # `RemainAfterExit = true` oneshot that succeeds stays "active (exited)" for
-    # the rest of the boot, so a timer pointed at one fires exactly once and then
-    # reports `NextElapseUSecMonotonic=infinity` forever.
-    #
-    # The timer base has nothing to do with it. It decides what the next elapse is
-    # computed *from*; it does not decide whether the timer is re-armed at all.
-    # This check used to say the same thing about OnUnitActiveSec/OnUnitInactiveSec
-    # only, and told you to "use OnCalendar instead" — which three units then did,
-    # and all three stayed just as dead. That is the 2026-09-06 outage: node1's NIC
-    # flapped, the images RBD timed out, XFS shut the containerd data-root down,
-    # and the "mounted but unreadable -> rebuild" recovery in
-    # homelab/local-api/src/storage/containerd_store.rs never ran again, because
-    # yolab-containerd-store.timer had not fired in two days. `systemctl
-    # list-timers` on the live node: `NEXT: -` for all three OnCalendar timers
-    # whose service was RemainAfterExit, next elapse scheduled for all the others.
-    # The node went NotReady, its pods hung in Terminating, and every app in the UI
-    # read "Starting up…" for 32 hours.
-    #
-    # So the invariant is about the service, not the timer base: if a timer exists
-    # to retry or to re-check something, its service must be able to go inactive.
-    #
-    # `allowlist` is for units where "stop after the first success" is correct, not
-    # a bug — see each one's own comment (yolab-ceph-bootstrap: a successful join
-    # has nothing left to retry, and RemainAfterExit is load-bearing there because
-    # ceph-mon requires it).
     self-healing-timers-can-re-arm = let
       allowlist = ["yolab-ceph-bootstrap"];
       services = nixosSystems.yolab-ci.config.systemd.services;
@@ -217,34 +159,6 @@ in let
         touch $out
       '';
 
-    # A RETRY TIMER MUST MEASURE FROM WHEN THE RUN ENDED.
-    #
-    # The sibling check above is about whether a timer re-arms at all. This one is
-    # about what happens once it does, and it exists because fixing the first bug
-    # exposed the second within hours.
-    #
-    # OnCalendar and OnUnitActiveSec both compute the next elapse from a moment at
-    # or before the run's START — the last trigger, and the last activation. So a
-    # run that outlives its own interval finishes with the next elapse already in
-    # the past, and systemd fires it again in the same second, forever. On
-    # 2026-09-07 yolab-containerd-store (TimeoutStartSec 3600s, interval 5min) ran
-    # 09:59:48 -> 10:17:41 moving 8.3G, and re-triggered at 10:17:41. Every run
-    # stops k3s to do its work, so node2 never came back up.
-    #
-    # OnUnitInactiveSec measures from the moment the unit went inactive, which is
-    # immune to that by construction and — since a failed unit also ends inactive —
-    # already covers the failed-attempt case OnUnitActiveSec used to be paired in
-    # for. For a timer that exists to retry or re-check something, it is simply the
-    # right directive, and there is no interval arithmetic to get wrong.
-    #
-    # Scoped to `yolab-` units on purpose. Upstream nixpkgs ships genuine
-    # wall-clock jobs (fstrim, logrotate, nix-gc) where OnCalendar is exactly
-    # right and the work is bounded well under the period; this invariant is about
-    # our own retry/reconcile timers, which are a different kind of thing.
-    #
-    # `allowlist` is for one of ours that genuinely wants a wall clock — a nightly
-    # job that must run at a fixed hour rather than N after the last one. There are
-    # none today. If you add one, make sure its service cannot outlive the gap.
     retry-timers-measure-from-run-end = let
       allowlist = [];
       timers = nixosSystems.yolab-ci.config.systemd.timers;
@@ -274,17 +188,8 @@ in let
         touch $out
       '';
 
-    # The image RBD's sizing arithmetic used to be pinned here against a shell
-    # fragment driven with stubbed `ceph` output. That fragment moved into
-    # homelab/local-api/src/storage/images_sizing.rs (part of the Ceph
-    # shell->Rust migration), and `local-api-tests` above already builds and
-    # runs its unit tests — including the exact three cases this check used to
-    # assert (one/two copies costing the same raw bytes, and the ceiling
-    # beating the 40G floor on a small pool) — so a separate nix check would
-    # only be testing the same arithmetic twice.
 
     # POSIX for using the bash its own shebang asks for. shellcheck reads the
-    # shebang. -x follows sourced files.
     shellcheck =
       pkgs.runCommand "shellcheck"
       {
@@ -295,9 +200,6 @@ in let
         touch $out
       '';
 
-    # DL3018 wants every apk package pinned. These images track upstream Alpine
-    # deliberately, and the wg-* tools must match the host kernel's WireGuard, so
-    # pinning buys a stale userland rather than safety.
     hadolint =
       pkgs.runCommand "hadolint"
       {
@@ -309,24 +211,7 @@ in let
         touch $out
       '';
 
-    # `ci-buckets-cover-every-check` used to live here: it diffed the hand-written
-    # buckets in .github/workflows/push.yml against `checkNames`, because a check
-    # missing from every bucket would silently stop running. Both halves are gone
-    # — CI now runs `.#devour`, which builds whatever `checks` exposes, so there
-    # is no list to drift and nothing left for that check to police.
 
-    # THE API SURFACE IS WRITTEN DOWN TWICE, SO NEITHER COPY CAN DRIFT.
-    #
-    # `surface::ROUTE_TABLE` is the list every cross-cutting test walks — most
-    # importantly `every_route_refuses_an_unauthenticated_stranger`, which is the
-    # only thing standing between "someone added a route" and "someone added an
-    # unauthenticated route". axum's `Router` cannot be enumerated at runtime, so
-    # that table has to be written by hand, and a hand-written list of 69 things
-    # is a list that silently falls behind.
-    #
-    # Both directions fail: a route in the router but not the table is a route no
-    # sweep ever visits; a table entry naming no route is a test walking over
-    # nothing and reporting success.
     route-table-is-complete =
       pkgs.runCommand "route-table-is-complete" {nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];}
       ''
@@ -360,37 +245,7 @@ in let
         touch $out
       '';
 
-    # THE SEAM RATCHET: direct machine access may only ever shrink.
-    #
-    # `host.rs` is the seam — every kubectl/ceph/systemctl/lsblk call is supposed
-    # to go through the `Host` trait, because that is what lets a test substitute
-    # `FakeHost` and drive the logic without a cluster. Code that names `RealHost`
-    # or calls `crate::kubectl::` directly has stepped around it, and is
-    # structurally untestable: there is no seam left to inject at.
-    #
-    # That is not hypothetical. `routers/restore.rs` is 1711 lines with 11 such
-    # call sites, and on 2026-09-22 a restore finished pulling an app's data and
-    # then never brought the app back up — the volume was restored, the Deployment
-    # was never created, the record was marked "interrupted — scaled back up", and
-    # `scaled_deployments` was empty so scaling back up did nothing. None of that
-    # module's 20 tests could have caught it, because none of them can run a
-    # restore at all. `heal/` is the counter-example: generic over `H: Host, N:
-    # Network`, with both faked, and its failure paths are exercised.
-    #
-    # So this is a budget, per file, and the numbers may only go DOWN. Both
-    # directions fail on purpose:
-    #
-    #   - over budget: the hole got deeper. Take a `host: &H` and call through the
-    #     seam instead.
-    #   - under budget: good — lower the number in the same commit, so the next
-    #     person inherits the tighter bound rather than the slack.
-    #
-    # A file that reaches 0 comes off the list entirely; a file not on the list
-    # may not have any.
     host-seam-ratchet = let
-      # file -> how many direct `RealHost` / `crate::kubectl::` mentions it may
-      # still have. Measured, not guessed. `host.rs` is the seam itself and
-      # `kubectl.rs` defines the helpers, so neither is counted.
       budget = {
         "auth.rs" = 2;
         "boot/mod.rs" = 2;
@@ -411,8 +266,6 @@ in let
         "storage/mod.rs" = 2;
         "topology.rs" = 2;
       };
-      # `attrNames` is already byte-sorted, which is what `LC_ALL=C sort` gives
-      # the measured side. The two orderings have to agree or every line diffs.
       expected =
         pkgs.writeText "seam-budget"
         (pkgs.lib.concatStrings (
@@ -448,38 +301,6 @@ in let
         touch $out
       '';
 
-    # A NIXOS-REBUILD MUST NOT TAKE THE STORAGE DOWN WITH IT.
-    #
-    # Two separate mechanisms, one outage. On 2026-09-15 a rebuild on node1
-    # changed yolab-ceph-bootstrap, systemd restarted ceph-mon because the mon
-    # Requires it, and every OSD on the node stopped with the mon — `Requires`
-    # propagates a STOP, which `restartIfChanged = false` on the OSD template
-    # does nothing about, because the OSDs were not restarted, they were
-    # dependency-stopped. Their restart then deadlocked on LVM (see
-    # lvm-never-scans-an-rbd), and the node had no storage until someone
-    # intervened.
-    #
-    # So both halves are asserted here:
-    #
-    #   1. Nothing of ours may `Requires=` a Ceph daemon. A daemon is a thing
-    #      that comes and goes on its own; wanting one is fine, being stopped
-    #      alongside one is not. The dependency in the other direction —
-    #      `requiredBy` on a keyring unit, so the mon refuses to start without
-    #      its key — is correct and is not what this catches.
-    #
-    #   2. The units that must not be cycled by a rebuild say so. Each one is on
-    #      this list because restarting it mid-rebuild does real damage, not
-    #      because restarting it is merely wasteful:
-    #
-    #        yolab-reset-wipe        erases this machine's cluster state
-    #        yolab-ceph-osd@         cycles EVERY OSD on the node at once
-    #        yolab-ceph-system-osd   re-runs OSD creation
-    #        yolab-ceph-bootstrap    restarts the mon underneath the OSDs (1)
-    #        yolab-images-rbd        unmaps the image store k3s is running from
-    #        yolab-containerd-store  stops k3s to move several GB of images
-    #
-    # This replaces a comment in homelab/nixos/ceph/default.nix that explained
-    # the whole thing and enforced none of it.
     ceph-survives-a-rebuild = let
       svcs = nixosSystems.yolab-ci.config.systemd.services;
 
@@ -520,24 +341,6 @@ in let
         touch $out
       '';
 
-    # LVM MUST NOT SCAN AN RBD — BY ANY OF ITS NAMES.
-    #
-    # ceph-volume runs `lvs` to create an OSD; `lvs` scanning /dev/rbd0 blocks in
-    # io_getevents because the RBD cannot be served while the cluster has no OSD;
-    # the OSD that would fix that is the one waiting on `lvs`. Observed on node1:
-    # eight leaked `lvs` processes, yolab-local-api unstoppable, and a
-    # nixos-rebuild wedged for 17 minutes trying to stop it.
-    #
-    # The first fix rejected `^/dev/rbd` only, and LVM went on scanning the same
-    # device through /dev/block/253:0, which the trailing `a|.*|` happily
-    # accepted — same deadlock, on 2026-09-15, via a name nobody had thought of.
-    # THE LESSON IS THE ALIASES, so that is what this asserts: every directory
-    # the kernel and udev publish a block device under must be rejected, and the
-    # accept-everything rule must come last. A real disk still arrives by its
-    # kernel name (/dev/sda, /dev/nvme0n1, /dev/dm-0) and is still accepted; an
-    # RBD has no name left.
-    #
-    # No OSD ever lives on an RBD, so nothing legitimate is lost.
     lvm-never-scans-an-rbd = let
       conf = nixosSystems.yolab-ci.config.environment.etc."lvm/lvm.conf".source;
     in
@@ -579,32 +382,7 @@ in let
         touch $out
       '';
 
-    # EVERY APP IN THE CATALOG IS A WORD MOST PEOPLE HAVE NEVER SEEN.
-    #
-    # Vikunja, Karakeep, Miniflux, Navidrome. A grid of 74 of those is not a
-    # shop, it is a wall — the one line in client-ui/src/catalog/meta.ts
-    # comparing each to something the reader already pays for is what turns it
-    # into somewhere you can find what you came for. That file is the
-    # highest-leverage copy in the product and nothing connects it to the charts
-    # it describes, so a chart added on one side is simply absent on the other.
-    #
-    # `taglineFor` falls back to the chart's own description, so a missing entry
-    # is never blank — it is worse than that: it is a sentence written for
-    # someone who already knows what the app is, sitting in the one place that
-    # exists for someone who does not.
-    #
-    # Two directions, and they are not symmetric:
-    #
-    #   - A tagline naming no chart is dead copy. Zero today, and it stays zero:
-    #     that is a hard failure, because the only way to get one is a rename or
-    #     a delete that half-landed.
-    #
-    #   - A chart with no tagline is a gap, and there are 13. Listing them is
-    #     what makes them finite: the list may only SHRINK, so the storefront
-    #     cannot quietly get less curated as the catalog grows.
     catalog-apps-have-a-tagline = let
-      # Charts still waiting for a line of their own. Delete a name when you
-      # write one; never add one.
       uncurated = [
         "babybuddy"
         "emulatorjs"
@@ -669,9 +447,6 @@ in let
         fi
         touch $out
       '';
-    # statix is deliberately absent: its 39 findings are all "avoid repeated keys
-    # in attribute sets", and flattening `boot.loader.grub.*` is not obviously an
-    # improvement. `nix run nixpkgs#statix -- check` if you want it.
     deadnix =
       pkgs.runCommand "deadnix"
       {

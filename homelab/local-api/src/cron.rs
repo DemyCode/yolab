@@ -1,33 +1,15 @@
-//! A small five-field cron matcher, for per-app backup schedules.
-//!
-//! The alternative was pulling in the `cron` crate, but this crate is built from
-//! a pinned flake and a new dependency means touching Cargo.lock and the vendor
-//! hash for a feature the size of one screen of code. The syntax supported is
-//! the ordinary one — `*`, `a`, `a-b`, `a,b,c`, and any of those with `/step` —
-//! over the five standard fields (minute hour day-of-month month day-of-week).
-//! Month and weekday names are deliberately not supported; the UI writes
-//! numbers, and a name parser nobody calls is a name parser that rots.
 
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 
-/// How far back `last_fire` will scan for a matching minute. A schedule that
-/// has not fired in a year is not meaningfully "due"; the bound stops a typo
-/// like `0 0 31 2 *` (Feb 31, which never matches) from scanning forever.
 const MAX_LOOKBACK_MINUTES: i64 = 366 * 24 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cron {
     minutes: [bool; 60],
     hours: [bool; 24],
-    /// 1..=31, index 0 unused.
     days: [bool; 32],
-    /// 1..=12, index 0 unused.
     months: [bool; 13],
-    /// 0..=6, Sunday = 0. Also accepts 7 for Sunday when parsing.
     weekdays: [bool; 7],
-    /// Whether day-of-month / day-of-week were written as `*`. The classic cron
-    /// rule: when both are restricted, either matching is enough; when one is
-    /// `*`, the other must match.
     dom_restricted: bool,
     dow_restricted: bool,
 }
@@ -43,8 +25,6 @@ impl std::fmt::Display for CronError {
 impl std::error::Error for CronError {}
 
 impl Cron {
-    /// Parses a five-field cron expression. Returns a human-readable error
-    /// suitable for showing next to a schedule field in the UI.
     pub fn parse(expr: &str) -> Result<Cron, CronError> {
         let fields: Vec<&str> = expr.split_whitespace().collect();
         if fields.len() != 5 {
@@ -59,7 +39,6 @@ impl Cron {
         let days = parse_field(fields[2], 1, 31, "day")?;
         let months = parse_field(fields[3], 1, 12, "month")?;
 
-        // Weekday accepts 0..=7 with both 0 and 7 meaning Sunday; normalise 7 to 0.
         let raw_weekdays = parse_field(fields[4], 0, 7, "weekday")?;
         let mut weekdays = [false; 7];
         for (i, on) in raw_weekdays.iter().enumerate() {
@@ -96,10 +75,8 @@ impl Cron {
         })
     }
 
-    /// Whether `dt` (to the minute) is a scheduled time.
     pub fn matches(&self, dt: &DateTime<Utc>) -> bool {
         let dom = self.days[dt.day() as usize];
-        // chrono's `weekday().num_days_from_sunday()` is 0 for Sunday, matching us.
         let dow = self.weekdays[dt.weekday().num_days_from_sunday() as usize];
         let day_ok = match (self.dom_restricted, self.dow_restricted) {
             (true, true) => dom || dow,
@@ -113,8 +90,6 @@ impl Cron {
             && self.months[dt.month() as usize]
     }
 
-    /// The most recent scheduled minute at or before `now`, or `None` if none
-    /// matched within the lookback bound.
     pub fn last_fire(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let mut t = now
             .with_second(0)
@@ -129,12 +104,6 @@ impl Cron {
         None
     }
 
-    /// Whether a schedule is due, given when it last succeeded.
-    ///
-    /// Never-run is always due. Otherwise the newest scheduled fire time is
-    /// compared against the last success: a backup that ran at 03:00 is not due
-    /// again until the next 03:00 has passed, and one that missed yesterday is
-    /// due the moment today's fire time arrives.
     pub fn due(&self, last_ok: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
         let Some(last) = last_ok else {
             return true;
@@ -146,8 +115,6 @@ impl Cron {
     }
 }
 
-/// Parses one field into a bool set over `lo..=hi`, returning a Vec of length
-/// `hi + 1` (index 0 unused for 1-based fields, harmlessly false).
 fn parse_field(field: &str, lo: u32, hi: u32, name: &str) -> Result<Vec<bool>, CronError> {
     let mut set = vec![false; (hi + 1) as usize];
     for part in field.split(',') {
@@ -184,7 +151,6 @@ fn parse_field(field: &str, lo: u32, hi: u32, name: &str) -> Result<Vec<bool>, C
             let n: u32 = range
                 .parse()
                 .map_err(|_| CronError(format!("{name}: '{range}' is not a number")))?;
-            // `5/10` means "from 5, every 10" — end at the field max.
             (n, if step > 1 { hi } else { n })
         };
         if start < lo || end > hi {
@@ -240,7 +206,6 @@ mod tests {
     #[test]
     fn weekday_seven_means_sunday() {
         let c = Cron::parse("0 0 * * 7").unwrap();
-        // 2026-09-20 is a Sunday.
         assert!(c.matches(&at(2026, 9, 20, 0, 0)));
         assert!(!c.matches(&at(2026, 9, 21, 0, 0)));
     }
@@ -248,7 +213,6 @@ mod tests {
     #[test]
     fn when_both_day_fields_are_restricted_either_matches() {
         let c = Cron::parse("0 0 1 * 1").unwrap();
-        // 1st of the month OR a Monday.
         assert!(c.matches(&at(2026, 9, 1, 0, 0)), "the 1st");
         assert!(c.matches(&at(2026, 9, 7, 0, 0)), "a Monday");
         assert!(
@@ -286,7 +250,6 @@ mod tests {
 
     #[test]
     fn a_never_matching_schedule_is_never_due_after_a_run() {
-        // Feb 31 does not exist.
         let c = Cron::parse("0 0 31 2 *").unwrap();
         assert!(!c.due(Some(at(2026, 1, 1, 0, 0)), at(2026, 9, 17, 12, 0)));
     }

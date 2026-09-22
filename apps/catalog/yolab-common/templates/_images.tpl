@@ -1,11 +1,4 @@
-{{/*
-Pinned images for the shared gateway.
 
-Every reference is tag + digest. Kubernetes defaults `imagePullPolicy` to `Always`
-for a `:latest` tag, which meant these were re-pulled on every pod restart and could
-silently move underneath running apps. Charts may override any of them via
-`.Values.yolab.images.*`, but the defaults are the contract.
-*/}}
 
 {{- define "yolab-common.image.wgRegister" -}}
 {{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:1f68d09b5e4ef2a83b0b50df83633ca397be772cd8d72ebdf8c971f1677f414a" -}}

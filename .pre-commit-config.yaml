@@ -1,23 +1,12 @@
-# Thin: everything a hook here would duplicate is a derivation in
-# nix/checks.nix, so there is one definition of each and it is the one CI runs.
-#
-# The whole suite is not here — `nix run .#ci` builds three NixOS toplevels,
-# which is a CI job, not something to sit through on every commit.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      # About what is entering the commit, not what the tree says, so nix
-      # cannot do these from inside a derivation.
       - id: check-merge-conflict
       - id: check-added-large-files
 
   - repo: local
     hooks:
-      # `.` and not `path:.`: the git ref hands nix a 4.8M source, `path:.`
-      # hands it the whole working directory — 8.6G with target/ in it — and
-      # copies that into the store on every invocation. A new file has to be
-      # `git add`ed to be visible, which pre-commit does anyway.
       - id: nix-fmt
         name: nix fmt
         entry: nix run .#format

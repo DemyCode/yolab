@@ -15,9 +15,6 @@ pub async fn exec(
     State(state): State<AppState>,
     axum::Json(req): axum::Json<ExecRequest>,
 ) -> Response {
-    // This runs an arbitrary command as root. It is only reachable past the
-    // auth middleware (valid session or cluster token), but operators can shut
-    // it off entirely with YOLAB_TERMINAL_ENABLED=0.
     if !state.config.terminal_enabled {
         return (
             axum::http::StatusCode::FORBIDDEN,
@@ -25,7 +22,6 @@ pub async fn exec(
         )
             .into_response();
     }
-    // Audit every command so root-shell use is traceable in the journal.
     tracing::warn!(target: "yolab::terminal", "exec: {}", req.command);
     let stream = async_stream::stream! {
         let child = tokio::process::Command::new("bash")

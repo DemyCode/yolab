@@ -1,14 +1,11 @@
-# A machine's own files belong in /var/lib/yolab/machine, never in the repo
-# (see machine/README.md). Ignored here so a misplaced copy cannot be committed.
 machine/*
 !machine/README.md
 ignored/
 
-# NixOS build results
 result
 result-*
 
-# Backup files
 *.backup
 *.bak
 config.toml.example
+

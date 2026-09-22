@@ -1,7 +1,2 @@
-{{/*
-  Tunnel cleanup runs as a pre-delete hook from the shared library, same as every
-  other app — see yolab-common/templates/_uninstall.tpl. Keeping a per-chart copy is
-  how this one ended up still passing the account token as a literal after the others
-  had moved to a Secret reference.
-*/}}
+
 {{ include "yolab-common.uninstallHook" . }}

@@ -1,17 +1,3 @@
-//! CephFS bootstrap — the filesystem behind every app PVC.
-//!
-//! Replaces the `yolab-cephfs-init` systemd unit, which was a bash script on a
-//! timer. Idempotent: creates the pools, the filesystem and the `csi`
-//! subvolume group once a disk is available.
-//!
-//! Cluster-scoped (one writer), and paused while a restore or a storage recovery
-//! runs: the recovery deletes and recreates this very filesystem, and creating one
-//! here between its steps would race it.
-//!
-//! SIZE IS SET ONLY ON POOLS THIS TICK CREATED. It used to run `pool set size 1`
-//! on both pools whenever the filesystem was missing — including pools that
-//! already existed with the owner's chosen copy count, which deleted the extra
-//! replicas until the topology controller put them back.
 
 use std::time::Duration;
 
@@ -74,8 +60,6 @@ pub(crate) async fn ensure() -> Result<Tick> {
             continue;
         }
         crate::ceph_cli::ceph(&["osd", "pool", "create", pool, pgs, pgs]).await?;
-        // New and empty, so size 1 loses nothing; the topology controller raises
-        // it to the owner's chosen count on its next tick.
         crate::ceph_cli::ceph(&[
             "osd",
             "pool",

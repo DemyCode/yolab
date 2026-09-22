@@ -50,42 +50,17 @@ export interface DiskInfo {
   is_loop: boolean;
   is_our_osd: boolean;
   foreign_ceph: boolean;
-  /**
-   * Which of the foreign_ceph states this actually is. `foreign_ceph` collapses
-   * "another cluster owns this" and "I could not tell", which have the same
-   * consequence and very different meanings; this distinguishes them.
-   * Optional because a node running an older local-api does not send it.
-   */
   ownership?: "ours" | "foreign" | "blank" | "unknown";
   osd_id: number | null;
-  /** "ON" = the owner wants this disk in the cluster, "OFF" = excluded. */
   desired: "ON" | "OFF";
   connected: boolean;
-  /** Has a partition table — something is already stored on it. */
   has_partitions: boolean;
-  /** This machine has a filesystem from it mounted; never usable for storage. */
   mounted: boolean;
-  /**
-   * Where the reconciler has actually got to, rather than what the page can
-   * infer. "" from a node that has not reported yet.
-   *
-   * The page used to derive its own state from desired/connected/is_our_osd,
-   * and that guess cannot tell "started five seconds ago" from "has failed
-   * fourteen times" — both came out as "Setting up…", pulsing forever.
-   */
   phase: DiskPhase | "";
-  /** Plain-language detail for `phase`, including the last error. Shown as-is. */
   message: string;
-  /** Failed attempts at the current transition; 0 once it succeeds. */
   attempts: number;
 }
 
-/**
- * The reconciler's own vocabulary — see disks_reconciler::phase.
- *
- * Two destinations, one per toggle position: `active` for ON, `removable` for
- * OFF. Everything else is a step on the way, or a stop that needs a person.
- */
 export type DiskPhase =
   | "active"
   | "creating"
@@ -96,12 +71,6 @@ export type DiskPhase =
   | "removable"
   | "unknown";
 
-/// What the owner asked for. No `mode`: the auto-scaling mode is gone, because
-/// it derived the copy count from disks that were currently UP, so unplugging
-/// one silently reduced replication and deleted the extra copies.
-///
-/// No `min_size` either — the server fixes it at one online copy
-/// (topology::MIN_SIZE) so the cluster keeps serving whatever is reachable.
 export interface StoragePolicy {
   size: number;
   failure_domain: "osd" | "host";
@@ -121,13 +90,8 @@ export interface StorageTarget {
 }
 
 export interface StoragePolicyData {
-  /// null until the owner has chosen, or when the setting cannot be read. The
-  /// page shows "not set yet" rather than inventing a number the cluster is
-  /// not actually using.
   policy: StoragePolicy | null;
   topology: StorageTopology | null;
   target: StorageTarget | null;
-  /// Online copies required to serve data. Always 1; sent so the page can
-  /// explain the behaviour without hardcoding a number decided on the server.
   min_size: number;
 }

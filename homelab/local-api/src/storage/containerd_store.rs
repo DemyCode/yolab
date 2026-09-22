@@ -1,15 +1,3 @@
-//! Boot step: containerd's data-root is this node's images RBD. Always.
-//!
-//! One path, decided before k3s starts and never changed while it runs: the
-//! system LV is an OSD, the images pool and this node's RBD exist, the RBD is
-//! mounted here, then k3s starts. This step waits for its preconditions
-//! (`storage::wait`) and has no fallback, so there is nothing to move later and
-//! nothing that ever stops k3s to change its store.
-//!
-//! Nothing under the data-root is the owner's data — every byte is a layer a
-//! registry will send again — so any doubt about the filesystem is answered by
-//! formatting it. A store that breaks while the node runs is repaired by a
-//! reboot, the one operation that takes every container off it.
 
 use std::path::{Path, PathBuf};
 
@@ -30,8 +18,6 @@ pub enum Filesystem {
 
 impl Filesystem {
     pub fn parse(s: &str) -> Self {
-        // Anything unrecognised defaults to xfs, matching the Nix option's own
-        // default — never silently ext4, which most k8s distros do not use.
         if s.eq_ignore_ascii_case("ext4") {
             Filesystem::Ext4
         } else {
@@ -40,16 +26,8 @@ impl Filesystem {
     }
 }
 
-/// Budget for `mkfs`, whose runtime scales with the SIZE OF THE IMAGE rather
-/// than with how quickly Ceph answers. Measured: a full pass over node2's 163 GiB
-/// image took 134s; the image grows with the pool, so the generic 600s command
-/// bound is the wrong question to ask of it.
 const FS_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
-/// `-o osd_request_timeout`: krbd defaults to waiting forever, so a pool that
-/// cannot serve a read parks anything touching the device in uninterruptible
-/// sleep, which no signal ends. With a bound the same situation is an I/O error.
-/// Long enough to ride out an OSD restart (a few minutes), short of forever.
 const OSD_REQUEST_TIMEOUT_SECS: u32 = 300;
 
 pub struct ContainerdStorePolicy {
@@ -66,7 +44,6 @@ fn probe_dir(root: &Path) -> PathBuf {
     root.join(format!("tmp/yolab-containerd-probe-{uniq:016x}"))
 }
 
-/// One attempt at putting containerd's data-root on this node's RBD.
 pub async fn attempt<H: Host>(
     host: &H,
     root: &Path,
@@ -76,7 +53,6 @@ pub async fn attempt<H: Host>(
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
 
-    // Already in place (the unit was started again by hand): nothing to do.
     if is_mountpoint(host, &croot_s).await {
         return Ok(Attempt::Ready(()));
     }
@@ -130,9 +106,6 @@ pub async fn attempt<H: Host>(
     Ok(Attempt::Ready(()))
 }
 
-/// Whether this node's image is there — and, KEPT SEPARATE, whether the pool
-/// could answer at all. A pool that cannot serve a read is not a pool with no
-/// image in it; collapsing the two was the silent half of the 2026-09-10 outage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ImageState {
     Present,
@@ -152,23 +125,17 @@ async fn image_state<H: Host>(host: &H, pool: &str, name: &str) -> ImageState {
                 ImageState::Absent
             }
         }
-        // Includes the pool not existing yet: that is waited on either way.
         Ok(o) => ImageState::Unavailable(o.stderr.trim().to_string()),
         Err(e) => ImageState::Unavailable(e.to_string()),
     }
 }
 
-/// Answers from the mount table, never by touching the mount: stat() on a
-/// filesystem XFS has shut down returns EIO, and `mountpoint -q` reported "not
-/// mounted" about exactly the broken mount it was asked about (2026-09-06).
 async fn is_mountpoint<H: Host>(host: &H, path: &str) -> bool {
     host.run_cmd("findmnt", &["-rno", "TARGET", "--mountpoint", path])
         .await
         .is_ok_and(|o| o.success)
 }
 
-/// A real, partial read — opendir() can succeed against a mount that returns
-/// EIO on the first readdir().
 fn is_readable_dir(path: &Path) -> bool {
     match std::fs::read_dir(path) {
         Ok(entries) => entries.into_iter().all(|e| e.is_ok()),
@@ -176,16 +143,6 @@ fn is_readable_dir(path: &Path) -> bool {
     }
 }
 
-/// Whether containerd can actually USE this store, as opposed to merely read it.
-///
-/// ("Snapshots" here are containerd's image layers, nothing to do with backups.)
-/// An XFS shutdown mid-write can leave the snapshotter's metadata.db listing
-/// layers whose directories are gone. Every read succeeds and containerd cannot
-/// start a single pod ("failed to create snapshot: missing parent"). Observed on
-/// node1, 2026-09-08, and it survived a reboot.
-///
-/// Deliberately narrow: a db WITH content beside an EMPTY snapshots directory. A
-/// fresh store has neither and is fine; a working store has both.
 fn snapshotter_is_coherent(store: &Path) -> bool {
     let overlay = store.join("io.containerd.snapshotter.v1.overlayfs");
     let db_has_content = std::fs::metadata(overlay.join("metadata.db"))
@@ -200,7 +157,6 @@ fn dir_has_any_entries(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Every `device` mapped to `pool/name` in `rbd showmapped --format json`.
 fn find_mapped_devices(showmapped: &Value, pool: &str, name: &str) -> Vec<String> {
     showmapped
         .as_array()
@@ -223,9 +179,6 @@ async fn existing_mapping<H: Host>(host: &H, pool: &str, name: &str) -> Option<S
     find_mapped_devices(&v, pool, name).into_iter().next()
 }
 
-/// The device `pool/name` is mapped at, mapping it if it is not. Reuses an
-/// existing mapping: kernel `rbd map` does not dedupe, and a second map of the
-/// same image is a second device and a second watch. `Err` is rbd's own reason.
 async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Result<String, String> {
     if let Some(dev) = existing_mapping(host, pool, name).await {
         return Ok(dev);
@@ -258,10 +211,6 @@ async fn has_filesystem<H: Host>(host: &H, dev: &str) -> bool {
     host.run_cmd("blkid", &[dev]).await.is_ok_and(|o| o.success)
 }
 
-/// "Can containerd use this?" — answered by mounting it, which is how containerd
-/// will find out. Not `xfs_repair -n`: a dirty log after an unclean shutdown makes
-/// that refuse outright, and on 2026-09-07 it had both nodes' perfectly good
-/// stores reformatted after an ordinary reboot. A mount replays the log.
 async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool {
     let probe = probe_dir(root);
     if std::fs::create_dir_all(&probe).is_err() {
@@ -318,19 +267,14 @@ mod tests {
         }
     }
 
-    /// A node at boot: nothing is mounted yet. FakeHost queues answers per
-    /// command, so this scripts only what no test answers differently.
     fn booting() -> FakeHost {
         FakeHost::new().fail("findmnt -rno TARGET --mountpoint", "")
     }
 
-    /// Whether `mount` itself ran. Not `host.ran("mount")`: that is a substring
-    /// match, and every attempt runs `findmnt … --mountpoint` first.
     fn ran_mount(host: &FakeHost) -> bool {
         host.calls().iter().any(|c| c.starts_with("mount "))
     }
 
-    /// …and this node's image exists and maps to /dev/rbd0.
     fn mapped() -> FakeHost {
         booting()
             .ok("rbd ls images", "yolab-n1\n")
@@ -350,7 +294,6 @@ mod tests {
         }
     }
 
-    // ── The boot path ────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn a_blank_image_is_formatted_and_mounted() {
@@ -392,7 +335,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = mapped()
             .ok("blkid /dev/rbd0", "TYPE=xfs")
-            // The probe mount fails; the real mount after mkfs succeeds.
             .fail("mount", "wrong fs type, bad superblock")
             .ok("mount", "")
             .ok("mkfs.xfs", "");
@@ -440,7 +382,6 @@ mod tests {
         assert!(!ran_mount(&host), "{:?}", host.calls());
     }
 
-    // ── Waiting, never falling back ──────────────────────────────────────────
 
     #[tokio::test]
     async fn a_missing_image_is_waited_for() {
@@ -459,7 +400,6 @@ mod tests {
         );
     }
 
-    /// 2026-09-10: a pool that cannot answer is not a pool without the image.
     #[tokio::test]
     async fn a_pool_that_cannot_answer_is_waited_for_and_says_why() {
         let dir = tempfile::tempdir().unwrap();
@@ -504,7 +444,6 @@ mod tests {
         assert!(why.contains("can't read superblock"), "{why}");
     }
 
-    // ── Idempotence ──────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn an_already_mounted_store_is_left_alone() {
@@ -519,7 +458,6 @@ mod tests {
         assert_eq!(host.calls().len(), 1, "{:?}", host.calls());
     }
 
-    // ── Pure pieces ──────────────────────────────────────────────────────────
 
     #[test]
     fn filesystem_parse_defaults_to_xfs() {
@@ -556,9 +494,9 @@ mod tests {
     #[test]
     fn only_a_db_with_layers_beside_no_layer_dirs_is_incoherent() {
         let cases = [
-            (262_144, 0, false), // node1, 2026-09-08
-            (0, 0, true),        // fresh store
-            (262_144, 4, true),  // working store
+            (262_144, 0, false),
+            (0, 0, true),
+            (262_144, 4, true),
         ];
         for (db, dirs, coherent) in cases {
             let dir = tempfile::tempdir().unwrap();

@@ -1,15 +1,8 @@
-//! A window pointed at the owner's box.
-//!
-//! The shell owns exactly one piece of state — the address — and nothing else.
-//! Everything the person sees is served by their box, so this binary never has
-//! an opinion about the UI and never needs releasing when the UI changes. See
-//! README.md for why loading remotely beats bundling.
 
 use std::sync::Mutex;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Where the address is remembered, relative to Tauri's per-app config dir.
 const STORE_FILE: &str = "server.txt";
 
 struct Stored(Mutex<Option<String>>);
@@ -30,17 +23,6 @@ fn read_stored(app: &tauri::AppHandle) -> Option<String> {
     }
 }
 
-/// Validates and canonicalises an address the owner typed.
-///
-/// Rejects rather than repairs, with one exception: a bare host gets `https://`
-/// put in front, because typing the scheme is the single most common thing
-/// people leave out and refusing that would be pedantry.
-///
-/// http:// is refused outright. This window carries a session cookie marked
-/// `Secure` — over plain http the cookie is not sent at all, so the app would
-/// appear to sign in and then behave as though it had not, which is a far worse
-/// experience than being told the address must be https. Loopback is allowed so
-/// a developer can point it at a local instance.
 pub(crate) fn normalise_url(input: &str) -> Result<String, String> {
     let raw = input.trim().trim_end_matches('/');
     if raw.is_empty() {
@@ -78,14 +60,11 @@ fn stored_url(app: tauri::AppHandle) -> Option<String> {
     read_stored(&app)
 }
 
-/// Saves the address and swaps the window over to it.
 #[tauri::command]
 async fn connect(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let normalised = normalise_url(&url)?;
 
     if let Some(path) = store_path(&app) {
-        // Best-effort: failing to remember the address is not a reason to
-        // refuse to open it. The person still gets their box this session.
         if let Err(e) = std::fs::write(&path, &normalised) {
             eprintln!("could not remember the address: {e}");
         }
@@ -95,7 +74,6 @@ async fn connect(app: tauri::AppHandle, url: String) -> Result<(), String> {
     open_box_window(&app, &normalised)
 }
 
-/// Returns to the address prompt, from the native menu.
 #[tauri::command]
 fn change_server(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("main") {
@@ -119,8 +97,6 @@ fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
         .title("YoLab")
         .inner_size(1100.0, 780.0)
-        // Below the width the UI switches to its phone layout, so a window
-        // narrower than this is a broken-looking app rather than a small one.
         .min_inner_size(420.0, 480.0)
         .build()
         .map_err(|e| e.to_string())?;
@@ -131,13 +107,6 @@ fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The whole app, as a library function.
-///
-/// Android does not run a binary: the APK is a Java host that loads this crate
-/// as a cdylib and calls in. A crate with no lib target fails the Android build
-/// outright with "no library targets found in package". `mobile_entry_point`
-/// generates the symbol that host looks for; on desktop the attribute is absent
-/// and `main` calls this directly.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -145,9 +114,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![stored_url, connect, change_server])
         .setup(|app| {
             let handle = app.handle().clone();
-            // Straight to the box when the address is already known. Making
-            // someone confirm it on every launch would be a prompt that only
-            // ever has one answer.
             match read_stored(&handle) {
                 Some(url) => open_box_window(&handle, &url)?,
                 None => open_setup_window(&handle)?,
@@ -178,9 +144,6 @@ mod tests {
         );
     }
 
-    /// The session cookie is marked Secure. Over http it is silently not sent,
-    /// so the app would look signed in and behave signed out — the worst of
-    /// both. Refusing up front is the kinder failure.
     #[test]
     fn plain_http_is_refused_with_the_actual_reason() {
         let err = normalise_url("http://box.example").unwrap_err();
@@ -188,8 +151,6 @@ mod tests {
         assert!(err.contains("cookie"), "must say why, not just no: {err}");
     }
 
-    /// Except on loopback, where there is no network to protect and a developer
-    /// needs to point this at a local instance.
     #[test]
     fn http_is_allowed_on_loopback_for_development() {
         for local in ["http://localhost:3001", "http://127.0.0.1:3001"] {

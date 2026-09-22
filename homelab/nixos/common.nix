@@ -5,10 +5,6 @@
   yolabConfigPath,
   rust,
   localApiEnv,
-  # The revision this system is being built from. Passed by flake.nix from
-  # `self.rev`/`self.lastModified` rather than read from a checkout, because a
-  # machine now builds from a flake URL and has no git tree of its own. Used only
-  # for the version shown on the System page.
   yolabRev ? "",
   yolabLastModified ? null,
   ...
@@ -23,38 +19,18 @@
   };
   k3sCfg = s.nodeCfg.k3s;
 
-  # The first node initialises the embedded-etcd cluster (--cluster-init).
-  # Every other node joins as an equal server peer via serverAddr.
-  # After joining, all nodes are identical: control plane + worker + UI.
   isFirstNode = k3sCfg.server_addr == "";
 
   tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
-  # The user's own zone, `6.yolab.io` for `node1.6.yolab.io`: where the names
-  # every machine shares live (`cluster.`, `notify.`). Built the same way in
-  # homelab/local-api/src/notify/mod.rs (`Tunnel::user_domain`).
   userDomain = lib.concatStringsSep "." (lib.drop 1 (lib.splitString "." tunnelDomain));
   platformApiUrl = lib.removeSuffix "/" (s.tunnelCfg.platform_api_url or "https://api.yolab.io");
 
-  # Ceph runs as host daemons rather than Rook pods so containerd's image store
-  # can live on an RBD — see homelab/nixos/ceph/default.nix for why that is not
-  # possible while the mons are pods.
   cephCfg = s.homelabConfig.ceph or {};
 
-  # The mesh address of a machine already in the cluster, taken from the k3s
-  # server URL the installer wrote — same tunnel, same peer, one fewer thing to
-  # keep in sync. Empty on the machine that creates the cluster.
-  #
-  # A `throw` rather than a fallback to "": silently treating an unparseable
-  # server_addr as "this is the first node" would make a joining machine
-  # bootstrap its own Ceph cluster instead of joining, which looks healthy on
-  # both nodes and is only discovered when the storage turns out to be split.
   cephSeedAddr =
     if isFirstNode
     then ""
     else let
-      # `]` is deliberately unescaped outside the bracket expression: Nix uses POSIX
-      # ERE, where `\]` is not a valid escape and the whole pattern is rejected at
-      # eval time with "invalid regular expression".
       m = builtins.match "https?://\\[([^]]+)]:[0-9]+" k3sCfg.server_addr;
     in
       if m == null
@@ -70,9 +46,6 @@ in {
     ./ceph/dashboard.nix
   ];
 
-  # ── Module options ────────────────────────────────────────────────────────
-  # Consumed by platform overlays (wsl.nix, darwin/configuration.nix …).
-  # Defaults cover the standard bare-metal / QEMU case.
   options.yolab = {
     platform = lib.mkOption {
       type = lib.types.str;
@@ -96,19 +69,6 @@ in {
   };
 
   config = {
-    # Ceph comes straight from the single nixpkgs pin. A separate `nixpkgs-ceph`
-    # input used to override it to a newer ceph, but it was a second moving pin
-    # that broke on its own (a transitive python test dependency), so it bought
-    # nothing over the main pin and was removed.
-    #
-    # `inline-snapshot` is a *test framework* pulled in as a check dependency of
-    # openai/sqlframe/narwhals, which sit in ceph's python environment. Its own
-    # test suite (1405 tests) fails 3 in the sandbox, so Hydra never caches it
-    # and every node compiles it from source only to fail. Testing the test
-    # framework is the one thing nobody in this closure needs — disable it.
-    #
-    # ceph is pinned to python312 (not the default python3, which is 3.14), so
-    # the override must land on python312 — overriding python3 alone did nothing.
     nixpkgs.overlays = [
       (_: prev: {
         python312 = prev.python312.override {
@@ -121,36 +81,24 @@ in {
       })
     ];
 
-    # Ceph runs as host daemons, outside k3s — the only arrangement in which
-    # containerd's image store can live on an RBD. See homelab/nixos/ceph/.
     yolab.ceph = {
       enable = true;
       fsid = cephCfg.fsid or (throw "[ceph] fsid is required in config.toml");
       monAddr = s.nodeCfg.sub_ipv6_private;
-      # The mesh, not this node's /128 — see yolab.ceph.clusterSubnet.
       clusterSubnet = s.privateSubnet;
-      # "" on the first machine; every other machine joins through this one.
       joinSeedAddr = cephSeedAddr;
       imagesStore.enable = true;
-      # CephFS behind every app PVC, and the credentials ceph-csi needs to
-      # reach it. Rook stays only to run CSI, in external mode.
       filesystem.enable = true;
       csiSecrets.enable = true;
-      # noout across reboots, and a health gate the update path calls before it
-      # restarts Ceph daemons.
       maintenance.enable = true;
     };
 
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
 
-    # ── DNS ───────────────────────────────────────────────────────────────
-    # Point the node itself at IPv6-capable public resolvers.
-    # The same servers are written to /etc/k3s-resolv.conf so that CoreDNS
-    # and kubelet use them as upstreams — essential on an IPv6-only host.
     networking.nameservers = [
-      "2606:4700:4700::1111" # Cloudflare
-      "2001:4860:4860::8888" # Google
+      "2606:4700:4700::1111"
+      "2001:4860:4860::8888"
     ];
 
     environment.etc."k3s-resolv.conf".text = ''
@@ -160,25 +108,11 @@ in {
       nameserver 2001:4860:4860::8888
     '';
 
-    # ── Networking ────────────────────────────────────────────────────────
     networking = {
       hostName = s.hostname;
       enableIPv6 = true;
       firewall.enable = false;
 
-      # ── WireGuard ──────────────────────────────────────────────────────
-      #
-      # Hub-and-spoke. Every node reaches the external WireGuard server over
-      # TWO interfaces with separate keypairs, so tunnel clients (public
-      # access) and mesh nodes (cluster only) can be provisioned independently:
-      #
-      #   wg0 — public address. Caddy binds here; pod egress SNATs to it.
-      #   wg1 — private mesh. K3s, Flannel VXLAN, kubelet, local-api fan-out.
-      #
-      # Three rules, and the split matters: wg1 is a destination route so
-      # cluster traffic exits it regardless of source (VXLAN sockets need
-      # that), while wg0 needs a *source* policy in table 51820 so return
-      # traffic from our public address does not exit asymmetrically.
       wireguard.interfaces.wg0 = {
         ips = ["${s.tunnelCfg.sub_ipv6}/128"];
         privateKey = s.tunnelCfg.wg_private_key;
@@ -214,15 +148,6 @@ in {
         ips = ["${s.nodeCfg.sub_ipv6_private}/128"];
         privateKey = s.nodeCfg.wg_private_key;
 
-        # FIXED, so a peer can dial us. Without it the kernel picks an ephemeral
-        # port that changes on every restart, which is fine for hub-and-spoke
-        # — the node always initiates — and useless the moment another node
-        # needs to initiate TO us. local-api reads the port back off the running
-        # interface rather than duplicating this number.
-        #
-        # No firewall rule needed: firewall.enable is false. Exposure is the
-        # standard WireGuard one anyway — it never replies to a packet it
-        # cannot authenticate.
         listenPort = 51821;
 
         postSetup = ''
@@ -245,7 +170,6 @@ in {
       };
     };
 
-    # ── SSH ───────────────────────────────────────────────────────────────
     services.openssh = {
       enable = true;
       ports = [s.sshPort];
@@ -255,7 +179,6 @@ in {
       };
     };
 
-    # ── Kernel ────────────────────────────────────────────────────────────
     boot.kernelModules = [
       "wireguard"
       "ip6_tables"
@@ -274,44 +197,20 @@ in {
       "net.bridge.bridge-nf-call-ip6tables" = 1;
       "net.ipv4.ip_forward" = 1;
       "net.ipv6.conf.all.forwarding" = 1;
-      # Keep Ceph daemons in RAM — they perform poorly when swapped out.
       "vm.swappiness" = 10;
       "vm.dirty_ratio" = 40;
       "vm.dirty_background_ratio" = 10;
     };
 
-    # ── K3s ───────────────────────────────────────────────────────────────
-    #
-    # Every node is a server (control plane + worker); the cluster is HA once
-    # there are 3+ (embedded etcd quorum).
-    #
-    # Flannel vxlan, not wireguard-native: wg1 already encrypts inter-node
-    # traffic, so wireguard-native would double-encapsulate for no gain.
-    #
-    # --cluster-dns is set explicitly because K3s's auto-inference can silently
-    # pick the wrong address on a custom IPv6-only CIDR. --tls-san is needed or
-    # joining nodes hit a certificate mismatch against the private IP.
-    # --advertise-address must be the private cluster IP for peers to reach it
-    # through the hub relay.
     services.k3s = {
       enable = true;
       role = "server";
       inherit (k3sCfg) token;
       clusterInit = isFirstNode;
-      serverAddr = k3sCfg.server_addr; # "" on the first node — K3s ignores it
+      serverAddr = k3sCfg.server_addr;
 
       extraFlags = [
-        # Traefik is not used — YoLab exposes apps via WireGuard sidecars and
-        # Caddy handles the management UI.  Leaving Traefik enabled causes its
-        # svclb DaemonSet to bind hostPorts 80/443 on every node, which
-        # conflicts with Caddy and causes it to receive SIGTERM.
         "--disable=traefik"
-        # k3s also ships local-path-provisioner and marks its StorageClass as
-        # the cluster default. Nothing here uses it — every app goes to
-        # yolab-cephfs — and Kubernetes REJECTS PVC creation while two default
-        # classes exist, which is what shipping both produced: k3s re-applied
-        # local-path (and its default annotation) on every restart, racing
-        # whatever tried to strip it.
         "--disable=local-storage"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
@@ -324,9 +223,6 @@ in {
       ];
     };
 
-    # Detect the node's outbound IPv4 at boot and write it to K3s's config file
-    # as node-ip alongside the private IPv6, enabling dual-stack pods.
-    # Running before K3s and after WireGuard ensures the IPv6 address is up.
     systemd.services.k3s-node-ip = {
       description = "Write K3s dual-stack node-ip config";
       after = [
@@ -341,14 +237,10 @@ in {
         RemainAfterExit = true;
         ExecStart = "${localApiEnv}/bin/local-api boot node-ip";
       };
-      # The IPv4 detection and the dual-stack-vs-IPv6-only line now live in
-      # homelab/local-api/src/boot/node_ip.rs, with unit tests for both.
       path = [pkgs.iproute2];
       environment.YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
     };
 
-    # K3s must start after both WireGuard interfaces so all addresses are up
-    # before K3s tries to register itself with the cluster.
     systemd.services.k3s = {
       after = [
         "wireguard-wg0.service"
@@ -361,48 +253,11 @@ in {
       ];
       serviceConfig.TimeoutStopSec = "30";
 
-      # FINITE, and that is the entire point.
-      #
-      # mkForce because nixpkgs' own k3s module sets `TimeoutStartSec = 0`, and
-      # in systemd 0 does not mean "instant" — it means DISABLE THE TIMEOUT.
-      # That is where the `TimeoutStartUSec=infinity` on the running unit comes
-      # from, and without mkForce the two definitions simply collide and the
-      # evaluation fails. Overriding upstream is deliberate here, not
-      # incidental: k3s is Type=notify, so an unbounded start means systemd
-      # waits forever for a readiness signal a broken node will never send.
-      #
-      # THE DEADLOCK THAT CAUSED (2026-09-08). node2's containerd data-root
-      # returned EIO after XFS shut down, so k3s could never finish starting.
-      # `switch-to-configuration` waits for the units it starts, so the whole
-      # nixos-rebuild sat on that start job — for over an hour. And the repair
-      # for the dead store shipped IN that rebuild. So: the switch waited on
-      # k3s, k3s waited on the store, and the store waited on the switch that
-      # was blocked. Nothing could break it from inside; the machine had to be
-      # rebooted by hand.
-      #
-      # A bound turns that into a slow failure instead of a permanent one. The
-      # start eventually gives up, the switch completes, the fix lands, and the
-      # yolab-containerd-store timer repairs the mount on its next tick.
-      #
-      # 30 minutes because it must never fire on a healthy node. A cold start
-      # pulls images and lets etcd catch up, and on a two-node cluster a peer
-      # that is still booting legitimately delays quorum; the observed slow
-      # paths in this repo are minutes, not tens of minutes. This is a deadlock
-      # breaker, not a health check — if it ever fires on a working machine it
-      # is too short, not too long.
       serviceConfig.TimeoutStartSec = lib.mkForce "1800";
     };
 
-    # ── Caddy ─────────────────────────────────────────────────────────────
-    # Serves the management UI over HTTPS on the node's public tunnel address.
-    # Caddy is the only service that needs the public sub_ipv6.
-    # Everything else — app installs, kubectl, inter-node API calls — travels
-    # over private WireGuard addresses inside the cluster subnet.
     services.caddy = {
       enable = true;
-      # With the DNS provider that gets certificates for the names every machine
-      # shares: an HTTP challenge for them reaches whichever machine it reaches,
-      # so they use DNS-01, through the platform's acme-dns endpoint.
       package = pkgs.caddy.withPlugins {
         plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
         hash = "sha256-iKExEW87Jd6DXrNBxqvkWkKjkh3KwpNZsBIf1HmSGE4=";
@@ -491,8 +346,6 @@ in {
     systemd.services.caddy = {
       after = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
       wants = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
-      # Optional (`-`): without it only the shared names lack a certificate, and
-      # this machine's own address keeps working.
       serviceConfig.EnvironmentFile = "-/var/lib/yolab/caddy/acme.env";
     };
 
@@ -509,23 +362,13 @@ in {
       };
     };
 
-    # ── Phone notifications (ntfy) ────────────────────────────────────────
-    # On the machine, not in Kubernetes: the notifications that matter most are
-    # about Kubernetes or Ceph not working. Served by the Caddy above as
-    # notify.<user>, a name every machine shares; every notification is delivered
-    # to every machine, so the phone subscribes once. See
-    # homelab/local-api/src/notify/.
     services.ntfy-sh = {
       enable = true;
       settings = {
         base-url = "https://notify.${userDomain}";
         listen-http = "[::1]:2586";
         behind-proxy = true;
-        # Every topic denied, except the cluster's topic (derived from its k3s
-        # token), opened in the environment file `yolab-ntfy-credentials` writes.
         auth-default-access = "deny-all";
-        # iOS gets instant notifications only through ntfy.sh's push relay, which
-        # receives a hash of the topic, never the messages.
         upstream-base-url = "https://ntfy.sh";
       };
       environmentFile = "/var/lib/yolab/ntfy/ntfy.env";
@@ -545,31 +388,13 @@ in {
       };
     };
 
-    # ── System-disk OSD ───────────────────────────────────────────────────────
-    # The system OSD is now a dedicated LVM logical volume (/dev/pool/ceph),
-    # created by disko at install time and activated automatically by LVM on
-    # every boot — so there is no loop-file service to attach or self-heal, and
-    # no ENOSPC coupling between the OSD and the OS root filesystem. Rook consumes
-    # /dev/mapper/pool-ceph directly (see disks_reconciler). Additional whole
-    # disks are consumed as raw devices, discovered by the reconciler.
 
-    # ── Local API ──────────────────────────────────────────────────────────
-    # Runs on every node.  The node the user opens in their browser queries
-    # its own local-api, which fans out disk / storage / node requests to
-    # sibling nodes via their private IPv6 addresses (discovered from kubectl).
     systemd.services.yolab-local-api = {
-      # NOT After=k3s. k3s now waits at boot until this node's image store is on
-      # its RBD, and while it waits this process is the only way to see why
-      # (/api/system/controllers, the Storage page). Its controllers wait for the
-      # Kubernetes API themselves (runtime `requires`).
       after = ["network.target"];
       wants = ["k3s.service"];
       wantedBy = ["multi-user.target"];
       environment =
         {
-          # The storage controllers run what the boot oneshots ran, so they get the
-          # same tools those units name in their own `path` — explicitly, rather
-          # than trusting each one to also be in the system profile.
           PATH = lib.mkForce (
             lib.optionalString config.yolab.ceph.enable "${
               lib.makeBinPath (
@@ -597,14 +422,8 @@ in {
           SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
         }
         // lib.optionalAttrs config.yolab.ceph.enable {
-          # The storage jobs that used to be systemd timers now run as controllers
-          # inside this process (homelab/local-api/src/storage/controllers.rs), so
-          # it needs the same settings the boot oneshots get — see `StorageEnv` in
-          # homelab/local-api/src/storage/mod.rs. Without these the daemon sees
-          # empty addresses, `is_configured()` is false, and none of them start.
           YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
           YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
-          # "" on the machine that created the cluster.
           YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
           YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
           YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
@@ -627,14 +446,6 @@ in {
       };
     };
 
-    # ── FORCE HEAL: the wipe at boot ──────────────────────────────────────
-    # A heal rebuilds the boot entry of every machine it keeps for the new
-    # cluster and sets `[node] wipe_condition = true` in its config.toml; the
-    # boot that follows erases the machine's OSDs, Ceph state and k3s state
-    # before anything that would use them starts, clears the flag, and the
-    # ordinary create-or-join path takes over. The flag is read here, at boot —
-    # never at eval time — so every boot runs this unit and it does nothing
-    # without it. See homelab/local-api/src/storage/reset_wipe.rs and heal/.
     systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (let
       host = config.networking.hostName;
     in {
@@ -654,47 +465,22 @@ in {
         "k3s.service"
         "yolab-local-api.service"
       ];
-      # The same boot must not run the cluster on a half-wiped machine: every
-      # unit above waits for this one, and fails with it.
       requiredBy = [
         "yolab-ceph-bootstrap.service"
         "k3s.service"
       ];
-      # Runs at boot only; a rebuild must never start it.
       restartIfChanged = false;
       path = with pkgs; [ceph lvm2 util-linux coreutils];
       environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # Erasing a disk is quick, but a disk that does not answer must not
-        # hold the boot forever.
         TimeoutStartSec = "1800s";
         ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
       };
     });
 
-    # No storage-class default management here any more.
-    #
-    # There used to be a yolab-storageclass-default unit that stripped the
-    # default annotation off k3s's local-path class. It is gone because
-    # --disable=local-storage above means that class is never created, and
-    # yolab-cephfs (which declares the annotation itself, in
-    # rook/cluster-external.yaml) is the only default.
-    #
-    # Removing it was NOT optional once local-storage was disabled: its
-    # ExecStart began `until kubectl get storageclass local-path; do sleep 5;
-    # done` — an unbounded wait inside a oneshot unit, which would have hung at
-    # every boot waiting for a class that can no longer exist.
 
-    # ── CephFS CSI stale-lock recovery ───────────────────────────────────────
-    # After a node reboot the CephFS CSI plugin (csi-cephfsplugin DaemonSet)
-    # retains in-memory operation locks from the previous session.  Any pod that
-    # tries to mount a CephFS volume immediately after reboot gets:
-    #   "an operation with the given Volume ID … already exists"
-    # until those locks expire (~10 minutes) or the pod is restarted.
-    # Restarting the DaemonSet pods on startup clears the lock state immediately
-    # so app pods and VolSync backup jobs can mount volumes without delay.
     systemd.services.yolab-csi-recovery = {
       description = "Restart CephFS CSI plugin to clear stale volume locks";
       after = ["k3s.service"];
@@ -706,12 +492,9 @@ in {
         ExecStart = "${localApiEnv}/bin/local-api boot csi-recovery";
         TimeoutStartSec = "300";
       };
-      # The wait-for-DaemonSet loop and the this-node-only pod delete now live
-      # in homelab/local-api/src/boot/csi_recovery.rs.
       path = [pkgs.k3s];
     };
 
-    # ── Users ─────────────────────────────────────────────────────────────
     users.users.root.openssh.authorizedKeys.keys =
       lib.optional (s.rootSshKey != "") s.rootSshKey
       ++ [
@@ -727,9 +510,6 @@ in {
 
     services.logind.settings.Login.HandleLidSwitchExternalPower = "ignore";
 
-    # ── Boot banner ───────────────────────────────────────────────────────────────
-    # Generates /run/issue with a QR code and management URL before tty1 shows
-    # the login prompt.  agetty is configured to display that file.
     systemd.services.yolab-banner = {
       description = "Generate boot banner with management URL QR code";
       before = ["getty@tty1.service"];
@@ -740,8 +520,6 @@ in {
         RemainAfterExit = true;
         ExecStart = "${localApiEnv}/bin/local-api boot banner";
       };
-      # The config.toml parsing (a real TOML parse now, not a regex) and the
-      # banner text now live in homelab/local-api/src/boot/banner.rs.
       path = [pkgs.qrencode];
       environment.YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
     };
@@ -759,8 +537,8 @@ in {
         just
         wireguard-tools
         kubectl
-        gptfdisk # sgdisk — wipes disks before Rook claims them
-        unzip # local-api unpacks a chart uploaded as a .zip; tar covers .tgz
+        gptfdisk
+        unzip
         dysk
         dust
         ctop
@@ -771,63 +549,27 @@ in {
         fuse3
         qrencode
         restic
-        kubernetes-helm # apps are Helm charts; local-api shells out to `helm`
+        kubernetes-helm
       ];
 
-    # ── Ceph ──────────────────────────────────────────────────────────────────
 
-    # The ceph group is no longer declared here. It used to be pinned to gid 167
-    # to match the uid/gid *inside* Rook's OSD containers, so udev could grant
-    # those pods access by name. Ceph now runs as host daemons, so
-    # services.ceph owns the user and group (gid 288) and declaring it here as
-    # well is a conflicting definition that fails evaluation outright.
 
-    # Any whole-disk block device (not a partition, loop, or dm volume) that
-    # appears or changes gets group ownership set to "ceph" with mode 0660.
-    # This fires on every connect/reconnect, so hot-plugged USB drives and
-    # newly provisioned disks are readable by the host's ceph-osd daemons
-    # without declaring them individually.
     services.udev.extraRules = ''
       SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL!="loop*", KERNEL!="dm-*", GROUP="ceph", MODE="0660"
     '';
 
-    # K3s watches /var/lib/rancher/k3s/server/manifests/ and auto-applies
-    # any YAML placed there.  Symlinks into the Nix store so updates
-    # propagate on nixos-rebuild without manual kubectl apply.
     systemd.tmpfiles.rules = [
-      # This machine's config.toml holds its tunnel keys and account token: root
-      # only.
       "d ${config.yolab.machineDir} 0700 root root -"
-      # Kubelet's drop-in config directory. k3s writes its own
-      # 00-k3s-defaults.conf here fresh on every start; this coexists with it
-      # (higher sort order = applied on top) rather than fighting it — the
-      # directory must exist before k3s's first write, hence the `d` rule.
       "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0700 root root -"
       "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-yolab-image-gc.conf     - - - - ${./k3s/kubelet-image-gc.yaml}"
-      # Rook's operator still runs — it owns ceph-csi, which is what backs PVCs —
-      # but it no longer runs the Ceph cluster itself. The CephCluster/
-      # CephFilesystem manifests are deliberately NOT applied here: Ceph is a
-      # host daemon now (homelab/nixos/ceph/), because a mon that is a pod makes
-      # an RBD-backed containerd store impossible. See that module's header.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
-      # External-mode CephCluster + the yolab-cephfs StorageClass. Replaces the
-      # old cluster.yaml, which declared mons/mgrs/OSDs that Rook no longer runs.
       "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-external.yaml              - - - - ${./rook/cluster-external.yaml}"
-      # external-snapshotter: CRDs + RBAC must be applied before the controller.
-      # K3s applies manifests in lexicographic order so the prefix ensures ordering.
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-2-controller.yaml               - - - - ${./external-snapshotter/controller.yaml}"
-      # VolSync operator for PV backup/restore via restic.
       "L+ /var/lib/rancher/k3s/server/manifests/volsync.yaml                         - - - - ${./volsync/helmchart.yaml}"
-      # VolumeSnapshotClass for Rook CephFS CSI — used by VolSync ReplicationSources.
-      # Applied after VolSync so the CRD (from external-snapshotter) exists first.
       "L+ /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml           - - - - ${./volsync/snapshotclass.yaml}"
     ];
 
-    # The revision this system was built from, for the System page. Taken from
-    # the flake itself (see `yolabRev`), not from a checkout: a node builds from
-    # a flake URL and keeps no git tree. There is no commit message in a flake,
-    # so that file is written empty and the UI shows a dash.
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
       printf '%s' ${lib.escapeShellArg yolabRev} > /var/lib/yolab/built-hash
@@ -846,20 +588,6 @@ in {
     nix.settings.max-jobs = 1;
     nix.settings.cores = 2;
 
-    # Attic cache (Cloudflare R2-backed) — CI pushes local-api/client-ui/the ISO
-    # here after every build on main (see .github/workflows/push.yml), so a
-    # node's rebuild substitutes them instead of recompiling. Listed after
-    # cache.nixos.org: this only ever has yolab's own packages, never the
-    # base nixpkgs closure, so trying it first would just be a guaranteed
-    # miss on every ordinary package.
-    #
-    # Deliberately public (unlike yolab-external's own cache, which stays
-    # private — that repo is the hosted platform, this one is the homelab
-    # distribution itself): every real node substituting from here is a
-    # customer's own machine, and there is no way to hand every one of them
-    # the same shared secret without it stopping being a secret. A public
-    # cache can still only be PUSHED to by whoever holds the push-scoped
-    # token — nothing about read access here weakens that.
     nix.settings.substituters = [
       "https://cache.nixos.org"
       "https://cache.yolab.io/yolab"
@@ -873,18 +601,6 @@ in {
 
     services.swapspace = {
       enable = true;
-      # settings = {
-      #   # Per-file cap. The module default is "2t", which on a laptop is not a limit.
-      #   max_swapsize = "4g";
-      #   # swapspace stops when the disk fills and then backs off for `cooldown` seconds,
-      #   # but total swap is otherwise bounded only by free space — and this LV also holds
-      #   # /nix. A full root here does not just mean swap thrashing, it means
-      #   # nixos-rebuild can no longer write, i.e. the node loses the ability to update or
-      #   # roll back. Keeping a larger free margin than the default (20/60/30) is cheap
-      #   # insurance against the one failure this product cannot recover from remotely.
-      #   lower_freelimit = 15;
-      #   freetarget = 25;
-      # };
     };
   };
 }

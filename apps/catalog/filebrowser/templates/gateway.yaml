@@ -5,9 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: 1
-  {{- /* Recreate, not RollingUpdate: the gateway mounts the app's ReadWriteMany PVC
-       and holds the WireGuard interface. A rolling update briefly runs two pods
-       registering the same tunnel subdomain, which is how this crash-looped. */}}
+  
   strategy:
     type: Recreate
   selector:

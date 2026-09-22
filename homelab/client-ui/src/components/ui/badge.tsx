@@ -12,9 +12,7 @@ const badgeVariants = cva(
         success: "bg-success-soft text-success border border-success/20",
         warning: "bg-warning-soft text-warning border border-warning/20",
         danger: "bg-danger-soft text-danger border border-danger/20",
-        /** Border only — for labels that should recede, like a version number. */
         outline: "border border-border text-fg-muted",
-        /** Filled, no border — for counts and inert metadata. */
         muted: "bg-surface-2 text-fg-muted",
       },
     },
@@ -31,14 +29,6 @@ export function Badge({ className, variant, ...props }: BadgeProps) {
   );
 }
 
-/**
- * A coloured dot.
- *
- * Deliberately has no "everything is fine" state that renders visibly — the
- * caller passes `tone="ok"` and gets nothing. Permanent green ticks train
- * people to scan for status they cannot interpret; silence is the success
- * case, and a dot appearing means something actually wants them.
- */
 export function StatusDot({
   tone,
   pulse,

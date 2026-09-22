@@ -5,7 +5,6 @@ export interface AppLink {
   url: string;
 }
 
-/** chart id → how many copies of it are installed. */
 export function installedByChart(
   apps: AppInfo[] | undefined,
 ): Map<string, number> {
@@ -16,18 +15,6 @@ export function installedByChart(
   return counts;
 }
 
-/**
- * Every web address an app exposes, not just the first.
- *
- * An app is not one link. A chart can scrape several `url` outputs — an admin
- * panel beside the app itself, a second front end, an API endpoint — and once
- * bundles of apps land, one install will routinely publish half a dozen. So
- * this returns a list and the caller renders all of them.
- *
- * The reconstructed `subdomain.domain` address is appended only when nothing
- * already covers it, so it acts as the answer before the first output scan has
- * run rather than as a duplicate afterwards.
- */
 export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
   const links: AppLink[] = [];
   const seen = new Set<string>();
@@ -41,8 +28,6 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
   const subdomain = app.config?.subdomain;
   if (typeof subdomain === "string" && subdomain && tunnelDomain) {
     const derived = `https://${subdomain}.${tunnelDomain}`;
-    // Charts write the URL with and without a trailing slash; compare loosely
-    // so we do not offer the same address twice under two labels.
     const already = [...seen].some(
       (u) => u.replace(/\/$/, "") === derived.replace(/\/$/, ""),
     );
@@ -55,27 +40,9 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
 export interface AppFactRow {
   key: string;
   label: string;
-  /** null while the value has not been scraped out of the app's logs yet. */
   value: string | null;
 }
 
-/**
- * Every fact this app is *expected* to publish, found or not.
- *
- * The chart declares its outputs up front (`outputs_spec`), but values only
- * appear once they have been scraped from the app's logs — which can be a while
- * after install, and never at all if the app failed to start. Rendering only
- * what was found left the page saying "no details yet" with no clue whether it
- * was waiting on a password, a server address, or nothing worth waiting for.
- *
- * So the spec drives the rows and the scraped values fill them in. Someone who
- * installs qBittorrent sees "Temporary password" the moment the page loads and
- * knows to wait for it, instead of wondering how they are supposed to log in.
- *
- * Anything scraped but not declared is appended rather than dropped: an older
- * install may hold values from a chart version whose spec has since changed,
- * and silently hiding a password someone still needs is worse than an extra row.
- */
 export function appFactRows(app: AppInfo): AppFactRow[] {
   const found = new Map(
     (app.outputs ?? [])
@@ -105,19 +72,6 @@ export function appFactRows(app: AppInfo): AppFactRow[] {
   return rows;
 }
 
-/**
- * A free name for another copy of the same app.
- *
- * Installing an app twice is a normal thing to want — a family photo library
- * and a private one, a work Vaultwarden and a personal one, a test blog beside
- * the real one. The backend has always supported it: each install gets its own
- * namespace (`yolab-<instance>`) and the chart id is kept in an annotation, so
- * `nextcloud` and `nextcloud-2` are two independent apps. Only the UI assumed
- * one install per chart.
- *
- * The name doubles as the namespace and the default subdomain, so it has to be
- * a valid DNS label and it has to be unused.
- */
 export function nextInstanceName(appId: string, installed: AppInfo[]): string {
   const taken = new Set(installed.map((a) => a.instance_name));
   if (!taken.has(appId)) return appId;
@@ -136,24 +90,10 @@ export function appState(app: AppInfo): AppState {
   return "ready";
 }
 
-/**
- * What the tile says under the name, preferring the backend's explanation.
- *
- * `appStateLabel` can only ever say "Starting up…", because the state is all the
- * UI has. That one sentence covers a 2GB download, an init container waiting on
- * a storage driver, and a process that has crashed 335 times — and it is useless
- * in all three. Only the pod status distinguishes them, and only the backend
- * sees it, so `detail` comes over the wire already written (see
- * routers/apps.rs `explain_app_state`).
- *
- * Falls back to the generic label when `detail` is empty, which also keeps this
- * working against an older backend that does not send the field.
- */
 export function appLabel(app: AppInfo, state: AppState): string {
   return app.detail?.trim() || appStateLabel(state);
 }
 
-/** What the tile says under the name. Empty for the healthy case. */
 export function appStateLabel(state: AppState): string {
   switch (state) {
     case "starting":
@@ -165,7 +105,6 @@ export function appStateLabel(state: AppState): string {
   }
 }
 
-/** Match an installed instance back to its catalog entry, for icons and copy. */
 export function catalogEntry(
   app: AppInfo,
   catalog: CatalogApp[],
@@ -173,23 +112,13 @@ export function catalogEntry(
   return catalog.find((c) => c.id === app.app_id);
 }
 
-/**
- * A display name for an installed instance.
- *
- * `instance_name` is what Helm calls the release, which for a second copy of an
- * app is something like "immich-2". Prefer the catalog's display name and only
- * fall back to the release name when the chart is gone from the catalog.
- */
 export function appDisplayName(app: AppInfo, catalog: CatalogApp[]): string {
   const entry = catalogEntry(app, catalog);
   const stem = instanceStem(app);
   if (!entry) return stem;
-  // A renamed instance is meaningful information — show it rather than
-  // pretending every copy is "Immich".
   return stem === app.app_id ? entry.name : stem;
 }
 
-/** The instance name without the random id the backend appends to every install. */
 export function instanceStem(app: AppInfo): string {
   const id = app.instance_id;
   return id && app.instance_name.endsWith(`-${id}`)

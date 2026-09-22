@@ -1,25 +1,3 @@
-//! One machine's part of a FORCE HEAL: becoming a fresh member of the new
-//! cluster at its next boot.
-//!
-//! What makes a machine create a cluster or join one, and which Ceph cluster it
-//! belongs to, is read from its config.toml when its system is BUILT
-//! (`[node.k3s] server_addr`, `[ceph] fsid`; see homelab/nixos/common.nix). So a
-//! machine is reset by rewriting those, rebuilding its boot entry, and restarting
-//! with the wipe asked for.
-//!
-//!   prepare  Keeps a copy of config.toml, writes the new cluster's settings into
-//!            it and runs `nixos-rebuild boot`. Slow, and the step that fails (a
-//!            broken repo, a full disk) — but nothing wipes anything yet, and a
-//!            failure puts config.toml straight back.
-//!   arm      Sets `[node] wipe_condition = true`. Only once every machine is
-//!            prepared, and a file write: the flag is read at boot
-//!            (`storage::reset_wipe`), never built into the system.
-//!   undo     Until the machine restarts: the previous config.toml back — which
-//!            disarms it at once — and `nixos-rebuild boot` again, so the boot
-//!            entry matches it.
-//!
-//! The driver (`heal`) asks every machine it keeps, itself included, over the
-//! same HTTP endpoints, so every machine does exactly the same thing.
 
 use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
@@ -33,19 +11,12 @@ use crate::config::write_private_file;
 use crate::host::Host;
 use crate::storage::reset_wipe;
 
-/// A rebuild runs from the repo as it is; one that has to compile large parts of
-/// the system can take a long time on a laptop.
 const REBUILD_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
-/// Where this machine keeps its part of a heal.
 #[derive(Clone, Debug)]
 pub(crate) struct Layout {
-    /// `/`, or a temporary directory in tests.
     pub root: PathBuf,
-    /// This machine's own files: the `yolab-machine` flake input.
     pub machine_dir: PathBuf,
-    /// The flake this machine builds from — a URL (see `Config::flake_ref`),
-    /// not a checkout. A heal rebuilds from the same revision an update would.
     pub flake: String,
     pub flake_target: String,
 }
@@ -63,37 +34,26 @@ impl Layout {
     fn state(&self) -> PathBuf {
         self.root.join("var/lib/yolab/reset/state.json")
     }
-    /// config.toml as it was before the heal changed it. Outside `machine_dir`,
-    /// whose whole content is copied into the Nix store by every rebuild; removed
-    /// by the wipe, when that cluster is gone for good.
     fn config_before(&self) -> PathBuf {
         self.root.join("var/lib/yolab/reset/config.toml.before")
     }
-    /// Which system generation the boot entry was before the heal rebuilt it.
     fn system_before(&self) -> PathBuf {
         self.root.join("var/lib/yolab/reset/system.before")
     }
     fn config(&self) -> PathBuf {
         self.machine_dir.join("config.toml")
     }
-    /// Its newest generation is the default boot entry.
     fn system_profile(&self) -> PathBuf {
         self.root.join("nix/var/nix/profiles/system")
     }
 }
 
-// ── State ─────────────────────────────────────────────────────────────────────
 
-/// What the driver asks a machine to become.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PrepareRequest {
     pub heal_id: String,
-    /// The machine driving the heal.
     pub driver: String,
-    /// The new cluster's Ceph fsid.
     pub fsid: String,
-    /// `""` for the machine that creates the new cluster, the creator's k3s URL
-    /// (`https://[<addr>]:6443`) for every other.
     pub server_addr: String,
 }
 
@@ -118,8 +78,6 @@ impl PrepareRequest {
     }
 }
 
-/// The address inside `https://[<ipv6>]:6443` — the only shape
-/// homelab/nixos/common.nix can read a Ceph seed address out of.
 fn join_addr(server_addr: &str) -> Option<Ipv6Addr> {
     server_addr
         .strip_prefix("https://[")?
@@ -145,8 +103,6 @@ enum Phase {
     Failed {
         error: String,
     },
-    /// The next boot wipes the machine. `boot_id` is the boot it was armed in: a
-    /// different one means it restarted.
     Armed {
         boot_id: String,
     },
@@ -161,23 +117,18 @@ struct Reset {
     phase: Phase,
 }
 
-/// A machine's part in a heal, as the driver and the page see it.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PhaseView {
     Preparing,
     Prepared,
     Failed,
-    /// Restarts into the new cluster.
     Armed,
-    /// Restarted since it was armed: the machine is part of the new cluster.
     Restarted,
     Undone,
 }
 
 impl PhaseView {
-    /// Whether the machine is taken by this heal: a new one must not start
-    /// under it.
     pub fn active(self) -> bool {
         matches!(
             self,
@@ -199,7 +150,6 @@ fn view(reset: &Reset, boot_id: &str, preparing: Option<&str>) -> ResetView {
         Phase::Preparing if preparing == Some(reset.request.heal_id.as_str()) => {
             (PhaseView::Preparing, None)
         }
-        // The process that ran it is gone (local-api restarted).
         Phase::Preparing => (
             PhaseView::Failed,
             Some("preparing was interrupted".to_string()),
@@ -237,8 +187,6 @@ fn save(layout: &Layout, request: &PrepareRequest, phase: Phase) -> Result<()> {
     write_private_file(&layout.state(), &serde_json::to_vec_pretty(&reset)?)
 }
 
-/// Which heal is being prepared in this process right now. A `Preparing` state
-/// with nothing running here was interrupted.
 #[derive(Clone, Default)]
 pub(crate) struct Preparing(Arc<Mutex<Option<String>>>);
 
@@ -255,8 +203,6 @@ impl Preparing {
     }
 }
 
-/// Every change to a machine's part in a heal happens under this lock, so an arm
-/// and an undo, or a finishing prepare and an undo, never interleave.
 pub(crate) fn lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -270,23 +216,13 @@ pub(crate) fn current(
     Ok(load(layout)?.map(|r| view(&r, boot_id, preparing.running().as_deref())))
 }
 
-// ── Prepare ───────────────────────────────────────────────────────────────────
 
-/// What `begin_prepare` decided.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Begin {
-    /// This heal is already being prepared here, or is past it.
     Already(ResetView),
-    /// The state says `Preparing`: run `prepare` now.
     Start,
 }
 
-/// Records that preparing for `request` starts, unless it already has.
-///
-/// A machine still taken by ANOTHER heal is put back first. The driver only asks
-/// when that heal's own driver no longer answers (see `Survey::refusal`), and a
-/// machine left armed for a heal nobody drives would wipe itself into a cluster
-/// that never forms at its next restart.
 pub(crate) async fn begin_prepare<H: Host>(
     host: &H,
     layout: &Layout,
@@ -313,7 +249,6 @@ pub(crate) async fn begin_prepare<H: Host>(
             if v.phase != PhaseView::Failed {
                 return Ok(Begin::Already(v));
             }
-            // Failed: the driver abandons the heal on it. Asked again, try again.
         } else if matches!(
             v.phase,
             PhaseView::Prepared | PhaseView::Armed | PhaseView::Failed
@@ -332,7 +267,6 @@ pub(crate) async fn begin_prepare<H: Host>(
     Ok(Begin::Start)
 }
 
-/// Prepares the machine and records the outcome.
 pub(crate) async fn prepare<H: Host>(
     host: &H,
     layout: &Layout,
@@ -364,8 +298,6 @@ async fn rewrite_and_rebuild<H: Host>(
     layout: &Layout,
     request: &PrepareRequest,
 ) -> Result<()> {
-    // The copy is made once, from config.toml as it was before any heal touched
-    // it: preparing again rewrites from it, never from its own output.
     if !layout.config_before().exists() {
         let current = std::fs::read(layout.config())
             .with_context(|| format!("read {}", layout.config().display()))?;
@@ -383,9 +315,6 @@ async fn rewrite_and_rebuild<H: Host>(
     let new = rewrite_config(&before, &request.server_addr, &request.fsid)?;
     write_private_file(&layout.config(), new.as_bytes())?;
     if let Err(e) = rebuild(host, layout).await {
-        // Not undone here: whether the boot entry changed is unknown. But
-        // config.toml goes back now, so nothing — an update, the undo — builds
-        // from half a heal.
         if let Err(restore) = write_private_file(&layout.config(), before.as_bytes()) {
             tracing::error!("heal: put config.toml back: {restore:#}");
         }
@@ -394,8 +323,6 @@ async fn rewrite_and_rebuild<H: Host>(
     Ok(())
 }
 
-/// `config` with the new cluster's settings and no wipe asked for, everything
-/// else as it was.
 pub(crate) fn rewrite_config(config: &str, server_addr: &str, fsid: &str) -> Result<String> {
     let mut table: toml::Table = toml::from_str(config).context("config.toml is not TOML")?;
     let k3s = table
@@ -415,11 +342,7 @@ pub(crate) fn rewrite_config(config: &str, server_addr: &str, fsid: &str) -> Res
     reset_wipe::with_wipe_condition(&text, false)
 }
 
-/// The same rebuild an update runs, with `boot`: the running system is left
-/// alone, the next boot starts the new one.
 async fn rebuild<H: Host>(host: &H, layout: &Layout) -> Result<()> {
-    // An interrupted rebuild leaves its transient unit behind, and systemd
-    // refuses to start it again (see routers/update.rs).
     host.systemctl(&[
         "reset-failed",
         "nixos-rebuild-switch-to-configuration.service",
@@ -455,16 +378,11 @@ fn tail(text: &str, lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
-/// Whether a heal has changed this machine's config.toml: from preparing until
-/// the heal is undone or the machine has wiped itself. Nothing may build from
-/// config.toml meanwhile but the heal.
 pub(crate) fn holds_config(layout: &Layout) -> bool {
     layout.config_before().exists()
 }
 
-// ── Arm and undo ──────────────────────────────────────────────────────────────
 
-/// Asks the next boot to wipe this machine.
 pub(crate) fn arm(layout: &Layout, heal_id: &str, boot_id: &str) -> Result<()> {
     let Some(reset) = load(layout)?.filter(|r| r.request.heal_id == heal_id) else {
         bail!("this machine was not prepared for heal {heal_id}");
@@ -489,10 +407,6 @@ pub(crate) fn arm(layout: &Layout, heal_id: &str, boot_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Undoes this heal on this machine, if it has not restarted yet.
-///
-/// `may_rebuild`: whether this caller holds off updates, which putting the
-/// previous boot entry back needs.
 pub(crate) async fn undo<H: Host>(
     host: &H,
     layout: &Layout,
@@ -521,16 +435,9 @@ pub(crate) async fn undo<H: Host>(
     Ok(())
 }
 
-/// config.toml as it was before the heal — which also clears the wipe flag —
-/// then, if the heal changed the boot entry, one built from it again.
-///
-/// Rebuilt only when needed: a prepare that failed usually failed before the
-/// boot entry changed, and for the same reason (a broken repo, a full disk) a
-/// rebuild now would fail too, and the undo with it, forever.
 async fn put_back<H: Host>(host: &H, layout: &Layout) -> Result<()> {
     let before = match std::fs::read(layout.config_before()) {
         Ok(b) => b,
-        // Nothing was ever changed.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).context("read the copy of config.toml"),
     };
@@ -550,8 +457,6 @@ async fn put_back<H: Host>(host: &H, layout: &Layout) -> Result<()> {
     Ok(())
 }
 
-/// Whether the system profile still points at the generation it did before the
-/// heal. Not knowing is no.
 fn boot_entry_unchanged(layout: &Layout) -> bool {
     match (
         std::fs::read_to_string(layout.system_before()),
@@ -757,7 +662,6 @@ mod tests {
                 .is_err(),
             "one heal at a time"
         );
-        // local-api restarted: nothing runs any more.
         let v = current(&m.layout, "boot1", &Preparing::default())
             .unwrap()
             .unwrap();
@@ -778,7 +682,6 @@ mod tests {
         begin_prepare(&host, &m.layout, &other, "boot1", &preparing)
             .await
             .unwrap();
-        // The first heal was put back before the second started.
         assert_eq!(config(&m), ORIGINAL);
         assert!(!m.layout.config_before().exists());
         prepare(&host, &m.layout, &other, &preparing).await;
@@ -846,7 +749,6 @@ mod tests {
             .count();
         assert_eq!(after, rebuilds + 1);
         assert_eq!(phase(&m, "boot1"), PhaseView::Undone);
-        // Again, and for a heal this machine never heard of: nothing to do.
         undo(
             &host,
             &m.layout,
@@ -882,7 +784,6 @@ mod tests {
                 .count()
         };
 
-        // The repo is broken: preparing fails, and so would any rebuild.
         let broken = FakeHost::new().ok("systemctl reset-failed", "").fail(
             "nixos-rebuild boot",
             "error: flake has no attribute 'yolab'",
@@ -903,7 +804,6 @@ mod tests {
         assert_eq!(config(&m), ORIGINAL);
         assert!(!holds_config(&m.layout));
 
-        // A prepare that moved the boot entry on: the undo rebuilds it.
         let host = host();
         prepared(&m, &host, "cd34").await;
         std::fs::remove_file(profiles.join("system")).unwrap();

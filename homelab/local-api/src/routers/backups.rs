@@ -7,7 +7,6 @@ use crate::routers::backup_common::*;
 use crate::routers::{backup, restore};
 use crate::{config::Config, error::Result, AppState};
 
-// ── S3 / SFTP pass-through endpoints ─────────────────────────────────────────
 
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
     let tunnel = cfg.tunnel_table()?;
@@ -52,9 +51,7 @@ pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Va
     Ok(Json(serde_json::json!({ "provisioned": true, "s3": body })))
 }
 
-/// POST /api/backups/s3/enable — idempotent: provisions B2, configures VolSync per PVC.
 pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    // `?` on the check itself: not knowing whether a restore runs is not "no".
     if restore::running_anywhere().await? {
         return Err(
             anyhow::anyhow!("A restore is in progress — try again once it finishes.").into(),
@@ -101,7 +98,6 @@ pub async fn get_recovery_key(State(_state): State<AppState>) -> Result<Json<ser
     })))
 }
 
-/// GET /api/backups/state — the frontend's single source of truth for what is running.
 pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let restores = restore::list().await?;
     let sets = backup::list().await?;
@@ -123,24 +119,18 @@ pub async fn operation_state(State(_state): State<AppState>) -> Result<Json<serd
     })))
 }
 
-/// GET /api/backups/runs — every recorded backup set, newest first, in three states
-/// (`running`, `restorable`, `crashed`).
 pub async fn list_runs(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(serde_json::Value::Array(backup::list().await?)))
 }
 
-// ── Per-app restore (thin HTTP layer over restore.rs) ─────────────────────────
 
 #[derive(Deserialize)]
 pub struct RestoreRequest {
-    /// The app's namespace, e.g. "yolab-gitea".
     pub namespace: String,
-    /// A specific restic `cluster-backup` snapshot id, or omit to restore latest.
     #[serde(default)]
     pub snapshot_id: Option<String>,
 }
 
-/// POST /api/backups/restore — restores one app's data and config from a backup.
 pub async fn restore_app(
     State(_state): State<AppState>,
     Json(body): Json<RestoreRequest>,
@@ -151,15 +141,11 @@ pub async fn restore_app(
     ))
 }
 
-/// GET /api/backups/restores — every recorded app restore, newest first.
 pub async fn list_restores(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(serde_json::Value::Array(restore::list().await?)))
 }
 
-// ── Backed-up apps ─────────────────────────────────────────────────────────────
 
-/// Every app in any backup: whether it is installed, and each point in time it
-/// can come back from, newest first.
 fn backed_up_apps_json(
     versions: &restore::BackupVersions,
     installed: &HashSet<String>,
@@ -179,7 +165,6 @@ fn backed_up_apps_json(
     serde_json::json!({ "configured": versions.configured, "apps": apps })
 }
 
-/// GET /api/backups/apps
 pub async fn list_backed_up_apps(
     State(_state): State<AppState>,
 ) -> Result<Json<serde_json::Value>> {
@@ -188,29 +173,7 @@ pub async fn list_backed_up_apps(
     Ok(Json(backed_up_apps_json(&versions, &installed)))
 }
 
-// ── Cluster backup ─────────────────────────────────────────────────────────────
 
-/// Cluster snapshot ids that actually contain `namespace`.
-///
-/// A RESTORE IS ONLY MEANINGFUL FOR A POINT IN TIME THE APP EXISTED AT.
-///
-/// `restore_inner` drives an app restore off a CLUSTER snapshot: it extracts
-/// that snapshot's `<namespace>.yaml` to rebuild the app's objects, then rolls
-/// each PVC back to the snapshot's timestamp. A snapshot taken before the app
-/// was installed has no such file, so restoring from it fails — and offering it
-/// is worse than useless, because the person picking it has been told it is a
-/// point they can go back to.
-///
-/// The restore dialog listed every cluster backup regardless, including ones
-/// from before the app existed.
-///
-/// One `restic find` across the whole repository rather than a per-snapshot
-/// probe: the alternative is one process per snapshot, and this runs while
-/// somebody waits for a dialog to open.
-///
-/// `None` means the question could not be answered — the caller then shows
-/// everything rather than pretending an app has no restore points, since a
-/// wrong "no backups exist" reads as data loss.
 async fn snapshots_containing(cfg: &BackupConfig, namespace: &str) -> Option<HashSet<String>> {
     let repo = cfg.restic_repo("cluster-backup");
     let pattern = format!("{namespace}.yaml");
@@ -237,8 +200,6 @@ async fn snapshots_containing(cfg: &BackupConfig, namespace: &str) -> Option<Has
             .as_array()?
             .iter()
             .filter(|e| {
-                // An entry with no matches is reported for some restic versions;
-                // treat only a real hit as the app being present.
                 e["matches"].as_array().is_some_and(|m| !m.is_empty())
             })
             .filter_map(|e| e["snapshot"].as_str().map(str::to_string))
@@ -246,10 +207,6 @@ async fn snapshots_containing(cfg: &BackupConfig, namespace: &str) -> Option<Has
     )
 }
 
-/// GET /api/backups/snapshots — cluster-backup restic snapshots.
-///
-/// `?namespace=yolab-foo` narrows the list to the points in time that app can
-/// actually be restored to; see `snapshots_containing`.
 #[derive(Deserialize)]
 pub struct SnapshotQuery {
     pub namespace: Option<String>,
@@ -290,8 +247,6 @@ pub async fn list_snapshots(
         serde_json::from_slice(&out.stdout).unwrap_or(serde_json::json!([]));
 
     if let Some(ns) = q.namespace.as_deref().filter(|s| !s.is_empty()) {
-        // Only when the question could be answered. On failure every snapshot is
-        // still offered: a wrong "no backups exist" reads as data loss.
         if let Some(ids) = snapshots_containing(&cfg, ns).await {
             if let Some(arr) = snapshots.as_array() {
                 let kept: Vec<serde_json::Value> = arr
@@ -301,8 +256,6 @@ pub async fn list_snapshots(
                             .as_str()
                             .or_else(|| s["id"].as_str())
                             .is_some_and(|id| {
-                                // restic reports short ids in `find`, full ids in
-                                // `snapshots`; match either way round.
                                 ids.iter()
                                     .any(|f| id.starts_with(f.as_str()) || f.starts_with(id))
                             })
@@ -319,9 +272,6 @@ pub async fn list_snapshots(
     ))
 }
 
-/// POST /api/backups/cluster/run-now — manual trigger. Starts one backup set: every
-/// VolSync ReplicationSource is triggered and the cluster state is snapshotted, both
-/// tagged with the same id.
 pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     if read_master_config().await.is_none() {
         return Err(anyhow::anyhow!("backup not configured").into());
@@ -332,8 +282,6 @@ pub async fn run_backup_now(State(_state): State<AppState>) -> Result<Json<serde
     ))
 }
 
-/// POST /api/backups/apps/:namespace/run-now — back up one app now. Its own PVCs
-/// and its own saved objects; no etcd, which belongs to the cluster-wide run.
 pub async fn run_app_backup_now(Path(namespace): Path<String>) -> Result<Json<serde_json::Value>> {
     if read_master_config().await.is_none() {
         return Err(anyhow::anyhow!("backup not configured").into());
@@ -347,9 +295,6 @@ pub async fn run_app_backup_now(Path(namespace): Path<String>) -> Result<Json<se
     ))
 }
 
-/// GET /api/backups/apps/:namespace/definition?snapshot_id= — the app's
-/// definition as of a backup, credentials redacted, for prefilling the install
-/// form when restoring or duplicating with data.
 #[derive(Deserialize)]
 pub struct DefinitionQuery {
     pub snapshot_id: String,
@@ -367,40 +312,15 @@ pub async fn app_definition_from_backup(
     ))
 }
 
-// ── Per-namespace install-time hook ───────────────────────────────────────────
 
-/// Creates the restic secret and ReplicationSource for a single namespace at install
-/// time. Called by apps.rs immediately after the namespace is created.
 pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     let Some(cfg) = read_master_config().await else {
-        return Ok(()); // backups not enabled — nothing to wire up
+        return Ok(());
     };
     let pvcs = list_user_pvcs().await?;
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         annotate_ns_privileged_movers(&pvc.namespace).await;
-        // `?`: an app installed without its backup wiring would sit "backed up" on
-        // the page with nothing behind it. The install reports the failure instead.
         ensure_restic_secret(&pvc.namespace, &pvc.name, &cfg).await?;
-        // ADOPTING A REPOSITORY IS THE MOMENT TO CLEAR A LOCK NOBODY OWNS.
-        //
-        // A repo is keyed by namespace and PVC name, so REINSTALLING an app lands
-        // on the same one its predecessor used — deliberately, since that keeps
-        // the backup history. It also inherits whatever that predecessor left
-        // behind. A fresh yolab-filebrowser install on 2026-09-11 picked up a
-        // lock held by a mover pod that had died the previous day:
-        //
-        //   repository is already locked by PID 46 on
-        //     volsync-src-volsync-filebrowser-data-jbz7g
-        //   lock was created at 2026-09-10 14:08:42 (25h12m ago)
-        //
-        // Every backup then uploaded its snapshot and failed at `forget`. The
-        // periodic sweeper would clear it, but only on its next half-hourly pass,
-        // and its previous one ran before this app existed — so a newly installed
-        // app reports failing backups for up to thirty minutes for no reason the
-        // owner can see.
-        //
-        // Stale locks only (plain `unlock`, never `--remove-all`), so this cannot
-        // disturb a backup that is genuinely running.
         cfg.unlock(&format!(
             "volsync/{}/{}",
             pvc.namespace,
@@ -412,36 +332,6 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Background loop: clear restic locks nothing is holding any more.
-///
-/// A LOCK OUTLIVES THE PROCESS THAT TOOK IT, AND NOTHING CLEANED UP AFTER ONE.
-///
-/// Every app's PVC has its own restic repository, and a leftover lock on one
-/// blocks that app's retention forever: VolSync's mover still uploads the
-/// snapshot, then fails at `forget`, and the pod retries in a loop. Observed on
-/// 2026-09-11 across babybuddy, code-server and vaultwarden:
-///
-///   === Starting forget ===
-///   unable to create lock in backend: repository is already locked by
-///     PID 530299 on node1 by root
-///   lock was created at 2026-09-11 13:51:50
-///
-/// PID 530299 was long dead and no restic process was running anywhere.
-///
-/// Where those locks came from is the reason `--no-lock` now appears on every
-/// read-only `restic snapshots` call in this crate: `app_damage` (since removed) listed snapshots
-/// for EVERY app repo, the home page polled it every 15s while storage looked
-/// unhealthy, and each of those listings took a lock. Restart local-api
-/// mid-listing — 21 restarts in 30 hours during a day of deploys — and the lock
-/// is orphaned. That fix stops new ones; this clears the ones already out there,
-/// and covers any future interruption of a lock-taking command.
-///
-/// `restic unlock` WITHOUT `--remove-all`, deliberately. Plain `unlock` removes
-/// only locks restic itself judges stale — the creating process is gone, or the
-/// lock has aged out. `--remove-all` would rip out a lock a backup is actively
-/// holding, turning a tidy-up into corruption of the run it interrupted. This
-/// loop must be safe to run at any moment, including mid-backup, because it
-/// does.
 pub struct LockSweeperController;
 
 impl crate::runtime::Controller for LockSweeperController {
@@ -449,7 +339,6 @@ impl crate::runtime::Controller for LockSweeperController {
         "backup-lock-sweeper"
     }
     fn scope(&self) -> crate::runtime::Scope {
-        // One node sweeps: the repositories are shared, not per machine.
         crate::runtime::Scope::Cluster
     }
     fn interval(&self) -> std::time::Duration {
@@ -459,16 +348,12 @@ impl crate::runtime::Controller for LockSweeperController {
         &[crate::runtime::Requirement::KubeApi]
     }
     fn not_before_uptime(&self) -> std::time::Duration {
-        // After the boot rush, and after the scheduler has had its first look.
         std::time::Duration::from_secs(300)
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let Some(cfg) = read_master_config().await else {
             return Ok(crate::runtime::Tick::Idle("backups are not enabled".into()));
         };
-        // The cluster repo plus one per app PVC — the same set
-        // `setup_namespace_backup` wires up, so a new app is covered the moment
-        // it has a ReplicationSource.
         cfg.unlock("cluster-backup").await;
         for pvc in list_user_pvcs().await? {
             let path = format!("volsync/{}/{}", pvc.namespace, canonical_pvc_id(&pvc.name));

@@ -1,22 +1,3 @@
-# Disk-loss VM test: pull a disk out of a one-copy cluster and FORCE HEAL it.
-#
-# One machine, two OSD disks, every pool at one copy — so each placement group
-# lives on exactly one disk and hot-unplugging either loses data for real. The
-# test asserts that nothing happens on its own, and then the two halves of a
-# FORCE HEAL (homelab/local-api/src/heal/) a VM can run:
-#
-#   * a heal whose `nixos-rebuild boot` fails is undone, and leaves the machine
-#     exactly as it was — the VM has no flake repo to rebuild from, which is as
-#     real a failure as any;
-#   * `[node] wipe_condition = true` makes the next boot (storage/reset_wipe.rs)
-#     turn the machine into a fresh one: every OSD erased, no disk switched
-#     on, no apps, the flag cleared, and the cluster created again.
-#
-# The unplug is done from inside the guest by unbinding the disk's virtio PCI
-# device, which removes the block device the way a yanked USB cable does. The
-# CSI driver, VolSync and the app image are not in this test (no internet): the
-# claim stays Pending and the pods never pull, which is enough — what is under
-# test is what happens to Ceph and to the Kubernetes objects.
 {
   pkgs,
   inputs,
@@ -43,7 +24,6 @@
     virtualisation.cores = 4;
     virtualisation.emptyDiskImages = [8192 8192];
 
-    # Same stand-in for the mesh as two-node.nix; see the note there.
     networking.wireguard.interfaces = lib.mkForce {};
     networking.interfaces.eth1.ipv6.addresses = [
       {
@@ -72,8 +52,6 @@
     };
     networking.useDHCP = lib.mkDefault false;
     environment.systemPackages = [pkgs.curl pkgs.jq];
-    # A writable machine directory, as on a real machine: a heal rewrites
-    # config.toml, and the wipe clears its flag.
     systemd.tmpfiles.rules = ["C /var/lib/yolab/machine/config.toml 0600 root root - ${configPath}"];
   };
 in

@@ -3,8 +3,6 @@ name: mastodon
 description: "Your own corner of the fediverse — a social server you run"
 home: https://joinmastodon.org
 type: application
-# Chart version — bump on any packaging change. A backup records this, and a restore
-# pins to it, so "which version wrote this data" stops being a guess.
 version: 0.1.1
 
 dependencies:
@@ -25,10 +23,6 @@ annotations:
         "ui:widget": "password"
       }
     }
-  # The owner account is created on first boot and its password printed once. Without
-  # this the app would be unreachable: Mastodon has no default login, and signing up
-  # through the web form needs a confirmation email, which needs SMTP that a new
-  # install may not have.
   yolab.io/outputs: |
     [
       { "key": "owner_user", "label": "Owner username", "type": "text", "pattern": "YOLAB_OUTPUT owner_user (\\S+)" },

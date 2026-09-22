@@ -19,7 +19,6 @@ import {
   type HealStatus,
 } from "@/lib/heal";
 
-/** A finished heal stays on the page this long, so its outcome can be read. */
 const SHOW_FINISHED_FOR_SECS = 24 * 3600;
 
 function recentlyFinished(heal: Heal | null): boolean {
@@ -31,10 +30,6 @@ function recentlyFinished(heal: Heal | null): boolean {
   );
 }
 
-/**
- * The home page banner while something is wrong or a heal runs. It only points
- * the way: the decision is made on the Storage page, where the details are.
- */
 export function HealBanner({ className }: { className?: string }) {
   const status = useHealStatus(20_000).data;
   if (!status) return null;
@@ -73,7 +68,6 @@ export function HealBanner({ className }: { className?: string }) {
       </Banner>
     );
   }
-  // A new problem outranks the note that the last heal finished.
   if (status.problems.length === 0) {
     return recentlyFinished(heal) ? (
       <Banner
@@ -105,7 +99,6 @@ export function HealBanner({ className }: { className?: string }) {
 }
 
 function StepList({ heal }: { heal: Heal }) {
-  // Undoing is not a step of the way forward: it replaces the list.
   const steps: HealStep[] = heal.step === "undo" ? ["undo"] : heal.steps;
   const at = steps.indexOf(heal.step);
   return (
@@ -154,7 +147,6 @@ function HealProgress({
   action,
 }: {
   heal: Heal;
-  /** Shown under the steps: starting again, when this heal cannot finish. */
   action?: ReactNode;
 }) {
   return (
@@ -340,10 +332,7 @@ function HealDialog({
   );
 }
 
-/** The Storage page section: what is wrong, the FORCE HEAL button, and progress. */
 export function ForceHealCard() {
-  // Not faster: every answer probes each machine that does not answer, which
-  // takes seconds by itself.
   const status = useHealStatus(10_000);
   const [confirming, setConfirming] = useState(false);
   const s = status.data;
@@ -351,9 +340,6 @@ export function ForceHealCard() {
   const heal = s.heal;
 
   if (heal?.running) {
-    // Past the restart, or while putting machines back, a heal can wait forever
-    // on a machine that died meanwhile. The server accepts a new heal from
-    // there, so offer one.
     const stuck =
       (heal.step === "rebuild" || heal.step === "undo") &&
       s.problems.length > 0 &&
@@ -395,8 +381,6 @@ export function ForceHealCard() {
       </Card>
     );
   }
-  // A finished heal is shown until something is wrong again — never in place of
-  // the button a new problem needs.
   if (s.problems.length === 0) {
     return heal && recentlyFinished(heal) ? <HealProgress heal={heal} /> : null;
   }

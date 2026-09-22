@@ -23,15 +23,10 @@ pub struct DiskInfo {
     pub osd_id: Option<i64>,
     pub desired: String,
     pub connected: bool,
-    /// The disk has a partition table — something is already on it.
     pub has_partitions: bool,
-    /// This machine has a filesystem from it mounted. Never usable for storage.
     pub mounted: bool,
-    /// Where the reconciler has got to with this disk: see disks_reconciler::Phase.
     pub phase: String,
-    /// Plain-language detail for `phase`, including the last error. Shown as-is.
     pub message: String,
-    /// Failed attempts at the current transition. 0 once it succeeds.
     pub attempts: u32,
 }
 
@@ -40,10 +35,6 @@ pub struct SetState {
     pub desired: String,
 }
 
-/// The inverse of `disks_reconciler::record_key`: the node a record is scoped to
-/// (None for a hardware id, which belongs to the disk wherever it is plugged in)
-/// and the disk id. A key in neither shape is still returned, never skipped — a
-/// record nobody can parse still governs a disk.
 fn split_record_key(key: &str) -> (Option<&str>, &str) {
     if is_globally_unique_id(key) {
         return (None, key);
@@ -54,11 +45,8 @@ fn split_record_key(key: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// node → disk id → the metadata that node last published.
 type Inventory = HashMap<String, HashMap<String, Value>>;
 
-/// Parses each node's published inventory. A node whose payload does not parse
-/// is left out and logged: its disks show as not connected rather than wrong.
 fn parse_inventory(published: &BTreeMap<String, String>) -> Inventory {
     published
         .iter()
@@ -107,9 +95,6 @@ fn disk_info(disk_id: &str, desired: &str, meta: Option<&Value>) -> DiskInfo {
     }
 }
 
-/// Every disk the page should show, by node: every record (connected or not),
-/// plus every connected disk that has no record yet — the system disk, which
-/// never needs one, and a disk seen before its first registration.
 fn disk_list(
     desired: &HashMap<String, String>,
     live: &Inventory,
@@ -119,8 +104,6 @@ fn disk_list(
 
     for (key, setting) in desired {
         let (scoped_node, disk_id) = split_record_key(key);
-        // A hardware-id record is shown under whichever node sees the disk now;
-        // a disk nobody sees stays listed, under no node ("").
         let node = match scoped_node {
             Some(n) => n.to_string(),
             None => live
@@ -130,7 +113,6 @@ fn disk_list(
                 .unwrap_or_default(),
         };
         let meta = live.get(&node).and_then(|m| m.get(disk_id));
-        // The system disk is ON whatever a record says (`wants_on`).
         let setting = if disk_id == SYSTEM_OSD_ID {
             "ON"
         } else {
@@ -160,8 +142,6 @@ fn disk_list(
         }
     }
 
-    // Connected first, then the system disk, then by size, then by id so the
-    // order never shuffles between refreshes.
     for disks in result.values_mut() {
         disks.sort_by(|a, b| {
             b.connected
@@ -174,8 +154,6 @@ fn disk_list(
     result
 }
 
-/// GET /api/disks. An unreadable settings store is an error, never an empty
-/// page: "no disks" and "cannot tell" must not look the same.
 pub async fn list_disks(
     State(_s): State<AppState>,
 ) -> crate::error::Result<Json<HashMap<String, Vec<DiskInfo>>>> {
@@ -187,13 +165,6 @@ pub async fn list_disks(
     Ok(Json(disk_list(&desired, &live)))
 }
 
-/// Why a requested ON/OFF must not be recorded, if it must not.
-///
-/// The system disk cannot be switched off: this machine's container images live
-/// on it (see `storage::containerd_store`), so draining it would leave the node
-/// unable to run anything. The reconciler treats it as ON regardless
-/// (`disks_reconciler::wants_on`); refusing here keeps the page from showing a
-/// switch that does nothing.
 fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
     match desired {
         "ON" => None,
@@ -205,9 +176,6 @@ fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
     }
 }
 
-/// Records the owner's switch for one disk and wakes the disk controller. Shared
-/// by the Storage page's toggle and the Ceph page's per-OSD buttons, so there is
-/// one writer and one set of rules.
 pub(crate) async fn record_switch(node: &str, disk_id: &str, desired: &str) -> Result<(), String> {
     if let Some(error) = refuse_state_change(disk_id, desired) {
         return Err(error.to_string());
@@ -235,12 +203,6 @@ pub async fn set_disk_state(
 mod tests {
     use super::*;
 
-    // ── Reading the keys the reconciler writes ────────────────────────────────
-    //
-    // These two halves drifted apart once: record_key gained a bare form for hardware
-    // ids, this file kept `split_once("--") else { continue }`, and every bare key was
-    // skipped. The record draining a live disk had no row on the page and no toggle —
-    // the system was acting on state its owner could not see.
 
     #[test]
     fn a_node_scoped_key_splits_into_node_and_disk() {
@@ -251,8 +213,6 @@ mod tests {
         assert_eq!(split_record_key("node1--system"), (Some("node1"), "system"));
     }
 
-    /// A hardware id belongs to the disk, so it has no node in it — and must not be
-    /// split on a `--` it merely happens to contain.
     #[test]
     fn a_hardware_key_keeps_its_whole_id() {
         assert_eq!(
@@ -266,16 +226,12 @@ mod tests {
         );
     }
 
-    /// The failure this replaces: an unparseable key used to be dropped with
-    /// `continue`. A key nobody can read still governs a disk.
     #[test]
     fn an_unrecognised_key_is_surfaced_rather_than_dropped() {
         assert_eq!(split_record_key("weird"), (None, "weird"));
         assert_eq!(split_record_key(""), (None, ""));
     }
 
-    /// Round trip against the writer, which is the property that actually matters:
-    /// whatever record_key produces, split_record_key has to recover.
     #[test]
     fn every_key_the_reconciler_writes_can_be_read_back() {
         for (node, id) in [
@@ -298,8 +254,6 @@ mod tests {
         }
     }
 
-    /// The live record set at the moment the disk went missing from the page. Both
-    /// records for the easystore have to be readable; previously the second was not.
     #[test]
     fn the_configmap_that_hid_a_draining_disk_now_parses_completely() {
         let keys = [
@@ -313,13 +267,10 @@ mod tests {
         ];
         let parsed: Vec<_> = keys.iter().map(|k| split_record_key(k)).collect();
         assert_eq!(parsed.len(), keys.len(), "no key may be skipped");
-        // The one that was invisible.
         assert_eq!(parsed[6], (None, "serial-wwn-0x50014ee214caf529"));
-        // And it names the same disk as the node-scoped one beside it.
         assert_eq!(parsed[3].1, parsed[6].1);
     }
 
-    // ── The page's list ───────────────────────────────────────────────────────
 
     fn inventory(node: &str, disks: Value) -> Inventory {
         parse_inventory(&BTreeMap::from([(
@@ -338,7 +289,6 @@ mod tests {
     fn records_and_connected_disks_without_records_are_all_listed() {
         let desired = HashMap::from([
             ("node1--dev-sdb".to_string(), "ON".to_string()),
-            // Unplugged, still switched on: listed, not connected.
             ("node1--dev-sdz".to_string(), "ON".to_string()),
         ]);
         let live = inventory(

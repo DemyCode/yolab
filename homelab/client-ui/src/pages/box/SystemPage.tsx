@@ -48,17 +48,14 @@ export function SystemPage() {
   const [log, setLog] = useState<string[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const logRef = useRef<HTMLDivElement>(null);
-  // Tracks how many rebuild-log lines we've already shown so we only append deltas
   const rebuildOffsetRef = useRef(0);
 
-  // Channel state
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   const [channelOpen, setChannelOpen] = useState(false);
   const [editUrl, setEditUrl] = useState("");
   const [editRef, setEditRef] = useState("");
   const [channelSaving, setChannelSaving] = useState(false);
 
-  // Reboot. Two-step on purpose — see the button.
   const [rebootConfirm, setRebootConfirm] = useState(false);
   const [rebooting, setRebooting] = useState(false);
 
@@ -70,8 +67,6 @@ export function SystemPage() {
     if (lines.length > 0) setLog((prev) => [...prev, ...lines]);
   }
 
-  // Poll /api/rebuild-log every 2 s. Handles service restarts transparently —
-  // errors just retry. Stops when running=false (PID gone on the server).
   function pollRebuildLog() {
     let cancelled = false;
     async function tick() {
@@ -93,7 +88,6 @@ export function SystemPage() {
             .catch(() => {});
         }
       } catch {
-        // Service is restarting — retry silently
         if (!cancelled) setTimeout(tick, 2000);
       }
     }
@@ -114,7 +108,6 @@ export function SystemPage() {
       .catch(() => {});
   }
 
-  // On mount: check if a rebuild is already running from a previous session
   useEffect(() => {
     fetch("/api/status")
       .then((r) => r.json())
@@ -142,13 +135,10 @@ export function SystemPage() {
     setPhase("git");
     rebuildOffsetRef.current = 0;
     try {
-      // The shared SSE reader, so this goes through the same base-URL/auth
-      // chokepoint as every other stream rather than its own fetch.
       await streamEvents(url, { method: "POST" }, (line) =>
         appendLines([line]),
       );
     } catch {
-      /* service is restarting — handled by pollRebuildLog */
     }
     setPhase("rebuild");
     rebuildOffsetRef.current = 0;
@@ -158,21 +148,12 @@ export function SystemPage() {
   const runUpdate = () => streamUpdate("/api/update");
   const runUpdateAll = () => streamUpdate("/api/update/all");
 
-  /**
-   * Reboot every machine.
-   *
-   * The request is expected NOT to come back cleanly: this node reboots a few
-   * seconds after answering, so the connection dies mid-flight. A catch that
-   * treated that as failure would show an error for the one case that worked,
-   * so the outcome is simply "asked", never "succeeded".
-   */
   async function rebootAll() {
     setRebooting(true);
     setRebootConfirm(false);
     try {
       await fetch("/api/system/reboot/all", { method: "POST" });
     } catch {
-      // Expected: the machine answering this request is going down too.
     }
   }
 
@@ -220,7 +201,7 @@ export function SystemPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      {/* Status cards */}
+      {}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
@@ -276,7 +257,7 @@ export function SystemPage() {
 
       <NotificationsCard />
 
-      {/* Update action + channel */}
+      {}
       <Card>
         <CardContent className="pt-5 pb-4 space-y-4">
           <div className="flex items-center gap-3 flex-wrap">
@@ -292,12 +273,8 @@ export function SystemPage() {
               {updating ? "Updating…" : "Update all machines"}
             </Button>
 
-            {/* TWO-STEP, and not because rebooting is exotic — because this one
-                button takes the entire cluster down at once. Every machine goes
-                at the same time, so nothing is served until they are back. It
-                sits next to Update, which does the opposite (k3s and Ceph keep
-                running throughout), and one misread click should not be the
-                difference. */}
+            {
+}
             {rebootConfirm ? (
               <div className="flex items-center gap-2">
                 <Button
@@ -390,7 +367,7 @@ export function SystemPage() {
         </CardContent>
       </Card>
 
-      {/* Unified build log */}
+      {}
       {phase !== "idle" && (
         <Card>
           <CardHeader>

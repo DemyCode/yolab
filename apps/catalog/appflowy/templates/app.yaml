@@ -98,14 +98,7 @@ spec:
         app: cloud
     spec:
       initContainers:
-      {{- /* AppFlowy Cloud's migration 20231130150001 reads the `auth` schema, and
-             that schema is created by gotrue's own migrations against this same
-             database. Nothing orders the two, so cloud reaches its migration first,
-             fails with `schema "auth" does not exist`, and CrashLoopBackOffs —
-             taking the worker down with it, since the tables it polls are created
-             by the migrations that never ran. Upstream's compose file expresses
-             this as `depends_on: gotrue`; Kubernetes has no such thing, so the
-             dependency has to be waited for explicitly. */}}
+      
       - name: prepare-database
         image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
         imagePullPolicy: IfNotPresent
@@ -267,10 +260,7 @@ spec:
         app: gotrue
     spec:
       initContainers:
-      {{- /* gotrue needs API_EXTERNAL_URL, and the value is this release's public
-             hostname, which only exists once wg-register has claimed it. gotrue runs
-             in its own pod, so it cannot see the gateway's /yolab/env emptyDir —
-             yolabEnvInit rebuilds the same file from the shared PVC. */}}
+      
       {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:
       - name: gotrue
@@ -298,11 +288,7 @@ spec:
           export API_EXTERNAL_URL="$YOLAB_URL/gotrue"
           exec /start.sh
         env:
-        {{- /* gotrue defaults to :8081, but the Service, the readiness probe, the
-               Caddy route and cloud's APPFLOWY_GOTRUE_BASE_URL all address it on
-               9999 (as upstream's compose does). Left unset the container comes up
-               healthy from its own point of view and every one of those four is
-               talking to a closed port. */}}
+        
         - name: GOTRUE_API_PORT
           value: '9999'
         - name: GOTRUE_SITE_URL
@@ -313,15 +299,7 @@ spec:
           value: '7200'
         - name: GOTRUE_DB_DRIVER
           value: postgres
-        {{- /* search_path=auth is load-bearing. `auth migrate` schema-qualifies its
-               DDL, so the tables get created either way — but every runtime query,
-               including the `admin createuser` that /start.sh runs on boot, uses
-               unqualified names. Without it gotrue creates 23 tables and then dies
-               with `relation "identities" does not exist`, which reads like the
-               migrations failed when they in fact succeeded. Upstream gets this for
-               free from a dedicated role whose search_path is preset; we share one
-               role with appflowy_cloud, which needs `public`, so it is set per
-               connection here instead of on the role. */}}
+        
         - name: DATABASE_URL
           value: postgres://appflowy:appflowy@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/appflowy?search_path=auth
         - name: GOTRUE_SMTP_ADMIN_EMAIL
@@ -330,9 +308,7 @@ spec:
           value: 'true'
         - name: GOTRUE_ADMIN_EMAIL
           value: {{ .Values.config.admin_email }}
-        {{- /* By reference, not by value. This is the owner's password: inline it
-               and it is readable from `kubectl get deploy -o yaml` and captured
-               verbatim in every cluster-state backup. */}}
+        
         - name: GOTRUE_ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:

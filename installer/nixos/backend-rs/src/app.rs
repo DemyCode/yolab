@@ -8,7 +8,6 @@ use tokio_stream::StreamExt;
 
 use crate::{install, wireguard::PLATFORM_API};
 
-// ── Step ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
@@ -31,7 +30,6 @@ impl Step {
     }
 }
 
-// ── Domain types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClusterMode {
@@ -48,7 +46,6 @@ pub struct DiskInfo {
     pub recommended: bool,
 }
 
-// ── Events from background tasks ──────────────────────────────────────────────
 
 pub enum AppEvent {
     NetworkReady,
@@ -71,7 +68,6 @@ pub enum AppEvent {
     Failed(String),
 }
 
-// ── Click target registry ─────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub enum ClickTarget {
@@ -95,29 +91,24 @@ pub enum BtnId {
     Poweroff,
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
 
 pub struct App {
     pub step: Step,
 
-    // Step 1 – Mode
     pub mode: Option<ClusterMode>,
-    pub mode_cursor: usize, // 0=New 1=Join
+    pub mode_cursor: usize,
 
-    // Step 2 – Account (new) / Connect (join)
-    pub acct_cursor: u8,    // 0=Create 1=Existing
-    pub acct_input: String, // existing token input
+    pub acct_cursor: u8,
+    pub acct_input: String,
     pub account_token: Option<String>,
     pub created_token: Option<String>,
     pub join_url: String,
     pub join_pass: String,
-    pub join_field: u8, // 0=URL 1=pass
+    pub join_field: u8,
 
-    // Step 3 – Disk
     pub disks: Vec<DiskInfo>,
     pub disk_cursor: usize,
 
-    // Step 4 – Configure
     pub timezone: String,
     pub password: String,
     pub password2: String,
@@ -125,21 +116,18 @@ pub struct App {
     pub cfg_field: u8,
     pub gen_privkey: Option<String>,
 
-    // Carry-over from join
     pub join_server_addr: Option<String>,
     pub join_k3s_token: Option<String>,
     pub join_ceph_fsid: Option<String>,
 
-    // Step 5 – Install
     pub log_lines: Vec<String>,
     pub install_done: bool,
     pub install_failed: bool,
     pub mgmt_url: Option<String>,
 
     pub network_ready: bool,
-    pub boot_mode: String, // "uefi" or "bios"
+    pub boot_mode: String,
 
-    // Global UI
     pub error: Option<String>,
     pub loading: bool,
     pub loading_msg: String,
@@ -152,8 +140,6 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        // Kick off network readiness check immediately — retries every second
-        // until api.yolab.io resolves (NetworkManager + DHCP may not be up yet).
         {
             let tx2 = tx.clone();
             tokio::spawn(async move {
@@ -207,7 +193,6 @@ impl App {
         }
     }
 
-    // ── Main loop ─────────────────────────────────────────────────────────────
 
     pub async fn run(
         &mut self,
@@ -238,10 +223,8 @@ impl App {
         Ok(())
     }
 
-    // ── Key handling ──────────────────────────────────────────────────────────
 
     async fn handle_key(&mut self, key: KeyEvent) -> bool {
-        // Ctrl-C always quits
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
@@ -378,7 +361,7 @@ impl App {
     }
 
     async fn key_configure(&mut self, key: KeyEvent) {
-        const FIELDS: u8 = 4; // timezone, pass, pass2, ssh_pub
+        const FIELDS: u8 = 4;
         match key.code {
             KeyCode::Esc => {
                 self.step = Step::Disk;
@@ -428,7 +411,6 @@ impl App {
         }
     }
 
-    // ── Mouse handling ────────────────────────────────────────────────────────
 
     async fn handle_mouse(&mut self, m: MouseEvent) {
         if self.loading {
@@ -522,7 +504,6 @@ impl App {
         }
     }
 
-    // ── App event handler ─────────────────────────────────────────────────────
 
     fn handle_app_event(&mut self, ev: AppEvent) {
         match ev {
@@ -556,11 +537,7 @@ impl App {
             } => {
                 self.join_server_addr = Some(server_addr);
                 self.join_k3s_token = Some(k3s_token);
-                // Non-empty by construction: parse_join_response refuses an empty
-                // one rather than letting install.rs generate a fresh fsid, which
-                // would build a second isolated storage cluster.
                 self.join_ceph_fsid = Some(ceph_fsid);
-                // Pre-fill the configure password from the join password — same homelab, same password.
                 if self.password.is_empty() {
                     self.password = self.join_pass.clone();
                     self.password2 = self.join_pass.clone();
@@ -590,7 +567,6 @@ impl App {
         }
     }
 
-    // ── Actions ───────────────────────────────────────────────────────────────
 
     async fn confirm_mode(&mut self) {
         if !self.network_ready {
@@ -655,7 +631,6 @@ impl App {
         tokio::spawn(async move {
             match do_fetch_join_info(&url, &pass).await {
                 Ok((server_addr, k3s_token, account_token, ceph_fsid)) => {
-                    // Store account token via a combined event
                     if let Some(t) = account_token {
                         let _ = tx.send(AppEvent::AccountCreated(t));
                     }
@@ -773,7 +748,6 @@ impl App {
     }
 }
 
-// ── Platform API helpers ──────────────────────────────────────────────────────
 
 async fn do_create_account() -> anyhow::Result<String> {
     let resp = reqwest::Client::new()
@@ -831,30 +805,9 @@ async fn do_fetch_join_info(
     parse_join_response(&info)
 }
 
-/// Pull the four join fields out of the other node's reply, refusing anything
-/// incomplete.
-///
-/// Every field here used to be read with `.unwrap_or("")`, so an error body — or
-/// a node running a build old enough not to send these — was reported to the
-/// user as a SUCCESSFUL connection carrying empty strings. Neither empty value
-/// then failed anywhere:
-///
-///   * `server_addr: ""` is precisely how config.toml spells "this is the first
-///     machine". The installer would set up a standalone node, run k3s with
-///     --cluster-init, and create its own Ceph cluster — while the person doing
-///     it believed they were adding a machine to an existing one.
-///
-///   * `ceph_fsid: ""` becomes None, and install.rs turns None into a freshly
-///     generated fsid. Same outcome for storage alone: a second cluster that
-///     shares nothing with the first and looks perfectly healthy from both
-///     sides.
-///
-/// Split out from the request so those cases are actually testable.
 fn parse_join_response(
     info: &serde_json::Value,
 ) -> anyhow::Result<(String, String, Option<String>, String)> {
-    // The handler reports failures as {"error": "..."} with a 200, so the status
-    // code alone does not tell us this worked.
     if let Some(e) = info.get("error").and_then(|v| v.as_str()) {
         anyhow::bail!("the existing node could not describe its cluster: {e}");
     }
@@ -870,8 +823,6 @@ fn parse_join_response(
     let server_addr = field("server_addr")?;
     let k3s_token = field("k3s_token")?;
     let account_token = info["account_token"].as_str().map(|s| s.to_string());
-    // Named separately because this one has an actionable cause: a node
-    // installed before Ceph moved onto the host has no [ceph] section to report.
     let ceph_fsid = field("ceph_fsid").map_err(|_| {
         anyhow::anyhow!(
             "the existing node reported no Ceph cluster id — update it first, \
@@ -891,13 +842,6 @@ async fn detect_disks() -> anyhow::Result<Vec<DiskInfo>> {
     Ok(disks_from_lsblk(&data))
 }
 
-/// Turns `lsblk -J -b` output into the disk list the picker shows, marking one
-/// as recommended.
-///
-/// Split from `detect_disks` so the selection rule is testable: this is the
-/// screen where someone chooses which disk to erase, and the recommendation is
-/// what most people will accept without reading. It must never land on the USB
-/// stick the installer itself booted from, nor on a mounted disk.
 fn disks_from_lsblk(data: &serde_json::Value) -> Vec<DiskInfo> {
     let empty = vec![];
     let devices = data["blockdevices"].as_array().unwrap_or(&empty);
@@ -994,10 +938,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ── Step ──────────────────────────────────────────────────────────────────
 
-    /// The index drives the sidebar's progress highlight. Duplicates or gaps show
-    /// up as two steps lit at once, or none.
     #[test]
     fn step_indices_are_sequential_and_unique() {
         let steps = [
@@ -1011,11 +952,7 @@ mod tests {
         assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
 
-    // ── fmt_bytes ─────────────────────────────────────────────────────────────
 
-    /// Disks are sold in decimal gigabytes, so a 500 GB disk must read "500 GB"
-    /// and not the 465 GiB a binary divisor would print — the user is matching
-    /// this against the label on the drive.
     #[test]
     fn sizes_are_formatted_in_the_units_printed_on_the_box() {
         assert_eq!(fmt_bytes(500_000_000_000), "500 GB");
@@ -1035,10 +972,7 @@ mod tests {
         assert_eq!(fmt_bytes(1), "0 GB");
     }
 
-    // ── parse_gb ──────────────────────────────────────────────────────────────
 
-    /// `parse_gb` reads back what `fmt_bytes` wrote, so the two have to agree —
-    /// this is what orders the disks when choosing which to recommend.
     #[test]
     fn parse_gb_round_trips_what_fmt_bytes_produces() {
         assert_eq!(parse_gb(&fmt_bytes(500_000_000_000)), 500);
@@ -1058,16 +992,12 @@ mod tests {
         assert_eq!(parse_gb("GB"), 0);
     }
 
-    // ── disk_has_mount ────────────────────────────────────────────────────────
 
     #[test]
     fn a_disk_mounted_at_its_top_level_counts_as_mounted() {
         assert!(disk_has_mount(&json!({"mountpoint": "/"})));
     }
 
-    /// The live USB's root is on a *partition*, not the disk node, so only
-    /// recursing into children detects it — and that disk is the one thing the
-    /// installer must never offer to erase.
     #[test]
     fn a_disk_is_mounted_when_any_partition_below_it_is() {
         let disk = json!({
@@ -1082,7 +1012,6 @@ mod tests {
 
     #[test]
     fn nesting_deeper_than_one_level_is_still_detected() {
-        // e.g. disk → partition → LUKS/LVM mapping that holds the mount.
         let disk = json!({
             "children": [{"children": [{"mountpoint": "/nix/store"}]}],
         });
@@ -1099,7 +1028,6 @@ mod tests {
         })));
     }
 
-    // ── disks_from_lsblk ──────────────────────────────────────────────────────
 
     fn lsblk(devices: serde_json::Value) -> serde_json::Value {
         json!({"blockdevices": devices})
@@ -1155,8 +1083,6 @@ mod tests {
         assert_eq!(rec, vec!["/dev/nvme0n1"]);
     }
 
-    /// The installer is running *from* the USB stick. Recommending it would mean
-    /// the default action destroys the installer mid-install.
     #[test]
     fn the_usb_stick_is_never_recommended_even_when_it_is_the_largest() {
         let data = lsblk(json!([
@@ -1170,7 +1096,6 @@ mod tests {
             .map(|d| d.name.as_str())
             .collect();
         assert_eq!(rec, vec!["/dev/sda"]);
-        // It is still listed, just not preselected — an advanced user may want it.
         assert_eq!(disks.len(), 2);
         assert!(disks.iter().any(|d| d.name == "/dev/sdb" && d.is_usb));
     }
@@ -1193,8 +1118,6 @@ mod tests {
         assert_eq!(rec, vec!["/dev/sda"]);
     }
 
-    /// With nothing safe to pick, nothing is preselected — better an explicit
-    /// choice than a default that erases the wrong device.
     #[test]
     fn nothing_is_recommended_when_every_disk_is_usb_or_mounted() {
         let data = lsblk(json!([
@@ -1237,8 +1160,6 @@ mod tests {
 
     #[test]
     fn a_disk_with_no_reported_size_still_appears() {
-        // Some virtio/NVMe setups omit `size`; hiding the disk entirely would
-        // leave a user with no installable target at all.
         let data = lsblk(json!([{"name": "vda", "type": "disk"}]));
         let disks = disks_from_lsblk(&data);
         assert_eq!(disks.len(), 1);
@@ -1246,11 +1167,6 @@ mod tests {
         assert_eq!(disks[0].tran, "");
     }
 
-    // ── parse_join_response ───────────────────────────────────────────────────
-    //
-    // These cover the failure this function exists to prevent: a joining machine
-    // being told "connected!" on a reply that says nothing, then quietly
-    // installing itself as a brand new cluster.
 
     fn join_reply() -> serde_json::Value {
         serde_json::json!({
@@ -1270,8 +1186,6 @@ mod tests {
         assert_eq!(fsid, "11111111-2222-4333-8444-555555555555");
     }
 
-    /// The handler answers 200 with {"error": ...}, so the status code is not
-    /// evidence that anything worked.
     #[test]
     fn an_error_body_is_a_failure_not_a_connection() {
         let v = serde_json::json!({"error": "missing node.k3s.token"});
@@ -1279,9 +1193,6 @@ mod tests {
         assert!(e.contains("missing node.k3s.token"), "{e}");
     }
 
-    /// The worst one. "" is exactly how config.toml spells "first machine", so
-    /// accepting it installs a standalone node while the user is watching a
-    /// screen that says they are joining an existing cluster.
     #[test]
     fn an_empty_server_address_is_refused_rather_than_meaning_first_node() {
         let mut v = join_reply();
@@ -1298,9 +1209,6 @@ mod tests {
         assert!(super::parse_join_response(&v).is_err());
     }
 
-    /// An empty fsid used to become None, which install.rs turned into a freshly
-    /// generated one — a second Ceph cluster sharing no data with the first, and
-    /// healthy-looking from both machines.
     #[test]
     fn an_empty_ceph_fsid_is_refused_and_says_what_to_do() {
         let mut v = join_reply();
@@ -1309,8 +1217,6 @@ mod tests {
         assert!(e.contains("update it first"), "{e}");
     }
 
-    /// A node predating host-level Ceph has no [ceph] section at all, so the key
-    /// is absent rather than empty. Same outcome required.
     #[test]
     fn an_absent_ceph_fsid_is_refused_too() {
         let mut v = join_reply();
@@ -1318,8 +1224,6 @@ mod tests {
         assert!(super::parse_join_response(&v).is_err());
     }
 
-    /// account_token is the one genuinely optional field: a node can be paired
-    /// without one, and the installer asks for it separately.
     #[test]
     fn an_absent_account_token_is_allowed() {
         let mut v = join_reply();

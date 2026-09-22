@@ -16,9 +16,7 @@ spec:
       labels:
         app: filebrowser
       annotations:
-        {{- /* Roll the pods when the admin password changes; without this an upgrade
-             that only alters the Secret leaves the old password in place until
-             something else happens to restart the pod. */}}
+        
         checksum/admin-secret: {{ .Values.config.password | sha256sum }}
     spec:
       initContainers:

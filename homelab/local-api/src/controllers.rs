@@ -1,23 +1,12 @@
-//! Every controller local-api runs, in one place.
-//!
-//! `spawn_all` is what main.rs starts; `NAMES` is the same set for things that
-//! cannot see a live registry — the runtime's watch test (a watch may only wake
-//! a controller that exists) and `local-api run <name>`. `spawn` asserts the two
-//! agree in debug builds, so a controller added to one and forgotten in the
-//! other is caught the first time it starts.
 
 use crate::runtime::{self, leader::Leadership};
 use crate::storage::StorageEnv;
 
-/// Every controller name, node- and cluster-scoped, including the storage
-/// agent's. Kept in step with `spawn_all` by `spawn`'s debug assertion.
 pub const NAMES: &[&str] = &[
-    // Cluster coordination and operations.
     "backup-scheduler",
     "restore-watchdog",
     "uninstall-watchdog",
     "backup-lock-sweeper",
-    // Node and cluster reconcilers.
     "disks",
     "cephfs",
     "topology",
@@ -28,7 +17,6 @@ pub const NAMES: &[&str] = &[
     "mesh-paths",
     "mesh-discovery",
     "chart-sync",
-    // The storage agent's own jobs (formerly systemd timers).
     "osd-activate",
     "images-grow",
     "ceph-dashboard",
@@ -48,46 +36,33 @@ fn spawn<C: runtime::Controller>(controller: C, leader: &Leadership) {
     runtime::spawn(controller, leader.clone());
 }
 
-/// Starts every controller and the event sources that wake them. Called once,
-/// from main, after tracing is installed.
 pub fn spawn_all(leader: Leadership) {
     use crate::routers::{apps, backup, backups, restore};
     use crate::storage::controllers as storage;
 
-    // Scheduled backups and the per-app restore watchdog. Both drive long
-    // operations, so they keep their records' claims fresh — the fix for a node2
-    // watchdog treating node1's live restore as abandoned.
     spawn(backup::BackupSchedulerController, &leader);
     spawn(restore::RestoreWatchdogController, &leader);
     backup::start_heartbeat();
     restore::start_heartbeat();
-    // Finishes uninstalls whose driving request died with a local-api restart.
     spawn(apps::UninstallWatchdogController, &leader);
-    // Clears restic locks left behind when a lock-taking command was interrupted.
     spawn(backups::LockSweeperController, &leader);
 
-    // OSD active-state (crush weight + in/out) is driven by the disk controller,
-    // the single actuator for the DISK→ON/OFF config — no separate watcher.
     spawn(crate::disks_reconciler::DisksController, &leader);
     spawn(crate::cephfs::CephFsController, &leader);
     spawn(crate::topology::TopologyController, &leader);
     spawn(crate::mesh::MeshPathsController::new(), &leader);
     spawn(crate::mesh::MeshDiscoveryController::new(), &leader);
-    // Keeps the app catalog current without a nixos-rebuild.
     spawn(crate::charts::ChartSyncController, &leader);
-    // Drives a FORCE HEAL started from this machine, across its own restart.
     spawn(
         crate::heal::HealController {
             config: crate::config::Config::from_env(),
         },
         &leader,
     );
-    // Keeps the backup credentials on this machine's disk, which a heal keeps.
     spawn(
         crate::heal::credentials::BackupCredentialsController,
         &leader,
     );
-    // Phone notifications, and the names every machine shares (cluster, notify).
     spawn(
         crate::notify::alerts::NotifierController {
             config: crate::config::Config::from_env(),
@@ -101,9 +76,6 @@ pub fn spawn_all(leader: Leadership) {
         &leader,
     );
 
-    // The storage agent's own jobs, which used to be eleven systemd timers. Only
-    // on a machine whose storage settings reached the process: a dev box must not
-    // act on empty addresses.
     let env = StorageEnv::from_env();
     if env.is_configured() {
         spawn(storage::OsdActivateController { env: env.clone() }, &leader);
@@ -116,16 +88,11 @@ pub fn spawn_all(leader: Leadership) {
         spawn(storage::CsiRecoveryController, &leader);
     }
 
-    // Event sources that wake controllers early. Events are hints, state is the
-    // truth: a line from udev or a kubectl watch only means "look now".
     for watch in runtime::watch::standard() {
         runtime::watch::spawn(watch);
     }
 }
 
-/// Runs one controller's tick once, by name — `local-api run <name>`. So a
-/// person over SSH can drive exactly what the daemon would, without waiting for
-/// its interval.
 pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
     use crate::routers::{apps, backup, backups, restore};
     use crate::storage::controllers as storage;

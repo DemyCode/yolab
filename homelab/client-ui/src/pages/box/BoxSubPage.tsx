@@ -2,15 +2,6 @@ import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 
-/**
- * Frame around the ported operator pages.
- *
- * Storage and Backups between them encode a great deal of hard-won behaviour —
- * the Ceph state machine, the disk-removal safety checks, the restore path.
- * Rewriting that from scratch is exactly where bugs already paid for come
- * back, so it was restyled onto the new tokens and moved down a level rather
- * than redesigned. This wrapper is what gives it a way back out.
- */
 export function BoxSubPage({
   title,
   subtitle,

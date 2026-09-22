@@ -1,15 +1,3 @@
-//! Cross-process exclusion for work that a boot unit and the daemon both run.
-//!
-//! Some storage work has to happen before k3s at boot (so it stays a systemd
-//! oneshot ordered `Before=k3s.service`) and also has to be re-checked for the
-//! life of the machine (so the daemon runs the same code as a controller). The
-//! two must never run it at once: `containerd-store` stops k3s, unmounts and
-//! mkfs's a device, and two of those interleaved destroy the store.
-//!
-//! An in-process `Mutex` cannot see the other process. An `flock` on a file in
-//! `/run` can, is released by the kernel when the holder dies — so a crashed
-//! holder never leaves the lock stuck — and `/run` is tmpfs, so nothing survives
-//! a reboot. It is what a real OS uses for exactly this.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -17,7 +5,6 @@ use std::time::Duration;
 
 pub const LOCK_DIR: &str = "/run/yolab/locks";
 
-/// Held while the guard lives; dropping it (or the process dying) releases it.
 #[derive(Debug)]
 pub struct LockGuard {
     _file: File,
@@ -43,8 +30,6 @@ fn open(dir: &Path, name: &str) -> std::io::Result<File> {
         .open(path_in(dir, name))
 }
 
-/// Take the lock `name` in `dir` (normally `LOCK_DIR`) if nobody holds it.
-/// `Ok(None)` when another process (or another holder in this one) has it.
 pub fn try_acquire_in(dir: &Path, name: &str) -> std::io::Result<Option<LockGuard>> {
     let file = open(dir, name)?;
     match file.try_lock() {
@@ -57,11 +42,6 @@ pub fn try_acquire_in(dir: &Path, name: &str) -> std::io::Result<Option<LockGuar
     }
 }
 
-/// Wait for the lock, up to `timeout`. `Ok(None)` if it never came free.
-///
-/// Polls rather than blocking in `flock(LOCK_EX)`, so the wait stays bounded and
-/// cancellable from async code — a boot unit must never hang forever behind a
-/// holder that is itself stuck.
 pub async fn acquire(name: &str, timeout: Duration) -> std::io::Result<Option<LockGuard>> {
     acquire_in(Path::new(LOCK_DIR), name, timeout).await
 }
@@ -92,8 +72,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let first = try_acquire_in(dir.path(), "store").unwrap();
         assert!(first.is_some());
-        // flock locks belong to the open file description, so a second open of
-        // the same path — exactly what another process does — is refused.
         assert!(try_acquire_in(dir.path(), "store").unwrap().is_none());
         drop(first);
         assert!(try_acquire_in(dir.path(), "store").unwrap().is_some());

@@ -26,17 +26,9 @@ pub struct JoinInfo {
     pub server_addr: String,
     pub account_token: String,
     pub platform_api_url: String,
-    /// The cluster's Ceph fsid, so a joining node builds against the same
-    /// storage cluster rather than bootstrapping a second, isolated one.
     pub ceph_fsid: String,
 }
 
-/// Returns an error (not an empty list) when the cluster can't be reached.
-///
-/// This used to `unwrap_or_default()`, so "kubectl failed" and "there are no nodes"
-/// both came back as `200 []` — leaving the UI no way to tell a real answer from a
-/// broken one, which it then guessed at by assuming any empty list meant the control
-/// plane was down.
 pub async fn nodes() -> Result<Json<Vec<NodeInfo>>> {
     let items = kubectl::get_nodes().await?;
     Ok(Json(
@@ -136,18 +128,6 @@ pub async fn join_info(State(state): State<AppState>) -> Result<Json<JoinInfo>> 
     Ok(Json(parse_join_info(&text)?))
 }
 
-/// Extract everything a joining node needs from this node's config.toml.
-///
-/// Split from the handler so it is testable without a filesystem or an
-/// AppState. This is how a second machine learns which cluster to join, and two
-/// of the four fields cannot be regenerated locally — get either wrong and the
-/// new node either fails to join k3s or, worse, silently builds an isolated
-/// second Ceph cluster.
-///
-/// Uses `.get()` throughout. The previous version indexed with `table["node"]`
-/// and `node["k3s"]["token"]`, which *panics* on a missing key rather than
-/// returning an error — so a hand-edited or truncated config.toml took the
-/// request thread down instead of reporting what was wrong.
 pub fn parse_join_info(text: &str) -> anyhow::Result<JoinInfo> {
     let table: toml::Table = toml::from_str(text)?;
 
@@ -187,15 +167,6 @@ pub fn parse_join_info(text: &str) -> anyhow::Result<JoinInfo> {
         .unwrap_or("")
         .to_string();
 
-    // Every node in a Ceph cluster shares one fsid. A joining node cannot
-    // generate its own: it is baked into each OSD's BlueStore superblock, and a
-    // node built with the wrong value cannot authenticate to the mons at all.
-    // So it travels with the k3s token, which has exactly the same property.
-    //
-    // Empty rather than an error: a node installed before host-level Ceph has
-    // no [ceph] section, and the installer refuses an empty value on the other
-    // side rather than generating a fresh fsid. Failing here instead would stop
-    // such a node from serving join-info at all.
     let ceph_fsid = table
         .get("ceph")
         .and_then(|c| c.as_table())
@@ -206,11 +177,6 @@ pub fn parse_join_info(text: &str) -> anyhow::Result<JoinInfo> {
 
     Ok(JoinInfo {
         k3s_token,
-        // This exact shape is parsed back out in homelab/nixos/common.nix
-        // (`cephSeedAddr`) to find the mon to join through — same tunnel, same
-        // peer, so there is nothing extra to keep in sync. Changing the format
-        // here breaks the Ceph join on the next machine that installs; it fails
-        // loudly at eval time rather than silently, but only on that machine.
         server_addr: format!("https://[{sub_ipv6_private}]:6443"),
         account_token,
         platform_api_url,
@@ -222,7 +188,6 @@ pub fn parse_join_info(text: &str) -> anyhow::Result<JoinInfo> {
 mod tests {
     use super::*;
 
-    /// A config.toml with only the fields join-info reads.
     fn cfg(extra: &str) -> String {
         format!(
             r#"
@@ -251,9 +216,6 @@ platform_api_url = "https://api.example"
         assert_eq!(j.ceph_fsid, "11111111-2222-4333-8444-555555555555");
     }
 
-    /// The address is IPv6, so it MUST be bracketed. An unbracketed URL parses
-    /// as host "fd00" port "cafe", and the joining node fails to reach the API
-    /// server with an error that points nowhere near the cause.
     #[test]
     fn the_server_address_brackets_the_ipv6_literal() {
         let j = parse_join_info(&cfg("")).unwrap();
@@ -264,9 +226,6 @@ platform_api_url = "https://api.example"
         );
     }
 
-    /// A node predating host-level Ceph has no [ceph] section. It must still be
-    /// able to serve join-info; the installer refuses the empty value rather
-    /// than generating a fresh fsid, which is where that case is caught.
     #[test]
     fn a_config_without_a_ceph_section_reports_an_empty_fsid() {
         let j = parse_join_info(&cfg("")).unwrap();
@@ -278,11 +237,6 @@ platform_api_url = "https://api.example"
         assert_eq!(parse_join_info(&cfg("[ceph]")).unwrap().ceph_fsid, "");
     }
 
-    // ── The panics this function used to have ─────────────────────────────────
-    //
-    // These indexed with table["node"], which panics on a missing key. A
-    // truncated or hand-edited config.toml took down the request thread instead
-    // of returning a message naming the missing field.
 
     #[test]
     fn a_config_with_no_node_section_errors_instead_of_panicking() {
@@ -325,8 +279,6 @@ token = "deadbeef"
         assert!(e.to_string().contains("sub_ipv6_private"), "{e}");
     }
 
-    /// An empty token is as useless as a missing one, and would otherwise be
-    /// handed to a joining node as though it were valid.
     #[test]
     fn an_empty_token_is_treated_as_missing() {
         let bad = r#"
@@ -344,13 +296,11 @@ token = ""
         assert!(parse_join_info("this is not toml {{{").is_err());
     }
 
-    /// Wrong types must not panic either — `as_table` on a string returns None.
     #[test]
     fn a_node_key_of_the_wrong_type_errors() {
         assert!(parse_join_info("node = \"a string\"").is_err());
     }
 
-    /// Optional fields are genuinely optional; absent means empty, not failure.
     #[test]
     fn absent_tunnel_fields_default_to_empty() {
         let bad = r#"

@@ -40,10 +40,7 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
 ---
-{{- /* Cinny is a static site served by the image's own nginx, which listens on :80 and
-       offers no way to move. That is the port Caddy binds, and containers in a pod
-       share a network namespace, so running Cinny beside the gateway meant one of the
-       two silently lost the bind. It gets its own pod for that reason alone. */}}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:

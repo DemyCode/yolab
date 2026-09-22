@@ -13,44 +13,14 @@ use crate::error::Outcome;
 use crate::{config::Config, error::Result, proc::KillOnDrop, AppState};
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
-/// Shared with backup_run.rs, which exports this annotation so a restored namespace
-/// keeps its app identity — a single definition so the two can never drift apart.
 pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
-/// Chart version this instance was installed from. Captured in backups alongside the
-/// image digests, so a restore can say which packaging produced the data rather than
-/// leaving the user to find out from a crash loop.
 pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
-/// Which repository the chart came from.
-///
-/// `app-id` alone is ambiguous the moment more than one repo is configured — two repos
-/// can both ship a chart called `gitea`, and `app-id` is what the backup identity export
-/// and the restore path use to decide what an app *is*. Recording the repo now, while
-/// nothing has been installed yet, avoids a migration later against live data.
 pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 
 const ANN_CONFIG: &str = "yolab.io/config";
-/// The app's backup policy, as JSON `{enabled, schedule}`. On the namespace so
-/// `list_apps` can show it from the namespace list it already fetches, without a
-/// Secret read per app.
 const ANN_BACKUP: &str = "yolab.io/backup";
 const ANN_OUTPUTS: &str = "yolab.io/outputs";
-/// Marks a namespace as having an uninstall in flight.
-///
-/// A plain "is this namespace Terminating" check misses the window between a
-/// successful `helm uninstall` and the namespace actually entering
-/// `Terminating`: if the final `kubectl delete namespace` step itself fails
-/// (a control-plane blip is enough), the namespace sits `Active` looking
-/// exactly like "never uninstalled" — inviting a retry. That retry then
-/// races the first attempt's already-completed teardown: its pre-delete
-/// hook Job mounts a PVC the first run already deleted and hangs forever
-/// (observed live: `filebrowser-uninstall` stuck Pending, "persistentvolumeclaim
-/// \"filebrowser-data\" not found"). This annotation closes that window.
 const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
-/// How long an uninstall claim is honored before a fresh attempt may reclaim
-/// it. Comfortably longer than `HELM_UNINSTALL_TIMEOUT` plus the namespace
-/// delete retries below, so it only ever kicks in to recover from a
-/// crashed/restarted local-api — never to race an attempt still genuinely
-/// running.
 const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const LOGS_SCAN_TAIL: u32 = 500;
 const LOGS_FOLLOW_TAIL: u32 = 100;
@@ -76,18 +46,12 @@ pub struct OutputSpec {
 pub struct AppInfo {
     pub app_id: String,
     pub instance_name: String,
-    /// The random suffix `unique_instance_name` appended, or None for a name that
-    /// predates it. The UI strips it from the display name and shows it on its own.
     pub instance_id: Option<String>,
     pub status: String,
-    /// Plain-language explanation of `status`, empty when the app is healthy.
-    /// See `explain_app_state` for why this is not left to the UI to guess.
     pub detail: String,
     pub outputs: Vec<AppOutput>,
     pub outputs_spec: Vec<OutputSpec>,
     pub config: serde_json::Map<String, Value>,
-    /// This app's backup policy and last successful backup, so its tile and page
-    /// can show both without a second request.
     pub backup: AppBackupStatus,
 }
 
@@ -95,9 +59,7 @@ pub struct AppInfo {
 pub struct AppBackupStatus {
     pub enabled: bool,
     pub schedule: String,
-    /// When this app last backed up successfully, RFC 3339, if ever.
     pub last_ok_at: Option<String>,
-    /// Whether a backup of this app is running right now.
     pub running: bool,
 }
 
@@ -115,15 +77,9 @@ impl Default for AppBackupStatus {
 #[derive(Serialize)]
 pub struct CatalogApp {
     pub id: String,
-    /// Repository this chart came from. The UI uses it to distinguish the curated
-    /// catalog from charts a user added themselves — which matters, because a chart can
-    /// create arbitrary cluster objects, so "who published this" is a security fact and
-    /// not decoration.
     pub repo: String,
     pub name: String,
     pub description: String,
-    /// The project's own website, from Chart.yaml's `home`. Empty for a chart that
-    /// does not declare one (including uploaded ones), and the UI simply omits the link.
     pub home: String,
     pub icon: String,
     pub category: String,
@@ -153,33 +109,24 @@ pub struct DomainResponse {
 pub struct InstallRequest {
     pub instance_name: String,
     pub config: serde_json::Map<String, Value>,
-    /// Set when this install is not a fresh catalog pick: a duplicate of a live
-    /// app, or a restore of one from a backup.
     #[serde(default)]
     pub source: Option<InstallSource>,
 }
 
-/// Where a non-catalog install gets its app from.
 #[derive(Deserialize, Clone, Default)]
 pub struct InstallSource {
-    /// "duplicate" (a live app) or "backup" (a snapshot).
     #[serde(default)]
     pub kind: String,
-    /// duplicate: the live instance to copy from, without the `yolab-` prefix.
     #[serde(default)]
     pub from_instance: Option<String>,
-    /// backup: the namespace the snapshot holds, with the `yolab-` prefix.
     #[serde(default)]
     pub namespace: Option<String>,
-    /// duplicate-with-data / backup: the cluster-backup snapshot to restore from.
     #[serde(default)]
     pub snapshot_id: Option<String>,
-    /// duplicate: also copy the app's data (volumes), not just its settings.
     #[serde(default)]
     pub with_data: bool,
 }
 
-/// The source namespace and the source definition, for a source-aware install.
 async fn resolve_install_source(src: &InstallSource) -> anyhow::Result<(String, AppDefinition)> {
     match src.kind.as_str() {
         "backup" => {
@@ -207,10 +154,7 @@ async fn resolve_install_source(src: &InstallSource) -> anyhow::Result<(String, 
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Overwrite a namespace annotation, logging (rather than swallowing) failures.
-/// A silently-failed annotate loses an app's persisted config or outputs.
 async fn annotate_ns(ns: &str, key: &str, value: &str) {
     if let Err(e) = crate::kubectl::run(&[
         "annotate",
@@ -225,35 +169,10 @@ async fn annotate_ns(ns: &str, key: &str, value: &str) {
     }
 }
 
-/// Where an app's install config actually lives.
-///
-/// IT USED TO LIVE IN A NAMESPACE ANNOTATION, IN PLAINTEXT.
-///
-/// `yolab.io/config` is the whole config object serialised as JSON, credentials
-/// included, and a namespace annotation is about the most readable place in a
-/// cluster: it comes out of `kubectl get ns -o yaml`, it is copied verbatim into
-/// `kubectl.kubernetes.io/last-applied-configuration` beside it, and it is
-/// returned by any request that lists namespaces. On 2026-09-11 a filebrowser
-/// admin password was read straight out of a routine diagnostic dump of
-/// `kubectl get ns yolab-filebrowser -o jsonpath={.metadata.annotations}`.
-///
-/// A Secret is not encryption — it is base64 in etcd unless the cluster enables
-/// encryption at rest — but it is the conventional place, it is a separate
-/// resource for RBAC to grant or withhold, and it does not turn up in the output
-/// of every command that touches namespaces.
 const CONFIG_SECRET: &str = "yolab-config";
 const CONFIG_SECRET_KEY: &str = "config.json";
-/// What a credential field reads as in the annotation that remains.
 const REDACTED: &str = "__redacted__";
 
-/// Config field names the chart marks as credentials.
-///
-/// Read from the chart's uiSchema — the same `ui:widget: PasswordWidget` the
-/// install form uses to decide what to mask and what to offer to regenerate —
-/// and NOT from guessing at names. The install page already made that choice
-/// deliberately ("Which fields those are comes from the chart's uiSchema, not
-/// from guessing at names"); a second, name-sniffing rule here would disagree
-/// with it the first time a chart calls something `api_key`.
 fn credential_fields(uischema: &Value) -> std::collections::HashSet<String> {
     uischema
         .as_object()
@@ -266,11 +185,6 @@ fn credential_fields(uischema: &Value) -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
-/// The config with every credential replaced by a marker, for the annotation.
-///
-/// The keys are kept rather than dropped so the annotation still describes the
-/// shape of the config, and so anything reading it can tell "this app has a
-/// password, stored elsewhere" from "this app has no password".
 fn redact_credentials(
     config: &serde_json::Map<String, Value>,
     credentials: &std::collections::HashSet<String>,
@@ -287,9 +201,6 @@ fn redact_credentials(
         .collect()
 }
 
-/// An app's config, credentials included, from its Secret — the only place it
-/// lives. Never from the annotation: that copy is redacted, and an update built
-/// on it would hand helm the literal "__redacted__" as the app's password.
 async fn read_config(ns: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
     let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
         .await?
@@ -308,38 +219,16 @@ fn parse_saved_config(
         .map_err(|e| anyhow::anyhow!("{ns}: the saved settings are unreadable: {e}"))
 }
 
-// ── The app definition ────────────────────────────────────────────────────────
-//
-// ONE RECORD OF WHAT AN APP IS, written at install and read by everything else.
-//
-// Before this, three places each carried their own idea of the app: the install
-// path wrote annotations + a config Secret, the backup path re-derived identity
-// from those annotations, and restore reverse-engineered the config back out of
-// a backed-up Secret. They could disagree, and adding a field (a schedule, a
-// resource footprint) meant teaching all three. The definition is the single
-// source of truth; the annotation remains only as a cheap redacted cache that
-// `list_apps` reads without a Secret fetch per namespace.
-//
-// It lives in the SAME `yolab-config` Secret as `config.json`, under `app.json`,
-// so there is one Secret to fetch and one to back up. `config.json` is kept
-// because it is what older readers (and `helm`-time callers) expect; the
-// definition supersedes it but does not orphan it.
 
 pub(crate) const DEFINITION_SCHEMA: u32 = 1;
 const DEFINITION_SECRET_KEY: &str = "app.json";
 
-/// One volume an app owns, as recorded at install. Name + capacity is enough to
-/// recreate it on a new cluster and to size a rebuild.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VolumeSpec {
     pub name: String,
     pub capacity: String,
 }
 
-/// The app's footprint, summed from its rendered workloads. This is what a
-/// "can this cluster hold everything back?" check and a rebuild manifest need,
-/// and it is deliberately taken from the chart's spec rather than from live pod
-/// usage, which is runtime noise.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResourceSpec {
     #[serde(default)]
@@ -352,18 +241,14 @@ pub struct ResourceSpec {
     pub replicas: u64,
 }
 
-/// Whether and when this app backs itself up.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BackupPolicy {
     pub enabled: bool,
-    /// A five-field cron expression, e.g. `0 3 * * *`. See `crate::cron`.
     pub schedule: String,
 }
 
 impl Default for BackupPolicy {
     fn default() -> Self {
-        // Nightly at 03:00. A homelab that never chose a schedule still gets one,
-        // and the app page makes it editable.
         Self {
             enabled: true,
             schedule: "0 3 * * *".to_string(),
@@ -391,7 +276,6 @@ pub struct AppDefinition {
     pub backup: BackupPolicy,
 }
 
-/// Persist the definition and the redacted annotation in one Secret write.
 pub(crate) async fn write_definition(
     ns: &str,
     def: &AppDefinition,
@@ -415,8 +299,6 @@ pub(crate) async fn write_definition(
     Ok(())
 }
 
-/// An app's definition. Falls back to reconstructing one from the config Secret
-/// and namespace annotations for apps installed before definitions existed.
 pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
     let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
         .await?
@@ -434,15 +316,10 @@ pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
     Ok(definition_from_annotations(&ns_v, config))
 }
 
-/// Best-effort read for callers (the scheduler) that can treat a missing
-/// definition as "use the default policy".
 pub(crate) async fn read_definition_opt(ns: &str) -> Option<AppDefinition> {
     read_definition(ns).await.ok()
 }
 
-/// A definition safe to hand the browser: credentials replaced by the marker the
-/// install form knows to leave alone. The real values never leave the server; the
-/// install path merges them back from the source definition.
 pub(crate) fn redact_definition(
     def: &AppDefinition,
     catalog_dir: &std::path::Path,
@@ -453,13 +330,6 @@ pub(crate) fn redact_definition(
     d
 }
 
-/// Replace the form's `__redacted__` markers with the values from `stored`.
-///
-/// The install form pre-fills from a redacted copy, so a password the user did
-/// not touch comes back as the marker. Writing that through would set the app's
-/// password to the literal string — so the real value is restored from the
-/// source definition, and a marker with nothing to restore is dropped rather
-/// than passed on.
 pub(crate) fn merge_credentials(
     mut incoming: serde_json::Map<String, Value>,
     stored: &serde_json::Map<String, Value>,
@@ -481,8 +351,6 @@ pub(crate) fn merge_credentials(
     incoming
 }
 
-/// The definition for an app with no `app.json`, rebuilt from what the namespace
-/// annotations and config Secret already say.
 pub(crate) fn definition_from_annotations(
     ns_v: &Value,
     config: serde_json::Map<String, Value>,
@@ -512,14 +380,7 @@ pub(crate) fn definition_from_annotations(
     }
 }
 
-/// Read an app's volumes and resource footprint from the live cluster.
-///
-/// Called after install/update so the definition describes what actually
-/// landed, not what the schema hoped for. Best-effort: a definition without a
-/// footprint is still a definition.
 pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec) {
-    // The same PVC inventory the backup layer walks, so an app's definition can
-    // never list a volume the backup would not capture (or miss one it would).
     let volumes = crate::routers::backup_common::list_user_pvcs()
         .await
         .unwrap_or_default()
@@ -572,7 +433,6 @@ pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec)
     (volumes, resources)
 }
 
-/// Kubernetes CPU quantity → millicores: `100m` = 100, `1` = 1000, `0.5` = 500.
 pub(crate) fn parse_cpu_millicores(s: &str) -> u64 {
     let s = s.trim();
     if let Some(m) = s.strip_suffix('m') {
@@ -584,8 +444,6 @@ pub(crate) fn parse_cpu_millicores(s: &str) -> u64 {
     (s.parse::<f64>().unwrap_or(0.0) * 1000.0).round() as u64
 }
 
-/// Kubernetes memory quantity → bytes. Binary (Ki/Mi/Gi/Ti) and decimal
-/// (k/M/G/T) suffixes, plus a bare number.
 pub(crate) fn parse_memory_bytes(s: &str) -> u64 {
     let s = s.trim();
     let (num, mult) = if let Some(n) = s.strip_suffix("Ki") {
@@ -615,13 +473,6 @@ fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
         .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))
 }
 
-// ── Chart metadata ────────────────────────────────────────────────────────────
-//
-// Apps are Helm charts. What used to be five files per app (app.toml, schema.json,
-// uischema.json, outputs.json, manifest.yaml.j2) is now Chart.yaml + values.schema.json
-// + templates/, with the YoLab-specific bits carried as chart annotations — the standard
-// escape hatch for metadata Helm has no field for. Reading them here rather than from a
-// bespoke layout is what lets a chart from someone else's repo work unmodified.
 
 const ANN_DISPLAY_NAME: &str = "yolab.io/display-name";
 const ANN_ICON: &str = "yolab.io/icon";
@@ -634,10 +485,6 @@ struct ChartYaml {
     name: String,
     #[serde(default)]
     description: String,
-    /// Helm's own field for the project's website. Surfaced to the storefront because
-    /// a one-line description cannot explain what most of these apps are — the honest
-    /// answer to "what is Karakeep?" is the project's own page, and a name with no way
-    /// to look it up is a name someone will not install.
     #[serde(default)]
     home: String,
     #[serde(default)]
@@ -650,10 +497,6 @@ struct ChartYaml {
 
 struct ChartMeta {
     chart: ChartYaml,
-    /// The user-facing form schema: values.schema.json's `properties.config`. Nesting it
-    /// under `config` keeps Helm able to validate the WHOLE values object (including the
-    /// platform-injected `yolab` subtree) while leaving the form schema extractable
-    /// exactly as the UI already expects it.
     schema: Value,
 }
 
@@ -665,7 +508,6 @@ impl ChartMeta {
             .map(String::as_str)
             .unwrap_or("")
     }
-    /// Annotations hold JSON as a string (YAML block scalar); parse or fall back.
     fn ann_json(&self, key: &str) -> Value {
         serde_json::from_str(self.ann(key)).unwrap_or(Value::Null)
     }
@@ -682,7 +524,6 @@ impl ChartMeta {
 fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
     let chart: ChartYaml =
         serde_norway::from_str(&std::fs::read_to_string(dir.join("Chart.yaml")).ok()?).ok()?;
-    // Library charts (yolab-common) are building blocks, not installable apps.
     if chart.type_ == "library" {
         return None;
     }
@@ -694,12 +535,6 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
     Some(ChartMeta { chart, schema })
 }
 
-/// The chart's log-scraping output specs (`yolab.io/outputs`). Empty when the chart
-/// declares none, or when the app was installed from a chart no longer in the catalog.
-/// The chart's uiSchema, which is what marks a config field as a credential.
-///
-/// Read from the chart rather than from the namespace so it is available on the
-/// install path, before anything has been annotated.
 fn chart_uischema(catalog_dir: &std::path::Path, id: &str) -> Value {
     if id.is_empty() {
         return Value::Null;
@@ -719,18 +554,6 @@ fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The tunnel subdomain the user asked for: the value of whichever config field the
-/// chart's schema marks `format: tunnel`. wg-register needs it to claim the subdomain.
-///
-/// `schema` here is ALREADY the config subtree — `read_chart` stores
-/// `values.schema.json`'s `properties.config` — so the tunnel field sits at
-/// `properties.<field>`. Both that and the fully-nested shape are accepted, so
-/// this keeps working if a caller ever passes the whole values schema.
-///
-/// (An earlier version of this comment claimed the opposite. The empty
-/// serviceName that prompted it came from the UI posting `config: {}`, because
-/// InstallPage unwrapped `properties.config` a second time and rendered no
-/// fields at all — not from the lookup path being wrong.)
 fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
     fn tunnel_field(props: Option<&serde_json::Map<String, Value>>) -> Option<(String, Value)> {
         props?.iter().find_map(|(k, v)| {
@@ -745,15 +568,6 @@ fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>)
         return String::new();
     };
 
-    // The user's answer, falling back to the schema's declared default.
-    //
-    // The fallback is not belt-and-braces — it is the normal path. An install
-    // submitted with `config: {}` (seen live) leaves no subdomain at all, and an
-    // empty serviceName means wg-register registers no DNS record, YOLAB_FQDN
-    // comes out blank, and the app's Caddy dies on a Caddyfile whose site block
-    // collapsed to a bare `{`. A schema that declares `"default": "qbittorrent"`
-    // is stating what to use when the field is absent; ignoring that turned a
-    // missing optional answer into a broken install.
     config
         .get(&field)
         .and_then(|v| v.as_str())
@@ -763,19 +577,11 @@ fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>)
         .to_string()
 }
 
-/// Values file handed to Helm. Everything the user chose goes under `config`; everything
-/// the platform injects goes under `yolab`, so a chart can never confuse the two and a
-/// malicious chart's values cannot smuggle in a different account token.
 fn build_values(
     config: &serde_json::Map<String, Value>,
     tunnel_cfg: &toml::Table,
     service_name: &str,
 ) -> String {
-    // No accountToken here on purpose. Chart values are persisted verbatim in the Helm
-    // release Secret and echoed by `helm get values`, so passing the token as a value
-    // would put the account's master credential in one more durable, readable place —
-    // and into every backup. It reaches the one container that needs it through a
-    // namespace Secret instead (see ensure_tunnel_credentials).
     serde_json::json!({
         "config": config,
         "yolab": {
@@ -783,21 +589,9 @@ fn build_values(
             "serviceName": service_name,
         },
     })
-    // A values file is YAML, and JSON is valid YAML — so this needs no YAML serializer
-    // and cannot produce the indentation bugs hand-built YAML is prone to.
     .to_string()
 }
 
-/// Runs a helm command, streaming stdout+stderr to the client as SSE.
-///
-/// Helm writes progress and errors to stderr, so both are forwarded — the old
-/// `kubectl apply` streamer only forwarded stdout, which is why a failed apply surfaced
-/// as a bare exit code with no explanation.
-///
-/// `failed` is set when helm exits non-zero (or cannot be spawned). A stream cannot
-/// return a value, and the install path needs the outcome to decide whether to roll
-/// back what it just created — so the outcome is a shared flag the caller reads after
-/// draining the stream.
 fn helm_stream(
     args: Vec<String>,
     failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -843,25 +637,6 @@ fn helm_stream(
     }
 }
 
-/// Creates the app's namespace with the labels and annotations YoLab depends on.
-///
-/// Deliberately NOT part of the chart. `yolab.io/managed` is what the backup's PVC
-/// inventory and cluster export select on, and `yolab.io/app-id` is what identifies the
-/// app after a restore — leaving those to chart authors would mean a third-party chart
-/// could silently opt itself out of being backed up.
-/// Puts the platform account token in the app's namespace as a Secret.
-///
-/// Created by local-api, not by the chart: a chart must not get to choose where its
-/// credentials come from, or a hostile one could point the reference at a Secret it
-/// controls. Only `yolab-common.wgRegisterInit` and the pre-delete hook reference it, so
-/// the app's own containers never receive it in their environment.
-///
-/// This is a containment measure, not a fix. The token is still the whole account — it
-/// can read the raw B2 credentials from /storage/s3, manage tunnels and DNS, and it
-/// doubles as the x-yolab-cluster header that bypasses local-api auth entirely. Anything
-/// that can read Secrets in the namespace can still reach it. The real fix is minting a
-/// per-app credential scoped to "register one tunnel for one service", which needs a new
-/// endpoint on yolab-external.
 async fn ensure_tunnel_credentials(ns: &str, tunnel_cfg: &toml::Table) -> anyhow::Result<()> {
     let token = tunnel_cfg
         .get("account_token")
@@ -909,19 +684,12 @@ fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
     if raw.is_empty() {
         return vec![];
     }
-    // Written only by scan_outputs, in this shape. Anything else is logged, not
-    // guessed at.
     serde_json::from_str::<Vec<AppOutput>>(raw).unwrap_or_else(|e| {
         tracing::warn!("{ANN_OUTPUTS} does not hold a list of outputs ({e}) — showing none");
         vec![]
     })
 }
 
-/// Reject config scalars that could break out of a YAML scalar and inject
-/// structure into the rendered manifest. Tera writes context string values
-/// verbatim, so an embedded newline in e.g. a "domain" field could smuggle an
-/// extra key/document into the applied manifest. All current catalog fields are
-/// single-line scalars, so rejecting control characters has no false positives.
 fn validate_config_values(
     config: &serde_json::Map<String, Value>,
 ) -> std::result::Result<(), String> {
@@ -947,16 +715,8 @@ fn validate_config_values(
     Ok(())
 }
 
-// render_manifest + apply_manifest_stream lived here. Both are gone: Helm renders the
-// chart and applies the result itself, so there is no hand-rolled template context to
-// keep in sync with each app's variable names, and no separate "write a temp manifest,
-// kubectl apply it, hope stderr wasn't important" path.
 
-// ── Routes ────────────────────────────────────────────────────────────────────
 
-/// Strip scheme and trailing slash from a dns_url, then drop the leading
-/// subdomain label to yield the apex tunnel domain. A purely numeric first
-/// label (an IP-like host) is kept as-is.
 fn derive_domain(dns_url: &str) -> String {
     let host = dns_url
         .trim_start_matches("https://")
@@ -978,13 +738,6 @@ pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainR
     }))
 }
 
-/// The storefront: every chart across every configured source.
-///
-/// Sources are visited in resolution order (synced repos first, the bundled directory
-/// last), and the first chart seen for a given id wins — so a published fix supersedes the
-/// copy shipped in the system closure without anyone rebuilding the OS.
-/// One chart's storefront entry. Shared by the full listing and the single-chart
-/// refresh so the two can never drift into describing the same chart differently.
 fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
     CatalogApp {
         id: meta.chart.name.clone(),
@@ -1000,17 +753,6 @@ fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
     }
 }
 
-/// Re-pull one chart, then return its freshly-read catalog entry.
-///
-/// Called by the install page before it renders the form. The background sync is
-/// hourly, so a chart published minutes ago still shows its previous schema —
-/// and a field you just added is simply absent, which looks like a broken change
-/// rather than a stale copy.
-///
-/// Failure is deliberately not an error: if the registry is unreachable, the
-/// cached chart is still perfectly installable and the form should render from
-/// it rather than refusing to open. The response says whether the refresh
-/// actually happened so the UI can tell "current" from "possibly stale".
 pub async fn refresh_catalog_app(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -1024,7 +766,6 @@ pub async fn refresh_catalog_app(
                 refreshed = true;
                 break;
             }
-            // Not in this repo, or this repo is unreachable — try the next one.
             Err(e) => note = e.to_string(),
         }
     }
@@ -1056,21 +797,16 @@ pub async fn catalog(State(_state): State<AppState>) -> Json<Vec<CatalogApp>> {
             let Some(meta) = read_chart(&entry.path()) else {
                 continue;
             };
-            // An id can legitimately exist in several repos; the earlier source wins, and
-            // the UI shows which repo it came from so "gitea from someone else's repo"
-            // can never masquerade as the curated one.
             if !seen.insert(meta.chart.name.clone()) {
                 continue;
             }
             apps.push(catalog_entry_from(repo.clone(), meta));
         }
     }
-    // read_dir order is filesystem-dependent; sort so the storefront is stable.
     apps.sort_by_key(|a| a.name.to_lowercase());
     Json(apps)
 }
 
-// ── Chart repositories ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct AddRepoBody {
@@ -1089,12 +825,9 @@ pub async fn add_repo(
     if let Err(e) = crate::charts::add_repo(&body.name, &body.url).await {
         return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
     }
-    // Sync immediately so the storefront reflects the new repo without a second call.
     let repos = crate::charts::list_repos().await;
     if let Some(r) = repos.iter().find(|r| r.name == body.name) {
         if let Err(e) = crate::charts::sync_repo(r).await {
-            // The repo is registered but unusable — surface it rather than leaving an
-            // empty section in the UI with no explanation.
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("added, but sync failed: {e}"),
@@ -1115,8 +848,6 @@ pub async fn remove_repo(
     }
 }
 
-/// Refreshes every repo. Also runs on a timer (see `run_chart_sync`) so a node picks up
-/// newly published apps on its own.
 pub async fn sync_repos(State(_s): State<AppState>) -> Json<serde_json::Value> {
     let mut results = serde_json::Map::new();
     for repo in crate::charts::list_repos().await {
@@ -1129,26 +860,6 @@ pub async fn sync_repos(State(_s): State<AppState>) -> Json<serde_json::Value> {
     Json(Value::Object(results))
 }
 
-/// True when a pod sitting in an app's namespace belongs to YoLab's backup
-/// machinery rather than to the app.
-///
-/// VolSync schedules its movers INTO the namespace of the volume they copy, so
-/// every app namespace temporarily grows a `volsync-src-…` pod during a backup and
-/// a `volsync-dst-…` pod during a restore. They are ours. Counting them as the
-/// app's own pods had two visible effects:
-///
-///   - the app card flipped to "Starting…" for the pull-and-init window of every
-///     backup, and again between the mover finishing (phase Succeeded, so its Ready
-///     condition is False) and Kubernetes garbage-collecting it;
-///   - the app's pod list showed `volsync-src-volsync-filebrowser-data-4k46c`
-///     alongside the app's own containers, which is an implementation detail with
-///     no meaning to whoever is looking at it.
-///
-/// Neither is wrong about the pod. Both are wrong about whose pod it is.
-///
-/// Matched on the name prefix, which is deterministic and already relied on
-/// elsewhere to find the mover for progress reporting, OR on VolSync's own label,
-/// so a rename upstream does not silently reopen this.
 pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
     pod["metadata"]["name"]
         .as_str()
@@ -1156,52 +867,17 @@ pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
         || pod["metadata"]["labels"]["app.kubernetes.io/created-by"].as_str() == Some("volsync")
 }
 
-/// True once Kubernetes has asked this pod to go away — `deletionTimestamp` is set.
-///
-/// A pod on its way out is not evidence about whether the app is up, and on a node
-/// whose kubelet cannot reach its container runtime it is not even on its way out:
-/// kubelet cannot kill what the runtime will not answer for, so the pod sits in
-/// Terminating with `Ready: False` until the node is fixed or forcibly removed.
-///
-/// That is not hypothetical. On 2026-09-06 a node's containerd data-root died (an
-/// RBD write timeout shut XFS down, see storage::containerd_store) and its pods hung
-/// in Terminating for 32 hours. Kubernetes did the right thing and started a healthy
-/// replacement for each of them on the other node — and the UI showed every app as
-/// "Starting up…" the entire time, because the readiness rollup below is an `all()`
-/// and each namespace still contained one unready ghost. Every app was reachable and
-/// serving; the only broken thing was the sentence under its name.
-///
-/// So a terminating pod is excluded from the *rollup*, not from sight: `list_pods`
-/// deliberately still shows it, because when a pod is wedged in Terminating that is
-/// exactly what someone opening the pod list needs to see.
 pub(crate) fn is_terminating_pod(pod: &Value) -> bool {
     !pod["metadata"]["deletionTimestamp"].is_null()
 }
 
-/// What is actually happening to this app, in words its owner can act on.
-///
-/// "Starting up…" is true of a container downloading a 2GB image, an init
-/// container waiting on a storage driver, and a process that has crashed 300
-/// times — and it is useless in all three. Someone whose app has not come back
-/// needs to know whether to wait, check their internet, or look at the logs, and
-/// Kubernetes already knows which; it just says so in words like
-/// `ImagePullBackOff` and `CreateContainerConfigError`.
-///
-/// This is the translation. It reports the FIRST thing that is not fine, in
-/// roughly the order a person would care: something broken beats something slow,
-/// and a specific cause beats a generic one.
-///
-/// Only pod status is consulted, never events. Events would add detail (a failed
-/// mount names the volume) but they expire, they are per-namespace, and reading
-/// them means another API call per app on a page that already renders during an
-/// outage. Everything below survives the API being slow.
 pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     if pods.is_empty() {
         return "Waiting to be given a machine to run on".into();
     }
 
     let mut restarts: i64 = 0;
-    let mut waiting: Vec<(String, bool)> = Vec::new(); // (reason, is_init)
+    let mut waiting: Vec<(String, bool)> = Vec::new();
     let mut unschedulable = false;
     let mut running_not_ready = false;
 
@@ -1234,8 +910,6 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
 
     let has = |r: &str| waiting.iter().any(|(reason, _)| reason == r);
 
-    // Broken first. These do not resolve by waiting, and saying "starting up"
-    // about them is how an app sits dead for a day without anyone looking.
     if has("CrashLoopBackOff") {
         return if restarts > 1 {
             format!("Keeps stopping unexpectedly — restarted {restarts} times. Check the logs.")
@@ -1256,7 +930,6 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
         return "No machine has room for this app right now.".into();
     }
 
-    // Then the slow-but-fine states, most specific first.
     if has("ContainerCreating") {
         return "Getting ready — downloading files and connecting storage.".into();
     }
@@ -1267,8 +940,6 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
         return "Almost ready — waiting for the app to respond.".into();
     }
     if !waiting.is_empty() {
-        // An unrecognised reason is still worth showing verbatim: an honest
-        // Kubernetes word beats a reassuring invention.
         let (reason, _) = &waiting[0];
         return format!("Waiting: {reason}");
     }
@@ -1288,8 +959,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     );
     let v: Value = ns_out?;
 
-    // Build a pod-by-namespace index from the single bulk query so list_apps
-    // requires only two kubectl calls regardless of app count.
     let pods_v: Value = pods_out.unwrap_or_else(|_| serde_json::json!({"items": []}));
     let empty_pods: Vec<Value> = vec![];
     let all_pod_items = pods_v["items"].as_array().unwrap_or(&empty_pods);
@@ -1318,10 +987,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             "uninstalling".to_string()
         } else {
             let ns_full = format!("yolab-{name}");
-            // The app's own pods, and only the ones that still count as evidence: a
-            // backup running in this namespace must not make the app look like it is
-            // restarting, and a pod Kubernetes has already replaced must not hold the
-            // whole app at "Starting up…" while its replacement serves every request.
             let items: Vec<&Value> = pods_by_ns
                 .get(ns_full.as_str())
                 .map(|v| v.as_slice())
@@ -1340,8 +1005,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                         })
                         .unwrap_or(false)
                 });
-            // Only asked for when something is not right, so a healthy app costs
-            // nothing and its tile stays quiet.
             if !all_ready {
                 detail = explain_app_state(&items);
             }
@@ -1409,19 +1072,10 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     Ok(Json(apps))
 }
 
-/// Longest name Kubernetes will accept for a namespace (RFC 1123 label).
 const MAX_NS_LEN: usize = 63;
-/// `yolab-` prefix plus the `-xxxx` suffix this adds.
 const NS_OVERHEAD: usize = "yolab-".len() + 1 + INSTANCE_SUFFIX_LEN;
 const INSTANCE_SUFFIX_LEN: usize = 4;
 
-/// A short random suffix that makes one install distinguishable from the next.
-///
-/// No `l`, `o` or `0/1` — these end up in namespaces, URLs and support
-/// conversations, and a suffix somebody cannot read back correctly is worse than
-/// a slightly shorter one. 32 characters over 4 places is about a million
-/// combinations, which for a homelab is far past the point where collisions
-/// matter; `unique_instance_name` re-rolls on the off chance anyway.
 fn instance_suffix() -> String {
     (0..INSTANCE_SUFFIX_LEN)
         .map(|_| SUFFIX_ALPHABET[rand::random::<usize>() % SUFFIX_ALPHABET.len()] as char)
@@ -1430,8 +1084,6 @@ fn instance_suffix() -> String {
 
 const SUFFIX_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
 
-/// The inverse of `unique_instance_name`: `(stem, Some(suffix))`, or the whole name
-/// and None when its last segment could not have come from `instance_suffix`.
 fn split_instance_name(name: &str) -> (&str, Option<&str>) {
     match name.rsplit_once('-') {
         Some((stem, id))
@@ -1445,13 +1097,6 @@ fn split_instance_name(name: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// The part of the requested name that survives into the namespace.
-///
-/// Truncated so `yolab-<stem>-<suffix>` still fits Kubernetes' 63-character
-/// limit, rather than letting the API server reject the namespace after the
-/// owner has filled in a whole install form. Trailing hyphens are trimmed so a
-/// name cut mid-word cannot produce `something--ab3d`, and a name that is
-/// nothing but hyphens yields `None` rather than a namespace starting with one.
 fn instance_stem(requested: &str) -> Option<String> {
     let stem: String = requested
         .chars()
@@ -1461,25 +1106,6 @@ fn instance_stem(requested: &str) -> Option<String> {
     (!stem.is_empty()).then(|| stem.to_string())
 }
 
-/// The name an install actually gets: what the owner asked for, plus a suffix.
-///
-/// EVERY INSTALL IS A NEW APP, EVEN WHEN IT REUSES A NAME.
-///
-/// The namespace is `yolab-<instance>` and an app's backup repository is keyed
-/// by namespace and PVC name, so a name reused after a deletion landed on the
-/// previous app's repository. Not a theory: a fresh filebrowser installed on
-/// 2026-09-11 at 15:17 — new namespace, new PVC — wrote its first backup into
-/// the repo of the one deleted minutes earlier, chaining onto its history
-/// (`using parent snapshot 537a9ebc`) and inheriting a 25-hour-old stale lock.
-/// A restore on the new app would have offered the old app's snapshots, and the
-/// deleted app's files became reachable by whoever now owned the name.
-///
-/// Names are unique among LIVE apps already; the collision is across time. A
-/// suffix closes that without asking the owner to invent unique names forever.
-///
-/// The candidate is checked against the cluster rather than assumed, because a
-/// collision with a live app would not fail — `ensure_app_namespace` applies,
-/// so it would quietly install into the running app's namespace.
 async fn unique_instance_name(requested: &str) -> Option<String> {
     let stem = instance_stem(requested)?;
     for _ in 0..8 {
@@ -1520,8 +1146,6 @@ pub async fn install_app(
         return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
     }
 
-    // Server-side, so a client cannot pick a name that collides with a deleted
-    // app's leftovers — see `unique_instance_name`.
     let Some(instance_name) = unique_instance_name(&body.instance_name).await else {
         return (
             StatusCode::BAD_REQUEST,
@@ -1530,10 +1154,6 @@ pub async fn install_app(
             .into_response();
     };
 
-    // A duplicate-with-data or a restore-from-backup restores the source's
-    // volumes, then installs the chart with the posted settings. Credentials the
-    // form left as the redaction marker are merged back from the source
-    // definition, so a copy does not reset the app's passwords.
     if let Some(src) = body.source.clone() {
         let with_data = src.kind == "backup" || (src.kind == "duplicate" && src.with_data);
         if with_data {
@@ -1569,9 +1189,6 @@ pub async fn install_app(
             return Sse::new(stream).into_response();
         }
         if src.kind == "duplicate" {
-            // A fresh copy with the same settings. The data is not copied, but the
-            // credentials must be: the form shows the redaction marker, and the
-            // real values only exist on the source.
             if let Ok((_, def)) = resolve_install_source(&src).await {
                 let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
                 body.config = merge_credentials(body.config, &def.config, &uischema);
@@ -1600,20 +1217,6 @@ pub async fn install_app(
         } = staged;
 
         yield Ok(Event::default().data("Installing chart..."));
-        // `upgrade --install` rather than `install`: a retry after a partial failure then
-        // converges instead of erroring with "release already exists" and leaving the user
-        // stuck with a half-installed app they can't retry or remove from the UI.
-        // --dependency-update resolves the chart's declared dependencies if they are not
-        // already vendored. Charts pulled from the registry arrive self-contained (the
-        // packaged tarball includes charts/yolab-common), so this is a no-op for them; it
-        // only does work for a chart resolved from the bundled source directory, whose
-        // charts/ is a build artifact and therefore gitignored.
-        //
-        // This replaces a boot-time systemd unit that vendored every bundled chart up
-        // front. That unit could not earn its keep once the library became an oci://
-        // dependency: it needed the network to do its job, so it failed in exactly the
-        // situation its fallback existed for, and listing the catalog never needed
-        // dependencies at all — only rendering does.
         let args: Vec<String> = vec![
             "upgrade".into(), "--install".into(), "--dependency-update".into(),
             instance_name.clone(), chart_dir.to_string_lossy().to_string(),
@@ -1627,12 +1230,6 @@ pub async fn install_app(
         while let Some(ev) = s.next().await { yield ev; }
         drop(tmp);
 
-        // AN INSTALL THAT FAILED IS NOT AN INSTALL. Before this, a failed helm left
-        // the namespace and tunnel-credentials Secret behind, and the app then showed
-        // up on the home page as a forever-"starting" tile nobody could retry. Roll
-        // back everything this attempt created: `helm uninstall` first so the chart's
-        // pre-delete hook deletes the WireGuard tunnel (a DNS name now belongs to
-        // exactly one tunnel, so leaving it would block the retry), then the namespace.
         if failed.load(std::sync::atomic::Ordering::Relaxed) {
             rollback_failed_install(&ns, &instance_name).await;
             yield Ok(Event::default().data(format!(
@@ -1641,7 +1238,6 @@ pub async fn install_app(
             return;
         }
 
-        // Record what actually landed, not what the schema hoped for.
         let (volumes, resources) = collect_runtime(&ns).await;
         let def = AppDefinition {
             schema: DEFINITION_SCHEMA,
@@ -1655,8 +1251,6 @@ pub async fn install_app(
             resources,
             backup: BackupPolicy::default(),
         };
-        // The real config goes in a Secret; a copy with credentials redacted stays
-        // on the namespace, where list_apps can read every app's at once.
         if let Err(e) = write_definition(&ns, &def, &chart_uischema(&state.config.catalog_dir(), &app_id)).await {
             yield Ok(Event::default().data(format!(
                 "[ERROR] {app_id} was installed, but its settings could not be saved ({e}) — reinstall it before changing its settings"
@@ -1664,9 +1258,6 @@ pub async fn install_app(
             return;
         }
 
-        // Wire up VolSync ReplicationSource(s) for any PVCs this app created. Best-effort:
-        // the hourly replication-source reconciler self-heals a failure here within the
-        // hour, but the person installing should still be told it didn't happen yet.
         if let Err(e) = crate::routers::backups::setup_namespace_backup(&ns).await {
             yield Ok(Event::default().data(format!(
                 "[WARN] backup was not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
@@ -1678,11 +1269,6 @@ pub async fn install_app(
     Sse::new(stream).into_response()
 }
 
-/// Removes everything a failed install created: the Helm release first (so the
-/// chart's pre-delete hook can delete the WireGuard tunnel it registered), then
-/// the namespace. Best-effort throughout — the caller has already decided the
-/// install failed, and a cleanup that itself fails must not turn into a second
-/// error the user has to reason about.
 pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
     crate::exec::checked(
         "helm",
@@ -1696,22 +1282,16 @@ pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
         .debug_on_err(format!("rollback {ns}: delete namespace"));
 }
 
-/// Everything an install needs before `helm upgrade --install` runs.
 struct StagedInstall {
     ns: String,
-    /// The identity the definition records: which chart, from where, at what
-    /// version, and the tunnel name resolved from the config.
     app_id: String,
     chart_repo: String,
     chart_version: String,
     service_name: String,
     chart_dir: std::path::PathBuf,
-    /// The values file; removed when dropped, so it must outlive the helm call.
     values: tempfile::NamedTempFile,
 }
 
-/// The steps every install shares, whoever asked for it: the chart, the namespace
-/// the backup layer selects on, the tunnel credentials and the values file.
 async fn stage_install(
     cfg: &Config,
     id: &str,
@@ -1727,12 +1307,9 @@ async fn stage_install(
         anyhow::bail!("{id} is not a valid chart");
     };
     let ns = format!("yolab-{instance_name}");
-    // Namespace first: the chart's resources are namespaced, and the labels/
-    // annotations set here are what the backup layer selects on.
     ensure_app_namespace(&ns, id, &repo, &meta.chart.version)
         .await
         .map_err(|e| anyhow::anyhow!("create namespace: {e}"))?;
-    // The one container that needs the account token reads it from here.
     ensure_tunnel_credentials(&ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
@@ -1757,10 +1334,6 @@ async fn stage_install(
     })
 }
 
-/// An app staged for installation — its namespace, tunnel credentials and values
-/// exist — and not installed yet, for callers that are not an HTTP request and
-/// put things in the namespace first: adding an app from backup restores its
-/// volumes before the chart that uses them. Backups are NOT wired up here.
 pub(crate) struct PreparedInstall {
     cfg: Config,
     staged: StagedInstall,
@@ -1786,7 +1359,6 @@ pub(crate) async fn prepare_install(
 }
 
 impl PreparedInstall {
-    /// Installs the chart and waits for Helm.
     pub(crate) async fn run(self) -> anyhow::Result<()> {
         let PreparedInstall {
             cfg,
@@ -1879,9 +1451,6 @@ pub async fn update_app(
         .unwrap_or("")
         .to_string();
     let uischema = chart_uischema(&state.config.catalog_dir(), &id);
-    // From the Secret, not the annotation: the annotation only carries redacted
-    // credentials now, and an update that fell back to it would hand helm the
-    // literal string "__redacted__" as the app's password.
     let stored_config = match read_config(&ns).await {
         Ok(c) => c,
         Err(e) => {
@@ -1893,15 +1462,8 @@ pub async fn update_app(
         }
     };
 
-    // Caller may supply a new config; fall back to the stored one.
     let config = match body.and_then(|b| b.0.config) {
         Some(mut incoming) => {
-            // THE FORM PRE-FILLS FROM THE REDACTED COPY. `list_apps` deliberately
-            // no longer hands the browser real credentials, so a password the
-            // user did not touch comes back here as the marker. Writing that
-            // through would silently set the app's password to the literal
-            // string "__redacted__" — locking them out of their own app on a
-            // reconfigure that changed something else entirely.
             for field in credential_fields(&uischema) {
                 let untouched = incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
                 if untouched {
@@ -1909,8 +1471,6 @@ pub async fn update_app(
                         Some(kept) => {
                             incoming.insert(field, kept.clone());
                         }
-                        // Nothing stored to restore: drop the marker rather than
-                        // pass it on, and let the chart's default apply.
                         None => {
                             incoming.remove(&field);
                         }
@@ -1930,8 +1490,6 @@ pub async fn update_app(
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
     }
 
-    // Preserve the schedule across an update: a config change must not silently
-    // reset an app's backup policy back to the default.
     let existing_backup = read_definition_opt(&ns)
         .await
         .map(|d| d.backup)
@@ -1964,17 +1522,6 @@ pub async fn update_app(
         }
 
         yield Ok(Event::default().data("Upgrading release..."));
-        // --dependency-update resolves the chart's declared dependencies if they are not
-        // already vendored. Charts pulled from the registry arrive self-contained (the
-        // packaged tarball includes charts/yolab-common), so this is a no-op for them; it
-        // only does work for a chart resolved from the bundled source directory, whose
-        // charts/ is a build artifact and therefore gitignored.
-        //
-        // This replaces a boot-time systemd unit that vendored every bundled chart up
-        // front. That unit could not earn its keep once the library became an oci://
-        // dependency: it needed the network to do its job, so it failed in exactly the
-        // situation its fallback existed for, and listing the catalog never needed
-        // dependencies at all — only rendering does.
         let args: Vec<String> = vec![
             "upgrade".into(), "--install".into(), "--dependency-update".into(),
             instance_name.clone(), chart_dir.to_string_lossy().to_string(),
@@ -1995,10 +1542,6 @@ pub async fn update_app(
             return;
         }
 
-        // No explicit `kubectl rollout restart` any more. Helm diffs the rendered
-        // manifests and restarts only what actually changed — and charts that need a
-        // restart on a config-only change (e.g. a password held in a Secret) carry a
-        // checksum annotation on the pod template, which is the idiomatic way to say so.
         let (volumes, resources) = collect_runtime(&ns).await;
         let def = AppDefinition {
             schema: DEFINITION_SCHEMA,
@@ -2030,14 +1573,11 @@ pub struct BackupPolicyRequest {
     pub schedule: String,
 }
 
-/// PUT /api/apps/:instance/backup — set an app's own backup schedule.
 pub async fn set_backup_policy(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
     Json(body): Json<BackupPolicyRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    // Reject an invalid schedule here, with a message next to the field, rather
-    // than storing it and letting the scheduler skip the app forever.
     crate::cron::Cron::parse(&body.schedule)
         .map_err(|e| anyhow::anyhow!("that schedule is not valid: {e}"))?;
     let ns = format!("yolab-{instance_name}");
@@ -2051,8 +1591,6 @@ pub async fn set_backup_policy(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// GET /api/apps/:instance/definition — the app's definition, credentials
-/// redacted, for prefilling a duplicate's install form.
 pub async fn app_definition(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
@@ -2084,8 +1622,6 @@ pub async fn scan_outputs(
         }));
     }
 
-    // Compile regex patterns once — recompiling inside the inner log-line loop
-    // is O(patterns × lines) compilations which blows up on long logs.
     struct CompiledSpec {
         key: String,
         label: String,
@@ -2152,7 +1688,6 @@ pub async fn scan_outputs(
                     }
                 }
             }
-            // Stop as soon as all keys are found.
             if found.len() == compiled.len() {
                 break 'outer;
             }
@@ -2184,8 +1719,6 @@ pub async fn scan_outputs(
     Ok(Json(ScanOutputsResponse { outputs }))
 }
 
-/// Whether `ns`'s `yolab.io/uninstalling` annotation, if any, represents a
-/// still-active claim — i.e. younger than [`UNINSTALL_LOCK_TTL`].
 fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> bool {
     ann.get(ANN_UNINSTALLING)
         .and_then(|v| v.as_str())
@@ -2197,17 +1730,6 @@ fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> bool {
         .unwrap_or(false)
 }
 
-/// Atomically claims the uninstall lock on `ns` (see [`ANN_UNINSTALLING`]).
-///
-/// `--overwrite=false` is a real compare-and-swap at the API server: it
-/// fails if the annotation is already set, so two simultaneous first
-/// attempts cannot both win it. Returns `Ok(true)` once this call owns the
-/// lock — including when the namespace does not exist at all, since then
-/// there is nothing to race against and both the `helm uninstall
-/// --ignore-not-found` and the namespace delete below are no-ops. Returns
-/// `Ok(false)` when a fresh claim from another still-running uninstall is
-/// already in place; a stale one (past the TTL, e.g. left by a crashed
-/// local-api) is reclaimed instead.
 async fn claim_uninstall_lock(ns: &str) -> Result<bool> {
     let now = chrono::Utc::now().to_rfc3339();
     let first_claim = crate::kubectl::run(&[
@@ -2221,7 +1743,7 @@ async fn claim_uninstall_lock(ns: &str) -> Result<bool> {
     match first_claim {
         Ok(_) => return Ok(true),
         Err(e) if crate::kubectl::is_not_found(&e) => return Ok(true),
-        Err(_) => {} // annotation already present — fall through to check staleness
+        Err(_) => {}
     }
 
     let raw =
@@ -2249,16 +1771,6 @@ async fn claim_uninstall_lock(ns: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// The step most exposed to a flaky control plane — and, before this retry
-/// existed, the step that on failure left nothing to show an uninstall had
-/// even started: no PVC, no pods, but the namespace (and its lock) still
-/// sitting there `Active`, indistinguishable from "never touched" and
-/// inviting exactly the retry that used to race the first attempt's
-/// teardown. A short retry absorbs the transient etcd/apiserver hiccup that
-/// caused that in practice; a caller that exhausts it just logs and leaves
-/// the namespace for a future attempt to pick up, same as a failed helm
-/// uninstall above — the client already treats neither as fatal to this
-/// request.
 async fn delete_namespace_with_retry(ns: &str) {
     const ATTEMPTS: u32 = 4;
     let mut delay = std::time::Duration::from_secs(2);
@@ -2300,33 +1812,12 @@ pub async fn uninstall_app(
         return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
     }
 
-    // DETACHED, so a browser that goes away cannot kill a half-finished teardown.
-    //
-    // `helm uninstall` runs with `kill_on_drop(true)`. This handler used to await
-    // it directly, so when the client disconnected — a reload, a navigation, or
-    // just several Removes fired at once while the UI was struggling — axum
-    // dropped the handler future and SIGKILLed helm partway through. What that
-    // leaves is the worst of both states: the release marked `uninstalling`, the
-    // namespace still Active, and some of the app already torn down.
-    //
-    // Seen on 2026-09-11 with five apps at once, every one of them stranded that
-    // way at 14:59 with local-api itself running fine throughout. The watchdog
-    // does recover them, but not until the claim goes stale ten minutes later,
-    // and in the meantime the owner has pressed Remove and watched nothing
-    // happen.
-    //
-    // A spawned task outlives the handle: tokio detaches on drop rather than
-    // cancelling, so awaiting it here reports the result to a client that is
-    // still listening while letting the teardown run to completion for one that
-    // is not.
     let ns_owned = ns.clone();
     let instance_owned = instance_name.clone();
     let task = tokio::spawn(async move {
         run_teardown(&instance_owned, &ns_owned).await;
     });
     if let Err(e) = task.await {
-        // The teardown task panicked. The uninstall claim is still on the
-        // namespace, so the watchdog finishes it once the claim goes stale.
         tracing::error!("uninstall {instance_name}: teardown task failed: {e}");
         return Err(anyhow::anyhow!("the uninstall did not finish: {e}").into());
     }
@@ -2334,26 +1825,6 @@ pub async fn uninstall_app(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
-/// The teardown itself: run the chart's pre-delete hook via helm, then remove
-/// the namespace.
-///
-/// Split out of `uninstall_app` so the watchdog below can finish a teardown the
-/// request that started it never got to complete. Both callers must do exactly
-/// the same thing — a second, parallel implementation of "how to remove an app"
-/// is how the two paths drift until one of them leaves something behind.
-///
-/// Deliberately infallible. Every step already treats its own failure as
-/// non-fatal and logs it, because the namespace delete that follows tears the
-/// app down regardless; returning an error here would only give callers
-/// something to ignore.
-/// Whether the namespace is already being deleted.
-///
-/// Once it is, `helm uninstall` cannot succeed: its pre-delete hook has to CREATE
-/// a Job, and the API server refuses new objects in a terminating namespace —
-/// "unable to create new content in namespace X because it is being terminated".
-/// So retrying helm there is guaranteed noise. Observed after the watchdog's
-/// first pass on 2026-09-11: minecraft logged that same refusal at 13:55 and
-/// again at 14:01, once per tick, until the namespace finished going away.
 async fn namespace_is_terminating(ns: &str) -> bool {
     crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
         .await
@@ -2362,9 +1833,6 @@ async fn namespace_is_terminating(ns: &str) -> bool {
 }
 
 async fn run_teardown(instance_name: &str, ns: &str) {
-    // Already on its way out: skip straight to the delete, which is idempotent
-    // and simply confirms. Running helm here would fail every time and say
-    // nothing useful about it.
     if namespace_is_terminating(ns).await {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
@@ -2374,13 +1842,6 @@ async fn run_teardown(instance_name: &str, ns: &str) {
         return;
     }
 
-    // `helm uninstall` runs the chart's pre-delete hook (tunnel cleanup) and waits for
-    // it before removing anything. That replaces rendering an uninstall template by
-    // hand, applying it, and polling `kubectl wait job/uninstall --timeout=120s` — and
-    // unlike that version, a hook that fails shows up in the output instead of being
-    // silently skipped on its way to deleting the namespace anyway.
-    // Bounded: the pre-delete hook calls out to the platform to tear down the tunnel,
-    // which must not be allowed to hang this request forever if that call stalls.
     const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let work = tokio::process::Command::new("helm")
         .args([
@@ -2396,9 +1857,6 @@ async fn run_teardown(instance_name: &str, ns: &str) {
     let out = tokio::time::timeout(HELM_UNINSTALL_TIMEOUT, work).await;
     match out {
         Ok(Ok(o)) if !o.status.success() => {
-            // Not fatal: the namespace delete below still tears the app down. But it
-            // must be visible, because the thing that most commonly fails here is the
-            // tunnel cleanup, which leaves an orphaned tunnel on the platform.
             tracing::warn!(
                 "uninstall {instance_name}: helm uninstall failed: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
@@ -2415,15 +1873,6 @@ async fn run_teardown(instance_name: &str, ns: &str) {
     delete_namespace_with_retry(ns).await;
 }
 
-/// Namespaces whose uninstall was claimed and then abandoned.
-///
-/// Only STALE claims, so this can never race an attempt that is still genuinely
-/// running — `uninstall_lock_is_fresh` is the same check the request path uses
-/// to decide whether it may reclaim.
-///
-/// Split from the kubectl call so the selection can be tested: which namespaces
-/// this picks up is the part that decides whether a watchdog quietly deletes
-/// something someone is still working on.
 fn abandoned_in(v: &Value) -> Vec<(String, String)> {
     v["items"]
         .as_array()
@@ -2455,28 +1904,6 @@ async fn abandoned_uninstalls() -> anyhow::Result<Vec<(String, String)>> {
     Ok(abandoned_in(&v))
 }
 
-/// Finishes uninstalls whose driving request died.
-///
-/// AN UNINSTALL IS A LONG OPERATION DRIVEN BY ONE HTTP REQUEST, and nothing was
-/// resuming it. If local-api restarts while `helm uninstall --wait` is running —
-/// a deploy, a `nixos-rebuild`, a node reboot — the request dies and the app is
-/// left half-removed: the helm release stuck in `uninstalling`, the namespace
-/// still Active, and, because helm had already got partway, some of the app's
-/// resources gone. Pressing Remove again is the only thing that could finish it,
-/// and nothing tells the owner that is what is needed. The app simply sits there
-/// broken.
-///
-/// Observed on the live cluster 2026-09-11: minecraft claimed at 11:54:48 and
-/// filebrowser at 12:30:48, both abandoned by a local-api restart minutes later
-/// (21 restarts in 30 hours, during a day of deploys). filebrowser had already
-/// lost its data PVC, so its pods sat Pending on "persistentvolumeclaim
-/// \"filebrowser-data\" not found" for 23 hours; minecraft's world was left with
-/// a stale `session.lock` and crash-looped 28 times.
-///
-/// Both `UNINSTALL_LOCK_TTL` and `delete_namespace_with_retry` already described
-/// this case — "recover from a crashed/restarted local-api", "leaving it for a
-/// future retry" — and neither had anything that would actually do it. This is
-/// that future retry.
 pub struct UninstallWatchdogController;
 
 impl crate::runtime::Controller for UninstallWatchdogController {
@@ -2484,8 +1911,6 @@ impl crate::runtime::Controller for UninstallWatchdogController {
         "uninstall-watchdog"
     }
     fn scope(&self) -> crate::runtime::Scope {
-        // One node finishes an abandoned teardown; two would race each other's
-        // helm uninstall.
         crate::runtime::Scope::Cluster
     }
     fn interval(&self) -> std::time::Duration {
@@ -2495,8 +1920,6 @@ impl crate::runtime::Controller for UninstallWatchdogController {
         &[crate::runtime::Requirement::KubeApi]
     }
     fn not_before_uptime(&self) -> std::time::Duration {
-        // Long enough after boot that a legitimate in-flight uninstall from before
-        // a restart has had its chance to be re-driven by the client first.
         std::time::Duration::from_secs(90)
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
@@ -2569,10 +1992,6 @@ pub async fn pod_logs(
         let mut guard = KillOnDrop(c);
         use tokio::io::AsyncBufReadExt;
         let stdout = guard.0.stdout.take().unwrap();
-        // stderr was piped and then never read, so every reason kubectl declines to
-        // show logs — a container still initialising, a pod that has gone away, a name
-        // that no longer exists — arrived as an empty stream and an empty panel. The
-        // explanation existed; nothing carried it to the person reading.
         let stderr = guard.0.stderr.take().unwrap();
         let mut out = tokio::io::BufReader::new(stdout).lines();
         let mut err = tokio::io::BufReader::new(stderr).lines();
@@ -2584,13 +2003,10 @@ pub async fn pod_logs(
                 },
                 line = err.next_line() => match line {
                     Ok(Some(l)) => yield Ok(Event::default().data(format!("[yolab] {l}"))),
-                    // stderr closing is normal and says nothing about stdout.
                     _ => continue,
                 },
             }
         }
-        // Drain whatever kubectl said on its way out, so a failure that only appears
-        // at exit is still reported rather than swallowed by the loop ending.
         while let Ok(Some(l)) = err.next_line().await {
             yield Ok(Event::default().data(format!("[yolab] {l}")));
         }
@@ -2602,12 +2018,6 @@ pub async fn pod_logs(
 #[cfg(test)]
 mod tests {
 
-    // ── is_backup_mover_pod ───────────────────────────────────────────────────
-    //
-    // VolSync runs its movers inside the namespace of the volume they copy, so an
-    // app namespace grows one during every backup. Treating it as the app's own pod
-    // made the app card flash "Starting…" on a backup and listed the mover next to
-    // the app's containers.
 
     fn pod(name: &str) -> Value {
         json!({"metadata": {"name": name}})
@@ -2615,18 +2025,14 @@ mod tests {
 
     #[test]
     fn a_backup_mover_is_not_one_of_the_apps_pods() {
-        // The exact name observed live in yolab-filebrowser during a backup.
         assert!(is_backup_mover_pod(&pod(
             "volsync-src-volsync-filebrowser-data-4k46c"
         )));
-        // And the restore-side mover, which appears while an app is scaled to zero.
         assert!(is_backup_mover_pod(&pod(
             "volsync-dst-volsync-vaultwarden-data-abc12"
         )));
     }
 
-    /// The label is a second, independent signal so an upstream rename of the pod
-    /// prefix does not silently put the movers back on the app card.
     #[test]
     fn the_volsync_label_is_enough_on_its_own() {
         assert!(is_backup_mover_pod(&json!({
@@ -2637,8 +2043,6 @@ mod tests {
         })));
     }
 
-    /// The app's own pods must survive the filter, including ones whose names merely
-    /// mention sync or backup.
     #[test]
     fn ordinary_app_pods_are_kept() {
         for name in [
@@ -2655,7 +2059,6 @@ mod tests {
         }
     }
 
-    /// A pod with no labels at all must not panic the label check.
     #[test]
     fn a_pod_without_labels_is_handled() {
         assert!(!is_backup_mover_pod(
@@ -2664,11 +2067,6 @@ mod tests {
         assert!(!is_backup_mover_pod(&json!({})));
     }
 
-    // ── is_terminating_pod ────────────────────────────────────────────────────
-    //
-    // The readiness rollup in list_apps is an all(), so one unready pod that will
-    // never become ready pins the whole app at "Starting up…". A node whose runtime
-    // has died produces exactly that and holds it indefinitely.
 
     #[test]
     fn a_pod_being_deleted_is_terminating() {
@@ -2684,15 +2082,11 @@ mod tests {
     fn a_live_pod_is_not_terminating() {
         assert!(!is_terminating_pod(&pod("gateway-85495df94-74s4t")));
         assert!(!is_terminating_pod(&json!({})));
-        // Explicit null is how kubectl renders an unset field in some outputs.
         assert!(!is_terminating_pod(&json!({
             "metadata": {"name": "app-1", "deletionTimestamp": null}
         })));
     }
 
-    /// The shape of the live incident: one node's pods wedged in Terminating and
-    /// unready, a healthy replacement Running on the other node. The app is up, and
-    /// the rollup has to say so.
     #[test]
     fn a_wedged_terminating_pod_does_not_hold_the_app_at_starting() {
         let ready = |ready: bool| {
@@ -2720,12 +2114,6 @@ mod tests {
         }));
     }
 
-    // ── explain_app_state ─────────────────────────────────────────────────────
-    //
-    // The rule these pin: a reassuring sentence may only ever be shown when
-    // nothing is wrong. Saying "getting ready" about a crash loop is how an app
-    // sits dead for a day with nobody looking — the same mistake HomePage's
-    // storage banner made, for the same reason.
 
     fn waiting_pod(kind: &str, reason: &str, restarts: i64) -> Value {
         json!({"status": {"phase": "Pending", kind: [
@@ -2748,7 +2136,6 @@ mod tests {
         assert!(!msg.to_lowercase().contains("getting ready"));
     }
 
-    /// A first crash should not read "restarted 1 times".
     #[test]
     fn a_single_restart_reads_naturally() {
         let pod = waiting_pod("containerStatuses", "CrashLoopBackOff", 1);
@@ -2765,8 +2152,6 @@ mod tests {
         }
     }
 
-    /// Broken beats slow. A pod that is both pulling an image for one container
-    /// and crash-looping in another must report the crash.
     #[test]
     fn something_broken_outranks_something_merely_slow() {
         let pod = json!({"status": {"phase": "Pending", "containerStatuses": [
@@ -2776,9 +2161,6 @@ mod tests {
         assert!(explain_app_state(&[&pod]).contains("stopping"));
     }
 
-    /// The exact state every app was in after the 2026-09-07 reboot: init
-    /// containers running while images came back. It has to read as progress,
-    /// because it is.
     #[test]
     fn first_time_setup_and_downloading_are_distinguishable() {
         let creating = waiting_pod("containerStatuses", "ContainerCreating", 0);
@@ -2801,8 +2183,6 @@ mod tests {
         assert!(explain_app_state(&[&pod]).to_lowercase().contains("room"));
     }
 
-    /// Running but failing its readiness probe — the app is up and not yet
-    /// answering. Distinct from both "starting" and "broken".
     #[test]
     fn running_but_not_answering_is_its_own_state() {
         let pod = json!({"status": {"phase": "Running", "containerStatuses": [
@@ -2811,9 +2191,6 @@ mod tests {
         assert!(explain_app_state(&[&pod]).contains("Almost ready"));
     }
 
-    /// An unrecognised Kubernetes reason must be surfaced verbatim rather than
-    /// smoothed into a comforting generic sentence. An honest unfamiliar word
-    /// beats a reassuring invention.
     #[test]
     fn an_unknown_reason_is_shown_not_invented_over() {
         let pod = waiting_pod("containerStatuses", "SomeFutureReason", 0);
@@ -2825,24 +2202,13 @@ mod tests {
         assert!(explain_app_state(&[]).to_lowercase().contains("machine"));
     }
 
-    /// Init containers are where the gateway does its tunnel registration, so a
-    /// failure there must be reported as loudly as one in the app itself.
     #[test]
     fn a_stuck_init_container_is_not_hidden() {
         let pod = waiting_pod("initContainerStatuses", "CrashLoopBackOff", 4);
         assert!(explain_app_state(&[&pod]).contains("stopping"));
     }
 
-    // ── resolve_service_name ──────────────────────────────────────────────────
-    //
-    // This decides whether an app gets a DNS record at all. When it returns "",
-    // wg-register skips registration, writes an empty YOLAB_FQDN, and the
-    // generated Caddyfile collapses to a bare `{` — Caddy then fails with
-    // "unrecognized global option: reverse_proxy", which names neither the
-    // subdomain nor the schema. Every app install was broken this way.
 
-    /// The real shape a chart's values.schema.json has: the tunnel field sits
-    /// under properties.config.properties, not at the top level.
     fn real_schema() -> Value {
         serde_json::json!({
             "properties": {
@@ -2876,9 +2242,6 @@ mod tests {
         );
     }
 
-    /// The exact regression: top-level properties are `config` and `yolab`,
-    /// neither of which carries format:tunnel, so a top-level-only search
-    /// silently yields "".
     #[test]
     fn a_top_level_only_search_would_have_returned_nothing() {
         let schema = real_schema();
@@ -2893,7 +2256,6 @@ mod tests {
         );
     }
 
-    /// A flat schema must keep working.
     #[test]
     fn a_flat_schema_is_still_supported() {
         let schema = serde_json::json!({
@@ -2916,12 +2278,6 @@ mod tests {
         );
     }
 
-    /// Declared in the schema but absent from the user's answers: still empty,
-    /// but must not panic.
-    /// The path that actually broke installs: the UI submitted `config: {}`, so
-    /// there is no answer at all. The schema declares a default precisely for
-    /// this, and using it is what keeps the install working instead of silently
-    /// producing an app with no DNS name.
     #[test]
     fn a_missing_answer_falls_back_to_the_schema_default() {
         assert_eq!(
@@ -2930,8 +2286,6 @@ mod tests {
         );
     }
 
-    /// An explicitly empty string is as absent as a missing key — it must not
-    /// win over the default, or it reintroduces the blank-FQDN failure.
     #[test]
     fn an_empty_answer_also_falls_back_to_the_default() {
         assert_eq!(
@@ -2940,7 +2294,6 @@ mod tests {
         );
     }
 
-    /// A real answer still wins over the default.
     #[test]
     fn an_explicit_answer_beats_the_default() {
         assert_eq!(
@@ -2949,7 +2302,6 @@ mod tests {
         );
     }
 
-    /// No answer AND no default: still empty, and still no panic.
     #[test]
     fn no_answer_and_no_default_yields_empty() {
         let schema = serde_json::json!({
@@ -2958,10 +2310,6 @@ mod tests {
         assert_eq!(resolve_service_name(&schema, &cfg(&[])), "");
     }
 
-    /// A non-string answer is unusable, so it falls back to the default rather
-    /// than yielding "". Returning empty here would mean no DNS record and a
-    /// gateway that crash-loops on a blank FQDN — a worse outcome than using
-    /// the subdomain the schema nominated.
     #[test]
     fn a_non_string_answer_falls_back_to_the_default() {
         let mut c = serde_json::Map::new();
@@ -2980,11 +2328,7 @@ mod tests {
         v.as_object().cloned().unwrap()
     }
 
-    // ── unique instance names ─────────────────────────────────────────────────
 
-    /// The whole point: `yolab-<stem>-<suffix>` must be a namespace Kubernetes
-    /// will accept, however long a name the owner typed. Rejecting it at the API
-    /// server means rejecting it AFTER the install form was filled in.
     #[test]
     fn a_long_name_still_fits_a_namespace() {
         let long = "a".repeat(200);
@@ -3002,24 +2346,18 @@ mod tests {
         assert_eq!(instance_stem("filebrowser").as_deref(), Some("filebrowser"));
     }
 
-    /// A name cut mid-word must not leave a trailing hyphen, or the result reads
-    /// `something--ab3d`.
     #[test]
     fn a_trailing_hyphen_is_trimmed() {
         assert_eq!(instance_stem("my-app-").as_deref(), Some("my-app"));
         assert_eq!(instance_stem("my-app---").as_deref(), Some("my-app"));
     }
 
-    /// Nothing but hyphens would make a namespace that starts with one.
     #[test]
     fn a_name_with_nothing_left_is_rejected() {
         assert!(instance_stem("---").is_none());
         assert!(instance_stem("").is_none());
     }
 
-    /// These end up in namespaces, URLs and support conversations. A suffix
-    /// somebody reads back wrong is worse than a shorter one, so the ambiguous
-    /// characters are deliberately absent.
     #[test]
     fn the_suffix_avoids_characters_that_are_misread() {
         for _ in 0..200 {
@@ -3055,8 +2393,6 @@ mod tests {
         assert_eq!(split_instance_name("-pgxw"), ("-pgxw", None));
     }
 
-    /// Two installs of the same app must not land on the same namespace — that
-    /// is the entire reason the suffix exists.
     #[test]
     fn two_installs_of_one_name_differ() {
         let names: std::collections::HashSet<String> = (0..50).map(|_| instance_suffix()).collect();
@@ -3075,7 +2411,6 @@ mod tests {
 
     #[test]
     fn derive_domain_keeps_numeric_first_label() {
-        // A purely numeric first label (IP-ish) is kept whole.
         assert_eq!(derive_domain("https://127.0.0.1"), "127.0.0.1");
     }
 
@@ -3131,13 +2466,6 @@ mod tests {
         assert!(normalize_outputs(&ann).is_empty());
     }
 
-    // ── uninstall_lock_is_fresh ──────────────────────────────────────────────
-    //
-    // The exact bug this exists to prevent: a namespace whose lock is fresh must
-    // read as "uninstalling" even though its phase is still Active (the window
-    // between a successful `helm uninstall` and the namespace actually entering
-    // Terminating) — otherwise the UI shows the app as present and invites a
-    // second, colliding uninstall click.
 
     #[test]
     fn no_lock_annotation_is_not_fresh() {
@@ -3162,8 +2490,6 @@ mod tests {
         )));
     }
 
-    /// Which namespaces the watchdog picks up is the part that decides whether
-    /// it quietly finishes removing something somebody is still working on.
     #[test]
     fn the_watchdog_only_picks_up_abandoned_uninstalls() {
         let stale = (chrono::Utc::now()
@@ -3172,16 +2498,12 @@ mod tests {
         let fresh = chrono::Utc::now().to_rfc3339();
 
         let list = serde_json::json!({ "items": [
-            // Abandoned: claimed long ago, nothing driving it.
             { "metadata": { "name": "yolab-minecraft",
                             "annotations": { ANN_UNINSTALLING: stale } } },
-            // Still running: a request is mid-teardown right now.
             { "metadata": { "name": "yolab-filebrowser",
                             "annotations": { ANN_UNINSTALLING: fresh } } },
-            // A perfectly healthy installed app.
             { "metadata": { "name": "yolab-vaultwarden",
                             "annotations": { "yolab.io/app-id": "vaultwarden" } } },
-            // No annotations at all.
             { "metadata": { "name": "yolab-babybuddy" } },
         ]});
 
@@ -3192,8 +2514,6 @@ mod tests {
         );
     }
 
-    /// A namespace that is not one of ours must never be torn down, however its
-    /// annotations happen to read.
     #[test]
     fn the_watchdog_ignores_namespaces_outside_the_yolab_prefix() {
         let stale = (chrono::Utc::now()
@@ -3214,26 +2534,11 @@ mod tests {
 
     #[test]
     fn an_unparsable_lock_timestamp_is_not_fresh() {
-        // Can't prove it's still running, so don't wedge the app forever on it.
         assert!(!uninstall_lock_is_fresh(&map(
             serde_json::json!({ ANN_UNINSTALLING: "not-a-timestamp" })
         )));
     }
 
-    // ── chart_outputs_spec ───────────────────────────────────────────────────
-    //
-    // Every piece of the file explorer is chart-declared (values.schema.json, the
-    // yolab.io/outputs annotation, the explicit template includes) rather than
-    // injected here — see yolab-common/templates/_fileexplorer.tpl.
-    //
-    // Which splits the regression into two halves that belong in two places. That
-    // a *real* chart rendering the file explorer declares its two outputs is a
-    // catalog invariant, and lives in apps/catalog/check_charts.py, which has the
-    // catalog. This half is the Rust side's own responsibility: that the
-    // annotation is found and parsed at all. It used to be one test reaching up
-    // out of the crate into ../../apps/catalog — a path crane's cleanCargoSource
-    // strips, so it failed in every `nix build`, which failed every
-    // `nixos-rebuild` on every node.
 
     fn chart_dir_with(outputs: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -3262,9 +2567,6 @@ mod tests {
         assert!(keys.contains(&"file_explorer_password"));
     }
 
-    /// A chart that declares nothing, and an id that is not in the catalog at all,
-    /// must both come back empty rather than panicking — an app installed from a
-    /// chart since removed still has to render.
     #[test]
     fn a_chart_without_outputs_yields_none() {
         let dir = chart_dir_with("[]");

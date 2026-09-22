@@ -1,21 +1,3 @@
-//! The backup itself, reduced to what it actually is.
-//!
-//! A backup is one id-tagged operation with two independent halves:
-//!
-//!   1. every managed PVC's VolSync ReplicationSource is stamped with a fresh manual
-//!      trigger, and
-//!   2. the cluster state (etcd snapshot + K8s object export) is pushed to restic,
-//!      tagged with the same id.
-//!
-//! The set's lifecycle is recorded in a ConfigMap so the page can show three states:
-//! *running* (a node is still driving it — see the record's `Claim`), *restorable*
-//! (the cluster snapshot completed), or *crashed* (started, but its driver is gone,
-//! or it failed). There is no phase machine and no deadline; several sets may be in
-//! flight at once.
-//!
-//! The scheduler is cluster-scoped. It used to run on every node, and each node only
-//! knew about the sets IT was driving, so two nodes could each start the daily backup
-//! in the same window.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -40,16 +22,11 @@ pub(crate) const SETS: Store = Store {
 };
 const MAX_SETS: usize = 50;
 
-/// How long the scheduler waits between looks. Each app's own cron decides
-/// whether it is due; this is only how often that question is asked.
 const SCHEDULE_TICK_SECS: u64 = 300;
 
-/// The one restic call that can legitimately run long: the full B2 upload of the
-/// cluster-state snapshot.
 const CLUSTER_BACKUP_TIMEOUT_SECS: u64 = 3600;
 const PRUNE_TIMEOUT_SECS: u64 = 600;
 
-/// Ids this process is actively backing up.
 pub(crate) static IN_FLIGHT: InFlight = InFlight::new();
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -63,7 +40,6 @@ pub(crate) struct BackupSet {
     pub id: String,
     #[serde(default)]
     pub triggered_by: String,
-    /// The app this set backs up, or empty for a whole-cluster (DR) run.
     #[serde(default)]
     pub namespace: String,
     pub started_at: String,
@@ -80,14 +56,9 @@ pub(crate) struct BackupSet {
     pub claim: Claim,
 }
 
-/// What a backup run covers. Every app backs up on its own schedule and its own
-/// button; the cluster-wide run stays for disaster recovery, where etcd and the
-/// cluster-scoped objects matter and a per-app snapshot would miss them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BackupTarget {
-    /// etcd + every managed namespace's objects + every PVC.
     Cluster,
-    /// One app's namespace: its objects and its PVCs, no etcd.
     App(String),
 }
 
@@ -118,8 +89,6 @@ impl Claimed for BackupSet {
     }
 }
 
-/// The three states the page shows. `Crashed` covers both "failed" and "was running
-/// when its driver died" — either way it is not something you can restore from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SetState {
     Running,
@@ -139,7 +108,6 @@ pub(crate) fn new_id() -> String {
     format!("bk-{}", random_hex(8))
 }
 
-// ── ConfigMap records ──────────────────────────────────────────────────────────
 
 fn upsert(sets: &mut Vec<BackupSet>, set: BackupSet) {
     sets.retain(|s| s.id != set.id);
@@ -200,7 +168,6 @@ async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSumma
     ));
 }
 
-// ── Pure decision functions ────────────────────────────────────────────────────
 
 fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
     match set.state.as_str() {
@@ -211,8 +178,6 @@ fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
     }
 }
 
-/// The newest successful set for a namespace, or `None`. A cluster-wide set
-/// (empty namespace) is not an app's backup.
 fn last_ok_for(sets: &[BackupSet], namespace: &str) -> Option<DateTime<Utc>> {
     sets.iter()
         .filter(|s| s.namespace == namespace && s.state == "succeeded")
@@ -221,33 +186,22 @@ fn last_ok_for(sets: &[BackupSet], namespace: &str) -> Option<DateTime<Utc>> {
         .map(|t| t.with_timezone(&Utc))
 }
 
-/// True while a set for this namespace is genuinely running (its driver is
-/// alive). A crashed set must NOT read as in progress, or a crash would stop
-/// scheduling forever.
 fn running_for(sets: &[BackupSet], namespace: &str) -> bool {
     sets.iter()
         .any(|s| s.namespace == namespace && s.is_running() && liveness_of(s).is_live())
 }
 
-/// The whole-cluster (DR) snapshot's schedule. Apps schedule themselves; this
-/// one exists so a total loss can be rebuilt, which needs etcd and the
-/// cluster-scoped objects a per-app snapshot does not carry.
 const DR_SCHEDULE: &str = "0 4 * * *";
 
-// ── The operation ──────────────────────────────────────────────────────────────
 
-/// Starts a whole-cluster backup set and returns immediately.
 pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
     start_target(BackupTarget::Cluster, triggered_by).await
 }
 
-/// Starts a backup of one app's namespace.
 pub(crate) async fn start_app(namespace: &str, triggered_by: &str) -> anyhow::Result<String> {
     start_target(BackupTarget::App(namespace.to_string()), triggered_by).await
 }
 
-/// Starts a backup set and returns immediately. The work runs detached on a spawned
-/// task, so it survives this (HTTP) caller ending and several sets can overlap.
 async fn start_target(target: BackupTarget, triggered_by: &str) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
         anyhow::bail!("backup not configured");
@@ -261,34 +215,18 @@ async fn start_target(target: BackupTarget, triggered_by: &str) -> anyhow::Resul
 
     let task_id = id.clone();
     tokio::spawn(async move {
-        // Dropped when the task ends, panics included.
         let _guard = guard;
         let result = run_set(&cfg, &target).await;
-        // Record the terminal state before dropping the claim, so the page never
-        // briefly reads a finished set as "crashed".
         record_done(&task_id, &result).await;
     });
 
     Ok(id)
 }
 
-/// The two halves of one backup, in order. Everything here is safe to redo and bounded
-/// by the restic timeouts, so a crash simply leaves a "running" record that the next
-/// tick classifies as crashed.
 async fn run_set(
     cfg: &BackupConfig,
     target: &BackupTarget,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    // 1. Volumes: trigger every managed PVC this target covers, then WAIT for each
-    //    upload to finish.
-    //
-    // This used to be fire-and-forget, and the cluster snapshot below then started
-    // seconds before the volume uploads did. Restore uses the cluster snapshot's time
-    // as VolSync's `restoreAsOf`, so it could never see the volume snapshots taken
-    // by its own backup — observed 2026-09-14: cluster snapshot 12:10:02, the app's
-    // only volume snapshot 12:10:05, and a restore of it would have found "No
-    // eligible snapshots", exited successfully, and left the app empty.
-    //
     let pvcs: Vec<PvcInfo> = list_user_pvcs()
         .await?
         .into_iter()
@@ -325,8 +263,6 @@ async fn run_set(
     let (sync_failures, synced) = wait_for_volume_syncs(&pending).await;
     failures.extend(sync_failures);
 
-    // Which restic snapshot each upload produced, so a restore takes exactly that one
-    // rather than whatever a timestamp happens to select.
     let mut pinned = HashMap::new();
     for (pvc, rs) in &synced {
         match pin_volume_snapshot(cfg, pvc, rs).await {
@@ -340,12 +276,8 @@ async fn run_set(
         }
     }
 
-    // 2. Cluster state, tagged with this run's scope. Taken even when a volume
-    //    failed, so every other app still has a restorable backup from this run.
     let (snapshot_id, services) = snapshot_cluster(cfg, &pinned, target).await?;
 
-    // 3. Retention. Best-effort: if it fails or is skipped this run, the next one
-    //    prunes whatever it left behind.
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
     restic_timeout(
@@ -380,9 +312,7 @@ async fn run_set(
     Ok((snapshot_id, services))
 }
 
-// ── Waiting for volume uploads ─────────────────────────────────────────────────
 
-/// How long one backup may wait for all volume uploads before calling them failed.
 const VOLUME_SYNC_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
 const VOLUME_SYNC_POLL: Duration = Duration::from_secs(10);
 
@@ -419,9 +349,6 @@ fn mover_logs(rs: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// VolSync records `lastManualSync` = the trigger value only once that sync has
-/// completed. A failed attempt shows up as a new `latestMoverStatus` with result
-/// `Failed` — new meaning its logs differ from what was there before this trigger.
 fn sync_outcome(rs: &Value, trigger: &str, logs_before: Option<&str>) -> SyncOutcome {
     let status = &rs["status"];
     let result = status["latestMoverStatus"]["result"].as_str();
@@ -445,16 +372,12 @@ fn last_line(logs: Option<&str>) -> String {
         .to_string()
 }
 
-/// A volume snapshot pinned by id, as recorded in `catalog.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VolumeSnapshot {
     pub id: String,
-    /// restic's own timestamp for it, verbatim.
     pub time: String,
 }
 
-/// The snapshot VolSync's restic mover just saved: its log ends with
-/// `snapshot f46c4413 saved`.
 fn saved_snapshot_id(logs: &str) -> Option<String> {
     logs.lines().rev().find_map(|l| {
         let rest = l.trim().strip_prefix("snapshot ")?;
@@ -463,7 +386,6 @@ fn saved_snapshot_id(logs: &str) -> Option<String> {
     })
 }
 
-/// `restic snapshots <id> --json` → the full id and time of that one snapshot.
 fn parse_pinned(v: &Value) -> Option<VolumeSnapshot> {
     let s = v.as_array()?.first()?;
     Some(VolumeSnapshot {
@@ -492,7 +414,6 @@ async fn pin_volume_snapshot(
     parse_pinned(&serde_json::from_slice(&out.stdout).ok()?)
 }
 
-/// Failures, and the source status of every volume that finished.
 async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(PvcInfo, Value)>) {
     let deadline = std::time::Instant::now() + VOLUME_SYNC_TIMEOUT;
     let mut waiting: Vec<&PendingSync> = pending.iter().collect();
@@ -530,14 +451,9 @@ async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(Pv
     (failures, synced)
 }
 
-// ── Cluster-state snapshot (etcd + K8s objects + catalog) ──────────────────────
 
-/// (namespace, pvc name) → the snapshot this backup took of it.
 type PinnedVolumes = HashMap<(String, String), VolumeSnapshot>;
 
-/// One volume's catalog entry. A pinned snapshot is what restore takes; without one
-/// (a volume whose upload failed) restore falls back to the newest snapshot before
-/// the cluster snapshot, or refuses.
 fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> Value {
     let mut v = json!({ "name": name, "capacity": capacity });
     if let Some(s) = pinned {
@@ -547,9 +463,6 @@ fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> V
     v
 }
 
-/// Snapshots etcd and exports the target's objects, then pushes the staging
-/// directory to restic tagged with `cluster-backup` (so restore can find it) plus
-/// a scope tag. Returns the restic snapshot id and a summary of the services captured.
 async fn snapshot_cluster(
     cfg: &BackupConfig,
     pinned: &PinnedVolumes,
@@ -574,10 +487,6 @@ async fn snapshot_cluster(
     result
 }
 
-/// Cluster-scoped objects a rebuild needs and a per-namespace export misses.
-/// Curated rather than `kubectl api-resources`, because that also drags in
-/// events, APIServices and the like — noise that is either regenerated or
-/// harmful to re-apply.
 const CLUSTER_SCOPED_EXPORT: &[&str] = &[
     "namespaces",
     "customresourcedefinitions.apiextensions.k8s.io",
@@ -596,8 +505,6 @@ const CLUSTER_SCOPED_EXPORT: &[&str] = &[
     "runtimeclasses.node.k8s.io",
 ];
 
-/// Exports the curated cluster-scoped resources into one List. Best-effort per
-/// resource: one missing CRD must not fail the whole DR snapshot.
 async fn export_cluster_scoped(tmp_dir: &str) -> anyhow::Result<()> {
     let mut items: Vec<Value> = Vec::new();
     for res in CLUSTER_SCOPED_EXPORT {
@@ -635,17 +542,12 @@ async fn snapshot_cluster_inner(
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
 
-    // A per-app run covers one namespace and skips etcd: etcd is cluster-wide,
-    // and its size and restore semantics are a DR concern, not an app's.
     let namespaces: Vec<String> = match target {
         BackupTarget::Cluster => list_managed_namespaces().await?,
         BackupTarget::App(ns) => vec![ns.clone()],
     };
     let include_etcd = target.is_cluster();
 
-    // One PVC inventory for the whole run, grouped by namespace — the same source
-    // the app definition and the backup layer use. `?` on purpose: a failed read
-    // must not become "this app has no volumes".
     let mut pvcs_by_ns: HashMap<String, Vec<PvcInfo>> = HashMap::new();
     for pvc in list_user_pvcs().await? {
         pvcs_by_ns
@@ -654,8 +556,6 @@ async fn snapshot_cluster_inner(
             .push(pvc);
     }
 
-    // 1. etcd snapshot — archived as etcd.db in this restic snapshot, consumed only by
-    //    the external dr-restore script (restore_run restores volumes + K8s objects).
     if include_etcd {
         let snap_name = format!("yolab-cluster-{date}");
         let snap_saved = Command::new("k3s")
@@ -701,24 +601,17 @@ async fn snapshot_cluster_inner(
         }
     }
 
-    // 1b. Cluster-scoped objects, for a rebuild. Only the DR tier: an app
-    //     snapshot must not carry cluster-wide state.
     if include_etcd {
         if let Err(e) = export_cluster_scoped(tmp_dir).await {
             tracing::warn!("cluster-backup: cluster-scoped export: {e}");
         }
     }
 
-    // 2. Export K8s objects for the target's namespaces.
     let mut services: Vec<Value> = Vec::new();
 
     for ns in &namespaces {
         let mut items: Vec<Value> = Vec::new();
 
-        // Every read here is `?`. A failed read used to become an empty list, and
-        // the backup was then recorded restorable without that app's objects —
-        // discovered only when a restore could not find them. A namespace that
-        // vanished since it was listed is the one legitimate absence.
         let Some(ns_obj) = crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"]).await?
         else {
             continue;
@@ -787,8 +680,6 @@ async fn snapshot_cluster_inner(
 
         let images = collect_images(&workloads);
 
-        // The app's own record, embedded so restore/duplicate do not have to
-        // reverse-engineer it back out of the backed-up Secret.
         let definition = crate::routers::apps::read_definition_opt(ns).await;
         let (service_name, resources, volumes, backup_policy) = match &definition {
             Some(d) => (
@@ -830,9 +721,6 @@ async fn snapshot_cluster_inner(
     });
     tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await?;
 
-    // What a rebuild needs, aggregated: nodes, and every app's footprint and
-    // volumes. The point of a DR backup is to answer "what do I need to bring
-    // everything back", and that answer should not require reading the catalog.
     let manifest = rebuild_manifest(&services).await;
     tokio::fs::write(
         format!("{tmp_dir}/manifest.json"),
@@ -840,7 +728,6 @@ async fn snapshot_cluster_inner(
     )
     .await?;
 
-    // 3. Init restic repo if needed.
     cfg.unlock("cluster-backup").await;
     let check = restic(&repo, cfg, &["snapshots", "--no-lock"]).await;
     if check.map(|o| !o.status.success()).unwrap_or(true) {
@@ -853,11 +740,6 @@ async fn snapshot_cluster_inner(
         }
     }
 
-    // 4. Backup. The stable `cluster-backup` tag is what restore looks for; the
-    //    scope tag (`scope:cluster` or `namespace:<ns>`) is what retention groups
-    //    by, so one busy app cannot prune another's history. The per-run set id is
-    //    deliberately NOT a tag: `forget --group-by tags` would then see every run
-    //    as its own group and prune nothing.
     let scope_tag = match target {
         BackupTarget::Cluster => "scope:cluster".to_string(),
         BackupTarget::App(ns) => format!("namespace:{ns}"),
@@ -889,9 +771,6 @@ async fn snapshot_cluster_inner(
         .map(|snapshot_id| (snapshot_id, summarize_services(&services)))
 }
 
-/// A manifest of what rebuilding this cluster needs: node capacity, and every
-/// app's resource footprint, volumes and schedule. Written into a DR snapshot so
-/// the answer to "the hardware is gone, what do I need" is in the backup itself.
 async fn rebuild_manifest(services: &[Value]) -> Value {
     let (nodes, node_cpu_millicores, node_memory_bytes) =
         match crate::kubectl::get_json(&["get", "nodes", "-o", "json"]).await {
@@ -949,7 +828,6 @@ fn summarize_services(services: &[Value]) -> Vec<ServiceSummary> {
         .collect()
 }
 
-/// The newest restic snapshot id carrying `tag`, if any.
 async fn newest_snapshot_id(repo: &str, cfg: &BackupConfig, tag: &str) -> Option<String> {
     let out = restic(
         repo,
@@ -993,13 +871,11 @@ fn built_hash() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-// ── Read side ──────────────────────────────────────────────────────────────────
 
 fn liveness_of(s: &BackupSet) -> Liveness {
     s.liveness(&crate::system::hostname(), &IN_FLIGHT)
 }
 
-/// Every recorded set, newest first, classified into the three page states.
 pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
     let sets = read_sets().await?;
     Ok(sets
@@ -1021,8 +897,6 @@ pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
         .collect())
 }
 
-/// Per-namespace backup status for the app list: (last successful time, running).
-/// One read of the sets, so `list_apps` pays nothing per app.
 pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool)> {
     let Ok(sets) = read_sets().await else {
         return HashMap::new();
@@ -1043,8 +917,6 @@ pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool
     map
 }
 
-/// Hours since the newest restorable backup, or `None` if none ever succeeded or
-/// the records cannot be read.
 pub(crate) async fn last_ok_age_hours() -> Option<i64> {
     let sets = read_sets().await.ok()?;
     sets.iter()
@@ -1053,8 +925,6 @@ pub(crate) async fn last_ok_age_hours() -> Option<i64> {
         .and_then(hours_since)
 }
 
-/// True while any VolSync mover pod is actively pushing PVC data — a belt-and-braces
-/// signal that volume work is in flight even outside a recorded set.
 pub(crate) async fn volsync_mover_running() -> bool {
     crate::kubectl::run(&[
         "get",
@@ -1071,8 +941,6 @@ pub(crate) async fn volsync_mover_running() -> bool {
     .unwrap_or(false)
 }
 
-/// Starts each app's scheduled backup when its own cron is due, plus the
-/// whole-cluster DR snapshot on its own clock. Cluster-scoped: one node schedules.
 pub struct BackupSchedulerController;
 
 impl Controller for BackupSchedulerController {
@@ -1102,9 +970,7 @@ impl Controller for BackupSchedulerController {
         let now = Utc::now();
 
         let live = |s: &BackupSet| s.is_running() && liveness_of(s).is_live();
-        // A whole-cluster run touches every PVC, so app backups wait for it.
         let cluster_running = sets.iter().any(|s| s.namespace.is_empty() && live(s));
-        // The DR snapshot waits for everything: it is the heaviest run.
         let any_running = sets.iter().any(live);
 
         let mut started = 0usize;
@@ -1210,7 +1076,6 @@ mod tests {
         );
     }
 
-    /// The exact log VolSync 0.16's restic mover left on the live cluster.
     #[test]
     fn the_saved_snapshot_is_read_from_the_mover_log() {
         let logs = "=== Initialize Dir ===\ncreated restic repository 9bc0b3e83e at s3:https://x\n\
@@ -1293,10 +1158,6 @@ mod tests {
             snapshot_id: None,
             error: None,
             services: vec![],
-            // A live claim owned by ANOTHER node. The default (empty owner)
-            // happens to equal the hostname in some sandboxes, which makes the
-            // record read as this node's abandoned claim and flips the liveness
-            // assertions below depending on where the test runs.
             claim: Claim {
                 owner: "other-node".into(),
                 heartbeat: "2026-01-01T00:00:00Z".into(),
@@ -1374,7 +1235,6 @@ mod tests {
         assert!(new_id().starts_with("bk-"));
     }
 
-    // ── per-app due / running ──────────────────────────────────────────────────
 
     fn at(iso: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(iso)
@@ -1411,14 +1271,11 @@ mod tests {
 
     #[test]
     fn running_is_scoped_to_the_namespace() {
-        // A set's own namespace is the only one it holds back; another app's
-        // scheduled run must not be suppressed by it.
         assert!(running_for(&[set("a", "running")], "yolab-a"));
         assert!(!running_for(&[set("a", "running")], "yolab-b"));
         assert!(!running_for(&[set("a", "succeeded")], "yolab-a"));
     }
 
-    // ── collect_images ─────────────────────────────────────────────────────────
 
     fn workload(init: &[&str], main: &[&str]) -> Value {
         json!({"spec": {"template": {"spec": {
@@ -1442,7 +1299,6 @@ mod tests {
         assert!(collect_images(&[json!({})]).is_empty());
     }
 
-    // ── summarize_services ─────────────────────────────────────────────────────
 
     #[test]
     fn summarize_services_maps_names_to_names_and_counts() {

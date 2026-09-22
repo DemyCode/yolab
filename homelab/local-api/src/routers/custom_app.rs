@@ -1,35 +1,3 @@
-//! Apps the owner brings themselves, as plain Kubernetes YAML.
-//!
-//! ── Why the YAML becomes a chart instead of being applied directly ────────────
-//!
-//! `kubectl apply` would be three lines and would strand the result outside
-//! everything that makes an app an app here. A YoLab app is not just a Deployment:
-//! it is a namespace with the labels the Apps page lists by, a tunnel subdomain
-//! claimed through wg-register, a Caddy that terminates TLS for it, a PVC the backup
-//! system already knows to include, and an uninstall path that gives the subdomain
-//! back. All of that lives in the yolab-common Helm library, and all of it would have
-//! to be reimplemented for anything applied outside Helm.
-//!
-//! So a custom app is materialised as a real chart that depends on yolab-common, and
-//! then installed down the ordinary path. It appears on the Apps page, gets a URL,
-//! gets backed up and uninstalls cleanly, because it genuinely is an app like the
-//! others — the only difference is who wrote the manifest.
-//!
-//! ── Why the manifest is a FILE and not a template ────────────────────────────
-//!
-//! Anything under `templates/` is rendered by Helm, and a manifest that happens to
-//! contain `{{` — a Go template in a ConfigMap, a Prometheus rule, a Grafana
-//! dashboard — would be interpreted rather than shipped, and would usually fail to
-//! parse. The manifest is written to the chart root and pulled in with
-//! `.Files.Get`, which returns the bytes untouched.
-//!
-//! ── What is refused ──────────────────────────────────────────────────────────
-//!
-//! check_charts.py enforces the catalog's safety rules at build time; nothing
-//! enforces them on YAML that arrives at runtime. The rules below are the subset
-//! that stops a pasted manifest from reaching past its own namespace — the same
-//! boundary the catalog is held to, applied at the point the YAML arrives rather
-//! than trusting whoever pasted it.
 
 use axum::{
     extract::Path as AxPath, extract::State, http::StatusCode, response::IntoResponse, Json,
@@ -40,17 +8,12 @@ use std::path::PathBuf;
 
 use crate::AppState;
 
-/// Reserved repo name for locally-authored charts. `charts::chart_sources` includes
-/// this directory, and `sync_repo` never touches it because it is not a real repo.
 pub const CUSTOM_REPO: &str = "custom";
 
 fn custom_dir() -> PathBuf {
     PathBuf::from(crate::charts::CACHE_DIR).join(CUSTOM_REPO)
 }
 
-/// Kinds that exist outside a namespace, and therefore outside the blast radius an
-/// app is supposed to have. A ClusterRoleBinding in a pasted manifest is a cluster
-/// takeover with extra steps.
 const CLUSTER_SCOPED: &[&str] = &[
     "Namespace",
     "Node",
@@ -80,27 +43,9 @@ fn reject(reason: impl Into<String>) -> Rejection {
     }
 }
 
-/// Walks a parsed document looking for the things a namespaced app may not do.
-///
-/// Recursive on purpose: a pod spec can be nested at several depths depending on the
-/// workload kind (Deployment, StatefulSet, Job, CronJob each bury it differently), and
-/// checking only the shapes we thought of is how one gets missed.
-/// The one container in this system that is legitimately privileged.
-///
-/// It creates a network interface, so it cannot not be. check_charts.py asserts both
-/// halves for catalog charts — that this container IS privileged and that no other one
-/// is — and the same exception has to exist here, or no chart built on yolab-common
-/// could ever be uploaded: every app in the catalog carries this sidecar.
 const WG_SIDECAR_CONTAINER: &str = "wireguard";
 const WG_SIDECAR_IMAGE_PREFIX: &str = "ghcr.io/demycode/wg-sidecar:";
 
-/// Whether a container object is the real tunnel sidecar, rather than one that has
-/// merely been given its name.
-///
-/// The name alone is what check_charts.py checks, which is fine for charts we wrote.
-/// It is not fine here: an uploaded chart choosing `name: wireguard` would otherwise
-/// be handed `privileged: true` for an image of its own choosing, which is the whole
-/// machine. The image has to match too.
 fn is_tunnel_sidecar(container: &Value) -> bool {
     container["name"].as_str() == Some(WG_SIDECAR_CONTAINER)
         && container["image"]
@@ -108,16 +53,10 @@ fn is_tunnel_sidecar(container: &Value) -> bool {
             .is_some_and(|i| i.starts_with(WG_SIDECAR_IMAGE_PREFIX))
 }
 
-/// `allow_sidecar` is the difference between the two callers. An uploaded CHART
-/// legitimately contains the tunnel sidecar and must be allowed to; a PASTED manifest
-/// never does (its gateway comes from the generated wrapper, not from the paste), so
-/// nothing in it has any reason to ask for privileged.
 fn scan_for_escapes(node: &Value, allow_sidecar: bool, out: &mut Vec<String>) {
     scan_inner(node, false, allow_sidecar, out)
 }
 
-/// `privileged_ok` is true only while descending into the tunnel sidecar itself, so
-/// the exception cannot leak to a sibling container in the same pod.
 fn scan_inner(node: &Value, privileged_ok: bool, allow_sidecar: bool, out: &mut Vec<String>) {
     match node {
         Value::Object(map) => {
@@ -140,8 +79,6 @@ fn scan_inner(node: &Value, privileged_ok: bool, allow_sidecar: bool, out: &mut 
                     }
                     _ => {}
                 }
-                // Descending into a container list is where the exception is decided,
-                // per container, rather than anywhere else in the document.
                 if matches!(
                     k.as_str(),
                     "containers" | "initContainers" | "ephemeralContainers"
@@ -170,8 +107,6 @@ fn scan_inner(node: &Value, privileged_ok: bool, allow_sidecar: bool, out: &mut 
     }
 }
 
-/// Parses a multi-document manifest and holds it to the same boundary the catalog is
-/// held to. Returns the number of documents on success.
 pub fn validate_manifest(yaml: &str) -> Result<usize, Rejection> {
     if yaml.trim().is_empty() {
         return Err(reject("there is nothing here to install"));
@@ -186,7 +121,6 @@ pub fn validate_manifest(yaml: &str) -> Result<usize, Rejection> {
             Ok(v) => v,
             Err(e) => return Err(reject(format!("this is not valid YAML: {e}"))),
         };
-        // `---` separators produce empty documents; they are not an error.
         if v.is_null() {
             continue;
         }
@@ -224,7 +158,6 @@ pub fn validate_manifest(yaml: &str) -> Result<usize, Rejection> {
     Ok(count)
 }
 
-/// Chart id rules: it becomes a directory name, a URL segment and a Helm release name.
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 40
@@ -243,12 +176,8 @@ pub struct CustomApp {
     pub icon: String,
     #[serde(default)]
     pub description: String,
-    /// Port inside the pod that Caddy should send traffic to. None means the app has
-    /// no web interface and gets no subdomain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// Service name Caddy proxies to. Empty means "in the gateway pod", which a raw
-    /// manifest never is — its workloads are separate Deployments.
     #[serde(default)]
     pub service: String,
 }
@@ -310,14 +239,10 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
 "#;
 
-/// `.Files.Get` returns the file's bytes without rendering them, which is the whole
-/// point: a manifest containing `{{ }}` ships as written instead of being evaluated.
 const USER_TEMPLATE: &str = "{{ .Files.Get \"user-manifest.yaml\" }}\n";
 
 async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> anyhow::Result<()> {
     let dir = root.join(&app.id);
-    // Clean slate: an edit that removes a document must not leave it behind, the same
-    // reason sync_repo untars over a removed directory rather than into a live one.
     let _ = tokio::fs::remove_dir_all(&dir).await;
     tokio::fs::create_dir_all(dir.join("templates")).await?;
 
@@ -388,9 +313,6 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
     )
     .await?;
 
-    // The gateway half only when the app actually serves something. An app with no
-    // port would otherwise get a subdomain that resolves to a Caddy with nowhere to
-    // send the request — a 502 with a DNS record in front of it.
     if !upstream.is_empty() {
         tokio::fs::write(dir.join("templates/gateway.yaml"), CHART_TEMPLATE).await?;
     }
@@ -400,7 +322,6 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
     Ok(())
 }
 
-/// GET /api/apps/custom
 pub async fn list_custom() -> Json<Vec<CustomApp>> {
     let mut out = Vec::new();
     if let Ok(mut rd) = tokio::fs::read_dir(custom_dir()).await {
@@ -417,9 +338,6 @@ pub async fn list_custom() -> Json<Vec<CustomApp>> {
     Json(out)
 }
 
-/// POST /api/apps/custom — validate and materialise. Does NOT install; the app then
-/// appears in the catalog and is installed through the ordinary form, so a custom app
-/// and a catalog app are the same thing from here on.
 pub async fn save_custom(
     State(_s): State<AppState>,
     Json(req): Json<SaveCustomReq>,
@@ -467,8 +385,6 @@ pub async fn save_custom(
     )
 }
 
-/// DELETE /api/apps/custom/:id — removes the definition. Anything already installed
-/// from it keeps running; it is an ordinary app now and is uninstalled like one.
 pub async fn delete_custom(AxPath(id): AxPath<String>) -> impl IntoResponse {
     if !valid_id(&id) {
         return (
@@ -485,20 +401,7 @@ pub async fn delete_custom(AxPath(id): AxPath<String>) -> impl IntoResponse {
     }
 }
 
-// ── A packaged chart, uploaded ────────────────────────────────────────────────
-//
-// The raw-YAML path above generates a chart with a two-field install form, because
-// two fields is all it can honestly infer from a Deployment. A real chart already
-// carries `values.schema.json`, which is exactly what InstallPage renders — so a
-// chart that arrives packaged gets the same install form as anything in the catalog,
-// with its own inputs, without anyone describing them twice.
-//
-// It also means the metadata is not asked for: name, icon and description are read
-// from the chart's own Chart.yaml annotations, the same place the catalog reads them.
 
-/// What kind of archive this is, from its first bytes rather than its filename —
-/// browsers are inconsistent about extensions and a filename is a user-supplied
-/// string anyway.
 #[derive(Debug, PartialEq)]
 enum Archive {
     Zip,
@@ -513,9 +416,6 @@ fn sniff(bytes: &[u8]) -> Option<Archive> {
     }
 }
 
-/// The directory holding Chart.yaml, which is rarely the top of the archive:
-/// `helm package` produces `<name>/Chart.yaml`, and a zip made from a folder in a
-/// file manager can nest it another level down.
 fn find_chart_root(base: &std::path::Path, depth: usize) -> Option<PathBuf> {
     if base.join("Chart.yaml").is_file() {
         return Some(base.to_path_buf());
@@ -529,14 +429,10 @@ fn find_chart_root(base: &std::path::Path, depth: usize) -> Option<PathBuf> {
         if !e.path().is_dir() {
             continue;
         }
-        // A macOS zip carries __MACOSX beside the real folder; following it finds
-        // nothing and hides the real answer.
         if e.file_name().to_string_lossy().starts_with("__") {
             continue;
         }
         if let Some(hit) = find_chart_root(&e.path(), depth - 1) {
-            // Two charts in one archive is ambiguous, and picking one silently
-            // installs something the uploader did not choose.
             if found.is_some() {
                 return None;
             }
@@ -562,12 +458,6 @@ struct ChartDep {
     name: String,
 }
 
-/// Holds a RENDERED chart to the same boundary a pasted manifest is held to.
-///
-/// Rendering first is the whole point: the objects a chart produces are decided by Go
-/// templates and values, so reading templates/*.yaml as text proves nothing. This is
-/// the same order check_charts.py uses on the catalog — render, then assert about what
-/// came out.
 fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> {
     for doc in serde_norway::Deserializer::from_str(rendered) {
         let v: Value = match serde::Deserialize::deserialize(doc) {
@@ -587,8 +477,6 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
                 "this chart creates a {kind}, which applies to the whole cluster rather than to one app"
             )));
         }
-        // A chart legitimately writes `namespace: {{ .Release.Namespace }}`; what it
-        // may not do is name a DIFFERENT one.
         if let Some(ns) = v["metadata"]["namespace"].as_str() {
             if ns != release_ns {
                 return Err(reject(format!(
@@ -607,10 +495,6 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
     Ok(())
 }
 
-/// Bounded and `kill_on_drop`: every one of this module's callers runs `helm`/`tar`
-/// against an admin-uploaded chart archive, so a malformed or adversarial upload that
-/// makes `helm template` hang (an infinite `range`, say) must not be able to wedge the
-/// request forever — see `kubectl.rs`'s identical reasoning for the same shape of bug.
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn run(cmd: &str, args: &[&str]) -> Result<String, Rejection> {
@@ -630,10 +514,6 @@ async fn run(cmd: &str, args: &[&str]) -> Result<String, Rejection> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// POST /api/apps/custom/chart — body is the archive itself.
-///
-/// Deliberately not multipart: the only field is the file, and multipart would mean a
-/// parser dependency to carry one value that the request body already is.
 pub async fn upload_chart(
     State(state): State<AppState>,
     body: axum::body::Bytes,
@@ -672,9 +552,6 @@ pub async fn upload_chart(
     let dest = tmp.join("x");
     let _ = tokio::fs::create_dir_all(&dest).await;
     let extracted = match kind {
-        // Both refuse to write outside the destination: tar because of the flag,
-        // unzip because it declines absolute and ../ paths by default. Without that,
-        // an archive entry named ../../etc/something writes there.
         Archive::TarGz => {
             run(
                 "tar",
@@ -734,10 +611,6 @@ pub async fn upload_chart(
         ));
     }
 
-    // Vendor the library from this machine rather than fetching it. A chart that
-    // depends on yolab-common must get OUR copy: it is what supplies the tunnel and
-    // Caddy, and pulling whatever a `repository:` line points at would let an
-    // uploaded chart choose its own gateway.
     if meta.dependencies.iter().any(|d| d.name == "yolab-common") {
         let lib = state.config.catalog_dir().join("yolab-common");
         if lib.is_dir() {
@@ -779,7 +652,6 @@ pub async fn upload_chart(
         return bad(r.reason);
     }
 
-    // Only now does it replace anything already installed under that id.
     let final_dir = custom_dir().join(&meta.name);
     if let Err(e) = tokio::fs::create_dir_all(custom_dir()).await {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -834,8 +706,6 @@ pub async fn upload_chart(
         Json(serde_json::json!({
             "ok": true,
             "app": app,
-            // So the page can say "it has its own settings" rather than making the
-            // uploader open the install form to find out.
             "has_form": final_dir.join("values.schema.json").is_file(),
         })),
     )
@@ -873,18 +743,12 @@ spec:
         assert_eq!(validate_manifest(&two), Ok(2));
     }
 
-    /// Empty documents come from a trailing `---` and are not a mistake.
     #[test]
     fn empty_documents_are_skipped_not_rejected() {
         let padded = format!("---\n{POD}---\n");
         assert_eq!(validate_manifest(&padded), Ok(1));
     }
 
-    // ── The boundary ──────────────────────────────────────────────────────────
-    //
-    // check_charts.py holds catalog charts to these rules at build time. Nothing
-    // held pasted YAML to anything, so these are that same boundary applied where
-    // the YAML arrives.
 
     #[test]
     fn cluster_scoped_kinds_are_refused() {
@@ -913,8 +777,6 @@ spec:
         assert!(err.reason.contains("kube-system"), "{}", err.reason);
     }
 
-    /// Nested at pod-spec depth, which is where these actually appear — a check that
-    /// only looked at the top level would pass all of them.
     #[test]
     fn container_escapes_are_found_however_deeply_nested() {
         let cases = [
@@ -934,15 +796,12 @@ spec:
         }
     }
 
-    /// privileged: false is the normal case and must not be caught by a check that
-    /// only looks for the key.
     #[test]
     fn privileged_false_is_fine() {
         let doc = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      containers:\n        - name: c\n          securityContext:\n            privileged: false\n";
         assert!(validate_manifest(doc).is_ok());
     }
 
-    // ── Things people will actually paste by mistake ──────────────────────────
 
     #[test]
     fn a_docker_compose_file_is_named_rather_than_called_invalid_yaml() {
@@ -989,27 +848,16 @@ spec:
         }
     }
 
-    // ── The generated chart ───────────────────────────────────────────────────
 
-    /// Materialises a chart and renders it with the real yolab-common from this
-    /// working tree. This is the assertion that matters: everything above checks the
-    /// YAML going in, and this checks that what comes out is a chart Helm accepts and
-    /// that the manifest survived verbatim.
-    ///
-    /// The manifest is deliberately full of Go template braces — a Grafana dashboard,
-    /// a Prometheus rule. `.Files.Get` carries it, so nothing evaluates it, and this
-    /// pins that it is not rejected on the way in either.
     #[tokio::test]
     async fn the_generated_chart_renders_and_ships_the_manifest_untouched() {
         let Ok(helm) = which("helm") else { return };
         let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../apps/catalog/yolab-common");
         if !lib.exists() {
-            return; // packaged build without the catalog beside it
+            return;
         }
 
-        // Deliberately full of Go template syntax: a Prometheus rule is the everyday
-        // example, and it is exactly what naive templating would destroy.
         let manifest = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: rules\ndata:\n  alert.yaml: |\n    expr: up == 0\n    annotations:\n      summary: \"{{ $labels.instance }} is down\"\n";
         let app = CustomApp {
             id: "my-thing".into(),
@@ -1027,7 +875,6 @@ spec:
             .expect("chart should be written");
         let chart = tmp.join("my-thing");
 
-        // The library is vendored the same way check_charts.py does it.
         tokio::fs::create_dir_all(chart.join("charts"))
             .await
             .unwrap();
@@ -1058,13 +905,10 @@ spec:
         );
         let rendered = String::from_utf8_lossy(&out.stdout);
 
-        // The braces are still braces. If .Files.Get were ever replaced with an
-        // include, this is the line that would fail.
         assert!(
             rendered.contains("{{ $labels.instance }} is down"),
             "the manifest was evaluated instead of shipped:\n{rendered}"
         );
-        // And the gateway came along, so the app is actually reachable.
         assert!(
             rendered.contains("name: gateway"),
             "no gateway in:\n{rendered}"
@@ -1077,9 +921,6 @@ spec:
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
-    /// An app with no port is a worker, not a website: it must NOT get a gateway,
-    /// because a subdomain pointing at a Caddy with no upstream is a 502 with a DNS
-    /// record in front of it.
     #[tokio::test]
     async fn an_app_with_no_port_gets_no_gateway() {
         let tmp = std::env::temp_dir().join(format!("yolab-custom-noport-{}", std::process::id()));
@@ -1098,21 +939,17 @@ spec:
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
-    // ── Uploaded charts ───────────────────────────────────────────────────────
 
     #[test]
     fn archives_are_recognised_by_their_bytes_not_their_name() {
         assert_eq!(sniff(b"PK\x03\x04rest"), Some(Archive::Zip));
-        assert_eq!(sniff(b"PK\x05\x06rest"), Some(Archive::Zip)); // empty zip
+        assert_eq!(sniff(b"PK\x05\x06rest"), Some(Archive::Zip));
         assert_eq!(sniff(b"\x1f\x8b\x08rest"), Some(Archive::TarGz));
         for not in [&b"not an archive"[..], b"", b"PK", b"\x1f"] {
             assert!(sniff(not).is_none(), "{not:?} is not an archive");
         }
     }
 
-    /// `helm package` puts Chart.yaml one level down, and a folder zipped from a file
-    /// manager can bury it further. A search that only looked at the top would reject
-    /// every real upload.
     #[test]
     fn the_chart_root_is_found_however_it_is_nested() {
         let base = std::env::temp_dir().join(format!("yolab-root-{}", std::process::id()));
@@ -1128,7 +965,6 @@ spec:
         std::fs::write(nested.join("mychart/Chart.yaml"), "name: x").unwrap();
         assert_eq!(find_chart_root(&nested, 3), Some(nested.join("mychart")));
 
-        // A macOS zip carries this beside the real folder.
         let mac = base.join("mac");
         std::fs::create_dir_all(mac.join("__MACOSX")).unwrap();
         std::fs::create_dir_all(mac.join("real")).unwrap();
@@ -1136,7 +972,6 @@ spec:
         std::fs::write(mac.join("real/Chart.yaml"), "name: x").unwrap();
         assert_eq!(find_chart_root(&mac, 3), Some(mac.join("real")));
 
-        // Two charts is ambiguous, and picking one silently installs the wrong app.
         let two = base.join("two");
         std::fs::create_dir_all(two.join("a")).unwrap();
         std::fs::create_dir_all(two.join("b")).unwrap();
@@ -1147,8 +982,6 @@ spec:
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// A chart writes `namespace: {{ .Release.Namespace }}` all over itself, which is
-    /// correct. Naming a DIFFERENT namespace is the thing to catch.
     #[test]
     fn a_chart_may_name_its_own_namespace_but_no_other() {
         let ok = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\n  namespace: yolab-mine\n";
@@ -1170,9 +1003,6 @@ spec:
         assert!(validate_rendered(host, "yolab-x").is_err());
     }
 
-    /// The whole pipeline against a real chart from this repo, packaged by real helm:
-    /// package → unpack → locate → render → validate. Every step above is unit-tested
-    /// in isolation; this is the one that would catch them being wired together wrong.
     #[tokio::test]
     async fn a_real_packaged_chart_survives_the_whole_pipeline() {
         let Ok(helm) = which("helm") else { return };
@@ -1184,8 +1014,6 @@ spec:
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
-        // Vendor the library the same way the upload path does, so `helm package`
-        // does not try to reach the network for the dependency.
         let src = tmp.join("pairdrop");
         std::process::Command::new("cp")
             .args([
@@ -1227,7 +1055,6 @@ spec:
             .find(|p| p.extension().is_some_and(|x| x == "tgz"))
             .expect("helm package should have produced a .tgz");
 
-        // It is what the uploader would have sent.
         let bytes = std::fs::read(&tgz).unwrap();
         assert_eq!(sniff(&bytes), Some(Archive::TarGz));
 
@@ -1276,22 +1103,13 @@ spec:
         );
         let text = String::from_utf8_lossy(&rendered.stdout);
 
-        // A catalog chart must pass the boundary an uploaded chart is held to. If it
-        // did not, the rule would be wrong rather than the chart.
         validate_rendered(&text, &ns).expect("a catalog chart must satisfy the upload rules");
 
-        // And the install form the uploader gets is the chart's own.
         assert!(root.join("values.schema.json").is_file());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // ── The one privileged exception ──────────────────────────────────────────
-    //
-    // Every app in the catalog carries the tunnel sidecar, and it must be privileged
-    // to create a network interface — so a blanket refusal would mean no real chart
-    // could ever be uploaded. That exception is also the obvious way in, so these pin
-    // exactly how far it reaches.
 
     fn pod_with(containers: &str) -> String {
         format!("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      containers:\n{containers}")
@@ -1305,9 +1123,6 @@ spec:
         assert!(validate_rendered(&doc, "yolab-x").is_ok());
     }
 
-    /// The bypass this closes: name a container `wireguard`, point it at any image,
-    /// and inherit the exception. check_charts.py matches on the name alone, which is
-    /// safe for charts we wrote and not for one that arrives from outside.
     #[test]
     fn a_container_merely_named_wireguard_may_not_be_privileged() {
         let doc = pod_with(
@@ -1317,8 +1132,6 @@ spec:
         assert!(err.reason.contains("privileged"), "{}", err.reason);
     }
 
-    /// The exception is per container, so a second one in the same pod cannot ride
-    /// along beside the genuine sidecar.
     #[test]
     fn a_sibling_of_the_sidecar_may_not_be_privileged() {
         let doc = pod_with(
@@ -1327,14 +1140,11 @@ spec:
         assert!(validate_rendered(&doc, "yolab-x").is_err());
     }
 
-    /// Pasted YAML gets no exception at all: the gateway is supplied by the generated
-    /// wrapper, so nothing in a pasted manifest has any reason to be privileged.
     #[test]
     fn pasted_yaml_gets_no_sidecar_exception() {
         let doc = pod_with(
             "        - name: wireguard\n          image: ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1\n          securityContext:\n            privileged: true\n",
         );
-        // validate_manifest refuses it even though validate_rendered allows it.
         assert!(validate_rendered(&doc, "yolab-x").is_ok());
         assert!(
             validate_manifest(&doc).is_err(),
