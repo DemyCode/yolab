@@ -1,4 +1,3 @@
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
@@ -294,7 +293,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn a_blank_image_is_formatted_and_mounted() {
         let dir = tempfile::tempdir().unwrap();
@@ -382,7 +380,6 @@ mod tests {
         assert!(!ran_mount(&host), "{:?}", host.calls());
     }
 
-
     #[tokio::test]
     async fn a_missing_image_is_waited_for() {
         let dir = tempfile::tempdir().unwrap();
@@ -444,7 +441,6 @@ mod tests {
         assert!(why.contains("can't read superblock"), "{why}");
     }
 
-
     #[tokio::test]
     async fn an_already_mounted_store_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -457,7 +453,6 @@ mod tests {
         assert_eq!(ready, Attempt::Ready(()));
         assert_eq!(host.calls().len(), 1, "{:?}", host.calls());
     }
-
 
     #[test]
     fn filesystem_parse_defaults_to_xfs() {
@@ -493,11 +488,7 @@ mod tests {
 
     #[test]
     fn only_a_db_with_layers_beside_no_layer_dirs_is_incoherent() {
-        let cases = [
-            (262_144, 0, false),
-            (0, 0, true),
-            (262_144, 4, true),
-        ];
+        let cases = [(262_144, 0, false), (0, 0, true), (262_144, 4, true)];
         for (db, dirs, coherent) in cases {
             let dir = tempfile::tempdir().unwrap();
             snapshotter_at(dir.path(), db, dirs);

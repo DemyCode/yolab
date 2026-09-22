@@ -1,4 +1,3 @@
-
 use crate::ceph::model::SafeToDestroyReport;
 use crate::exec::{CmdError, Failure};
 use crate::host::Host;
@@ -58,7 +57,6 @@ fn command_words(args: &[&str]) -> Vec<String> {
     out
 }
 
-
 #[derive(Debug)]
 pub struct SafeToDestroy {
     osd: i64,
@@ -104,7 +102,6 @@ async fn purge<H: Host>(host: &H, osd: i64) -> Result<Option<Purged>, CmdError> 
     let still = host.osd_ids().await?;
     Ok((!still.contains(&osd)).then_some(Purged { osd }))
 }
-
 
 #[derive(Debug)]
 pub enum ZapWarrant {

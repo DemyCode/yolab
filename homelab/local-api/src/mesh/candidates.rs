@@ -1,4 +1,3 @@
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -24,10 +23,7 @@ fn is_physical(iface: &str) -> bool {
 
 fn is_dialable(addr: &str) -> bool {
     let a = addr.to_ascii_lowercase();
-    !(a.starts_with("fe80:")
-        || a.starts_with("169.254.")
-        || a.starts_with("127.")
-        || a == "::1")
+    !(a.starts_with("fe80:") || a.starts_with("169.254.") || a.starts_with("127.") || a == "::1")
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]

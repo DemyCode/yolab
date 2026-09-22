@@ -1,4 +1,3 @@
-
 pub mod candidates;
 pub mod wg;
 
@@ -39,7 +38,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-
 pub async fn mesh_candidates(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
@@ -74,7 +72,6 @@ async fn prime_caller<H: Host>(host: &H, caller_public_key: &str, caller_addr: s
         tracing::debug!("mesh: could not prime caller {caller_addr}: {e:#}");
     }
 }
-
 
 #[derive(Serialize)]
 pub struct PathStatus {
@@ -116,7 +113,6 @@ fn path_statuses(peers: &[wg::Peer], addrs: &[String], now: u64) -> Vec<PathStat
         })
         .collect()
 }
-
 
 const PEER_CACHE: &str = "/var/lib/yolab/mesh-peers.json";
 
@@ -202,7 +198,6 @@ async fn routes_via_tunnel<H: Host>(host: &H, addr: &str) -> bool {
     };
     out.stdout.contains(&format!("dev {}", wg::IFACE))
 }
-
 
 pub struct MeshPathsController {
     blackhole: tokio::sync::Mutex<HashMap<String, Traffic>>,
@@ -613,7 +608,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn an_unknown_caller_is_primed_as_a_listen_only_peer() {
         let host = host_with(&dump_of(&[hub_line()]));
@@ -659,7 +653,6 @@ mod tests {
 
         assert!(!host.calls().iter().any(|c| c.starts_with("wg set")));
     }
-
 
     #[test]
     fn a_promoted_and_live_peer_reports_direct_with_its_endpoint() {
@@ -727,7 +720,6 @@ mod tests {
             vec!["fd00:cafe::6", "fd00:cafe::7"]
         );
     }
-
 
     fn peer(rx: u64, tx: u64) -> wg::Peer {
         wg::Peer {

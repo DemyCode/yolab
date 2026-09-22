@@ -203,7 +203,6 @@ pub async fn set_disk_state(
 mod tests {
     use super::*;
 
-
     #[test]
     fn a_node_scoped_key_splits_into_node_and_disk() {
         assert_eq!(
@@ -270,7 +269,6 @@ mod tests {
         assert_eq!(parsed[6], (None, "serial-wwn-0x50014ee214caf529"));
         assert_eq!(parsed[3].1, parsed[6].1);
     }
-
 
     fn inventory(node: &str, disks: Value) -> Inventory {
         parse_inventory(&BTreeMap::from([(

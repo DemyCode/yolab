@@ -16,7 +16,6 @@ const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
 const SYSTEM_OSD_DEV: &str = "/dev/mapper/pool-ceph";
 pub(crate) const SYSTEM_OSD_ID: &str = "system";
 
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
     #[default]
@@ -1059,38 +1058,34 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
     }
 
     match result {
-        Ok(_) => {
-            match local_osds(host).await {
-                Ok(local) => {
-                    let want = canonical_device(dev_path);
-                    if let Some((_, osd_id)) =
-                        local.iter().find(|(d, _)| canonical_device(d) == want)
-                    {
-                        start_osd_unit(host, *osd_id).await;
-                        set_phase(disk_id, Phase::Active, "Added to the storage pool.");
-                        if let Ok(mut p) = PROGRESS.lock() {
-                            let e = p.entry(disk_id.to_string()).or_default();
-                            e.attempts = 0;
-                            e.last_attempt = None;
-                            e.orphan_osd_id = None;
-                        }
-                    } else {
-                        tracing::warn!(
+        Ok(_) => match local_osds(host).await {
+            Ok(local) => {
+                let want = canonical_device(dev_path);
+                if let Some((_, osd_id)) = local.iter().find(|(d, _)| canonical_device(d) == want) {
+                    start_osd_unit(host, *osd_id).await;
+                    set_phase(disk_id, Phase::Active, "Added to the storage pool.");
+                    if let Ok(mut p) = PROGRESS.lock() {
+                        let e = p.entry(disk_id.to_string()).or_default();
+                        e.attempts = 0;
+                        e.last_attempt = None;
+                        e.orphan_osd_id = None;
+                    }
+                } else {
+                    tracing::warn!(
                             "{disk_id}: ceph-volume reported success but {dev_path} is in no OSD map — will retry"
                         );
-                        set_phase(
-                            disk_id,
-                            Phase::Creating,
-                            "Added to the storage pool; waiting for it to come online.",
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("{disk_id}: created, but could not confirm it: {e}");
-                    set_phase(disk_id, Phase::Creating, "Added. Checking it is working…")
+                    set_phase(
+                        disk_id,
+                        Phase::Creating,
+                        "Added to the storage pool; waiting for it to come online.",
+                    );
                 }
             }
-        }
+            Err(e) => {
+                tracing::warn!("{disk_id}: created, but could not confirm it: {e}");
+                set_phase(disk_id, Phase::Creating, "Added. Checking it is working…")
+            }
+        },
         Err(e) => {
             let leaked: Vec<i64> = match (&before, host.osd_ids().await.ok()) {
                 (Some(before), Some(after)) => after
@@ -1219,9 +1214,7 @@ fn plan_tick(reachable: bool, disk_to_osd_known: bool) -> TickPlan {
 
 #[derive(Debug, PartialEq, Eq)]
 enum CreatePlan {
-    Create {
-        dev_path: String,
-    },
+    Create { dev_path: String },
     Blocked(&'static str),
     Waiting,
     Skip,
@@ -1635,7 +1628,6 @@ fn new_disk_records(
     out
 }
 
-
 fn is_user_disk(name: &str) -> bool {
     const VIRTUAL_PREFIXES: [&str; 6] = ["rbd", "loop", "zram", "zd", "md", "dm-"];
     !VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
@@ -1701,7 +1693,6 @@ async fn scan_devices<H: Host>(host: &H) -> Option<Vec<(String, DiskFlags)>> {
     Some(devices)
 }
 
-
 fn read_bluestore_header(device: &str) -> Option<[u8; 4096]> {
     let path = if device.starts_with('/') {
         device.to_string()
@@ -1753,7 +1744,6 @@ pub(crate) fn record_key(node: &str, disk_id: &str) -> String {
 pub(crate) fn is_globally_unique_id(disk_id: &str) -> bool {
     disk_id.starts_with("serial-")
 }
-
 
 const ID_PREFIXES: [&str; 6] = ["wwn-", "nvme-eui.", "nvme-", "ata-", "scsi-", "usb-"];
 const BY_ID_DIR: &str = "/dev/disk/by-id";
@@ -1819,7 +1809,6 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
         progress: None,
     }
 }
-
 
 async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk>) {
     let wire: HashMap<&str, Value> = meta
@@ -2287,7 +2276,6 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
-
     #[test]
     fn is_uuid_accepts_a_canonical_uuid() {
         assert!(is_uuid(OURS));
@@ -2308,7 +2296,6 @@ mod tests {
         assert!(!is_uuid("11111111 2222 3333 4444 555555555555"));
         assert!(!is_uuid("----"));
     }
-
 
     #[test]
     fn foreign_and_unknown_are_distinguishable_on_the_wire() {
@@ -2349,7 +2336,6 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted.len(), names.len(), "names collide: {names:?}");
     }
-
 
     #[test]
     fn bluestore_fsid_reads_a_well_formed_label() {
@@ -2396,7 +2382,6 @@ mod tests {
         let dev = fake_device(&dir, "sde", &buf);
         assert_eq!(bluestore_fsid(&dev), None);
     }
-
 
     #[test]
     fn a_label_matching_our_cluster_is_ours() {
@@ -2523,8 +2508,6 @@ mod tests {
         assert!(v.get("phase").is_none());
     }
 
-
-
     #[test]
     fn a_hardware_id_is_not_scoped_to_a_machine() {
         assert_eq!(
@@ -2556,7 +2539,6 @@ mod tests {
             assert!(!is_globally_unique_id(local), "{local} names a position");
         }
     }
-
 
     #[test]
     fn a_hardware_id_beats_the_kernel_name() {
@@ -2627,7 +2609,6 @@ mod tests {
         assert_eq!(disk_id_from("sda", Some("   \n")), "dev-sda");
     }
 
-
     #[test]
     fn weight_prefers_cephs_own_kb_over_lsblk_bytes() {
         let kb = 1u64 << 30;
@@ -2644,7 +2625,6 @@ mod tests {
     fn weight_is_zero_when_no_size_is_known() {
         assert_eq!(weight_tib_from(0, 0), 0.0);
     }
-
 
     fn recs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -2903,7 +2883,6 @@ mod tests {
         assert_eq!(refuse_osd_creation(&partitioned), None);
     }
 
-
     #[test]
     fn a_disk_ceph_knows_about_is_marked_as_ours() {
         let mut meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
@@ -2940,7 +2919,6 @@ mod tests {
         assert!(meta.is_empty());
     }
 
-
     #[test]
     fn a_mounted_disk_is_refused_with_a_reason() {
         let d = Disk {
@@ -2973,7 +2951,6 @@ mod tests {
         assert!(refuse_osd_creation(&disk(Ownership::Unknown)).is_some());
     }
 
-
     #[test]
     fn a_mounted_disk_is_not_offered_as_storage() {
         let v = json!({"name": "sda", "type": "disk", "children": [
@@ -2981,7 +2958,6 @@ mod tests {
         ]});
         assert!(parse_disk_flags(&v).mounted, "must be seen as mounted");
     }
-
 
     #[test]
     fn refusal_reasons_carry_no_jargon() {
@@ -3021,7 +2997,6 @@ mod tests {
             );
         }
     }
-
 
     fn meta_json() -> serde_json::Value {
         json!([
@@ -3070,7 +3045,6 @@ mod tests {
         assert!(parse_osd_metadata(&json!([]), "n").is_empty());
         assert!(parse_osd_metadata(&json!([{"hostname": "n"}]), "n").is_empty());
     }
-
 
     fn osd(id: i64, up: bool, reweight: f64) -> Value {
         json!({"id": id, "type": "osd",
@@ -3141,7 +3115,6 @@ mod tests {
         assert!(!m.contains("until this finishes"), "{m}");
     }
 
-
     #[test]
     fn an_unreachable_cluster_does_nothing() {
         assert_eq!(plan_tick(false, true), TickPlan::Unreachable);
@@ -3161,7 +3134,6 @@ mod tests {
     fn a_reachable_cluster_with_a_readable_map_proceeds() {
         assert_eq!(plan_tick(true, true), TickPlan::Proceed);
     }
-
 
     fn osds(pairs: &[(&str, i64)]) -> HashMap<String, i64> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
@@ -3297,7 +3269,6 @@ mod tests {
         assert_eq!(plan, CreatePlan::Skip);
     }
 
-
     #[test]
     fn a_mounted_disk_switched_on_is_blocked_not_created() {
         let plan = plan_create(
@@ -3425,7 +3396,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn an_absent_record_is_off() {
         assert!(!wants_on(&recs(&[]), "node1", "dev-sdb"));
@@ -3448,7 +3418,6 @@ mod tests {
         assert!(wants_on(&recs(&[(id, "ON")]), "node1", id));
         assert!(wants_on(&recs(&[(id, "ON")]), "node2", id));
     }
-
 
     use crate::routers::ceph::PgLoss;
 
@@ -3570,7 +3539,6 @@ mod tests {
         );
         assert_eq!(Phase::default(), Phase::Unset);
     }
-
 
     fn our_fsid_host() -> FakeHost {
         FakeHost::new().ok("ceph fsid", &format!(r#"{{"fsid":"{OURS}"}}"#))

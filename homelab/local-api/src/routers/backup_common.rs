@@ -1,4 +1,3 @@
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -61,7 +60,6 @@ pub(crate) fn canonical_pvc_id(pvc_name: &str) -> String {
     }
     id.to_string()
 }
-
 
 pub(crate) const MASTER_SECRET: &str = "yolab-backup-config";
 pub(crate) const MASTER_NS: &str = "kube-system";
@@ -307,7 +305,6 @@ pub(crate) async fn ensure_restic_secret_for_repo(
     .await
 }
 
-
 #[derive(Clone)]
 pub(crate) struct PvcInfo {
     pub namespace: String,
@@ -357,7 +354,6 @@ pub(crate) async fn list_managed_namespaces() -> anyhow::Result<Vec<String>> {
     .await?;
     Ok(out.split_whitespace().map(String::from).collect())
 }
-
 
 pub(crate) fn replication_source_name(pvc_name: &str) -> String {
     format!("volsync-{}", canonical_pvc_id(pvc_name))
@@ -423,7 +419,6 @@ pub(crate) fn hours_since(timestamp: &str) -> Option<i64> {
         .ok()
         .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_hours())
 }
-
 
 pub(crate) fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
     const META_DROP: &[&str] = &[
@@ -495,7 +490,6 @@ pub(crate) fn parse_capacity_bytes(s: &str) -> u64 {
     s.parse::<u64>().unwrap_or(0)
 }
 
-
 pub(crate) async fn delete_replication_destination_without_touching_pvc(
     name: &str,
     namespace: &str,
@@ -562,7 +556,6 @@ pub(crate) async fn ensure_destination_pvc(
     });
     kubectl_apply(&manifest.to_string()).await
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -639,7 +632,6 @@ mod tests {
         assert_ne!(random_hex(16), random_hex(16));
     }
 
-
     fn cfg() -> BackupConfig {
         BackupConfig {
             access_key_id: "key".into(),
@@ -673,7 +665,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn hours_since_measures_elapsed_time() {
         let t = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
@@ -703,7 +694,6 @@ mod tests {
     fn hours_since_accepts_the_z_suffix_kubernetes_emits() {
         assert!(hours_since("2020-01-01T00:00:00Z").is_some());
     }
-
 
     #[test]
     fn capacity_parses_binary_suffixes() {
@@ -738,7 +728,6 @@ mod tests {
         assert_eq!(parse_capacity_bytes("5G"), 0);
         assert_eq!(parse_capacity_bytes("5M"), 0);
     }
-
 
     #[test]
     fn sanitize_strips_cluster_assigned_metadata() {

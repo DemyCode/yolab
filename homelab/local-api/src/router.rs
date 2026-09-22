@@ -1,4 +1,3 @@
-
 use axum::{
     middleware,
     routing::{any, delete, get, post, put},

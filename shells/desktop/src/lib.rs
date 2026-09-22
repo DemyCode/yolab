@@ -1,4 +1,3 @@
-
 use std::sync::Mutex;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};

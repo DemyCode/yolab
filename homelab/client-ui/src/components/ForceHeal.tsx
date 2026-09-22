@@ -142,13 +142,7 @@ function StepList({ heal }: { heal: Heal }) {
   );
 }
 
-function HealProgress({
-  heal,
-  action,
-}: {
-  heal: Heal;
-  action?: ReactNode;
-}) {
+function HealProgress({ heal, action }: { heal: Heal; action?: ReactNode }) {
   return (
     <Card>
       <CardContent className="space-y-4 pt-5 pb-5">

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { APP_META, GROUPS, groupFor, groupLabel, taglineFor } from "./meta";
 
-
 describe("APP_META", () => {
   const groupIds = new Set(GROUPS.map((g) => g.id));
 

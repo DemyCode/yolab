@@ -42,8 +42,7 @@ export function AppTile({
         />
       </div>
       <span className="line-clamp-1 text-sm font-medium text-fg">{name}</span>
-      {
-}
+      {}
       {label && (
         <span className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted">
           {label}

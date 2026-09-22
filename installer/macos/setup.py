@@ -12,7 +12,6 @@ from pathlib import Path
 MACHINE_DIR = Path("/var/lib/yolab/machine")
 
 
-
 def _toml_value(v):
     if isinstance(v, bool):
         return "true" if v else "false"
@@ -34,8 +33,6 @@ def write_toml(data: dict, path: Path) -> None:
         lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines))
-
-
 
 
 def prompt(question: str, default: str = "") -> str:
@@ -62,8 +59,6 @@ def generate_wg_keypair() -> tuple[str, str]:
     )
     public_key = result.stdout.strip()
     return private_key, public_key
-
-
 
 
 def main():

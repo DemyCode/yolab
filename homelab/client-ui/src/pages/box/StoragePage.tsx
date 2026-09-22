@@ -32,7 +32,6 @@ import type {
   StoragePolicyData,
 } from "@/types/storage";
 
-
 const GiB = 1073741824;
 const TiB = GiB * 1024;
 
@@ -145,7 +144,6 @@ function OsdPill({ on, labels }: { on: boolean; labels: [string, string] }) {
     </Badge>
   );
 }
-
 
 type DiskState =
   | "active"
@@ -335,9 +333,7 @@ function DiskRow({
 
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-fg">
-          {label}{" "}
-          {
-}
+          {label} {}
           {disk.connected && disk.size_bytes > 0 && (
             <span className="ml-2 font-normal text-fg-muted">
               {formatBytes(disk.size_bytes)}
@@ -359,8 +355,7 @@ function DiskRow({
             )}
           </p>
         </div>
-        {
-}
+        {}
         {disk.message && (
           <p className="mt-1 text-sm text-fg-muted">{disk.message}</p>
         )}
@@ -394,8 +389,7 @@ function DiskRow({
         </div>
       )}
 
-      {
-}
+      {}
       {state !== "unidentified" && !confirm && (
         <button
           onClick={() => void toggle()}
@@ -537,7 +531,6 @@ function DiskList({
   );
 }
 
-
 function safetyLine(
   data: StoragePolicyData | undefined,
   detail: StorageDetail | undefined,
@@ -645,7 +638,6 @@ function CapacityCard({
     </Card>
   );
 }
-
 
 type Domain = "osd" | "host";
 
@@ -859,8 +851,7 @@ function RedundancySheet({
               <p className="mb-2 text-sm font-medium text-fg">
                 How many copies
               </p>
-              {
-}
+              {}
               <div className="flex items-center gap-4">
                 <Button
                   size="sm"
@@ -948,7 +939,6 @@ function RedundancySheet({
     </Sheet>
   );
 }
-
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -1126,8 +1116,7 @@ function OsdTable({
                   <VarBadge v={osd.var} />
                 </td>
                 <td className="px-4 py-3">
-                  {
-}
+                  {}
                   <OsdPill on={osd.reweight > 0.5} labels={["In", "Out"]} />
                 </td>
                 <td className="px-4 py-3">
@@ -1194,11 +1183,9 @@ function AdvancedPanel({
 
       {open && (
         <div className="mt-4 space-y-6">
-          {
-}
+          {}
           <div className="flex items-center justify-end">
-            {
-}
+            {}
             <Button
               size="sm"
               variant="ghost"
@@ -1212,8 +1199,7 @@ function AdvancedPanel({
             </Button>
           </div>
 
-          {
-}
+          {}
           {osds.length > 0 && <OsdTable osds={osds} onRefresh={onRefresh} />}
 
           {creds && (
@@ -1260,7 +1246,6 @@ function AdvancedPanel({
     </div>
   );
 }
-
 
 export function StoragePage() {
   const [editing, setEditing] = useState(false);
@@ -1311,8 +1296,7 @@ export function StoragePage() {
         </Banner>
       )}
 
-      {
-}
+      {}
       <div className="flex items-center justify-end -mb-3">
         <CacheDot cache={detailRes.cache} />
       </div>
@@ -1376,8 +1360,7 @@ export function StoragePage() {
         refreshing={detailRes.loading}
       />
 
-      {
-}
+      {}
       <OfflineDiskBanner detail={detail} policy={policyRes.data} />
     </div>
   );

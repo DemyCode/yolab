@@ -128,7 +128,6 @@
         nixosSystems
         ;
     };
-
   in {
     nixosConfigurations =
       {yolab-installer = nixosSystems.yolab-installer;}

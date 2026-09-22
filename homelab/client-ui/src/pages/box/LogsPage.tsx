@@ -181,8 +181,7 @@ export function LogsPage() {
                 <span className="w-40 shrink-0 truncate text-fg-subtle">
                   {shortUnit(e.unit)}
                 </span>
-                {
-}
+                {}
                 <span className={cn("min-w-0 break-all", toneOf(e.priority))}>
                   {e.message}
                 </span>

@@ -59,7 +59,6 @@ in {
       devices/global_filter = [ "r|^/dev/rbd|", "r|^/dev/block/|", "r|^/dev/disk/|", "a|.*|" ]
     '';
 
-
     systemd.services.yolab-images-rbd = {
       description = "Ensure the Ceph images pool and this node's RBD image exist";
       wantedBy = ["multi-user.target"];

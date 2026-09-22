@@ -5,7 +5,6 @@ import type {
 } from "@rjsf/utils";
 import { Plus, X } from "lucide-react";
 
-
 export function FieldTemplate(props: FieldTemplateProps) {
   const { id, label, help, errors, children, schema, hidden } = props;
 
