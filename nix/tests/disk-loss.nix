@@ -4,6 +4,7 @@
   disko,
   yolabSpecialArgs,
 }: let
+  testLib = import ./lib.nix {inherit pkgs;};
   configPath = ../../homelab/tests/boot-config.toml;
   meshAddr = "fd00:cafe::1";
 
@@ -110,8 +111,16 @@ in
             '[.pg_stats[] | select(.state | test("active") | not)] | length == 0', 900)
 
       # ── A stand-in app with a volume on CephFS ────────────────────────────
+      #
+      # The image is built by Nix, not pulled from a registry: this sandbox
+      # has no internet on any runner (see two-node-test's rook-ceph-namespace
+      # comment), so a public image would sit ImagePullBackOff forever and
+      # this test could only ever check that the Deployment OBJECT exists,
+      # never that a pod actually runs. Importing a local image and setting
+      # imagePullPolicy: Never makes the readiness assertion below meaningful.
       node1.succeed(f"{K} create namespace yolab-demo")
       node1.succeed(f"{K} label namespace yolab-demo yolab.io/managed=true")
+      node1.succeed("k3s ctr -n k8s.io images import ${testLib.demoImage}")
       node1.succeed(f"""{K} apply -f - <<'EOF'
       apiVersion: v1
       kind: PersistentVolumeClaim
@@ -121,8 +130,23 @@ in
         storageClassName: yolab-cephfs
         resources: {{requests: {{storage: 1Gi}}}}
       EOF""")
-      node1.succeed(f"{K} create deployment web --image=busybox --replicas=2 -n yolab-demo")
+      node1.succeed(f"""{K} apply -f - <<'EOF'
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {{name: web, namespace: yolab-demo}}
+      spec:
+        replicas: 2
+        selector: {{matchLabels: {{app: web}}}}
+        template:
+          metadata: {{labels: {{app: web}}}}
+          spec:
+            containers:
+            - name: web
+              image: ${testLib.demoImageName}:${testLib.demoImageTag}
+              imagePullPolicy: Never
+      EOF""")
       old_uid = node1.succeed(f"{K} get pvc data -n yolab-demo -o jsonpath='{{.metadata.uid}}'").strip()
+      jq_ok(f"{K} get deployment web -n yolab-demo -o json", ".status.readyReplicas == 2", 300)
 
       # ── Pull osd.1's disk ─────────────────────────────────────────────────
       dev = node1.succeed("ceph osd metadata 1 -f json | jq -r .devices").strip()

@@ -1,4 +1,21 @@
 {pkgs}: {
+  # A tiny OCI image built entirely from the Nix store — no registry pull, so
+  # it works inside a VM test's network-sandboxed VM. `k3s ctr -n k8s.io
+  # images import` loads it into containerd's local store before any pod
+  # references it; pair with `imagePullPolicy: Never` so k3s never tries the
+  # network anyway. This is what makes it possible for a VM test to assert a
+  # pod actually reaches Ready, not just that the Deployment object exists —
+  # busybox from docker.io can never do that here: see the comment on
+  # rook-ceph-namespace in two-node.nix for why nothing in this sandbox can
+  # reach the internet, ever, on any runner.
+  demoImageName = "yolab-test-demo";
+  demoImageTag = "latest";
+  demoImage = pkgs.dockerTools.buildImage {
+    name = "yolab-test-demo";
+    tag = "latest";
+    config.Cmd = ["${pkgs.coreutils}/bin/sleep" "infinity"];
+  };
+
   machine = {
     configPath,
     systemDisk ? "/dev/vdb",
