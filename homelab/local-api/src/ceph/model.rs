@@ -1,10 +1,8 @@
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Deserializer};
 
 use crate::exec::{self, CmdError};
-
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct OsdDump {
@@ -54,7 +52,6 @@ impl OsdDump {
             .collect()
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct PgBrief {
@@ -123,7 +120,6 @@ pub fn lost_pgs(dump: &OsdDump, pgs: &[PgBrief]) -> (PgsByPool, BTreeSet<i64>) {
     (lost, holders)
 }
 
-
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct OsdStat {
     pub num_osds: u64,
@@ -140,7 +136,6 @@ pub struct FsEntry {
 pub struct SafeToDestroyReport {
     pub safe_to_destroy: Vec<i64>,
 }
-
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LvmVolume {

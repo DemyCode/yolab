@@ -31,8 +31,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg p-5">
-      {
-}
+      {}
       <div
         aria-hidden
         className="pointer-events-none absolute -top-40 left-1/2 h-[34rem] w-[34rem] -translate-x-1/2 rounded-full bg-primary/10 blur-3xl"

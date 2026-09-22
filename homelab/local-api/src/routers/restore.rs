@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -66,7 +65,6 @@ impl Claimed for RestoreSet {
     }
 }
 
-
 fn upsert(sets: &mut Vec<RestoreSet>, set: RestoreSet) {
     sets.retain(|s| s.id != set.id);
     sets.insert(0, set);
@@ -87,7 +85,6 @@ async fn patch_set(id: &str, mut update: impl FnMut(&mut RestoreSet)) -> anyhow:
         .await?;
     Ok(())
 }
-
 
 pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyhow::Result<String> {
     let Some(cfg) = read_master_config().await else {
@@ -311,7 +308,6 @@ fn parse_snapshots(v: &Value) -> Vec<SnapshotEntry> {
         })
         .collect()
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct AppVersion {
@@ -816,7 +812,6 @@ async fn wait_for_rd(namespace: &str, dest_name: &str) -> anyhow::Result<()> {
     }
 }
 
-
 async fn read_deployment_scales(ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
     let v = crate::kubectl::get_json(&["get", "deployments", "-n", ns, "-o", "json"]).await?;
     parse_deployment_scales(&v)
@@ -998,7 +993,6 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
         })
         .unwrap_or_default()
 }
-
 
 fn liveness_of(s: &RestoreSet) -> Liveness {
     s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT)
@@ -1265,7 +1259,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn a_pinned_snapshot_is_restored_at_its_own_exact_time() {
         let snaps = [
@@ -1358,7 +1351,6 @@ mod tests {
         assert!(parse_snapshots(&json!({})).is_empty());
     }
 
-
     #[test]
     fn catalog_pvcs_read_names_capacity_and_the_pinned_snapshot() {
         let catalog = json!({"services": [
@@ -1445,7 +1437,6 @@ mod tests {
         ]});
         assert_eq!(saved_config(&bad), None);
     }
-
 
     #[test]
     fn each_app_lists_the_snapshots_holding_it_newest_first() {

@@ -1,4 +1,3 @@
-
 pub(crate) mod credentials;
 pub(crate) mod member;
 
@@ -25,7 +24,6 @@ const NAME: &str = "heal";
 const TICK: Duration = Duration::from_secs(10);
 const KUBERNETES_GRACE_SECS: u64 = 600;
 const PREPARE_WAIT_SECS: u64 = 3 * 3600;
-
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Member {
@@ -150,7 +148,6 @@ fn blocked_by_loss(lost: &PgsByPool) -> Option<&'static str> {
         .any(|pool| APP_DATA_POOLS.contains(&pool.as_str()))
         .then_some("a disk holding app data does not answer — reconnect it, or use FORCE HEAL")
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub(crate) struct PeerInfo {
@@ -342,7 +339,6 @@ impl Network for RealNetwork {
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 struct MonStatus {
@@ -634,7 +630,6 @@ async fn survey<H: Host, N: Network>(
     }
 }
 
-
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 pub struct HealRequest {
     pub keep_machines: BTreeSet<String>,
@@ -742,7 +737,6 @@ fn new_fsid() -> String {
         &h[20..32]
     )
 }
-
 
 #[derive(Debug, PartialEq)]
 enum StepResult {
@@ -1032,7 +1026,6 @@ async fn restart_this_machine<H: Host>(host: &H) -> Result<()> {
     }
     Ok(())
 }
-
 
 fn heal_json(heal: &Heal) -> Value {
     json!({

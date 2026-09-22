@@ -1,4 +1,3 @@
-
 export const CATALOG_ICONS: Record<string, string> = {
   "2fauth": "/icons/2fauth.svg",
   actual: "/icons/actual.svg",

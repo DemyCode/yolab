@@ -1,4 +1,3 @@
-
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -409,7 +408,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn matching_fsids_are_accepted() {
         assert!(validate_join_fsid(FSID, FSID, "fd00:cafe::1").is_ok());
@@ -428,7 +426,6 @@ mod tests {
     fn an_empty_bundle_fsid_is_refused_not_treated_as_a_match() {
         assert!(validate_join_fsid("", FSID, "fd00:cafe::1").is_err());
     }
-
 
     #[tokio::test]
     async fn create_path_produces_a_keyring_and_never_touches_the_network() {
@@ -475,7 +472,6 @@ mod tests {
 
         assert!(host.calls().is_empty());
     }
-
 
     #[tokio::test]
     async fn join_writes_the_bundles_keyrings_and_fetches_a_live_monmap() {

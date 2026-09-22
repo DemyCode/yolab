@@ -1,4 +1,3 @@
-
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 
 const MAX_LOOKBACK_MINUTES: i64 = 366 * 24 * 60;

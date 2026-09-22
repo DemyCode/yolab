@@ -28,7 +28,6 @@ pub fn is_not_found(e: &impl exec::AsCmdError) -> bool {
     exec::is_not_found(e)
 }
 
-
 async fn pipe_manifest(verb: &str, manifest: &str) -> Result<(), CmdError> {
     exec::with_stdin("kubectl", &[verb, "-f", "-"], manifest, KUBECTL_TIMEOUT)
         .await
@@ -134,7 +133,6 @@ fn cluster_ipv6(node: &Value) -> Option<String> {
 mod tests {
     use super::*;
 
-
     fn node(ips: &[(&str, &str)]) -> Value {
         serde_json::json!({
             "status": { "addresses": ips.iter()
@@ -185,7 +183,6 @@ mod tests {
             vec!["fd00:cafe::6", "fd00:cafe::7"]
         );
     }
-
 
     #[test]
     fn a_kubectl_not_found_is_a_missing_resource() {

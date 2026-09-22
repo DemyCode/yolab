@@ -1,4 +1,3 @@
-
 use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -47,7 +46,6 @@ impl Layout {
         self.root.join("nix/var/nix/profiles/system")
     }
 }
-
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PrepareRequest {
@@ -100,12 +98,8 @@ fn is_uuid(s: &str) -> bool {
 enum Phase {
     Preparing,
     Prepared,
-    Failed {
-        error: String,
-    },
-    Armed {
-        boot_id: String,
-    },
+    Failed { error: String },
+    Armed { boot_id: String },
     Undone,
 }
 
@@ -215,7 +209,6 @@ pub(crate) fn current(
 ) -> Result<Option<ResetView>> {
     Ok(load(layout)?.map(|r| view(&r, boot_id, preparing.running().as_deref())))
 }
-
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Begin {
@@ -381,7 +374,6 @@ fn tail(text: &str, lines: usize) -> String {
 pub(crate) fn holds_config(layout: &Layout) -> bool {
     layout.config_before().exists()
 }
-
 
 pub(crate) fn arm(layout: &Layout, heal_id: &str, boot_id: &str) -> Result<()> {
     let Some(reset) = load(layout)?.filter(|r| r.request.heal_id == heal_id) else {

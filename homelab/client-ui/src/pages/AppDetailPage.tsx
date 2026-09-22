@@ -61,8 +61,7 @@ function CopyValue({ label, value }: { label: string; value: string }) {
             await navigator.clipboard.writeText(value);
             setCopied(true);
             setTimeout(() => setCopied(false), 1600);
-          } catch {
-          }
+          } catch {}
         }}
         className="shrink-0 rounded-lg p-2.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
         aria-label={`Copy ${label}`}
@@ -227,8 +226,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                 {logs.lines.length > 0
                   ? logs.lines.join("\n")
                   : logs.live
-                    ?
-                      "Connected — waiting for this app to print something…"
+                    ? "Connected — waiting for this app to print something…"
                     : "This app printed nothing."}
               </pre>
             </div>
@@ -565,8 +563,7 @@ export function AppDetailPage() {
         if (cancelled) return;
         const mine = list.find((r) => r.namespace === `yolab-${instanceName}`);
         setRestore(mine ?? null);
-      } catch {
-      }
+      } catch {}
     }
     void pollRestore();
     const id = window.setInterval(pollRestore, 5000);
@@ -726,8 +723,7 @@ export function AppDetailPage() {
         </Banner>
       )}
 
-      {
-}
+      {}
       {links.length > 0 && (
         <div className="mb-4 space-y-2">
           {links.map((link, i) => (
@@ -767,8 +763,7 @@ export function AppDetailPage() {
         </div>
       )}
 
-      {
-}
+      {}
       {factRows.length > 0 && (
         <Card className="mb-4 divide-y divide-border p-0">
           {factRows.map((f) =>

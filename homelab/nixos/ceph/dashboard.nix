@@ -61,6 +61,5 @@ in {
         YOLAB_CEPH_MON_ADDR = cephCfg.monAddr;
       };
     };
-
   };
 }

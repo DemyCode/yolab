@@ -209,9 +209,7 @@ export function BoxPage() {
           label="Updates and system"
           detail={status.data?.platform}
         />
-        {
-
-}
+        {}
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}
@@ -250,8 +248,7 @@ export function BoxPage() {
         wrong and someone is helping you.
       </p>
       <Card className="overflow-hidden p-0">
-        {
-}
+        {}
         <NavRow
           to="/box/logs"
           icon={ScrollText}

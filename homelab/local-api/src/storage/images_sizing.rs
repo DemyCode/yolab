@@ -1,4 +1,3 @@
-
 use serde_json::Value;
 
 use crate::host::Host;
@@ -116,7 +115,6 @@ mod tests {
         assert_eq!(replica_count(&serde_json::json!({"size": 0})), 1);
         assert_eq!(replica_count(&serde_json::json!({"size": 3})), 3);
     }
-
 
     #[test]
     fn one_copy_gets_a_quarter_of_the_pool() {
