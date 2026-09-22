@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn the_route_table_is_not_empty_and_has_no_duplicates() {
         assert!(ROUTE_TABLE.len() > 50, "the table lost most of its routes");
-        let mut paths: Vec<&str> = ROUTE_TABLE.iter().map(|(p, _)| *p).collect();
+        let mut paths: Vec<&str> = ROUTE_TABLE.iter().map(|&(p, _)| p).collect();
         paths.sort_unstable();
         let before = paths.len();
         paths.dedup();
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn every_listed_route_is_absolute_and_has_at_least_one_method() {
-        for (path, methods) in ROUTE_TABLE {
+        for &(path, methods) in ROUTE_TABLE {
             assert!(path.starts_with('/'), "{path} is not absolute");
             assert!(!methods.is_empty(), "{path} registers no method");
         }
@@ -155,8 +155,8 @@ mod tests {
     async fn every_route_refuses_an_unauthenticated_stranger() {
         let api = TestApi::provisioned();
         let mut reached = Vec::new();
-        for (path, methods) in ROUTE_TABLE {
-            if PUBLIC_ROUTES.contains(path) {
+        for &(path, methods) in ROUTE_TABLE {
+            if PUBLIC_ROUTES.contains(&path) {
                 continue;
             }
             for method in verbs(methods) {
@@ -180,8 +180,8 @@ mod tests {
     async fn an_unprovisioned_node_still_refuses_everything_off_box() {
         let api = TestApi::unprovisioned();
         let mut reached = Vec::new();
-        for (path, methods) in ROUTE_TABLE {
-            if PUBLIC_ROUTES.contains(path) {
+        for &(path, methods) in ROUTE_TABLE {
+            if PUBLIC_ROUTES.contains(&path) {
                 continue;
             }
             for method in verbs(methods) {

@@ -131,13 +131,8 @@ impl TestApi {
     /// Sign in with the real password, keeping the session cookie for every
     /// later request — the same handshake the UI performs.
     pub async fn login(mut self) -> Self {
-        let res = self
-            .send(
-                "POST",
-                "/api/login",
-                Some(&format!("{{\"password\":\"{PASSWORD}\"}}")),
-            )
-            .await;
+        let body = format!("{{\"password\":\"{PASSWORD}\"}}");
+        let res = self.send("POST", "/api/login", Some(&body)).await;
         assert_eq!(res.status, StatusCode::OK, "login failed: {}", res.body);
         let cookie = res.set_cookie.expect("login set no cookie");
         let token = cookie
@@ -168,7 +163,7 @@ impl TestApi {
             req = req.header(header::COOKIE, format!("yolab_session={token}"));
         }
         if let Some(token) = &self.cluster_token {
-            req = req.header(crate::auth::CLUSTER_AUTH_HEADER, token);
+            req = req.header(crate::auth::CLUSTER_AUTH_HEADER, token.as_str());
         }
         let mut req = req
             .body(
