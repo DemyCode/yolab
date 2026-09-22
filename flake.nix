@@ -196,9 +196,13 @@
     nixosConfigurations = nixosSystems;
 
     # VM tests that actually boot machines. Kept out of `checks` on purpose: a
-    # boot test needs a QEMU-capable runner (CI has one, the build sandbox does
-    # not) and has not yet been verified to pass, so it must not be part of
-    # `nix flake check`. Run it explicitly:
+    # boot test needs a QEMU-capable runner, and the build sandbox `nix flake
+    # check` runs in has no /dev/kvm. They are not optional for that — CI runs
+    # every one of them, one runner each, in the `vm` job of
+    # .github/workflows/push.yml, whose matrix is `builtins.attrNames` of THIS
+    # attribute set. Adding a test here is all it takes to get it a runner.
+    #
+    # Locally, on a machine with KVM:
     #   nix build .#nixosTests.boot-test
     #   nix build .#nixosTests.two-node-test
     #

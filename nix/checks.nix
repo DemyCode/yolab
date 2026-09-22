@@ -374,6 +374,140 @@ in let
         fi
         touch $out
       '';
+
+    # THE API SURFACE IS WRITTEN DOWN TWICE, SO NEITHER COPY CAN DRIFT.
+    #
+    # `surface::ROUTE_TABLE` is the list every cross-cutting test walks — most
+    # importantly `every_route_refuses_an_unauthenticated_stranger`, which is the
+    # only thing standing between "someone added a route" and "someone added an
+    # unauthenticated route". axum's `Router` cannot be enumerated at runtime, so
+    # that table has to be written by hand, and a hand-written list of 69 things
+    # is a list that silently falls behind.
+    #
+    # Both directions fail, for the same reasons as ci-buckets-cover-every-check:
+    # a route in the router but not the table is a route no sweep ever visits; a
+    # table entry naming no route is a test walking over nothing and reporting
+    # success.
+    route-table-is-complete =
+      pkgs.runCommand "route-table-is-complete" {nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];}
+      ''
+        src=${treeSrc}/homelab/local-api/src
+
+        # Every path build_router registers. Flattened first: eleven of these are
+        # written across several lines, and the obvious grep — one that assumes
+        # `.route("` is contiguous — silently finds 58 of the 69 and then reports
+        # a clean diff against a table missing the same eleven.
+        tr '\n' ' ' < "$src/router.rs" \
+          | grep -oE '\.route\([[:space:]]*"[^"]+"' \
+          | sed 's/^\.route([[:space:]]*"//; s/"$//' \
+          | LC_ALL=C sort -u > registered
+
+        # Every path the table claims.
+        sed -n 's/^ *("\([^"]*\)", &\[.*$/\1/p' "$src/surface.rs" \
+          | LC_ALL=C sort -u > tabled
+
+        if ! diff -u tabled registered > delta; then
+          echo "homelab/local-api/src/surface.rs ROUTE_TABLE no longer matches the" >&2
+          echo "routes registered in homelab/local-api/src/router.rs." >&2
+          echo "" >&2
+          echo "  '+' lines: registered but NOT in the table — no test sweeps these," >&2
+          echo "             including the one that checks they are behind auth." >&2
+          echo "  '-' lines: in the table but registered nowhere — a test walking" >&2
+          echo "             over a route that does not exist." >&2
+          echo "" >&2
+          cat delta >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
+    # THE SEAM RATCHET: direct machine access may only ever shrink.
+    #
+    # `host.rs` is the seam — every kubectl/ceph/systemctl/lsblk call is supposed
+    # to go through the `Host` trait, because that is what lets a test substitute
+    # `FakeHost` and drive the logic without a cluster. Code that names `RealHost`
+    # or calls `crate::kubectl::` directly has stepped around it, and is
+    # structurally untestable: there is no seam left to inject at.
+    #
+    # That is not hypothetical. `routers/restore.rs` is 1711 lines with 11 such
+    # call sites, and on 2026-09-22 a restore finished pulling an app's data and
+    # then never brought the app back up — the volume was restored, the Deployment
+    # was never created, the record was marked "interrupted — scaled back up", and
+    # `scaled_deployments` was empty so scaling back up did nothing. None of that
+    # module's 20 tests could have caught it, because none of them can run a
+    # restore at all. `heal/` is the counter-example: generic over `H: Host, N:
+    # Network`, with both faked, and its failure paths are exercised.
+    #
+    # So this is a budget, per file, and the numbers may only go DOWN. Both
+    # directions fail on purpose:
+    #
+    #   - over budget: the hole got deeper. Take a `host: &H` and call through the
+    #     seam instead.
+    #   - under budget: good — lower the number in the same commit, so the next
+    #     person inherits the tighter bound rather than the slack.
+    #
+    # A file that reaches 0 comes off the list entirely; a file not on the list
+    # may not have any.
+    host-seam-ratchet = let
+      # file -> how many direct `RealHost` / `crate::kubectl::` mentions it may
+      # still have. Measured, not guessed. `host.rs` is the seam itself and
+      # `kubectl.rs` defines the helpers, so neither is counted.
+      budget = {
+        "auth.rs" = 2;
+        "boot/mod.rs" = 2;
+        "charts.rs" = 5;
+        "disks_reconciler.rs" = 2;
+        "heal/credentials.rs" = 1;
+        "heal/mod.rs" = 9;
+        "mesh/mod.rs" = 5;
+        "ops.rs" = 1;
+        "routers/apps.rs" = 24;
+        "routers/backup.rs" = 11;
+        "routers/backup_common.rs" = 10;
+        "routers/ceph.rs" = 2;
+        "routers/disks.rs" = 4;
+        "routers/restore.rs" = 11;
+        "runtime/leader.rs" = 4;
+        "storage/controllers.rs" = 11;
+        "storage/mod.rs" = 2;
+        "topology.rs" = 2;
+      };
+      # `attrNames` is already byte-sorted, which is what `LC_ALL=C sort` gives
+      # the measured side. The two orderings have to agree or every line diffs.
+      expected =
+        pkgs.writeText "seam-budget"
+        (pkgs.lib.concatStrings (
+          map (n: "${n} ${toString budget.${n}}\n") (builtins.attrNames budget)
+        ));
+    in
+      pkgs.runCommand "host-seam-ratchet" {nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];} ''
+        # The subshell matters: `cd` lands in the read-only store path, so the
+        # redirection below has to happen back in the build directory.
+        (
+          cd ${treeSrc}/homelab/local-api/src
+          find . -name '*.rs' ! -path './host.rs' ! -path './kubectl.rs' -print0 \
+            | xargs -0 grep -cE 'RealHost|crate::kubectl::' /dev/null
+        ) \
+          | grep -v ':0$' \
+          | sed 's|^\./||; s|:| |' \
+          | LC_ALL=C sort > actual
+
+        if ! diff -u ${expected} actual > delta; then
+          echo "Direct machine access moved. This list is a ratchet: it may only" >&2
+          echo "shrink, and nix/checks.nix says why." >&2
+          echo "" >&2
+          echo "  '+' lines: more direct RealHost / crate::kubectl:: use than the" >&2
+          echo "             budget allows, or a file that had none and now does." >&2
+          echo "             Take a 'host: &H' and call through the seam instead," >&2
+          echo "             the way homelab/local-api/src/heal/ does." >&2
+          echo "  '-' lines: fewer than the budget — thank you. Lower the number" >&2
+          echo "             in nix/checks.nix in this same commit." >&2
+          echo "" >&2
+          cat delta >&2
+          exit 1
+        fi
+        touch $out
+      '';
     # statix is deliberately absent: its 39 findings are all "avoid repeated keys
     # in attribute sets", and flattening `boot.loader.grub.*` is not obviously an
     # improvement. `nix run nixpkgs#statix -- check` if you want it.
