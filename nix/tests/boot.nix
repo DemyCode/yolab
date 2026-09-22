@@ -17,7 +17,7 @@
   disko,
   yolabSpecialArgs,
 }: let
-  testLib = import ./lib.nix;
+  testLib = import ./lib.nix {inherit pkgs;};
   bootConfigPath = ../../homelab/tests/boot-config.toml;
   vmModule = {lib, ...}: {
     # The same arguments the real `nixosSystem` passes, from the same function —
@@ -28,6 +28,7 @@
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix
       ../../homelab/nixos/disk-config.nix
+      (testLib.machine {configPath = bootConfigPath;})
     ];
 
     # The VM boots the harness's own root image, so the install-time LVM layout
@@ -42,11 +43,11 @@
     # and an OOM in here reads as a mysterious hang rather than a failure.
     virtualisation.memorySize = 4096;
     virtualisation.cores = 2;
-    # A spare disk, so the machine looks like one with storage to offer even
-    # though this test never switches it on. Its absence changes what the disk
-    # reconciler reports, and "boots with a spare disk present" is the shape
-    # every real machine has.
-    virtualisation.emptyDiskImages = [8192];
+    # Two disks: /dev/vdb becomes the system LV (see testLib.machine — the test
+    # neutralises disko, so nothing else creates the layout yolab-ceph-system-osd
+    # waits for), and /dev/vdc stays spare, which is the shape the Storage page
+    # expects to find on a real machine with something left to offer.
+    virtualisation.emptyDiskImages = [8192 8192];
 
     # ── The mesh, without WireGuard ──────────────────────────────────────────
     #
