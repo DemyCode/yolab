@@ -79,9 +79,49 @@ A comment that asserts a property is a test that has not been written yet.
 
 ## Running things
 
+`nix flake check` builds **every** check and takes no filter of any kind — it is
+all 28 or nothing.
+
+It also does **not** run the three VM tests. Those live under `nixosTests`
+rather than `checks` because a NixOS VM test needs `/dev/kvm`, which the
+sandbox `nix flake check` runs in does not have. So:
+
+> A green `nix flake check` is not the same as "everything is tested", and
+> there is no flag that makes it so.
+
+To pick what runs:
+
 ```sh
-nix run .#ci                        # every check, exactly as CI does
-nix build .#checks.x86_64-linux.<name>   # one check
-nix build .#nixosTests.two-node-test     # one VM test (needs /dev/kvm)
-nix run .#coverage                  # local-api + installer coverage reports
+nix run .#test -- --list     # every check and every VM test, by name
+nix run .#test               # all 28 checks (never the VM tests)
+nix run .#test -- rust       # local-api-tests, clippy-local-api, ...
+nix run .#test -- backup     # anything with "backup" in its name
+nix run .#test -- boot-test  # one real VM (needs /dev/kvm)
+```
+
+Matching is a plain substring over both sets, which is why `rust` reaches
+`clippy-local-api` — and also why `ui` reaches `ceph-survives-a-reb`**ui**`ld`.
+`--list` is there for when that bites. VM tests are only ever selected by an
+explicit filter: an unfiltered run must not quietly start booting machines.
+
+Everything selected is built in one `nix build`, so nix realises shared
+dependencies once rather than per check. That is the same reason CI groups its
+checks into buckets.
+
+The longer forms, if you want them:
+
+```sh
+nix build .#checks.x86_64-linux.local-api-tests        # exactly one check
+nix build .#nixosTests.two-node-test                   # exactly one VM test
+nix run .#ci                                           # all checks + a summary
+nix run .#coverage                                     # local-api + installer coverage
+nix fmt                                                # fix formatting
+```
+
+**Read the log, not the scrollback.** A VM test or a cold Rust build emits tens
+of thousands of lines. Redirect and tail:
+
+```sh
+nix build --no-link --print-build-logs .#nixosTests.boot-test > /tmp/boot.log 2>&1
+tail -40 /tmp/boot.log
 ```

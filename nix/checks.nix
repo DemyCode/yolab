@@ -330,6 +330,14 @@ in let
     # nothing.
     #
     # This check is itself in the `lint` bucket, so it guards its own presence too.
+    #
+    # THE VM TESTS ARE NOT IN A BUCKET, AND THAT IS CORRECT. `checks` in flake.nix
+    # is `allChecks // nixosTests`, so `nix flake check` covers them — but CI runs
+    # them in the separate `vm` job, one runner each, off a matrix it derives with
+    # `nix eval .#nixosTests`. A derived matrix cannot fall behind, so there is
+    # nothing for this check to compare. What it does assert is that the derivation
+    # still exists: delete the vm job and the VM tests stop running in CI just as
+    # silently as an unbucketed check would.
     ci-buckets-cover-every-check = let
       # Every name `checks` will expose. Built from the same attribute set CI
       # consumes, not a second hand-written list — a hand-written one would be the
@@ -354,6 +362,16 @@ in let
       pkgs.runCommand "ci-buckets-cover-every-check" {
         nativeBuildInputs = [pkgs.yq-go];
       } ''
+        # The vm job must still derive its matrix from the flake.
+        if ! grep -q "nix eval --json '.#nixosTests'" \
+             ${treeSrc}/.github/workflows/push.yml; then
+          echo "The vm job in .github/workflows/push.yml no longer derives its" >&2
+          echo "matrix from 'nix eval --json .#nixosTests'. Either it is gone, or" >&2
+          echo "it now names its tests by hand — which is the drift this whole" >&2
+          echo "file exists to prevent." >&2
+          exit 1
+        fi
+
         yq -r '.jobs.checks.strategy.matrix.include[].checks' \
           ${treeSrc}/.github/workflows/push.yml \
           | tr ' ' '\n' | sed '/^$/d' | sort -u > bucketed

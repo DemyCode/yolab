@@ -214,15 +214,30 @@
   in {
     nixosConfigurations = nixosSystems;
 
-    # VM tests that actually boot machines. Kept out of `checks` on purpose: a
-    # boot test needs a QEMU-capable runner, and the build sandbox `nix flake
-    # check` runs in has no /dev/kvm. They are not optional for that — CI runs
-    # every one of them, one runner each, in the `vm` job of
-    # .github/workflows/push.yml, whose matrix is `builtins.attrNames` of THIS
-    # attribute set. Adding a test here is all it takes to get it a runner.
+    # VM tests that actually boot machines.
     #
-    # Locally, on a machine with KVM:
-    #   nix build .#nixosTests.boot-test
+    # KEPT OUT OF `checks` FOR TIME, NOT FOR CAPABILITY. This comment used to
+    # say the build sandbox has no /dev/kvm, and that is simply false: a NixOS
+    # VM test derivation carries `requiredSystemFeatures = [ "kvm" ]`, and any
+    # builder advertising the `kvm` system feature hands it the device inside
+    # the sandbox. Verified on 2026-09-22 by watching boot-test boot a machine
+    # under `nix build` with `sandbox = true`.
+    #
+    # The real reason is wall clock. `nix flake check` builds every one of the
+    # checks with no way to select a subset, and folding three VM boots into it
+    # would turn the one command everybody runs before pushing into a
+    # half-hour one. So they stay their own output, and `nix run .#test -- boot`
+    # is how you ask for one by name.
+    #
+    # The cost of that choice is the `warning: unknown flake output 'nixosTests'`
+    # every `nix flake check` prints — nix knows nothing about this attribute, so
+    # it neither builds nor type-checks it. CI does instead: the `vm` job in
+    # .github/workflows/push.yml builds its matrix from `builtins.attrNames` of
+    # THIS attribute set, one runner each, so adding a test here is all it takes
+    # to get it run.
+    #
+    # Locally:
+    #   nix run .#test -- boot-test
     #   nix build .#nixosTests.two-node-test
     #
     # two-node-test is the one to run before shipping anything that touches
@@ -245,8 +260,29 @@
       "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
     };
 
-    # `coverage-*` filtered out: they are reports, not gates. See nix/checks.nix.
-    checks.x86_64-linux = lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks;
+    # EVERYTHING, INCLUDING THE MACHINES.
+    #
+    # `nix flake check` takes no filter — it is every derivation in here or
+    # none — so what goes in this attribute decides what "the flake is correct"
+    # is allowed to mean. The VM tests used to sit outside it, which made a green
+    # `nix flake check` a statement about 28 static checks and nothing about
+    # whether a machine boots. That is the weaker claim, and it is not the one
+    # worth making.
+    #
+    # They run in the build sandbox perfectly well: a NixOS VM test carries
+    # `requiredSystemFeatures = [ "kvm" ]` and any builder advertising the `kvm`
+    # system feature hands it /dev/kvm. What it costs is wall clock — this
+    # command is now tens of minutes, not one — and it will FAIL on a machine
+    # with no KVM rather than skip. Both are the point: a check that quietly
+    # does not run is the thing this repo keeps getting caught by.
+    #
+    # `nix run .#test -- <filter>` is the fast selective path for day-to-day
+    # work; this is the one that has to be green before shipping.
+    #
+    # `coverage-*` stays out: it is a report, not a gate. See nix/checks.nix.
+    checks.x86_64-linux =
+      lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks
+      // self.nixosTests;
 
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
 
@@ -260,6 +296,66 @@
       # eslint is a package, not a check: 7 pre-existing findings. It belongs in
       # `checks` once those are fixed, as clippy now is.
       client-ui-lint = builds.clientUiLint;
+
+      # `nix run .#test` — every check, or the ones whose name matches.
+      #
+      # `nix flake check` builds every check and has no filter of any kind: it
+      # is all 28 or nothing, and it does NOT touch the three VM tests, which
+      # live under `nixosTests` because they need /dev/kvm. So a green
+      # `nix flake check` is not the same as "everything is tested", and there
+      # is no flag that makes it so.
+      #
+      #   nix run .#test              # every check (not the VM tests)
+      #   nix run .#test -- rust      # local-api-tests, clippy-*, ...
+      #   nix run .#test -- ceph      # ceph-survives-a-rebuild
+      #   nix run .#test -- boot      # boot-test, a real VM (needs KVM)
+      #   nix run .#test -- --list    # what there is to match against
+      #
+      # Matching is a plain substring over both sets, so one name is as easy to
+      # reach as a family of them, and everything selected is built in ONE
+      # `nix build` — nix then realises shared dependencies once instead of per
+      # check, which is the whole reason CI buckets exist.
+      test = pkgs.writeShellApplication {
+        name = "yolab-test";
+        runtimeInputs = [pkgs.nix];
+        text = ''
+          # `checks` contains the VM tests too now (see checks.x86_64-linux), so
+          # the static ones are the difference. Without subtracting, --list
+          # would show each VM test twice and read like there are six.
+          checks="${lib.concatStringsSep " " (lib.subtractLists (builtins.attrNames self.nixosTests) (builtins.attrNames self.checks.x86_64-linux))}"
+          vms="${lib.concatStringsSep " " (builtins.attrNames self.nixosTests)}"
+          filter="''${1-}"
+
+          if [ "$filter" = "--list" ]; then
+            echo "static checks:"
+            for n in $checks; do echo "  $n"; done
+            echo "VM tests (also in nix flake check; need /dev/kvm):"
+            for n in $vms; do echo "  $n"; done
+            exit 0
+          fi
+
+          targets=()
+          for n in $checks; do
+            case "$n" in *"$filter"*) targets+=(".#checks.x86_64-linux.$n") ;; esac
+          done
+          # Only when asked for by name. An unfiltered run must not quietly
+          # start booting virtual machines.
+          if [ -n "$filter" ]; then
+            for n in $vms; do
+              case "$n" in *"$filter"*) targets+=(".#nixosTests.$n") ;; esac
+            done
+          fi
+
+          if [ ''${#targets[@]} -eq 0 ]; then
+            echo "nothing matches '$filter' — try: nix run .#test -- --list" >&2
+            exit 1
+          fi
+
+          echo "building ''${#targets[@]}:"
+          printf '  %s\n' "''${targets[@]}"
+          exec nix build --no-link --print-build-logs "''${targets[@]}"
+        '';
+      };
 
       # `nix run .#coverage` — build both HTML reports and say where they are.
       # Kept out of `ci` deliberately; see the note on checks.x86_64-linux.
@@ -316,6 +412,12 @@
           type = "app";
           program = lib.getExe self.packages.x86_64-linux.ci;
           meta.description = "Run every check, exactly as CI does";
+        };
+
+        test = {
+          type = "app";
+          program = lib.getExe self.packages.x86_64-linux.test;
+          meta.description = "Build the checks whose name matches (or all of them)";
         };
 
         format = {
