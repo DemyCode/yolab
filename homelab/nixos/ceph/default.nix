@@ -354,24 +354,21 @@ in {
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
       after = ["network-online.target" "ceph-mon-${host}.service"];
-      # Wants, not Requires, on the mon. Requires also propagates a STOP: on
-      # 2026-09-15 a rebuild restarted the mon (its bootstrap unit had changed),
-      # which stopped every OSD on node1 — restartIfChanged below notwithstanding
-      # — and their restart deadlocked on LVM (see images-store.nix). A running
-      # OSD rides out a mon restart on its own.
+      # Wants, not Requires, on the mon: a running OSD rides out a mon restart
+      # on its own, and Requires would propagate the mon's STOP to it. Enforced
+      # by ceph-survives-a-rebuild in nix/checks.nix, which has the incident.
       wants = ["network-online.target" "ceph-mon-${host}.service"];
       # No wantedBy: enablement is per-instance and owned by local-api.
       #
-      # restartIfChanged = false because the default cycles EVERY OSD on the
-      # node at once on any unit change — above all a Ceph version bump, which
-      # rewrites ExecStart, in the middle of an unattended auto-update. Ceph
-      # wants mon -> mgr -> osd one at a time with health checks between;
-      # restarting a node's OSDs while another node backfills can drop PGs
-      # below min_size and block I/O cluster-wide.
-      #
-      # A new Ceph build therefore reaches OSDs on the next reboot, not as a
-      # side effect of a rebuild. Mixed daemon versions within a release line
-      # are explicitly supported, which is what makes that safe.
+      # restartIfChanged = false: the default cycles EVERY OSD on the node at
+      # once on any unit change — above all a Ceph version bump, which rewrites
+      # ExecStart, mid unattended auto-update. Ceph wants mon -> mgr -> osd one
+      # at a time with health checks between, and restarting a node's OSDs while
+      # another node backfills can drop PGs below min_size and block I/O
+      # cluster-wide. So a new Ceph build reaches OSDs on the next reboot, not as
+      # a side effect of a rebuild; mixed daemon versions within a release line
+      # are supported, which is what makes that safe. Enforced by
+      # ceph-survives-a-rebuild in nix/checks.nix.
       restartIfChanged = false;
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils];
       # systemd's default (5 starts per 10s, then permanent failure) is the
