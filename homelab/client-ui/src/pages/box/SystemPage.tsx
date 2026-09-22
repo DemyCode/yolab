@@ -138,6 +138,7 @@ export function SystemPage() {
       await streamEvents(url, { method: "POST" }, (line) =>
         appendLines([line]),
       );
+      // eslint-disable-next-line no-empty
     } catch {}
     setPhase("rebuild");
     rebuildOffsetRef.current = 0;
@@ -152,6 +153,7 @@ export function SystemPage() {
     setRebootConfirm(false);
     try {
       await fetch("/api/system/reboot/all", { method: "POST" });
+      // eslint-disable-next-line no-empty
     } catch {}
   }
 

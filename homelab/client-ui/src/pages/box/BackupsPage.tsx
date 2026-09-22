@@ -155,6 +155,7 @@ function RecoveryKeyOverlay({
       await navigator.clipboard.writeText(recoveryKey);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
+      // eslint-disable-next-line no-empty
     } catch {}
   }
 
@@ -312,6 +313,7 @@ export function BackupsPage() {
         setRecoveryKey(data.recovery_key);
         setRecoveryMandatory(mandatory);
       }
+      // eslint-disable-next-line no-empty
     } catch {}
   }
 
@@ -339,6 +341,7 @@ export function BackupsPage() {
     try {
       const runsRes = await fetch("/api/backups/runs").then((r) => r.json());
       if (Array.isArray(runsRes)) setSets(runsRes as BackupSet[]);
+      // eslint-disable-next-line no-empty
     } catch {}
   }, []);
 
@@ -348,6 +351,7 @@ export function BackupsPage() {
         r.json(),
       )) as OperationState;
       setOpState(s);
+      // eslint-disable-next-line no-empty
     } catch {}
   }, []);
 

@@ -66,6 +66,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
   async function signOut() {
     try {
       await api.post("/api/logout");
+      // eslint-disable-next-line no-empty
     } catch {}
     onLogout();
   }
