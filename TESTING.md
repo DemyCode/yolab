@@ -8,10 +8,10 @@ forever.
 
 | tier | where | needs | runs |
 |---|---|---|---|
-| 1. Nix invariants | `nix/checks.nix` | nothing | every push, `lint`/`nixos` bucket |
-| 2. Rust unit | `#[cfg(test)] mod tests` beside the code | nothing | every push, `rust` bucket |
-| 3. Rust seam | same, driven by `host::fake::FakeHost` | nothing | every push, `rust` bucket |
-| 4. Rust surface | `surface.rs` + `testkit.rs`, the real axum router | nothing | every push, `rust` bucket |
+| 1. Nix invariants | `nix/checks.nix` | nothing | every push |
+| 2. Rust unit | `#[cfg(test)] mod tests` beside the code | nothing | every push |
+| 3. Rust seam | same, driven by `host::fake::FakeHost` | nothing | every push |
+| 4. Rust surface | `surface.rs` + `testkit.rs`, the real axum router | nothing | every push |
 | 5. NixOS VM | `nix/tests/*.nix` | `/dev/kvm` | every push, one runner per test |
 
 ## 1. Nix invariants — the tier nobody else has
@@ -57,8 +57,8 @@ cover a new route the moment it is added.
 Real machines, booted, with real disks. This is where storage, boot ordering,
 quorum and recovery live, because nothing below tier 5 can observe them. They
 need `/dev/kvm`; CI gives each one its own runner, and the matrix is
-`builtins.attrNames` of the flake's `nixosTests`, so adding a test is enough to
-get it run.
+`builtins.attrNames` of the flake's `checks`, so adding a test is enough to get
+it run.
 
 Borrowed from umbrelOS, which runs ~95 of these per push and finds its RAID bugs
 in CI rather than on customers' machines.
@@ -79,49 +79,29 @@ A comment that asserts a property is a test that has not been written yet.
 
 ## Running things
 
-`nix flake check` builds **every** check and takes no filter of any kind — it is
-all 28 or nothing.
+`nix flake check` builds **every** entry in `checks.x86_64-linux` — all of them,
+no filter. The VM tests are in there too, so `nix flake check` needs `/dev/kvm`.
 
-It also does **not** run the three VM tests. Those live under `nixosTests`
-rather than `checks` because a NixOS VM test needs `/dev/kvm`, which the
-sandbox `nix flake check` runs in does not have. So:
-
-> A green `nix flake check` is not the same as "everything is tested", and
-> there is no flag that makes it so.
-
-To pick what runs:
+To run a subset:
 
 ```sh
-nix run .#test -- --list     # every check and every VM test, by name
-nix run .#test               # all 28 checks (never the VM tests)
-nix run .#test -- rust       # local-api-tests, clippy-local-api, ...
-nix run .#test -- backup     # anything with "backup" in its name
-nix run .#test -- boot-test  # one real VM (needs /dev/kvm)
+nix build .#checks.x86_64-linux.local-api-tests   # exactly one check
+nix build .#checks.x86_64-linux.two-node-test     # a VM test (needs /dev/kvm)
+
+# everything, in one nix invocation
+nix build -L $(nix eval --json .#checks.x86_64-linux \
+  --apply 'a: map (n: ".#checks.x86_64-linux.${n}") (builtins.attrNames a)' | jq -r '.[]')
+
+nix fmt                                           # fix formatting
 ```
 
-Matching is a plain substring over both sets, which is why `rust` reaches
-`clippy-local-api` — and also why `ui` reaches `ceph-survives-a-reb`**ui**`ld`.
-`--list` is there for when that bites. VM tests are only ever selected by an
-explicit filter: an unfiltered run must not quietly start booting machines.
-
-Everything selected is built in one `nix build`, so nix realises shared
-dependencies once rather than per check. That is the same reason CI groups its
-checks into buckets.
-
-The longer forms, if you want them:
-
-```sh
-nix build .#checks.x86_64-linux.local-api-tests        # exactly one check
-nix build .#nixosTests.two-node-test                   # exactly one VM test
-nix run .#ci                                           # all checks + a summary
-nix run .#coverage                                     # local-api + installer coverage
-nix fmt                                                # fix formatting
-```
+CI does the same thing, one runner per check: the matrix is `builtins.attrNames`
+of `checks.x86_64-linux`, so adding a check is enough to get it run and cached.
 
 **Read the log, not the scrollback.** A VM test or a cold Rust build emits tens
 of thousands of lines. Redirect and tail:
 
 ```sh
-nix build --no-link --print-build-logs .#nixosTests.boot-test > /tmp/boot.log 2>&1
+nix build --no-link --print-build-logs .#checks.x86_64-linux.boot-test > /tmp/boot.log 2>&1
 tail -40 /tmp/boot.log
 ```

@@ -7,8 +7,41 @@ on:
       - main
 
 jobs:
-  ci:
+  configure:
     runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.list.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - id: list
+        run: |
+          set -euo pipefail
+          {
+            nix eval --json '.#packages.x86_64-linux' --apply 'a: builtins.map (n: "packages.x86_64-linux.${n}") (builtins.attrNames a)'
+            nix eval --json '.#checks.x86_64-linux' --apply 'a: builtins.map (n: "checks.x86_64-linux.${n}") (builtins.attrNames a)'
+            nix eval --json '.#devShells.x86_64-linux' --apply 'a: builtins.map (n: "devShells.x86_64-linux.${n}") (builtins.attrNames a)'
+            nix eval --json '.#nixosConfigurations' --apply 'a: builtins.map (n: "nixosConfigurations.${n}.config.system.build.toplevel") (builtins.attrNames a)'
+            printf '["formatter.x86_64-linux"]'
+          } | jq --slurp --compact-output 'add | map({job: .})' > matrix.json
+          cat matrix.json
+          echo "jobs=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.job }}
+    needs: configure
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.configure.outputs.jobs) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -20,18 +53,15 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Grant KVM to the runner
+      - name: Grant KVM if available
         run: |
           set -euo pipefail
-          if [ ! -e /dev/kvm ]; then
-            echo "::error::No /dev/kvm on this runner. This job builds the flake's" \
-                 "VM tests; software emulation is too slow to finish inside any" \
-                 "sane job timeout. Move this job to a runner that exposes KVM" \
-                 "(umbrelOS uses ubicloud-standard-4-ubuntu-2404 for exactly this)."
-            exit 1
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            ls -l /dev/kvm
+          else
+            echo "::warning::no /dev/kvm; the VM test jobs will fail on this runner"
           fi
-          sudo chmod 666 /dev/kvm
-          ls -l /dev/kvm
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -42,19 +72,11 @@ jobs:
             accept-flake-config = true
             system-features = nixos-test benchmark big-parallel kvm
 
-      - name: Build every flake output
+      - name: Build
         run: |
           set -euo pipefail
-          # `git+file://$PWD`, never `.` or `path:.` — the git flake copies only
-          # tracked files, so its source hash matches what a machine builds with
-          # (`github:DemyCode/yolab/main#...`). A `path:` source copies the whole
-          # directory, hashes differently, and caches derivations no node can
-          # use. See the ISO step's note for what that cost.
-          #
-          # The output is a JSON list of every path devour built; its closure is
-          # all of them, so the push step below caches the lot.
-          nix run .#devour -- "git+file://$PWD" > /tmp/devour.json
-          cat /tmp/devour.json
+          nix build ".#${{ matrix.job }}" --no-link --print-out-paths > /tmp/out.txt
+          cat /tmp/out.txt
 
       - name: Push to the Nix cache
         env:
@@ -63,11 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
-          # The CLOSURE of every built path, not the paths themselves: the JSON
-          # names the outputs, but what a node needs is everything underneath
-          # them — crane's cargoArtifacts, the NixOS closures the VM tests boot.
-          jq -r '.[].outPaths[]' /tmp/devour.json | sort -u > /tmp/devour-paths.txt
-          xargs -a /tmp/devour-paths.txt nix path-info --recursive \
+          xargs -a /tmp/out.txt nix path-info --recursive \
             | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
 
 
@@ -365,7 +383,7 @@ jobs:
           # both runners, neither able to use the cache the other had just filled.
           # A machine's own files come in through the `yolab-machine` input
           # instead (see flake.nix), which is why nothing needs `path:` any more.
-          ISO_OUT=$(nix build .#iso --no-link --print-build-logs --print-out-paths)
+          ISO_OUT=$(nix build .#nixosConfigurations.yolab-installer.config.system.build.isoImage --no-link --print-build-logs --print-out-paths)
           echo "store_path=$ISO_OUT" >> "$GITHUB_OUTPUT"
           echo "ISO store path: $ISO_OUT"
 
@@ -472,7 +490,7 @@ jobs:
 
             This is mechanical output — the same treefmt wrapper
             `checks.formatting` builds, so merging it is what makes
-            `nix run .#ci` green on that branch.
+            CI green on that branch.
 
             If this appeared without anyone editing the affected files, a
             formatter version moved: check the most recent bump to
