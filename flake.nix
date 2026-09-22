@@ -4,6 +4,15 @@
   nixConfig = {
     extra-substituters = ["https://cache.yolab.io/yolab"];
     extra-trusted-public-keys = ["yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="];
+    # "relaxed", not "false": every derivation stays sandboxed (no network,
+    # full reproducibility) by default. Only a derivation that explicitly
+    # opts in with __noChroot — currently just the VM tests, via
+    # nix/tests/lib.nix's withNetwork — gets network access. CI already
+    # passes accept-flake-config = true (see .github/workflows/push.yml), so
+    # this needs no workflow changes; a build from an untrusted user or
+    # without --accept-flake-config just gets the ordinary fully-sandboxed
+    # behavior instead of an error.
+    sandbox = "relaxed";
   };
 
   inputs = {

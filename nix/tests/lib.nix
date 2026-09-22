@@ -1,4 +1,20 @@
 {pkgs}: {
+  # Real internet access for exactly this VM test's build — nothing else in
+  # the flake. `nix build` sandboxes every derivation (no network) unless it
+  # is a fixed-output derivation; there is no per-derivation "give this one
+  # network" option in the nixosTest framework itself (nixpkgs' own run.nix
+  # says as much: "TODO: can the interactive driver be configured to access
+  # the network?"). `__noChroot` is Nix's actual escape hatch for that, and
+  # `overrideTestDerivation` (the documented way to reach into a nixosTest's
+  # underlying mkDerivation, see nixos/lib/testing/run.nix) is what lets it
+  # reach this one test's derivation without a flake-wide nixConfig.sandbox
+  # setting that would also de-sandbox every Rust build, chart check and ISO
+  # build in the flake. Requires the building user to be `trusted-users` in
+  # nix.conf (this machine has `nixos`; cachix/install-nix-action's default
+  # CI setup makes the runner user trusted too) — an untrusted user silently
+  # gets the normal sandboxed build instead, not an error.
+  withNetwork = test: test.overrideTestDerivation (_: {__noChroot = true;});
+
   # A tiny OCI image built entirely from the Nix store — no registry pull, so
   # it works inside a VM test's network-sandboxed VM. `k3s ctr -n k8s.io
   # images import` loads it into containerd's local store before any pod

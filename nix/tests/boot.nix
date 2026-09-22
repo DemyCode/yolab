@@ -44,7 +44,7 @@
     };
   };
 in
-  pkgs.testers.nixosTest {
+  testLib.withNetwork (pkgs.testers.nixosTest {
     name = "yolab-boot";
     nodes.node1 = vmModule;
     testScript =
@@ -94,4 +94,4 @@ in
                 timeout=300,
             )
       '';
-  }
+  })

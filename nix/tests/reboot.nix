@@ -56,7 +56,7 @@
     environment.systemPackages = [pkgs.curl pkgs.jq];
   };
 in
-  pkgs.testers.nixosTest {
+  testLib.withNetwork (pkgs.testers.nixosTest {
     name = "yolab-reboot";
     nodes.node1 = node;
 
@@ -243,4 +243,4 @@ in
                     f"(next elapse: {nxt!r})"
                 )
       '';
-  }
+  })

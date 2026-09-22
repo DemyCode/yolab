@@ -62,7 +62,7 @@
     environment.etc."yolab-machine/config.toml".source = configPath;
   };
 in
-  pkgs.testers.nixosTest {
+  testLib.withNetwork (pkgs.testers.nixosTest {
     name = "yolab-two-node";
 
     nodes.node1 = mkNode {
@@ -283,4 +283,4 @@ in
         node1.succeed("rbd ls images | grep -qx yolab-n1")
         node1.succeed("rbd ls images | grep -qx yolab-n2")
       '';
-  }
+  })

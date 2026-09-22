@@ -58,7 +58,7 @@
     environment.systemPackages = [pkgs.curl pkgs.jq];
   };
 in
-  pkgs.testers.nixosTest {
+  testLib.withNetwork (pkgs.testers.nixosTest {
     name = "yolab-rolling-reboot";
 
     nodes.node1 = mkNode {
@@ -179,4 +179,4 @@ in
                 f"{fsid_before!r} -> {fsids!r}"
             )
       '';
-  }
+  })
