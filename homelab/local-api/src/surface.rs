@@ -206,7 +206,7 @@ mod tests {
     /// — including a container that got a host port — is an administrator.
     #[tokio::test]
     async fn a_provisioned_node_does_not_trust_loopback() {
-        let api = TestApi::provisioned().from_loopback();
+        let api = TestApi::provisioned().over_loopback();
         let res = api.get("/api/auth/check").await;
         assert_eq!(res.status, StatusCode::UNAUTHORIZED);
     }
@@ -215,7 +215,7 @@ mod tests {
     /// be, because Caddy has to be able to serve the setup page.
     #[tokio::test]
     async fn an_unprovisioned_node_trusts_loopback() {
-        let api = TestApi::unprovisioned().from_loopback();
+        let api = TestApi::unprovisioned().over_loopback();
         let res = api.get("/api/auth/check").await;
         assert_eq!(res.status, StatusCode::OK);
     }
@@ -239,7 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_cluster_token_opens_node_to_node_calls() {
-        let api = TestApi::provisioned().as_peer_node();
+        let api = TestApi::provisioned().with_peer_token();
         let res = api.get("/api/auth/check").await;
         assert_eq!(res.status, StatusCode::OK);
     }

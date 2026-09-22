@@ -110,14 +110,16 @@ impl TestApi {
     }
 
     /// Send as if from this machine itself — what Caddy's reverse proxy looks
-    /// like, and the only caller an unprovisioned node trusts.
-    pub fn from_loopback(mut self) -> Self {
+    /// like, and the only caller an unprovisioned node trusts. Named `over_`
+    /// rather than `from_`: clippy reads a `from_*` method as a constructor and
+    /// rejects one that takes self.
+    pub fn over_loopback(mut self) -> Self {
         self.peer = LOOPBACK;
         self
     }
 
-    /// Present the shared cluster token, as a peer node does.
-    pub fn as_peer_node(mut self) -> Self {
+    /// Present the correct shared cluster token, as a peer node does.
+    pub fn with_peer_token(mut self) -> Self {
         self.cluster_token = Some(CLUSTER_TOKEN.to_string());
         self
     }
