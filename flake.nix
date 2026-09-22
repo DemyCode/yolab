@@ -120,6 +120,24 @@
         ;
     };
 
+    rebootTest = import ./nix/tests/reboot.nix {
+      inherit
+        pkgs
+        inputs
+        disko
+        yolabSpecialArgs
+        ;
+    };
+
+    rollingRebootTest = import ./nix/tests/rolling-reboot.nix {
+      inherit
+        pkgs
+        inputs
+        disko
+        yolabSpecialArgs
+        ;
+    };
+
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
@@ -139,6 +157,8 @@
         boot-test = bootTest;
         two-node-test = twoNodeTest;
         disk-loss-test = diskLossTest;
+        reboot-test = rebootTest;
+        rolling-reboot-test = rollingRebootTest;
       };
 
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
