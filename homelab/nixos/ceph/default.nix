@@ -238,7 +238,24 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        TimeoutStartSec = "infinity";
+        # NOT infinity, unlike this looked before: `local-api storage
+        # system-osd` retries forever with no give-up (wait::until_ready has
+        # no bound) when /dev/mapper/pool-ceph does not exist — a real,
+        # tolerated state for "this machine was not installed with the YoLab
+        # disk layout" (see the error text in disks_reconciler.rs, and
+        # nix/tests/disk-loss.nix, whose node never has a system LV at all).
+        # yolab-images-rbd is explicitly After=/Wants= this unit (see
+        # containerd-store-after-order in nix/checks.nix), so a start job
+        # that never reaches a terminal state here holds up the ENTIRE k3s
+        # boot line behind it forever, not just this one OSD.
+        #
+        # A bounded timeout still fails loudly — systemd marks the unit
+        # failed, which `systemctl --failed` shows, matching the existing
+        # a_machine_without_the_system_lv_is_an_error_not_a_skip Rust test —
+        # it just also lets ordering resolve so images-rbd, containerd-store
+        # and k3s can come up regardless, exactly like
+        # yolab-ceph-osd-activate's own bounded 600s just below.
+        TimeoutStartSec = "600s";
         ExecStart = "${localApiEnv}/bin/local-api storage system-osd";
       };
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
