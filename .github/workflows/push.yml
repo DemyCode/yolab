@@ -42,6 +42,7 @@ jobs:
             checks: >-
               deadnix hadolint shellcheck formatting chart-checks client-ui
               ci-buckets-cover-every-check route-table-is-complete client-ui-tests
+              catalog-apps-have-a-tagline
               host-seam-ratchet
           - bucket: rust
             checks: >-

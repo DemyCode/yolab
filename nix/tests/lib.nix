@@ -1,4 +1,5 @@
-# Shared Python preamble for every yolab VM test.
+# Shared pieces every yolab VM test uses: the NixOS module a test machine needs,
+# and the Python preamble that makes a failure explain itself.
 #
 # WHY THIS EXISTS. A NixOS VM test that fails prints the assertion that failed
 # and nothing else. For a test whose subject is "did this machine finish coming
@@ -10,7 +11,74 @@
 #
 # So every test wraps its assertions in `step(...)`, and a failure dumps the
 # boot line's state before re-raising. The log becomes the diagnosis.
-{
+{pkgs}: {
+  # A NixOS module every yolab VM test imports, holding the two things a test VM
+  # needs that a real installed machine gets from the installer.
+  #
+  # Both were missing, and between them they kept all three tests from ever
+  # reaching multi-user.target. The diagnostics below are what finally said so:
+  #
+  #   yolab-reset-wipe: failed — storage reset-wipe: read
+  #     /var/lib/yolab/machine/config.toml: No such file or directory
+  #   yolab-ceph-bootstrap: Dependency failed
+  #   yolab-ceph-system-osd: activating — /dev/mapper/pool-ceph does not exist
+  #
+  # reset-wipe is `requiredBy` both yolab-ceph-bootstrap and k3s, so its failure
+  # meant no Ceph cluster at all; and system-osd waits for the system LV without
+  # a timeout, holding multi-user.target open behind it. Neither is a bug in the
+  # OS — a real machine has a machine directory and the disko layout — but a test
+  # VM has neither unless it is given them.
+  machine = {
+    configPath,
+    # The disk the system LV goes on. Everything else stays spare, which is
+    # what the disk reconciler offers the person on the Storage page.
+    systemDisk ? "/dev/vdb",
+  }: {
+    # The machine's own config.toml, where the installer writes it.
+    # `yolabConfigPath` points modules at a config at EVALUATION time; this is
+    # the copy the RUNNING machine reads, and several units go looking for it by
+    # this path rather than through that argument.
+    #
+    # A tmpfiles `C` rule rather than repointing `yolab.machineDir` at a store
+    # path: machineDir is typed as a string, and common.nix also has a tmpfiles
+    # rule that creates it 0700 root root — which would try to chmod a read-only
+    # store path. Copying into the real location leaves every other unit reading
+    # exactly what it reads in production. reset-wipe is already
+    # After=systemd-tmpfiles-setup.service, so the file is there before the first
+    # unit wants it.
+    systemd.tmpfiles.rules = [
+      "C /var/lib/yolab/machine/config.toml 0600 root root - ${configPath}"
+    ];
+
+    # The LVM layout disko builds at install time, which the test neutralises
+    # with `disko.devices = lib.mkForce {}` because the VM boots the harness's
+    # own root image. yolab-ceph-system-osd waits for `/dev/mapper/pool-ceph`
+    # for as long as it takes, by design — on a real machine a missing system LV
+    # means the disk is not ready yet, not that it will never come.
+    systemd.services.yolab-test-system-lv = {
+      description = "The system LV disko would have created (VM test)";
+      # requiredBy AND before: before alone only orders, and the OSD unit would
+      # start first and wait for a device nothing was creating.
+      before = ["yolab-ceph-system-osd.service"];
+      requiredBy = ["yolab-ceph-system-osd.service"];
+      after = ["local-fs.target"];
+      path = [pkgs.lvm2 pkgs.util-linux];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        if [ -e /dev/mapper/pool-ceph ]; then exit 0; fi
+        wipefs -a ${systemDisk} || true
+        pvcreate -ff -y ${systemDisk}
+        vgcreate pool ${systemDisk}
+        lvcreate -y -l 100%FREE -n ceph pool
+        vgchange -ay pool
+        udevadm settle
+      '';
+    };
+  };
+
   preamble = ''
     # The boot line to k3s, in order, plus the daemon that reports on it. A
     # failure anywhere here explains every failure after it — see the

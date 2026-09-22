@@ -658,6 +658,97 @@ in let
         esac
         touch $out
       '';
+
+    # EVERY APP IN THE CATALOG IS A WORD MOST PEOPLE HAVE NEVER SEEN.
+    #
+    # Vikunja, Karakeep, Miniflux, Navidrome. A grid of 74 of those is not a
+    # shop, it is a wall — the one line in client-ui/src/catalog/meta.ts
+    # comparing each to something the reader already pays for is what turns it
+    # into somewhere you can find what you came for. That file is the
+    # highest-leverage copy in the product and nothing connects it to the charts
+    # it describes, so a chart added on one side is simply absent on the other.
+    #
+    # `taglineFor` falls back to the chart's own description, so a missing entry
+    # is never blank — it is worse than that: it is a sentence written for
+    # someone who already knows what the app is, sitting in the one place that
+    # exists for someone who does not.
+    #
+    # Two directions, and they are not symmetric:
+    #
+    #   - A tagline naming no chart is dead copy. Zero today, and it stays zero:
+    #     that is a hard failure, because the only way to get one is a rename or
+    #     a delete that half-landed.
+    #
+    #   - A chart with no tagline is a gap, and there are 13. Listing them is
+    #     what makes them finite: the list may only SHRINK, so the storefront
+    #     cannot quietly get less curated as the catalog grows.
+    catalog-apps-have-a-tagline = let
+      # Charts still waiting for a line of their own. Delete a name when you
+      # write one; never add one.
+      uncurated = [
+        "babybuddy"
+        "emulatorjs"
+        "healthchecks"
+        "kimai"
+        "mastodon"
+        "onlyoffice"
+        "pairdrop"
+        "prowlarr"
+        "radarr"
+        "sonarr"
+        "speedtest-tracker"
+        "unifi"
+        "your-spotify"
+      ];
+      expected = pkgs.writeText "uncurated" (
+        pkgs.lib.concatStrings (map (n: "${n}\n") (builtins.sort builtins.lessThan uncurated))
+      );
+    in
+      pkgs.runCommand "catalog-apps-have-a-tagline" {
+        nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];
+      } ''
+        meta=${treeSrc}/homelab/client-ui/src/catalog/meta.ts
+
+        # Every chart in the official catalog, library charts excluded.
+        for chart in ${treeSrc}/apps/catalog/*/; do
+          [ -f "$chart/Chart.yaml" ] || continue
+          grep -q '^type: library' "$chart/Chart.yaml" && continue
+          grep '^name:' "$chart/Chart.yaml" | head -1 | awk '{print $2}'
+        done | LC_ALL=C sort -u > charts
+
+        # Every key of APP_META. TWO SHAPES, and only matching one of them is
+        # how this check was first written: 25 of the 61 entries are a single
+        # line (`foo: { tagline: "...", group: "x" },`) and 36 span three, so an
+        # extraction anchored to `: {$` finds 36 and reports 38 healthy charts as
+        # missing copy. No `$` anchor here, deliberately.
+        awk '/^export const APP_META/{f=1} f{print} /^};$/{if(f) exit}' "$meta" \
+          | sed -n 's/^  "\?\([A-Za-z0-9][A-Za-z0-9._-]*\)"\?: {.*$/\1/p' \
+          | LC_ALL=C sort -u > tagged
+
+        dead=$(comm -13 charts tagged)
+        if [ -n "$dead" ]; then
+          echo "These taglines name a chart that does not exist — a rename or a" >&2
+          echo "delete that only half landed:" >&2
+          echo "$dead" >&2
+          exit 1
+        fi
+
+        comm -23 charts tagged > missing
+        if ! diff -u ${expected} missing > delta; then
+          echo "The set of catalog apps with no tagline has changed." >&2
+          echo "" >&2
+          echo "  '+' lines: a new app with no storefront copy. Write one line in" >&2
+          echo "             homelab/client-ui/src/catalog/meta.ts saying what it" >&2
+          echo "             does and what it is like, or add it to this check's" >&2
+          echo "             list if it genuinely has to ship uncurated." >&2
+          echo "  '-' lines: you wrote one — delete the name from the list in" >&2
+          echo "             nix/checks.nix in the same commit." >&2
+          echo "" >&2
+          cat delta >&2
+          exit 1
+        fi
+        touch $out
+      '';
     # statix is deliberately absent: its 39 findings are all "avoid repeated keys
     # in attribute sets", and flattening `boot.loader.grub.*` is not obviously an
     # improvement. `nix run nixpkgs#statix -- check` if you want it.
