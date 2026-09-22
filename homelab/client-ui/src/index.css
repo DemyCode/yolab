@@ -2,7 +2,6 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-
 @font-face {
   font-family: "Geist";
   src: url("/fonts/geist.woff2") format("woff2");
@@ -17,7 +16,6 @@
   font-style: normal;
   font-display: swap;
 }
-
 
 :root {
   --bg: #fafafa;

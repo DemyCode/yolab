@@ -1,4 +1,3 @@
-
 use std::fmt;
 use std::process::Stdio;
 use std::time::Duration;
@@ -18,16 +17,29 @@ pub enum Failure {
 
 #[derive(Debug)]
 pub enum CmdError {
-    Spawn { cmd: String, source: std::io::Error },
-    Timeout { cmd: String, after: Duration },
+    Spawn {
+        cmd: String,
+        source: std::io::Error,
+    },
+    Timeout {
+        cmd: String,
+        after: Duration,
+    },
     Failed {
         cmd: String,
         kind: Failure,
         stderr: String,
     },
-    Parse { cmd: String, detail: String },
-    Busy { cmd: String },
-    Forbidden { cmd: String },
+    Parse {
+        cmd: String,
+        detail: String,
+    },
+    Busy {
+        cmd: String,
+    },
+    Forbidden {
+        cmd: String,
+    },
 }
 
 impl CmdError {

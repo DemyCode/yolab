@@ -30,7 +30,6 @@ import type {
   DomainResponse,
 } from "@/types/apps";
 
-
 interface SchemaProp {
   type?: string;
   title?: string;
@@ -56,7 +55,6 @@ function configSchema(schema: object | undefined): ConfigSchema {
   }
   return s.properties ? s : {};
 }
-
 
 function phaseFrom(line: string): string | null {
   const l = line.toLowerCase();
@@ -88,8 +86,7 @@ export function InstallPage() {
           `/api/apps/catalog/${appId}/refresh`,
         );
         if (!cancelled && r?.app) setFresh(r.app);
-      } catch {
-      }
+      } catch {}
     })();
     return () => {
       cancelled = true;
@@ -125,8 +122,7 @@ export function InstallPage() {
           );
           if (!cancelled) setSourceDef(d);
         }
-      } catch {
-      }
+      } catch {}
     })();
     return () => {
       cancelled = true;
@@ -455,8 +451,7 @@ export function InstallPage() {
         <div className="min-w-0">
           <h1 className="font-display text-3xl text-fg">{app.name}</h1>
           <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>
-          {
-}
+          {}
           {app.home && (
             <a
               href={app.home}
@@ -533,10 +528,8 @@ export function InstallPage() {
       )}
 
       <Card className="divide-y divide-border">
-        {
-}
-        {
-}
+        {}
+        {}
         <div className="p-5">
           <Form
             schema={rjsfSchema}
@@ -549,8 +542,7 @@ export function InstallPage() {
             showErrorList={false}
             onChange={(e) => setFormData(e.formData ?? {})}
           >
-            {
-}
+            {}
             <></>
           </Form>
         </div>

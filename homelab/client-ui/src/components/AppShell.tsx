@@ -66,8 +66,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
   async function signOut() {
     try {
       await api.post("/api/logout");
-    } catch {
-    }
+    } catch {}
     onLogout();
   }
 
@@ -112,8 +111,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
         </div>
       </aside>
 
-      {
-}
+      {}
       <main className="min-w-0 flex-1 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
         <Outlet />
       </main>

@@ -216,8 +216,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {
-}
+      {}
       {!catalog.loading && results.length > 0 && groups.size === 1 && (
         <p className="mt-4 text-xs text-fg-subtle">
           Showing {groupLabel([...groups][0])} only.

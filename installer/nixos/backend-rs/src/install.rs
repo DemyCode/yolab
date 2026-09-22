@@ -26,7 +26,6 @@ pub struct InstallParams {
     pub boot_mode: String,
 }
 
-
 #[derive(Serialize)]
 struct ConfigToml {
     homelab: HomelabSection,
@@ -98,7 +97,6 @@ struct K3sSection {
 struct CephSection {
     fsid: String,
 }
-
 
 fn gen_ceph_fsid() -> String {
     use rand::Rng;
@@ -291,7 +289,6 @@ fn disko_args(flake_ref: &str) -> [&str; 5] {
     ]
 }
 
-
 pub async fn run_install(req: InstallParams, tx: mpsc::UnboundedSender<AppEvent>) {
     match do_install(&req, &tx).await {
         Ok(url) => {
@@ -463,7 +460,6 @@ mod tests {
         toml::from_str(&text).expect("installer must emit parseable TOML")
     }
 
-
     #[test]
     fn a_generated_k3s_token_is_256_bits_of_hex() {
         let t = gen_k3s_token();
@@ -475,7 +471,6 @@ mod tests {
     fn generated_k3s_tokens_differ() {
         assert_ne!(gen_k3s_token(), gen_k3s_token());
     }
-
 
     #[test]
     fn a_generated_ceph_fsid_is_a_v4_uuid() {
@@ -513,7 +508,6 @@ mod tests {
             .expect("[ceph] fsid must be written");
         assert!(!fsid.is_empty());
     }
-
 
     #[test]
     fn the_rendered_config_has_every_section_the_nixos_modules_read() {
@@ -581,7 +575,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn the_first_node_generates_its_own_k3s_token_and_no_server_address() {
         let cfg = rendered(&params());
@@ -614,7 +607,6 @@ mod tests {
             b["node"]["k3s"]["token"].as_str()
         );
     }
-
 
     #[test]
     fn defaults_that_the_ui_never_asks_about_are_still_set() {

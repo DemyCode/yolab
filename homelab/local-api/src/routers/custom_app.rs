@@ -1,4 +1,3 @@
-
 use axum::{
     extract::Path as AxPath, extract::State, http::StatusCode, response::IntoResponse, Json,
 };
@@ -401,7 +400,6 @@ pub async fn delete_custom(AxPath(id): AxPath<String>) -> impl IntoResponse {
     }
 }
 
-
 #[derive(Debug, PartialEq)]
 enum Archive {
     Zip,
@@ -749,7 +747,6 @@ spec:
         assert_eq!(validate_manifest(&padded), Ok(1));
     }
 
-
     #[test]
     fn cluster_scoped_kinds_are_refused() {
         for kind in [
@@ -802,7 +799,6 @@ spec:
         assert!(validate_manifest(doc).is_ok());
     }
 
-
     #[test]
     fn a_docker_compose_file_is_named_rather_than_called_invalid_yaml() {
         let compose = "services:\n  web:\n    image: nginx\n    ports:\n      - \"80:80\"\n";
@@ -847,7 +843,6 @@ spec:
             assert!(!valid_id(bad), "{bad:?}");
         }
     }
-
 
     #[tokio::test]
     async fn the_generated_chart_renders_and_ships_the_manifest_untouched() {
@@ -938,7 +933,6 @@ spec:
         assert!(tmp.join("worker/templates/user.yaml").exists());
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
-
 
     #[test]
     fn archives_are_recognised_by_their_bytes_not_their_name() {
@@ -1109,7 +1103,6 @@ spec:
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-
 
     fn pod_with(containers: &str) -> String {
         format!("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      containers:\n{containers}")

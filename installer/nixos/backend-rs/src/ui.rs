@@ -40,7 +40,6 @@ fn surface_block(title: &str) -> Block<'_> {
         .bg(SURFACE)
 }
 
-
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
@@ -57,7 +56,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_body(f, rows[1], app);
     render_footer(f, rows[2], app);
 }
-
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let step_label = format!("Step {} / {}", app.step.index() + 1, 5);
@@ -86,7 +84,6 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(title, area);
 }
 
-
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let hints = match app.step {
         Step::Mode | Step::Disk => "  ↑↓ / Click  Select     Enter  Confirm     Ctrl-C  Quit",
@@ -101,7 +98,6 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     );
     f.render_widget(footer, area);
 }
-
 
 fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     let cols = Layout::default()
@@ -126,7 +122,6 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
         Step::Install => render_install(f, content, app),
     }
 }
-
 
 fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     let steps = [
@@ -181,7 +176,6 @@ fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(sidebar, area);
 }
 
-
 fn render_loading(f: &mut Frame, area: Rect, msg: &str) {
     let inner = centered_rect(60, 20, area);
     let text = Paragraph::new(format!("\n  ⋯  {msg}"))
@@ -190,7 +184,6 @@ fn render_loading(f: &mut Frame, area: Rect, msg: &str) {
     f.render_widget(Clear, inner);
     f.render_widget(text, inner);
 }
-
 
 fn render_mode(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
@@ -229,7 +222,6 @@ fn render_mode(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(error_paragraph(err), rows[5]);
     }
 }
-
 
 fn render_account(f: &mut Frame, area: Rect, app: &mut App) {
     match app.mode {
@@ -444,7 +436,6 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-
 fn render_disk(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = padded(area, 3, 1);
 
@@ -551,7 +542,6 @@ fn render_disk_row(f: &mut Frame, area: Rect, disk: &DiskInfo, _idx: usize, sele
     f.render_widget(para, area);
 }
 
-
 fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = padded(area, 3, 1);
 
@@ -617,7 +607,6 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(error_paragraph(err), rows[12]);
     }
 }
-
 
 fn render_install(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = padded(area, 2, 1);
@@ -749,7 +738,6 @@ fn render_install_failed(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
-
 fn render_heading(f: &mut Frame, area: Rect, text: &str) {
     f.render_widget(
         Paragraph::new(format!("  {text}")).style(white().add_modifier(Modifier::BOLD)),
@@ -842,7 +830,6 @@ fn error_paragraph(msg: &str) -> Paragraph<'static> {
         .style(danger())
         .wrap(Wrap { trim: true })
 }
-
 
 fn padded(area: Rect, h: u16, v: u16) -> Rect {
     Rect {

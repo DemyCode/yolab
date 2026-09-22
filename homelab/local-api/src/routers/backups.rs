@@ -7,7 +7,6 @@ use crate::routers::backup_common::*;
 use crate::routers::{backup, restore};
 use crate::{config::Config, error::Result, AppState};
 
-
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
     let tunnel = cfg.tunnel_table()?;
     let url = tunnel
@@ -123,7 +122,6 @@ pub async fn list_runs(State(_state): State<AppState>) -> Result<Json<serde_json
     Ok(Json(serde_json::Value::Array(backup::list().await?)))
 }
 
-
 #[derive(Deserialize)]
 pub struct RestoreRequest {
     pub namespace: String,
@@ -144,7 +142,6 @@ pub async fn restore_app(
 pub async fn list_restores(State(_state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(serde_json::Value::Array(restore::list().await?)))
 }
-
 
 fn backed_up_apps_json(
     versions: &restore::BackupVersions,
@@ -173,7 +170,6 @@ pub async fn list_backed_up_apps(
     Ok(Json(backed_up_apps_json(&versions, &installed)))
 }
 
-
 async fn snapshots_containing(cfg: &BackupConfig, namespace: &str) -> Option<HashSet<String>> {
     let repo = cfg.restic_repo("cluster-backup");
     let pattern = format!("{namespace}.yaml");
@@ -199,9 +195,7 @@ async fn snapshots_containing(cfg: &BackupConfig, namespace: &str) -> Option<Has
         found
             .as_array()?
             .iter()
-            .filter(|e| {
-                e["matches"].as_array().is_some_and(|m| !m.is_empty())
-            })
+            .filter(|e| e["matches"].as_array().is_some_and(|m| !m.is_empty()))
             .filter_map(|e| e["snapshot"].as_str().map(str::to_string))
             .collect(),
     )
@@ -311,7 +305,6 @@ pub async fn app_definition_from_backup(
         serde_json::to_value(redacted).unwrap_or(serde_json::Value::Null),
     ))
 }
-
 
 pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     let Some(cfg) = read_master_config().await else {

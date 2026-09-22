@@ -252,7 +252,6 @@ async fn started(host: &FakeHost, net: &FakeNetwork, record: &LocalRecord) -> He
     .unwrap()
 }
 
-
 #[test]
 fn mon_status_gives_quorum_and_every_mon_with_its_address() {
     let s = parse_mon_status(&mon_status_json(
@@ -409,7 +408,6 @@ async fn a_heal_another_answering_machine_drives_is_not_started_over() {
     assert_eq!(s.refusal(None), None);
 }
 
-
 #[tokio::test]
 async fn a_heal_starts_only_on_what_the_owner_saw() {
     let (host, net) = broken_cluster();
@@ -503,7 +501,6 @@ fn the_driver_creates_the_cluster_and_every_other_machine_joins_it() {
         "https://[fd00::1]:6443"
     );
 }
-
 
 #[tokio::test]
 async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_cluster() {

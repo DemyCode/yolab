@@ -1,4 +1,3 @@
-
 let baseUrl = "";
 let authToken: string | null = null;
 
@@ -35,8 +34,7 @@ function errorMessageFrom(body: string, status: number): string {
     if (parsed && typeof parsed === "object" && "error" in parsed) {
       message = String((parsed as { error: unknown }).error);
     }
-  } catch {
-  }
+  } catch {}
   return message;
 }
 
@@ -131,7 +129,6 @@ export async function streamEvents(
 
   return outcome ?? { ok: false, error: "The connection closed unexpectedly." };
 }
-
 
 export type ListResult<T> =
   | { ok: true; data: T[] }

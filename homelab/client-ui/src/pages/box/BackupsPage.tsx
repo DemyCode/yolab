@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/feedback";
 import { formatDateTime } from "@/lib/format";
 
-
 type BackupSetState = "running" | "restorable" | "crashed";
 
 interface BackupSet {
@@ -42,7 +41,6 @@ interface RecoveryKeyResponse {
   recovery_key?: string;
 }
 
-
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const h = Math.floor(diff / 3600000);
@@ -52,7 +50,6 @@ function timeAgo(iso: string): string {
   if (h > 0) return `${h}h ago`;
   return `${m}m ago`;
 }
-
 
 function setStateLabel(state: BackupSetState): string {
   switch (state) {
@@ -141,7 +138,6 @@ function BackupSetCard({ set: backupSet }: { set: BackupSet }) {
   );
 }
 
-
 function RecoveryKeyOverlay({
   recoveryKey,
   mandatory,
@@ -159,8 +155,7 @@ function RecoveryKeyOverlay({
       await navigator.clipboard.writeText(recoveryKey);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-    }
+    } catch {}
   }
 
   return (
@@ -228,7 +223,6 @@ function RecoveryKeyOverlay({
   );
 }
 
-
 function EnableCard({
   onEnable,
   disabled,
@@ -291,7 +285,6 @@ function EnableCard({
   );
 }
 
-
 export function BackupsPage() {
   const [s3Status, setS3Status] = useState<{ provisioned: boolean } | null>(
     null,
@@ -319,8 +312,7 @@ export function BackupsPage() {
         setRecoveryKey(data.recovery_key);
         setRecoveryMandatory(mandatory);
       }
-    } catch {
-    }
+    } catch {}
   }
 
   const load = useCallback(async () => {
@@ -347,8 +339,7 @@ export function BackupsPage() {
     try {
       const runsRes = await fetch("/api/backups/runs").then((r) => r.json());
       if (Array.isArray(runsRes)) setSets(runsRes as BackupSet[]);
-    } catch {
-    }
+    } catch {}
   }, []);
 
   const pollOpState = useCallback(async () => {
@@ -357,8 +348,7 @@ export function BackupsPage() {
         r.json(),
       )) as OperationState;
       setOpState(s);
-    } catch {
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {

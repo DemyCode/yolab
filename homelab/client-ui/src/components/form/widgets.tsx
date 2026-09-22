@@ -5,7 +5,6 @@ import { Input, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-
 export function TunnelWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, autofocus, id, options } = props;
   const domain = (options?.domain as string) ?? "";

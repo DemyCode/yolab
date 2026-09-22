@@ -237,7 +237,6 @@ platform_api_url = "https://api.example"
         assert_eq!(parse_join_info(&cfg("[ceph]")).unwrap().ceph_fsid, "");
     }
 
-
     #[test]
     fn a_config_with_no_node_section_errors_instead_of_panicking() {
         let e = parse_join_info("[tunnel]\naccount_token = \"x\"").unwrap_err();

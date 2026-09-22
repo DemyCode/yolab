@@ -37,7 +37,6 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-
 static LOADED: AtomicBool = AtomicBool::new(false);
 static REVOKED_BEFORE_LOAD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
@@ -95,7 +94,6 @@ fn note_revoked(token: &str) {
     }
 }
 
-
 pub async fn init_sessions(sessions: &Sessions) {
     let sessions = sessions.clone();
     tokio::spawn(async move {
@@ -129,7 +127,6 @@ pub async fn init_sessions(sessions: &Sessions) {
         }
     });
 }
-
 
 fn password_hash(cfg: &Config) -> String {
     cfg.toml()
@@ -181,13 +178,11 @@ fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
     ct_eq(presented, &cfg.cluster_token())
 }
 
-
 #[derive(Clone)]
 pub struct AuthState {
     pub sessions: Sessions,
     pub config: Arc<Config>,
 }
-
 
 pub async fn auth_middleware(
     State(state): State<AuthState>,
@@ -227,7 +222,6 @@ pub async fn auth_middleware(
     }
     next.run(req).await
 }
-
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -361,7 +355,6 @@ mod tests {
     const LOOPBACK: Option<&str> = Some("127.0.0.1:5000");
     const OFF_BOX: Option<&str> = Some("[fd00:42::5]:5000");
 
-
     #[test]
     fn ct_eq_matches_identical() {
         assert!(ct_eq("s3cret-token", "s3cret-token"));
@@ -379,7 +372,6 @@ mod tests {
         assert!(!ct_eq("", "anything"));
         assert!(!ct_eq("anything", ""));
     }
-
 
     #[test]
     fn password_hash_reads_the_configured_hash() {
@@ -412,7 +404,6 @@ mod tests {
         assert!(!verify_password("anything", ""));
         assert!(!verify_password("", ""));
     }
-
 
     #[tokio::test]
     async fn loopback_is_allowed_when_no_password_is_configured() {
@@ -464,7 +455,6 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
     }
-
 
     #[tokio::test]
     async fn the_cluster_token_authorizes_a_call_from_another_node() {
@@ -521,7 +511,6 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
     }
-
 
     #[tokio::test]
     async fn a_live_session_cookie_is_accepted() {
@@ -607,7 +596,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn login_is_reachable_without_credentials() {
         let (_d, cfg) = provisioned();
@@ -629,7 +617,6 @@ mod tests {
             );
         }
     }
-
 
     fn app_state(config: Arc<Config>) -> crate::AppState {
         crate::AppState {

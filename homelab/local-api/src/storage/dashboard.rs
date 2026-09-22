@@ -1,4 +1,3 @@
-
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
@@ -336,7 +335,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn parse_served_splits_an_ipv6_dashboard_url() {
         let s = parse_served("http://[fd00:cafe::1]:7000/ceph-dashboard/").unwrap();
@@ -392,7 +390,6 @@ mod tests {
         assert!(!restart_needed("nonsense", 7000, "/ceph-dashboard"));
     }
 
-
     #[test]
     fn login_codes_are_classified() {
         assert_eq!(interpret_login_code(200), LoginCheck::Verified);
@@ -410,7 +407,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn adopts_an_existing_local_password_trimmed() {
         assert_eq!(
@@ -425,7 +421,6 @@ mod tests {
         assert_eq!(adopt_local_password(Some("")), None);
         assert_eq!(adopt_local_password(Some("   \n")), None);
     }
-
 
     #[tokio::test]
     async fn does_nothing_while_unreachable() {

@@ -26,6 +26,5 @@ in {
       environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       path = with pkgs; [ceph ceph-client k3s];
     };
-
   };
 }

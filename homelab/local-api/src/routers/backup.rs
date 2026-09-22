@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -108,7 +107,6 @@ pub(crate) fn new_id() -> String {
     format!("bk-{}", random_hex(8))
 }
 
-
 fn upsert(sets: &mut Vec<BackupSet>, set: BackupSet) {
     sets.retain(|s| s.id != set.id);
     sets.insert(0, set);
@@ -168,7 +166,6 @@ async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSumma
     ));
 }
 
-
 fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
     match set.state.as_str() {
         "succeeded" => SetState::Restorable,
@@ -192,7 +189,6 @@ fn running_for(sets: &[BackupSet], namespace: &str) -> bool {
 }
 
 const DR_SCHEDULE: &str = "0 4 * * *";
-
 
 pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
     start_target(BackupTarget::Cluster, triggered_by).await
@@ -311,7 +307,6 @@ async fn run_set(
     }
     Ok((snapshot_id, services))
 }
-
 
 const VOLUME_SYNC_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
 const VOLUME_SYNC_POLL: Duration = Duration::from_secs(10);
@@ -450,7 +445,6 @@ async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(Pv
     }
     (failures, synced)
 }
-
 
 type PinnedVolumes = HashMap<(String, String), VolumeSnapshot>;
 
@@ -871,7 +865,6 @@ fn built_hash() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-
 fn liveness_of(s: &BackupSet) -> Liveness {
     s.liveness(&crate::system::hostname(), &IN_FLIGHT)
 }
@@ -1235,7 +1228,6 @@ mod tests {
         assert!(new_id().starts_with("bk-"));
     }
 
-
     fn at(iso: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(iso)
             .unwrap()
@@ -1276,7 +1268,6 @@ mod tests {
         assert!(!running_for(&[set("a", "succeeded")], "yolab-a"));
     }
 
-
     fn workload(init: &[&str], main: &[&str]) -> Value {
         json!({"spec": {"template": {"spec": {
             "initContainers": init.iter().map(|i| json!({"image": i})).collect::<Vec<_>>(),
@@ -1298,7 +1289,6 @@ mod tests {
         assert!(collect_images(&[]).is_empty());
         assert!(collect_images(&[json!({})]).is_empty());
     }
-
 
     #[test]
     fn summarize_services_maps_names_to_names_and_counts() {
