@@ -185,6 +185,59 @@ in let
         touch $out
       '';
 
+    no-infinite-timeout-on-the-boot-line = let
+      allowlist = [];
+      svcs = nixosSystems.yolab-ci.config.systemd.services;
+      stripService = name: pkgs.lib.removeSuffix ".service" name;
+
+      # A unit is on the boot line if multi-user.target directly wants it, or
+      # if a unit already on the boot line is After= it — a hang in an
+      # ancestor's dependency blocks the ancestor's own start job exactly the
+      # same way, transitively, all the way down.
+      directlyWanted = builtins.filter (
+        n: builtins.elem "multi-user.target" (svcs.${n}.wantedBy or [])
+      ) (builtins.attrNames svcs);
+      deps = n:
+        if svcs ? ${n}
+        then map stripService (svcs.${n}.after or [])
+        else [];
+      closureItems = builtins.genericClosure {
+        startSet = map (n: {key = n;}) directlyWanted;
+        operator = item: map (n: {key = n;}) (deps item.key);
+      };
+      onBootLine = map (i: i.key) closureItems;
+
+      offenders = builtins.filter (
+        name:
+          (builtins.match "yolab-.*" name != null)
+          && builtins.elem name onBootLine
+          && (svcs.${name}.serviceConfig.TimeoutStartSec or null) == "infinity"
+          && !(builtins.elem name allowlist)
+      ) (builtins.attrNames svcs);
+    in
+      pkgs.runCommand "no-infinite-timeout-on-the-boot-line" {} ''
+        offenders=${pkgs.writeText "offenders" (builtins.concatStringsSep "\n" offenders)}
+        if [ -s "$offenders" ]; then
+          echo "These units are on the boot line to multi-user.target (directly" >&2
+          echo "WantedBy it, or After= something that is) AND have" >&2
+          echo "TimeoutStartSec = \"infinity\". If the command they run can ever" >&2
+          echo "retry forever without giving up — and every yolab wait::until_ready" >&2
+          echo "loop can — the unit's start job never reaches a terminal state, and" >&2
+          echo "nothing ordered After= it can start either. This is exactly what" >&2
+          echo "held disk-loss-test's multi-user.target hostage on" >&2
+          echo "yolab-ceph-system-osd, yolab-images-rbd and yolab-containerd-store" >&2
+          echo "when a machine has no system LV: it is a real, tolerated state, not" >&2
+          echo "just a test artifact, and it used to mean the machine never finished" >&2
+          echo "booting. Bound the timeout — a unit that fails still fails loudly" >&2
+          echo "via 'systemctl --failed', it just also lets ordering resolve — or add" >&2
+          echo "the unit to this check's allowlist with a comment saying why nothing" >&2
+          echo "on the boot line can ever depend on it finishing:" >&2
+          cat "$offenders" >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
     # POSIX for using the bash its own shebang asks for. shellcheck reads the
     shellcheck =
       pkgs.runCommand "shellcheck"

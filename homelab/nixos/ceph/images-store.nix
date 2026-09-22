@@ -68,7 +68,17 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        TimeoutStartSec = "infinity";
+        # NOT infinity: images_rbd::attempt returns NotYet forever (no
+        # give-up) while stat.num_up_osds == 0, which is exactly the state
+        # every node boots into before any OSD exists — first boot on a
+        # freshly wiped machine, or any boot before a disk has been switched
+        # on. yolab-containerd-store is After=/Wants= this unit, and k3s is
+        # After=/Wants=/Before=-ed to containerd-store in turn (see
+        # containerd-store-after-order in nix/checks.nix), so a start job
+        # that never reaches a terminal state here holds up k3s — and
+        # multi-user.target with it — exactly like yolab-ceph-system-osd did
+        # (see the comment there). Bounded the same way, for the same reason.
+        TimeoutStartSec = "600s";
         ExecStart = "${localApiEnv}/bin/local-api storage images-rbd";
       };
       path = with pkgs; [ceph ceph-client];
@@ -85,7 +95,17 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        TimeoutStartSec = "infinity";
+        # NOT infinity, same reasoning as yolab-images-rbd just above: this
+        # unit is explicitly Before=k3s.service, so this is the most direct
+        # of the three links in the chain — if it never reaches a terminal
+        # state, k3s never even gets a start job queued. Bounding it lets k3s
+        # proceed once it gives up, using whatever is already mounted at
+        # containerd's data-root (the root filesystem, by default) — which is
+        # the actual mechanism behind "k3s must come up whether or not there
+        # is an OSD yet" in nix/tests/boot.nix's own comment. containerd_store
+        # ::attempt has no explicit fallback branch; this bound is what makes
+        # that comment true rather than aspirational.
+        TimeoutStartSec = "600s";
         ExecStart = "${localApiEnv}/bin/local-api storage containerd-store";
       };
       path = cephPath;
