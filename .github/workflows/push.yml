@@ -184,6 +184,31 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
+      # KVM must be granted before nix starts, and in two separate senses.
+      #
+      # /dev/kvm existing is necessary but not sufficient: a NixOS VM test
+      # derivation carries `requiredSystemFeatures = [ "kvm" ]`, and the nix
+      # daemon only schedules it if the builder ADVERTISES that feature. A
+      # daemon that came up without it refuses the build outright with "a 'kvm'
+      # feature is required ... but I am a builder with features {benchmark,
+      # big-parallel, nixos-test}" — which is not a test failure at all, and
+      # looks nothing like one in the log.
+      #
+      # `system-features` is set here rather than after the fact because the
+      # daemon reads it at start-up.
+      - name: Grant KVM to the runner
+        run: |
+          set -euo pipefail
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::No /dev/kvm on this runner. NixOS VM tests need hardware" \
+                 "virtualisation; software emulation is too slow to finish inside" \
+                 "any sane job timeout. Move this job to a runner that exposes KVM" \
+                 "(umbrelOS uses ubicloud-standard-4-ubuntu-2404 for exactly this)."
+            exit 1
+          fi
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
@@ -191,27 +216,15 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+            system-features = nixos-test benchmark big-parallel kvm
 
-      # A missing /dev/kvm does not fail the build — QEMU falls back to software
-      # emulation and the test simply takes long enough to hit the job timeout,
-      # which reads as a test failure and sends whoever looks at it hunting
-      # through the wrong logs. Say it plainly instead, before anything boots.
-      - name: Require KVM
-        run: |
-          set -euo pipefail
-          if [ ! -e /dev/kvm ]; then
-            echo "::error::No /dev/kvm on this runner. NixOS VM tests need hardware" \
-                 "virtualisation; software emulation is too slow to finish." \
-                 "Move this job to a runner that exposes KVM (umbrelOS uses" \
-                 "ubicloud-standard-4-ubuntu-2404 for exactly this)."
-            exit 1
-          fi
-          sudo chmod 666 /dev/kvm || true
-          ls -l /dev/kvm
+      - name: Show what nix thinks it can build
+        run: nix show-config | grep -E 'system-features|sandbox' || true
 
       - name: Run the VM test
         run: |
           nix build --no-link --print-build-logs \
+            ".#nixosTests.${{ matrix.test.name }}"
             ".#nixosTests.${{ matrix.test.name }}"
   build-images:
     runs-on: ubuntu-latest
