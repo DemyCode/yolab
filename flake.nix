@@ -138,6 +138,15 @@
         ;
     };
 
+    twoNodeDiskLossTest = import ./nix/tests/two-node-disk-loss.nix {
+      inherit
+        pkgs
+        inputs
+        disko
+        yolabSpecialArgs
+        ;
+    };
+
     allChecks = import ./nix/checks.nix {
       inherit
         pkgs
@@ -159,6 +168,7 @@
         disk-loss-test = diskLossTest;
         reboot-test = rebootTest;
         rolling-reboot-test = rollingRebootTest;
+        two-node-disk-loss-test = twoNodeDiskLossTest;
       };
 
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
