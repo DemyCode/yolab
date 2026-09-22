@@ -22,6 +22,7 @@ in let
   allChecks = {
     client-ui = builds.clientUi;
     client-ui-tests = builds.clientUiTests;
+    client-ui-lint = builds.clientUiLint;
 
     local-api-tests = crates.local-api.tests;
     installer-tests = crates.installer.tests;
@@ -66,12 +67,8 @@ in let
         touch $out
       '';
 
-    coverage-local-api = crates.local-api.coverage;
-    coverage-installer = crates.installer.coverage;
-
     nixos-create = toplevel "yolab-ci";
     nixos-join = toplevel "yolab-ci-join";
-    nixos-wsl = toplevel "yolab-wsl";
 
     binary-contract = let
       allBins = pkgs.symlinkJoin {

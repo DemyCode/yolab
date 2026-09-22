@@ -10,20 +10,11 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     disko.url = "github:nix-community/disko";
     disko.inputs.nixpkgs.follows = "nixpkgs";
-    nixos-wsl.url = "github:nix-community/NixOS-WSL";
-    nixos-wsl.inputs.nixpkgs.follows = "nixpkgs";
-    nix-darwin.url = "github:LnL7/nix-darwin";
-    nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
     crane.url = "github:ipetkov/crane";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
-
-    devour-flake = {
-      url = "github:srid/devour-flake";
-      flake = false;
-    };
 
     yolab-machine = {
       url = "path:./homelab/machine";
@@ -35,8 +26,6 @@
     self,
     nixpkgs,
     disko,
-    nixos-wsl,
-    nix-darwin,
     ...
   } @ inputs: let
     pkgs = nixpkgs.legacyPackages.x86_64-linux;
@@ -85,13 +74,6 @@
         yolab-ci-join = mkYolabSystem {
           configPath = ./homelab/ci-join-config.toml;
           modules = baseModules;
-        };
-        yolab-wsl = mkYolabSystem {
-          configPath = ./homelab/ci-config.toml;
-          modules = [
-            nixos-wsl.nixosModules.default
-            ./homelab/nixos/wsl.nix
-          ];
         };
         yolab-installer = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
@@ -147,154 +129,33 @@
         ;
     };
 
-    mkDarwinSystem = system:
-      nix-darwin.lib.darwinSystem {
-        inherit system;
-        modules = [./homelab/darwin/configuration.nix];
-        specialArgs = {
-          inherit inputs rust;
-          yolabConfigPath = machineConfig;
-        };
-      };
   in {
-    nixosConfigurations = nixosSystems;
-
-    nixosTests = {
-      boot-test = bootTest;
-      two-node-test = twoNodeTest;
-      disk-loss-test = diskLossTest;
-    };
-
-    darwinConfigurations = lib.optionalAttrs isMachine {
-      "yolab-mac" = mkDarwinSystem "aarch64-darwin";
-      "yolab-mac-x86" = mkDarwinSystem "x86_64-darwin";
-    };
+    nixosConfigurations =
+      {yolab-installer = nixosSystems.yolab-installer;}
+      // lib.optionalAttrs isMachine {yolab = nixosSystems.yolab;};
 
     checks.x86_64-linux =
-      lib.filterAttrs (n: _: !lib.hasPrefix "coverage-" n) allChecks
-      // self.nixosTests;
+      allChecks
+      // {
+        boot-test = bootTest;
+        two-node-test = twoNodeTest;
+        disk-loss-test = diskLossTest;
+      };
 
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
 
-    packages.x86_64-linux = let
-      builds = import ./homelab/builds.nix {inherit pkgs rust;};
-      checks = self.checks.x86_64-linux;
-    in {
-      devour = pkgs.callPackage inputs.devour-flake {};
-
-      inherit (allChecks) coverage-local-api;
-      inherit (allChecks) coverage-installer;
-
-      client-ui-lint = builds.clientUiLint;
-
-      test = pkgs.writeShellApplication {
-        name = "yolab-test";
-        runtimeInputs = [pkgs.nix];
-        text = ''
-          # `checks` contains the VM tests too now (see checks.x86_64-linux), so
-          # the static ones are the difference. Without subtracting, --list
-          # would show each VM test twice and read like there are six.
-          checks="${lib.concatStringsSep " " (lib.subtractLists (builtins.attrNames self.nixosTests) (builtins.attrNames self.checks.x86_64-linux))}"
-          vms="${lib.concatStringsSep " " (builtins.attrNames self.nixosTests)}"
-          filter="''${1-}"
-
-          if [ "$filter" = "--list" ]; then
-            echo "static checks:"
-            for n in $checks; do echo "  $n"; done
-            echo "VM tests (also in nix flake check; need /dev/kvm):"
-            for n in $vms; do echo "  $n"; done
-            exit 0
-          fi
-
-          targets=()
-          for n in $checks; do
-            case "$n" in *"$filter"*) targets+=(".#checks.x86_64-linux.$n") ;; esac
-          done
-          # Only when asked for by name. An unfiltered run must not quietly
-          # start booting virtual machines.
-          if [ -n "$filter" ]; then
-            for n in $vms; do
-              case "$n" in *"$filter"*) targets+=(".#nixosTests.$n") ;; esac
-            done
-          fi
-
-          if [ ''${#targets[@]} -eq 0 ]; then
-            echo "nothing matches '$filter' — try: nix run .#test -- --list" >&2
-            exit 1
-          fi
-
-          echo "building ''${#targets[@]}:"
-          printf '  %s\n' "''${targets[@]}"
-          exec nix build --no-link --print-build-logs "''${targets[@]}"
-        '';
-      };
-
-      coverage = pkgs.writeShellApplication {
-        name = "yolab-coverage";
-        text = ''
-          # cargo-llvm-cov writes its report tree under html/.
-          echo "Browsable reports:"
-          echo "  local-api  ${allChecks.coverage-local-api}/html/index.html"
-          echo "  installer  ${allChecks.coverage-installer}/html/index.html"
-          echo
-          for r in ${allChecks.coverage-local-api} ${allChecks.coverage-installer}; do
-            [ -f "$r/coverage-summary.txt" ] && cat "$r/coverage-summary.txt"
-            echo
-          done
-        '';
-      };
-
-      iso = self.nixosConfigurations.yolab-installer.config.system.build.isoImage;
-      homelab-ui = builds.clientUi;
-      homelab-api = builds.localApiEnv;
-
+    packages.x86_64-linux = {
       desktop-client = rust.crates.desktop-client.package;
-
       android-apk = import ./nix/android.nix {inherit pkgs rust;};
-
-      ci = pkgs.writeShellApplication {
-        name = "yolab-ci";
-        text = ''
-          ${lib.concatMapStringsSep "\n" (name: ''
-            echo "✓ ${name}  (${checks.${name}})"
-          '') (builtins.attrNames checks)}
-          echo "all ${toString (builtins.length (builtins.attrNames checks))} checks passed"
-        '';
-      };
     };
 
-    apps.x86_64-linux =
-      {
-        default = {
-          type = "app";
-          program = lib.getExe self.packages.x86_64-linux.ci;
-          meta.description = "Run every check, exactly as CI does";
-        };
-
-        test = {
-          type = "app";
-          program = lib.getExe self.packages.x86_64-linux.test;
-          meta.description = "Build the checks whose name matches (or all of them)";
-        };
-
-        format = {
-          type = "app";
-          program = lib.getExe treefmtEval.config.build.wrapper;
-          meta.description = "Format the whole tree";
-        };
-
-        desktop-client = {
-          type = "app";
-          program = "${self.packages.x86_64-linux.desktop-client}/bin/yolab-desktop";
-          meta.description = "Open the YoLab desktop window";
-        };
-      }
-      // lib.mapAttrs (name: drv: {
+    apps.x86_64-linux = {
+      desktop-client = {
         type = "app";
-        program = toString (pkgs.writeShellScript "check" "echo ${drv}");
-        meta.description = "Build the ${name} check and print its store path";
-      })
-      self.checks.x86_64-linux;
+        program = "${self.packages.x86_64-linux.desktop-client}/bin/yolab-desktop";
+        meta.description = "Open the YoLab desktop window";
+      };
+    };
 
     devShells.x86_64-linux.default = pkgs.mkShell {
       packages =
@@ -318,7 +179,7 @@
         ++ [treefmtEval.config.build.wrapper];
 
       shellHook = ''
-        echo "yolab devshell — 'nix run .#ci' runs every check exactly as CI does"
+        echo "yolab devshell"
       '';
     };
 

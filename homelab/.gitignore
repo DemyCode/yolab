@@ -1,5 +1,7 @@
 machine/*
 !machine/README.md
+!machine/config.toml
+!machine/hardware-configuration.nix
 ignored/
 
 result

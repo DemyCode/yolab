@@ -1,0 +1,43 @@
+[homelab]
+hostname = "yolab"
+timezone = "UTC"
+locale = "en_US.UTF-8"
+ssh_port = 22
+root_ssh_key = ""
+allowed_ssh_keys = []
+homelab_password_hash = ""
+
+[tunnel]
+enabled = false
+platform_api_url = "https://api.yolab.io"
+account_token = ""
+service_name = "homelab"
+service_id = 0
+wg_private_key = ""
+wg_public_key = ""
+sub_ipv6 = "fd00:1::"
+sub_ipv6_private = "fd00:cafe::1"
+wg_server_endpoint = "1.2.3.4:51820"
+wg_server_public_key = ""
+dns_url = "https://ci.example.com"
+
+[node]
+node_id = "yolab"
+sub_ipv6_private = "fd00:cafe::1"
+sub_ipv6_private_subnet = "fd00:cafe::/112"
+wg_private_key = ""
+wg_server_endpoint = "1.2.3.4:51820"
+wg_server_public_key = ""
+
+[node.k3s]
+role = "server"
+token = "ci-token"
+server_addr = ""
+
+[ceph]
+fsid = "00000000-0000-4000-8000-000000000000"
+
+[disk]
+device = "/dev/vda"
+esp_size = "512M"
+system_size = "8G"

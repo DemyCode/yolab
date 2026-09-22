@@ -36,7 +36,7 @@ Add more machines with the same account token and they join the cluster automati
 Download from [Releases](../../releases), or build it:
 
 ```bash
-nix build .#iso
+nix build .#nixosConfigurations.yolab-installer.config.system.build.isoImage
 ```
 
 ### 2. Boot the installer
@@ -84,15 +84,13 @@ nix develop
 pre-commit run --all-files
 ```
 
-WSL and macOS configs are included:
+A machine's own `config.toml` lives outside the repo, in `/var/lib/yolab/machine`,
+and comes in as the `yolab-machine` flake input (see flake.nix). Never use
+`path:.`: it copies the whole working directory into the store (8.6G against
+4.8M) every time.
 
 ```bash
-sudo nixos-rebuild switch --flake .#yolab-wsl
-# A machine's own config.toml lives outside the repo, in /var/lib/yolab/machine,
-# and comes in as the `yolab-machine` flake input (see flake.nix). Never use
-# `path:.`: it copies the whole working directory into the store (8.6G against
-# 4.8M) every time.
-darwin-rebuild switch --flake .#yolab-mac \
+sudo nixos-rebuild switch --flake .#yolab \
   --override-input yolab-machine path:/var/lib/yolab/machine --no-write-lock-file
 ```
 
