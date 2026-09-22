@@ -1,4 +1,3 @@
-
 use anyhow::{bail, Result};
 
 use crate::ceph::model::OsdStat;

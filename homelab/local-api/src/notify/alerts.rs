@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -117,7 +116,6 @@ fn save(root: &Path, sent: &BTreeMap<String, Alert>) -> Result<()> {
     crate::config::write_private_file(&state_path(root), &serde_json::to_vec_pretty(sent)?)
 }
 
-
 fn heal_alert(problem: &str) -> Alert {
     let title = match problem {
         "machines_gone" => "A machine does not answer",
@@ -194,7 +192,6 @@ fn disk_source() -> Source {
         silent: false,
     }
 }
-
 
 pub struct NotifierController {
     pub config: crate::config::Config,

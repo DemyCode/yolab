@@ -1,4 +1,3 @@
-
 pub(crate) mod alerts;
 
 use std::path::Path;
@@ -59,7 +58,6 @@ pub async fn run(args: &[String]) -> i32 {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Tunnel {
     pub enabled: bool,
@@ -116,7 +114,6 @@ impl Tunnel {
             .to_string()
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Notification {
@@ -183,7 +180,6 @@ pub(crate) async fn publish_everywhere(
     futures::future::join_all(deliveries).await;
     Ok(())
 }
-
 
 #[derive(Debug, PartialEq, Serialize)]
 struct Subscription {

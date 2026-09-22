@@ -1,4 +1,3 @@
-
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
@@ -275,7 +274,6 @@ mod tests {
         })).collect::<Vec<_>>()})
     }
 
-
     #[test]
     fn mon_v1_addrs_picks_only_the_v1_endpoint() {
         let d = dump_with(&[("yolab-n1", "fd00:cafe::1")]);
@@ -317,7 +315,6 @@ mod tests {
         assert!(!needs_type_fix("kubernetes.io/rook"));
         assert!(needs_type_fix("Opaque"));
     }
-
 
     fn scripted_ok_host() -> FakeHost {
         FakeHost::new()

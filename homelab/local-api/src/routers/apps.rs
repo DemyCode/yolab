@@ -154,7 +154,6 @@ async fn resolve_install_source(src: &InstallSource) -> anyhow::Result<(String, 
     }
 }
 
-
 async fn annotate_ns(ns: &str, key: &str, value: &str) {
     if let Err(e) = crate::kubectl::run(&[
         "annotate",
@@ -218,7 +217,6 @@ fn parse_saved_config(
     serde_json::from_str(raw)
         .map_err(|e| anyhow::anyhow!("{ns}: the saved settings are unreadable: {e}"))
 }
-
 
 pub(crate) const DEFINITION_SCHEMA: u32 = 1;
 const DEFINITION_SECRET_KEY: &str = "app.json";
@@ -473,7 +471,6 @@ fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
         .ok_or_else(|| anyhow::anyhow!("missing [tunnel] in config"))
 }
 
-
 const ANN_DISPLAY_NAME: &str = "yolab.io/display-name";
 const ANN_ICON: &str = "yolab.io/icon";
 const ANN_CATEGORY: &str = "yolab.io/category";
@@ -715,8 +712,6 @@ fn validate_config_values(
     Ok(())
 }
 
-
-
 fn derive_domain(dns_url: &str) -> String {
     let host = dns_url
         .trim_start_matches("https://")
@@ -806,7 +801,6 @@ pub async fn catalog(State(_state): State<AppState>) -> Json<Vec<CatalogApp>> {
     apps.sort_by_key(|a| a.name.to_lowercase());
     Json(apps)
 }
-
 
 #[derive(Deserialize)]
 pub struct AddRepoBody {
@@ -2018,7 +2012,6 @@ pub async fn pod_logs(
 #[cfg(test)]
 mod tests {
 
-
     fn pod(name: &str) -> Value {
         json!({"metadata": {"name": name}})
     }
@@ -2067,7 +2060,6 @@ mod tests {
         assert!(!is_backup_mover_pod(&json!({})));
     }
 
-
     #[test]
     fn a_pod_being_deleted_is_terminating() {
         assert!(is_terminating_pod(&json!({
@@ -2113,7 +2105,6 @@ mod tests {
             })
         }));
     }
-
 
     fn waiting_pod(kind: &str, reason: &str, restarts: i64) -> Value {
         json!({"status": {"phase": "Pending", kind: [
@@ -2207,7 +2198,6 @@ mod tests {
         let pod = waiting_pod("initContainerStatuses", "CrashLoopBackOff", 4);
         assert!(explain_app_state(&[&pod]).contains("stopping"));
     }
-
 
     fn real_schema() -> Value {
         serde_json::json!({
@@ -2327,7 +2317,6 @@ mod tests {
     fn map(v: Value) -> serde_json::Map<String, Value> {
         v.as_object().cloned().unwrap()
     }
-
 
     #[test]
     fn a_long_name_still_fits_a_namespace() {
@@ -2466,7 +2455,6 @@ mod tests {
         assert!(normalize_outputs(&ann).is_empty());
     }
 
-
     #[test]
     fn no_lock_annotation_is_not_fresh() {
         assert!(!uninstall_lock_is_fresh(&serde_json::Map::new()));
@@ -2538,7 +2526,6 @@ mod tests {
             serde_json::json!({ ANN_UNINSTALLING: "not-a-timestamp" })
         )));
     }
-
 
     fn chart_dir_with(outputs: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

@@ -53,7 +53,6 @@ pub async fn set_channel(
     }
 }
 
-
 async fn emit(out: &tokio::sync::mpsc::Sender<String>, msg: impl Into<String>) {
     let _ = out.send(msg.into()).await;
 }
@@ -147,7 +146,6 @@ pub async fn update(State(state): State<AppState>) -> Response {
         .map(|line| Ok::<Event, Infallible>(Event::default().data(line)));
     Sse::new(stream).into_response()
 }
-
 
 pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::Value> {
     if let Some(why) = heal_holds(&state.config) {

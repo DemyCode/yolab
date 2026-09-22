@@ -8,7 +8,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-
 #[derive(Serialize, Clone, PartialEq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum HealthLevel {
@@ -523,7 +522,6 @@ async fn ceph_health_and_details() -> anyhow::Result<String> {
     Ok(format!("{status}\n{checks}"))
 }
 
-
 #[derive(Serialize)]
 pub struct OsdInfo {
     pub id: i64,
@@ -779,7 +777,6 @@ pub async fn storage_detail() -> Json<serde_json::Value> {
     }
 }
 
-
 pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     set_desired_by_osd(id, "ON").await
 }
@@ -876,7 +873,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-
     fn warn() -> serde_json::Value {
         json!({"severity": "HEALTH_WARN", "summary": {"message": "some detail"}})
     }
@@ -892,7 +888,6 @@ mod tests {
         assert!(issue.description.contains("stored once"));
         assert_eq!(issue.level, HealthLevel::Warn);
     }
-
 
     fn loss(stuck: u32, total: u32, unrecoverable: bool) -> PgLoss {
         PgLoss {
@@ -963,7 +958,6 @@ mod tests {
         }
     }
 
-
     fn pg_dump(pgid: &str, state: &str) -> Value {
         json!({ "pg_stats": [{ "pgid": pgid, "state": state }] })
     }
@@ -975,7 +969,6 @@ mod tests {
     fn pool(id: i64, name: &str, size: u64) -> Value {
         json!({ "pool": id, "pool_name": name, "size": size })
     }
-
 
     fn osd(id: i64, is_in: i64) -> Value {
         json!({ "osd": id, "in": is_in, "up": 0, "weight": 1.0 })
@@ -1148,7 +1141,6 @@ mod tests {
         assert!(issue.title.contains("cannot be rebuilt"), "{}", issue.title);
     }
 
-
     #[test]
     fn with_one_disk_the_advice_is_backups() {
         for places in [0, 1] {
@@ -1300,7 +1292,6 @@ mod tests {
         assert_eq!(a.description, b.description);
     }
 
-
     #[test]
     fn failure_domain_comes_from_the_choose_step() {
         let rule = json!({"steps": [
@@ -1342,7 +1333,6 @@ mod tests {
             "host"
         );
     }
-
 
     fn sample_raw() -> serde_json::Value {
         json!({
@@ -1510,7 +1500,6 @@ mod tests {
         assert_eq!(d.osds[0].reweight, 1.0);
     }
 }
-
 
 async fn active_dashboard_origin() -> Option<String> {
     let services = crate::ceph_cli::ceph_json(&["mgr", "services"])

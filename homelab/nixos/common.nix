@@ -388,7 +388,6 @@ in {
       };
     };
 
-
     systemd.services.yolab-local-api = {
       after = ["network.target"];
       wants = ["k3s.service"];
@@ -480,7 +479,6 @@ in {
       };
     });
 
-
     systemd.services.yolab-csi-recovery = {
       description = "Restart CephFS CSI plugin to clear stale volume locks";
       after = ["k3s.service"];
@@ -551,8 +549,6 @@ in {
         restic
         kubernetes-helm
       ];
-
-
 
     services.udev.extraRules = ''
       SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL!="loop*", KERNEL!="dm-*", GROUP="ceph", MODE="0660"

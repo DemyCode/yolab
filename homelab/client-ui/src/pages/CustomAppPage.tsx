@@ -143,8 +143,7 @@ export default function CustomAppPage() {
       subtitle="Upload a Helm chart, or paste Kubernetes YAML. Either way it becomes an app like any other — its own address, its own backups."
     >
       <div className="space-y-4">
-        {
-}
+        {}
         <section className="rounded-card border border-border bg-surface p-4">
           <div className="flex flex-wrap items-center gap-3">
             <Package className="h-4 w-4 shrink-0 text-fg-muted" />

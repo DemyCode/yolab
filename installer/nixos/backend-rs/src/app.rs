@@ -8,7 +8,6 @@ use tokio_stream::StreamExt;
 
 use crate::{install, wireguard::PLATFORM_API};
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     Mode,
@@ -30,7 +29,6 @@ impl Step {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClusterMode {
     New,
@@ -45,7 +43,6 @@ pub struct DiskInfo {
     pub mounted: bool,
     pub recommended: bool,
 }
-
 
 pub enum AppEvent {
     NetworkReady,
@@ -68,7 +65,6 @@ pub enum AppEvent {
     Failed(String),
 }
 
-
 #[derive(Clone)]
 pub enum ClickTarget {
     ModeOption(usize),
@@ -90,7 +86,6 @@ pub enum BtnId {
     Reboot,
     Poweroff,
 }
-
 
 pub struct App {
     pub step: Step,
@@ -193,7 +188,6 @@ impl App {
         }
     }
 
-
     pub async fn run(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -222,7 +216,6 @@ impl App {
         }
         Ok(())
     }
-
 
     async fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -411,7 +404,6 @@ impl App {
         }
     }
 
-
     async fn handle_mouse(&mut self, m: MouseEvent) {
         if self.loading {
             return;
@@ -504,7 +496,6 @@ impl App {
         }
     }
 
-
     fn handle_app_event(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::NetworkReady => {
@@ -566,7 +557,6 @@ impl App {
             }
         }
     }
-
 
     async fn confirm_mode(&mut self) {
         if !self.network_ready {
@@ -747,7 +737,6 @@ impl App {
             .spawn();
     }
 }
-
 
 async fn do_create_account() -> anyhow::Result<String> {
     let resp = reqwest::Client::new()
@@ -938,7 +927,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-
     #[test]
     fn step_indices_are_sequential_and_unique() {
         let steps = [
@@ -951,7 +939,6 @@ mod tests {
         let indices: Vec<usize> = steps.iter().map(Step::index).collect();
         assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
-
 
     #[test]
     fn sizes_are_formatted_in_the_units_printed_on_the_box() {
@@ -972,7 +959,6 @@ mod tests {
         assert_eq!(fmt_bytes(1), "0 GB");
     }
 
-
     #[test]
     fn parse_gb_round_trips_what_fmt_bytes_produces() {
         assert_eq!(parse_gb(&fmt_bytes(500_000_000_000)), 500);
@@ -991,7 +977,6 @@ mod tests {
         assert_eq!(parse_gb("unknown"), 0);
         assert_eq!(parse_gb("GB"), 0);
     }
-
 
     #[test]
     fn a_disk_mounted_at_its_top_level_counts_as_mounted() {
@@ -1027,7 +1012,6 @@ mod tests {
             "children": [{"mountpoint": null}, {"mountpoint": ""}]
         })));
     }
-
 
     fn lsblk(devices: serde_json::Value) -> serde_json::Value {
         json!({"blockdevices": devices})
@@ -1166,7 +1150,6 @@ mod tests {
         assert_eq!(disks[0].size, "0 GB");
         assert_eq!(disks[0].tran, "");
     }
-
 
     fn join_reply() -> serde_json::Value {
         serde_json::json!({

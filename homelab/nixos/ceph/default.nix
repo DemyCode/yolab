@@ -95,7 +95,6 @@ in {
         osd_pool_default_min_size = "1";
         mon_allow_pool_size_one = "true";
 
-
         osd_crush_initial_weight = "0";
 
         mon_osd_down_out_interval = "600";
@@ -157,7 +156,6 @@ in {
       '';
     };
 
-
     systemd.services.yolab-ceph-mon-member = mkIf (!isBootstrap) {
       description = "Ensure this node's mon is in the monmap";
       after = ["ceph-mon-${host}.service"];
@@ -186,7 +184,6 @@ in {
         ${pkgs.systemd}/bin/systemctl start --no-block ceph-mgr-${host}.service || true
       '';
     };
-
 
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
@@ -258,7 +255,6 @@ in {
       };
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
     };
-
 
     environment.systemPackages = with pkgs; [
       ceph

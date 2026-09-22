@@ -281,7 +281,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-
     #[test]
     fn masking_to_112_zeroes_the_final_two_octets() {
         assert_eq!(
@@ -317,7 +316,6 @@ mod tests {
         let err = mask_to_112("nonsense").unwrap_err().to_string();
         assert!(err.contains("nonsense"), "got: {err}");
     }
-
 
     fn tunnels(names: &[&[&str]]) -> serde_json::Value {
         json!(names

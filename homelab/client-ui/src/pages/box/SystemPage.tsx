@@ -138,8 +138,7 @@ export function SystemPage() {
       await streamEvents(url, { method: "POST" }, (line) =>
         appendLines([line]),
       );
-    } catch {
-    }
+    } catch {}
     setPhase("rebuild");
     rebuildOffsetRef.current = 0;
     pollRebuildLog();
@@ -153,8 +152,7 @@ export function SystemPage() {
     setRebootConfirm(false);
     try {
       await fetch("/api/system/reboot/all", { method: "POST" });
-    } catch {
-    }
+    } catch {}
   }
 
   async function saveChannelAndUpdate() {
@@ -273,8 +271,7 @@ export function SystemPage() {
               {updating ? "Updating…" : "Update all machines"}
             </Button>
 
-            {
-}
+            {}
             {rebootConfirm ? (
               <div className="flex items-center gap-2">
                 <Button

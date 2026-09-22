@@ -6,7 +6,6 @@ SETUP="$HERE/setup.sh"
 PASS=0
 FAIL=0
 
-
 new_sandbox() {
     SANDBOX=$(mktemp -d)
     export SANDBOX
@@ -118,7 +117,6 @@ RECORD_BODY='{"fqdn":"myapp.example.test"}'
 CACHED_STATE='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_private_key":"PRIVKEY-cached",
  "wg_server_endpoint":"9.9.9.9:51820","wg_server_public_key":"CACHED-SERVER-PUB","fqdn":"old.example.test"}'
 
-
 case_start "fresh install registers a tunnel and writes every artifact"
 respond create 200 "$TUNNEL_BODY"
 respond records 200 "$RECORD_BODY"
@@ -168,7 +166,6 @@ assert_contains "$(env_file)" 'export YOLAB_URL=' "env"
 assert_missing "$(env_file)" 'https://' "env should carry no URL"
 case_end
 
-
 case_start "a tunnel the platform still knows about is reused, not recreated"
 write_state <<EOF
 $CACHED_STATE
@@ -206,7 +203,6 @@ assert_contains "$(wg_conf)" 'PRIVKEY-cached' "the tunnel still comes up"
 assert_contains "$(cat "$OUT")" 'WARNING' "the failure is reported"
 case_end
 
-
 case_start "a tunnel deleted on the platform is re-registered"
 write_state <<EOF
 $CACHED_STATE
@@ -232,7 +228,6 @@ assert_eq "$RC" "0" "exit code"
 assert_not_called "GET verify" "incomplete state must not be verified"
 assert_called "POST create" "re-registration"
 case_end
-
 
 case_start "an unreachable platform does not cost the app its tunnel"
 write_state <<EOF
@@ -269,7 +264,6 @@ assert_not_called "POST create" "a bad token must not wipe a working tunnel"
 assert_eq "$(state_field tunnel_id)" "42" "cached state must survive"
 case_end
 
-
 case_start "a rejected tunnel registration fails the init container"
 respond create 403 '{"detail":"quota exceeded"}'
 run_setup
@@ -295,7 +289,6 @@ RC=$?
 if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
 assert_not_called "POST create" "nothing should be requested without a token"
 case_end
-
 
 echo "wg-register: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -7,7 +7,6 @@ import {
   type MachineReset,
 } from "./heal";
 
-
 const reset = (phase: MachineReset["phase"]): MachineReset => ({
   heal_id: "h1",
   driver: "node1",

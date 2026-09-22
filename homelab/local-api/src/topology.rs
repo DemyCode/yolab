@@ -1,4 +1,3 @@
-
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,7 +47,6 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
     }
 }
 
-
 pub async fn read_policy() -> Option<PolicyState> {
     read_policy_from(&crate::host::RealHost).await
 }
@@ -70,7 +68,6 @@ async fn write_policy<H: crate::host::Host>(host: &H, p: &StoragePolicy) -> anyh
     crate::runtime::wake("disks");
     Ok(())
 }
-
 
 pub(crate) async fn observe() -> Option<Topology> {
     let nodes = kubectl::get_nodes().await.ok()?.len() as u32;
@@ -99,7 +96,6 @@ async fn cluster_health() -> Option<String> {
         .as_str()
         .map(str::to_string)
 }
-
 
 pub struct TopologyController;
 
@@ -270,7 +266,6 @@ async fn apply_pools(target: &Target) {
     }
 }
 
-
 pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
     let chosen = match read_policy().await {
         Some(PolicyState::Chosen(p)) => Some(p),
@@ -353,7 +348,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn the_chosen_size_is_what_comes_out() {
         for size in [1u32, 2, 3, 5, 9] {
@@ -382,7 +376,6 @@ mod tests {
         assert_eq!(t.size, 3);
     }
 
-
     #[test]
     fn losing_disks_cannot_change_how_many_copies_are_kept() {
         let p = policy(3, "host");
@@ -403,7 +396,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn min_size_is_one_whatever_is_asked_for() {
         for size in [1u32, 2, 3, 7] {
@@ -420,7 +412,6 @@ mod tests {
         assert!(t.min_size <= t.size);
     }
 
-
     #[test]
     fn one_mon_and_mgr_per_machine() {
         assert_eq!(compute_target(&policy(2, "host"), &topo(3, 3, 3)).mon, 3);
@@ -432,7 +423,6 @@ mod tests {
         let t = compute_target(&policy(1, "osd"), &topo(0, 0, 0));
         assert_eq!((t.mon, t.mgr), (1, 1));
     }
-
 
     #[test]
     fn every_data_pool_including_images_follows_the_chosen_size() {
@@ -448,7 +438,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn the_current_page_body_parses() {
         let req: SetPolicyReq =
@@ -456,7 +445,6 @@ mod tests {
         assert_eq!(req.size, Some(2));
         assert_eq!(req.failure_domain.as_deref(), Some("osd"));
     }
-
 
     #[tokio::test]
     async fn a_policy_is_chosen_not_chosen_or_unreadable_and_never_defaulted() {

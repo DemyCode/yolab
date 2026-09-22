@@ -1,4 +1,3 @@
-
 pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/login", &["POST"]),
     ("/api/logout", &["POST"]),
@@ -230,7 +229,6 @@ mod tests {
         assert_eq!(concrete("/api/disks/:node/:id"), "/api/disks/probe/probe");
         assert_eq!(concrete("/ceph-dashboard/*rest"), "/ceph-dashboard/probe");
     }
-
 
     #[test]
     fn nothing_that_returns_a_secret_is_cacheable() {
