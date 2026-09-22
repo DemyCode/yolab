@@ -27,6 +27,7 @@ in let
 
   allChecks = {
     client-ui = builds.clientUi;
+    client-ui-tests = builds.clientUiTests;
 
     local-api-tests = crates.local-api.tests;
     installer-tests = crates.installer.tests;

@@ -79,6 +79,34 @@
     machineHardware = "${inputs.yolab-machine}/hardware-configuration.nix";
     isMachine = builtins.pathExists machineConfig;
 
+    # EVERY MODULE ARGUMENT A YOLAB SYSTEM NEEDS, IN ONE PLACE.
+    #
+    # `nixosSystem` and the VM tests in nix/tests/ both build the same modules,
+    # so both have to hand them the same arguments — and a missing one is not a
+    # build failure anywhere near the test. It surfaces from inside nixpkgs'
+    # module system as `attribute 'localApiEnv' missing`, naming nothing in the
+    # file that forgot it, because nothing references these until a module deep
+    # in common.nix builds a unit's ExecStart or an activation script from them.
+    #
+    # All three VM tests were failing on exactly that, twice over: boot.nix had
+    # never passed `localApiEnv`, and none of the three passed `yolabRev` or
+    # `yolabLastModified`. Every one of them died during evaluation, so not one
+    # had ever run. A test nobody can run is worse than no test — it reads like
+    # coverage.
+    #
+    # So the tests take this function rather than copying its body. Adding an
+    # argument here reaches them in the same commit.
+    yolabSpecialArgs = configPath: {
+      inherit rust;
+      yolabConfigPath = configPath;
+      localApiEnv = rust.crates.local-api.package;
+      # The revision this system is built from, for the version shown on the
+      # System page. A node builds from a flake URL and keeps no git tree, so
+      # the flake itself is the only place the revision can come from.
+      yolabRev = self.rev or self.dirtyRev or "";
+      yolabLastModified = self.lastModified or null;
+    };
+
     # The config.toml path is an argument so the CI stubs can be evaluated
     # without a node's real config.toml being touched.
     mkYolabSystem = {
@@ -88,16 +116,7 @@
       nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         inherit modules;
-        specialArgs = {
-          inherit rust;
-          yolabConfigPath = configPath;
-          localApiEnv = rust.crates.local-api.package;
-          # The revision this system is built from, for the version shown on the
-          # System page. A node builds from a flake URL and keeps no git tree, so
-          # the flake itself is the only place the revision can come from.
-          yolabRev = self.rev or self.dirtyRev or "";
-          yolabLastModified = self.lastModified or null;
-        };
+        specialArgs = yolabSpecialArgs configPath;
       };
 
     baseModules = [
@@ -151,8 +170,8 @@
       inherit
         pkgs
         inputs
-        rust
         disko
+        yolabSpecialArgs
         ;
     };
 
@@ -160,8 +179,8 @@
       inherit
         pkgs
         inputs
-        rust
         disko
+        yolabSpecialArgs
         ;
     };
 
@@ -169,8 +188,8 @@
       inherit
         pkgs
         inputs
-        rust
         disko
+        yolabSpecialArgs
         ;
     };
 

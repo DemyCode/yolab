@@ -41,7 +41,7 @@ jobs:
           - bucket: lint
             checks: >-
               deadnix hadolint shellcheck formatting chart-checks client-ui
-              ci-buckets-cover-every-check route-table-is-complete
+              ci-buckets-cover-every-check route-table-is-complete client-ui-tests
               host-seam-ratchet
           - bucket: rust
             checks: >-

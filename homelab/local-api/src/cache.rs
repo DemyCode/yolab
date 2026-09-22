@@ -136,13 +136,23 @@ impl Policy {
 /// Everything else is cached, including routes with path parameters — those key
 /// off the full path so `/api/apps/immich/pods` and `/api/apps/plex/pods` are
 /// separate entries.
-fn policy_for(path: &str) -> Option<Policy> {
+pub(crate) fn policy_for(path: &str) -> Option<Policy> {
     if !path.starts_with("/api/") {
         return None;
     }
-
-    // Differs per caller: the cache cannot tell them apart.
-    if path == "/api/auth/check" {
+    // Auth. `/api/auth/check` answers differently per caller and the key is
+    // path plus query, which cannot tell two callers apart — a remembered "yes"
+    // would be handed to a stranger.
+    //
+    // `/api/login` and `/api/logout` are POST-only, so the middleware's
+    // GET-only rule already means the cache is never consulted for them. They
+    // are named here anyway: a login response carries a session token in
+    // Set-Cookie, and "a different layer happens to stop it" is not how a
+    // secret should be protected. Naming them also keeps `policy_for` honest,
+    // which `every_cacheable_route_can_be_reached_by_get` in surface.rs checks
+    // — a policy on a route with no GET is a rule that can never fire, and
+    // reads like one that does.
+    if matches!(path, "/api/auth/check" | "/api/login" | "/api/logout") {
         return None;
     }
     // Credentials and key material.
