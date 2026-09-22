@@ -15,6 +15,22 @@
         "type": "github"
       }
     },
+    "devour-flake": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1770055559,
+        "narHash": "sha256-peb6VlxIDoqaHkGPanQ35p8SXy9t54NIJ8XJHgMSuFg=",
+        "owner": "srid",
+        "repo": "devour-flake",
+        "rev": "e65d15fd4ef46dbde90ac59be581b2a286c35d0f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "srid",
+        "repo": "devour-flake",
+        "type": "github"
+      }
+    },
     "disko": {
       "inputs": {
         "nixpkgs": [
@@ -111,6 +127,7 @@
     "root": {
       "inputs": {
         "crane": "crane",
+        "devour-flake": "devour-flake",
         "disko": "disko",
         "nix-darwin": "nix-darwin",
         "nixos-wsl": "nixos-wsl",

@@ -35,6 +35,18 @@
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
 
+    # Builds EVERY flake output — packages, apps, checks (VM tests included),
+    # devShells, nixosConfigurations — in one `nix build`, so CI no longer names
+    # what to build: it builds whatever the flake exposes. Non-flake input
+    # because it is consumed as a package (`pkgs.callPackage`), not as a flake.
+    #
+    # See `packages.<system>.devour` below and the `ci` job in push.yml. The
+    # point is that adding a package, check or devShell needs no CI change.
+    devour-flake = {
+      url = "github:srid/devour-flake";
+      flake = false;
+    };
+
     # THIS MACHINE's own files: config.toml (secrets, tunnel keys, tokens) and
     # hardware-configuration.nix. They are not in the repo, so a machine builds
     # from a flake URL and keeps these as the only local files — the node no
@@ -290,6 +302,13 @@
       builds = import ./homelab/builds.nix {inherit pkgs rust;};
       checks = self.checks.x86_64-linux;
     in {
+      # `nix run .#devour -- .` builds every output of THIS flake (or of any
+      # flake URL passed instead) in one `nix build`, then prints a JSON of the
+      # resulting store paths. It is the whole of CI's build step: the workflow
+      # runs this and pushes the closure, so a new package, check or devShell
+      # reaches the cache without anyone editing the workflow.
+      devour = pkgs.callPackage inputs.devour-flake {};
+
       inherit (allChecks) coverage-local-api;
       inherit (allChecks) coverage-installer;
 

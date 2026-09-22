@@ -7,173 +7,30 @@ on:
       - main
 
 jobs:
-  # The 22 flake checks, split across runners that go in parallel.
+  # EVERY flake output — packages, apps, checks (the three VM tests included),
+  # devShells, nixosConfigurations — built and pushed to the cache in one job.
   #
-  # This was one job running `nix run .#ci`, which is a single derivation
-  # depending on every check — so nix built all 22 back to back on one runner and
-  # the job took as long as their sum.
+  # THE FLAKE IS THE ONLY LIST. This replaced a hand-written matrix of check
+  # buckets, a separate VM-test job, a homelab-packages job, and a
+  # `ci-buckets-cover-every-check` check whose entire purpose was to catch a
+  # check missing from those hand-written buckets. `.#devour` (devour-flake)
+  # builds whatever the flake exposes, so a new package, check or devShell is
+  # built and cached in the same commit that adds it, and nothing in this file
+  # changes. There is no list left to drift.
   #
-  # BUCKETED BY SHARED DEPENDENCY, NOT ONE JOB PER CHECK. A runner starts with an
-  # empty /nix/store, so anything a check needs is either fetched from the cache
-  # or built again on that runner. Twenty-two jobs would mean twenty-two runners
-  # each building the crate artifacts or the NixOS closures their checks sit on,
-  # which burns far more total compute for no better wall clock. Grouping checks
-  # that share a heavy base means each base is built once per bucket instead:
+  # ONE JOB, NOT A MATRIX. The old buckets existed because a runner starts with
+  # an empty /nix/store and shared bases (crane's cargoArtifacts, the NixOS
+  # toplevels) would otherwise be rebuilt on every runner. That reasoning does
+  # not survive a warm cache: with `accept-flake-config` and this flake's
+  # nixConfig, each shared base is FETCHED from cache.yolab.io, so one job costs
+  # a longer wall clock, not duplicated compute — and nix still schedules the
+  # builds in parallel internally.
   #
-  #   lint   — no rust, no NixOS eval; these are seconds each and share nothing,
-  #            so they cost almost nothing to carry together.
-  #   rust   — every crate test and clippy run; crane's cargoArtifacts is shared
-  #            between a crate's test and its clippy, so keeping them together is
-  #            what makes that sharing pay.
-  #   nixos  — the system toplevels, disko scripts, and the unit-ordering checks
-  #            that read the evaluated config. All of these force the same NixOS
-  #            evaluation and the same closure.
-  #
-  # `fail-fast: false` because a red bucket should not hide which of the others
-  # would also have failed — the point of splitting is to learn more per run.
-  checks:
-    name: checks (${{ matrix.bucket }})
+  # KVM IS REQUIRED: the flake's `checks` are `allChecks // nixosTests`, so this
+  # job builds the VM tests too. Both halves of the grant are needed — the device
+  # must exist AND the daemon must advertise the feature at start-up (see below).
+  ci:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - bucket: lint
-            checks: >-
-              deadnix hadolint shellcheck formatting chart-checks client-ui
-              ci-buckets-cover-every-check route-table-is-complete client-ui-tests
-              catalog-apps-have-a-tagline
-              host-seam-ratchet
-          - bucket: rust
-            checks: >-
-              local-api-tests installer-tests desktop-client-tests
-              wg-register-tests clippy-local-api clippy-installer
-              clippy-desktop-client
-          - bucket: nixos
-            checks: >-
-              nixos-create nixos-join nixos-wsl disko-create disko-join
-              binary-contract containerd-store-after-order
-              self-healing-timers-can-re-arm retry-timers-measure-from-run-end
-              ceph-survives-a-rebuild lvm-never-scans-an-rbd
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
-            /usr/local/share/powershell /usr/share/swift
-          sudo docker image prune --all --force || true
-          df -h /
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-
-      - name: Build this bucket's checks
-        run: |
-          set -euo pipefail
-          # ONE `nix build` for the whole bucket, never a loop of them: nix
-          # schedules the lot together and realises their shared dependencies
-          # once, which is the entire reason these are grouped.
-          #
-          # `.#` here MUST match every other nix invocation in this workflow —
-          # and what the machines build with — see the note in the ISO step below
-          # for what diverging costs.
-          targets=()
-          for c in ${{ matrix.checks }}; do
-            targets+=(".#checks.x86_64-linux.$c")
-          done
-          nix build --no-link --print-build-logs --print-out-paths \
-            "${targets[@]}" > /tmp/bucket-out-paths.txt
-          cat /tmp/bucket-out-paths.txt
-
-      - name: Push to the Nix cache
-        env:
-          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
-        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
-        run: |
-          set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
-          # Push the FULL closure of what THIS bucket built — ceph and every one
-          # of its build dependencies included. An older version of this grepped
-          # store paths out of the build log, which captured the .drv files but
-          # not their realizable outputs, so ceph's output never reached the cache
-          # and every node recompiled it from source on every update.
-          #
-          # Driven off the paths the build step actually produced, NOT off a fixed
-          # list of toplevels. Naming the toplevels here would make every bucket
-          # build an entire NixOS system just to have something to push — which
-          # would hand the `lint` bucket, whose real work is a few seconds of
-          # shellcheck, the slowest job in the workflow. The `nixos` bucket builds
-          # `nixos-create` and `nixos-join`, and those checks ARE the yolab-ci and
-          # yolab-ci-join toplevels, so the closure this pushes is the same one as
-          # before.
-          xargs -a /tmp/bucket-out-paths.txt nix path-info --recursive \
-            | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
-
-
-  # THE ONLY TESTS THAT BOOT A REAL MACHINE — and until now, the only ones that
-  # never ran.
-  #
-  # nix/tests/*.nix have existed for a while as `nixosTests` outputs, deliberately
-  # kept out of `checks` because a boot test needs KVM and the build sandbox on a
-  # normal runner does not have it. The cost of that decision is written in
-  # flake.nix: "Every storage bug this project has had was found on a live
-  # two-node cluster rather than here, which is the wrong order." These jobs are
-  # how that order gets fixed.
-  #
-  # THE MATRIX IS DISCOVERED, NOT LISTED. `checks` above has to police its own
-  # buckets with ci-buckets-cover-every-check because the bucket list is written
-  # by hand. There is no equivalent risk here: the matrix is `builtins.attrNames`
-  # of the flake's own `nixosTests`, so a test added to the flake gets a CI runner
-  # in the same commit, and a test that is deleted stops being demanded. This is
-  # the shape umbrelOS uses (`discover-vm-tests` → one runner per test file), and
-  # it is strictly better than a list somebody has to remember to update.
-  #
-  # ONE RUNNER PER TEST. Unlike `checks`, these do not share a heavy base worth
-  # grouping for — each boots its own VMs and is dominated by wall clock, not by
-  # closure building. `fail-fast: false` so one broken scenario does not hide the
-  # state of the others.
-  discover-vm-tests:
-    name: Discover VM tests
-    runs-on: ubuntu-latest
-    outputs:
-      tests: ${{ steps.find.outputs.tests }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-
-      - id: find
-        run: |
-          set -euo pipefail
-          # The flake is the source of truth, not a `find` over nix/tests: an
-          # attribute is what `nix build` can actually be pointed at, and a file
-          # that is not wired into `nixosTests` is not a test anyone can run.
-          nix eval --json '.#nixosTests' --apply builtins.attrNames > names.json
-          cat names.json
-          tests=$(jq --compact-output 'map({name: .})' names.json)
-          echo "tests=$tests" >> "$GITHUB_OUTPUT"
-
-  vm:
-    name: VM test (${{ matrix.test.name }})
-    needs: discover-vm-tests
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        test: ${{ fromJSON(needs.discover-vm-tests.outputs.tests) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -195,15 +52,15 @@ jobs:
       # big-parallel, nixos-test}" — which is not a test failure at all, and
       # looks nothing like one in the log.
       #
-      # `system-features` is set here rather than after the fact because the
-      # daemon reads it at start-up.
+      # `system-features` is set in the Install Nix step below rather than after
+      # the fact because the daemon reads it at start-up.
       - name: Grant KVM to the runner
         run: |
           set -euo pipefail
           if [ ! -e /dev/kvm ]; then
-            echo "::error::No /dev/kvm on this runner. NixOS VM tests need hardware" \
-                 "virtualisation; software emulation is too slow to finish inside" \
-                 "any sane job timeout. Move this job to a runner that exposes KVM" \
+            echo "::error::No /dev/kvm on this runner. This job builds the flake's" \
+                 "VM tests; software emulation is too slow to finish inside any" \
+                 "sane job timeout. Move this job to a runner that exposes KVM" \
                  "(umbrelOS uses ubicloud-standard-4-ubuntu-2404 for exactly this)."
             exit 1
           fi
@@ -219,14 +76,35 @@ jobs:
             accept-flake-config = true
             system-features = nixos-test benchmark big-parallel kvm
 
-      - name: Show what nix thinks it can build
-        run: nix show-config | grep -E 'system-features|sandbox' || true
-
-      - name: Run the VM test
+      - name: Build every flake output
         run: |
-          nix build --no-link --print-build-logs \
-            ".#nixosTests.${{ matrix.test.name }}"
-            ".#nixosTests.${{ matrix.test.name }}"
+          set -euo pipefail
+          # `git+file://$PWD`, never `.` or `path:.` — the git flake copies only
+          # tracked files, so its source hash matches what a machine builds with
+          # (`github:DemyCode/yolab/main#...`). A `path:` source copies the whole
+          # directory, hashes differently, and caches derivations no node can
+          # use. See the ISO step's note for what that cost.
+          #
+          # The output is a JSON list of every path devour built; its closure is
+          # all of them, so the push step below caches the lot.
+          nix run .#devour -- "git+file://$PWD" > /tmp/devour.json
+          cat /tmp/devour.json
+
+      - name: Push to the Nix cache
+        env:
+          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
+        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
+          # The CLOSURE of every built path, not the paths themselves: the JSON
+          # names the outputs, but what a node needs is everything underneath
+          # them — crane's cargoArtifacts, the NixOS closures the VM tests boot.
+          jq -r '.[].outPaths[]' /tmp/devour.json | sort -u > /tmp/devour-paths.txt
+          xargs -a /tmp/devour-paths.txt nix path-info --recursive \
+            | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
+
+
   build-images:
     runs-on: ubuntu-latest
     permissions:
@@ -488,47 +366,6 @@ jobs:
           # next run retries the rest. Failing here only makes the gap visible.
           echo "charts that did not publish:${{ steps.push.outputs.failed }}"
           exit 1
-
-  # Split out of build-iso, where they were a second step that could only start
-  # once the ISO's squashfs had finished. Neither package is an input to the ISO
-  # image, so nothing was making that ordering necessary — it was just two
-  # unrelated builds sharing a runner.
-  homelab-packages:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-
-      - name: Build homelab packages
-        id: build_homelab
-        run: |
-          set -euo pipefail
-          # Two calls, not one with two installables: the runner's /nix/store
-          # persists between commands, so whatever these two share is realised
-          # once regardless, and naming one output per call avoids depending on
-          # the order `--print-out-paths` happens to print them in.
-          UI_OUT=$(nix build .#homelab-ui --no-link --print-build-logs --print-out-paths)
-          API_OUT=$(nix build .#homelab-api --no-link --print-build-logs --print-out-paths)
-          echo "ui_store_path=$UI_OUT" >> "$GITHUB_OUTPUT"
-          echo "api_store_path=$API_OUT" >> "$GITHUB_OUTPUT"
-
-      - name: Push to the Nix cache
-        env:
-          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
-        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
-        run: |
-          set -euo pipefail
-          nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
-          nix run nixpkgs#attic-client -- push yolab \
-            "${{ steps.build_homelab.outputs.ui_store_path }}" \
-            "${{ steps.build_homelab.outputs.api_store_path }}"
 
   build-iso:
     runs-on: ubuntu-latest

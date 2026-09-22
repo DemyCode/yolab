@@ -19,12 +19,6 @@
 
   toplevel = name: nixosSystems.${name}.config.system.build.toplevel;
 in let
-  # The names of every check, for `ci-buckets-cover-every-check` to compare the
-  # workflow against. Not circular despite appearances: `attrNames` forces the
-  # attribute set's KEYS, which are known from the syntax, and never its values —
-  # so the one check that reads this list does not have to evaluate itself.
-  checkNames = builtins.attrNames allChecks;
-
   allChecks = {
     client-ui = builds.clientUi;
     client-ui-tests = builds.clientUiTests;
@@ -315,84 +309,11 @@ in let
         touch $out
       '';
 
-    # EVERY CHECK MUST BE IN A CI BUCKET, OR IT SILENTLY STOPS RUNNING.
-    #
-    # CI used to run `nix run .#ci`, one derivation depending on every check, so a
-    # check was in CI the moment it existed here. Splitting the work across
-    # parallel runners traded that away: .github/workflows/push.yml now names the
-    # checks explicitly, bucketed by shared dependency, and a name that is not in a
-    # bucket is simply never built. Nothing would fail — the workflow would go
-    # green having quietly skipped it, which is the worst way for a check to die.
-    #
-    # So the list is verified against this file instead of trusted. Both directions
-    # matter: a check missing from every bucket is coverage lost, and a bucket
-    # naming something that is not a check is a typo that has been silently testing
-    # nothing.
-    #
-    # This check is itself in the `lint` bucket, so it guards its own presence too.
-    #
-    # THE VM TESTS ARE NOT IN A BUCKET, AND THAT IS CORRECT. `checks` in flake.nix
-    # is `allChecks // nixosTests`, so `nix flake check` covers them — but CI runs
-    # them in the separate `vm` job, one runner each, off a matrix it derives with
-    # `nix eval .#nixosTests`. A derived matrix cannot fall behind, so there is
-    # nothing for this check to compare. What it does assert is that the derivation
-    # still exists: delete the vm job and the VM tests stop running in CI just as
-    # silently as an unbucketed check would.
-    ci-buckets-cover-every-check = let
-      # Every name `checks` will expose. Built from the same attribute set CI
-      # consumes, not a second hand-written list — a hand-written one would be the
-      # very thing this exists to prevent.
-      #
-      # `coverage-*` is dropped to match flake.nix, which filters exactly this
-      # prefix out of `checks.x86_64-linux` because coverage is a report rather
-      # than a gate. The two filters have to agree: if that one ever changes,
-      # this check starts demanding CI run something the flake does not expose,
-      # and the failure message will point straight here.
-      expected = pkgs.writeText "expected-checks" (
-        builtins.concatStringsSep "\n"
-        (builtins.sort builtins.lessThan (
-          builtins.filter (n: !pkgs.lib.hasPrefix "coverage-" n) checkNames
-        ))
-        # Trailing newline so this compares equal to `sort`'s output, which has
-        # one. Without it the diff reports every name as changed over a "\ No
-        # newline at end of file" that has nothing to do with the buckets.
-        + "\n"
-      );
-    in
-      pkgs.runCommand "ci-buckets-cover-every-check" {
-        nativeBuildInputs = [pkgs.yq-go];
-      } ''
-        # The vm job must still derive its matrix from the flake.
-        if ! grep -q "nix eval --json '.#nixosTests'" \
-             ${treeSrc}/.github/workflows/push.yml; then
-          echo "The vm job in .github/workflows/push.yml no longer derives its" >&2
-          echo "matrix from 'nix eval --json .#nixosTests'. Either it is gone, or" >&2
-          echo "it now names its tests by hand — which is the drift this whole" >&2
-          echo "file exists to prevent." >&2
-          exit 1
-        fi
-
-        yq -r '.jobs.checks.strategy.matrix.include[].checks' \
-          ${treeSrc}/.github/workflows/push.yml \
-          | tr ' ' '\n' | sed '/^$/d' | sort -u > bucketed
-
-        if ! diff -u ${expected} bucketed > delta; then
-          echo "The CI buckets in .github/workflows/push.yml no longer match the" >&2
-          echo "checks defined in nix/checks.nix." >&2
-          echo "" >&2
-          echo "  '-' lines: defined here but in no bucket — these would NOT run in CI." >&2
-          echo "  '+' lines: named in a bucket but not a check — a typo testing nothing." >&2
-          echo "" >&2
-          cat delta >&2
-          echo "" >&2
-          echo "Add the check to whichever bucket shares its heavy dependencies:" >&2
-          echo "  lint  — no rust, no NixOS evaluation" >&2
-          echo "  rust  — crate tests and clippy (shared cargoArtifacts)" >&2
-          echo "  nixos — anything forcing a NixOS system evaluation" >&2
-          exit 1
-        fi
-        touch $out
-      '';
+    # `ci-buckets-cover-every-check` used to live here: it diffed the hand-written
+    # buckets in .github/workflows/push.yml against `checkNames`, because a check
+    # missing from every bucket would silently stop running. Both halves are gone
+    # — CI now runs `.#devour`, which builds whatever `checks` exposes, so there
+    # is no list to drift and nothing left for that check to police.
 
     # THE API SURFACE IS WRITTEN DOWN TWICE, SO NEITHER COPY CAN DRIFT.
     #
@@ -403,10 +324,9 @@ in let
     # that table has to be written by hand, and a hand-written list of 69 things
     # is a list that silently falls behind.
     #
-    # Both directions fail, for the same reasons as ci-buckets-cover-every-check:
-    # a route in the router but not the table is a route no sweep ever visits; a
-    # table entry naming no route is a test walking over nothing and reporting
-    # success.
+    # Both directions fail: a route in the router but not the table is a route no
+    # sweep ever visits; a table entry naming no route is a test walking over
+    # nothing and reporting success.
     route-table-is-complete =
       pkgs.runCommand "route-table-is-complete" {nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];}
       ''

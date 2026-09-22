@@ -36,6 +36,7 @@
   disko,
   yolabSpecialArgs,
 }: let
+  testLib = import ./lib.nix {inherit pkgs;};
   # Same shape as boot.nix's: the VM boots the harness's own root image, so the
   # install-time LVM layout is neutralised and GRUB pointed at the virtual disk.
   mkNode = {
@@ -49,6 +50,7 @@
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix
       ../../homelab/nixos/disk-config.nix
+      (testLib.machine {inherit configPath;})
     ];
 
     disko.devices = lib.mkForce {};
@@ -63,7 +65,11 @@
     # The OSD's disk. Separate from the root image on purpose: an OSD on a
     # loopback file inside the root fs is a different code path from a real
     # block device, and the real one is what ships.
-    virtualisation.emptyDiskImages = [8192];
+    # /dev/vdb becomes the system LV (testLib.machine), /dev/vdc stays spare
+    # for the test to switch on through the real API. Before the system LV
+    # existed, yolab-ceph-system-osd waited for it forever and held
+    # multi-user.target open — which is why this test had never run.
+    virtualisation.emptyDiskImages = [8192 8192];
 
     # ── The mesh, without WireGuard ──────────────────────────────────────────
     #
@@ -138,7 +144,9 @@ in
       meshAddr = "fd00:cafe::2";
     };
 
-    testScript = ''
+    testScript =
+      testLib.preamble
+      + ''
       import re
 
       start_all()
@@ -254,10 +262,13 @@ in
           )
       assert len(switched_on) == 2, f"expected a disk on each node, got {switched_on}"
 
-      # One OSD per machine, both up. Until this holds there is no pool capacity
-      # and the images RBD cannot exist.
+      # FOUR OSDs, not two. Each machine makes its own system LV an OSD at boot
+      # (yolab-ceph-system-osd), and the loop above switched on one spare disk
+      # per machine on top of that. This assertion read "2 osds" for as long as
+      # the test could not run at all — back when nothing created the system LV,
+      # so there was no system OSD to count.
       node1.wait_until_succeeds(
-          "ceph osd stat --connect-timeout 10 | grep -E '2 osds: 2 up'", timeout=900
+          "ceph osd stat --connect-timeout 10 | grep -E '4 osds: 4 up'", timeout=900
       )
 
       # ── THE REGRESSION THIS FILE EXISTS FOR ───────────────────────────────
