@@ -20,18 +20,14 @@
 {
   pkgs,
   inputs,
-  rust,
   disko,
+  yolabSpecialArgs,
 }: let
   configPath = ../../homelab/tests/boot-config.toml;
   meshAddr = "fd00:cafe::1";
 
   node = {lib, ...}: {
-    _module.args = {
-      inherit inputs rust;
-      yolabConfigPath = configPath;
-      localApiEnv = rust.crates.local-api.package;
-    };
+    _module.args = yolabSpecialArgs configPath // {inherit inputs;};
     imports = [
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix

@@ -14,26 +14,16 @@
 {
   pkgs,
   inputs,
-  rust,
   disko,
+  yolabSpecialArgs,
 }: let
   testLib = import ./lib.nix;
   bootConfigPath = ../../homelab/tests/boot-config.toml;
   vmModule = {lib, ...}: {
-    # All four of the specialArgs the real `nixosSystem` passes (see flake.nix).
-    #
-    # `localApiEnv` is the one that gets forgotten, and forgetting it is not a
-    # runtime failure — nothing references it until a module deep in common.nix
-    # builds a unit's ExecStart from it, and the eval then dies with "attribute
-    # 'localApiEnv' missing" raised from inside nixpkgs' module system, naming
-    # nothing in this file. This test shipped without it and could never have
-    # passed; it was simply never run. That is what the `vm` job in
-    # .github/workflows/push.yml exists to stop.
-    _module.args = {
-      inherit inputs rust;
-      yolabConfigPath = bootConfigPath;
-      localApiEnv = rust.crates.local-api.package;
-    };
+    # The same arguments the real `nixosSystem` passes, from the same function —
+    # never a copy. See yolabSpecialArgs in flake.nix for what copying cost.
+    # `inputs` is extra: the tests' stubs reach for it, the real system does not.
+    _module.args = yolabSpecialArgs bootConfigPath // {inherit inputs;};
     imports = [
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix

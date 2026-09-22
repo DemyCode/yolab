@@ -108,6 +108,7 @@ fn concrete(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache;
     use crate::testkit::TestApi;
     use axum::http::StatusCode;
 
@@ -274,5 +275,112 @@ mod tests {
         assert_eq!(concrete("/api/apps/:id/pods"), "/api/apps/probe/pods");
         assert_eq!(concrete("/api/disks/:node/:id"), "/api/disks/probe/probe");
         assert_eq!(concrete("/ceph-dashboard/*rest"), "/ceph-dashboard/probe");
+    }
+
+    // ── The cache, swept over the same table ──────────────────────────────────
+    //
+    // `cache::policy_for` decides whether a GET's body may be remembered and
+    // replayed to the next caller. Its exclusions are not performance tuning —
+    // each one is a correctness or safety rule, and each was written as a
+    // comment above the branch that implements it. Comments do not fail when a
+    // route is added beside them, so the rules are swept here instead.
+
+    /// A REMEMBERED SECRET IS A LEAKED SECRET.
+    ///
+    /// These routes return key material or credentials: the recovery key that
+    /// decrypts every backup, the Ceph dashboard's password, the bundle a
+    /// joining machine authenticates with, the notification topic. Caching any
+    /// of them keeps a copy in this process's memory past the request that
+    /// asked for it, and hands it to whoever asks next inside the window.
+    #[test]
+    fn nothing_that_returns_a_secret_is_cacheable() {
+        for path in [
+            "/api/account/token",
+            // A login response carries a session token in Set-Cookie. These two
+            // are POST-only, so the middleware's GET-only gate already means the
+            // cache is never consulted for them — they are listed anyway,
+            // because "a different layer happens to stop it" is not how a secret
+            // is protected, and a route that gains a GET later must not quietly
+            // start remembering one. `policy_for` returned a policy for
+            // /api/login until this test asked.
+            "/api/login",
+            "/api/logout",
+            // Answers differently per caller, and the cache key is path plus
+            // query — which cannot tell two callers apart, so a remembered
+            // "yes" would be handed to a stranger.
+            "/api/auth/check",
+            "/api/backups/recovery-key",
+            "/api/ceph/dashboard",
+            "/api/cluster/ceph-join",
+            "/api/notifications",
+        ] {
+            assert!(
+                cache::policy_for(path).is_none(),
+                "{path} returns credentials and would be cached"
+            );
+        }
+    }
+
+    /// FORCE HEAL IS DECIDED ON LIVE FACTS ONLY.
+    ///
+    /// A heal wipes machines. A remembered "this machine does not answer",
+    /// shown for even the second before the real answer lands, is long enough
+    /// to read and act on — and the action is destructive and irreversible.
+    #[test]
+    fn no_heal_route_is_cacheable() {
+        let heal: Vec<&str> = ROUTE_TABLE
+            .iter()
+            .map(|&(p, _)| p)
+            .filter(|p| p.starts_with("/api/heal"))
+            .collect();
+        assert!(!heal.is_empty(), "the table lost the heal routes");
+        for path in heal {
+            assert!(
+                cache::policy_for(path).is_none(),
+                "{path} decides a destructive action and would be cached"
+            );
+        }
+    }
+
+    /// Log bodies are live and large, and a replayed one is indistinguishable
+    /// from a stalled process.
+    #[test]
+    fn no_log_route_is_cacheable() {
+        for &(path, _) in ROUTE_TABLE {
+            if path.contains("/logs") || path == "/api/rebuild-log" {
+                assert!(
+                    cache::policy_for(&concrete(path)).is_none(),
+                    "{path} serves logs and would be cached"
+                );
+            }
+        }
+    }
+
+    /// The Ceph dashboard proxy is not an API route and streams a whole web UI
+    /// through this process. `policy_for` refuses anything outside `/api/`.
+    #[test]
+    fn nothing_outside_the_api_is_cacheable() {
+        for &(path, _) in ROUTE_TABLE {
+            if !path.starts_with("/api/") {
+                assert!(
+                    cache::policy_for(&concrete(path)).is_none(),
+                    "{path} is not an API route and would be cached"
+                );
+            }
+        }
+    }
+
+    /// The window a remembered body may be shown in has to be shorter than the
+    /// window it is kept for, or the first frame is always the real one and the
+    /// cache does nothing.
+    #[test]
+    fn a_cached_body_is_shown_for_less_time_than_it_is_kept() {
+        let policy = cache::policy_for("/api/status").expect("/api/status is cached");
+        assert!(
+            policy.ttl < policy.hard,
+            "ttl {:?} is not shorter than the hard limit {:?}",
+            policy.ttl,
+            policy.hard
+        );
     }
 }

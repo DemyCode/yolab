@@ -10,8 +10,15 @@ export function formatBytes(bytes: number, digits = 1): string {
   );
   const value = bytes / Math.pow(1000, i);
   // No "1.0 GB" — a trailing .0 reads as spurious precision.
+  //
+  // `Number()` around `toFixed` is what actually does that: toFixed always pads
+  // to `digits`, so it returns "2.0" for a round number and this comment was
+  // false for as long as it has existed — every whole-numbered size on the
+  // Storage and Backups pages rendered as "1.0 GB", "2.0 TB". Number("2.0") is
+  // 2 and Number("1.4") is 1.4, so the decimal survives only where it says
+  // something.
   const shown =
-    i === 0 || value >= 100 ? Math.round(value) : value.toFixed(digits);
+    i === 0 || value >= 100 ? Math.round(value) : Number(value.toFixed(digits));
   return `${shown} ${units[i]}`;
 }
 

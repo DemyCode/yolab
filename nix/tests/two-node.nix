@@ -33,8 +33,8 @@
 {
   pkgs,
   inputs,
-  rust,
   disko,
+  yolabSpecialArgs,
 }: let
   # Same shape as boot.nix's: the VM boots the harness's own root image, so the
   # install-time LVM layout is neutralised and GRUB pointed at the virtual disk.
@@ -42,16 +42,9 @@
     configPath,
     meshAddr,
   }: {lib, ...}: {
-    # The same four the real `nixosSystem` passes as specialArgs (see flake.nix).
-    # `localApiEnv` is easy to forget because nothing references it until a module
-    # deep in common.nix builds a unit's ExecStart from it, and the resulting
-    # "attribute 'localApiEnv' missing" surfaces from inside nixpkgs' module
-    # system rather than from anything in this file.
-    _module.args = {
-      inherit inputs rust;
-      yolabConfigPath = configPath;
-      localApiEnv = rust.crates.local-api.package;
-    };
+    # The same arguments the real `nixosSystem` passes, from the same function —
+    # never a copy. See yolabSpecialArgs in flake.nix.
+    _module.args = yolabSpecialArgs configPath // {inherit inputs;};
     imports = [
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix
