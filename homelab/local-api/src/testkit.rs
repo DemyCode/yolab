@@ -132,7 +132,11 @@ impl TestApi {
     /// later request — the same handshake the UI performs.
     pub async fn login(mut self) -> Self {
         let res = self
-            .send("POST", "/api/login", Some(&format!("{{\"password\":\"{PASSWORD}\"}}")))
+            .send(
+                "POST",
+                "/api/login",
+                Some(&format!("{{\"password\":\"{PASSWORD}\"}}")),
+            )
             .await;
         assert_eq!(res.status, StatusCode::OK, "login failed: {}", res.body);
         let cookie = res.set_cookie.expect("login set no cookie");
@@ -167,7 +171,10 @@ impl TestApi {
             req = req.header(crate::auth::CLUSTER_AUTH_HEADER, token);
         }
         let mut req = req
-            .body(body.map(|b| Body::from(b.to_string())).unwrap_or_else(Body::empty))
+            .body(
+                body.map(|b| Body::from(b.to_string()))
+                    .unwrap_or_else(Body::empty),
+            )
             .expect("build request");
         let addr: SocketAddr = self.peer.parse().expect("peer address");
         req.extensions_mut().insert(ConnectInfo(addr));

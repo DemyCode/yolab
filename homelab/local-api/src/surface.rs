@@ -272,10 +272,7 @@ mod tests {
     fn concrete_fills_in_every_kind_of_path_parameter() {
         assert_eq!(concrete("/api/apps"), "/api/apps");
         assert_eq!(concrete("/api/apps/:id/pods"), "/api/apps/probe/pods");
-        assert_eq!(
-            concrete("/api/disks/:node/:id"),
-            "/api/disks/probe/probe"
-        );
+        assert_eq!(concrete("/api/disks/:node/:id"), "/api/disks/probe/probe");
         assert_eq!(concrete("/ceph-dashboard/*rest"), "/ceph-dashboard/probe");
     }
 }
