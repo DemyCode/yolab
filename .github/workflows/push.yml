@@ -75,7 +75,7 @@ jobs:
       - name: Build
         run: |
           set -euo pipefail
-          nix build ".#${{ matrix.target }}" --no-link --print-out-paths > /tmp/out.txt
+          nix build ".#${{ matrix.target }}" -L --no-link --print-out-paths > /tmp/out.txt
           cat /tmp/out.txt
 
       - name: Push to the Nix cache
