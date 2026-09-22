@@ -86,6 +86,7 @@ export function InstallPage() {
           `/api/apps/catalog/${appId}/refresh`,
         );
         if (!cancelled && r?.app) setFresh(r.app);
+        // eslint-disable-next-line no-empty
       } catch {}
     })();
     return () => {
@@ -122,6 +123,7 @@ export function InstallPage() {
           );
           if (!cancelled) setSourceDef(d);
         }
+        // eslint-disable-next-line no-empty
       } catch {}
     })();
     return () => {

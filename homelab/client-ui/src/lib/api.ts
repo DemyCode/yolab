@@ -34,6 +34,7 @@ function errorMessageFrom(body: string, status: number): string {
     if (parsed && typeof parsed === "object" && "error" in parsed) {
       message = String((parsed as { error: unknown }).error);
     }
+    // eslint-disable-next-line no-empty
   } catch {}
   return message;
 }

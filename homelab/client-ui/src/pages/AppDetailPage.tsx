@@ -61,6 +61,7 @@ function CopyValue({ label, value }: { label: string; value: string }) {
             await navigator.clipboard.writeText(value);
             setCopied(true);
             setTimeout(() => setCopied(false), 1600);
+            // eslint-disable-next-line no-empty
           } catch {}
         }}
         className="shrink-0 rounded-lg p-2.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
@@ -563,6 +564,7 @@ export function AppDetailPage() {
         if (cancelled) return;
         const mine = list.find((r) => r.namespace === `yolab-${instanceName}`);
         setRestore(mine ?? null);
+        // eslint-disable-next-line no-empty
       } catch {}
     }
     void pollRestore();
@@ -582,6 +584,7 @@ export function AppDetailPage() {
         `/api/apps/${instanceName}/scan-outputs`,
       );
       await refreshApps();
+      // eslint-disable-next-line no-empty
     } catch {
     } finally {
       setScanning(false);
