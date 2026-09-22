@@ -56,7 +56,7 @@
     systemd.tmpfiles.rules = ["C /var/lib/yolab/machine/config.toml 0600 root root - ${configPath}"];
   };
 in
-  pkgs.testers.nixosTest {
+  testLib.withNetwork (pkgs.testers.nixosTest {
     name = "yolab-disk-loss";
     nodes.node1 = node;
 
@@ -206,4 +206,4 @@ in
       # The k3s manifests tmpfiles links in survive the wipe.
       node1.succeed("test -e /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml")
     '';
-  }
+  })
