@@ -30,18 +30,18 @@ jobs:
             nix eval --json '.#devShells.x86_64-linux' --apply 'a: builtins.map (n: "devShells.x86_64-linux.${n}") (builtins.attrNames a)'
             nix eval --json '.#nixosConfigurations' --apply 'a: builtins.map (n: "nixosConfigurations.${n}.config.system.build.toplevel") (builtins.attrNames a)'
             printf '["formatter.x86_64-linux"]'
-          } | jq --slurp --compact-output 'add | map({job: .})' > matrix.json
+          } | jq --slurp --compact-output 'add' > matrix.json
           cat matrix.json
           echo "jobs=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: ${{ matrix.job }}
+    name: ${{ matrix.target }}
     needs: configure
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        job: ${{ fromJSON(needs.configure.outputs.jobs) }}
+        target: ${{ fromJSON(needs.configure.outputs.jobs) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -75,7 +75,7 @@ jobs:
       - name: Build
         run: |
           set -euo pipefail
-          nix build ".#${{ matrix.job }}" --no-link --print-out-paths > /tmp/out.txt
+          nix build ".#${{ matrix.target }}" --no-link --print-out-paths > /tmp/out.txt
           cat /tmp/out.txt
 
       - name: Push to the Nix cache
