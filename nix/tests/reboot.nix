@@ -143,8 +143,15 @@ in
         # create the objects, track the PVC's UID, and use survival of that
         # UID across the reboot as the assertion, rather than a bind that
         # cannot happen in this environment.
+        #
+        # The deployment does NOT mount that PVC — it never depended on the
+        # CSI driver to begin with — so its pods can and do reach Ready, once
+        # they reference an image this sandbox actually has: one Nix built
+        # locally and imported into containerd, not one docker.io was asked
+        # to pull. See demoImage's comment in lib.nix.
         node1.succeed(f"{K} create namespace yolab-demo")
         node1.succeed(f"{K} label namespace yolab-demo yolab.io/managed=true")
+        node1.succeed("k3s ctr -n k8s.io images import ${testLib.demoImage}")
         node1.succeed(f"""{K} apply -f - <<'EOF'
         apiVersion: v1
         kind: PersistentVolumeClaim
@@ -154,11 +161,26 @@ in
           storageClassName: yolab-cephfs
           resources: {{requests: {{storage: 1Gi}}}}
         EOF""")
-        node1.succeed(f"{K} create deployment web --image=busybox --replicas=1 -n yolab-demo "
-                       "-- sh -c 'sleep infinity'")
+        node1.succeed(f"""{K} apply -f - <<'EOF'
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata: {{name: web, namespace: yolab-demo}}
+        spec:
+          replicas: 1
+          selector: {{matchLabels: {{app: web}}}}
+          template:
+            metadata: {{labels: {{app: web}}}}
+            spec:
+              containers:
+              - name: web
+                image: ${testLib.demoImageName}:${testLib.demoImageTag}
+                imagePullPolicy: Never
+        EOF""")
         pvc_uid_before = node1.succeed(
             f"{K} get pvc data -n yolab-demo -o jsonpath='{{.metadata.uid}}'"
         ).strip()
+        with step(node1, "the demo app reaches Ready before the reboot"):
+            jq_ok(f"{K} get deployment web -n yolab-demo -o json", ".status.readyReplicas == 1", 300)
 
         # ── The actual test: a warm reboot, nothing else changed ────────────
         #
@@ -193,7 +215,7 @@ in
 
         with step(node1, "after reboot: the demo app and its PVC survived"):
             node1.succeed(f"{K} get namespace yolab-demo")
-            node1.succeed(f"{K} get deployment web -n yolab-demo")
+            jq_ok(f"{K} get deployment web -n yolab-demo -o json", ".status.readyReplicas == 1", 300)
             pvc_uid_after = node1.succeed(
                 f"{K} get pvc data -n yolab-demo -o jsonpath='{{.metadata.uid}}'"
             ).strip()
