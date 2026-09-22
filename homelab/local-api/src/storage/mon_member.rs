@@ -1,16 +1,3 @@
-//! Ensure this node's mon is in the monmap.
-//!
-//! Having a mon store and a running daemon is not the same as being in the
-//! monmap: a starting mon absent from the map asks the leader to add it
-//! (MMonJoin), which is normally all that is needed. This is the fallback for
-//! when that has not happened.
-//!
-//! THE ORDERING RULE — see homelab/nixos/ceph/default.nix's header — never
-//! touch the monmap while this node's own mon is down. Adding a mon raises
-//! the quorum requirement immediately, so the new mon must already be running
-//! and able to sync within seconds. This is why `run` starts the daemon and
-//! returns, rather than adding the node to the map, whenever the local mon
-//! isn't active yet.
 
 use std::path::Path;
 
@@ -39,10 +26,6 @@ async fn is_active<H: Host>(host: &H, unit: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `--connect-timeout 10` on every call in this module, tighter than the 30s
-/// `client_mount_timeout` in ceph.conf: this runs on a timer, so returning
-/// quickly and trying again beats waiting out a full timeout while a peer
-/// reboots.
 async fn reachable_fast<H: Host>(host: &H) -> bool {
     host.ceph(&["--connect-timeout", "10", "-s"]).await.is_ok()
 }
@@ -90,8 +73,6 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArg
     }
 
     tracing::info!("adding {node} to the monmap");
-    // Not `?`: a mon that is already joining makes `mon add` fail with EEXIST,
-    // and the poll below is what decides success either way.
     host.ceph(&[
         "--connect-timeout",
         "10",
@@ -148,7 +129,7 @@ mod tests {
 
     #[tokio::test]
     async fn does_nothing_before_this_node_has_joined() {
-        let host = FakeHost::new(); // no calls scripted — none should happen
+        let host = FakeHost::new();
         let dir = tempfile::tempdir().unwrap();
         run(
             &host,
@@ -226,12 +207,12 @@ mod tests {
             .ok(
                 "ceph --connect-timeout 10 mon dump",
                 &dump_with(&["yolab-n1"]),
-            ) // not in it yet
+            )
             .ok("ceph --connect-timeout 10 mon add", "")
             .ok(
                 "ceph --connect-timeout 10 mon dump",
                 &dump_with(&["yolab-n1", "yolab-n2"]),
-            ); // now it is
+            );
         let dir = tempfile::tempdir().unwrap();
         joined(&dir, "yolab-n2");
 
@@ -249,8 +230,6 @@ mod tests {
         assert!(host.ran("mon add yolab-n2 [v2:[fd00:cafe::2]:3300,v1:[fd00:cafe::2]:6789]"));
     }
 
-    // 30x2s reachability wait, or 60x2s monmap-confirmation wait — paused time
-    // so both resolve instantly instead of taking a minute or two.
     #[tokio::test(start_paused = true)]
     async fn gives_up_quietly_when_the_cluster_never_answers() {
         let host = FakeHost::new()

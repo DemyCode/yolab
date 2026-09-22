@@ -16,11 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 toml = "0.8"
-# Chart.yaml parsing. serde_yaml is deprecated upstream; serde_norway is the
-# maintained fork with the same API.
 serde_norway = "0.9"
-# SHA-256 for the notification topic (notify). 0.9: the version pwhash already
-# brings in, so nothing new is downloaded.
 sha2 = "0.9"
 anyhow = "1"
 tracing = "0.1"
@@ -38,10 +34,5 @@ tempfile = "3"
 time = "0.3"
 
 [dev-dependencies]
-# `ServiceExt::oneshot`, so middleware and handlers can be driven through a real
-# Router in tests instead of being called directly (Next is opaque).
 tower = { version = "0.4", features = ["util"] }
-# `#[tokio::test(start_paused = true)]`, so a retry loop's real `sleep` calls
-# (e.g. storage::noout waiting up to 60s for the cluster) resolve instantly
-# under a virtual clock instead of making the test suite actually wait.
 tokio = { version = "1", features = ["test-util"] }

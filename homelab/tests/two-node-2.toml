@@ -1,13 +1,3 @@
-# The JOINING node of the two-node VM test (nix/tests/two-node.nix).
-#
-# Differs from boot-config.toml in exactly the four fields that make a node a
-# joiner rather than a founder: hostname, node_id, its own mesh address, and a
-# non-empty node.k3s.server_addr — which is what common.nix reads to decide
-# `isFirstNode`, and what it parses the Ceph seed address back out of. The fsid
-# is deliberately IDENTICAL to node1's: two nodes disagreeing on it is the one
-# bootstrap error that looks healthy on both machines.
-#
-# A throwaway cluster; nothing here is a production secret.
 
 [homelab]
 hostname = "yolab-n2"

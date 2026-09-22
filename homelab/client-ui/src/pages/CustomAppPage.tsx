@@ -51,15 +51,6 @@ spec:
       targetPort: 80
 `;
 
-/**
- * Bring your own app.
- *
- * The YAML is not applied here. It is turned into a chart that depends on the same
- * library every catalog app uses, so the result is an ordinary app: it appears on the
- * Apps page, gets a subdomain and a certificate, is backed up, and uninstalls
- * cleanly. Saving only adds it to the catalog — installing is the same form as
- * everything else, which is why there is no "install" button on this page.
- */
 export default function CustomAppPage() {
   const navigate = useNavigate();
   const apps = useApi<CustomApp[]>("custom-apps", "/api/apps/custom");
@@ -76,10 +67,6 @@ export default function CustomAppPage() {
   const [saved, setSaved] = useState<string | null>(null);
   const [uploadedId, setUploadedId] = useState<string | null>(null);
 
-  /**
-   * A packaged chart is sent as the request body rather than as multipart: the only
-   * field is the file, and the body already is the file.
-   */
   async function uploadChart(file: File) {
     setBusy(true);
     setError(null);
@@ -156,9 +143,8 @@ export default function CustomAppPage() {
       subtitle="Upload a Helm chart, or paste Kubernetes YAML. Either way it becomes an app like any other — its own address, its own backups."
     >
       <div className="space-y-4">
-        {/* The packaged route comes first because it is the better one when it is
-            available: a real chart already declares its own settings, so the
-            install page shows them without anyone describing them twice here. */}
+        {
+}
         <section className="rounded-card border border-border bg-surface p-4">
           <div className="flex flex-wrap items-center gap-3">
             <Package className="h-4 w-4 shrink-0 text-fg-muted" />
@@ -179,7 +165,6 @@ export default function CustomAppPage() {
                 disabled={busy}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  // Cleared so picking the same file twice fires again.
                   e.target.value = "";
                   if (f) void uploadChart(f);
                 }}

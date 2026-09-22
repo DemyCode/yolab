@@ -33,40 +33,14 @@ spec:
       initContainers:
         {{- include "yolab-common.wgRegisterInit" . | nindent 8 }}
       containers:
-        {{- /* A game server exposes raw TCP through the tunnel — no Caddy, so this
-               composes the WireGuard sidecar alone rather than the full gateway. */}}
+        
         {{- include "yolab-common.wireguardContainer" . | nindent 8 }}
         - name: minecraft
           image: itzg/minecraft-server:latest@sha256:bb1cf73b342bdf6fa03b9d689b699bd1f8c6989f81ea07d520985eb2f18e6f30
           imagePullPolicy: IfNotPresent
           stdin: true
           tty: true
-          {{- /* NO LIVENESS PROBE, DELIBERATELY — and this server is why.
-
-                 A liveness probe cannot tell "hung" from "busy": both look like
-                 a port that will not answer. This one guessed wrong twice.
-
-                 2026-09-07: container start 14:21:24, the itzg image spent ~3
-                 minutes on its own setup before Minecraft's ServerMain appeared
-                 at 14:24:33, and the world was still loading off CephFS after
-                 that. Liveness (120s delay + 3 x 30s) fired at ~210s, SIGTERM
-                 at 14:24:51 mid-boot, SIGKILL 30s later. Every restart began
-                 the same slow load, so it never once opened :25565.
-
-                 2026-09-08: the same thing, 55 restarts, permanently 1/2
-                 Running, while the world sat on a CephFS that was itself
-                 recovering.
-
-                 A startupProbe was tried as the fix and is also gone. It worked,
-                 but it only existed to defer liveness — and once you accept that
-                 you cannot time this server's start, the honest conclusion is
-                 that nothing should be killing it on a timer at all.
-
-                 The trade is asymmetric. Restarting a genuinely hung server
-                 saves an owner one manual restart of something they can already
-                 see is down. Killing a healthy slow one means it can NEVER
-                 start. Readiness below still reports the difference between
-                 starting and running; it just does not shoot anything. */}}
+          
           readinessProbe:
             tcpSocket:
               port: 25565

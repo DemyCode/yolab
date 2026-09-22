@@ -30,15 +30,11 @@ MANIFEST = os.path.join(ROOT, "homelab/client-ui/src/catalog/icons.ts")
 SELFHST = "https://cdn.jsdelivr.net/gh/selfhst/icons"
 DASHBOARD = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons"
 
-# Charts whose upstream logo is filed under a different name.
 ALIASES = {
     "actual": "actual-budget",
-    # code-server is VS Code in a browser tab, and has no mark of its own.
     "code-server": "vscode",
 }
 
-# Above this an SVG is almost always a traced raster, and a downscaled PNG is
-# both smaller and identical on screen. memos shipped a 245 KB one.
 SVG_MAX_BYTES = 40_000
 PNG_MAX_PX = 128
 

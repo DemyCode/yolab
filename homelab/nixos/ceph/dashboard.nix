@@ -1,12 +1,3 @@
-# The Ceph dashboard, served from the host mgr instead of Rook.
-#
-# Not a reverse proxy to [::1]:7000: the dashboard runs on the ACTIVE mgr only,
-# and a standby redirects to the active one's WireGuard address, which is
-# unreachable from a browser. Whether proxying locally worked would depend on
-# which machine happened to hold the active mgr.
-#
-# local-api asks Ceph which mgr is active (`ceph mgr services`) and forwards
-# there over the mesh, so failover changes the answer and nothing else notices.
 {
   config,
   lib,
@@ -59,16 +50,9 @@ in {
       wantedBy = ["multi-user.target"];
       serviceConfig = {
         Type = "oneshot";
-        # `Type=oneshot` disables the start timeout by default; see the note on
-        # yolab-ceph-bootstrap in default.nix.
         TimeoutStartSec = "300s";
         ExecStart = "${localApiEnv}/bin/local-api storage dashboard";
       };
-      # The restart-needed comparison (compared against what the mgr REPORTS
-      # it serves, never `ceph config get` — see homelab/local-api/src/storage
-      # /dashboard.rs's header for why), the cluster-wide password
-      # generation/adoption/race-resolution, and the login-verify-and-reapply
-      # loop all live in that module now, with unit tests for each decision.
       path = cephPath;
       environment = {
         YOLAB_CEPH_DASHBOARD_PORT = toString cfg.port;
@@ -78,6 +62,5 @@ in {
       };
     };
 
-    # Re-asserted by the `ceph-dashboard` controller (controllers.rs).
   };
 }

@@ -1,20 +1,8 @@
 @import "tailwindcss";
 
-/* Manual theme switching, not just `prefers-color-scheme`.
-   The box is often set up on a laptop in a bright room and then used from a
-   phone in bed; letting the person choose beats guessing from the OS. */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ── Type ─────────────────────────────────────────────────────────────────
-   Self-hosted and subset to Latin, because a box at home may have no working
-   internet — which is precisely when someone opens this dashboard to find out
-   why. A CDN font would leave them reading a fallback at the worst moment,
-   and would also tell a third party each time a household looked at its own
-   server.
 
-   Geist is the identity: a precise neo-grotesque that reads as a product
-   rather than a control panel, and the same family the marketing site sets
-   its promise in. Geist Mono carries the numbers, addresses and status. */
 @font-face {
   font-family: "Geist";
   src: url("/fonts/geist.woff2") format("woff2");
@@ -30,15 +18,7 @@
   font-display: swap;
 }
 
-/* ── Tokens ───────────────────────────────────────────────────────────────
-   Every colour in the app comes from here.
 
-   The palette is neutral and cool: a soft off-white page, white surfaces,
-   near-black ink, and one saturated Signal Blue for anything you can act on.
-   It is the same world as the marketing site, so the first screen someone
-   sees and the app they live in are recognisably one product — and it stays
-   out of the way of the thing the product is actually about, which is the
-   photographs, films and files on the box. */
 :root {
   --bg: #fafafa;
   --surface: #ffffff;
@@ -61,14 +41,11 @@
   --danger: #dc2626;
   --danger-soft: #fef2f2;
 
-  /* Neutral rather than warm: the shadows belong to the same cool world as
-     the ink. */
   --shadow-card: 0 1px 2px rgb(9 9 11 / 0.06), 0 1px 3px rgb(9 9 11 / 0.04);
   --shadow-lift:
     0 4px 12px -2px rgb(9 9 11 / 0.08), 0 2px 6px -2px rgb(9 9 11 / 0.05);
   --shadow-pop: 0 24px 48px -12px rgb(9 9 11 / 0.18);
 
-  /* App logos sit on their own plate — see AppIconTile. */
   --icon-plate: #ffffff;
 }
 
@@ -98,14 +75,9 @@
   --shadow-lift: 0 4px 14px -4px rgb(0 0 0 / 0.5);
   --shadow-pop: 0 16px 40px -12px rgb(0 0 0 / 0.65);
 
-  /* A light plate keeps third-party logos legible on a dark page; dimmed off
-     pure white so a grid of them does not glare. */
   --icon-plate: #e4e4e7;
 }
 
-/* `inline` so the generated utilities dereference the custom property at use
-   time — that is what makes `.dark` overrides apply without regenerating any
-   classes. */
 @theme inline {
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
@@ -157,7 +129,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Headings carry the identity; body text stays out of the way. */
 .font-display {
   font-family: var(--font-display);
   font-weight: 600;
@@ -176,8 +147,6 @@ body {
   border-radius: 4px;
 }
 
-/* The blue flash on tap makes tiles feel like a web page rather than an app;
-   we render our own press state instead. */
 * {
   -webkit-tap-highlight-color: transparent;
 }
@@ -243,8 +212,6 @@ body {
   }
 }
 
-/* Someone who gets motion sick should not have to endure our transitions to
-   use their own photo library. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

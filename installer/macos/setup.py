@@ -9,10 +9,8 @@ import sys
 import uuid
 from pathlib import Path
 
-# The `yolab-machine` flake input: this machine's own files, never in the repo.
 MACHINE_DIR = Path("/var/lib/yolab/machine")
 
-# ─── TOML writer (simple, only handles our config shape) ──────────────────────
 
 
 def _toml_value(v):
@@ -23,7 +21,6 @@ def _toml_value(v):
     if isinstance(v, list):
         items = ", ".join(f'"{x}"' if isinstance(x, str) else str(x) for x in v)
         return f"[{items}]"
-    # string — escape backslashes and double-quotes
     escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
@@ -39,7 +36,6 @@ def write_toml(data: dict, path: Path) -> None:
     path.write_text("\n".join(lines))
 
 
-# ─── Prompts ──────────────────────────────────────────────────────────────────
 
 
 def prompt(question: str, default: str = "") -> str:
@@ -68,7 +64,6 @@ def generate_wg_keypair() -> tuple[str, str]:
     return private_key, public_key
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
 
 
 def main():
@@ -131,7 +126,6 @@ def main():
                     "Authorization": f"Bearer {account_token}",
                 }
 
-                # Step 1: create tunnel (WireGuard peer + IPv6, no DNS)
                 payload1 = json.dumps({"wg_public_key": wg_public_key}).encode()
                 req1 = urllib.request.Request(
                     f"{platform_api_url}/tunnels",
@@ -145,7 +139,6 @@ def main():
                 tunnel_id = tunnel_data["tunnel_id"]
                 sub_ipv6 = tunnel_data["sub_ipv6"]
 
-                # Step 2: attach AAAA record for the management domain
                 payload2 = json.dumps(
                     {
                         "record_type": "AAAA",
@@ -201,7 +194,6 @@ def main():
     }
 
     write_toml(config, config_path)
-    # Tunnel keys and the account token: root only.
     MACHINE_DIR.chmod(0o700)
     config_path.chmod(0o600)
     print(f"\nConfiguration written to: {config_path}")

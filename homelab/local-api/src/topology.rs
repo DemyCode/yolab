@@ -1,25 +1,3 @@
-//! Topology controller — applies the redundancy the user asked for.
-//!
-//! Runs only on the disk-reconciler lease holder, so the cluster has a single
-//! writer.
-//!
-//! THE USER STATES INTENT, CEPH REPORTS REALITY, THE UI SHOWS THE GAP.
-//!
-//! There used to be an "auto" mode that derived the copy count from how many
-//! machines and disks it could currently see. It is gone, and the reason is
-//! worth keeping: `observe()` counted OSDs that were UP, so unplugging a disk
-//! made the cluster look smaller, and `apply_pools` then reduced `size` to
-//! match. One disconnected disk silently dropped three copies to two; a second
-//! took it to one, at which point Ceph DELETES the surviving replicas. Plugging
-//! the disks back in re-replicated everything from whatever was left.
-//!
-//! The mistake was treating "cannot place a third copy right now" as "should
-//! not keep a third copy". A missing disk is a temporary fact about
-//! availability; `size` is a durable statement about how many copies the owner
-//! wants. Nothing here adjusts it any more — the number is theirs, it is applied
-//! as given, and when reality falls short the Storage page says so in words.
-//!
-//! `min_size` is likewise no longer computed; see MIN_SIZE.
 
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
@@ -29,49 +7,15 @@ use crate::error::Outcome;
 use crate::storage::settings;
 use crate::{kubectl, AppState};
 
-/// What the owner asked for. Two numbers, both theirs, neither derived.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct StoragePolicy {
-    /// Copies of everything to keep. Applied as given — not clamped to what
-    /// currently fits. Asking for more copies than there are disks is a legal
-    /// thing to want: it means "and make the rest when I add disks", which is
-    /// exactly what Ceph does once they appear.
     pub size: u32,
-    /// "osd" — copies on different disks, survives a dead disk.
-    /// "host" — copies on different machines, survives a dead machine.
     pub failure_domain: String,
 }
 
-/// Copies that must be ONLINE before Ceph will serve a placement group. Always
-/// one, and never derived from anything.
-///
-/// `size` and `min_size` answer different questions. `size` is how many copies
-/// to KEEP — a durability goal. `min_size` is how many must be REACHABLE before
-/// Ceph will answer at all — an availability gate. Below it a placement group
-/// goes inactive and every read AND write to it blocks; clients hang rather
-/// than fail.
-///
-/// This used to be `size - 1`, so three machines meant min_size=2 and losing
-/// two disks stopped every app on every machine until one came back. For a box
-/// somebody keeps their photos on, "nothing works and I cannot see why" is a
-/// worse outcome than the risk below, and it is not a state its owner can
-/// diagnose or fix.
-///
-/// THE COST, STATED PLAINLY. At min_size=1 a write is acknowledged once a
-/// single copy has it, so if that disk dies before the copy is made, that write
-/// is gone. Recovery can also leave a placement group `incomplete` — Ceph knows
-/// a newer version existed on the dead disk and refuses to serve the older one
-/// — which needs hands-on intervention to clear.
-///
-/// That is the trade taken here: availability now, against a narrow window in
-/// which a second failure loses recent writes. `size` is what defends against
-/// that window, and `size` is the number the owner controls.
 pub const MIN_SIZE: u32 = 1;
 
-/// A policy the owner has never set is different from one that cannot be read,
-/// and both are different from a policy that says "one copy".
 pub enum PolicyState {
-    /// No choice has been recorded yet.
     NotChosen,
     Chosen(StoragePolicy),
 }
@@ -80,13 +24,6 @@ pub enum PolicyState {
 pub struct Topology {
     pub nodes: u32,
     pub osds: u32,
-    /// Hosts that actually carry an OSD — NOT the same as `nodes`.
-    ///
-    /// A machine can be in the Kubernetes cluster while contributing no storage:
-    /// its disks are switched off, or its Ceph has not joined yet. With
-    /// failure_domain=host, replicas must land on distinct hosts, so this is the
-    /// real ceiling on `size`. Counting Kubernetes nodes instead asks Ceph for a
-    /// placement it cannot satisfy, and every PG stays undersized forever.
     pub osd_hosts: u32,
 }
 
@@ -99,33 +36,9 @@ pub struct Target {
     pub mgr: u32,
 }
 
-/// Pure decision function: given the policy and observed topology, what should
-/// Ceph's redundancy look like? Kept pure so it can be unit-tested.
 pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
-    // Every machine runs its own mon, mgr and MDS. No node is a permanent
-    // master: the first machine only *creates* the cluster, and after that it is
-    // interchangeable with any other.
-    //
-    // So these two are not a target this controller drives toward — a mon exists
-    // because a machine runs one, and that is decided by the node-join flow in
-    // homelab/nixos/ceph/default.nix, not here. They are kept so the UI can show
-    // the expected footprint and so apply_mon_mgr can report drift from it.
-    //
-    // The cost of one-mon-per-node is explicit and accepted: Paxos needs a
-    // majority, so at two machines BOTH must be up. Three machines is where
-    // losing one becomes survivable.
     let (mon, mgr) = (topo.nodes.max(1), topo.nodes.max(1));
 
-    // NO CLAMPING. The old code reduced `size` to whatever could be placed
-    // right now, and "right now" counted OSDs that were UP — so a disconnected
-    // disk shrank the target and `apply_pools` shrank the pool to match,
-    // deleting replicas to satisfy a number derived from a cable.
-    //
-    // Wanting more copies than currently fit is a coherent thing to want. It
-    // means "and make the rest when I add disks", and that is precisely what
-    // Ceph does the moment they appear. Until then the placement groups sit
-    // undersized, which is honest, harmless at min_size=1, and reported to the
-    // owner in words by the Storage page rather than silently corrected here.
     Target {
         size: policy.size,
         min_size: MIN_SIZE,
@@ -135,14 +48,7 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
     }
 }
 
-// ── Policy persistence (Ceph) ────────────────────────────────────────────────
 
-/// The owner's storage policy — `Some(NotChosen)` when none has been set, `None`
-/// when it could not be read.
-///
-/// The difference is load-bearing: this decides how many copies of the owner's
-/// data exist. Reading "could not ask" as "not chosen" or as a default would let
-/// a failed read rewrite every pool's size.
 pub async fn read_policy() -> Option<PolicyState> {
     read_policy_from(&crate::host::RealHost).await
 }
@@ -160,42 +66,17 @@ async fn read_policy_from<H: crate::host::Host>(host: &H) -> Option<PolicyState>
 
 async fn write_policy<H: crate::host::Host>(host: &H, p: &StoragePolicy) -> anyhow::Result<()> {
     settings::set_json(host, settings::STORAGE_POLICY, p).await?;
-    // Applied now rather than on the next resync: pool sizes, and the disk
-    // controller's reading of whether a drain can finish.
     crate::runtime::wake("topology");
     crate::runtime::wake("disks");
     Ok(())
 }
 
-// ── Observation ───────────────────────────────────────────────────────────────
 
-/// None when any input could not be read.
-///
-/// THIS FUNCTION DECIDES HOW MANY COPIES OF YOUR DATA EXIST, and every field
-/// used to fall back to 0 on error. That is the wrong direction in the worst
-/// possible way:
-///
-///   * `ceph osd tree` fails -> osd_hosts = 0 -> compute_target clamps
-///     `size.min(osd_hosts.max(1))` to 1 -> apply_pools sets every pool to
-///     size 1 -> Ceph DELETES the other copies. A transient timeout on one
-///     command would destroy the redundancy of the whole cluster.
-///
-///   * `kubectl get nodes` fails -> nodes = 0 -> a healthy three-machine
-///     cluster is treated as one machine, dropping to two copies and switching
-///     the CRUSH rule from host to osd, which reshuffles every object.
-///
-/// There is no safe default for "how big is this cluster". Not knowing has to
-/// mean not acting.
 pub(crate) async fn observe() -> Option<Topology> {
     let nodes = kubectl::get_nodes().await.ok()?.len() as u32;
-    // OSD count from Ceph itself. This used to count Rook OSD Deployments with a
-    // ready replica; there are no such Deployments now, and the count was always
-    // a proxy — it measured pods Rook had scheduled, not OSDs Ceph had up.
-    // `num_up_osds` is the quantity the replication targets actually depend on.
     let osds =
         crate::ceph_cli::ceph_json(&["osd", "stat"]).await.ok()?["num_up_osds"].as_u64()? as u32;
 
-    // Host buckets in the CRUSH tree that hold at least one OSD.
     let tree = crate::ceph_cli::ceph_json(&["osd", "tree"]).await.ok()?;
     let osd_hosts = tree["nodes"]
         .as_array()?
@@ -213,22 +94,13 @@ pub(crate) async fn observe() -> Option<Topology> {
     })
 }
 
-/// Health straight from the mon rather than from a Rook CR status field.
-///
-/// Returns "" when Ceph is unreachable, which every caller must treat as "do
-/// not act" — the same discipline as an unknown fsid. Reading silence as
-/// HEALTH_OK would let a reduction proceed against a cluster that cannot answer.
 async fn cluster_health() -> Option<String> {
     crate::ceph_cli::ceph_json(&["health"]).await.ok()?["status"]
         .as_str()
         .map(str::to_string)
 }
 
-// ── Controller ────────────────────────────────────────────────────────────────
 
-/// Cluster-scoped: one machine sets pool sizes and rules. Paused during a restore
-/// or a storage recovery, which delete and recreate pools — setting a crush rule
-/// on a pool that is being deleted underneath would race it.
 pub struct TopologyController;
 
 impl crate::runtime::Controller for TopologyController {
@@ -262,12 +134,8 @@ async fn tick() -> anyhow::Result<()> {
         return Ok(());
     };
     if topo.osds == 0 {
-        return Ok(()); // nothing provisioned yet
+        return Ok(());
     }
-    // Don't rebalance while the cluster is in a hard-error state — or while we
-    // cannot tell what state it is in. The old check compared against
-    // "HEALTH_ERR" and read an unreachable cluster as "" — which passed, and let
-    // pool sizes be rewritten against a cluster nobody could read.
     match cluster_health().await.as_deref() {
         Some("HEALTH_ERR") | None => return Ok(()),
         _ => {}
@@ -279,8 +147,6 @@ async fn tick() -> anyhow::Result<()> {
             return Ok(());
         }
         Some(PolicyState::NotChosen) => {
-            // Nothing is applied from a policy nobody chose: pools keep the one
-            // copy they were created with until the owner picks a number.
             return Ok(());
         }
         Some(PolicyState::Chosen(p)) => p,
@@ -292,27 +158,6 @@ async fn tick() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Report drift between the mon footprint and one-mon-per-node.
-///
-/// Deliberately observational: it reads, logs, and changes nothing.
-///
-/// Under Rook this patched `spec.mon.count` and the operator scheduled however
-/// many mon pods that implied. With Ceph on the host there is no such dial — a
-/// mon exists because a *machine* runs one — and the node-join flow in
-/// homelab/nixos/ceph/default.nix is what creates it, at the one moment where
-/// the joining machine is provably able to run it.
-///
-/// Both directions are left alone on purpose:
-///
-///   * Too few mons means a machine has joined Kubernetes but its Ceph has not
-///     come up yet. That resolves itself on the joining node's bootstrap retry
-///     timer, and acting on it from here would mean this node reaching into
-///     another machine to start a daemon.
-///
-///   * Too many is the dangerous one. Removing a mon can cost quorum outright,
-///     and — critically — a node that is merely *offline* is indistinguishable
-///     from one that has left. Automating removal would mean a rebooting
-///     machine could be evicted from the quorum by a peer.
 async fn apply_mon_mgr(target: &Target) {
     let Ok(dump) = crate::ceph_cli::ceph_json(&["mon", "dump"]).await else {
         return;
@@ -338,17 +183,10 @@ async fn apply_mon_mgr(target: &Target) {
     }
 }
 
-/// Whether `apply_pools` owns this pool's replica count.
-///
-/// Ceph's own rgw and nfs pools manage themselves. `images` is deliberately
-/// included: pinning it at one copy is what made losing a single disk take the
-/// whole container store with it.
 fn apply_pools_selects(pool: &str) -> bool {
     !pool.is_empty() && !pool.starts_with(".nfs") && !pool.starts_with(".rgw")
 }
 
-/// A pool's current size, or None when Ceph did not say. Never a default: both
-/// callers decide whether to change how many copies exist from this number.
 async fn pool_size(pool: &str) -> Option<u32> {
     crate::ceph_cli::ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
         .await
@@ -358,10 +196,6 @@ async fn pool_size(pool: &str) -> Option<u32> {
         .map(|x| x as u32)
 }
 
-/// Apply the target crush rule + size + min_size to every data pool.
-/// There is no "auto" mode any more (see this module's header) and no
-/// raise-only rule to go with it: `target.size` is the owner's own number,
-/// and it is applied exactly, up or down.
 async fn apply_pools(target: &Target) {
     let rule = if target.failure_domain == "osd" {
         "replicated_osd"
@@ -369,7 +203,6 @@ async fn apply_pools(target: &Target) {
         "replicated_rule"
     };
 
-    // Ensure the OSD-domain rule exists (the host rule ships by default).
     if target.failure_domain == "osd" {
         let have = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"])
             .await
@@ -401,10 +234,6 @@ async fn apply_pools(target: &Target) {
             tracing::debug!("topology: size of {pool} unknown this tick — leaving it");
             continue;
         };
-        // The owner's number, applied as given — up or down. There is no
-        // raise-only rule any more because there is nothing left that could
-        // lower it behind their back: `size` comes from the policy and nowhere
-        // else, so the only way it drops is somebody asking for that.
         let want = target.size;
         let min = MIN_SIZE;
 
@@ -441,21 +270,10 @@ async fn apply_pools(target: &Target) {
     }
 }
 
-// ── HTTP: /api/storage/policy ─────────────────────────────────────────────────
 
-/// Nulls rather than invented numbers when the cluster cannot be read.
-///
-/// This used to fall back to defaults for both the policy and the topology and
-/// hand the result to `compute_target`, so a Storage page opened while Ceph was
-/// unreachable showed a confident, fabricated answer: a specific number of
-/// copies, a specific failure domain, a specific machine count. All of it made
-/// up. "We do not know right now" is a worse-looking page and a truthful one.
 pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
     let chosen = match read_policy().await {
         Some(PolicyState::Chosen(p)) => Some(p),
-        // Not chosen yet, or unreadable. Null rather than an invented default:
-        // the page would otherwise show a copy count nobody selected, next to a
-        // cluster doing something else.
         _ => None,
     };
     let topo = observe().await;
@@ -467,8 +285,6 @@ pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
         "policy": chosen,
         "topology": topo,
         "target": target,
-        // So the page can render "each copy lives on a different disk/machine"
-        // without hardcoding a number that is decided here.
         "min_size": MIN_SIZE,
     }))
 }
@@ -483,10 +299,6 @@ pub async fn set_policy(
     State(_s): State<AppState>,
     Json(req): Json<SetPolicyReq>,
 ) -> (StatusCode, Json<Value>) {
-    // Both fields are required now. There is no mode to change on its own and
-    // no derived value to preserve, so a partial update has nothing to merge
-    // into — which also removes the read-modify-write that made this fail when
-    // the current policy could not be read.
     let (Some(size), Some(failure_domain)) = (req.size, req.failure_domain.clone()) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -494,10 +306,6 @@ pub async fn set_policy(
         );
     };
 
-    // No upper bound on purpose. Asking for more copies than there are disks
-    // means "and make the rest when I add some", which is what Ceph does when
-    // they appear. Zero is the one number that is not a wish but a mistake:
-    // Ceph rejects it, and it would read as "keep no copies".
     if size < 1 {
         return (
             StatusCode::BAD_REQUEST,
@@ -545,7 +353,6 @@ mod tests {
         }
     }
 
-    // ── The policy is applied as given ────────────────────────────────────────
 
     #[test]
     fn the_chosen_size_is_what_comes_out() {
@@ -563,34 +370,19 @@ mod tests {
         }
     }
 
-    /// Asking for more copies than there are disks is allowed, and means "make
-    /// the rest when I add some". The old code clamped it down to what fitted;
-    /// this asserts it no longer does.
     #[test]
     fn more_copies_than_disks_is_kept_not_clamped() {
         let t = compute_target(&policy(3, "osd"), &topo(1, 1, 1));
         assert_eq!(t.size, 3, "the owner's number survives a small cluster");
     }
 
-    /// Same, for the host domain: three copies across one machine cannot be
-    /// placed today and will be placed the day a third machine joins.
     #[test]
     fn more_copies_than_machines_is_kept_not_clamped() {
         let t = compute_target(&policy(3, "host"), &topo(1, 4, 1));
         assert_eq!(t.size, 3);
     }
 
-    // ── The regression that motivated all of this ─────────────────────────────
 
-    /// THE POINT OF THIS MODULE.
-    ///
-    /// Unplugging a disk used to shrink the target — `observe()` counted OSDs
-    /// that were UP — and `apply_pools` then shrank the pool to match, deleting
-    /// replicas. A second unplug took it to one copy, and reconnecting both
-    /// re-replicated everything from whatever survived.
-    ///
-    /// The topology is now irrelevant to `size`, so no cable can change how
-    /// many copies the cluster keeps.
     #[test]
     fn losing_disks_cannot_change_how_many_copies_are_kept() {
         let p = policy(3, "host");
@@ -611,12 +403,7 @@ mod tests {
         );
     }
 
-    // ── min_size ──────────────────────────────────────────────────────────────
 
-    /// It used to be `size - 1`, so three machines produced min_size=2: lose two
-    /// disks and every app on every machine stopped until one came back — a
-    /// state its owner can neither diagnose nor fix. One reachable copy is now
-    /// always enough to keep serving.
     #[test]
     fn min_size_is_one_whatever_is_asked_for() {
         for size in [1u32, 2, 3, 7] {
@@ -633,11 +420,6 @@ mod tests {
         assert!(t.min_size <= t.size);
     }
 
-    // ── mon / mgr ─────────────────────────────────────────────────────────────
-    //
-    // Still derived from the node count, because a mon exists by virtue of a
-    // machine running one. These are reported so the UI can show drift, not
-    // driven toward.
 
     #[test]
     fn one_mon_and_mgr_per_machine() {
@@ -645,20 +427,13 @@ mod tests {
         assert_eq!(compute_target(&policy(2, "host"), &topo(3, 3, 3)).mgr, 3);
     }
 
-    /// An empty topology must not report zero mons — the machine reading this
-    /// is itself one.
     #[test]
     fn an_unreadable_cluster_still_reports_at_least_one_mon() {
         let t = compute_target(&policy(1, "osd"), &topo(0, 0, 0));
         assert_eq!((t.mon, t.mgr), (1, 1));
     }
 
-    // ── Pool selection ────────────────────────────────────────────────────────
 
-    /// `images` used to be pinned at one copy, which made a single disk loss
-    /// take the container store with it. It now follows the chosen size like
-    /// every other pool; the raw cost of that is paid for in images-store.nix,
-    /// which divides the RBD by the replica count.
     #[test]
     fn every_data_pool_including_images_follows_the_chosen_size() {
         for p in ["images", "yolab-fs-data0", "yolab-fs-metadata"] {
@@ -666,8 +441,6 @@ mod tests {
         }
     }
 
-    /// Ceph's own pools are still left alone: `.mgr` sizes itself, and the
-    /// rgw/nfs ones are not ours to touch.
     #[test]
     fn cephs_own_pools_are_left_alone() {
         for p in [".rgw.root", ".nfs"] {
@@ -675,12 +448,7 @@ mod tests {
         }
     }
 
-    // ── The request body the page actually sends ────────────────────────────────
 
-    /// The exact body StoragePage sends. This failed with "missing field
-    /// `mode` at line 1 column 33" for as long as `mode` was a bare `String`:
-    /// nothing about the endpoint needed a mode, but serde still demanded one,
-    /// so every copy-count change was rejected before `set_policy` ran.
     #[test]
     fn the_current_page_body_parses() {
         let req: SetPolicyReq =
@@ -689,7 +457,6 @@ mod tests {
         assert_eq!(req.failure_domain.as_deref(), Some("osd"));
     }
 
-    // ── Where the policy lives ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn a_policy_is_chosen_not_chosen_or_unreadable_and_never_defaulted() {

@@ -1,5 +1,3 @@
-//! Mint the mgr/mds cephx key. One shared flow because the two units differ
-//! only in the daemon name, the keyring directory and the capabilities.
 
 use std::path::Path;
 
@@ -9,8 +7,6 @@ use crate::host::Host;
 
 use crate::system::hostname;
 
-/// The `ceph auth get-or-create` caps for a daemon. The one bug-prone detail:
-/// a typo here silently mints a key with the wrong grants, so it is pinned.
 fn caps_for(daemon: &str) -> Option<Vec<&'static str>> {
     match daemon {
         "mgr" => Some(vec![

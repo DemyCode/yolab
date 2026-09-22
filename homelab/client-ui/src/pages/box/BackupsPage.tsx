@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/feedback";
 import { formatDateTime } from "@/lib/format";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 type BackupSetState = "running" | "restorable" | "crashed";
 
@@ -43,7 +42,6 @@ interface RecoveryKeyResponse {
   recovery_key?: string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -55,7 +53,6 @@ function timeAgo(iso: string): string {
   return `${m}m ago`;
 }
 
-// ── One backup set ────────────────────────────────────────────────────────────
 
 function setStateLabel(state: BackupSetState): string {
   switch (state) {
@@ -144,7 +141,6 @@ function BackupSetCard({ set: backupSet }: { set: BackupSet }) {
   );
 }
 
-// ── Recovery key overlay ──────────────────────────────────────────────────────
 
 function RecoveryKeyOverlay({
   recoveryKey,
@@ -164,7 +160,6 @@ function RecoveryKeyOverlay({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
-      /* clipboard unavailable */
     }
   }
 
@@ -233,7 +228,6 @@ function RecoveryKeyOverlay({
   );
 }
 
-// ── Enable card ───────────────────────────────────────────────────────────────
 
 function EnableCard({
   onEnable,
@@ -297,7 +291,6 @@ function EnableCard({
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
 
 export function BackupsPage() {
   const [s3Status, setS3Status] = useState<{ provisioned: boolean } | null>(
@@ -327,7 +320,6 @@ export function BackupsPage() {
         setRecoveryMandatory(mandatory);
       }
     } catch {
-      /* network blip */
     }
   }
 
@@ -351,15 +343,11 @@ export function BackupsPage() {
     void load();
   }, [load]);
 
-  // The list is polled separately from the one-shot `load`, so a backup that is
-  // running appears as a row the moment it starts and flips to Restorable (with
-  // its services) the moment it finishes — without re-fetching the s3 status.
   const loadRuns = useCallback(async () => {
     try {
       const runsRes = await fetch("/api/backups/runs").then((r) => r.json());
       if (Array.isArray(runsRes)) setSets(runsRes as BackupSet[]);
     } catch {
-      /* network blip */
     }
   }, []);
 
@@ -370,7 +358,6 @@ export function BackupsPage() {
       )) as OperationState;
       setOpState(s);
     } catch {
-      /* network blip */
     }
   }, []);
 

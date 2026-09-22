@@ -10,10 +10,6 @@ pub struct RebuildLog {
 }
 
 fn pid_is_running(pid: u32) -> bool {
-    // Read /proc/{pid}/status. If it doesn't exist the process is gone.
-    // If it exists but state is Z (zombie), treat as not running — the process
-    // has already exited but hasn't been reaped yet. This happens when the
-    // local-api service restarts mid-rebuild and the reaper thread is killed.
     match std::fs::read_to_string(format!("/proc/{pid}/status")) {
         Err(_) => false,
         Ok(s) => !s

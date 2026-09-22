@@ -1,19 +1,3 @@
-//! Hold Ceph's `noout` flag across a reboot.
-//!
-//! An OSD down for `mon_osd_down_out_interval` (600s) is marked `out`, and
-//! Ceph starts copying its data onto the remaining disks. Right for a dead
-//! disk, wrong for a reboot that comes back in two minutes — with
-//! `osd_max_backfills=4` the pointless rebalance is aggressive, and on a
-//! multi-node cluster it saturates the WireGuard links copying data that was
-//! never lost. `set` runs as the unit's ExecStop (ceph-noout-set, at
-//! shutdown), `clear` as its ExecStart (ceph-noout-clear, at the next boot).
-//!
-//! THE MARKER FOLLOWS THE FLAG, NEVER THE ATTEMPT. The marker says "we set
-//! noout, so we may clear it". Both sides used to ignore the ceph command's
-//! result: a failed `unset` still deleted the marker — leaving noout on for
-//! good, so a genuinely dead disk was never re-replicated — and a failed `set`
-//! still wrote one, so the next boot would clear a noout an operator had set
-//! in the meantime.
 
 use std::path::{Path, PathBuf};
 
@@ -25,10 +9,6 @@ fn marker_path(root: &Path) -> PathBuf {
     root.join("var/lib/ceph/.yolab-set-noout")
 }
 
-/// Reads `ceph osd dump`'s plain-text `flags` line. Not the JSON form: the
-/// shell this replaces used `ceph osd dump | grep -q '^flags.*noout'`, and the
-/// flags line has no `-f json` equivalent worth parsing over grepping for the
-/// substring.
 fn already_set(osd_dump: &str) -> bool {
     osd_dump
         .lines()
@@ -45,9 +25,6 @@ async fn wait_reachable<H: Host>(host: &H, attempts: u32) -> bool {
     false
 }
 
-/// ExecStart: clear noout, but only if a previous `set` (this same marker) is
-/// what turned it on — an operator's own `ceph osd set noout` for a
-/// maintenance window that outlives this reboot must not be stomped.
 pub async fn clear<H: Host>(host: &H, root: &Path) -> Result<()> {
     if !wait_reachable(host, 60).await {
         tracing::info!("noout-clear: ceph unreachable — leaving flags alone");
@@ -57,8 +34,6 @@ pub async fn clear<H: Host>(host: &H, root: &Path) -> Result<()> {
     if !marker.exists() {
         return Ok(());
     }
-    // `?` before touching the marker: if the flag is still set, the marker is
-    // the only record that it is ours to clear.
     host.ceph(&["osd", "unset", "noout"])
         .await
         .context("noout-clear: ceph osd unset noout")?;
@@ -68,11 +43,6 @@ pub async fn clear<H: Host>(host: &H, root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// ExecStop: set noout before the daemons on this node go down for the
-/// reboot. Never blocks waiting for reachability — a shutdown that is already
-/// underway must not hang on a cluster that happens to be unreachable right
-/// now (see maintenance.nix's TimeoutStopSec note on why ExecStop must stay
-/// bounded).
 pub async fn set<H: Host>(host: &H, root: &Path) -> Result<()> {
     if !host.reachable().await {
         tracing::info!("noout-set: ceph unreachable — leaving flags alone");
@@ -85,7 +55,6 @@ pub async fn set<H: Host>(host: &H, root: &Path) -> Result<()> {
         }
         Ok(_) => {}
         Err(e) => {
-            // Not knowing whether someone else set it means not claiming it.
             tracing::warn!("noout-set: could not read the flags ({e}) — leaving them alone");
             return Ok(());
         }
@@ -112,16 +81,11 @@ mod tests {
 
     #[test]
     fn already_set_ignores_noout_mentioned_elsewhere() {
-        // Only the line that actually starts with "flags" counts — a stray
-        // mention of "noout" in some other line (e.g. a log excerpt Ceph
-        // echoes back) must not be read as the flag being live.
         assert!(!already_set(
             "epoch 12\nsomething about noout here\nflags sortbitwise"
         ));
     }
 
-    // `clear` retries reachability up to 60 times with a 1s sleep between —
-    // paused time so this resolves instantly instead of taking a minute.
     #[tokio::test(start_paused = true)]
     async fn clear_does_nothing_when_ceph_is_unreachable() {
         let host = FakeHost::new().fail("ceph -s", "unreachable");

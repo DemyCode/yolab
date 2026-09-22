@@ -16,29 +16,14 @@ import { useApi } from "@/lib/useResource";
 interface ChartRepo {
   name: string;
   url: string;
-  /** False for the official catalog, which must not be removable. */
   removable: boolean;
 }
 
-/** What `POST /api/apps/repos/sync` reports back, per repo. */
 type SyncResult = Record<
   string,
   { ok: boolean; charts?: number; error?: string }
 >;
 
-/**
- * Where apps come from.
- *
- * local-api has had add/remove/sync for chart repositories the whole time —
- * validated, persisted to a ConfigMap, re-synced on a timer. Nothing in the UI
- * ever called any of it, so in practice YoLab shipped with exactly one source
- * of apps and no way to say otherwise. This is that missing screen; the
- * endpoints are unchanged.
- *
- * Deliberately at the bottom of the catalog rather than in Settings: the
- * question "why isn't the app I want in here?" is asked while looking at the
- * list it is missing from.
- */
 export function AppSources({ onChanged }: { onChanged?: () => void }) {
   const repos = useApi<ChartRepo[]>("app-repos", "/api/apps/repos");
   const [adding, setAdding] = useState(false);
@@ -85,8 +70,6 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
     setSyncNote(null);
     try {
       const res = await api.post<SyncResult>("/api/apps/repos/sync");
-      // Report per source. A single "synced!" would hide the case that matters:
-      // one source is broken and the app someone is looking for is in that one.
       const failed = Object.entries(res).filter(([, r]) => !r.ok);
       if (failed.length > 0) {
         setError(
@@ -141,9 +124,8 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
 
       {adding && (
         <>
-          {/* charts.rs says this plainly and the UI has to as well: a chart can
-              declare any cluster object, so adding a source hands its publisher
-              the ability to do anything here. It is not apt-get. */}
+          {
+}
           <p className="mt-4 flex items-start gap-2 rounded-md border border-warning-soft bg-warning-soft p-3 text-sm text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>

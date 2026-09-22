@@ -1,21 +1,4 @@
-//! The API surface as data, and the cross-cutting tests that walk all of it.
-//!
-//! `ROUTE_TABLE` is every path `router::build_router` registers. It is written
-//! down rather than read back because axum's `Router` cannot be enumerated at
-//! runtime — so the `route-table-is-complete` nix check diffs this list against
-//! the `.route("…")` calls in `router.rs`, in both directions. A route missing
-//! from the table would be a route no sweep below ever visits; a table entry
-//! naming no real route would be a test passing over nothing.
-//!
-//! WHY A SWEEP AND NOT PER-ROUTE TESTS. Auth is a property of the whole surface,
-//! not of any one handler: the failure mode is a route added below the
-//! `.layer(auth_middleware)` line, or registered on a second Router that never
-//! gets the layer. No handler-level test can see that, and a reviewer reading a
-//! diff that adds one `.route(…)` line will not see it either. Walking the table
-//! means a new route is covered the moment it is added — and if someone adds one
-//! without touching the table, the nix check fails instead.
 
-/// Path, and the HTTP methods registered on it.
 pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/login", &["POST"]),
     ("/api/logout", &["POST"]),
@@ -88,12 +71,8 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/terminal/exec", &["POST"]),
 ];
 
-/// The ONLY route reachable without credentials. Everything else in
-/// `ROUTE_TABLE` must answer 401 to a stranger — `auth_middleware` short-circuits
-/// on this exact path and on nothing else.
 pub(crate) const PUBLIC_ROUTES: &[&str] = &["/api/login"];
 
-/// A concrete URI for a route pattern, so the request is well-formed.
 fn concrete(path: &str) -> String {
     path.split('/')
         .map(|seg| match seg.chars().next() {
@@ -112,7 +91,6 @@ mod tests {
     use crate::testkit::TestApi;
     use axum::http::StatusCode;
 
-    /// An `ANY` route takes every verb; the sweep only needs one of them.
     fn verbs(methods: &[&str]) -> Vec<&'static str> {
         methods
             .iter()
@@ -145,13 +123,6 @@ mod tests {
         }
     }
 
-    /// THE SWEEP. On a provisioned node — one that has finished setup and has a
-    /// password — a caller from off this machine with no session and no cluster
-    /// token must be refused by every route but `/api/login`.
-    ///
-    /// This is the test that makes adding a route safe: a route registered
-    /// outside the auth layer answers something other than 401 here, and names
-    /// itself in the failure.
     #[tokio::test]
     async fn every_route_refuses_an_unauthenticated_stranger() {
         let api = TestApi::provisioned();
@@ -174,9 +145,6 @@ mod tests {
         );
     }
 
-    /// The same sweep for a node that has not been set up yet. No password is
-    /// configured, so there is nothing to check a session against — the door has
-    /// to be held shut by address alone, and everything off-box is still refused.
     #[tokio::test]
     async fn an_unprovisioned_node_still_refuses_everything_off_box() {
         let api = TestApi::unprovisioned();
@@ -199,12 +167,6 @@ mod tests {
         );
     }
 
-    /// A PROVISIONED NODE DOES NOT TRUST ITS OWN LOOPBACK.
-    ///
-    /// The loopback exemption exists only for the window before a password is
-    /// set. Once one is, Caddy's proxied traffic carries the user's session like
-    /// anyone else's, and a loopback exemption would mean any process on the box
-    /// — including a container that got a host port — is an administrator.
     #[tokio::test]
     async fn a_provisioned_node_does_not_trust_loopback() {
         let api = TestApi::provisioned().over_loopback();
@@ -212,8 +174,6 @@ mod tests {
         assert_eq!(res.status, StatusCode::UNAUTHORIZED);
     }
 
-    /// The other half: before setup, loopback IS the only credential there can
-    /// be, because Caddy has to be able to serve the setup page.
     #[tokio::test]
     async fn an_unprovisioned_node_trusts_loopback() {
         let api = TestApi::unprovisioned().over_loopback();
@@ -225,8 +185,6 @@ mod tests {
     async fn login_is_reachable_without_credentials() {
         let api = TestApi::provisioned();
         let res = api.post("/api/login", r#"{"password":"wrong"}"#).await;
-        // Reached the handler and was told the password is wrong — not turned
-        // away by the middleware before it could try.
         assert_eq!(res.status, StatusCode::UNAUTHORIZED);
         assert_eq!(res.json()["detail"], "Wrong password", "body: {}", res.body);
     }
@@ -245,8 +203,6 @@ mod tests {
         assert_eq!(res.status, StatusCode::OK);
     }
 
-    /// The token is compared in constant time and must match exactly. A prefix
-    /// must not be enough — that is what `ct_eq`'s length check is for.
     #[tokio::test]
     async fn a_wrong_cluster_token_is_refused() {
         for wrong in ["", "cluster-to", "cluster-tok-extra", "CLUSTER-TOK"] {
@@ -262,8 +218,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_path_is_refused_rather_than_described() {
-        // 404 would tell a stranger which paths exist. The auth layer wraps the
-        // fallback too, so they learn nothing.
         let api = TestApi::provisioned();
         let res = api.get("/api/does-not-exist").await;
         assert_eq!(res.status, StatusCode::UNAUTHORIZED);
@@ -277,37 +231,13 @@ mod tests {
         assert_eq!(concrete("/ceph-dashboard/*rest"), "/ceph-dashboard/probe");
     }
 
-    // ── The cache, swept over the same table ──────────────────────────────────
-    //
-    // `cache::policy_for` decides whether a GET's body may be remembered and
-    // replayed to the next caller. Its exclusions are not performance tuning —
-    // each one is a correctness or safety rule, and each was written as a
-    // comment above the branch that implements it. Comments do not fail when a
-    // route is added beside them, so the rules are swept here instead.
 
-    /// A REMEMBERED SECRET IS A LEAKED SECRET.
-    ///
-    /// These routes return key material or credentials: the recovery key that
-    /// decrypts every backup, the Ceph dashboard's password, the bundle a
-    /// joining machine authenticates with, the notification topic. Caching any
-    /// of them keeps a copy in this process's memory past the request that
-    /// asked for it, and hands it to whoever asks next inside the window.
     #[test]
     fn nothing_that_returns_a_secret_is_cacheable() {
         for path in [
             "/api/account/token",
-            // A login response carries a session token in Set-Cookie. These two
-            // are POST-only, so the middleware's GET-only gate already means the
-            // cache is never consulted for them — they are listed anyway,
-            // because "a different layer happens to stop it" is not how a secret
-            // is protected, and a route that gains a GET later must not quietly
-            // start remembering one. `policy_for` returned a policy for
-            // /api/login until this test asked.
             "/api/login",
             "/api/logout",
-            // Answers differently per caller, and the cache key is path plus
-            // query — which cannot tell two callers apart, so a remembered
-            // "yes" would be handed to a stranger.
             "/api/auth/check",
             "/api/backups/recovery-key",
             "/api/ceph/dashboard",
@@ -321,11 +251,6 @@ mod tests {
         }
     }
 
-    /// FORCE HEAL IS DECIDED ON LIVE FACTS ONLY.
-    ///
-    /// A heal wipes machines. A remembered "this machine does not answer",
-    /// shown for even the second before the real answer lands, is long enough
-    /// to read and act on — and the action is destructive and irreversible.
     #[test]
     fn no_heal_route_is_cacheable() {
         let heal: Vec<&str> = ROUTE_TABLE
@@ -342,8 +267,6 @@ mod tests {
         }
     }
 
-    /// Log bodies are live and large, and a replayed one is indistinguishable
-    /// from a stalled process.
     #[test]
     fn no_log_route_is_cacheable() {
         for &(path, _) in ROUTE_TABLE {
@@ -356,8 +279,6 @@ mod tests {
         }
     }
 
-    /// The Ceph dashboard proxy is not an API route and streams a whole web UI
-    /// through this process. `policy_for` refuses anything outside `/api/`.
     #[test]
     fn nothing_outside_the_api_is_cacheable() {
         for &(path, _) in ROUTE_TABLE {
@@ -370,9 +291,6 @@ mod tests {
         }
     }
 
-    /// The window a remembered body may be shown in has to be shorter than the
-    /// window it is kept for, or the first frame is always the real one and the
-    /// cache does nothing.
     #[test]
     fn a_cached_body_is_shown_for_less_time_than_it_is_kept() {
         let policy = cache::policy_for("/api/status").expect("/api/status is cached");

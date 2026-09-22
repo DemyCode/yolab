@@ -1,7 +1,3 @@
-# Bootable stub for the VM boot test (nix/tests/boot.nix). Unlike the ci-*
-# stubs this is meant to actually boot a machine, so it carries a real disk
-# device, a real WireGuard keypair and a real fsid. It is a throwaway
-# single-node cluster; nothing here is a production secret.
 
 [homelab]
 hostname = "yolab-n1"

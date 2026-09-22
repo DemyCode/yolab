@@ -32,10 +32,6 @@ import type {
   StoragePolicyData,
 } from "@/types/storage";
 
-// ── Formatting ────────────────────────────────────────────────────────────────
-// `formatBytes` (decimal GB/TB, from lib/format) is used for everything a
-// person reads. The binary GiB/TiB below survives only inside Advanced, where
-// the numbers are meant to line up with what `ceph` itself prints.
 
 const GiB = 1073741824;
 const TiB = GiB * 1024;
@@ -47,25 +43,6 @@ function fmtBytes(b: number): string {
   return `${(b / 1024).toFixed(0)} KiB`;
 }
 
-/**
- * What an offline OSD actually means — which is not one message.
- *
- * This used to say, unconditionally: "Your files are still there. If the disk
- * does not come back, switch it off above and YoLab will rebuild the missing
- * copies on the ones that remain."
- *
- * On a cluster storing one copy that is false in both halves. The files are NOT
- * still there, and there are no other copies to rebuild from — so following the
- * instruction destroys the data it claims to be protecting. This is the one
- * banner on the page that tells someone to act on a disk, so it has to be right
- * about redundancy before it tells them anything.
- *
- * It also stops counting OSDs that were never created. `ceph-volume lvm create`
- * takes an id from the mon before it does any of the slow work, so a create that
- * failed leaves an id in the OSD map with no CRUSH location and nothing on disk.
- * That is a failed setup, not a disk that went offline, and calling it offline
- * sends someone looking for a hardware fault that is not there.
- */
 function OfflineDiskBanner({
   detail,
   policy,
@@ -75,7 +52,6 @@ function OfflineDiskBanner({
 }) {
   if (!detail) return null;
 
-  // No host means it is not in the CRUSH map: never created, never held data.
   const down = detail.osds.filter((o) => o.status !== "up" && o.host !== "");
   const phantom = detail.osds.filter((o) => o.status !== "up" && o.host === "");
 
@@ -97,10 +73,6 @@ function OfflineDiskBanner({
     );
   }
 
-  // The distinction that matters: is there a second copy anywhere?
-  // `?? 1` on an unknown target is deliberate: it selects the more cautious
-  // message, which tells the owner NOT to switch a disk off. Assuming
-  // redundancy we cannot confirm would tell them the opposite.
   const copies = policy?.target?.size ?? 1;
   const anyUp = detail.osds.some((o) => o.status === "up");
 
@@ -174,7 +146,6 @@ function OsdPill({ on, labels }: { on: boolean; labels: [string, string] }) {
   );
 }
 
-// ── Disks ─────────────────────────────────────────────────────────────────────
 
 type DiskState =
   | "active"
@@ -184,38 +155,14 @@ type DiskState =
   | "excluded"
   | "historical"
   | "foreign"
-  /**
-   * Carries a Ceph label this node could not attribute. NOT known to belong to
-   * another cluster — most often it is this cluster's own LVM-backed OSD, seen
-   * while Ceph was unreachable.
-   */
   | "unidentified"
-  /** ON, but the last attempt failed. Another is coming; `message` says why. */
   | "failing"
-  /** ON, but it needs a decision first — it already has data on it. */
   | "blocked"
-  /** The node cannot see its own disk setup, so nothing here is known. */
   | "stale"
-  /** OFF, drained, and the last of it is being cleaned up. Do not unplug yet. */
   | "removing"
-  /** OFF and finished — the destination of the OFF toggle. Safe to unplug. */
   | "removable";
 
-/**
- * What to show for one disk.
- *
- * `phase` comes from the reconciler and is preferred whenever it is present,
- * because it is the only source that knows whether anything is actually
- * happening. The inference below it is the fallback for a node that has not
- * reported yet, and it is exactly the guess that produced the bug this replaced:
- * "switched on, present, no OSD yet" renders identically whether the setup
- * started five seconds ago or has failed fourteen times.
- */
 function diskState(disk: DiskInfo): DiskState {
-  // `unknown` means the label could not be attributed, which is NOT the same as
-  // belonging to another cluster — most often it is this cluster's own
-  // LVM-backed OSD seen while Ceph was unreachable. Saying "another system"
-  // about a healthy disk is alarming and wrong, so it gets its own state.
   if (disk.ownership === "unknown") return "unidentified";
   if (disk.foreign_ceph) return "foreign";
 
@@ -242,7 +189,6 @@ function diskState(disk: DiskInfo): DiskState {
       return "stale";
   }
 
-  // No phase reported yet — fall back to inference.
   if (on && disk.is_our_osd) return "active";
   if (on) return "pending";
   if (disk.is_our_osd) return "draining";
@@ -288,9 +234,6 @@ const STATE_META: Record<
     dot: "bg-warning",
     pulse: true,
   },
-  // The whole point of switching a disk off. It used to render as "Connected,
-  // not in use", which is true and useless: it does not answer the one question
-  // someone who switched a disk off is asking.
   removable: {
     label: "Safe to unplug",
     color: "text-success",
@@ -317,10 +260,6 @@ const STATE_META: Record<
     color: "text-warning",
     dot: "bg-warning",
   },
-  // Deliberately not alarming and deliberately not a claim. The node found a
-  // Ceph label it could not attribute, which is usually its OWN disk seen while
-  // the cluster was unreachable — node2's healthy osd.2 spent this session being
-  // described to its owner as belonging to another system.
   unidentified: {
     label: "Can't identify this disk yet",
     color: "text-fg-muted",
@@ -350,8 +289,6 @@ function DiskRow({
 
   async function toggle() {
     const next = isOn ? "OFF" : "ON";
-    // Turning off a disk that currently holds data starts a drain, and turning on
-    // one that holds another system's data erases it — both get a confirmation.
     const needsConfirm =
       (next === "OFF" && disk.is_our_osd) ||
       (next === "ON" && state === "foreign");
@@ -399,10 +336,8 @@ function DiskRow({
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-fg">
           {label}{" "}
-          {/* A real space, not just the margin below: without it the name and
-              the size run together for a screen reader and in anything copied
-              off the page — "easystore 26471.0 TB" for a 1 TB disk whose model
-              string is "easystore 2647". */}
+          {
+}
           {disk.connected && disk.size_bytes > 0 && (
             <span className="ml-2 font-normal text-fg-muted">
               {formatBytes(disk.size_bytes)}
@@ -424,10 +359,8 @@ function DiskRow({
             )}
           </p>
         </div>
-        {/* What the reconciler is actually doing, and why it stopped if it did.
-            Every one of these used to exist only as a tracing::warn! on the
-            machine, which is why a disk could pulse "Setting up…" for an hour
-            with the real answer sitting in the journal. */}
+        {
+}
         {disk.message && (
           <p className="mt-1 text-sm text-fg-muted">{disk.message}</p>
         )}
@@ -461,11 +394,8 @@ function DiskRow({
         </div>
       )}
 
-      {/* `unidentified` gets no switch: the reconciler refuses to create an OSD
-          on it (refuse_osd_creation), because the likeliest answer is that it is
-          one of ours seen while the cluster was unreachable. A `foreign` disk
-          does get one — switching it on erases the other system's data, which
-          is what the confirmation above says. */}
+      {
+}
       {state !== "unidentified" && !confirm && (
         <button
           onClick={() => void toggle()}
@@ -511,10 +441,6 @@ function DiskList({
       : osds.find((o) => o.id === disk.osd_id);
   }
 
-  // Disks that were plugged in once and never came back accumulate forever and
-  // are the single biggest source of clutter here — a machine that has seen
-  // four USB drives shows four rows nobody will ever act on. They are kept
-  // (removing one silently would be worse) but folded away.
   const present: [string, DiskInfo][] = [];
   const past: [string, DiskInfo][] = [];
   for (const node of nodes) {
@@ -611,23 +537,13 @@ function DiskList({
   );
 }
 
-// ── Capacity + safety ─────────────────────────────────────────────────────────
 
-/**
- * One sentence on what a failure would cost.
- *
- * This replaces a card that led with "3 copies across 3 disks" and a mode/scope
- * caption. Copies are the mechanism; what someone actually wants to know is
- * whether losing a disk loses their photos.
- */
 function safetyLine(
   data: StoragePolicyData | undefined,
   detail: StorageDetail | undefined,
 ): { tone: "ok" | "warn" | "bad"; text: string } | null {
   if (!data) return null;
   const { target } = data;
-  // No target means no choice has been recorded yet, or the cluster could not
-  // be read. Saying nothing beats stating a redundancy level that is a guess.
   if (!target) return null;
   const offline = detail?.osds.filter((o) => o.status !== "up").length ?? 0;
   const survives = target.size - 1;
@@ -659,36 +575,15 @@ function CapacityCard({
   policy: StoragePolicyData | undefined;
   loading: boolean;
 }) {
-  // What a person has, not what the disks have. Raw totals count every replica,
-  // so a 2 TB pool with two copies reports 4 TB raw — a number that is true,
-  // useless, and alarming in both directions. `stored_bytes` is what was put
-  // in; `max_avail_bytes` is what will still fit.
-  // `.`-prefixed pools are Ceph's own bookkeeping. `images` is this machine's
-  // container image cache: re-downloadable, not the user's files, and counting
-  // it made installing an app look like it had eaten their photo storage.
   const pools = (detail?.pools ?? []).filter(
     (p) => !p.name.startsWith(".") && p.name !== "images",
   );
   const used = pools.reduce((s, p) => s + p.stored_bytes, 0);
 
-  // The tightest headroom across the data pools — not `pools[0]`, which was
-  // whichever pool the API happened to list first. Pools can have different
-  // replication, so their max_avail differs by a factor of the copy count, and
-  // reading an arbitrary one reported a number belonging to a different pool.
   const poolFree = pools.length
     ? Math.min(...pools.map((p) => p.max_avail_bytes))
     : 0;
 
-  // Never promise more than physically exists right now. Ceph derives MAX AVAIL
-  // from CRUSH weight, which still counts disks that are DOWN — so a cluster
-  // with one live 178 GiB disk and two dead ones advertised "1.3 TB free" while
-  // the raw capacity readout on the same page said 178.5 GiB. avail_bytes comes
-  // from `ceph df` and counts only OSDs that are actually up.
-  //
-  // Those raw cards have since been removed, so the contradiction is no longer
-  // visible to anyone — which is exactly why this stays a comment: the guard
-  // below is still load-bearing, and nothing on screen would reveal its absence
-  // now.
   const rawFree = detail?.avail_bytes ?? poolFree;
   const free = Math.min(poolFree, rawFree);
   const total = used + free;
@@ -751,7 +646,6 @@ function CapacityCard({
   );
 }
 
-// ── Redundancy ────────────────────────────────────────────────────────────────
 
 type Domain = "osd" | "host";
 
@@ -767,24 +661,14 @@ function estimateUsable(
   const buckets = placementBuckets(osds, domain);
   if (buckets.length === 0) return 0;
 
-  // Ceph puts one copy in each place it has. Asking for more copies than there
-  // are places does not consume more room — the extra copies simply do not
-  // exist yet, and cost nothing until there is somewhere to put them.
-  //
-  // This used to `return 0` for that case, so choosing three copies on two
-  // machines reported "room for your files: 0 B" — alarming, and wrong: you
-  // get two copies and the capacity that implies.
   const effective = Math.min(size, buckets.length);
 
-  // Every place holds exactly one copy, so the smallest one is the ceiling —
-  // the others cannot be filled past it without leaving a copy homeless.
   if (effective === buckets.length) {
     return Math.min(...buckets) * SAFETY;
   }
   return (totalRaw / effective) * SAFETY;
 }
 
-/// Distinct places Ceph can put one copy each: disks, or machines.
 function placementBuckets(osds: OsdInfo[], domain: "osd" | "host"): number[] {
   if (domain === "osd") return osds.map((o) => o.size_bytes);
   const hostMap = new Map<string, number>();
@@ -794,14 +678,6 @@ function placementBuckets(osds: OsdInfo[], domain: "osd" | "host"): number[] {
   return [...hostMap.values()];
 }
 
-/**
- * The redundancy controls, moved into a sheet.
- *
- * On the page they were the largest block by some distance — a mode toggle, a
- * four-metric grid, two more toggle rows, a feasibility warning and a capacity
- * estimate — and they are touched approximately once in the life of a box.
- * Behind a "Change" button they cost one line until someone wants them.
- */
 function RedundancySheet({
   open,
   onClose,
@@ -817,10 +693,6 @@ function RedundancySheet({
   pools: PoolInfo[];
   onPolicyChanged: () => void;
 }) {
-  // Null until the cluster has recorded a choice — a fresh install, or the
-  // first tick after auto mode was removed. The form still has to open and be
-  // usable, so it starts from the safest thing that is true of any cluster:
-  // one copy, on any disk. Nothing is applied until Save.
   const saved = policyData.policy ?? {
     size: 1,
     failure_domain: "osd" as const,
@@ -832,7 +704,6 @@ function RedundancySheet({
   const [confirm, setConfirm] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
-  // Re-seed whenever the sheet is opened, so a cancelled edit does not linger.
   useEffect(() => {
     if (!open) return;
     setSize(saved.size);
@@ -849,9 +720,6 @@ function RedundancySheet({
   const cephFs = pools.filter((p) => !p.name.startsWith("."));
   const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
   const rawFree = osds.reduce((s, o) => s + o.avail_bytes, 0);
-  // Copies that can actually be placed, not copies asked for. A number beyond
-  // the number of disks or machines costs nothing until there is somewhere to
-  // put it, so charging for it would refuse a setting that is free to choose.
   const places = domain === "osd" ? nDisks : nNodes;
   const effNew = Math.min(size, places);
   const effOld = Math.min(saved.size, places);
@@ -873,8 +741,6 @@ function RedundancySheet({
     setApplying(true);
     setResult(null);
     try {
-      // No mode and no min_size. The server keeps exactly one copy online as
-      // its threshold (topology::MIN_SIZE) and applies `size` as given.
       const body = { size, failure_domain: domain };
       const d = await api.put<{ ok?: boolean; error?: string }>(
         "/api/storage/policy",
@@ -976,8 +842,6 @@ function RedundancySheet({
               <div className="flex gap-2">
                 <Choice
                   active={domain === "osd"}
-                  // No longer lowers the copy count to fit. Switching where
-                  // copies go should not quietly change how many you keep.
                   onClick={() => setDomain("osd")}
                   title="Different disks"
                   body={`${nDisks} available`}
@@ -995,11 +859,8 @@ function RedundancySheet({
               <p className="mb-2 text-sm font-medium text-fg">
                 How many copies
               </p>
-              {/* A stepper, not a fixed row of choices. The number is a
-                    statement of intent — "keep this many, and make the rest
-                    when I add disks" — so it is not capped at what fits today.
-                    The old control disabled anything above the current disk
-                    count, which made a perfectly reasonable plan unselectable. */}
+              {
+}
               <div className="flex items-center gap-4">
                 <Button
                   size="sm"
@@ -1088,7 +949,6 @@ function RedundancySheet({
   );
 }
 
-// ── Advanced ──────────────────────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -1266,11 +1126,8 @@ function OsdTable({
                   <VarBadge v={osd.var} />
                 </td>
                 <td className="px-4 py-3">
-                  {/* reweight, NOT crush_weight. `ceph osd out` sets reweight
-                      to 0 and leaves crush_weight alone — it is derived from
-                      the disk's size, so it stays at e.g. 0.909 forever. This
-                      read crush_weight and so showed "In" for a disk that had
-                      been switched off and marked out hours earlier. */}
+                  {
+}
                   <OsdPill on={osd.reweight > 0.5} labels={["In", "Out"]} />
                 </td>
                 <td className="px-4 py-3">
@@ -1337,13 +1194,11 @@ function AdvancedPanel({
 
       {open && (
         <div className="mt-4 space-y-6">
-          {/* justify-end, not justify-between: the raw-capacity cards that used
-              to sit opposite this button are gone, and with one child
-              justify-between would park Refresh on the left. */}
+          {
+}
           <div className="flex items-center justify-end">
-            {/* The one refresh control on the page. Everything above refreshes
-                itself; this exists for the moment after plugging a disk in,
-                when twenty seconds feels long. */}
+            {
+}
             <Button
               size="sm"
               variant="ghost"
@@ -1357,14 +1212,8 @@ function AdvancedPanel({
             </Button>
           </div>
 
-          {/* Raw total / used / free used to be three cards here, and they were
-              actively misleading: raw counts every replica, so on a healthy
-              cluster they never match the usable figures shown above and the
-              page appeared to contradict itself. The sentence explaining that
-              went with them — a caption apologising for a number is a sign the
-              number should not be there. What a person can actually store is
-              already on this page; the OSD table below covers the per-disk
-              detail an operator needs. */}
+          {
+}
           {osds.length > 0 && <OsdTable osds={osds} onRefresh={onRefresh} />}
 
           {creds && (
@@ -1412,19 +1261,10 @@ function AdvancedPanel({
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
 
 export function StoragePage() {
   const [editing, setEditing] = useState(false);
 
-  // All three fetches live here, so there is one refresh for the whole page.
-  // Previously the disk list fetched independently and carried its own reload
-  // icon next to the page's own Refresh button, which is why two of them were
-  // on screen doing almost the same thing.
-  // Progressive: this endpoint measured 5.5s on a healthy cluster and does not
-  // return at all on a sick one, so the page paints from the remembered value
-  // first and corrects itself when the real one lands. CacheDot says which is
-  // on screen.
   const detailRes = useApi<StorageDetailResponse>(
     "storage-detail",
     "/api/ceph/detail",
@@ -1471,10 +1311,8 @@ export function StoragePage() {
         </Banner>
       )}
 
-      {/* Sits with the capacity numbers because those are the ones a remembered
-          value could mislead someone about. Renders nothing once the page is
-          showing freshly computed figures, which is within a few seconds of
-          opening. */}
+      {
+}
       <div className="flex items-center justify-end -mb-3">
         <CacheDot cache={detailRes.cache} />
       </div>
@@ -1538,9 +1376,8 @@ export function StoragePage() {
         refreshing={detailRes.loading}
       />
 
-      {/* Kept out of the way, but not hidden: this is the one thing on the page
-          that can destroy data, and someone who erased a disk by accident
-          needs to have been told what would happen. */}
+      {
+}
       <OfflineDiskBanner detail={detail} policy={policyRes.data} />
     </div>
   );

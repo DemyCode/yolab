@@ -1,18 +1,3 @@
-//! Create or join the Ceph cluster: keyrings, monmap, `ceph-mon --mkfs`.
-//!
-//! Both paths end at the same place — a mon store this node owns, in
-//! `/var/lib/ceph/mon/ceph-<host>` — after which every node is a peer: its
-//! own mon, mgr, MDS and OSDs, none a master. The one asymmetry is
-//! `join_seed_addr`: empty means this machine creates the cluster, non-empty
-//! means it fetches an existing one's credentials first. See
-//! homelab/nixos/ceph/default.nix's header for the quorum-membership recovery
-//! procedure and the reasoning behind never automating it.
-//!
-//! THE FSID CHECK (`validate_join_fsid`) IS THE ONE THING IN THIS FILE THAT
-//! MUST NEVER BE SKIPPED. A joining node that `ceph-mon --mkfs`s against the
-//! wrong cluster's monmap does not fail loudly — it quietly creates a second,
-//! isolated cluster that looks healthy on both sides until someone notices
-//! their data is not where they left it.
 
 use std::path::Path;
 
@@ -27,12 +12,8 @@ use super::ceph_shared::{addrvec, mon_dir};
 
 pub struct BootstrapArgs {
     pub fsid: String,
-    /// This node's own mon address (the WireGuard cluster address).
     pub mon_addr: String,
-    /// Empty on the machine that creates the cluster; otherwise the address
-    /// of a machine already in it.
     pub join_seed_addr: String,
-    /// Where to read `[tunnel] account_token` from, on the join path only.
     pub config_path: String,
 }
 
@@ -52,8 +33,6 @@ fn tmp_monmap_path(root: &Path) -> std::path::PathBuf {
     root.join("tmp/monmap")
 }
 
-/// THE data-loss-prevention check in this file. A mismatch must halt before a
-/// single byte is written — see this module's header.
 pub fn validate_join_fsid(bundle_fsid: &str, expected_fsid: &str, seed: &str) -> Result<()> {
     if bundle_fsid != expected_fsid {
         bail!(
@@ -92,8 +71,6 @@ async fn fetch_join_bundle(seed_addr: &str, token: &str) -> Result<CephJoinBundl
         .context("parse the join bundle")
 }
 
-/// Create the cluster: generate the mon/admin/bootstrap-osd keyrings and a
-/// fresh one-mon monmap naming this host.
 async fn create_cluster<H: Host>(
     host: &H,
     root: &Path,
@@ -196,11 +173,6 @@ async fn create_cluster<H: Host>(
     Ok(())
 }
 
-/// Join an existing cluster: adopt its keyrings, then fetch the live monmap
-/// (never a copy carried in the bundle — see routers/ceph_join.rs's header for
-/// why: a copy is a snapshot that goes stale the moment mon membership
-/// changes, and by the time this runs the admin keyring already lets this
-/// node ask any reachable mon for the current one).
 async fn join_cluster<H: Host>(
     host: &H,
     root: &Path,
@@ -219,11 +191,6 @@ async fn join_cluster<H: Host>(
     run_ok(host, "chown", &["ceph:ceph", &admin_s]).await?;
     run_ok(host, "chown", &["ceph:ceph", &bootstrap_osd_s]).await?;
 
-    // Cleared first so a *failed* attempt below can never leave a stale
-    // monmap from an earlier retry of this same subcommand sitting there to
-    // be misread as fresh by the size check after the loop — `-o` always
-    // truncates-and-writes on a successful call, so only a failure can leave
-    // old bytes behind.
     let monmap = tmp_monmap_path(root);
     let monmap_s = monmap.to_string_lossy().into_owned();
     remove_if_present(&monmap)?;
@@ -240,16 +207,11 @@ async fn join_cluster<H: Host>(
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
-    // Checked once, after the loop — not per-attempt. A `ceph mon getmap`
-    // that exits 0 but somehow wrote nothing is exactly as much "not fetched"
-    // as 30 straight connection failures, and both are caught here.
     if !monmap.metadata().is_ok_and(|m| m.len() > 0) {
         bail!("could not fetch a monmap from the cluster; retrying on the timer");
     }
 
     let dir = mon_dir(root, node);
-    // A leftover store that cannot be removed would make `--mkfs` fail against
-    // it later with a far less obvious error. Only "already absent" is fine.
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -261,8 +223,6 @@ async fn join_cluster<H: Host>(
     Ok(())
 }
 
-/// The tail shared by both paths: `ceph-mon --mkfs` against the monmap and
-/// keyring each path left in the tmp files, then hand the store to `ceph`.
 async fn finish_mkfs<H: Host>(host: &H, root: &Path, node: &str) -> Result<()> {
     let tmp_mon = tmp_mon_keyring_path(root);
     let monmap = tmp_monmap_path(root);
@@ -288,8 +248,6 @@ async fn finish_mkfs<H: Host>(host: &H, root: &Path, node: &str) -> Result<()> {
     std::fs::copy(&tmp_mon, dir.join("keyring"))?;
     let ceph_dir = root.join("var/lib/ceph");
     let ceph_dir_s = ceph_dir.to_string_lossy().into_owned();
-    // `?`: a mon store left owned by root is a mon that will not start as
-    // `ceph`, reported by nothing but a unit restarting in a loop.
     run_ok(host, "chown", &["-R", "ceph:ceph", &ceph_dir_s]).await?;
     let admin_s = admin_keyring_path(root).to_string_lossy().into_owned();
     run_ok(host, "chown", &["ceph:ceph", &admin_s]).await?;
@@ -348,15 +306,6 @@ mod tests {
 
     const FSID: &str = "11111111-2222-3333-4444-555555555555";
 
-    /// Wraps a `FakeHost` and, for the handful of binaries this file shells
-    /// out to that write their result to a path named in argv (`ceph-authtool
-    /// --create-keyring <path>`, `monmaptool ... <path>`, `ceph mon getmap -o
-    /// <path>`), actually writes a placeholder file there. `FakeHost` alone
-    /// only fakes a command's exit status/stdout, which is right for most
-    /// commands but wrong for these three — their entire job, from this
-    /// file's point of view, IS the file they leave behind, and the retry
-    /// loop around `mon getmap` specifically re-checks that file on disk.
-    /// Confined to tests: production always shells out to the real binaries.
     #[derive(Clone)]
     struct FileWritingHost {
         inner: FakeHost,
@@ -460,7 +409,6 @@ mod tests {
         }
     }
 
-    // ── validate_join_fsid: the one check that must never be bypassed ────────
 
     #[test]
     fn matching_fsids_are_accepted() {
@@ -481,7 +429,6 @@ mod tests {
         assert!(validate_join_fsid("", FSID, "fd00:cafe::1").is_err());
     }
 
-    // ── create_cluster + finish_mkfs: the happy path, against a tempdir root ──
 
     #[tokio::test]
     async fn create_path_produces_a_keyring_and_never_touches_the_network() {
@@ -512,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_path_is_idempotent_once_the_keyring_exists() {
-        let host = FakeHost::new(); // no calls scripted — none should happen
+        let host = FakeHost::new();
         let dir = tempfile::tempdir().unwrap();
         let mon = mon_dir(dir.path(), "yolab-n1");
         std::fs::create_dir_all(&mon).unwrap();
@@ -529,7 +476,6 @@ mod tests {
         assert!(host.calls().is_empty());
     }
 
-    // ── join_cluster: the credential + monmap handoff ─────────────────────────
 
     #[tokio::test]
     async fn join_writes_the_bundles_keyrings_and_fetches_a_live_monmap() {
@@ -554,7 +500,6 @@ mod tests {
         assert!(mon_dir(dir.path(), "yolab-n2").join("keyring").exists());
     }
 
-    // 30 attempts x 2s between them — paused time so this resolves instantly.
     #[tokio::test(start_paused = true)]
     async fn join_gives_up_after_thirty_failed_monmap_fetches() {
         let host = FakeHost::new()
@@ -567,8 +512,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("could not fetch a monmap"));
-        // The keyrings were still written — they are needed for every retry —
-        // but mkfs must never have been reached without a real monmap.
         assert!(admin_keyring_path(dir.path()).exists());
         assert!(!host.ran("ceph-mon --mkfs"));
     }

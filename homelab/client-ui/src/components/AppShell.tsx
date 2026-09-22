@@ -6,39 +6,12 @@ import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api";
 import { Wordmark } from "@/components/Logo";
 
-/**
- * Three destinations.
- *
- * The previous shell had six, five of which were infrastructure: Overview,
- * Machines, Storage, Backups, Apps, Terminal. That is a diagram of the system's
- * architecture offered as a menu — someone who set this box up to get their
- * photos off Google opened it and found a storage administration console with
- * an app store hidden inside.
- *
- * Now: the things you own, somewhere to get more, and everything else. Storage,
- * machines, backups and the terminal still exist, one level down under Settings,
- * where they read as settings rather than as the point of the product.
- */
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
   { to: "/add", icon: Plus, label: "Add" },
   { to: "/box", icon: Settings2, label: "Settings" },
 ];
 
-/**
- * True while the person is scrolling down, so the mobile tab bar can get out
- * of the way.
- *
- * A phone screen is mostly taken up by the thing you are reading, and a fixed
- * bar costs ~15% of it permanently. Hiding on the way down and returning on
- * the way up is the behaviour people already know from every mobile browser,
- * so it needs no explanation.
- *
- * The threshold stops the bar flickering on small scroll jitter, and the top
- * guard keeps it visible near the top of a page — including during iOS
- * rubber-banding, where `scrollY` goes negative and every delta looks like a
- * direction change.
- */
 function useHideOnScroll(threshold = 10) {
   const [hidden, setHidden] = useState(false);
   const lastY = useRef(0);
@@ -94,15 +67,13 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
     try {
       await api.post("/api/logout");
     } catch {
-      // Even if the call fails the local session should end — leaving someone
-      // apparently signed in after they asked to leave is the worse outcome.
     }
     onLogout();
   }
 
   return (
     <div className="flex min-h-full bg-bg">
-      {/* Desktop rail */}
+      {}
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-surface px-3 py-5 md:flex">
         <div className="px-3 pb-5">
           <Wordmark />
@@ -141,13 +112,13 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
         </div>
       </aside>
 
-      {/* Content. The bottom padding on mobile clears the tab bar, including
-          the iOS home indicator. */}
+      {
+}
       <main className="min-w-0 flex-1 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
         <Outlet />
       </main>
 
-      {/* Mobile tab bar */}
+      {}
       <nav
         className={cn(
           "fixed inset-x-0 bottom-0 z-40 flex border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur transition-transform duration-200 md:hidden",
@@ -175,7 +146,6 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-/** Page frame: one max width, one set of gutters, one title treatment. */
 export function Page({
   title,
   subtitle,

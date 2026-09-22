@@ -37,8 +37,6 @@ const spec = (
 
 describe("installedByChart", () => {
   it("counts every copy, not just the first", () => {
-    // Installing an app twice is normal — a family photo library and a private
-    // one. The storefront has to say "2 installed", not "installed".
     const counts = installedByChart([
       app({ app_id: "immich", instance_name: "immich" }),
       app({ app_id: "immich", instance_name: "immich-2" }),
@@ -56,8 +54,6 @@ describe("installedByChart", () => {
 
 describe("appLinks", () => {
   it("returns every address an app publishes, not just the first", () => {
-    // A chart can scrape several url outputs — an admin panel beside the app,
-    // a second front end, an API endpoint. Rendering only one hides the rest.
     const links = appLinks(
       app({
         outputs: [
@@ -82,16 +78,12 @@ describe("appLinks", () => {
   });
 
   it("offers the derived address before any output has been scraped", () => {
-    // This is what the tile shows in the minutes between install and the first
-    // successful log scrape. Without it the app looks unreachable.
     expect(
       appLinks(app({ config: { subdomain: "git" } }), "box.yolab.io"),
     ).toEqual([{ label: "Open", url: "https://git.box.yolab.io" }]);
   });
 
   it("does not offer the same address twice under two labels", () => {
-    // Charts write the URL with and without a trailing slash, so the check has
-    // to be loose or the tile grows a duplicate button once scraping catches up.
     const links = appLinks(
       app({
         config: { subdomain: "git" },
@@ -117,9 +109,6 @@ describe("appLinks", () => {
 
 describe("appFactRows", () => {
   it("shows a declared fact before its value exists", () => {
-    // Someone installing qBittorrent must see "Temporary password" the moment
-    // the page loads, so they know to wait for it rather than wonder how they
-    // are supposed to log in.
     const rows = appFactRows(
       app({ outputs_spec: [spec("temp_password", "Temporary password")] }),
     );
@@ -139,9 +128,6 @@ describe("appFactRows", () => {
   });
 
   it("keeps a scraped fact the chart no longer declares", () => {
-    // An older install can hold values from a chart version whose spec has
-    // since changed. Silently hiding a password someone still needs is worse
-    // than an extra row.
     const rows = appFactRows(
       app({
         outputs_spec: [spec("user", "Username")],
@@ -185,8 +171,6 @@ describe("nextInstanceName", () => {
   });
 
   it("numbers the second copy rather than colliding", () => {
-    // The name doubles as the namespace and the default subdomain, so a
-    // collision is not cosmetic — it is two apps claiming one address.
     expect(nextInstanceName("gitea", [app({ instance_name: "gitea" })])).toBe(
       "gitea-2",
     );
@@ -215,8 +199,6 @@ describe("nextInstanceName", () => {
 
 describe("appState", () => {
   it("distinguishes the two states a tile must not confuse", () => {
-    // "removing" and "starting" look the same to a spinner and mean opposite
-    // things to the person watching it.
     expect(appState(app({ status: "uninstalling" }))).toBe("removing");
     expect(appState(app({ status: "starting" }))).toBe("starting");
     expect(appState(app({ status: "running" }))).toBe("ready");

@@ -13,37 +13,16 @@ import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
 
-/**
- * Chooses the single most important thing to say, or says nothing.
- *
- * The old shell showed a permanent "Storage healthy" chip in the sidebar plus a
- * banner for every issue at once. Both are wrong for this audience: a green
- * tick teaches people to monitor Ceph, and a stack of warnings they cannot act
- * on teaches them to ignore the whole strip. Silence is the success case.
- */
 interface Concern {
   tone: "info" | "warning" | "error";
   title: string;
   body: string;
-  /** How many further issues were folded away behind this one. */
   more?: number;
 }
 
 function topConcern(health: ClusterHealth | undefined): Concern | null {
   if (!health) return null;
 
-  // Expected, temporary states. These are not problems and must not be dressed
-  // up as ones — a box that just booted is not a box in trouble.
-  //
-  // They are checked AFTER severity, and that ordering is the whole point. Both are
-  // guesses about WHY something looks off, and both guess wrong in exactly the
-  // situation where being wrong costs the most. Observed live: a disk was pulled from
-  // a cluster keeping one copy, 63 of 81 placement groups went unreadable, and this
-  // page said "Preparing a new disk — you can keep using everything while this
-  // finishes", because `provisioning` was checked first and its backing signal
-  // (`in > up`) is also precisely what a dead disk looks like.
-  //
-  // A reassuring explanation may only ever apply when nothing is actually wrong.
   if (health.level !== "error") {
     if (health.starting) {
       return {
@@ -77,8 +56,6 @@ export function HomePage() {
     pollMs: 10_000,
   });
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
-  // Progressive: 2s on a healthy cluster, so the home page would otherwise hold
-  // a spinner for two seconds on every open.
   const health = useApi<ClusterHealth>("health", "/api/cluster/health", {
     pollMs: 20_000,
   });
@@ -96,18 +73,18 @@ export function HomePage() {
           </h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-fg-muted">
             Everything running at home. Tap one to open it.
-            {/* Covers the banner below and the app grid: both are drawn from
-                remembered values until their real ones land. */}
+            {
+}
             <CacheDot cache={health.cache ?? apps.cache} />
           </p>
         </div>
-        {/* Apps come back from backup here, not from the store: with the
-            settings and files they had at the moment picked. */}
+        {
+}
         <AddFromBackupButton />
       </header>
 
-      {/* A broken cluster outranks every other concern: it is the one that needs a
-          decision, and the place to make it is the Storage page. */}
+      {
+}
       <HealBanner className="mb-6" />
 
       {concern && (
@@ -127,8 +104,8 @@ export function HomePage() {
           }
         >
           {concern.body}
-          {/* Everything else is folded behind one link rather than stacked as
-              more banners — see the note on `topConcern`. */}
+          {
+}
           {(concern.more ?? 0) > 0 && (
             <>
               {" "}
@@ -147,9 +124,6 @@ export function HomePage() {
           ))}
         </div>
       ) : apps.error && !apps.data ? (
-        // Not "nothing installed" — the list never loaded at all. Telling
-        // someone their apps are gone because of a moment's outage is worse
-        // than telling them nothing.
         <ServiceTrouble onRetry={apps.refresh} />
       ) : installed.length === 0 ? (
         <EmptyState

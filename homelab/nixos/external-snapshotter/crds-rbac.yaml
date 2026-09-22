@@ -99,10 +99,7 @@ spec:
       name: Age
       type: date
     name: v1beta1
-    # This indicates the v1beta1 version of the custom resource is deprecated.
-    # API requests to this version receive a warning in the server response.
     deprecated: true
-    # This overrides the default warning returned to clients making v1beta1 API requests.
     deprecationWarning: "snapshot.storage.k8s.io/v1beta1 VolumeSnapshotClass is deprecated; use snapshot.storage.k8s.io/v1 VolumeSnapshotClass"
     schema:
       openAPIV3Schema:
@@ -484,10 +481,7 @@ spec:
       name: Age
       type: date
     name: v1beta1
-    # This indicates the v1beta1 version of the custom resource is deprecated.
-    # API requests to this version receive a warning in the server response.
     deprecated: true
-    # This overrides the default warning returned to clients making v1beta1 API requests.
     deprecationWarning: "snapshot.storage.k8s.io/v1beta1 VolumeSnapshotContent is deprecated; use snapshot.storage.k8s.io/v1 VolumeSnapshotContent"
     schema:
       openAPIV3Schema:
@@ -872,10 +866,7 @@ spec:
       name: Age
       type: date
     name: v1beta1
-    # This indicates the v1beta1 version of the custom resource is deprecated.
-    # API requests to this version receive a warning in the server response.
     deprecated: true
-    # This overrides the default warning returned to clients making v1beta1 API requests.
     deprecationWarning: "snapshot.storage.k8s.io/v1beta1 VolumeSnapshot is deprecated; use snapshot.storage.k8s.io/v1 VolumeSnapshot"
     schema:
       openAPIV3Schema:
@@ -949,12 +940,6 @@ status:
     plural: ""
   conditions: []
   storedVersions: []
-# RBAC file for the snapshot controller.
-#
-# The snapshot controller implements the control loop for CSI snapshot functionality.
-# It should be installed as part of the base Kubernetes distribution in an appropriate
-# namespace for components implementing base system functionality. For installing with
-# Vanilla Kubernetes, kube-system makes sense for the namespace.
 
 ---
 apiVersion: v1
@@ -1010,10 +995,6 @@ rules:
     resources: ["volumegroupsnapshots/status"]
     verbs: ["update", "patch"]
 
-  # Enable this RBAC rule only when using distributed snapshotting, i.e. when the enable-distributed-snapshotting flag is set to true
-  # - apiGroups: [""]
-  #   resources: ["nodes"]
-  #   verbs: ["get", "list", "watch"]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

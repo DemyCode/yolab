@@ -8,7 +8,6 @@ export interface ButtonProps
   extends
     Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">,
     VariantProps<typeof buttonClass> {
-  /** Shows a spinner and blocks input, without changing the button's width. */
   loading?: boolean;
   children?: ReactNode;
 }
@@ -33,7 +32,7 @@ export function Button({
       {loading ? (
         <>
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          {/* Keep the label mounted so the button does not resize mid-click. */}
+          {}
           <span className="opacity-70">{children}</span>
         </>
       ) : (

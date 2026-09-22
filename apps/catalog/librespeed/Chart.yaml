@@ -3,8 +3,6 @@ name: librespeed
 description: "Self-hosted internet speed test"
 home: https://librespeed.org
 type: application
-# Chart version — bump on any packaging change. A backup records this, and a restore
-# pins to it, so "which version wrote this data" stops being a guess.
 version: 0.1.1
 
 dependencies:
@@ -12,13 +10,10 @@ dependencies:
     version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
 
-# YoLab metadata Helm has no field for. Chart.yaml's own `icon` wants a URL, so the
-# emoji lives in an annotation alongside the rest.
 annotations:
   yolab.io/display-name: "LibreSpeed"
   yolab.io/icon: "⚡"
   yolab.io/category: "utilities"
-  # RJSF layout hints; the form's schema itself is values.schema.json properties.config.
   yolab.io/uischema: |
     {
       "subdomain": {
@@ -28,7 +23,6 @@ annotations:
         "ui:widget": "PasswordWidget"
       }
     }
-  # Values scraped from pod logs after install (regex, capture group 1).
   yolab.io/outputs: |
     [
       { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" },

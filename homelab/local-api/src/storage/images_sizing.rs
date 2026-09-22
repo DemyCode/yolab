@@ -1,14 +1,3 @@
-//! The image RBD's size arithmetic — shared by `images_rbd::run` (create) and
-//! `images_grow::run` (grow), because computing it twice is how a disagreement
-//! between the two once resized the image in both directions forever.
-//!
-//! It decides how much of the cluster one node's container store may claim.
-//! Getting it wrong walks every machine into full-ratio, which blocks writes
-//! for every app on every node — not something to discover on hardware, hence
-//! the test cases below pin the exact arithmetic from the shell fragment this
-//! replaces (nix/checks.nix's old `images-sizing` check drove the same three
-//! cases against the shell version; these are that check, moved with the code
-//! it was testing).
 
 use serde_json::Value;
 
@@ -20,9 +9,6 @@ pub struct SizingPolicy {
     pub min_size_gb: u64,
 }
 
-/// Number of CRUSH hosts with at least one OSD. Falls back to 1 — never 0 —
-/// so a cluster the tree can't be read from still gets a sane ceiling instead
-/// of one that divides by zero.
 fn host_count(osd_tree: &Value) -> u64 {
     let n = osd_tree["nodes"]
         .as_array()
@@ -42,15 +28,10 @@ fn host_count(osd_tree: &Value) -> u64 {
     }
 }
 
-/// `None` means "could not read pool capacity" — the caller's cue to size
-/// nothing this tick rather than substitute a default that could shrink a
-/// live image.
 fn total_mb(df: &Value) -> Option<u64> {
     df["stats"]["total_bytes"].as_u64().map(|b| b / 1_048_576)
 }
 
-/// Replica count for `pool_name`. Falls back to 1 — never 0 — for the same
-/// reason as `host_count`: dividing usable capacity by zero must never happen.
 fn replica_count(pool_size: &Value) -> u64 {
     match pool_size["size"].as_u64() {
         Some(n) if n > 0 => n,
@@ -58,11 +39,6 @@ fn replica_count(pool_size: &Value) -> u64 {
     }
 }
 
-/// The pure arithmetic: usable capacity (raw / replicas), the owner's share of
-/// it, floored at `min_size_gb` and capped so no single node's image can eat
-/// more than half of what `hosts` machines share. The ceiling applies LAST —
-/// exceeding it is the full-ratio failure this module exists to prevent, so it
-/// beats the floor when the two conflict.
 fn want_mb(total_mb: u64, replicas: u64, hosts: u64, share_of_pool: f64, min_size_gb: u64) -> u64 {
     let usable_mb = total_mb / replicas;
     let want = (usable_mb as f64 * share_of_pool) as u64;
@@ -72,9 +48,6 @@ fn want_mb(total_mb: u64, replicas: u64, hosts: u64, share_of_pool: f64, min_siz
     want.min(cap_mb)
 }
 
-/// Runs the three `ceph` reads and applies `want_mb`. `Ok(None)` is the
-/// "nothing to size yet" case (unreachable cluster or unreadable capacity),
-/// which callers must treat as "do nothing this tick", not as an error.
 pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> anyhow::Result<Option<u64>> {
     let hosts = host
         .ceph_json(&["osd", "tree"])
@@ -144,7 +117,6 @@ mod tests {
         assert_eq!(replica_count(&serde_json::json!({"size": 3})), 3);
     }
 
-    // ── want_mb: the exact cases the old shell-driven nix check pinned ────────
 
     #[test]
     fn one_copy_gets_a_quarter_of_the_pool() {
@@ -161,16 +133,12 @@ mod tests {
 
     #[test]
     fn the_ceiling_beats_the_floor_on_a_small_pool() {
-        // 4 hosts sharing a tiny pool: the ceiling (usable / (hosts*2)) must
-        // win even though it lands below the 40G floor.
         let tiny = want_mb(1000, 2, 4, 0.25, 40);
         assert!(tiny <= 1000 / 2 / (4 * 2));
     }
 
     #[test]
     fn the_floor_wins_when_the_pool_is_merely_small_not_tiny() {
-        // Plenty of ceiling room, but the share alone would undercut the
-        // floor — the floor must raise it.
         let got = want_mb(100_000, 1, 1, 0.01, 40);
         assert_eq!(got, 40 * 1024);
     }

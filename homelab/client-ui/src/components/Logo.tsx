@@ -1,17 +1,5 @@
 import { cn } from "@/lib/utils";
 
-/**
- * The mark: a house whose body is a server rack.
- *
- * It has to say both halves of what this thing is — the machine in the
- * cupboard, and the fact that the cupboard is yours. A pure house is a smart
- * thermostat; a pure rack is a datacentre. The pitched roof over three stacked
- * units with their status lights is the whole product in one glyph, and it
- * still reads at 20px in a sidebar.
- *
- * Drawn rather than emoji because 🏡 renders as a different picture on every
- * platform, which is the opposite of a logo.
- */
 export function Logo({ className }: { className?: string }) {
   return (
     <svg
@@ -20,7 +8,7 @@ export function Logo({ className }: { className?: string }) {
       className={cn("text-primary", className)}
       aria-hidden
     >
-      {/* Roof */}
+      {}
       <path
         d="M3.5 14.2 16 4.2l12.5 10"
         stroke="currentColor"
@@ -28,7 +16,7 @@ export function Logo({ className }: { className?: string }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {/* Body */}
+      {}
       <rect
         x="6.4"
         y="14.6"
@@ -38,7 +26,7 @@ export function Logo({ className }: { className?: string }) {
         stroke="currentColor"
         strokeWidth="2.4"
       />
-      {/* Rack units: a divider and a status light each */}
+      {}
       <path
         d="M6.4 21.2h19.2"
         stroke="currentColor"
@@ -51,7 +39,6 @@ export function Logo({ className }: { className?: string }) {
   );
 }
 
-/** Mark plus name, for the sidebar and the sign-in screen. */
 export function Wordmark({
   className,
   size = "md",

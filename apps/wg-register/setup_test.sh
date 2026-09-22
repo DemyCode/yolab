@@ -1,15 +1,4 @@
 #!/bin/sh
-# Tests for setup.sh — the init container that runs on every app install and on
-# every restart of every app. It decides whether to reuse a cached tunnel or
-# register a new one, and getting that wrong is not a failed install: it is an
-# app that silently loses its public address, or one that goes offline during a
-# platform outage it should have ridden out.
-#
-# `curl` and `wg` are replaced with stubs on PATH, so no network and no kernel
-# module are involved. Everything else — jq, the shell, the file writing — is
-# the real thing.
-#
-# Run:  sh apps/wg-register/setup_test.sh
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -17,22 +6,12 @@ SETUP="$HERE/setup.sh"
 PASS=0
 FAIL=0
 
-# ── Harness ───────────────────────────────────────────────────────────────────
 
-# Sets up a sandbox: stub binaries, empty state, canned platform responses.
 new_sandbox() {
-    # Exported here rather than on run_setup's env prefix: the curl stub reads it,
-    # and a prefix assignment is not visible to the other assignments beside it.
     SANDBOX=$(mktemp -d)
     export SANDBOX
     mkdir -p "$SANDBOX/bin" "$SANDBOX/state" "$SANDBOX/resp"
 
-    # curl stub. Dispatches on the request to a canned response file:
-    #   resp/verify   — GET  /tunnels/{id}
-    #   resp/create   — POST /tunnels
-    #   resp/records  — POST /tunnels/{id}/records
-    # Each file is "<http_code>\n<body>". Every call is appended to calls.log so
-    # a test can assert what was and was not requested.
     cat >"$SANDBOX/bin/curl" <<'STUB'
 #!/bin/sh
 url=""; method="GET"; code_only=0
@@ -63,7 +42,6 @@ else
 fi
 STUB
 
-    # wg stub — deterministic keys so the written config can be asserted exactly.
     cat >"$SANDBOX/bin/wg" <<'STUB'
 #!/bin/sh
 case "$1" in
@@ -76,13 +54,12 @@ STUB
     : >"$SANDBOX/calls.log"
 }
 
-respond() { # respond <key> <http_code> <body>
+respond() {
     printf '%s\n%s' "$2" "$3" >"$SANDBOX/resp/$1"
 }
 
 write_state() { cat >"$SANDBOX/state/wg-state.json"; }
 
-# Runs setup.sh in the sandbox. Stdout+stderr land in $OUT, exit code in $RC.
 run_setup() {
     OUT="$SANDBOX/output.txt"
     WG_DIR="$SANDBOX/wireguard" \
@@ -97,7 +74,6 @@ run_setup() {
 }
 
 state() { cat "$SANDBOX/state/wg-state.json" 2>/dev/null; }
-# Reads one field, so assertions do not depend on jq's output formatting.
 state_field() { jq -r ".$1 // empty" "$SANDBOX/state/wg-state.json" 2>/dev/null; }
 wg_conf() { cat "$SANDBOX/wireguard/wg0.conf" 2>/dev/null; }
 env_file() { cat "$SANDBOX/yolab/env" 2>/dev/null; }
@@ -109,7 +85,7 @@ bad() {
     printf 'FAIL %s\n     %s\n' "$CASE" "$1"
 }
 
-assert_contains() { # assert_contains <haystack> <needle> <what>
+assert_contains() {
     case "$1" in
     *"$2"*) ok ;;
     *) bad "$3: expected to contain '$2', got: $(printf '%s' "$1" | head -c 300)" ;;
@@ -136,14 +112,12 @@ case_end() {
     unset SERVICE_NAME_OVERRIDE
 }
 
-# Canned platform payloads.
 TUNNEL_BODY='{"tunnel_id":77,"sub_ipv6":"2001:db8::99","wg_server_endpoint":"1.2.3.4:51820","wg_server_public_key":"SERVER-PUB"}'
 RECORD_BODY='{"fqdn":"myapp.example.test"}'
 
 CACHED_STATE='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_private_key":"PRIVKEY-cached",
  "wg_server_endpoint":"9.9.9.9:51820","wg_server_public_key":"CACHED-SERVER-PUB","fqdn":"old.example.test"}'
 
-# ── Fresh registration ────────────────────────────────────────────────────────
 
 case_start "fresh install registers a tunnel and writes every artifact"
 respond create 200 "$TUNNEL_BODY"
@@ -175,8 +149,6 @@ assert_contains "$(env_file)" 'export YOLAB_URL=https://myapp.example.test' "env
 assert_contains "$(env_file)" 'export YOLAB_IPV6=2001:db8::99' "env"
 case_end
 
-# The state file holds a WireGuard private key. Group/world-readable would expose
-# it to anything else sharing the RWX volume.
 case_start "the state file holding the private key is owner-only"
 respond create 200 "$TUNNEL_BODY"
 respond records 200 "$RECORD_BODY"
@@ -196,7 +168,6 @@ assert_contains "$(env_file)" 'export YOLAB_URL=' "env"
 assert_missing "$(env_file)" 'https://' "env should carry no URL"
 case_end
 
-# ── Reuse of a cached tunnel ──────────────────────────────────────────────────
 
 case_start "a tunnel the platform still knows about is reused, not recreated"
 write_state <<EOF
@@ -211,9 +182,6 @@ assert_contains "$(wg_conf)" 'PrivateKey = PRIVKEY-cached' "wg0.conf must use th
 assert_contains "$(wg_conf)" '2001:db8::42/128' "wg0.conf must use the cached address"
 case_end
 
-# A restore brings back state naming an OLD tunnel while the live DNS record may
-# point at a newer one. POST /records is an upsert by name, so re-asserting on
-# every reuse is what makes a restored app reachable again without intervention.
 case_start "reusing a tunnel re-asserts its DNS record"
 write_state <<EOF
 $CACHED_STATE
@@ -238,7 +206,6 @@ assert_contains "$(wg_conf)" 'PRIVKEY-cached' "the tunnel still comes up"
 assert_contains "$(cat "$OUT")" 'WARNING' "the failure is reported"
 case_end
 
-# ── Re-registration ───────────────────────────────────────────────────────────
 
 case_start "a tunnel deleted on the platform is re-registered"
 write_state <<EOF
@@ -266,18 +233,11 @@ assert_not_called "GET verify" "incomplete state must not be verified"
 assert_called "POST create" "re-registration"
 case_end
 
-# ── Surviving a platform outage ───────────────────────────────────────────────
-#
-# The distinction this script exists to make: "the platform said this tunnel is
-# gone" (re-register) versus "the platform did not answer" (keep running). Losing
-# it means every app in the cluster drops its tunnel during an outage of a service
-# it does not otherwise need to be online.
 
 case_start "an unreachable platform does not cost the app its tunnel"
 write_state <<EOF
 $CACHED_STATE
 EOF
-# No verify response file at all — the stub reports 000, curl's "no answer".
 respond records 200 "$RECORD_BODY"
 run_setup
 assert_eq "$RC" "0" "exit code"
@@ -309,10 +269,6 @@ assert_not_called "POST create" "a bad token must not wipe a working tunnel"
 assert_eq "$(state_field tunnel_id)" "42" "cached state must survive"
 case_end
 
-# ── Hard failures ─────────────────────────────────────────────────────────────
-#
-# These must exit non-zero: the init container has to fail so the pod retries,
-# rather than letting the app start with no tunnel and appear healthy.
 
 case_start "a rejected tunnel registration fails the init container"
 respond create 403 '{"detail":"quota exceeded"}'
@@ -340,7 +296,6 @@ if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
 assert_not_called "POST create" "nothing should be requested without a token"
 case_end
 
-# ── Result ────────────────────────────────────────────────────────────────────
 
 echo "wg-register: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

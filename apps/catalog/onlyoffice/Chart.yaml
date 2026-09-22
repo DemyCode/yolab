@@ -14,8 +14,6 @@ annotations:
   yolab.io/category: "productivity"
   yolab.io/uischema: |
     { "subdomain": { "ui:widget": "TunnelWidget" } }
-  # Nextcloud's ONLYOFFICE connector asks for this secret. It is generated here and
-  # printed once so it can be copied across without anyone inventing their own.
   yolab.io/outputs: |
     [
       { "key": "jwt_secret", "label": "Connector secret", "type": "text", "pattern": "YOLAB_OUTPUT jwt_secret (\\S+)" },

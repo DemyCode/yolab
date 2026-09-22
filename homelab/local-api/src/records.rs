@@ -1,29 +1,3 @@
-//! JSON records kept in a ConfigMap: backup history, restore history, storage
-//! recovery state.
-//!
-//! THE BUG THIS EXISTS TO MAKE IMPOSSIBLE
-//!
-//! Each of those used to be a hand-written `read_sets()` / `write_sets()` pair:
-//!
-//! ```text
-//! let Ok(v) = kubectl get configmap … else { return Vec::new() };   // read
-//! let _ = kubectl apply -f - <whole list>;                           // write
-//! ```
-//!
-//! An API blip during the read returned `[]`; the next write then applied a
-//! one-element list over the whole history. For restores that history includes
-//! the replica counts the watchdog needs to bring a crashed restore's app back up
-//! — so one failed read could leave an app at zero replicas for good. And two
-//! writers (two tasks, or two nodes) each applied their own copy: last one wins,
-//! the other's update vanishes.
-//!
-//! Here:
-//!   - A read that fails is an error. Only NotFound (never created) is empty.
-//!   - A write is a compare-and-swap on `metadata.resourceVersion`
-//!     (`kubectl replace`), retried from a fresh read on conflict, so concurrent
-//!     updates compose instead of overwriting each other.
-//!   - Content that does not parse is never silently discarded: an update moves
-//!     it aside under `<key>.corrupt` so the evidence survives, and says so.
 
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -31,7 +5,6 @@ use serde_json::{json, Value};
 use crate::exec::CmdError;
 use crate::host::Host;
 
-/// How many times an update re-reads and retries after losing a race.
 const CAS_ATTEMPTS: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
@@ -43,11 +16,8 @@ pub struct Store {
 
 #[derive(Debug)]
 pub enum RecordError {
-    /// The ConfigMap could not be read or written.
     Cluster(CmdError),
-    /// It was read, but its content is not what we wrote.
     Corrupt { store: String, detail: String },
-    /// Every compare-and-swap attempt lost a race.
     Contended { store: String },
 }
 
@@ -126,8 +96,6 @@ impl Store {
         })
     }
 
-    /// The stored value. `T::default()` only when the ConfigMap or key has never
-    /// been written.
     pub async fn read<H: Host, T: DeserializeOwned + Default>(
         &self,
         host: &H,
@@ -142,9 +110,6 @@ impl Store {
         }
     }
 
-    /// Read, apply `f`, write back — atomically with respect to every other
-    /// writer. `f` may run more than once (on a lost race), so it must be a pure
-    /// function of the value it is given.
     pub async fn update<H, T, R>(
         &self,
         host: &H,
@@ -182,12 +147,6 @@ impl Store {
             let before = encode(&value)?;
             let result = f(&mut value);
             let body = encode(&value)?;
-            // The closure changed nothing: no write. One that decides inside the
-            // swap not to act (a watchdog that lost the race, a refused start) must
-            // not bump the resourceVersion and turn every concurrent writer's swap
-            // into a conflict for nothing. Compared against the value as parsed,
-            // not the stored text, which another writer may have formatted
-            // differently. Unreadable content is always rewritten, to move it aside.
             if corrupt.is_none() && before == body {
                 return Ok(result);
             }
@@ -196,8 +155,6 @@ impl Store {
                 corrupt.as_deref(),
                 loaded.resource_version.as_deref(),
             );
-            // `replace` without a resourceVersion is an unconditional overwrite, not a
-            // compare-and-swap — exactly the lost update this module exists to prevent.
             if loaded.exists && loaded.resource_version.is_none() {
                 return Err(RecordError::Cluster(CmdError::parse(
                     format!("kubectl get configmap {}", self.name),
@@ -317,7 +274,6 @@ mod tests {
             })
             .await
             .unwrap();
-        // The second attempt saw the other writer's "b" and kept it.
         assert_eq!(
             seen.last().unwrap(),
             &vec!["a".to_string(), "b".to_string()]

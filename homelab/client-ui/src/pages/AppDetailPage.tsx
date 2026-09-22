@@ -62,8 +62,6 @@ function CopyValue({ label, value }: { label: string; value: string }) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1600);
           } catch {
-            /* clipboard is blocked outside a secure context; the value is
-               still selectable, which is the point of showing it in full */
           }
         }}
         className="shrink-0 rounded-lg p-2.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
@@ -79,7 +77,6 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Pods, logs and the values it was installed with. */
 function TechnicalDetails({ app }: { app: AppInfo }) {
   const [open, setOpen] = useState(false);
   const [pods, setPods] = useState<PodInfo[] | null>(null);
@@ -91,17 +88,6 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   const logStream = useRef<AbortController | null>(null);
   const logBox = useRef<HTMLPreElement | null>(null);
 
-  /**
-   * Follow one pod's logs.
-   *
-   * This used to call `api.getText`, which waits for a complete response body — but
-   * the endpoint is an SSE stream running `kubectl logs --follow`, so the body never
-   * ends and the promise never settled. The panel rendered `{text || "…"}` and showed
-   * three dots forever, whatever the pod was actually saying.
-   *
-   * Lines are capped rather than accumulated without limit: a chatty pod left open in
-   * a background tab is otherwise an unbounded array.
-   */
   const MAX_LOG_LINES = 1000;
 
   function stopLogs() {
@@ -111,8 +97,6 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   }
 
   function startLogs(pod: string) {
-    // Only one at a time — switching pods must not leave the previous kubectl
-    // running on the server with nobody reading it.
     logStream.current?.abort();
     const ctrl = new AbortController();
     logStream.current = ctrl;
@@ -130,8 +114,6 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
       },
     )
       .then(() => {
-        // The stream ending means kubectl exited — the pod went away, or it was a
-        // one-shot container. Say so rather than leaving it looking live.
         if (logStream.current === ctrl) {
           setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
         }
@@ -143,10 +125,8 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
       });
   }
 
-  // Leaving the page must not leave kubectl following logs nobody is reading.
   useEffect(() => () => logStream.current?.abort(), []);
 
-  // Follow the tail as lines arrive, the way a terminal would.
   useEffect(() => {
     const el = logBox.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -247,8 +227,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                 {logs.lines.length > 0
                   ? logs.lines.join("\n")
                   : logs.live
-                    ? // An app that has printed nothing yet is a normal state and looks
-                      // identical to a broken viewer, so it has to say which it is.
+                    ?
                       "Connected — waiting for this app to print something…"
                     : "This app printed nothing."}
               </pre>
@@ -312,8 +291,6 @@ function RestoreDialog({
     setSelected(null);
     setError(null);
     setSnapshots(null);
-    // Scoped to this app: it can only be restored to a point in time it existed
-    // at, and offering the rest invites picking one that cannot work.
     fetch(
       "/api/backups/snapshots?namespace=" +
         encodeURIComponent(`yolab-${instanceName}`),
@@ -327,9 +304,6 @@ function RestoreDialog({
         if (snaps.length > 0) setSelected(snaps[0].id);
       })
       .catch(() => setSnapshots([]));
-    // `instanceName` is in here because the request is now scoped to it: without
-    // it, a dialog reopened for a different app would show the first one's
-    // restore points.
   }, [open, instanceName]);
 
   async function confirm() {
@@ -421,15 +395,6 @@ function backupWhen(iso: string | null): string {
   return formatDateTime(iso);
 }
 
-/**
- * One app's backup: its own button and its own schedule.
- *
- * Backups used to be one cluster-wide run on one clock. An app page could only
- * restore, never back up on demand, and every app shared a 24-hour interval. The
- * schedule is a cron expression because "daily at 3am" is not the only shape a
- * homelab wants, and the backend validates it so a typo is rejected here rather
- * than silently skipped forever.
- */
 function BackupCard({
   app,
   onChanged,
@@ -589,8 +554,6 @@ export function AppDetailPage() {
   const app = apps.data?.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
 
-  // Poll this app's restore record so the page can say "restoring this app" the
-  // moment one starts (from this tab or another), and clear it when it finishes.
   useEffect(() => {
     if (!instanceName) return;
     let cancelled = false;
@@ -603,7 +566,6 @@ export function AppDetailPage() {
         const mine = list.find((r) => r.namespace === `yolab-${instanceName}`);
         setRestore(mine ?? null);
       } catch {
-        /* network blip */
       }
     }
     void pollRestore();
@@ -614,9 +576,6 @@ export function AppDetailPage() {
     };
   }, [instanceName]);
 
-  // Depends on `refresh` rather than the whole resource: the resource object is
-  // a new identity every render, which would make `scan` — and the effect below
-  // that lists it — churn on every poll tick.
   const refreshApps = apps.refresh;
   const scan = useCallback(async () => {
     if (!instanceName) return;
@@ -627,17 +586,11 @@ export function AppDetailPage() {
       );
       await refreshApps();
     } catch {
-      // Scanning reads pod logs; before the pod is up there is nothing to
-      // read, and that is a normal state rather than a failure worth showing.
     } finally {
       setScanning(false);
     }
   }, [instanceName, refreshApps]);
 
-  // Scan once automatically when a running app has details it should have but
-  // does not. The old UI shipped a "Scan outputs" button and an install
-  // message telling people to press it — an internal step that had leaked into
-  // the product. Nobody should have to know what an output is.
   const autoScanned = useRef<string | null>(null);
   useEffect(() => {
     if (!app || state !== "ready") return;
@@ -655,9 +608,6 @@ export function AppDetailPage() {
     );
   }
 
-  // Checked before "not found": the list failing to load at all is not the
-  // same fact as this app genuinely being gone, and must not be reported as
-  // one — see ServiceTrouble's doc comment.
   if (apps.error && !apps.data) {
     return (
       <Page>
@@ -776,9 +726,8 @@ export function AppDetailPage() {
         </Banner>
       )}
 
-      {/* Links. An app is not one link — a chart can publish several, and a
-          bundle of apps will publish many. They are all offered, rather than
-          the first one being treated as "the" address. */}
+      {
+}
       {links.length > 0 && (
         <div className="mb-4 space-y-2">
           {links.map((link, i) => (
@@ -818,19 +767,14 @@ export function AppDetailPage() {
         </div>
       )}
 
-      {/* Everything that is not a link: a server address to paste into a game,
-          an IPv6, a generated credential. For minecraft and valheim this is
-          the entire reason to open this page. */}
+      {
+}
       {factRows.length > 0 && (
         <Card className="mb-4 divide-y divide-border p-0">
           {factRows.map((f) =>
             f.value !== null ? (
               <CopyValue key={f.key} label={f.label} value={f.value} />
             ) : (
-              // Declared by the chart but not scraped yet. Shown rather than
-              // hidden so the label itself tells you what is coming — "you will
-              // get a temporary password" is the answer to the only question
-              // someone has while the app is starting.
               <div
                 key={f.key}
                 className="flex items-center justify-between gap-3 p-4"
@@ -879,8 +823,6 @@ export function AppDetailPage() {
             <Badge variant="muted">copy named “{instanceStem(app)}”</Badge>
           )}
           {entry.repo !== "official" && (
-            // A chart from a repo the user added can create arbitrary cluster
-            // objects. Saying where this one came from is the minimum.
             <Badge variant="warning">from {entry.repo}</Badge>
           )}
         </div>

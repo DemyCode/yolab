@@ -12,25 +12,7 @@ import { AppSources } from "@/components/AppSources";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
-/**
- * Already having an app is not a reason to be refused another.
- *
- * The first version greyed out anything installed, which quietly forbade a
- * perfectly ordinary thing: a family photo library and a private one, a work
- * password vault and a personal one, a test blog beside the real one. The
- * backend never had that limitation — every install gets its own namespace —
- * so the card stays clickable and just says how many you already have.
- */
 
-/**
- * The catalog, as a shop rather than a chart index.
- *
- * Two things do the work here. Apps are described by what they replace rather
- * than by what they are ("Your photos, like Google Photos" instead of
- * "Self-hosted photo and video backup"), and they are grouped by what someone
- * came looking for rather than by the chart's `category` annotation, which was
- * written for us and not for them.
- */
 export function DiscoverPage() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -39,16 +21,12 @@ export function DiscoverPage() {
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   const apps = useApi<AppInfo[]>("apps", "/api/apps");
 
-  /** chart id → how many copies are installed. */
   const installedCounts = useMemo(
     () => installedByChart(apps.data),
     [apps.data],
   );
 
   const grouped = useMemo(() => {
-    // Browsing shows everything; narrowing is the search page's job. Built
-    // inside the memo because `?? []` is a fresh array every render, which
-    // meant this never memoised.
     const matches = catalog.data ?? [];
     const byGroup = new Map<string, CatalogApp[]>();
     for (const app of matches) {
@@ -70,10 +48,8 @@ export function DiscoverPage() {
       title="Add a service"
       subtitle="Everything here runs at home, on your own machines."
     >
-      {/* Typing here hands off to the search page rather than filtering in place.
-          Browsing and narrowing want different layouts — one wants grouping and
-          room, the other wants a flat ranked list — and this page trying to be
-          both is what turned it into 70 unknown names under a search box. */}
+      {
+}
       <div className="mb-4 flex gap-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
@@ -165,8 +141,8 @@ export function DiscoverPage() {
         </div>
       )}
 
-      {/* Refreshing the catalog after a source changes, so a newly added one's
-          apps appear in the grid above without a reload. */}
+      {
+}
       <AppSources onChanged={() => void catalog.refresh()} />
     </Page>
   );

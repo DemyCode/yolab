@@ -1,15 +1,3 @@
-//! Typed shapes of the Ceph JSON this crate acts on.
-//!
-//! Before this, every reader indexed a `serde_json::Value`:
-//! `v["num_up_osds"].as_u64().unwrap_or(0)`. A renamed field, a Ceph release
-//! that nests the list one level deeper, or a truncated answer all produced the
-//! same silent zero — and zero is an ANSWER ("no OSDs up", "no pools", "cluster
-//! empty") that callers act on.
-//!
-//! Here a field the decision depends on is required: if Ceph stops sending it
-//! the parse fails, `?` propagates, and the caller does nothing this tick. Only
-//! fields Ceph genuinely omits in normal operation carry `#[serde(default)]`,
-//! and each says why.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -17,7 +5,6 @@ use serde::{Deserialize, Deserializer};
 
 use crate::exec::{self, CmdError};
 
-// ── ceph osd dump ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct OsdDump {
@@ -44,7 +31,6 @@ pub struct PoolEntry {
     pub min_size: u32,
 }
 
-/// Ceph encodes up/in as 0/1 integers.
 fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     let n = i64::deserialize(d)?;
     match n {
@@ -69,7 +55,6 @@ impl OsdDump {
     }
 }
 
-// ── ceph pg dump pgs_brief ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct PgBrief {
@@ -86,8 +71,6 @@ impl PgBrief {
         pool_of(&self.pgid)
     }
 
-    /// Where the data lives: the acting set, or the up set when Ceph has not
-    /// filled in acting. Empty when neither is known.
     pub fn holders(&self) -> &[i64] {
         if self.acting.is_empty() {
             &self.up
@@ -101,8 +84,6 @@ pub fn pool_of(pgid: &str) -> Option<i64> {
     pgid.split('.').next()?.parse().ok()
 }
 
-/// `pgs_brief` is a bare array on some releases and `{"pg_stats": [...]}` on
-/// others. Both are accepted; anything else is a parse error.
 pub fn parse_pgs_brief(cmd: &str, raw: &str) -> Result<Vec<PgBrief>, CmdError> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -118,11 +99,6 @@ pub fn parse_pgs_brief(cmd: &str, raw: &str) -> Result<Vec<PgBrief>, CmdError> {
 
 pub type PgsByPool = BTreeMap<String, BTreeSet<String>>;
 
-/// Placement groups whose every holder is down, by pool name, and those holders.
-///
-/// Read while the OSDs are still `in`: that is when the acting set still names
-/// where the data was. A group Ceph merely has no statistics for (`unknown`,
-/// right after a mgr restart) still maps to its live holders, so it never counts.
 pub fn lost_pgs(dump: &OsdDump, pgs: &[PgBrief]) -> (PgsByPool, BTreeSet<i64>) {
     let down = dump.down();
     let names = dump.pool_names();
@@ -147,7 +123,6 @@ pub fn lost_pgs(dump: &OsdDump, pgs: &[PgBrief]) -> (PgsByPool, BTreeSet<i64>) {
     (lost, holders)
 }
 
-// ── small answers ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct OsdStat {
@@ -161,14 +136,11 @@ pub struct FsEntry {
     pub name: String,
 }
 
-/// `ceph osd safe-to-destroy osd.N -f json` when Ceph agrees. When it does not,
-/// ceph exits EBUSY instead, which `exec::classify` reports as `Failure::Busy`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SafeToDestroyReport {
     pub safe_to_destroy: Vec<i64>,
 }
 
-// ── ceph-volume lvm list ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LvmVolume {
@@ -187,10 +159,6 @@ impl LvmVolume {
     }
 }
 
-/// OSD id → its volumes. ceph-volume prints `-->` progress lines before the
-/// JSON, so anything before the first `{` is discarded. No `{` at all is a
-/// parse error, never "no OSDs": the whole safety of the disk reconciler rests
-/// on never reading a failed listing as an empty one.
 pub fn parse_lvm_list(raw: &str) -> Result<BTreeMap<i64, Vec<LvmVolume>>, CmdError> {
     const CMD: &str = "ceph-volume lvm list --format json";
     let start = raw

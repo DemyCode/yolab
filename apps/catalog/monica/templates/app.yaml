@@ -49,10 +49,7 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
 ---
-{{- /* Listens on 80, which Caddy already binds in the gateway pod — containers
-       in a pod share one network namespace, so this cannot live beside it. Running
-       here instead means it has no access to the gateway's /yolab/env emptyDir, so
-       yolabEnvInit reconstructs the same file from the shared PVC. */}}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:

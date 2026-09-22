@@ -5,8 +5,6 @@ PLATFORM_API_URL="${PLATFORM_API_URL:?PLATFORM_API_URL is required}"
 ACCOUNT_TOKEN="${ACCOUNT_TOKEN:?ACCOUNT_TOKEN is required}"
 SERVICE_NAME="${SERVICE_NAME:-}"
 
-# Overridable only so setup_test.sh can drive the script against a temp tree.
-# Nothing sets these in the container, so the defaults are what actually ship.
 WG_DIR="${WG_DIR:-/wireguard}"
 YOLAB_DIR="${YOLAB_DIR:-/yolab}"
 STATE_FILE="${STATE_FILE:-/state/wg-state.json}"
@@ -31,14 +29,6 @@ if [ -f "$STATE_FILE" ]; then
     fi
 fi
 
-# Verify the cached tunnel still exists on the platform before committing to reuse.
-# The platform DB may have been reset, or the tunnel deleted externally.
-#
-# Distinction matters:
-#   404 → tunnel explicitly deleted on the platform → must re-register
-#   200 → tunnel valid, reuse it
-#   anything else (000 = timeout, 5xx, network error) → platform is temporarily
-#   unreachable; keep the cached state so the app survives reboots during outages
 if [ "$REUSE" = "1" ]; then
     VERIFY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
         -H "Authorization: Bearer $ACCOUNT_TOKEN" \
@@ -51,26 +41,9 @@ if [ "$REUSE" = "1" ]; then
         REUSE=0
     else
         echo "Platform returned HTTP $VERIFY_HTTP (unreachable or error), reusing cached state to stay online."
-        # REUSE stays 1 — we proceed with the cached WireGuard credentials.
-        # The app will keep working; re-registration happens on the next pod restart
-        # once the platform is back.
     fi
 fi
 
-# Re-assert the DNS binding whenever we reuse a tunnel.
-#
-# The tunnel existing on the platform (200 above) does NOT prove the DNS record
-# still points at *this* tunnel's IPv6. After a backup restore, the cached state
-# carries an OLD tunnel/IPv6, while the live DNS record for this service name may
-# have been repointed at a newer tunnel — leaving the app unreachable even though
-# the reused tunnel is valid. POST /records is idempotent for the SAME tunnel
-# (it updates that tunnel's own record in place), so re-asserting here makes the
-# DNS name always resolve to whatever tunnel we are actually running. This is
-# what makes "restore" self-healing: no manual state cleanup required.
-#
-# A name held by a DIFFERENT tunnel is now a 409, not a silent takeover. On the
-# reuse path that is deliberately non-fatal below: the other app owns the name,
-# and the next real change of name (or an uninstall) clears the conflict.
 if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
     echo "Re-asserting DNS record '$SERVICE_NAME' -> $SUB_IPV6..."
     REASSERT_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
@@ -82,13 +55,10 @@ if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
     REASSERT_BODY=$(printf '%s' "$REASSERT_RESP" | head -n -1)
     if [ "$REASSERT_HTTP" -ge 200 ] && [ "$REASSERT_HTTP" -lt 300 ]; then
         FQDN=$(printf '%s' "$REASSERT_BODY" | jq -r .fqdn)
-        # Persist the (possibly refreshed) FQDN back to state.
         TMP_STATE=$(mktemp)
         jq --arg fqdn "$FQDN" '.fqdn = $fqdn' "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
         echo "DNS record re-asserted: $FQDN -> $SUB_IPV6"
     else
-        # Non-fatal: keep serving with cached state. If DNS was already correct the
-        # app stays reachable; if it had drifted, the next restart retries.
         echo "WARNING: DNS re-assert returned HTTP $REASSERT_HTTP: $REASSERT_BODY (continuing with cached state)"
     fi
 fi
@@ -126,10 +96,6 @@ if [ "$REUSE" = "0" ]; then
         RECORD_BODY=$(printf '%s' "$RECORD_RESP" | head -n -1)
         if [ "$RECORD_HTTP" -lt 200 ] || [ "$RECORD_HTTP" -ge 300 ]; then
             echo "ERROR: POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" >&2
-            # The tunnel was created a moment ago and exists only to carry this
-            # name. The state file is written below, so every crash-loop retry
-            # takes this same fresh path — leaving the tunnel behind would leak
-            # one tunnel + IPv6 per retry. Delete it, best-effort, then fail.
             curl -s -o /dev/null --max-time 10 -X DELETE \
                 -H "Authorization: Bearer $ACCOUNT_TOKEN" \
                 "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || true

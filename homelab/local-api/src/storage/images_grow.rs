@@ -1,13 +1,3 @@
-//! Grow the images RBD as the Ceph pool grows.
-//!
-//! Without this the feature is inert: add a disk, the pool grows, and the
-//! image store stays exactly the same size forever. Only ever grows —
-//! shrinking a mounted filesystem under a running containerd would corrupt
-//! it, and a pool that shrank (a disk was removed) is exactly when you least
-//! want to be truncating the image store.
-//!
-//! Every step checks the one before it: `rbd resize` reporting failure used to
-//! come back as `Ok` with `success == false`, and `xfs_growfs` ran anyway.
 
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -42,17 +32,12 @@ pub async fn run<H: Host>(
     node: &str,
     policy: &GrowPolicy,
 ) -> Result<()> {
-    // Can land during bootstrap before the admin keyring exists, or on a boot
-    // where the store never mounted. Both are normal states, not failures.
     if !host.reachable().await {
         tracing::info!("images-grow: ceph not reachable yet — nothing to grow");
         return Ok(());
     }
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
-    // The mount table, never `mountpoint -q`: that stat()s the path, and on a
-    // shut-down XFS the stat fails, so it answered "not mounted" about a mount
-    // that was very much there. See containerd_store::is_mountpoint.
     let source = host
         .run_cmd("findmnt", &["-rno", "SOURCE", "--mountpoint", &croot_s])
         .await?;
@@ -119,7 +104,7 @@ mod tests {
 
     #[test]
     fn current_size_mb_converts_bytes_to_mb() {
-        let v = serde_json::json!({"size": 41_943_040_000u64}); // 40000 MB
+        let v = serde_json::json!({"size": 41_943_040_000u64});
         assert_eq!(current_size_mb(&v), Some(40_000));
     }
 
@@ -151,12 +136,12 @@ mod tests {
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok("findmnt -rno SOURCE --mountpoint", "/dev/rbd0\n")
-            .ok("rbd info images/yolab-n1", r#"{"size":41943040000}"#) // 40000MB
+            .ok("rbd info images/yolab-n1", r#"{"size":41943040000}"#)
             .ok(
                 "ceph osd tree",
                 r#"{"nodes":[{"type":"host","children":[1]}]}"#,
             )
-            .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#) // -> want 100000MB
+            .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#)
             .ok("ceph osd pool get images size", r#"{"size":1}"#)
             .ok("rbd resize", "")
             .ok("xfs_growfs", "");
@@ -211,12 +196,12 @@ mod tests {
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok("findmnt -rno SOURCE --mountpoint", "/dev/rbd0\n")
-            .ok("rbd info images/yolab-n1", r#"{"size":419430400000}"#) // 400000MB, already large
+            .ok("rbd info images/yolab-n1", r#"{"size":419430400000}"#)
             .ok(
                 "ceph osd tree",
                 r#"{"nodes":[{"type":"host","children":[1]}]}"#,
             )
-            .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#) // want only 100000MB
+            .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#)
             .ok("ceph osd pool get images size", r#"{"size":1}"#);
 
         run(

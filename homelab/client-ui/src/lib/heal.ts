@@ -1,6 +1,5 @@
 import { useApi } from "@/lib/useResource";
 
-/** A machine's part in a heal — see heal/member.rs `ResetView`. */
 export interface MachineReset {
   heal_id: string;
   driver: string;
@@ -8,12 +7,10 @@ export interface MachineReset {
   error: string | null;
 }
 
-/** `GET /api/heal` — see heal/mod.rs `status_json`. */
 export interface HealStatus {
   survey: {
     me: string;
     machines: {
-      /** Its name, or its address when no list knew its name. */
       label: string;
       name: string | null;
       addr: string;
@@ -21,22 +18,18 @@ export interface HealStatus {
       answers: boolean;
       reset: MachineReset | null;
     }[];
-    /** Lists of machines that could not be read, and why. */
     unreadable: string[];
     ceph_quorum: boolean;
     kubernetes: boolean;
     uptime_secs: number;
-    /** Known only while Ceph has a quorum. */
     lost_groups: number | null;
   };
   problems: HealProblem[];
-  /** Why a heal cannot start from this machine right now, if it cannot. */
   refusal: string | null;
   plan: {
     keep_machines: string[];
     remove_machines: string[];
   };
-  /** The heal this machine drives, or drove last. */
   heal: Heal | null;
 }
 
@@ -49,16 +42,13 @@ export interface Heal {
   id: string;
   driver: string;
   running: boolean;
-  /** Why the heal was abandoned and undone, when it was. */
   failed: string | null;
   started_at: number;
   finished_at: number | null;
   step: HealStep;
-  /** The steps of a heal that succeeds, in order. */
   steps: HealStep[];
   members: string[];
   removed_machines: string[];
-  /** What the current step is waiting for, or why it failed last. */
   waiting: string | null;
 }
 
@@ -77,7 +67,6 @@ export const HEAL_PROBLEM_LABELS: Record<HealProblem, string> = {
   data_unreachable: "Some of your files have no reachable copy",
 };
 
-/** The heal another machine is carrying out on this one, if any. */
 export function healedFrom(status: HealStatus): MachineReset | null {
   const me = status.survey.machines.find((m) => m.this_machine);
   const reset = me?.reset;

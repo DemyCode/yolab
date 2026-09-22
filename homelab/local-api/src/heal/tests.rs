@@ -9,16 +9,13 @@ const MON_STATUS: &str = "ceph daemon mon.node1 mon_status";
 const READYZ: &str = "kubectl get --raw /readyz";
 const NODES: &str = "kubectl get nodes -o json";
 
-/// A machine as the fake network answers for it.
 #[derive(Clone)]
 struct FakeMachine {
     name: String,
     reset: Option<ResetView>,
-    /// Refuses to prepare or arm, with this error.
     refuses: Option<String>,
 }
 
-/// Machines by address. One missing from the map does not answer.
 #[derive(Default)]
 struct FakeNetwork {
     machines: Mutex<HashMap<String, FakeMachine>>,
@@ -210,8 +207,6 @@ fn set(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(|s| s.to_string()).collect()
 }
 
-/// node1 (this machine) and node3 answer; node2 is gone. Ceph has no quorum and
-/// Kubernetes does not answer.
 fn broken_cluster() -> (FakeHost, FakeNetwork) {
     let host = FakeHost::new()
         .ok(
@@ -257,7 +252,6 @@ async fn started(host: &FakeHost, net: &FakeNetwork, record: &LocalRecord) -> He
     .unwrap()
 }
 
-// ── Reading the cluster ──────────────────────────────────────────────────────
 
 #[test]
 fn mon_status_gives_quorum_and_every_mon_with_its_address() {
@@ -308,7 +302,6 @@ fn a_new_fsid_is_a_version_4_uuid() {
 #[tokio::test]
 async fn every_listed_machine_is_asked_and_the_silent_ones_are_left_behind() {
     let (host, mut net) = broken_cluster();
-    // A machine only the platform knows, which does not answer either.
     net.platform.as_mut().unwrap().push(PlatformNode {
         node_id: 14,
         sub_ipv6: "fd00:0::4".into(),
@@ -403,7 +396,6 @@ async fn a_heal_another_answering_machine_drives_is_not_started_over() {
         .unwrap()
         .contains("node3 is already healing"));
 
-    // Its driver is gone: this machine may take over.
     net.machines
         .lock()
         .unwrap()
@@ -417,7 +409,6 @@ async fn a_heal_another_answering_machine_drives_is_not_started_over() {
     assert_eq!(s.refusal(None), None);
 }
 
-// ── Starting ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn a_heal_starts_only_on_what_the_owner_saw() {
@@ -513,7 +504,6 @@ fn the_driver_creates_the_cluster_and_every_other_machine_joins_it() {
     );
 }
 
-// ── Running ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_cluster() {
@@ -522,7 +512,6 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
     started(&host, &net, &record).await;
     let host = host.ok("systemctl reboot", "");
 
-    // Prepare: every machine is asked, this one too, then waited for.
     tick(&host, &net, &record, "boot1", NOW + 10).await.unwrap();
     let calls = net.calls();
     assert!(
@@ -538,12 +527,10 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
     assert_eq!(heal.step, Step::Prepare);
     assert!(heal.waiting.unwrap().contains("preparing"));
 
-    // One is prepared, the other not yet: still nothing armed.
     net.set_phase("fd00::3", "ab12", PhaseView::Prepared, None);
     tick(&host, &net, &record, "boot1", NOW + 15).await.unwrap();
     assert!(!net.calls().iter().any(|c| c.starts_with("arm")));
 
-    // Prepared everywhere: arm (the driver last), then restart everyone.
     net.set_phase("fd00::1", "ab12", PhaseView::Prepared, None);
     tick(&host, &net, &record, "boot1", NOW + 20).await.unwrap();
     let calls = net.calls();
@@ -559,7 +546,6 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
     assert_eq!(heal.step, Step::Rebuild);
     assert_eq!(heal.restart_boot_id.as_deref(), Some("boot1"));
 
-    // Back up in a new boot, before Kubernetes is.
     net.set_phase("fd00::3", "ab12", PhaseView::Restarted, None);
     let host = FakeHost::new().fail(READYZ, "refused");
     tick(&host, &net, &record, "boot2", NOW + 300)
@@ -573,7 +559,6 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
         .unwrap()
         .contains("Kubernetes is starting"));
 
-    // Kubernetes answers, node3 has not joined yet.
     let host = FakeHost::new()
         .ok(READYZ, "ok")
         .ok(NODES, &nodes_json(&["node1"]));
@@ -588,7 +573,6 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
         .iter()
         .any(|c| c.starts_with("delete platform node")));
 
-    // Everyone is in: node2 leaves the platform, and the heal is done.
     let host = FakeHost::new()
         .ok(READYZ, "ok")
         .ok(NODES, &nodes_json(&["node1", "node3"]));
@@ -707,7 +691,6 @@ async fn an_undo_keeps_trying_a_machine_that_does_not_answer() {
     assert!(heal.running());
     assert!(heal.waiting.unwrap().contains("node3"));
 
-    // A new heal may replace it: nothing is half-done any more.
     assert!(Step::Undo.replaceable() && Step::Rebuild.replaceable());
     assert!(!Step::Arm.replaceable() && !Step::Prepare.replaceable());
 }

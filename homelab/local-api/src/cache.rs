@@ -1,62 +1,3 @@
-//! A caching middleware that answers twice: what we already knew, then the truth.
-//!
-//! WHY THIS EXISTS. Measured on a live, healthy three-node cluster:
-//!
-//!   /api/status              22ms
-//!   /api/nodes              193ms
-//!   /api/disks              309ms
-//!   /api/backups/status     505ms
-//!   /api/ceph/status        931ms
-//!   /api/cluster/health    2016ms
-//!   /api/ceph/detail       5476ms
-//!
-//! None of that is query cost. It is `ceph`, `kubectl` and `systemctl`
-//! processes being spawned and waited on. StoragePage polls `/api/ceph/detail`
-//! every 20s, so it sat blocked on one for better than a quarter of every
-//! window, and each open tab paid separately because nothing sat between them
-//! and the shell. On a DEGRADED cluster these get far worse — `rbd ls` against a
-//! pool with down placement groups does not return at all.
-//!
-//! TWO ANSWERS TO ONE REQUEST. A client that opts in gets an `application/
-//! x-ndjson` stream instead of a single JSON body: one frame with the value we
-//! already had, sent immediately, then a second frame with the value the handler
-//! actually produced. The page paints from the first frame in milliseconds and
-//! corrects itself when the second lands, on one connection, with no second
-//! request and no polling trick.
-//!
-//! That is also what lets this file stay small. An ordinary
-//! stale-while-revalidate cache needs a background task, a re-callable handler
-//! and a flag to stop refreshes piling up. Here the second frame IS the refresh,
-//! so none of that exists: the work happens on the request that wanted it, in
-//! the order the client can use it.
-//!
-//! OPT-IN, because the response shape changes. Only a client sending
-//! `x-yolab-progressive: 1` gets ndjson. Everything else — curl, tests, the
-//! tunnel, any future integration — gets exactly the single JSON body it always
-//! got, served from cache when that is fresh enough and computed when it is not.
-//!
-//! A CACHED VALUE IS NEVER PRESENTED AS A LIVE ONE.
-//!
-//! `useResource` in the client used to render last-known values from
-//! localStorage, and that was deliberately removed for a reason worth repeating:
-//! during an incident a confidently-rendered stale number — "1.2 TB free" from
-//! before a disk failed, a disk still shown "in use" after it was pulled — is
-//! worse than a spinner. This cache is only safe because it never repeats that.
-//! Every single-body response carries
-//!
-//!   x-yolab-cache         hit | miss
-//!   x-yolab-cache-age-ms  how old the body is, 0 on a miss
-//!   x-yolab-cache-ttl-ms  how old it was allowed to get
-//!
-//! and every ndjson frame carries the same three fields inline, because headers
-//! cannot change halfway through a response. Those are load-bearing, not
-//! diagnostics: if the UI stops surfacing them, this file has reintroduced the
-//! bug that one was deleted for.
-//!
-//! ALLOWLISTED, never "cache every GET". A blanket rule would eventually cache
-//! something per-user, something enormous, or something whose freshness is the
-//! entire point. Only the paths in `POLICIES` are cached, each with the TTL its
-//! own cost and volatility justify.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -69,28 +10,16 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use tokio::sync::Mutex;
-// tokio's Instant, not std's, so `#[tokio::test(start_paused = true)]` can drive
-// expiry without any test sleeping for real.
 use tokio::time::Instant;
 
 pub const HEADER_STATE: &str = "x-yolab-cache";
 pub const HEADER_AGE_MS: &str = "x-yolab-cache-age-ms";
 pub const HEADER_TTL_MS: &str = "x-yolab-cache-ttl-ms";
-/// What a client sends to ask for the two-frame form.
 pub const HEADER_PROGRESSIVE: &str = "x-yolab-progressive";
 pub const NDJSON: &str = "application/x-ndjson";
 
-/// Cap on a handler response we are willing to buffer in order to cache it.
-/// Anything larger is streamed through untouched rather than held in memory.
 const MAX_CACHEABLE_BYTES: usize = 4 * 1024 * 1024;
 
-/// How long a value may be served as fresh, and the hard limit past which it is
-/// not served at all.
-///
-/// The second number is the one that matters during an incident. However
-/// honestly a body is labelled, an operator watching a cluster come apart must
-/// not be handed a minute-old picture of it, so past `hard` the entry is dropped
-/// and the caller waits for the truth.
 #[derive(Clone, Copy, Debug)]
 pub struct Policy {
     pub ttl: Duration,
@@ -106,56 +35,13 @@ impl Policy {
     }
 }
 
-/// Whether this GET is cached, and how stale a first frame may be.
-///
-/// A DENYLIST, NOT AN ALLOWLIST, because the answer is "yes" for nearly
-/// everything once the real value always follows. This started as a list of
-/// seven measured-slow routes and that was the wrong shape: it made caching
-/// something you had to remember to opt a route into, so `/api/nodes/traffic` —
-/// ten full seconds, the slowest endpoint in the whole API — sat uncached simply
-/// because nobody had noticed it.
-///
-/// What is excluded, and why each one is a real exclusion rather than caution:
-///
-///   Session-scoped. The map is global and keyed by path, NOT by caller, so any
-///   response that differs per caller would be served to the wrong one. Today
-///   there is a single operator and the desktop and web shells authenticate
-///   differently; that is exactly the kind of thing that is theoretical until it
-///   is a login bug. `/api/auth/check` is 18ms anyway.
-///
-///   Secrets. Tokens, recovery keys, dashboard credentials and join bundles are
-///   cheap to produce, are sometimes generated per request, and can be rotated —
-///   serving a remembered password is a real failure, and there is nothing to
-///   gain. Keeping them in a long-lived global map for no benefit is gratuitous.
-///
-///   Logs. A tail is large, is watched live while something is happening, and
-///   retaining copies of them is the one thing here that could actually grow
-///   memory. They are also the routes most likely to exceed
-///   MAX_CACHEABLE_BYTES and be passed through uncached regardless.
-///
-/// Everything else is cached, including routes with path parameters — those key
-/// off the full path so `/api/apps/immich/pods` and `/api/apps/plex/pods` are
-/// separate entries.
 pub(crate) fn policy_for(path: &str) -> Option<Policy> {
     if !path.starts_with("/api/") {
         return None;
     }
-    // Auth. `/api/auth/check` answers differently per caller and the key is
-    // path plus query, which cannot tell two callers apart — a remembered "yes"
-    // would be handed to a stranger.
-    //
-    // `/api/login` and `/api/logout` are POST-only, so the middleware's
-    // GET-only rule already means the cache is never consulted for them. They
-    // are named here anyway: a login response carries a session token in
-    // Set-Cookie, and "a different layer happens to stop it" is not how a
-    // secret should be protected. Naming them also keeps `policy_for` honest,
-    // which `every_cacheable_route_can_be_reached_by_get` in surface.rs checks
-    // — a policy on a route with no GET is a rule that can never fire, and
-    // reads like one that does.
     if matches!(path, "/api/auth/check" | "/api/login" | "/api/logout") {
         return None;
     }
-    // Credentials and key material.
     if matches!(
         path,
         "/api/account/token"
@@ -166,25 +52,13 @@ pub(crate) fn policy_for(path: &str) -> Option<Policy> {
     ) {
         return None;
     }
-    // What FORCE HEAL would remove. A remembered "this machine does not answer"
-    // shown for even a second is a destructive decision made on stale facts.
     if path == "/api/heal" || path.starts_with("/api/heal/") {
         return None;
     }
-    // Log bodies, live and large. Covers /api/logs, /api/rebuild-log and
-    // /api/apps/:id/logs/:pod_name.
     if path == "/api/logs" || path == "/api/rebuild-log" || path.contains("/logs/") {
         return None;
     }
 
-    // One policy for everything else. The TTL only decides whether a remembered
-    // value is worth showing ahead of the real one; it never decides whether the
-    // real one is fetched, because in progressive mode it always is.
-    //
-    // 60s hard limit: past that the remembered value is dropped rather than
-    // flashed on screen. An operator watching a cluster come apart should not
-    // see a minute-old picture of it for even the second before the truth
-    // arrives — that second is long enough to read a number and act on it.
     Some(Policy::secs(15, 60))
 }
 
@@ -198,13 +72,6 @@ fn entries() -> &'static Mutex<HashMap<String, Entry>> {
     E.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// One lock per key, held across a handler run so concurrent misses collapse
-/// into a single subprocess.
-///
-/// A cold cache with three tabs open must not become three `ceph` invocations on
-/// a box that may already be the reason they are slow. Kept in its own map, not
-/// inside `entries`, because the entry map must never stay locked while a
-/// handler runs — that would serialise every endpoint behind the slowest one.
 fn flight(key: &str) -> Arc<Mutex<()>> {
     static F: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let map = F.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -212,37 +79,22 @@ fn flight(key: &str) -> Arc<Mutex<()>> {
     guard.entry(key.to_string()).or_default().clone()
 }
 
-/// A cached body and its age, or `None` when there is nothing usable.
 async fn look_up(key: &str, policy: Policy) -> Option<(Arc<Value>, Duration)> {
     let mut map = entries().lock().await;
     let entry = map.get(key)?;
     let age = entry.fetched_at.elapsed();
     if age >= policy.hard {
-        // Dropped rather than left to be overwritten, so a handler that then
-        // fails cannot resurrect it.
         map.remove(key);
         return None;
     }
     Some((entry.body.clone(), age))
 }
 
-/// Upper bound on distinct keys held at once.
-///
-/// The allowlist this replaced was self-limiting: seven fixed paths, seven
-/// entries. A denylist is not. Keys are path plus query, routes carry parameters
-/// (`/api/apps/:id/pods`), and a query string is whatever the caller sends — so
-/// without a cap a client looping over `?x=1`, `?x=2`, ... would grow this map
-/// until the process died. 256 is far above what the UI can produce (a few dozen
-/// apps, a handful of routes each) and far below anything that matters for
-/// memory, since each body is small JSON.
 const MAX_ENTRIES: usize = 256;
 
 async fn store(key: &str, body: Value) {
     let mut map = entries().lock().await;
     if map.len() >= MAX_ENTRIES && !map.contains_key(key) {
-        // Drop the oldest rather than refusing to insert: the value just
-        // computed is the one someone is waiting on, and an entry nobody has
-        // asked for in a while is the one worth losing.
         if let Some(oldest) = map
             .iter()
             .min_by_key(|(_, e)| e.fetched_at)
@@ -260,19 +112,6 @@ async fn store(key: &str, body: Value) {
     );
 }
 
-/// Drop everything the cache holds.
-///
-/// EVERY MUTATION MUST DO THIS, which is why `middleware` calls it for any
-/// successful non-GET rather than leaving it to each handler. A cache that
-/// outlives the action that invalidated it is worse than no cache: the operator
-/// marks an OSD out, the page keeps showing it in for the rest of the TTL, and
-/// the only reasonable conclusion is that the button did not work. The risk is
-/// not staleness in the abstract, it is contradicting something the user just
-/// did.
-///
-/// There is deliberately no per-path variant. One existed, was used only by a
-/// test, and `-D warnings` correctly called it dead code — see the note on the
-/// blast radius in `middleware` for why nothing needs it.
 pub async fn invalidate_all() {
     entries().lock().await.clear();
 }
@@ -289,8 +128,6 @@ fn frame(body: &Value, state: &str, age: Duration, policy: Policy) -> String {
         "ttlMs": ttl_ms,
         "data": body,
     });
-    // One JSON object per line is the whole contract; a newline inside a frame
-    // would split it in two for the reader.
     format!("{envelope}\n")
 }
 
@@ -309,21 +146,8 @@ fn single(body: &Value, state: &str, age: Duration, policy: Policy) -> Response 
     res
 }
 
-/// What came back from the handler: something worth caching, or something to
-/// send on untouched.
-///
-/// AN ENUM RATHER THAN `Result<Value, Response>`, which is what this was. The
-/// `Err` side never meant an error — a 204, a stream, an ordinary 500 are all
-/// perfectly good answers that simply cannot be cached — so `Result` was telling
-/// the reader the wrong thing about every one of them. clippy objected for its
-/// own reason (`result_large_err`: an axum Response is 128 bytes, and paying
-/// that on every success path is waste), and both complaints have the same fix.
 enum Handled {
-    /// A plain 200 JSON body, small enough to hold: cacheable.
     Cacheable(Value),
-    /// Anything else. Passed through exactly as the handler produced it — a
-    /// cache that stored error bodies would turn a one-second blip into a
-    /// TTL-long lie.
     PassThrough(Box<Response>),
 }
 
@@ -343,8 +167,6 @@ async fn run_handler(req: Request, next: Next) -> Handled {
     let (parts, body) = res.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_CACHEABLE_BYTES).await {
         Ok(b) => b,
-        // Too large to buffer, and the body is gone with it — there is nothing
-        // left to pass through, so say so rather than return an empty 200.
         Err(_) => {
             return Handled::PassThrough(Box::new(
                 (
@@ -362,21 +184,6 @@ async fn run_handler(req: Request, next: Next) -> Handled {
 }
 
 pub async fn middleware(req: Request, next: Next) -> Response {
-    // ANY SUCCESSFUL WRITE DROPS THE WHOLE CACHE, and it happens here rather than
-    // in each mutation handler on purpose.
-    //
-    // Per-handler invalidation is a rule someone has to remember every time they
-    // add a route, and the one they forget is the one that makes a button look
-    // broken: the operator marks an OSD out, the page goes on showing it in for
-    // the rest of the TTL, and the only reasonable conclusion is that the click
-    // did nothing. The middleware already sees every request, so it can enforce
-    // this for routes that do not know the cache exists.
-    //
-    // Everything, not just the route that was written to: marking an OSD out
-    // changes /api/ceph/detail, /api/cluster/health and /api/disks at once. The
-    // cached set is seven small entries, so dropping all of them costs one
-    // recompute of whatever is actually on screen, and needs no map from write
-    // routes to the reads they affect — a map that would itself go stale.
     if req.method() != Method::GET {
         let res = next.run(req).await;
         if res.status().is_success() {
@@ -387,8 +194,6 @@ pub async fn middleware(req: Request, next: Next) -> Response {
     let Some(policy) = policy_for(req.uri().path()) else {
         return next.run(req).await;
     };
-    // Path and query together: two different queries are two different answers,
-    // and keying on the path alone would serve one for the other.
     let key = req
         .uri()
         .path_and_query()
@@ -402,16 +207,6 @@ pub async fn middleware(req: Request, next: Next) -> Response {
 
     let cached = look_up(&key, policy).await;
 
-    // A PROGRESSIVE CLIENT ALWAYS GETS THE REAL VALUE, however fresh the
-    // remembered one is. That is the contract: the remembered value buys the
-    // page something to draw immediately, it never replaces the answer.
-    //
-    // This branch used to return a fresh cached body and skip the handler
-    // entirely, which did cut load but meant a client polling faster than the
-    // TTL could go whole cycles without anything recomputing — it would be told
-    // "hit" and never learn the disk had been pulled. Skipping work is now only
-    // something a PLAIN client gets, where there is no second frame to correct
-    // the first with.
     if !progressive {
         if let Some((body, age)) = &cached {
             if *age < policy.ttl {
@@ -422,13 +217,6 @@ pub async fn middleware(req: Request, next: Next) -> Response {
 
     if progressive {
         if let Some((body, age)) = cached {
-            // The two-frame answer. Frame one goes out before the handler is even
-            // started, so the page paints from it while the box is still shelling
-            // out for frame two.
-            // Labelled by real age, not a fixed "stale": with a denylist this
-            // frame is often only a second or two old, and calling that stale
-            // would train the operator to ignore the badge that exists to warn
-            // them when it is genuinely old.
             let label = if age < policy.ttl { "hit" } else { "stale" };
             let first = frame(&body, label, age, policy);
             let key = key.clone();
@@ -440,10 +228,6 @@ pub async fn middleware(req: Request, next: Next) -> Response {
                         yield Ok(axum::body::Bytes::from(frame(&fresh, "fresh", Duration::ZERO, policy)));
                     }
                     Handled::PassThrough(res) => {
-                        // The handler failed AFTER we already promised a 200 and
-                        // sent a frame. The status line is long gone, so the only
-                        // honest thing left is to say so in a frame the client
-                        // can recognise, and let it keep showing frame one.
                         let status = res.status().as_u16();
                         let envelope = serde_json::json!({
                             "cache": "error",
@@ -456,14 +240,10 @@ pub async fn middleware(req: Request, next: Next) -> Response {
             let mut res = Response::new(Body::from_stream(stream));
             res.headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
-            // The header describes frame ONE; frame two carries its own state
-            // inline, because a header cannot change halfway through a response.
             res.headers_mut()
                 .insert(HEADER_STATE, HeaderValue::from_static(label));
             return res;
         }
-        // Nothing cached at all. There is no first frame to send, so this is an
-        // ordinary miss — still ndjson, so the client has one shape to parse.
         let body = match compute_once(&key, policy, req, next).await {
             Computed::Fresh(body) => body,
             Computed::Ready(res) => return *res,
@@ -476,31 +256,20 @@ pub async fn middleware(req: Request, next: Next) -> Response {
         return res;
     }
 
-    // Plain client, nothing fresh: compute and answer once, as always.
     match compute_once(&key, policy, req, next).await {
         Computed::Fresh(body) => single(&body, "miss", Duration::ZERO, policy),
         Computed::Ready(res) => *res,
     }
 }
 
-/// The outcome of trying to produce a value for this key.
-///
-/// Like `Handled`, an enum rather than a `Result` whose `Err` is not an error:
-/// both "another request filled the cache while we queued" and "the handler
-/// returned something uncacheable" end the same way — there is a finished
-/// Response, send it. Only `Fresh` leaves the caller anything to decide, which
-/// is how it should frame the body it just computed.
 enum Computed {
     Fresh(Value),
     Ready(Box<Response>),
 }
 
-/// Compute under the key's flight lock, so simultaneous misses become one run.
 async fn compute_once(key: &str, policy: Policy, req: Request, next: Next) -> Computed {
     let flight = flight(key);
     let _guard = flight.lock().await;
-    // Whoever held this lock before us has just filled the cache. Use their
-    // result rather than spawning an identical subprocess a millisecond later.
     if let Some((body, age)) = look_up(key, policy).await {
         if age < policy.ttl {
             return Computed::Ready(Box::new(single(&body, "hit", age, policy)));
@@ -528,9 +297,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
 
-    /// The cache is process-global and keyed by path, so tests that use the same
-    /// real path would stomp each other when the harness runs them in parallel —
-    /// which it does. Every test takes this first and starts from an empty cache.
     fn test_lock() -> &'static Mutex<()> {
         static L: OnceLock<Mutex<()>> = OnceLock::new();
         L.get_or_init(|| Mutex::new(()))
@@ -542,9 +308,6 @@ mod tests {
         guard
     }
 
-    /// A router whose handler counts its calls, mounted at a REAL cached path —
-    /// the middleware keys off the path, so a made-up one would simply pass
-    /// through and the test would assert nothing.
     fn app(calls: Arc<AtomicUsize>) -> Router {
         Router::new()
             .route(
@@ -600,14 +363,11 @@ mod tests {
         );
     }
 
-    /// THE POINT OF THE WHOLE FILE: one request, two answers.
     #[tokio::test(start_paused = true)]
     async fn a_progressive_client_gets_the_cached_frame_then_the_real_one() {
         let _g = begin().await;
         let calls = Arc::new(AtomicUsize::new(0));
 
-        // Prime the cache, then age it past the TTL so there is something to send
-        // ahead of the handler.
         app(calls.clone()).oneshot(req(false)).await.unwrap();
         tokio::time::advance(Duration::from_secs(16)).await;
 
@@ -635,14 +395,10 @@ mod tests {
         );
         assert_eq!(lines[1]["ageMs"], 0);
 
-        // And frame two is what a later reader gets.
         let res = app(calls.clone()).oneshot(req(false)).await.unwrap();
         assert_eq!(body_string(res).await, r#"{"n":2}"#);
     }
 
-    /// Inside the TTL there is nothing better to offer, so the handler is never
-    /// run — this is the case that actually removes load from the box when
-    /// several tabs are open.
     #[tokio::test(start_paused = true)]
     async fn a_plain_client_inside_the_ttl_skips_the_handler() {
         let _g = begin().await;
@@ -660,21 +416,12 @@ mod tests {
         );
     }
 
-    /// THE CONTRACT: a progressive client always gets the real value, however
-    /// fresh the remembered one is.
-    ///
-    /// The test this replaced asserted the opposite and PASSED FOR THE WRONG
-    /// REASON. `Body::from_stream` is lazy, so a test that never reads the body
-    /// never drives the stream, and the handler it claimed had been skipped had
-    /// simply not run yet. Reading the body to completion is what makes the
-    /// assertion mean anything.
     #[tokio::test(start_paused = true)]
     async fn a_progressive_client_recomputes_even_when_the_cache_is_fresh() {
         let _g = begin().await;
         let calls = Arc::new(AtomicUsize::new(0));
 
         app(calls.clone()).oneshot(req(false)).await.unwrap();
-        // No time advanced: the entry is brand new, well inside the TTL.
         let res = app(calls.clone()).oneshot(req(true)).await.unwrap();
         assert_eq!(res.headers()[HEADER_STATE], "hit", "frame one is recent");
 
@@ -692,9 +439,6 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
-    /// Past the hard limit the old body is not sent at all, in either mode. An
-    /// operator watching a cluster come apart must not be handed a minute-old
-    /// picture of it, however clearly it is labelled.
     #[tokio::test(start_paused = true)]
     async fn a_body_past_the_hard_limit_is_never_served() {
         let _g = begin().await;
@@ -727,13 +471,10 @@ mod tests {
         assert_eq!(body_string(res).await, r#"{"n":2}"#);
     }
 
-    /// An uncached path must be untouched — same body, and none of the cache
-    /// headers, so nothing downstream can mistake it for a cached answer.
     #[tokio::test(start_paused = true)]
     async fn a_denied_path_passes_straight_through() {
         let app = Router::new()
             .route(
-                // Session-scoped, so it must never come back from a shared map.
                 "/api/auth/check",
                 get(|| async { axum::Json(serde_json::json!({"live": true})) }),
             )
@@ -757,8 +498,6 @@ mod tests {
         assert_eq!(body_string(res).await, r#"{"live":true}"#);
     }
 
-    /// A failing handler must not be stored — a one-second blip would otherwise
-    /// become a TTL-long lie.
     #[tokio::test(start_paused = true)]
     async fn an_error_response_is_never_cached() {
         let _g = begin().await;
@@ -778,9 +517,6 @@ mod tests {
 
     #[test]
     fn everything_is_cached_except_the_denylist() {
-        // The default is yes. An allowlist left /api/nodes/traffic — ten seconds,
-        // the slowest route in the API — uncached simply because nobody had
-        // thought to add it.
         for path in [
             "/api/ceph/detail",
             "/api/nodes/traffic",
@@ -792,10 +528,8 @@ mod tests {
             assert!(policy_for(path).is_some(), "{path} should be cached");
         }
 
-        // Differs per caller, and the map is not keyed by caller.
         assert!(policy_for("/api/auth/check").is_none());
 
-        // Credentials and key material.
         for path in [
             "/api/account/token",
             "/api/backups/recovery-key",
@@ -806,11 +540,9 @@ mod tests {
             assert!(policy_for(path).is_none(), "{path} is a secret");
         }
 
-        // The heal survey is never shown stale.
         assert!(policy_for("/api/heal").is_none());
         assert!(policy_for("/api/heal/peer").is_none());
 
-        // Log bodies: live, large, and watched while something is happening.
         for path in [
             "/api/logs",
             "/api/rebuild-log",
@@ -819,13 +551,10 @@ mod tests {
             assert!(policy_for(path).is_none(), "{path} is a log");
         }
 
-        // Nothing outside the API surface.
         assert!(policy_for("/index.html").is_none());
         assert!(policy_for("/ceph-dashboard/").is_none());
     }
 
-    /// The TTL has to be shorter than the UI's poll, or whole cycles go by that
-    /// never recompute and the second frame stops being worth sending.
     #[test]
     fn the_ttl_is_shorter_than_the_ui_poll_interval() {
         for path in ["/api/ceph/detail", "/api/cluster/health", "/api/disks"] {
@@ -840,9 +569,6 @@ mod tests {
             );
         }
     }
-    /// A write must clear the cache even though the route it hit knows nothing
-    /// about the cache. This is the property that keeps a button press from being
-    /// contradicted by a cached read for the rest of the TTL.
     #[tokio::test(start_paused = true)]
     async fn a_successful_write_on_an_unrelated_route_clears_the_cache() {
         let _g = begin().await;
@@ -860,7 +586,6 @@ mod tests {
                     }
                 }),
             )
-            // A different path entirely, exactly as a real mutation would be.
             .route(
                 "/api/ceph/osd/3/mark-out",
                 axum::routing::post(|| async { axum::Json(serde_json::json!({"ok": true})) }),
@@ -892,8 +617,6 @@ mod tests {
         assert_eq!(body_string(res).await, r#"{"n":2}"#);
     }
 
-    /// A write that FAILED changed nothing, so throwing the cache away would just
-    /// hand the box a pile of recomputes for no reason.
     #[tokio::test(start_paused = true)]
     async fn a_failed_write_leaves_the_cache_alone() {
         let _g = begin().await;

@@ -1,5 +1,3 @@
-//! Generate `/run/issue` with a QR code and management URL before tty1 shows
-//! the login prompt. `agetty --issue-file` displays it.
 
 use std::path::Path;
 
@@ -7,9 +5,6 @@ use anyhow::Result;
 
 use crate::host::Host;
 
-/// `[tunnel] dns_url` from config.toml, parsed properly rather than by
-/// regex — `None` for a missing file, unreadable TOML, or an absent/non-string
-/// key, all of which mean the same thing here: not configured yet.
 fn read_dns_url(config_path: &str) -> Option<String> {
     let text = std::fs::read_to_string(config_path).ok()?;
     let table: toml::Table = toml::from_str(&text).ok()?;
@@ -20,7 +15,6 @@ fn read_dns_url(config_path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Pure formatting, separate from the qrencode shell-out that produces `qr`.
 fn format_banner(dns_url: Option<&str>, qr: Option<&str>) -> String {
     let mut out = String::from("\n");
     match dns_url.filter(|s| !s.is_empty()) {

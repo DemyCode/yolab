@@ -14,32 +14,22 @@ export interface OutputSpec {
 export interface AppInfo {
   app_id: string;
   instance_name: string;
-  /** Random suffix the backend appends to every install, or null for older names. */
   instance_id?: string | null;
   status: "starting" | "running" | "uninstalling";
-  /** Plain-language explanation of `status`, empty when healthy. Written by the
-   *  backend (routers/apps.rs `explain_app_state`) rather than derived here: the
-   *  distinction between "downloading" and "crash looping" only exists in the pod
-   *  status, which the UI never sees. */
   detail: string;
   outputs: AppOutput[];
   outputs_spec: OutputSpec[];
   config: Record<string, unknown>;
-  /** This app's own backup policy and last successful backup. */
   backup: AppBackupStatus;
 }
 
 export interface AppBackupStatus {
   enabled: boolean;
-  /** Five-field cron expression, e.g. "0 3 * * *". */
   schedule: string;
-  /** RFC 3339 when this app last backed up successfully, or null if never. */
   last_ok_at: string | null;
-  /** A backup of this app is running right now. */
   running: boolean;
 }
 
-/** Everything an installed app is — what a duplicate or restore is prefilled from. */
 export interface AppDefinition {
   schema: number;
   app_id: string;
@@ -47,7 +37,6 @@ export interface AppDefinition {
   chart_version: string;
   instance_name: string;
   service_name: string;
-  /** Credentials are replaced by "__redacted__" in what the browser receives. */
   config: Record<string, unknown>;
   volumes: { name: string; capacity: string }[];
   resources: {
@@ -61,15 +50,10 @@ export interface AppDefinition {
 
 export interface CatalogApp {
   id: string;
-  /// Repository the chart came from. "official" is the curated catalog; anything else
-  /// was added by the user and can create arbitrary cluster objects, so the UI must be
-  /// able to tell them apart rather than presenting all apps as equally vouched-for.
   repo: string;
   chart_version: string;
   name: string;
   description: string;
-  /// The project's own website, from the chart's `home` field. Empty when the chart
-  /// does not declare one, in which case no link is shown.
   home: string;
   icon: string;
   category: string;

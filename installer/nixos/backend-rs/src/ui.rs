@@ -9,7 +9,6 @@ use ratatui::{
 
 use crate::app::{App, BtnId, ClickTarget, ClusterMode, DiskInfo, Step};
 
-// ── Palette ───────────────────────────────────────────────────────────────────
 const PURPLE: Color = Color::Rgb(167, 139, 250);
 const GREEN: Color = Color::Rgb(74, 222, 128);
 const RED: Color = Color::Rgb(248, 113, 113);
@@ -41,7 +40,6 @@ fn surface_block(title: &str) -> Block<'_> {
         .bg(SURFACE)
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -49,9 +47,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header
-            Constraint::Min(0),    // body
-            Constraint::Length(3), // footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
         ])
         .split(area);
 
@@ -60,7 +58,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_footer(f, rows[2], app);
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let step_label = format!("Step {} / {}", app.step.index() + 1, 5);
@@ -89,7 +86,6 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(title, area);
 }
 
-// ── Footer ────────────────────────────────────────────────────────────────────
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let hints = match app.step {
@@ -106,7 +102,6 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(footer, area);
 }
 
-// ── Body ──────────────────────────────────────────────────────────────────────
 
 fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     let cols = Layout::default()
@@ -132,7 +127,6 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-// ── Sidebar ───────────────────────────────────────────────────────────────────
 
 fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     let steps = [
@@ -187,7 +181,6 @@ fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(sidebar, area);
 }
 
-// ── Loading ───────────────────────────────────────────────────────────────────
 
 fn render_loading(f: &mut Frame, area: Rect, msg: &str) {
     let inner = centered_rect(60, 20, area);
@@ -198,18 +191,17 @@ fn render_loading(f: &mut Frame, area: Rect, msg: &str) {
     f.render_widget(text, inner);
 }
 
-// ── Step: Mode ────────────────────────────────────────────────────────────────
 
 fn render_mode(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // heading
-            Constraint::Length(5), // option 0
-            Constraint::Length(1), // gap
-            Constraint::Length(5), // option 1
+            Constraint::Length(3),
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Length(5),
             Constraint::Min(0),
-            Constraint::Length(3), // error
+            Constraint::Length(3),
         ])
         .split(padded(area, 3, 1));
 
@@ -238,7 +230,6 @@ fn render_mode(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-// ── Step: Account / Connect ───────────────────────────────────────────────────
 
 fn render_account(f: &mut Frame, area: Rect, app: &mut App) {
     match app.mode {
@@ -254,14 +245,14 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // heading
-            Constraint::Length(1), // subtitle
-            Constraint::Length(2), // gap
-            Constraint::Length(3), // method tabs
-            Constraint::Length(6), // method content
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(6),
             Constraint::Min(0),
-            Constraint::Length(3), // token display (if created)
-            Constraint::Length(3), // error
+            Constraint::Length(3),
+            Constraint::Length(3),
         ])
         .split(inner);
 
@@ -271,7 +262,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
         rows[1],
     );
 
-    // Method selector tabs
     let tab_row = rows[3];
     let tab_cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -302,7 +292,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if app.account_token.is_some() {
-        // Already have an account — show success
         f.render_widget(
             Paragraph::new("\n  ✓ Account connected").style(success()),
             rows[4],
@@ -322,7 +311,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             ClickTarget::Btn(BtnId::Continue),
         );
     } else if app.acct_cursor == 0 {
-        // Create
         f.render_widget(
             Paragraph::new("\n  No email required — a token is generated instantly.\n  Keep it safe: you'll need it to add more nodes later.")
                 .style(muted())
@@ -344,7 +332,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             ClickTarget::Btn(BtnId::CreateAcct),
         );
     } else {
-        // Existing token
         let input_area = Rect {
             x: rows[4].x + 2,
             y: rows[4].y + 1,
@@ -368,7 +355,6 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    // Show created token if we just created one
     if let Some(token) = &app.created_token.clone() {
         let short = if token.len() > 30 {
             &token[..30]
@@ -408,15 +394,15 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // heading
-            Constraint::Length(2), // gap
-            Constraint::Length(3), // url field
-            Constraint::Length(2), // gap
-            Constraint::Length(3), // pass field
-            Constraint::Length(2), // gap
-            Constraint::Length(3), // button
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3), // error
+            Constraint::Length(3),
         ])
         .split(inner);
 
@@ -431,7 +417,7 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
         false,
         app.join_field == 0,
     );
-    app.click_areas.push((url_rect, ClickTarget::CfgField(10))); // field 10 = join_url
+    app.click_areas.push((url_rect, ClickTarget::CfgField(10)));
 
     let pass_rect = rows[4];
     render_input(
@@ -442,7 +428,7 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
         true,
         app.join_field == 1,
     );
-    app.click_areas.push((pass_rect, ClickTarget::CfgField(11))); // field 11 = join_pass
+    app.click_areas.push((pass_rect, ClickTarget::CfgField(11)));
 
     render_button(
         f,
@@ -458,7 +444,6 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-// ── Step: Disk ────────────────────────────────────────────────────────────────
 
 fn render_disk(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = padded(area, 3, 1);
@@ -566,7 +551,6 @@ fn render_disk_row(f: &mut Frame, area: Rect, disk: &DiskInfo, _idx: usize, sele
     f.render_widget(para, area);
 }
 
-// ── Step: Configure ───────────────────────────────────────────────────────────
 
 fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = padded(area, 3, 1);
@@ -574,19 +558,19 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // heading
+            Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(3), // timezone
+            Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(3), // password
+            Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(3), // confirm
+            Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(3), // ssh key
+            Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(3), // gen ssh btn
+            Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3), // error
+            Constraint::Length(3),
         ])
         .split(inner);
 
@@ -607,7 +591,6 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
             .push((*row, ClickTarget::CfgField(*field_id)));
     }
 
-    // Generate SSH key button
     render_button(
         f,
         rows[10],
@@ -635,7 +618,6 @@ fn render_configure(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-// ── Step: Install ─────────────────────────────────────────────────────────────
 
 fn render_install(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = padded(area, 2, 1);
@@ -656,7 +638,6 @@ fn render_install(f: &mut Frame, area: Rect, app: &mut App) {
 
     render_heading(f, rows[0], "Installing YoLab…");
 
-    // Show last N log lines that fit
     let log_height = rows[1].height.saturating_sub(2) as usize;
     let total = app.log_lines.len();
     let start = total.saturating_sub(log_height);
@@ -768,7 +749,6 @@ fn render_install_failed(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
-// ── Reusable widgets ──────────────────────────────────────────────────────────
 
 fn render_heading(f: &mut Frame, area: Rect, text: &str) {
     f.render_widget(
@@ -863,7 +843,6 @@ fn error_paragraph(msg: &str) -> Paragraph<'static> {
         .wrap(Wrap { trim: true })
 }
 
-// ── Layout helpers ────────────────────────────────────────────────────────────
 
 fn padded(area: Rect, h: u16, v: u16) -> Rect {
     Rect {

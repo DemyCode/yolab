@@ -59,10 +59,6 @@ in {
     lima
     wireguard-go
     wireguard-tools
-    # local-api shells out to all three. Without them the mac target runs but cannot do
-    # anything: kubectl for every cluster read, helm since apps became charts, restic for
-    # backups. They were missing because this file had not been touched since before any
-    # of that landed.
     kubectl
     kubernetes-helm
     restic

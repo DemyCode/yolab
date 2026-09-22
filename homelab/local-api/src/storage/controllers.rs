@@ -1,18 +1,3 @@
-//! The storage jobs as controllers — what used to be systemd timers.
-//!
-//! Each one:
-//!   - takes the same lock as the job's boot oneshot and skips the tick if the
-//!     boot unit is running it (see `storage/mod.rs`);
-//!   - keeps the old timer's `OnBootSec` as `not_before_uptime`, so boot-time
-//!     ordering against the oneshots is what it always was;
-//!   - declares NO requirement unless the job genuinely has one.
-//!
-//! The steps on the boot line to k3s (`system-osd`, `images-rbd`,
-//! `containerd-store`) are deliberately NOT here: they happen once, before k3s,
-//! and nothing re-runs them on a live node — see `storage::containerd_store`.
-//!
-//! Intervals are the old timers' `OnUnitInactiveSec`: measured from the END of
-//! one run to the start of the next, which is what the runtime does.
 
 use std::future::Future;
 use std::time::Duration;
@@ -26,7 +11,6 @@ use super::{
     bootstrap, csi_secrets, dashboard, images_grow, keys, lock_name, mon_member, osd, StorageEnv,
 };
 
-/// Runs `job` under its lock, or reports that the boot unit has it.
 async fn locked<F, Fut>(job: &str, f: F) -> Result<Tick>
 where
     F: FnOnce() -> Fut,
@@ -41,8 +25,6 @@ where
     Fut: Future<Output = Result<()>>,
 {
     let Some(_guard) = lock::try_acquire_in(dir, &lock_name(job))? else {
-        // Not run, and not a failure: whoever holds the lock (the boot unit, or a
-        // `local-api storage` run by hand) is doing this very job right now.
         return Ok(Tick::Idle(format!(
             "another run of {job} holds its lock right now"
         )));
@@ -94,9 +76,6 @@ macro_rules! storage_controller {
 }
 
 storage_controller! {
-    /// Starts every prepared OSD whose daemon is not running. The boot unit does
-    /// this once; this keeps doing it, so an OSD whose daemon died comes back
-    /// without a reboot.
     OsdActivateController, name: "osd-activate", job: "osd-activate",
     every: Duration::from_secs(120), after_boot: Duration::from_secs(180),
     requires: [],
@@ -104,7 +83,6 @@ storage_controller! {
 }
 
 storage_controller! {
-    /// Grows the images RBD as the pool grows.
     ImagesGrowController, name: "images-grow", job: "images-grow",
     every: Duration::from_secs(120), after_boot: Duration::from_secs(600),
     requires: [Requirement::Ceph],
@@ -115,8 +93,6 @@ storage_controller! {
 }
 
 storage_controller! {
-    /// Configures the Ceph dashboard on this node's mgr and keeps its password in
-    /// step with the one the Storage page shows.
     DashboardController, name: "ceph-dashboard", job: "dashboard",
     every: Duration::from_secs(120), after_boot: Duration::from_secs(240),
     requires: [Requirement::Ceph],
@@ -127,7 +103,6 @@ storage_controller! {
 }
 
 storage_controller! {
-    /// Adds this node's mon to the monmap when joining did not.
     MonMemberController, name: "mon-member", job: "mon-member",
     every: Duration::from_secs(120), after_boot: Duration::from_secs(180),
     requires: [],
@@ -137,8 +112,6 @@ storage_controller! {
     }
 }
 
-/// Publishes the host cluster's credentials into Kubernetes for ceph-csi.
-/// Cluster-scoped: every node would write the same Secrets.
 pub struct CsiSecretsController;
 
 impl Controller for CsiSecretsController {
@@ -162,10 +135,6 @@ impl Controller for CsiSecretsController {
     }
 }
 
-/// Mints the mgr (and MDS) cephx keys when they are missing, then starts the
-/// daemon. The boot oneshot's first attempt necessarily fails on a joining node
-/// — the cluster credentials have not arrived yet — and a failed oneshot is
-/// never retried on its own; this is the retry.
 pub struct CephKeysController {
     pub env: StorageEnv,
 }
@@ -209,9 +178,6 @@ impl Controller for CephKeysController {
     }
 }
 
-/// Retries joining the Ceph cluster on a machine whose first boot could not.
-/// Only on joining machines; the machine that created the cluster has nothing
-/// to retry. Once the mon store exists `bootstrap::run` is a no-op.
 pub struct CephJoinController {
     pub env: StorageEnv,
 }
@@ -243,8 +209,6 @@ impl Controller for CephJoinController {
     }
 }
 
-/// Starts a unit if it is not already active. `--no-block`: several of these
-/// units are ordered after the jobs that start them.
 async fn ensure_started<H: Host>(host: &H, unit: &str) {
     let active = host
         .systemctl(&["is-active", "--quiet", unit])
@@ -260,9 +224,6 @@ async fn ensure_started<H: Host>(host: &H, unit: &str) {
     }
 }
 
-/// Clears the CephFS CSI plugin's stale volume locks once per boot. Was
-/// `yolab-csi-recovery.service`; a local-api restart must not repeat it, so
-/// "once" is recorded in /run, which only a reboot clears.
 pub struct CsiRecoveryController;
 
 const CSI_RECOVERED_MARKER: &str = "/run/yolab/csi-recovered-this-boot";
@@ -289,9 +250,6 @@ async fn once_per_boot<H: Host>(marker: &std::path::Path, host: &H) -> Result<Ti
     if marker.exists() {
         return Ok(Tick::Idle("already done this boot".into()));
     }
-    // Rook may not have created the DaemonSet yet; a later tick tries again —
-    // sooner than the interval, because the first mount after boot is what waits
-    // on it.
     if !crate::csi::plugin_daemonset_exists(host).await? {
         return Ok(Tick::RequeueAfter(Duration::from_secs(15)));
     }
@@ -385,7 +343,6 @@ mod tests {
         assert_eq!(ok.unwrap(), Tick::Done);
         let failed = locked_in(dir.path(), "osd-activate", time_out).await;
         assert!(failed.is_err());
-        // The lock is released after each run, failed or not.
         let free = lock::try_acquire_in(dir.path(), &lock_name("osd-activate"));
         assert!(free.unwrap().is_some());
     }

@@ -1,7 +1,3 @@
-//! Early-boot node subcommands that are not Ceph-specific: writing k3s's
-//! dual-stack node-ip config, recovering stale CephFS CSI locks after a
-//! reboot, and the tty1 QR banner. Same shape as `storage::run` — systemd
-//! keeps the ordering/timers, only the script bodies moved here.
 mod banner;
 mod csi_recovery;
 mod node_ip;

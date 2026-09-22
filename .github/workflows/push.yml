@@ -7,28 +7,6 @@ on:
       - main
 
 jobs:
-  # EVERY flake output — packages, apps, checks (the three VM tests included),
-  # devShells, nixosConfigurations — built and pushed to the cache in one job.
-  #
-  # THE FLAKE IS THE ONLY LIST. This replaced a hand-written matrix of check
-  # buckets, a separate VM-test job, a homelab-packages job, and a
-  # `ci-buckets-cover-every-check` check whose entire purpose was to catch a
-  # check missing from those hand-written buckets. `.#devour` (devour-flake)
-  # builds whatever the flake exposes, so a new package, check or devShell is
-  # built and cached in the same commit that adds it, and nothing in this file
-  # changes. There is no list left to drift.
-  #
-  # ONE JOB, NOT A MATRIX. The old buckets existed because a runner starts with
-  # an empty /nix/store and shared bases (crane's cargoArtifacts, the NixOS
-  # toplevels) would otherwise be rebuilt on every runner. That reasoning does
-  # not survive a warm cache: with `accept-flake-config` and this flake's
-  # nixConfig, each shared base is FETCHED from cache.yolab.io, so one job costs
-  # a longer wall clock, not duplicated compute — and nix still schedules the
-  # builds in parallel internally.
-  #
-  # KVM IS REQUIRED: the flake's `checks` are `allChecks // nixosTests`, so this
-  # job builds the VM tests too. Both halves of the grant are needed — the device
-  # must exist AND the daemon must advertise the feature at start-up (see below).
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -42,18 +20,6 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      # KVM must be granted before nix starts, and in two separate senses.
-      #
-      # /dev/kvm existing is necessary but not sufficient: a NixOS VM test
-      # derivation carries `requiredSystemFeatures = [ "kvm" ]`, and the nix
-      # daemon only schedules it if the builder ADVERTISES that feature. A
-      # daemon that came up without it refuses the build outright with "a 'kvm'
-      # feature is required ... but I am a builder with features {benchmark,
-      # big-parallel, nixos-test}" — which is not a test failure at all, and
-      # looks nothing like one in the log.
-      #
-      # `system-features` is set in the Install Nix step below rather than after
-      # the fact because the daemon reads it at start-up.
       - name: Grant KVM to the runner
         run: |
           set -euo pipefail
@@ -335,9 +301,6 @@ jobs:
         if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v7
         with:
-          # Branch charts are published but not discoverable — main's catalog.yaml is the
-          # only one committed. Serve this artifact somewhere (or set
-          # YOLAB_OFFICIAL_CHART_REPO at it) to install a branch's catalog on a test node.
           name: catalog-${{ github.ref_name }}
           path: catalog.yaml
           retention-days: 7
@@ -458,14 +421,6 @@ jobs:
           path: ${{ steps.iso_info.outputs.iso_path }}
           retention-days: 7
 
-  # Was its own format.yml, triggered on every branch (`push: branches: ["**"]`)
-  # plus workflow_dispatch. Folded in here to match how yolab-external's ci.yml
-  # holds every job in one file. The `on: push:` at the top of this file has no
-  # branch filter, so it already covers every branch the old file did — the one
-  # gap is tags, which that trigger fires on but a PR base cannot be, hence the
-  # `if:` below (the old file used `branches: ["**"]` specifically to exclude
-  # them). workflow_dispatch (manual re-run without a push) was dropped rather
-  # than added to every other job in this file for one job's sake.
   format:
     if: startsWith(github.ref, 'refs/heads/')
     concurrency:
@@ -502,8 +457,6 @@ jobs:
         if: steps.fmt.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
-          # Fixed name per source branch, so a later push updates the open PR
-          # rather than stacking a second one.
           branch: fmt-${{ github.ref_name }}
           base: ${{ github.ref_name }}
           delete-branch: true

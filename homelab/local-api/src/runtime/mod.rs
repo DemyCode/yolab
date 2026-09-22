@@ -1,42 +1,3 @@
-//! The controller runtime: how every background job in local-api runs.
-//!
-//! WHAT THIS REPLACED
-//!
-//! Background work used to live in three places that did not know about each
-//! other: ten `loop { …; sleep }` functions spawned from main.rs, eleven systemd
-//! timers re-running `local-api storage <x>` oneshots, and HTTP handlers that
-//! detached long tasks. Each loop hand-wrote its own startup sleep ("let k3s
-//! settle"), its own leader check (borrowed from the disk reconciler), and its own
-//! "is a restore running?" guard — and they disagreed: the disk reconciler paused
-//! for restores but not for storage recovery, cephfs paused for both, the backup
-//! scheduler and restore watchdog ran on every node with no leader at all.
-//!
-//! WHAT A CONTROLLER DECLARES
-//!
-//! Everything that used to be copy-pasted into each loop is now a declaration the
-//! runtime enforces in one place, the way systemd enforces `After=` instead of
-//! every daemon sleeping:
-//!
-//!   - `scope`: `Node` runs on every machine; `Cluster` runs only on the elected
-//!     leader (one Lease, owned by the runtime, not by any one controller).
-//!   - `requires`: what must be answering before a tick is worth running (the
-//!     Kubernetes API, Ceph). Unmet requirements are a WAITING state, not an error
-//!     and not a sleep.
-//!   - `pauses_during`: cluster-wide activities (a restore, a storage recovery)
-//!     during which the controller must not act. When the runtime cannot tell
-//!     whether one is running, it pauses — the old guards failed open.
-//!   - `not_before_uptime`: `OnBootSec` for jobs that used to be timers.
-//!   - `interval`: periodic resync. Anything can also `wake(name)` a controller
-//!     early — a disk change from udev, an API call that changed its input.
-//!
-//! WHAT IT DELIBERATELY DOES NOT DO
-//!
-//! No dependency graph between controllers, no inferred ordering, no retries
-//! inside a tick. A tick is a plain async function that reads the world and acts;
-//! the runtime only decides WHEN it runs and records HOW it went. Every
-//! controller's status is visible at `GET /api/system/controllers` and in
-//! `/run/yolab/controllers.json`, so "is the disk reconciler alive?" is a lookup,
-//! not a journal search.
 
 pub mod activity;
 pub mod leader;
@@ -54,17 +15,13 @@ use tokio::sync::Notify;
 pub use activity::Activity;
 use status::{Phase, Registry};
 
-/// Where a controller runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
-    /// On every machine, acting on that machine.
     Node,
-    /// On exactly one machine at a time: the Lease holder.
     Cluster,
 }
 
-/// Something that must be answering before a tick can do anything useful.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Requirement {
@@ -81,18 +38,13 @@ impl std::fmt::Display for Requirement {
     }
 }
 
-/// How a tick went, when it did not fail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tick {
-    /// Converged, or did what it could. Next run after `interval`.
     Done,
-    /// Nothing to do, for a reason worth showing (e.g. "no disks switched on").
     Idle(String),
-    /// Run again sooner than `interval`.
     RequeueAfter(Duration),
 }
 
-/// Everything a tick is told about the world by the runtime.
 pub struct Ctx {
     pub node: String,
 }
@@ -107,27 +59,16 @@ pub trait Controller: Send + Sync + 'static {
     fn pauses_during(&self) -> &'static [Activity] {
         &[]
     }
-    /// Machine uptime before the first tick — the old timers' `OnBootSec`.
-    /// Measured from boot, not from process start, so a local-api restart on a
-    /// long-running machine does not re-wait.
     fn not_before_uptime(&self) -> Duration {
         Duration::ZERO
     }
     fn reconcile(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
 }
 
-/// Shortest gap between two ticks of the same controller, however many wakes
-/// arrive: a burst of udev events must not become a burst of reconciles.
 const MIN_GAP: Duration = Duration::from_secs(2);
 
-/// How long to wait before re-checking an unmet requirement, pause or
-/// leadership. Short, because each check is cheap and the state it waits on
-/// changes on its own.
 const RECHECK: Duration = Duration::from_secs(15);
 
-/// After a tick fails, wait at least this long — growing with consecutive
-/// failures — so a controller stuck on a persistent error does not hammer the
-/// cluster, but still retries sooner than a long `interval` would.
 fn failure_backoff(consecutive: u32, interval: Duration) -> Duration {
     let base = Duration::from_secs(10).min(interval);
     let grown =
@@ -158,8 +99,6 @@ fn waker(name: &'static str) -> Arc<Notify> {
         .clone()
 }
 
-/// Ask a controller to run as soon as its gates allow. Cheap and idempotent:
-/// many wakes before the next tick collapse into one.
 pub fn wake(name: &str) {
     let w = shared()
         .wakers
@@ -180,8 +119,6 @@ fn uptime() -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
-/// Starts a controller. It runs for the life of the process; a panic inside a
-/// tick is caught, recorded, and the controller carries on after a backoff.
 pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership) {
     let controller = Arc::new(controller);
     let name = controller.name();
@@ -204,7 +141,6 @@ async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: lea
     let reg = registry();
     let node = crate::system::hostname();
 
-    // OnBootSec.
     let min_uptime = controller.not_before_uptime();
     if let Some(up) = uptime() {
         if up < min_uptime {
@@ -279,13 +215,6 @@ async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: lea
     }
 }
 
-/// Runs a controller's tick once, outside the loop — the `local-api run <name>`
-/// subcommand, so a person over SSH can drive exactly what the daemon would.
-///
-/// Under the same gates the daemon applies, or it would be a way around them:
-/// `local-api run disks` during a restore would drain and purge OSDs underneath
-/// it, and `local-api run topology` on a standby would be a second writer
-/// next to the leader. A refusal says which gate and why.
 pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
     let node = crate::system::hostname();
     if controller.scope() == Scope::Cluster && !leader::held_by(&node).await? {
@@ -315,7 +244,6 @@ mod tests {
         assert_eq!(failure_backoff(2, interval), Duration::from_secs(20));
         assert_eq!(failure_backoff(4, interval), Duration::from_secs(80));
         assert_eq!(failure_backoff(10, interval), interval);
-        // A controller with a short interval is never slowed below it.
         assert_eq!(
             failure_backoff(5, Duration::from_secs(5)),
             Duration::from_secs(5)

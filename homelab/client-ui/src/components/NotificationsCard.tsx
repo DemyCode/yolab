@@ -6,7 +6,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 
-/** `GET /api/notifications` — see local-api notify/mod.rs. */
 type NotificationsStatus =
   | {
       available: true;
@@ -18,7 +17,6 @@ type NotificationsStatus =
     }
   | { available: false; reason: string };
 
-/** A QR code as one SVG path: one square per dark module. */
 function QrCode({ value, size = 184 }: { value: string; size?: number }) {
   const { path, count } = useMemo(() => {
     const qr = qrcode(0, "M");
@@ -33,7 +31,6 @@ function QrCode({ value, size = 184 }: { value: string; size?: number }) {
     }
     return { path: d, count: n };
   }, [value]);
-  // A quiet zone of 4 modules, which scanners need to find the code.
   const quiet = 4;
   return (
     <svg
@@ -57,7 +54,6 @@ function QrCode({ value, size = 184 }: { value: string; size?: number }) {
   );
 }
 
-/** The System page section: subscribe a phone to the cluster's notifications. */
 export function NotificationsCard() {
   const status = useApi<NotificationsStatus>(
     "notifications",

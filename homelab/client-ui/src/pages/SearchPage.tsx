@@ -13,16 +13,6 @@ import type { AppInfo, CatalogApp } from "@/types/apps";
 
 type Installed = "any" | "installed" | "not-installed";
 
-/**
- * Search, as distinct from Discover.
- *
- * Discover answers "show me what there is"; this answers "I know roughly what I want,
- * narrow it down". They want opposite layouts — browsing wants grouping and breathing
- * room, narrowing wants one flat ranked list and filters that stack — so trying to be
- * both is what made the old page a grid of 70 unknown names with a search box on top.
- *
- * The query lives in the URL so a search can be linked, shared and gone back to.
- */
 export default function SearchPage() {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get("q") ?? "");
@@ -33,7 +23,6 @@ export default function SearchPage() {
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   const apps = useApi<AppInfo[]>("apps", "/api/apps");
 
-  // Debounced so the address bar does not gain one entry per keystroke.
   useEffect(() => {
     const t = setTimeout(() => {
       const next = new URLSearchParams(params);
@@ -42,8 +31,6 @@ export default function SearchPage() {
       setParams(next, { replace: true });
     }, 300);
     return () => clearTimeout(t);
-    // `params`/`setParams` are intentionally omitted: including them re-runs this
-    // on the very change it just made.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
@@ -52,7 +39,6 @@ export default function SearchPage() {
     [apps.data],
   );
 
-  /** Every source present in the catalog, so the filter lists only real options. */
   const sources = useMemo(() => {
     const s = new Set<string>();
     for (const a of catalog.data ?? []) s.add(a.repo);
@@ -69,16 +55,12 @@ export default function SearchPage() {
         if (installed === "installed" && n === 0) return false;
         if (installed === "not-installed" && n > 0) return false;
         if (!q) return true;
-        // The tagline is searched too, so "netflix" finds Jellyfin and "1password"
-        // finds Vaultwarden — people search for the thing they already know.
         return `${a.name} ${a.id} ${taglineFor(a)} ${a.description}`
           .toLowerCase()
           .includes(q);
       })
       .sort((a, b) => {
         if (!q) return a.name.localeCompare(b.name);
-        // A name match beats a match buried in a description: someone typing
-        // "photo" means the app called Photoprism before one that mentions photos.
         const an = a.name.toLowerCase().startsWith(q)
           ? 0
           : a.name.toLowerCase().includes(q)
@@ -234,8 +216,8 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Group headings are omitted on purpose: a ranked list is the point here, and
-          re-grouping it would put the best match halfway down the page. */}
+      {
+}
       {!catalog.loading && results.length > 0 && groups.size === 1 && (
         <p className="mt-4 text-xs text-fg-subtle">
           Showing {groupLabel([...groups][0])} only.

@@ -5,27 +5,7 @@ import { Input, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-/**
- * The widgets the catalog already asks for.
- *
- * Every chart ships an RJSF uiSchema in its `yolab.io/uischema` annotation —
- * 55 `TunnelWidget`, 20 `PasswordWidget`, 5 `ui:autofocus` across the catalog.
- * Those names only mean something to RJSF, and the previous hand-rolled
- * renderer ignored all of them, re-deriving the same intent by matching field
- * names against /pass|secret|key|token/. A chart author writing
- * `ui:widget: PasswordWidget` was being quietly overruled by a regex.
- *
- * So these are not decoration: they are the reason the catalog's uiSchema
- * exists at all.
- */
 
-/**
- * The app's web address.
- *
- * More than a text box: the subdomain becomes a real DNS name, so it shows the
- * full URL as you type. Seeing `https://photos.<your-domain>` is the difference
- * between "subdomain" meaning something and not.
- */
 export function TunnelWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, autofocus, id, options } = props;
   const domain = (options?.domain as string) ?? "";
@@ -39,8 +19,6 @@ export function TunnelWidget(props: WidgetProps) {
         autoFocus={autofocus}
         disabled={disabled || readonly}
         onChange={(e) =>
-          // A subdomain is a DNS label: lowercase, alphanumeric and hyphens.
-          // Correcting as they type beats rejecting on submit.
           onChange(
             e.target.value
               .toLowerCase()
@@ -58,14 +36,6 @@ export function TunnelWidget(props: WidgetProps) {
   );
 }
 
-/**
- * A generated credential.
- *
- * Pre-filled rather than blank: nobody wants to invent a password for a
- * database they will never type it into, and a blank field invites `admin`.
- * Hidden by default, with reveal and regenerate, because it is worth copying
- * before install and worthless afterwards.
- */
 export function PasswordWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, id, schema } = props;
   const [shown, setShown] = useState(false);
@@ -104,7 +74,6 @@ export function PasswordWidget(props: WidgetProps) {
   );
 }
 
-/** RJSF's checkbox, rendered as the switch used everywhere else in the UI. */
 export function CheckboxWidget(props: WidgetProps) {
   const { value, onChange, label, schema, disabled, readonly } = props;
   return (
@@ -117,7 +86,6 @@ export function CheckboxWidget(props: WidgetProps) {
   );
 }
 
-/** Long-form text — used for things like a list of logins, one per line. */
 export function TextareaWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, id, placeholder } = props;
   return (

@@ -1,46 +1,12 @@
-//! The only way to run a Ceph or LVM command that destroys data.
-//!
-//! WHY THIS IS A MODULE WITH A DOOR
-//!
-//! Every destructive incident in this project came from a command that was
-//! correct in the place it was written and wrong in a state its author did not
-//! picture: `pg ls-by-osd` said 0 for a DOWN OSD and the disk holding the only
-//! copy was wiped; an unplugged disk marked `out` after 600s satisfied every
-//! purge condition; `images_recover` and `storage_heal` both force-created the
-//! same placement groups on their own clocks.
-//!
-//! The commands themselves were just strings passed to `ceph()`, so nothing
-//! distinguished "list pools" from "delete pool" at the type level, and no
-//! review could find every place that could destroy something by grepping for
-//! one name.
-//!
-//! Now:
-//!
-//!   - `ceph_cli::ceph` / `ceph_volume` REFUSE any command `is_destructive`
-//!     recognises, with `CmdError::Forbidden`, before spawning anything.
-//!   - The door-holding variants take a `Door`, which only this module can
-//!     construct.
-//!   - Each function here that opens the door demands a proof value naming WHY
-//!     the destruction is allowed — `SafeToDestroy` (Ceph itself confirmed it),
-//!     a `ZapWarrant`, or a `Purged` receipt — and those proofs can only be
-//!     obtained by performing the check they stand for.
-//!
-//! A future bug can still pass the wrong proof. It can no longer forget to
-//! have one.
 
 use crate::ceph::model::SafeToDestroyReport;
 use crate::exec::{CmdError, Failure};
 use crate::host::Host;
 
-/// Permission to run a destructive command. The private field is the point:
-/// nothing outside this module can build one.
 pub struct Door(());
 
-/// The app filesystem's pools: where app data lives.
 pub const APP_DATA_POOLS: &[&str] = &["yolab-fs-metadata", "yolab-fs-data0"];
 
-/// Whether `bin args` destroys data. Matched on the command words, skipping
-/// leading `--option value` pairs such as `--connect-timeout 10`.
 pub fn is_destructive(bin: &str, args: &[&str]) -> bool {
     let words = command_words(args);
     let w: Vec<&str> = words.iter().map(String::as_str).collect();
@@ -74,8 +40,6 @@ fn command_words(args: &[&str]) -> Vec<String> {
     while i < args.len() {
         let a = args[i];
         if let Some(opt) = a.strip_prefix("--") {
-            // `--opt=value` is one word; `--opt value` is two, except for the
-            // bare flags the destructive commands themselves carry.
             if !opt.contains('=')
                 && !opt.starts_with("yes-i-really")
                 && opt != "destroy"
@@ -94,21 +58,12 @@ fn command_words(args: &[&str]) -> Vec<String> {
     out
 }
 
-// ── Proof: Ceph says destroying this OSD loses nothing ───────────────────────
 
-/// Obtained only from `safe_to_destroy`, which asked Ceph.
-///
-/// `ceph osd safe-to-destroy` is the one trusted signal — never PG counts, never
-/// reweight. Inferring it from `pg ls-by-osd` once wiped the only copy of 686
-/// objects, because a DOWN OSD has no PGs *mapped* while still holding the data.
 #[derive(Debug)]
 pub struct SafeToDestroy {
     osd: i64,
 }
 
-/// `Ok(Some)` when Ceph confirms, `Ok(None)` when Ceph says the OSD still holds
-/// data (EBUSY), `Err` when Ceph did not answer. The caller cannot confuse the
-/// last two: "could not ask" is not "not safe yet", and neither is "safe".
 pub async fn safe_to_destroy<H: Host>(
     host: &H,
     osd: i64,
@@ -129,16 +84,11 @@ pub async fn safe_to_destroy<H: Host>(
         .then_some(SafeToDestroy { osd }))
 }
 
-/// The receipt for a purge Ceph confirmed. Required to zap the disk the OSD
-/// lived on.
 #[derive(Debug)]
 pub struct Purged {
     osd: i64,
 }
 
-/// Purges an OSD Ceph has confirmed is safe to destroy, then confirms it is gone
-/// from `osd ls`. `Ok(None)` when the purge reported success but the OSD is
-/// still listed: never hand out a `Purged` for something that is not.
 pub async fn purge_safe<H: Host>(
     host: &H,
     proof: SafeToDestroy,
@@ -155,37 +105,17 @@ async fn purge<H: Host>(host: &H, osd: i64) -> Result<Option<Purged>, CmdError> 
     Ok((!still.contains(&osd)).then_some(Purged { osd }))
 }
 
-// ── Proof: this disk may be zapped ───────────────────────────────────────────
 
-/// Why a disk may be returned to blank.
 #[derive(Debug)]
 pub enum ZapWarrant {
-    /// Our own OSD on it was just purged, confirmed gone.
     AfterPurge(Purged),
-    /// The owner switched it ON and it carries an OSD from ANOTHER cluster —
-    /// read from its LVM tags against our fsid, which was known.
     ForeignCluster { osd: i64 },
-    /// The owner switched it ON, no OSD of ours is on it, and `ceph-volume lvm
-    /// create` refused it for a stale signature.
     StaleSignature,
-    /// A disk or the system volume carries this cluster's osd.N, and the
-    /// cluster's own OSD list — read, not assumed — no longer has it: purged
-    /// while the disk was away, or by a heal. Nothing can ever read that data
-    /// again, and the disk was switched on to be an OSD.
-    ///
-    /// `whole_disk`: the OSD is on a disk of its own, whose leftover volume group
-    /// would make the next `ceph-volume lvm create` refuse it — so it goes too.
-    /// Never for the system volume, whose volume group holds the OS.
     ForgottenByCluster { osd: i64, whole_disk: bool },
-    /// A FORCE HEAL rebuilds the cluster from scratch, and this machine is being
-    /// reset to take part: every OSD on it goes. A volume in a group ceph-volume
-    /// made is destroyed with that group; the system volume (a device-mapper
-    /// path) is only erased.
     MachineReset,
 }
 
 impl ZapWarrant {
-    /// Only issued when the create error really is the stale-signature refusal.
     pub fn stale_signature(create_error: &CmdError) -> Option<Self> {
         let e = create_error.to_string().to_ascii_lowercase();
         (e.contains("bluestore signature") || e.contains("has a filesystem signature"))
@@ -193,10 +123,6 @@ impl ZapWarrant {
     }
 }
 
-/// `--destroy` removes the volume group, which is right for a whole disk
-/// ceph-volume built its own LVM stack on and wrong for the system LV disko owns
-/// (the OS depends on the volume group around it). Device-mapper paths are
-/// therefore never `--destroy`ed, whatever the warrant.
 pub async fn zap<H: Host>(host: &H, dev_path: &str, warrant: ZapWarrant) -> Result<(), CmdError> {
     let door = Door(());
     let is_lv = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
@@ -393,7 +319,6 @@ mod tests {
             assert!(host.ran(&format!("ceph-volume lvm zap {dev}")));
             assert!(!host.ran("--destroy"), "{dev}");
         }
-        // A whole disk loses its leftover volume group, or it cannot be used again.
         let host = FakeHost::new().ok("ceph-volume lvm zap", "");
         zap(
             &host,

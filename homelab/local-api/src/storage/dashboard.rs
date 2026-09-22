@@ -1,22 +1,3 @@
-//! Enable and configure the Ceph dashboard on this node's mgr.
-//!
-//! Not a reverse proxy to a fixed address: the dashboard runs on the ACTIVE
-//! mgr only, and a standby redirects to that mgr's WireGuard address, which a
-//! browser cannot reach. `routers/ceph.rs`'s dashboard proxy asks Ceph which
-//! mgr is active and forwards there, so a failover changes the answer and
-//! nothing else notices.
-//!
-//! `ceph config set` stores a value; it does not restart anything. The
-//! dashboard reads `ssl`/`server_port`/`url_prefix` exactly once, when it
-//! mounts its CherryPy tree at module start — so the first run always sets
-//! them on an already-serving module, where they sit stored and unused until
-//! something restarts it. The symptom is not a dashboard that looks broken:
-//! it is one working perfectly at `/` instead of under the prefix, so every
-//! proxied request comes back as Ceph's own CherryPy 404. `restart_needed`
-//! below is compared against what the mgr REPORTS it serves, never against
-//! `ceph config get` — config holding the right value while the running
-//! module ignores it IS the fault being repaired, so it cannot be the thing
-//! that decides whether it is fixed.
 
 use std::{path::Path, time::Duration};
 
@@ -38,9 +19,6 @@ struct ServedAt {
     prefix: String,
 }
 
-/// `"http://[fd00::1]:7000/ceph-dashboard/"` -> scheme/port/prefix. The last
-/// colon of the host:port segment begins the port — the address is
-/// bracketed, so this cannot bite off part of an IPv6 literal.
 fn parse_served(served: &str) -> Option<ServedAt> {
     let (scheme, rest) = served.split_once("://")?;
     let hostport = rest.split('/').next().unwrap_or("");
@@ -56,10 +34,6 @@ fn parse_served(served: &str) -> Option<ServedAt> {
     })
 }
 
-/// scheme covers `ssl`, port covers `server_port`, prefix covers
-/// `url_prefix` — the three keys that only take effect on a module restart.
-/// `false` (never restart) when `served` cannot even be parsed: restarting is
-/// disruptive to any open session, so an unrecognised shape must fail closed.
 fn restart_needed(served: &str, want_port: u16, want_prefix: &str) -> bool {
     match parse_served(served) {
         Some(s) => s.scheme != "http" || s.port != want_port.to_string() || s.prefix != want_prefix,
@@ -72,9 +46,6 @@ enum LoginCheck {
     Verified,
     ReapplyNeeded,
     Unreachable,
-    /// 415 means the Accept header is wrong for this Ceph version, 404 that
-    /// url_prefix and the proxy disagree — neither is a password problem, and
-    /// re-applying it would hide the real fault.
     NotAPasswordProblem(u16),
 }
 
@@ -87,11 +58,6 @@ fn interpret_login_code(code: u16) -> LoginCheck {
     }
 }
 
-/// This node's own password file, if it holds something usable — adopted
-/// rather than replaced so an upgrade from the per-node era promotes a
-/// password that already works instead of inventing a new one. Trims
-/// whitespace so a file written by the version that appended a newline still
-/// matches what Ceph has stored for it.
 fn adopt_local_password(existing_file_contents: Option<&str>) -> Option<String> {
     existing_file_contents
         .map(|s| s.chars().filter(|c| !c.is_whitespace()).collect::<String>())
@@ -171,13 +137,8 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         }
     }
 
-    // TLS off on purpose: Caddy terminates HTTPS at the edge and this is
-    // reached only over the WireGuard mesh.
     let port_s = policy.port.to_string();
     let addr_key = format!("mgr/dashboard/{node}/server_addr");
-    // `?` on each: a setting that did not land is exactly the drift this unit
-    // exists to correct, and reporting success over it hid that until someone
-    // clicked a dead dashboard link.
     for (key, value) in [
         ("mgr/dashboard/ssl", "false"),
         ("mgr/dashboard/url_prefix", policy.url_prefix.as_str()),
@@ -238,11 +199,6 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         }
     }
 
-    // The dashboard user database is not per-node — it lives in the mon KV
-    // store, so there is one `admin` account for the whole cluster. Plaintext
-    // in config-key is deliberate: the Storage page displays this by design,
-    // so it must stay recoverable, and config-key needs the admin keyring —
-    // the same trust boundary as the 0600 file it replaces.
     if let Some(parent) = Path::new(&policy.password_file).parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -275,9 +231,6 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
             );
             return Ok(());
         }
-        // Re-read rather than trusting what was just written: two nodes
-        // racing to fill an empty key both find it missing and both set it,
-        // so the loser must end up holding the winner's value.
         pw = host
             .ceph(&["config-key", "get", PW_KEY])
             .await
@@ -291,9 +244,6 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         return Ok(());
     };
 
-    // printf-equivalent, not a trailing newline: Ceph stores the trimmed
-    // value and local-api's Storage page reads this file verbatim, so a
-    // stray newline here is a password that looks right and never logs in.
     std::fs::write(&policy.password_file, &pw)?;
     #[cfg(unix)]
     {
@@ -337,11 +287,6 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         return Ok(());
     }
 
-    // Everything above can succeed and the login still fail, so ask the
-    // dashboard itself whether the password the page displays actually logs
-    // in, and re-apply on failure only — re-applying invalidates any open
-    // session, which three nodes doing it unconditionally on a timer is
-    // exactly what caused the per-node password conflict this replaced.
     let code = verify_login(&dash_url, &pw).await;
     match interpret_login_code(code) {
         LoginCheck::Verified => tracing::info!("dashboard: login verified for user admin"),
@@ -391,7 +336,6 @@ mod tests {
         }
     }
 
-    // ── parse_served / restart_needed ─────────────────────────────────────────
 
     #[test]
     fn parse_served_splits_an_ipv6_dashboard_url() {
@@ -448,7 +392,6 @@ mod tests {
         assert!(!restart_needed("nonsense", 7000, "/ceph-dashboard"));
     }
 
-    // ── interpret_login_code ──────────────────────────────────────────────────
 
     #[test]
     fn login_codes_are_classified() {
@@ -467,7 +410,6 @@ mod tests {
         );
     }
 
-    // ── adopt_local_password ───────────────────────────────────────────────────
 
     #[test]
     fn adopts_an_existing_local_password_trimmed() {
@@ -484,7 +426,6 @@ mod tests {
         assert_eq!(adopt_local_password(Some("   \n")), None);
     }
 
-    // ── run(): sequencing against a FakeHost ──────────────────────────────────
 
     #[tokio::test]
     async fn does_nothing_while_unreachable() {
@@ -502,14 +443,14 @@ mod tests {
                 r#"{"enabled_modules":["dashboard","iostat"]}"#,
             )
             .ok("ceph config set", "")
-            .ok("ceph mgr stat", r#"{"active_name":"yolab-n2"}"#) // not us — skip restart branch
+            .ok("ceph mgr stat", r#"{"active_name":"yolab-n2"}"#)
             .ok("ceph mgr services", r#"{"dashboard":""}"#)
             .ok(
                 "ceph config-key get yolab/dashboard/admin-password",
                 "clusterpw123",
             )
             .ok("ceph dashboard ac-user-show admin", "")
-            .fail("ceph mgr services", "unreachable"); // second read, for the login-verify step: empty -> skip
+            .fail("ceph mgr services", "unreachable");
 
         let dir = tempfile::tempdir().unwrap();
         let mut p = policy();
@@ -526,11 +467,6 @@ mod tests {
 
     #[tokio::test]
     async fn generates_a_password_when_none_exists_anywhere() {
-        // Two answers on the same prefix, consumed in order: the first read
-        // finds nothing (triggers generation), the second — after
-        // `config-key set` — sees the value that write is presumed to have
-        // taken, exactly as two nodes racing to fill the key would each see
-        // their own read reflect whichever write actually won.
         let host = FakeHost::new()
             .ok("ceph -s", "")
             .ok("ceph mgr module ls", r#"{"enabled_modules":["dashboard"]}"#)

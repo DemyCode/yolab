@@ -1,13 +1,3 @@
-//! The seam between reconcile logic and the machine it runs on.
-//!
-//! Every side effect — kubectl, ceph, ceph-volume, systemctl, lsblk — goes
-//! through this trait. The real implementation shells out to those binaries;
-//! tests substitute `fake::FakeHost`, which records calls and answers from a
-//! script, so the logic can be exercised without a cluster.
-//!
-//! Every method fails with `exec::CmdError`. There is no `unwrap_or_default`
-//! anywhere on this seam: a timeout is a timeout, a NotFound is a NotFound, and
-//! a caller that wants one of them to mean "empty" has to say so by name.
 
 use std::future::Future;
 use std::time::Duration;
@@ -19,23 +9,6 @@ use crate::ceph::model::{self, OsdDump, PgBrief};
 pub use crate::exec::CommandOutput;
 use crate::exec::{self, CmdError};
 
-/// The DEFAULT bound for a `RealHost` subprocess call. Not a universal one: work whose
-/// duration scales with data rather than with the cluster's responsiveness must ask for
-/// its own via `run_cmd_bounded`.
-///
-/// This comment used to claim 600s was "long enough for a real multi-GB `cp` of
-/// containerd's data-root over a modest link". That was never measured and it is false:
-/// node2's 9.2G store copies at ~9MB/s and needs ~1000s, so the migration was SIGKILLed
-/// here on every attempt it ever made — four times in 45 minutes on 2026-09-07, each
-/// run re-triggered by the timer, each one holding k3s down. The sentence is what kept
-/// anyone from looking: it asserted the exact property that was broken. Measure before
-/// writing a bound into prose.
-///
-/// 600s remains right for everything else here, because the failure it guards against is
-/// not "a slow command", it is a command that never returns at all: a `mkfs`/`mount`
-/// against an RBD device blocked on Ceph parks the calling thread in uninterruptible
-/// sleep (state D), which no signal can end. Bounding the await at least lets this task
-/// fail fast and report it; the wedged child is orphaned either way.
 pub const RUN_CMD_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub type HostResult<T> = Result<T, CmdError>;
@@ -57,15 +30,10 @@ pub trait Host: Send + Sync + Clone {
         &self,
         args: &'a [&str],
     ) -> impl Future<Output = HostResult<Value>> + Send + 'a;
-    /// Pipe a manifest to `kubectl apply -f -`.
     fn kubectl_apply<'a>(
         &self,
         manifest: &'a str,
     ) -> impl Future<Output = HostResult<()>> + Send + 'a;
-    /// Pipe a manifest to `kubectl create -f -` (`verb = "create"`) or
-    /// `kubectl replace -f -` (`verb = "replace"`, a compare-and-swap when the
-    /// manifest carries `metadata.resourceVersion`). Hosts that never write
-    /// records need not support it.
     fn kubectl_write<'a>(
         &self,
         verb: &'a str,
@@ -87,9 +55,6 @@ pub trait Host: Send + Sync + Clone {
         args: &'a [&'a str],
     ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a;
 
-    /// The destructive entry points. Only `ceph::destructive` can supply a
-    /// `Door`. The defaults route through the guarded methods, so a host that
-    /// does not override them refuses destruction rather than performing it.
     fn ceph_destructive<'a>(
         &self,
         _door: &Door,
@@ -106,13 +71,6 @@ pub trait Host: Send + Sync + Clone {
         self.ceph_volume(args)
     }
 
-    /// `run_cmd` for the one kind of work whose duration scales with the data,
-    /// not with the cluster's responsiveness (mkfs, a store copy).
-    ///
-    /// Applying the 600s bound to a copy made the first migration impossible on
-    /// any node with a real image store (node2, 2026-09-07: 9.2G at ~9MB/s needed
-    /// ~1000s). Scripted test hosts have no clock, so the default ignores the
-    /// bound; `RealHost` overrides it.
     fn run_cmd_bounded<'a>(
         &self,
         bin: &'a str,
@@ -126,9 +84,6 @@ pub trait Host: Send + Sync + Clone {
         async move { self.ceph(&["-s"]).await.is_ok() }
     }
 
-    /// Our cluster's fsid. An error when Ceph cannot say — callers compare disk
-    /// labels against it, and a defaulted value makes every foreign disk look
-    /// ours or every disk of ours look foreign.
     fn cluster_fsid(&self) -> impl Future<Output = HostResult<String>> + Send + '_ {
         async move {
             let first = match self.ceph_json(&["fsid"]).await {
@@ -150,8 +105,6 @@ pub trait Host: Send + Sync + Clone {
         }
     }
 
-    /// Every OSD id the cluster knows. Output that is not a list of integers is
-    /// a parse error — never an empty cluster.
     fn osd_ids(&self) -> impl Future<Output = HostResult<Vec<i64>>> + Send + '_ {
         async move {
             let v = self.ceph_json(&["osd", "ls"]).await?;
@@ -175,8 +128,6 @@ pub trait Host: Send + Sync + Clone {
         }
     }
 
-    /// `kubectl get … -o json` where NotFound is a legitimate answer: `Ok(None)`
-    /// for a missing object, `Err` for everything else.
     fn kubectl_get_opt<'a>(
         &'a self,
         args: &'a [&str],
@@ -292,8 +243,6 @@ impl Host for RealHost {
     }
 }
 
-/// A scripted `Host` for tests, shared by every module so each one does not
-/// grow its own copy.
 #[cfg(test)]
 pub(crate) mod fake {
     use std::{
@@ -311,14 +260,6 @@ pub(crate) mod fake {
     type ScriptedAnswer = std::result::Result<String, String>;
     type Script = Vec<(String, VecDeque<ScriptedAnswer>)>;
 
-    /// Every effect is a command, so scripting commands is what makes the
-    /// sequence assertable. Unscripted commands fail loudly by default — a test
-    /// must say what the machine answers rather than silently getting a
-    /// plausible one.
-    ///
-    /// Each prefix maps to a queue of answers, consumed in call order; the last
-    /// answer repeats once the queue is empty, so a test only has to spell out
-    /// the calls whose answer actually changes.
     #[derive(Clone, Default)]
     pub(crate) struct FakeHost {
         calls: Arc<Mutex<Vec<String>>>,
@@ -352,8 +293,6 @@ pub(crate) mod fake {
             self
         }
 
-        /// Longest matching prefix wins, so a general steady-state answer and a
-        /// more specific override can coexist without colliding.
         fn answer(&self, cmd: &str) -> HostResult<String> {
             self.calls.lock().unwrap().push(cmd.to_string());
             let mut script = self.script.lock().unwrap();
@@ -393,14 +332,12 @@ pub(crate) mod fake {
                 .any(|c| !c.starts_with("REFUSED ") && c.contains(needle))
         }
 
-        /// Whether a destructive command was attempted outside the door.
         pub fn refused(&self, needle: &str) -> bool {
             self.calls()
                 .iter()
                 .any(|c| c.starts_with("REFUSED ") && c.contains(needle))
         }
 
-        /// Index of the first call containing `needle`, for ordering asserts.
         pub fn position(&self, needle: &str) -> Option<usize> {
             self.calls().iter().position(|c| c.contains(needle))
         }

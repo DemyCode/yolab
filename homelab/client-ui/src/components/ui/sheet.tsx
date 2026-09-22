@@ -3,11 +3,6 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
 
-/**
- * One component, two shapes: a sheet that rises from the bottom on a phone and
- * a centred panel on a desktop. Same content, same code — this is most of what
- * "derive a phone app from the same source" costs in practice.
- */
 export function Sheet({
   open,
   onClose,
@@ -33,7 +28,6 @@ export function Sheet({
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", onKey);
-    // Stop the page behind from scrolling under the sheet.
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -69,7 +63,7 @@ export function Sheet({
           "sm:mx-4",
         )}
       >
-        {/* Grab handle: purely a phone affordance, hidden on desktop. */}
+        {}
         <div className="mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-border-strong sm:hidden" />
 
         {(title || subtitle) && (
@@ -108,13 +102,6 @@ export function Sheet({
   );
 }
 
-/**
- * Confirmation for things that cannot be undone.
- *
- * Takes the consequence as its body text rather than a generic "Are you sure?".
- * "Are you sure?" is answered yes by everyone; "This deletes the 4,200 photos
- * in Immich" is not.
- */
 export function ConfirmDialog({
   open,
   onClose,

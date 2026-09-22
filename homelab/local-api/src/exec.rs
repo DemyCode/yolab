@@ -1,23 +1,3 @@
-//! Every subprocess this crate runs, and the one error type they all fail with.
-//!
-//! WHY A TYPE AND NOT A STRING
-//!
-//! Almost every storage outage this project has had was the same bug in a new
-//! place: a command that could not answer was read as a command that answered
-//! "nothing". `rbd ls` timed out and `.unwrap_or(false)` said "no image"
-//! (containerd_store, 23 hours). `ceph-volume` timed out and an empty map said
-//! "no OSDs here" (disks_reconciler, one weak check from re-creating over a live
-//! OSD). An unreachable cluster read as `""` passed a health gate (topology).
-//!
-//! Each was fixed by hand where it happened, and nothing stopped the next one,
-//! because `anyhow::Error` carries only prose: the only way to ask "was that
-//! NotFound, or was the server down?" was `format!("{e}").contains("NotFound")`.
-//!
-//! `CmdError` makes the question structural. A caller that wants to treat
-//! absence as empty must match `Failure::NotFound` by name; every other variant
-//! — a timeout, a refused connection, output it could not parse — stays an
-//! error that `?` propagates. There is deliberately no `Default` and no
-//! "empty" value to fall back on.
 
 use std::fmt;
 use std::process::Stdio;
@@ -26,52 +6,31 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-/// What a command that ran and exited non-zero was telling us.
-///
-/// Classified from the tool's own words (see `classify`), because that is all
-/// kubectl and ceph give us: kubectl exits 1 for everything, and ceph's exit code
-/// is an errno only some of the time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    /// The object asked about does not exist. The only failure that may be read
-    /// as "absent".
     NotFound,
-    /// A create found the object already there.
     AlreadyExists,
-    /// Optimistic concurrency lost: someone wrote the object since we read it.
     Conflict,
-    /// The daemon refused because the object is in use (`EBUSY`) — e.g.
-    /// `ceph osd safe-to-destroy` for an OSD that still holds data.
     Busy,
-    /// The server could not be reached at all. Never "absent".
     Unreachable,
-    /// Anything else.
     Other,
 }
 
 #[derive(Debug)]
 pub enum CmdError {
-    /// The binary could not be started (missing from PATH, fork failed).
     Spawn { cmd: String, source: std::io::Error },
-    /// No answer within the bound. Says nothing about whether the thing exists.
     Timeout { cmd: String, after: Duration },
-    /// The command ran and exited non-zero.
     Failed {
         cmd: String,
         kind: Failure,
         stderr: String,
     },
-    /// It answered, but not in a shape we understand. Never "empty".
     Parse { cmd: String, detail: String },
-    /// Not run, because a call it must not overlap with is already running.
     Busy { cmd: String },
-    /// A destructive command was issued outside `ceph::destructive`.
     Forbidden { cmd: String },
 }
 
 impl CmdError {
-    /// The failure kind for a command that ran; `None` for every way of not
-    /// getting an answer at all.
     pub fn failure(&self) -> Option<Failure> {
         match self {
             CmdError::Failed { kind, .. } => Some(*kind),
@@ -91,8 +50,6 @@ impl CmdError {
         self.failure() == Some(Failure::AlreadyExists)
     }
 
-    /// True when no answer was obtained: the question is still open. The
-    /// opposite of every "it told us no" case.
     pub fn is_unanswered(&self) -> bool {
         matches!(
             self,
@@ -107,16 +64,11 @@ impl CmdError {
         }
     }
 
-    /// A scripted failure for tests and fakes, classified exactly the way a real
-    /// one would be so a fake cannot disagree with production about what an
-    /// error means.
     #[cfg(test)]
     pub fn failed(cmd: impl Into<String>, stderr: impl Into<String>) -> Self {
         let cmd = cmd.into();
         let stderr = stderr.into();
         let bin = cmd.split_whitespace().next().unwrap_or("");
-        // FakeHost labels piped writes `kubectl-apply`/`kubectl-replace`/…; they
-        // are kubectl and must be classified as kubectl.
         let bin = if bin.starts_with("kubectl-") {
             "kubectl"
         } else {
@@ -163,8 +115,6 @@ impl std::error::Error for CmdError {
     }
 }
 
-/// Finds a `CmdError` wherever it sits: directly, or anywhere in an
-/// `anyhow::Error` chain (a `.context()` wrapped around it must not hide it).
 pub trait AsCmdError {
     fn as_cmd_error(&self) -> Option<&CmdError>;
 }
@@ -181,16 +131,10 @@ impl AsCmdError for anyhow::Error {
     }
 }
 
-/// "This object does not exist" — and nothing else. An error that is not a
-/// `CmdError` at all is not a NotFound, whatever its text says.
 pub fn is_not_found(e: &impl AsCmdError) -> bool {
     e.as_cmd_error().is_some_and(CmdError::is_not_found)
 }
 
-/// Reads the tool's own description of what went wrong.
-///
-/// Narrow on purpose: each pattern is one the tool prints for exactly that case,
-/// and anything unrecognised is `Other`, which callers must treat as an error.
 pub fn classify(bin: &str, stderr: &str) -> Failure {
     match bin {
         "kubectl" => {
@@ -232,7 +176,6 @@ pub fn classify(bin: &str, stderr: &str) -> Failure {
     }
 }
 
-/// The observable result of running a process that is allowed to exit non-zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandOutput {
     pub success: bool,
@@ -248,12 +191,6 @@ pub fn render(bin: &str, args: &[&str]) -> String {
     }
 }
 
-/// Runs `bin args`, bounded by `timeout`, and returns what it printed whether or
-/// not it succeeded. `kill_on_drop`, so a timeout kills the child instead of
-/// abandoning it to pile up behind the next attempt.
-///
-/// A child stuck in uninterruptible sleep (a `mount` against a dead RBD) cannot
-/// be killed by anything; the bound still lets THIS task return and report it.
 pub async fn output(
     bin: &str,
     args: &[&str],
@@ -282,7 +219,6 @@ pub async fn output(
     })
 }
 
-/// `output`, but a non-zero exit is an error classified by `classify`.
 pub async fn checked(bin: &str, args: &[&str], timeout: Duration) -> Result<String, CmdError> {
     let out = output(bin, args, timeout).await?;
     into_checked(bin, args, out)
@@ -304,8 +240,6 @@ pub(crate) fn into_checked(
     })
 }
 
-/// Runs `bin args` with `input` on stdin. Same bound and kill semantics as
-/// `output`; a non-zero exit is a classified error.
 pub async fn with_stdin(
     bin: &str,
     args: &[&str],
@@ -347,8 +281,6 @@ pub async fn with_stdin(
     )
 }
 
-/// Parses a command's stdout as JSON into `T`. A shape mismatch is a `Parse`
-/// error — never a defaulted value.
 pub fn parse_json<T: serde::de::DeserializeOwned>(cmd: &str, raw: &str) -> Result<T, CmdError> {
     serde_json::from_str(raw).map_err(|e| CmdError::parse(cmd, e))
 }
@@ -451,7 +383,6 @@ mod tests {
 
     #[test]
     fn prose_that_merely_mentions_notfound_is_not_a_not_found() {
-        // The old check was a substring search over any error's text.
         let e = anyhow::anyhow!("helm: release NotFound in cache");
         assert!(!is_not_found(&e));
     }

@@ -8,14 +8,12 @@ import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 
-/** `GET /api/backups/apps` — see backups.rs `backed_up_apps_json`. */
 interface BackedUpApps {
   configured: boolean;
   apps: {
     namespace: string;
     instance_name: string;
     installed: boolean;
-    /** Newest first. */
     versions: { snapshot_id: string; time: string }[];
   }[];
 }
@@ -26,12 +24,6 @@ function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /**
-   * Restoring opens the install form, prefilled from the backup, rather than
-   * running a background job. The person gets to see — and change — the name and
-   * web address the restored app will take before anything is created, which is
-   * also where a subdomain collision is caught.
-   */
   async function restore() {
     setBusy(true);
     setError(null);
@@ -85,7 +77,6 @@ function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
   );
 }
 
-/** Home page: install an app from any of its backups instead of from the store. */
 export function AddFromBackupButton() {
   const [open, setOpen] = useState(false);
   const res = useApi<BackedUpApps>(

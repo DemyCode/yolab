@@ -1,32 +1,3 @@
-//! Boot step: the part of a FORCE HEAL that destroys this machine's cluster state.
-//!
-//! A heal rebuilds the cluster from the machines that still answer as a fresh
-//! installation (see `heal`). Every one of them first rebuilds its boot entry
-//! from its rewritten config.toml, then sets `[node] wipe_condition = true` in
-//! it, and restarts. This runs early in every boot — before the Ceph bootstrap, any
-//! Ceph daemon, the image store or k3s — and turns the machine back into one that
-//! has never been part of a cluster:
-//!
-//!   - every OSD on its disks is erased,
-//!   - the Ceph state (mon store, keyrings, daemon directories) is removed,
-//!   - the k3s state (etcd, agent certificates, kubelet) is removed.
-//!
-//! The boot then takes the ordinary install path: create the cluster, or join
-//! the machine the heal chose.
-//!
-//! THE SYSTEM VOLUME'S VOLUME GROUP IS NEVER DESTROYED. ceph-volume reports an
-//! OSD made on an existing logical volume with the physical volume under it as
-//! its device — on node1 `/dev/sda2`, the partition holding the operating system.
-//! Erasing "every OSD device" would therefore erase the OS. So volumes are erased
-//! by their own path: those in a volume group ceph-volume made itself
-//! (`ceph-…`) together with that group, any other in place.
-//!
-//! THE FLAG IS READ AT BOOT, never at build time: nothing in the NixOS
-//! configuration depends on it, so setting it needs no rebuild, and clearing it
-//! here takes effect for the very next boot.
-//!
-//! Idempotent: the flag is cleared only once everything is gone, so an
-//! interrupted wipe simply runs again at the next boot.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -37,15 +8,8 @@ use serde_json::Value;
 use crate::ceph::destructive::{self, ZapWarrant};
 use crate::host::Host;
 
-/// The config.toml key, in `[node]`, that asks for the wipe.
 pub const FLAG: &str = "wipe_condition";
 
-/// Directories whose CONTENTS are removed, except the named entry. The
-/// directories themselves stay, with the owners and modes tmpfiles gave them.
-///
-/// k3s keeps two things tmpfiles puts in place before this step runs: the
-/// manifests it applies (`server/manifests`) and the kubelet drop-in
-/// configuration (`agent/etc`).
 const EMPTIED: &[(&str, Option<&str>)] = &[
     ("var/lib/ceph/mon", None),
     ("var/lib/ceph/mgr", None),
@@ -65,12 +29,10 @@ const REMOVED_FILES: &[&str] = &[
     "etc/rancher/k3s/k3s.yaml",
     "etc/rancher/node/password",
     "var/lib/yolab/mesh-peers.json",
-    // The heal's copies of what was before it: that cluster is gone.
     "var/lib/yolab/reset/config.toml.before",
     "var/lib/yolab/reset/system.before",
 ];
 
-/// Whether `config` asks for the wipe. A missing key is no.
 pub fn wipe_condition(config: &str) -> Result<bool> {
     let table: toml::Table = toml::from_str(config).context("config.toml is not TOML")?;
     match table.get("node").and_then(|n| n.get(FLAG)) {
@@ -81,7 +43,6 @@ pub fn wipe_condition(config: &str) -> Result<bool> {
     }
 }
 
-/// `config` with the flag set to `value`, everything else as it was.
 pub fn with_wipe_condition(config: &str, value: bool) -> Result<String> {
     let mut table: toml::Table = toml::from_str(config).context("config.toml is not TOML")?;
     table
@@ -92,7 +53,6 @@ pub fn with_wipe_condition(config: &str, value: bool) -> Result<String> {
     toml::to_string(&table).context("write config.toml")
 }
 
-/// `config_path`: this machine's config.toml.
 pub async fn run<H: Host>(host: &H, root: &Path, config_path: &Path) -> Result<()> {
     let config = std::fs::read_to_string(config_path)
         .with_context(|| format!("read {}", config_path.display()))?;
@@ -118,7 +78,6 @@ pub async fn run<H: Host>(host: &H, root: &Path, config_path: &Path) -> Result<(
         remove_file(&root.join(file))?;
     }
 
-    // Read again: only the flag changes, whatever else happened to the file.
     let config = std::fs::read_to_string(config_path)
         .with_context(|| format!("read {}", config_path.display()))?;
     crate::config::write_private_file(
@@ -129,12 +88,6 @@ pub async fn run<H: Host>(host: &H, root: &Path, config_path: &Path) -> Result<(
     Ok(())
 }
 
-/// The paths to erase for every OSD in a `ceph-volume lvm list --format json`.
-///
-/// A volume in a group ceph-volume created (`ceph-…`) is erased by its logical
-/// volume path, which `zap` destroys together with the group. Any other volume —
-/// the system volume carved out by the installer — is erased by its
-/// device-mapper name, which `zap` never destroys.
 fn volumes_to_erase(raw: &str) -> Result<BTreeSet<String>> {
     let start = raw
         .find('{')
@@ -213,8 +166,6 @@ mod tests {
     use crate::host::fake::FakeHost;
     use serde_json::json;
 
-    /// node1's real listing: the system OSD on the installer's `pool/ceph`
-    /// volume, whose `devices` is the OS partition.
     fn listing() -> String {
         json!({
             "0": [{
@@ -265,7 +216,6 @@ mod tests {
 
     const CONFIG: &str = "var/lib/yolab/machine/config.toml";
 
-    /// A config.toml with the flag set to `wipe`.
     fn config(root: &Path, wipe: bool) -> PathBuf {
         let path = root.join(CONFIG);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -13,9 +13,6 @@ import { BoxPage } from "@/pages/box/BoxPage";
 import { BoxSubPage } from "@/pages/box/BoxSubPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
 
-// The operator pages are large, rarely opened, and not on the path to anything
-// someone does daily — so they are not in the bundle that has to load before
-// the home screen paints.
 const StoragePage = lazy(() =>
   import("@/pages/box/StoragePage").then((m) => ({ default: m.StoragePage })),
 );
@@ -49,8 +46,6 @@ export default function App() {
   const handleLogout = useCallback(() => setLoggedIn(false), []);
 
   useEffect(() => {
-    // Any 401 from anywhere returns to the sign-in screen, rather than each
-    // page inventing its own handling and some of them inventing none.
     setUnauthorizedHandler(handleLogout);
     return () => setUnauthorizedHandler(null);
   }, [handleLogout]);
@@ -59,9 +54,6 @@ export default function App() {
     api
       .get("/api/status")
       .then(() => setLoggedIn(true))
-      // A network failure is not proof of being signed out — on a box that is
-      // still booting, treating it as one would bounce the owner to a login
-      // screen their password will not yet work against.
       .catch((e: unknown) => {
         const unauthorized =
           typeof e === "object" && e !== null && "status" in e
@@ -164,8 +156,8 @@ export default function App() {
                 </BoxSubPage>
               }
             />
-            {/* Old bookmarks and the previous hash routes land somewhere sensible
-              rather than on a blank page. */}
+            {
+}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

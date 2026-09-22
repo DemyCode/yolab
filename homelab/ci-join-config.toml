@@ -1,12 +1,3 @@
-# Stub config for the SECOND machine, used by CI to evaluate the join path.
-# All values here are dummies — this file is never deployed to a real machine.
-#
-# Everything that makes joining different from creating comes from one field:
-# node.k3s.server_addr. Non-empty means "there is already a cluster over there",
-# which switches k3s from --cluster-init to joining an existing server, and
-# switches Ceph from generating the cluster keys to fetching them (see
-# yolab.ceph.joinSeedAddr). ci-config.toml is the same machine with that field
-# empty, and the two together are what actually cover the module.
 
 [homelab]
 hostname = "yolab-ci-join"
@@ -33,10 +24,6 @@ dns_url = "https://ci.example.com"
 
 [node]
 node_id = "ci"
-# These are read from [node], not [tunnel] — `s.nodeCfg` is `homelabConfig.node`.
-# They were missing here, and the eval fails outright without them
-# ("attribute 'sub_ipv6_private' missing"), which went unnoticed because the
-# NixOS build job in .github/workflows/push.yml is commented out.
 sub_ipv6_private = "fd00:cafe::2"
 sub_ipv6_private_subnet = "fd00:cafe::/112"
 wg_private_key = ""
@@ -46,18 +33,11 @@ wg_server_public_key = ""
 [node.k3s]
 role = "server"
 token = "ci-token"
-# Non-empty: this machine joins the cluster that ci-config.toml creates.
 server_addr = "https://[fd00:cafe::1]:6443"
 
-# Ceph runs as host daemons now, so the NixOS config requires a cluster fsid
-# and throws without one. A fixed value is correct here precisely because this
-# stub never builds a real cluster — on a real install the installer generates
-# one per cluster and it must never change afterwards.
 [ceph]
 fsid = "00000000-0000-4000-8000-000000000000"
 
-# See ci-config.toml's note — required so diskoScript builds under this
-# config too.
 [disk]
 device = "/dev/vda"
 esp_size = "512M"

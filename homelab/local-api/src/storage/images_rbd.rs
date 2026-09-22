@@ -1,10 +1,3 @@
-//! Boot step: the Ceph images pool and this node's RBD image exist.
-//!
-//! Runs after this node's system OSD exists and before the image store is
-//! mounted, which is before k3s. It WAITS for an OSD to be up rather than exiting
-//! with nothing done: exiting was what left a fresh node's containerd on the root
-//! disk, and what everything that later moved the store under a running k3s
-//! existed to undo. See `storage::wait`.
 
 use anyhow::{bail, Result};
 
@@ -29,8 +22,6 @@ async fn run_ok<H: Host>(host: &H, bin: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// One attempt. `NotYet` while Ceph cannot hold a pool; `Err` for a command that
-/// failed, which the caller waits out the same way.
 pub async fn attempt<H: Host>(
     host: &H,
     node: &str,
@@ -50,8 +41,6 @@ pub async fn attempt<H: Host>(
     if !pools.lines().any(|l| l.trim() == policy.pool_name) {
         let pool = policy.pool_name.as_str();
         run_ok(host, "ceph", &["osd", "pool", "create", pool, "32", "32"]).await?;
-        // One copy to start: the topology controller raises it to the owner's
-        // chosen count once k3s is up. A new pool holds nothing to lose.
         run_ok(
             host,
             "ceph",
@@ -75,7 +64,6 @@ pub async fn attempt<H: Host>(
         run_ok(host, "rbd", &["pool", "init", pool]).await?;
     }
 
-    // Size from capacity that actually exists — see images-store.nix's header.
     let sizing = SizingPolicy {
         pool_name: policy.pool_name.clone(),
         share_of_pool: policy.share_of_pool,
@@ -88,10 +76,6 @@ pub async fn attempt<H: Host>(
         )));
     };
 
-    // BOUNDED, and `.success` checked separately from `?`: a pool that answers
-    // with an ERROR comes back Ok with an empty stdout, which reads as "this
-    // node's image is not in the list" and would send us into `rbd create`
-    // against a pool that just said no.
     let existing = host
         .run_cmd_bounded("rbd", &["ls", &policy.pool_name], POOL_PROBE_TIMEOUT)
         .await?;
@@ -103,9 +87,6 @@ pub async fn attempt<H: Host>(
         )));
     }
     if !existing.stdout.lines().any(|l| l.trim() == node) {
-        // krbd cannot map object-map/fast-diff/deep-flatten, so create with only
-        // the features the kernel client supports — getting this wrong produces a
-        // map failure that reads like a permissions error.
         run_ok(
             host,
             "rbd",
@@ -235,8 +216,6 @@ mod tests {
         assert!(!host.ran("rbd create"));
     }
 
-    /// 2026-09-11: an unanswerable pool must never be mistaken for "no image
-    /// yet" — creating an image on a pool that cannot answer just hangs again.
     #[tokio::test]
     async fn a_pool_that_cannot_answer_is_waited_on_instead_of_creating_an_image() {
         let host = FakeHost::new()

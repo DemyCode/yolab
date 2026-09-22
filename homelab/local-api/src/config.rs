@@ -2,12 +2,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Reads `[tunnel] account_token` out of a config.toml at `path`. A free
-/// function — not just a `Config` method — because `storage::bootstrap`'s
-/// cluster-join path needs the same value before `local-api serve` (and its
-/// `Config`) exists at all; both read it through here so there is one parser
-/// rather than two that could drift. Empty on any failure to read or parse —
-/// callers MUST treat empty as "no valid token" and never authorize on it.
 pub fn read_account_token(config_path: &str) -> String {
     let Ok(text) = std::fs::read_to_string(config_path) else {
         return String::new();
@@ -23,18 +17,12 @@ pub fn read_account_token(config_path: &str) -> String {
         .to_string()
 }
 
-/// This machine's own files (config.toml, hardware-configuration.nix): the
-/// `yolab-machine` flake input every rebuild passes. `YOLAB_MACHINE_DIR`, set by
-/// `yolab.machineDir`.
 pub fn machine_dir() -> PathBuf {
     std::env::var("YOLAB_MACHINE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/machine"))
 }
 
-/// Writes `content` whole to a temporary file, root-only, and renames it over
-/// `path`: a crash mid-write leaves the previous content, never half of the new
-/// one. For config.toml and the other files a FORCE HEAL keeps on disk.
 pub fn write_private_file(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
     use anyhow::Context as _;
     use std::io::Write as _;
@@ -54,13 +42,6 @@ pub fn write_private_file(path: &std::path::Path, content: &[u8]) -> anyhow::Res
     std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
 }
 
-/// Which flake this machine builds itself from: a flake URL (e.g.
-/// `github:DemyCode/yolab`) and the branch, tag or commit within it.
-///
-/// Kept on disk rather than in a checkout because the node no longer keeps one —
-/// `nixos-rebuild` fetches the flake itself. That also makes the source
-/// runtime-editable, the same shape a community catalog takes: a URL added at
-/// runtime rather than something baked into the system closure.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Channel {
     pub url: String,
@@ -68,9 +49,6 @@ pub struct Channel {
     pub ref_: String,
 }
 
-/// The upstream this fleet builds from unless a node's channel says otherwise.
-/// Overridable by env so a deployment (or a test) can point at a fork without a
-/// rebuild — the same reason `YOLAB_OFFICIAL_CHART_REPO` is configurable.
 pub fn default_flake_url() -> String {
     std::env::var("YOLAB_FLAKE_URL").unwrap_or_else(|_| "github:DemyCode/yolab".into())
 }
@@ -85,8 +63,6 @@ impl Default for Channel {
 }
 
 impl Channel {
-    /// The flake reference `nixos-rebuild --flake` takes: the URL, plus the ref
-    /// when one is set. `github:o/r` + `main` → `github:o/r/main`.
     pub fn flake(&self) -> String {
         if self.ref_.is_empty() {
             self.url.clone()
@@ -98,8 +74,6 @@ impl Channel {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// This machine's own files, outside the repo: the `yolab-machine` flake
-    /// input every rebuild passes (see flake.nix).
     pub machine_dir: String,
     pub config_path: String,
     pub platform: String,
@@ -110,9 +84,6 @@ pub struct Config {
     pub rebuild_pid: PathBuf,
     pub built_dir: PathBuf,
     pub channel_file: PathBuf,
-    /// Whether the /api/terminal/exec root shell is available. Defaults to on
-    /// (the UI's Terminal page relies on it); set YOLAB_TERMINAL_ENABLED=0 to
-    /// disable the endpoint entirely.
     pub terminal_enabled: bool,
 }
 
@@ -141,17 +112,10 @@ impl Config {
         }
     }
 
-    /// Where the official catalog's charts live: the synced cache, not a
-    /// directory beside the source. The node reads every chart — the official
-    /// catalog included — from what the marketplace pulled, so there is no
-    /// bundled copy to fall back to or drift from.
     pub fn catalog_dir(&self) -> PathBuf {
         crate::charts::official_dir()
     }
 
-    /// The channel file, or its default when unreadable. A half-written or
-    /// hand-edited file falls back wholesale rather than mixing a parsed field
-    /// with a defaulted one.
     pub fn channel(&self) -> Channel {
         let Some(v) = std::fs::read_to_string(&self.channel_file)
             .ok()
@@ -162,9 +126,6 @@ impl Config {
         let Some(ref_) = v.get("ref").and_then(|r| r.as_str()) else {
             return Channel::default();
         };
-        // `url` absent is the one lenient case: it lets a channel file written
-        // before the URL moved here keep its pinned ref under the default source.
-        // Present but the wrong type is not — that is a corrupt file.
         let url = match v.get("url") {
             Some(u) => match u.as_str() {
                 Some(s) if !s.is_empty() => s.to_string(),
@@ -188,35 +149,23 @@ impl Config {
         Ok(())
     }
 
-    /// The flake `nixos-rebuild` builds this machine from.
     pub fn flake_ref(&self) -> String {
         self.channel().flake()
     }
 
-    /// The shared secret used to authenticate node→node API calls.
-    ///
-    /// Every node in a cluster is provisioned with the same platform
-    /// `account_token` (in `[tunnel]` of config.toml), so it doubles as a
-    /// pre-shared key for the mesh. Returns an empty string if unreadable —
-    /// callers MUST treat empty as "no valid token" and never authorize on it.
     pub fn cluster_token(&self) -> String {
         read_account_token(&self.config_path)
     }
 
-    /// The parsed `config.toml`, or `None` when it cannot be read or parsed.
-    /// Several modules used to re-read and re-parse this file themselves.
     pub fn toml(&self) -> Option<toml::Table> {
         let text = std::fs::read_to_string(&self.config_path).ok()?;
         toml::from_str(&text).ok()
     }
 
-    /// The `[tunnel]` table, or `None` when it is missing.
     pub fn tunnel_table(&self) -> Option<toml::Table> {
         self.toml()?.get("tunnel")?.as_table().cloned()
     }
 
-    /// A Config pointing at a throwaway `config.toml`, for tests that need to
-    /// exercise password/token reads without touching the real one.
     #[cfg(test)]
     pub fn for_test(config_path: &std::path::Path) -> Self {
         Self {
@@ -253,9 +202,6 @@ mod tests {
         assert_eq!(cfg.cluster_token(), "tok-abc123");
     }
 
-    /// Every "is this caller allowed?" check funnels into comparing against this
-    /// string, so the failure modes all have to produce something that can never
-    /// match — never a partial or defaulted value.
     #[test]
     fn cluster_token_is_empty_when_it_cannot_be_read() {
         let missing = Config::for_test(std::path::Path::new("/nonexistent/config.toml"));
@@ -287,7 +233,6 @@ mod tests {
             ref_: "main".into(),
         };
         assert_eq!(ch.flake(), "github:DemyCode/yolab/main");
-        // A trailing slash on the URL must not double up.
         let ch = Channel {
             url: "github:DemyCode/yolab/".into(),
             ref_: "v2.1.0".into(),
@@ -295,7 +240,6 @@ mod tests {
         assert_eq!(ch.flake(), "github:DemyCode/yolab/v2.1.0");
     }
 
-    /// A ref already baked into the URL (or none at all) is used as-is.
     #[test]
     fn a_channel_without_a_ref_uses_the_url_alone() {
         let ch = Channel {
@@ -305,8 +249,6 @@ mod tests {
         assert_eq!(ch.flake(), "github:DemyCode/yolab/main");
     }
 
-    /// A Config whose channel file lives in a throwaway directory, so a test can
-    /// write and read one without touching the real `/var/lib/yolab`.
     fn channel_cfg(dir: &tempfile::TempDir) -> Config {
         let mut cfg = Config::for_test(&dir.path().join("config.toml"));
         cfg.built_dir = dir.path().join("built");
@@ -335,9 +277,6 @@ mod tests {
         assert_eq!(cfg.flake_ref(), "github:someone/fork/v2.1.0");
     }
 
-    /// A half-written or hand-edited file must fall back wholesale rather than
-    /// mix a parsed URL with a defaulted ref — that combination points at a ref
-    /// that may not exist in that source.
     #[test]
     fn a_malformed_channel_file_falls_back_completely() {
         let dir = tempfile::tempdir().unwrap();
@@ -347,10 +286,10 @@ mod tests {
         for body in [
             "",
             "not json at all",
-            r#"{"url": "github:o/r"}"#,    // ref missing
-            r#"{"ref": "v2"}"#,            // url missing → default url, ref kept
-            r#"{"url": 5, "ref": "v2"}"#,  // wrong type
-            r#"{"url": "", "ref": "v2"}"#, // empty url
+            r#"{"url": "github:o/r"}"#,
+            r#"{"ref": "v2"}"#,
+            r#"{"url": 5, "ref": "v2"}"#,
+            r#"{"url": "", "ref": "v2"}"#,
             r#"{"url": "github:o/r", "ref": 5}"#,
             r#"{"url": "github:o/r", "ref": ""}"#,
             "[]",
@@ -358,7 +297,6 @@ mod tests {
             std::fs::write(&cfg.channel_file, body).unwrap();
             let ch = cfg.channel();
             if body == r#"{"ref": "v2"}"# {
-                // The legacy shape: no url, but a ref worth keeping.
                 assert_eq!(
                     (ch.url.as_str(), ch.ref_.as_str()),
                     (default_flake_url().as_str(), "v2"),

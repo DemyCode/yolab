@@ -1,24 +1,3 @@
-//! One harness that stands up the REAL API, so a test drives what a browser
-//! drives.
-//!
-//! The shape is borrowed from umbrelOS, whose `createTestUmbreld` and
-//! `createTestVm` return the same object — one backed by an in-process daemon,
-//! the other by a whole OS in QEMU — so a test body can be promoted from the
-//! cheap tier to the expensive one without being rewritten. `TestApi` is the
-//! cheap tier: the real `build_router`, the real auth middleware, the real cache
-//! middleware, a real config file on disk, and no cluster. The expensive tier is
-//! `nix/tests/*.nix`.
-//!
-//! Two rules make it worth having:
-//!
-//! 1. NEVER a stub router. A test that assembles its own `Router` proves that
-//!    the handler works, not that it is reachable, not that it is behind auth,
-//!    and not that it is mounted at the path the UI asks for. All three have
-//!    been wrong in this repo.
-//! 2. Requests are off-box by default. `is_loopback` is load-bearing for the
-//!    unprovisioned case, so a harness that quietly sent everything from
-//!    `127.0.0.1` would pass while the door stood open to the mesh. Ask for
-//!    `from_loopback` by name when that is the case under test.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -34,18 +13,13 @@ use crate::auth::{new_sessions, AuthState};
 use crate::config::Config;
 use crate::AppState;
 
-/// "password" hashed with SHA-512 crypt — the format `openssl passwd -6` emits,
-/// and what the installer writes into config.toml.
 pub(crate) const PASSWORD_HASH: &str = "$6$UG3IURKt1uqugrtk$i3e3tXg2NMIXuOb9JXztEAwCcsIcfn81WYBkzsfmwA7keyOajafp/PAAlFtcrMHVXo3cXK9z03YRRLaplZZm90";
 pub(crate) const PASSWORD: &str = "password";
-/// The pre-shared secret node→node calls present in `x-yolab-cluster`.
 pub(crate) const CLUSTER_TOKEN: &str = "cluster-tok";
 
-/// An address that is NOT loopback — a mesh peer, a pod, anything off this box.
 const OFF_BOX: &str = "[fd00:cafe::9]:40000";
 const LOOPBACK: &str = "127.0.0.1:40000";
 
-/// One response, already read to the end.
 pub(crate) struct Res {
     pub status: StatusCode,
     pub body: String,
@@ -56,9 +30,6 @@ impl Res {
     pub fn json(&self) -> Value {
         serde_json::from_str(&self.body).unwrap_or(Value::Null)
     }
-    /// The middleware let this through to a handler. Deliberately not
-    /// `status == OK`: most handlers need a cluster this harness does not have,
-    /// so "was not rejected" is the honest assertion for a reachability test.
     pub fn reached_handler(&self) -> bool {
         self.status != StatusCode::UNAUTHORIZED
     }
@@ -66,7 +37,6 @@ impl Res {
 
 pub(crate) struct TestApi {
     router: Router,
-    /// Kept alive: the config file lives in it for as long as the API may read it.
     _dir: tempfile::TempDir,
     session: Option<String>,
     peer: &'static str,
@@ -92,8 +62,6 @@ impl TestApi {
         }
     }
 
-    /// A provisioned node: a password is set, so auth is enforced exactly as it
-    /// is in production. This is the default shape for anything security-facing.
     pub fn provisioned() -> Self {
         Self::with_config(&format!(
             "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{PASSWORD_HASH}\"\n\
@@ -101,37 +69,27 @@ impl TestApi {
         ))
     }
 
-    /// A node with no password yet — what a machine looks like between first
-    /// boot and finishing setup.
     pub fn unprovisioned() -> Self {
         Self::with_config(&format!(
             "[homelab]\nhostname = \"yolab\"\n[tunnel]\naccount_token = \"{CLUSTER_TOKEN}\"\n"
         ))
     }
 
-    /// Send as if from this machine itself — what Caddy's reverse proxy looks
-    /// like, and the only caller an unprovisioned node trusts. Named `over_`
-    /// rather than `from_`: clippy reads a `from_*` method as a constructor and
-    /// rejects one that takes self.
     pub fn over_loopback(mut self) -> Self {
         self.peer = LOOPBACK;
         self
     }
 
-    /// Present the correct shared cluster token, as a peer node does.
     pub fn with_peer_token(mut self) -> Self {
         self.cluster_token = Some(CLUSTER_TOKEN.to_string());
         self
     }
 
-    /// Present a cluster token that is wrong.
     pub fn with_cluster_token(mut self, token: &str) -> Self {
         self.cluster_token = Some(token.to_string());
         self
     }
 
-    /// Sign in with the real password, keeping the session cookie for every
-    /// later request — the same handshake the UI performs.
     pub async fn login(mut self) -> Self {
         let body = format!("{{\"password\":\"{PASSWORD}\"}}");
         let res = self.send("POST", "/api/login", Some(&body)).await;
@@ -155,7 +113,6 @@ impl TestApi {
         self.send("POST", uri, Some(body)).await
     }
 
-    /// Drives the real router through `oneshot`, exactly as the server would.
     pub async fn send(&self, method: &str, uri: &str, body: Option<&str>) -> Res {
         let mut req = Request::builder()
             .method(method)

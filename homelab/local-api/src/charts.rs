@@ -1,73 +1,21 @@
-//! Chart sources: where an app's chart comes from, and how it gets onto this node.
-//!
-//! Phase 1 resolved charts from a single directory baked into the NixOS closure, which
-//! meant adding or fixing an app required `git reset --hard` plus a full `nixos-rebuild`
-//! on every node. This module decouples the two: charts are pulled from Helm repositories
-//! into a cache, and that cache is the only place a chart is ever read from. There is no
-//! bundled copy — the official catalog is just another repo in the list, resolved the
-//! same way a community one is.
-//!
-//! ## Distribution and discovery are separate problems
-//!
-//! Conflating them is what sent this module through GitHub Pages and then through
-//! committing chart tarballs to git before arriving somewhere sensible. They want
-//! different mechanisms:
-//!
-//! **Distribution is solved by the registry.** `helm pull oci://ghcr.io/...` fetches a
-//! chart with no hosting on our side, and public packages pull anonymously — verified,
-//! no login and no registry config needed. Nothing to serve, nothing in git.
-//!
-//! **Discovery is not.** A registry cannot be enumerated without credentials: GHCR
-//! returns 401 to an unauthenticated caller on both the OCI catalog endpoint
-//! (`/v2/_catalog`) and the GitHub Packages API. Asking "what apps exist?" would mean
-//! shipping every node a GitHub token, which is not acceptable for a storefront.
-//!
-//! So a repo here is a **catalog manifest** — a few hundred bytes of YAML naming the
-//! registry and the charts in it — and the chart bytes come from that registry. The
-//! manifest is the only thing anyone has to host, and for the official catalog it is a
-//! file in this repo served over raw.githubusercontent.com.
-//!
-//! Chart metadata (display name, icon, schema) deliberately is NOT duplicated into the
-//! manifest: it lives in each chart's Chart.yaml, which is the single source of truth,
-//! and the storefront reads it from the pulled chart in the cache.
-//!
-//! ## Trust
-//!
-//! Adding a repository is not like adding a package source to a Linux distro. A chart can
-//! declare arbitrary cluster objects — a privileged DaemonSet, a ClusterRoleBinding, a
-//! hostPath mount of `/` — so `add_repo` hands the publisher the ability to do anything to
-//! the user's cluster. That is why every chart records the repo it came from (see
-//! `ANN_CHART_REPO`) and why third-party repos must stay behind explicit consent in the UI
-//! rather than being presented as equivalent to the curated catalog.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-/// Repo config lives in a ConfigMap rather than on disk so every node in the cluster
-/// agrees on the same set, and so it is captured by the cluster-state backup.
 const REPO_CM: &str = "yolab-chart-repos";
 const REPO_NS: &str = "kube-system";
 
-/// Where pulled charts are unpacked. Not in the Nix store: the whole point is that this
-/// changes without rebuilding the system.
 pub const CACHE_DIR: &str = "/var/lib/yolab/charts";
 
-/// The curated catalog. Always present, cannot be removed, and is the only repo whose
-/// charts the UI presents as vouched-for.
 pub const OFFICIAL: &str = "official";
 
-/// Charts authored on this machine rather than pulled from anywhere. Reserved as a
-/// repo name too: a repo called "custom" would share the cache directory, and
-/// `remove_repo` would then delete charts that exist nowhere else.
 pub const CUSTOM: &str = "custom";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ChartRepo {
     pub name: String,
     pub url: String,
-    /// False for the official repo — the UI must not offer to remove it, and a node with
-    /// no repos at all would have an empty storefront.
     #[serde(default = "yes")]
     pub removable: bool,
 }
@@ -76,24 +24,12 @@ fn yes() -> bool {
     true
 }
 
-/// The official catalog manifest — one small generated file in the yolab repo. The charts
-/// it names are pulled from the OCI registry the manifest itself declares.
-///
-/// Configurable because this URL is baked into every deployed node: moving the manifest
-/// later (to a CDN, or to a route on yolab-external for a stable own-domain address)
-/// must not require patching code, and the old URL has to keep working until the fleet
-/// has rolled over.
 fn official_url() -> String {
     std::env::var("YOLAB_OFFICIAL_CHART_REPO").unwrap_or_else(|_| {
         "https://raw.githubusercontent.com/DemyCode/yolab/main/catalog.yaml".into()
     })
 }
 
-/// Every configured repo, official first.
-///
-/// The official entry is synthesised rather than stored, so it cannot be edited away by a
-/// malformed ConfigMap and so its URL follows the deployment rather than whatever was
-/// written at first boot.
 pub async fn list_repos() -> Vec<ChartRepo> {
     let mut repos = vec![ChartRepo {
         name: OFFICIAL.into(),
@@ -115,7 +51,7 @@ pub async fn list_repos() -> Vec<ChartRepo> {
     .unwrap_or_default();
     for (name, url) in stored {
         if name == OFFICIAL {
-            continue; // never shadowed by stored config
+            continue;
         }
         repos.push(ChartRepo {
             name,
@@ -126,7 +62,6 @@ pub async fn list_repos() -> Vec<ChartRepo> {
     repos
 }
 
-/// Repo names must be usable as a `helm repo` name and as a path segment in the cache.
 pub fn valid_repo_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
@@ -137,9 +72,6 @@ pub fn valid_repo_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Only https. A chart pulled over plaintext http can be swapped in flight by anything on
-/// the path, and a chart is arbitrary cluster objects — this is not a transport we can be
-/// relaxed about.
 pub fn valid_repo_url(url: &str) -> bool {
     url.starts_with("https://")
 }
@@ -189,7 +121,6 @@ pub async fn remove_repo(name: &str) -> anyhow::Result<()> {
     if name == OFFICIAL {
         anyhow::bail!("the official catalog cannot be removed");
     }
-    // JSON-patch remove on a key that isn't there fails, so go through merge-null.
     let patch = serde_json::json!({ "data": { name: null } }).to_string();
     crate::kubectl::run(&[
         "patch",
@@ -212,24 +143,13 @@ fn cache_dir_for(repo: &str) -> PathBuf {
     PathBuf::from(CACHE_DIR).join(repo)
 }
 
-/// Where the official catalog's charts are unpacked.
-///
-/// The storefront, the install path and custom-app vendoring all read from here.
-/// It is the same cache every other repo uses, so the official catalog is not
-/// special-cased to a directory beside the source — a node reads what the
-/// marketplace pulled, nothing else.
 pub fn official_dir() -> PathBuf {
     cache_dir_for(OFFICIAL)
 }
 
-/// What a repo's catalog manifest declares: where the charts are, and which exist.
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct CatalogManifest {
-    /// OCI reference the charts live under, e.g. `oci://ghcr.io/demycode/charts`.
     pub registry: String,
-    /// The library chart apps depend on, when the repo publishes one. Pulled
-    /// into the cache so a chart built on it renders here, but never listed on
-    /// the storefront — `read_chart` filters library charts.
     #[serde(default)]
     pub library: Option<CatalogEntry>,
     #[serde(default)]
@@ -242,14 +162,10 @@ pub struct CatalogEntry {
     pub version: String,
 }
 
-/// Only oci:// registries, and only https for the manifest itself. A chart is arbitrary
-/// cluster objects, so neither the list of what to install nor the bytes themselves may
-/// arrive over a transport anything on the path can rewrite.
 fn valid_registry(registry: &str) -> bool {
     registry.starts_with("oci://")
 }
 
-/// Rejects anything that could escape the cache directory or confuse a chart reference.
 fn valid_chart_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
@@ -258,8 +174,6 @@ fn valid_chart_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Pulls one chart into `dir`, over a clean copy: a chart that lost files between
-/// versions must not keep stale templates from the previous pull.
 async fn pull_into(dir: &Path, registry: &str, entry: &CatalogEntry) -> anyhow::Result<()> {
     let reference = format!("{}/{}", registry.trim_end_matches('/'), entry.name);
     let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
@@ -285,7 +199,6 @@ async fn pull_into(dir: &Path, registry: &str, entry: &CatalogEntry) -> anyhow::
     Ok(())
 }
 
-/// Fetches a repo's catalog manifest, or explains why it could not be read.
 async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
     let body = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -304,17 +217,6 @@ async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
     Ok(manifest)
 }
 
-/// Refresh a SINGLE chart from its repo.
-///
-/// The background sync runs hourly, which means a chart published minutes ago is
-/// invisible until the next tick — and the failure mode is silent: the install
-/// form renders the previous schema, so a field you just added simply is not
-/// there. That reads as "my change did not work" rather than "the node has an
-/// hour-old copy", and it has cost real debugging time.
-///
-/// So the install path refreshes just the chart being installed. One pull, on a
-/// flow that is already slow, in exchange for the form always matching what is
-/// actually published.
 pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
     if !valid_chart_name(name) {
         anyhow::bail!("unusable chart name {name:?}");
@@ -332,17 +234,6 @@ pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
     pull_into(&dir, &manifest.registry, entry).await
 }
 
-/// Fetches a repo's manifest and pulls everything it names into the cache.
-///
-/// Pulling eagerly rather than on demand keeps install latency predictable, and
-/// means an install does not fail because the registry is briefly unreachable at
-/// exactly the wrong moment. The catalog is small — tens of charts at a few KB
-/// each — so this is cheap.
-///
-/// The library chart, when the manifest declares one, is pulled too: a custom
-/// chart that depends on it is rendered here and must get OUR copy, not whatever
-/// a `repository:` line in an uploaded chart points at. It never reaches the
-/// storefront because `read_chart` filters library charts.
 pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
     let manifest = fetch_manifest(repo).await?;
 
@@ -381,17 +272,8 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
     Ok(pulled)
 }
 
-/// Every directory that may contain charts, in resolution order.
-///
-/// The cache is the only source. Charts are pulled from the repositories'
-/// manifests into it, so a node never reads a chart from beside the source —
-/// there is no bundled copy left to drift from what was published. Charts the
-/// owner wrote here come first, then each configured repo (the official catalog
-/// among them).
 pub async fn chart_sources() -> Vec<(String, PathBuf)> {
     let mut sources = Vec::new();
-    // Charts the owner wrote here, first. Not a repo — it is never in the ConfigMap,
-    // so `sync_repo` never sees it and cannot delete a chart nobody can re-download.
     let custom = cache_dir_for(CUSTOM);
     if custom.is_dir() {
         sources.push((CUSTOM.to_string(), custom));
@@ -405,7 +287,6 @@ pub async fn chart_sources() -> Vec<(String, PathBuf)> {
     sources
 }
 
-/// Locates a chart by id, preferring `repo` when given. Returns (repo name, chart dir).
 pub async fn resolve_chart(id: &str, repo: Option<&str>) -> Option<(String, PathBuf)> {
     for (name, dir) in chart_sources().await {
         if let Some(want) = repo {
@@ -421,12 +302,6 @@ pub async fn resolve_chart(id: &str, repo: Option<&str>) -> Option<(String, Path
     None
 }
 
-/// Background refresh so a node discovers newly published apps on its own.
-///
-/// This is the payoff for the whole module: the catalog gains apps and fixes without a
-/// `nixos-rebuild` on every machine. A failed sync is logged and retried next tick rather
-/// than escalated — a node whose network is briefly unhappy should keep serving the
-/// charts it already has, not lose its storefront.
 pub struct ChartSyncController;
 
 impl crate::runtime::Controller for ChartSyncController {
@@ -434,7 +309,6 @@ impl crate::runtime::Controller for ChartSyncController {
         "chart-sync"
     }
     fn scope(&self) -> crate::runtime::Scope {
-        // Each machine keeps its own copy of the charts under /var/lib/yolab.
         crate::runtime::Scope::Node
     }
     fn interval(&self) -> std::time::Duration {
@@ -468,9 +342,7 @@ mod tests {
     fn repo_names_are_constrained() {
         assert!(valid_repo_name("community"));
         assert!(valid_repo_name("my-charts-2"));
-        // Must not be able to shadow the curated catalog.
         assert!(!valid_repo_name(OFFICIAL));
-        // Path traversal into another repo's cache, or out of it entirely.
         assert!(!valid_repo_name("../etc"));
         assert!(!valid_repo_name("a/b"));
         assert!(!valid_repo_name("UPPER"));
@@ -480,8 +352,6 @@ mod tests {
     #[test]
     fn repo_urls_must_be_https() {
         assert!(valid_repo_url("https://charts.example.com/catalog.yaml"));
-        // A chart is arbitrary cluster objects; plaintext transport means anything on the
-        // path can rewrite the list of what gets installed.
         assert!(!valid_repo_url("http://charts.example.com/catalog.yaml"));
         assert!(!valid_repo_url("file:///etc"));
         assert!(!valid_repo_url(""));
@@ -490,8 +360,6 @@ mod tests {
     #[test]
     fn registries_must_be_oci() {
         assert!(valid_registry("oci://ghcr.io/demycode/charts"));
-        // A manifest that redirected chart bytes to plain HTTP would undo the point of
-        // requiring https for the manifest itself.
         assert!(!valid_registry("https://ghcr.io/demycode/charts"));
         assert!(!valid_registry(""));
     }
@@ -500,8 +368,6 @@ mod tests {
     fn chart_names_cannot_escape_the_cache() {
         assert!(valid_chart_name("filebrowser"));
         assert!(valid_chart_name("reactive-resume"));
-        // A hostile manifest must not be able to write outside its own cache directory
-        // or forge a reference to another registry path.
         assert!(!valid_chart_name("../../etc/passwd"));
         assert!(!valid_chart_name("a/b"));
         assert!(!valid_chart_name("Upper"));
@@ -534,8 +400,6 @@ mod tests {
 
     #[test]
     fn manifest_without_charts_is_valid_and_empty() {
-        // A newly created repo that has published nothing yet must sync cleanly to zero
-        // rather than erroring and leaving the repo looking broken.
         let m: CatalogManifest =
             serde_norway::from_str("registry: oci://ghcr.io/x/charts\n").unwrap();
         assert!(m.charts.is_empty());

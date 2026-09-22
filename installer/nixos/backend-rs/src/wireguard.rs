@@ -9,7 +9,6 @@ pub const PLATFORM_API: &str = "https://api.yolab.io";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct TunnelResult {
-    // Tunnel WireGuard (wg0) — public IP, DNS, Caddy
     pub enabled: bool,
     pub platform_api_url: String,
     pub account_token: String,
@@ -20,7 +19,6 @@ pub struct TunnelResult {
     pub dns_url: String,
     pub wg_server_endpoint: String,
     pub wg_server_public_key: String,
-    // Node WireGuard (wg1) — private cluster IP, K3s, inter-node mesh
     pub node_id: String,
     pub node_wg_private_key: String,
     pub node_wg_public_key: String,
@@ -79,11 +77,6 @@ pub async fn next_node_name(account_token: &str) -> anyhow::Result<String> {
     Ok(next_node_name_from(&resp))
 }
 
-/// Picks the next free `nodeN` name from the platform's tunnel listing.
-///
-/// Split from the HTTP call so the naming rule can be tested. The name becomes
-/// the machine's hostname and its DNS record, so a collision means two machines
-/// fighting over one name.
 fn next_node_name_from(resp: &serde_json::Value) -> String {
     let re = regex::Regex::new(r"^node(\d+)$").unwrap();
     let mut max_n: u32 = 0;
@@ -109,14 +102,12 @@ pub async fn register_and_bring_up_tunnel(
     account_token: &str,
     service_name: &str,
 ) -> anyhow::Result<TunnelResult> {
-    // Generate independent keypairs for the public tunnel and the private node mesh.
     let (tunnel_priv, tunnel_pub) = generate_wg_keypair().await?;
     let (node_priv, node_pub) = generate_wg_keypair().await?;
 
     let client = reqwest::Client::new();
     let auth = format!("Bearer {account_token}");
 
-    // Step 1: create tunnel (public IP, DNS)
     let tunnel_resp = client
         .post(format!("{PLATFORM_API}/tunnels"))
         .header("Authorization", &auth)
@@ -144,7 +135,6 @@ pub async fn register_and_bring_up_tunnel(
         .ok_or_else(|| anyhow!("missing wg_server_public_key"))?
         .to_string();
 
-    // Step 2: attach DNS record
     let record_resp = client
         .post(format!("{PLATFORM_API}/tunnels/{tunnel_id}/records"))
         .header("Authorization", &auth)
@@ -164,7 +154,6 @@ pub async fn register_and_bring_up_tunnel(
         .ok_or_else(|| anyhow!("missing fqdn in record response"))?;
     let dns_url = format!("https://{fqdn}");
 
-    // Step 3: register node peer with its own keypair (private cluster IP, K3s mesh)
     let node_resp = client
         .post(format!("{PLATFORM_API}/nodes"))
         .header("Authorization", &auth)
@@ -193,8 +182,6 @@ pub async fn register_and_bring_up_tunnel(
         .to_string();
     let sub_ipv6_private_subnet = mask_to_112(&sub_ipv6_private)?;
 
-    // Step 4: write wg0.conf (tunnel only) and bring up the public interface.
-    // wg1 (node mesh) is configured by NixOS at boot via networking.wireguard.interfaces.
     let conf = format!(
         "[Interface]\n\
          PrivateKey = {tunnel_priv}\n\
@@ -251,17 +238,6 @@ pub async fn register_and_bring_up_tunnel(
     })
 }
 
-/// Undoes `register_and_bring_up_tunnel` after a later install step fails.
-///
-/// `next_node_name_from` picks the next hostname by scanning exactly the DNS
-/// records this function deletes — so without this, every failed install
-/// permanently burns a "nodeN" name and leaves a dead WireGuard peer
-/// registered on the platform forever, and the next attempt (or the next
-/// customer's first machine) gets a confusing, gapped name.
-///
-/// Best-effort: errors are logged, not propagated. The install has already
-/// failed for its own reason; losing that reason behind a cleanup failure
-/// would make debugging harder, not easier.
 pub async fn deregister(
     account_token: &str,
     tunnel: &TunnelResult,
@@ -273,8 +249,6 @@ pub async fn deregister(
     let client = reqwest::Client::new();
     let auth = format!("Bearer {account_token}");
 
-    // Two independent resources (see register_and_bring_up_tunnel's steps 1
-    // and 3) — deleting one does not cascade to the other.
     let node_result = client
         .delete(format!("{PLATFORM_API}/nodes/{}", tunnel.node_id))
         .header("Authorization", &auth)
@@ -288,7 +262,6 @@ pub async fn deregister(
         ));
     }
 
-    // Deletes the tunnel's dns_records too (the backend cascades this itself).
     let tunnel_result = client
         .delete(format!("{PLATFORM_API}/tunnels/{}", tunnel.tunnel_id))
         .header("Authorization", &auth)
@@ -308,10 +281,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ── mask_to_112 ───────────────────────────────────────────────────────────
 
-    /// The tunnel hands out a single /128 address; the node needs the /112 it
-    /// sits in. Zeroing the last two octets is what turns one into the other.
     #[test]
     fn masking_to_112_zeroes_the_final_two_octets() {
         assert_eq!(
@@ -324,7 +294,6 @@ mod tests {
     fn masking_an_address_already_on_the_boundary_is_idempotent() {
         let once = mask_to_112("fd00:42:1::0").unwrap();
         assert_eq!(once, "fd00:42:1::/112");
-        // Feed the network part back in — it must not shift again.
         assert_eq!(mask_to_112("fd00:42:1::").unwrap(), once);
     }
 
@@ -334,14 +303,12 @@ mod tests {
         assert_eq!(mask_to_112("fd00::1:ffff").unwrap(), "fd00::1:0/112");
     }
 
-    /// A silently-wrong prefix would misroute the whole cluster mesh, so bad
-    /// input has to fail loudly rather than default to something plausible.
     #[test]
     fn masking_rejects_anything_that_is_not_an_ipv6_address() {
         assert!(mask_to_112("").is_err());
         assert!(mask_to_112("192.168.1.1").is_err());
         assert!(mask_to_112("not-an-address").is_err());
-        assert!(mask_to_112("fd00::1/64").is_err()); // already has a prefix
+        assert!(mask_to_112("fd00::1/64").is_err());
         assert!(mask_to_112("fd00::gggg").is_err());
     }
 
@@ -351,7 +318,6 @@ mod tests {
         assert!(err.contains("nonsense"), "got: {err}");
     }
 
-    // ── next_node_name_from ───────────────────────────────────────────────────
 
     fn tunnels(names: &[&[&str]]) -> serde_json::Value {
         json!(names
@@ -375,9 +341,6 @@ mod tests {
         );
     }
 
-    /// The hostname must be free, not merely next in sequence: after node2 is
-    /// removed, reusing "node2" would collide with its leftover DNS record and
-    /// with any cluster state still referring to it.
     #[test]
     fn a_gap_in_the_sequence_is_not_reused() {
         assert_eq!(
@@ -402,8 +365,6 @@ mod tests {
 
     #[test]
     fn double_digit_node_names_are_compared_numerically() {
-        // Lexical comparison would rank "node9" above "node10" and hand out a
-        // name that is already taken.
         assert_eq!(
             next_node_name_from(&tunnels(&[&["node9"], &["node10"]])),
             "node11"

@@ -1,6 +1,3 @@
-//! Detect the node's outbound IPv4 at boot and write it to k3s's config file
-//! as node-ip alongside the private IPv6, enabling dual-stack pods. Runs
-//! after WireGuard and before k3s so the IPv6 address is already up.
 
 use std::path::Path;
 
@@ -8,17 +5,11 @@ use anyhow::Result;
 
 use crate::host::Host;
 
-/// `ip -4 route get 1.1.1.1`'s stdout is one line like
-/// `"1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.42 uid 0"` — pull out what
-/// follows `src `. `None` for a machine with no IPv4 route at all (the
-/// IPv6-only case this is written for), never a guessed address.
 fn parse_src_ip(route_get_output: &str) -> Option<String> {
     let after = route_get_output.split("src ").nth(1)?;
     after.split_whitespace().next().map(str::to_string)
 }
 
-/// The line k3s's config file needs. Dual-stack when an IPv4 route exists,
-/// IPv6-only otherwise.
 fn node_ip_line(private_ipv6: &str, ipv4: Option<&str>) -> String {
     match ipv4 {
         Some(v4) if !v4.is_empty() => format!("node-ip: {private_ipv6},{v4}\n"),

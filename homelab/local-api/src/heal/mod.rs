@@ -1,47 +1,3 @@
-//! FORCE HEAL: a fresh cluster from the machines that still answer.
-//!
-//! NOTHING HEALS ITSELF. An offline machine looks exactly like a departed one,
-//! and a disk being moved looks like a dead one, so only a person decides. The
-//! page shows what is wrong — machines that do not answer, Ceph without a
-//! quorum, Kubernetes not answering, data with no reachable copy — and FORCE
-//! HEAL is offered whenever any of it is true.
-//!
-//! NO REPAIR, A REINSTALL. However the cluster broke, it is not taken apart
-//! piece by piece (monmaps edited, etcd members removed, OSDs purged): every
-//! machine that answers is installed again as a new cluster, and everything
-//! else is left behind. The machine the owner clicked creates it; the others
-//! join it, exactly as they would have joined at install time. Afterwards:
-//!
-//!   - every machine's disks are empty; only its system disk is in use, the
-//!     others show up OFF on the Storage page, to be switched on again,
-//!   - there are no apps: they come back through "Add from backup",
-//!   - the backup credentials are put back (`credentials`),
-//!   - the storage policy is the default one again.
-//!
-//! WHICH MACHINES. The YoLab platform's list of this account's machines, this
-//! machine's Ceph monmap and Kubernetes' nodes, together — any one of them may
-//! be unreadable in the situation a heal is for. Every machine listed is asked
-//! directly, on its API, whether it is there. One that answers is kept; one that
-//! does not is left out of the new cluster and removed from the platform.
-//!
-//!   1. `prepare`: every machine that is kept, the creator included, writes
-//!      the new cluster into its config.toml and runs `nixos-rebuild boot`
-//!      (`member`). Nothing is wiped.
-//!   2. `arm`: once every machine is prepared, each sets `[node]
-//!      wipe_condition = true`, the creator last.
-//!   3. `restart`: every machine restarts at the same time. At boot each wipes
-//!      its Ceph and Kubernetes state (`storage::reset_wipe`), clears the flag,
-//!      and creates or joins the cluster — a machine that joins retries until
-//!      the creator is up, as at install time.
-//!   4. `rebuild`: wait for every machine to be in the new Kubernetes cluster,
-//!      then remove the ones left behind from the platform.
-//!
-//! A heal that fails before the restart is undone on every machine (`undo`),
-//! which is then exactly as it was.
-//!
-//! THE MACHINE YOU CLICK DRIVES IT, from a record in a file on its own disk
-//! (`/var/lib/yolab/heal.json`) that survives its restart. Nothing about a heal
-//! is kept in Kubernetes or Ceph: the heal replaces both.
 
 pub(crate) mod credentials;
 pub(crate) mod member;
@@ -67,30 +23,20 @@ use member::{Begin, Layout, PhaseView, PrepareRequest, Preparing, ResetView};
 
 const NAME: &str = "heal";
 const TICK: Duration = Duration::from_secs(10);
-/// Kubernetes not answering is normal for a few minutes after a boot — k3s waits
-/// for the image store — so it is only called a problem after this much uptime.
 const KUBERNETES_GRACE_SECS: u64 = 600;
-/// How long the machines may take to prepare, all together. Past it the heal is
-/// undone rather than left waiting on a machine that will never finish.
 const PREPARE_WAIT_SECS: u64 = 3 * 3600;
 
-// ── The record ────────────────────────────────────────────────────────────────
 
-/// A machine in the new cluster.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Member {
     pub name: String,
-    /// Its cluster address: where its API, mon and k3s listen.
     pub addr: String,
 }
 
-/// A machine left behind.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Gone {
-    /// Its name when any list knew it, its address otherwise.
     pub label: String,
     pub addr: String,
-    /// Its registration on the YoLab platform, removed at the end.
     pub platform_id: Option<i64>,
 }
 
@@ -101,12 +47,10 @@ enum Step {
     Arm,
     Restart,
     Rebuild,
-    /// Only after a failure: every machine back as it was.
     Undo,
 }
 
 impl Step {
-    /// The steps of a heal that succeeds, in order.
     const PATH: [Step; 4] = [Step::Prepare, Step::Arm, Step::Restart, Step::Rebuild];
 
     fn next(self) -> Option<Step> {
@@ -114,8 +58,6 @@ impl Step {
         Self::PATH.get(i + 1).copied()
     }
 
-    /// Whether a new heal may replace one at this step. Nothing is half-done on
-    /// any machine: the restart is behind it, or everything is being put back.
     fn replaceable(self) -> bool {
         matches!(self, Step::Rebuild | Step::Undo)
     }
@@ -124,21 +66,15 @@ impl Step {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 struct Heal {
     id: String,
-    /// The machine carrying it out, which creates the new cluster.
     driver: String,
     started_at: u64,
     finished_at: Option<u64>,
     step: Step,
-    /// The new cluster's Ceph fsid.
     fsid: String,
-    /// Every machine of the new cluster, the driver last.
     members: Vec<Member>,
     gone: Vec<Gone>,
-    /// The boot the driver restarted from, so the next boot knows it happened.
     restart_boot_id: Option<String>,
-    /// What the current step is waiting for, or why it failed last.
     waiting: Option<String>,
-    /// Why the heal was abandoned, when it was.
     failed: Option<String>,
 }
 
@@ -169,7 +105,6 @@ impl Heal {
     }
 }
 
-/// The driving machine's record.
 #[derive(Clone)]
 struct LocalRecord {
     path: PathBuf,
@@ -197,9 +132,6 @@ impl LocalRecord {
     }
 }
 
-/// Why a backup must not run right now, if it must not: app data has no
-/// reachable copy, and the backup would upload the damage as the newest copy.
-/// Not being able to tell is a reason too.
 pub(crate) async fn backups_blocked() -> Option<String> {
     let host = RealHost;
     let lost = async {
@@ -219,9 +151,7 @@ fn blocked_by_loss(lost: &PgsByPool) -> Option<&'static str> {
         .then_some("a disk holding app data does not answer — reconnect it, or use FORCE HEAL")
 }
 
-// ── Reaching other machines ───────────────────────────────────────────────────
 
-/// What a machine says about itself on `GET /api/heal/peer`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub(crate) struct PeerInfo {
     pub name: String,
@@ -229,15 +159,12 @@ pub(crate) struct PeerInfo {
     pub reset: Option<ResetView>,
 }
 
-/// A machine's registration on the YoLab platform.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub(crate) struct PlatformNode {
     pub node_id: i64,
     pub sub_ipv6: String,
 }
 
-/// Everything a heal says to other machines and to the platform. A seam, so the
-/// survey and the steps can be tested.
 pub(crate) trait Network: Send + Sync {
     fn peer<'a>(&'a self, addr: &'a str) -> impl Future<Output = Result<PeerInfo>> + Send + 'a;
     fn prepare<'a>(
@@ -256,7 +183,6 @@ pub(crate) trait Network: Send + Sync {
         heal_id: &'a str,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
     fn reboot<'a>(&'a self, addr: &'a str) -> impl Future<Output = Result<()>> + Send + 'a;
-    /// `None` when this machine is not connected to the platform.
     fn platform_nodes(&self)
         -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_;
     fn delete_platform_node(&self, id: i64) -> impl Future<Output = Result<()>> + Send + '_;
@@ -293,7 +219,6 @@ impl RealNetwork {
         format!("http://[{addr}]:{}{path}", self.port)
     }
 
-    /// Sends a node-to-node request; a refusal comes back as its `error`.
     async fn send(
         &self,
         request: reqwest::RequestBuilder,
@@ -368,7 +293,6 @@ impl Network for RealNetwork {
                 .client
                 .post(self.url(addr, "/api/heal/peer/undo"))
                 .json(&json!({ "heal_id": heal_id }));
-            // Undoing rebuilds the boot entry.
             self.send(r, Duration::from_secs(3600)).await.map(|_| ())
         }
     }
@@ -419,14 +343,10 @@ impl Network for RealNetwork {
     }
 }
 
-// ── Looking at the cluster ────────────────────────────────────────────────────
 
-/// This machine's mon, asked over its admin socket — which answers with or
-/// without a quorum, and carries the monmap it has.
 #[derive(Debug, Clone, PartialEq)]
 struct MonStatus {
     in_quorum: bool,
-    /// Name and address of every mon.
     mons: Vec<(String, String)>,
 }
 
@@ -454,15 +374,12 @@ fn parse_mon_status(raw: &str) -> Result<MonStatus> {
     })
 }
 
-/// `[fd00::1]:3300` → `fd00::1`; `10.0.0.1:3300` → `10.0.0.1`.
 fn host_of(addr: &str) -> Option<String> {
     let (host, _port) = addr.rsplit_once(':')?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
     (!host.is_empty()).then(|| host.to_string())
 }
 
-/// One spelling per address, so the same machine from two lists is one machine:
-/// `fd00:0::1/128` and `fd00::1` are the same.
 fn normalize(addr: &str) -> String {
     let bare = addr.split('/').next().unwrap_or(addr).trim();
     bare.parse::<Ipv6Addr>()
@@ -484,7 +401,6 @@ async fn kubernetes_answers<H: Host>(host: &H) -> bool {
         .is_ok()
 }
 
-/// Name and cluster address of every Kubernetes node.
 async fn kubernetes_nodes<H: Host>(host: &H) -> Result<Vec<(String, Option<String>)>> {
     let v = host
         .kubectl_json(&["get", "nodes", "-o", "json", "--request-timeout=10s"])
@@ -513,14 +429,11 @@ async fn kubernetes_nodes<H: Host>(host: &H) -> Result<Vec<(String, Option<Strin
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct MachineState {
-    /// What the machine calls itself when it answers; otherwise what a list
-    /// called it, if any did.
     name: Option<String>,
     addr: String,
     platform_id: Option<i64>,
     this_machine: bool,
     answers: bool,
-    /// Its part in a heal, when it answers and has one.
     reset: Option<ResetView>,
 }
 
@@ -534,14 +447,11 @@ impl MachineState {
 struct Survey {
     me: String,
     machines: Vec<MachineState>,
-    /// The lists of machines that could not be read, and why.
     unreadable: Vec<String>,
-    /// Whether any list of machines could be read.
     listed: bool,
     ceph_quorum: bool,
     kubernetes: bool,
     uptime_secs: u64,
-    /// Known only while Ceph has a quorum.
     lost_groups: Option<usize>,
 }
 
@@ -689,7 +599,6 @@ async fn survey<H: Host, N: Network>(
                         addr,
                         platform_id: l.platform_id,
                         this_machine,
-                        // This machine is serving the request that asks.
                         answers: this_machine,
                         reset: None,
                     }
@@ -725,14 +634,10 @@ async fn survey<H: Host, N: Network>(
     }
 }
 
-// ── Starting ──────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 pub struct HealRequest {
-    /// The machines of the new cluster, as the owner saw them.
     pub keep_machines: BTreeSet<String>,
-    /// The machines left behind, confirmed by the owner. Both must be exactly
-    /// the survey's now: anything else means the page is out of date.
     pub remove_machines: BTreeSet<String>,
 }
 
@@ -823,7 +728,6 @@ fn list(items: &BTreeSet<String>) -> String {
     }
 }
 
-/// A random (version 4) UUID.
 fn new_fsid() -> String {
     let mut b: [u8; 16] = rand::random();
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -839,16 +743,12 @@ fn new_fsid() -> String {
     )
 }
 
-// ── Running ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq)]
 enum StepResult {
     Done,
-    /// Look again next tick, for this reason.
     NotYet(String),
-    /// Abandon the heal, for this reason, and undo it.
     Fail(String),
-    /// This machine is restarting.
     Restarting,
 }
 
@@ -861,7 +761,6 @@ impl Controller for HealController {
         NAME
     }
     fn scope(&self) -> Scope {
-        // The machine the owner clicked drives the heal, whatever leads.
         Scope::Node
     }
     fn interval(&self) -> Duration {
@@ -967,8 +866,6 @@ async fn run_step<H: Host, N: Network>(
     match heal.step {
         Step::Prepare => prepare_step(net, heal, now).await,
         Step::Arm => {
-            // The driver last: if another machine cannot be armed, the machine
-            // that would create the cluster is not either.
             for m in &heal.members {
                 let info = match net.peer(&m.addr).await {
                     Ok(info) => info,
@@ -994,11 +891,7 @@ async fn run_step<H: Host, N: Network>(
             Ok(Done)
         }
         Step::Restart => {
-            // All at once: each machine restarts a few seconds after it answers
-            // (routers/reboot.rs), this one straight after asking them.
             for m in heal.members.iter().filter(|m| m.name != heal.driver) {
-                // Not fatal: one that does not restart now is asked again after
-                // this machine is back, and wipes itself whenever it restarts.
                 net.reboot(&m.addr)
                     .await
                     .warn_on_err(format!("heal: restart {}", m.name));
@@ -1012,7 +905,6 @@ async fn run_step<H: Host, N: Network>(
         }
         Step::Rebuild => {
             if heal.restart_boot_id.as_deref() == Some(boot_id) {
-                // Saved, but the restart never happened.
                 restart_this_machine(host).await?;
                 return Ok(Restarting);
             }
@@ -1124,8 +1016,6 @@ async fn rebuild_step<H: Host, N: Network>(host: &H, net: &N, heal: &Heal) -> Re
     }
     for g in &heal.gone {
         if let Some(id) = g.platform_id {
-            // Best effort: a registration left behind costs nothing but a line
-            // in the platform's list.
             net.delete_platform_node(id)
                 .await
                 .warn_on_err(format!("heal: remove {} from the YoLab platform", g.label));
@@ -1143,7 +1033,6 @@ async fn restart_this_machine<H: Host>(host: &H) -> Result<()> {
     Ok(())
 }
 
-// ── HTTP ──────────────────────────────────────────────────────────────────────
 
 fn heal_json(heal: &Heal) -> Value {
     json!({
@@ -1202,13 +1091,9 @@ async fn uptime_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// What `GET /api/heal` sees from this machine right now, for notifications
-/// (`notify`): what is wrong, and which machines answer.
 pub(crate) struct View {
     pub problems: Vec<&'static str>,
-    /// Names of every machine that answers, this one included.
     pub answering: Vec<String>,
-    /// Cluster addresses of the OTHER machines that answer.
     pub peer_addrs: Vec<String>,
 }
 
@@ -1227,8 +1112,6 @@ pub(crate) async fn current_view(cfg: &crate::config::Config) -> View {
     }
 }
 
-/// `GET /api/heal` — what is wrong, what a heal would do, and the heal this
-/// machine drives or drove last. Served whether or not Ceph or Kubernetes answer.
 pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let net = RealNetwork::from_config(&s.config);
     let local = match LocalRecord::under(Path::new("/")).load() {
@@ -1247,7 +1130,6 @@ pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) 
     (StatusCode::OK, Json(status_json(&survey, local.as_ref())))
 }
 
-/// `POST /api/heal` with a `HealRequest`. This machine drives the heal.
 pub async fn post_heal(
     State(s): State<AppState>,
     Json(request): Json<HealRequest>,
@@ -1278,7 +1160,6 @@ pub struct HealIdRequest {
     pub heal_id: String,
 }
 
-/// `GET /api/heal/peer` — this machine, as a heal driver sees it.
 pub async fn get_peer(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let boot = match boot_id().await {
         Ok(b) => b,
@@ -1298,8 +1179,6 @@ pub async fn get_peer(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     }
 }
 
-/// `POST /api/heal/peer/prepare` — prepare this machine for a heal's new
-/// cluster. Returns as soon as preparing has started.
 pub async fn post_peer_prepare(
     State(s): State<AppState>,
     Json(request): Json<PrepareRequest>,
@@ -1315,7 +1194,6 @@ pub async fn post_peer_prepare(
             return (StatusCode::OK, Json(json!(v)));
         }
     }
-    // Held while preparing: an update rebuilding this machine meanwhile would race it.
     let Some(update) = crate::routers::update::exclusive() else {
         return error(
             StatusCode::CONFLICT,
@@ -1335,7 +1213,6 @@ pub async fn post_peer_prepare(
     }
 }
 
-/// `POST /api/heal/peer/arm` — have this machine's next boot wipe it.
 pub async fn post_peer_arm(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
@@ -1348,7 +1225,6 @@ pub async fn post_peer_arm(
     .await
 }
 
-/// `POST /api/heal/peer/undo` — put this machine back as it was.
 pub async fn post_peer_undo(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
@@ -1382,7 +1258,6 @@ where
     };
     let layout = Layout::from_config(&s.config);
     let _held = member::lock().lock().await;
-    // Held while the boot entry is rebuilt: an update doing the same would race it.
     let update = crate::routers::update::exclusive();
     let may_rebuild = update.is_some();
     match change(layout, boot, heal_id.to_string(), may_rebuild).await {
