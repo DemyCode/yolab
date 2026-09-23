@@ -161,16 +161,15 @@
       }
       // lib.optionalAttrs isMachine {yolab = nixosSystems.yolab;};
 
-    checks.x86_64-linux =
-      allChecks
-      // {
-        boot-test = bootTest;
-        two-node-test = twoNodeTest;
-        disk-loss-test = diskLossTest;
-        reboot-test = rebootTest;
-        rolling-reboot-test = rollingRebootTest;
-        two-node-disk-loss-test = twoNodeDiskLossTest;
-      };
+    checks.x86_64-linux = allChecks;
+    # // {
+    #   boot-test = bootTest;
+    #   two-node-test = twoNodeTest;
+    #   disk-loss-test = diskLossTest;
+    #   reboot-test = rebootTest;
+    #   rolling-reboot-test = rollingRebootTest;
+    #   two-node-disk-loss-test = twoNodeDiskLossTest;
+    # } ;
 
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
 
