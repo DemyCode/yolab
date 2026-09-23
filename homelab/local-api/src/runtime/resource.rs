@@ -30,6 +30,24 @@ impl State {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disruption {
+    None,
+    RestartsWorkloads,
+}
+
+pub fn effective_pauses(
+    disruption: Disruption,
+    declared: &[activity::Activity],
+) -> Vec<activity::Activity> {
+    let mut out = declared.to_vec();
+    if disruption == Disruption::RestartsWorkloads && !out.contains(&activity::Activity::Restore) {
+        out.push(activity::Activity::Restore);
+    }
+    out
+}
+
 pub trait Resource: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
@@ -55,6 +73,10 @@ pub trait Resource: Send + Sync + 'static {
         Duration::ZERO
     }
 
+    fn disruption(&self) -> Disruption {
+        Disruption::None
+    }
+
     fn check(&self, ctx: &Ctx) -> impl Future<Output = State> + Send;
 
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
@@ -65,10 +87,43 @@ pub struct ControllerResource<C> {
     deps: Vec<&'static str>,
 }
 
+pub fn deps_of(requires: &[Requirement]) -> Vec<&'static str> {
+    requires.iter().map(|r| r.resource_name()).collect()
+}
+
+pub(crate) async fn preflight(
+    name: &str,
+    scope: Scope,
+    deps: &[&'static str],
+    disruption: Disruption,
+    pauses: &[activity::Activity],
+) -> anyhow::Result<String> {
+    let node = crate::system::hostname();
+    if scope == Scope::Cluster && !leader::held_by(&node).await? {
+        anyhow::bail!(
+            "{name} is cluster-scoped and {node} does not hold the cluster lease — run it on the leader"
+        );
+    }
+    for dep in deps {
+        if let Some(r) = Requirement::from_resource_name(dep) {
+            if !activity::is_met(r).await {
+                anyhow::bail!("not running {name}: waiting for {r}");
+            }
+        }
+    }
+    if let activity::Gate::Paused(why) = activity::gate(&effective_pauses(disruption, pauses)).await
+    {
+        anyhow::bail!("not running {name}: {why}");
+    }
+    Ok(node)
+}
+
 impl<C: Controller> ControllerResource<C> {
     pub fn new(inner: C) -> Self {
-        let deps = inner.requires().iter().map(|r| r.resource_name()).collect();
-        Self { inner, deps }
+        Self {
+            deps: deps_of(inner.requires()),
+            inner,
+        }
     }
 }
 
@@ -353,7 +408,12 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             continue;
         }
 
-        if let activity::Gate::Paused(why) = activity::gate(resource.pauses_during()).await {
+        if let activity::Gate::Paused(why) = activity::gate(&effective_pauses(
+            resource.disruption(),
+            resource.pauses_during(),
+        ))
+        .await
+        {
             reg.set_phase(name, Phase::Paused(why));
             super::wait_or_wake(&notify, super::RECHECK).await;
             continue;
@@ -366,11 +426,18 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         let outcome = tokio::spawn(async move { r.converge(&ctx).await }).await;
 
         let next = match outcome {
+            Ok(Ok(Tick::NotYet(why))) => {
+                set_state(name, State::NotYet(why.clone()));
+                was_settled = false;
+                reg.succeeded(name, Some(why));
+                interval
+            }
             Ok(Ok(tick)) => {
                 let (note, next) = match tick {
                     Tick::Done => (None, interval),
                     Tick::Idle(why) => (Some(why), interval),
                     Tick::RequeueAfter(d) => (None, d.min(interval)),
+                    Tick::NotYet(_) => (None, interval),
                 };
                 reg.succeeded(name, note);
                 if unchecked {
@@ -397,6 +464,18 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         super::status::publish_snapshot();
         super::wait_or_wake(&notify, next).await;
     }
+}
+
+pub async fn run_once<R: Resource>(resource: &R) -> anyhow::Result<Tick> {
+    let node = preflight(
+        resource.name(),
+        resource.scope(),
+        resource.depends_on(),
+        resource.disruption(),
+        resource.pauses_during(),
+    )
+    .await?;
+    resource.converge(&Ctx { node }).await
 }
 
 #[cfg(test)]
@@ -736,5 +815,65 @@ mod tests {
         let found = problems_in(&g);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("'ceph'"), "{found:?}");
+    }
+
+    #[test]
+    fn a_disruptive_resource_always_pauses_during_a_restore() {
+        let pauses = effective_pauses(Disruption::RestartsWorkloads, &[]);
+        assert!(
+            pauses.contains(&activity::Activity::Restore),
+            "a resource that restarts workloads must never do so mid-restore"
+        );
+    }
+
+    #[test]
+    fn a_harmless_resource_is_not_given_a_pause_it_did_not_ask_for() {
+        assert!(effective_pauses(Disruption::None, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_disruptive_resource_does_not_get_a_duplicate_pause() {
+        let pauses = effective_pauses(
+            Disruption::RestartsWorkloads,
+            &[activity::Activity::Restore],
+        );
+        assert_eq!(pauses.len(), 1, "{pauses:?}");
+    }
+
+    struct NeverDone {
+        converges: Arc<AtomicU32>,
+    }
+
+    impl Resource for NeverDone {
+        fn name(&self) -> &'static str {
+            "test-never-done"
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            State::Unchecked
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            self.converges.fetch_add(1, Ordering::SeqCst);
+            Ok(Tick::NotYet("no OSD is up yet".into()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_converge_that_reports_not_yet_never_becomes_ready() {
+        let converges = Arc::new(AtomicU32::new(0));
+        spawn(
+            NeverDone {
+                converges: converges.clone(),
+            },
+            leader::Leadership::fixed_for_tests(true),
+        );
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert!(converges.load(Ordering::SeqCst) > 1, "it stopped retrying");
+        match state_of("test-never-done") {
+            Some(State::NotYet(why)) => assert_eq!(why, "no OSD is up yet"),
+            other => panic!("NotYet was mistaken for readiness: {other:?}"),
+        }
     }
 }

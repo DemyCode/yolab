@@ -7,29 +7,63 @@ use crate::host::{Host, RealHost};
 use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
 use super::{
-    bootstrap, csi_secrets, dashboard, images_grow, keys, lock_name, mon_member, osd, StorageEnv,
+    bootstrap, containerd_store, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name,
+    mon_member, osd, StorageEnv,
 };
+
+use super::wait::Attempt;
+
+pub(crate) fn tick_of(a: Attempt<()>) -> Tick {
+    match a {
+        Attempt::Ready(()) => Tick::Done,
+        Attempt::NotYet(why) => Tick::NotYet(why),
+    }
+}
+
+async fn done<F>(f: F) -> Result<Tick>
+where
+    F: Future<Output = Result<()>>,
+{
+    f.await?;
+    Ok(Tick::Done)
+}
 
 async fn locked<F, Fut>(job: &str, f: F) -> Result<Tick>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    locked_in(std::path::Path::new(lock::LOCK_DIR), job, f).await
+    locked_tick(job, || done(f())).await
 }
 
-async fn locked_in<F, Fut>(dir: &std::path::Path, job: &str, f: F) -> Result<Tick>
+async fn locked_tick<F, Fut>(job: &str, f: F) -> Result<Tick>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<()>>,
+    Fut: Future<Output = Result<Tick>>,
+{
+    locked_tick_in(std::path::Path::new(lock::LOCK_DIR), job, f).await
+}
+
+async fn locked_tick_in<F, Fut>(dir: &std::path::Path, job: &str, f: F) -> Result<Tick>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Tick>>,
 {
     let Some(_guard) = lock::try_acquire_in(dir, &lock_name(job))? else {
         return Ok(Tick::Idle(format!(
             "another run of {job} holds its lock right now"
         )));
     };
-    f().await?;
-    Ok(Tick::Done)
+    f().await
+}
+
+#[cfg(test)]
+async fn locked_in<F, Fut>(dir: &std::path::Path, job: &str, f: F) -> Result<Tick>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    locked_tick_in(dir, job, || done(f())).await
 }
 
 fn root() -> &'static std::path::Path {
@@ -68,7 +102,7 @@ macro_rules! storage_controller {
             async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
                 let $env = &self.env;
                 let $node = ctx.node.as_str();
-                locked($job, || $body).await
+                locked_tick($job, || $body).await
             }
         }
     };
@@ -78,7 +112,26 @@ storage_controller! {
     OsdActivateController, name: "osd-activate", job: "osd-activate",
     every: Duration::from_secs(120), after_boot: Duration::ZERO,
     requires: [Requirement::Ceph],
-    run: |_env, _node| osd::run(&RealHost)
+    run: |_env, _node| done(osd::run(&RealHost))
+}
+
+storage_controller! {
+    SystemOsdController, name: "system-osd", job: "system-osd",
+    every: Duration::from_secs(60), after_boot: Duration::ZERO,
+    requires: [Requirement::Ceph],
+    run: |_env, _node| async {
+        Ok(tick_of(crate::disks_reconciler::system_osd_attempt(&RealHost).await?))
+    }
+}
+
+storage_controller! {
+    ImagesRbdController, name: "images-rbd", job: "images-rbd",
+    every: Duration::from_secs(60), after_boot: Duration::ZERO,
+    requires: [Requirement::Ceph],
+    run: |env, node| async {
+        let policy = env.images_rbd_policy();
+        Ok(tick_of(images_rbd::attempt(&RealHost, node, &policy).await?))
+    }
 }
 
 storage_controller! {
@@ -87,7 +140,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let policy = env.grow_policy();
-        images_grow::run(&RealHost, root(), node, &policy).await
+        done(images_grow::run(&RealHost, root(), node, &policy)).await
     }
 }
 
@@ -97,7 +150,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let policy = env.dashboard_policy();
-        dashboard::run(&RealHost, node, &policy).await
+        done(dashboard::run(&RealHost, node, &policy)).await
     }
 }
 
@@ -107,7 +160,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let args = env.mon_member_args();
-        mon_member::run(&RealHost, root(), node, &args).await
+        done(mon_member::run(&RealHost, root(), node, &args)).await
     }
 }
 
@@ -256,6 +309,44 @@ async fn once_per_boot<H: Host>(marker: &std::path::Path, host: &H) -> Result<Ti
     }
     std::fs::write(marker, "")?;
     Ok(Tick::Done)
+}
+
+pub const K3S_UNIT: &str = "k3s.service";
+
+pub struct ContainerdStoreResource {
+    pub env: StorageEnv,
+}
+
+impl crate::runtime::resource::Resource for ContainerdStoreResource {
+    fn name(&self) -> &'static str {
+        "containerd-store"
+    }
+    fn depends_on(&self) -> &[&'static str] {
+        &["images-rbd"]
+    }
+    fn interval(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+    fn disruption(&self) -> crate::runtime::resource::Disruption {
+        crate::runtime::resource::Disruption::RestartsWorkloads
+    }
+    async fn check(&self, _ctx: &Ctx) -> crate::runtime::resource::State {
+        use crate::runtime::resource::State;
+        if containerd_store::is_mounted(&RealHost, root()).await {
+            State::Ready
+        } else {
+            State::NotYet("containerd's data-root is still on the root filesystem".into())
+        }
+    }
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
+        let policy = self.env.containerd_store_policy();
+        locked_tick("containerd-store", || async {
+            Ok(tick_of(
+                containerd_store::pivot(&RealHost, root(), &ctx.node, &policy, K3S_UNIT).await?,
+            ))
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

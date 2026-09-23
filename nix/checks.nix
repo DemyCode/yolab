@@ -103,32 +103,31 @@ in let
     disko-join = nixosSystems.yolab-ci-join.config.system.build.diskoScript;
     formatting = treefmtEval.config.build.check treeSrc;
 
-    containerd-store-after-order = let
+    k3s-does-not-wait-for-storage = let
       svcs = nixosSystems.yolab-ci.config.systemd.services;
-      edges = [
-        ["k3s" "yolab-containerd-store"]
-        ["yolab-containerd-store" "yolab-images-rbd"]
-        ["yolab-images-rbd" "yolab-ceph-system-osd"]
-      ];
-      missing = builtins.concatMap (e: let
-        unit = builtins.elemAt e 0;
-        dep = "${builtins.elemAt e 1}.service";
-        s = svcs.${unit};
-      in
-        (pkgs.lib.optional (!(builtins.elem dep (s.after or []))) "${unit} is not After=${dep}")
-        ++ (pkgs.lib.optional (!(builtins.elem dep (s.wants or []))) "${unit} does not Want=${dep}"))
-      edges;
+      k3s = svcs.k3s;
+      ordering = (k3s.after or []) ++ (k3s.wants or []) ++ (k3s.requires or []);
+      storageUnits =
+        builtins.filter (
+          u: pkgs.lib.hasPrefix "yolab-" u && !(pkgs.lib.hasPrefix "yolab-reset-wipe" u)
+        )
+        ordering;
       problems =
-        missing
+        (map (u: "k3s is ordered behind ${u}, so storage can hold the control plane down") storageUnits)
         ++ pkgs.lib.optional (builtins.elem "k3s.service" (svcs.yolab-local-api.after or []))
         "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting";
     in
-      pkgs.runCommand "containerd-store-after-order" {} ''
+      pkgs.runCommand "k3s-does-not-wait-for-storage" {} ''
         ${pkgs.lib.concatMapStrings (p: "echo ${pkgs.lib.escapeShellArg p} >&2\n") problems}
-        ${pkgs.lib.optionalString (problems != []) "exit 1"}
+        ${pkgs.lib.optionalString (problems != []) ''
+          echo "" >&2
+          echo "k3s must boot whether or not Ceph is healthy. Storage convergence" >&2
+          echo "belongs in yolabd's resource graph, which retries; a systemd job" >&2
+          echo "gets one attempt and then holds everything ordered behind it." >&2
+          exit 1
+        ''}
         touch $out
       '';
-
     self-healing-timers-can-re-arm = let
       allowlist = ["yolab-ceph-bootstrap"];
       services = nixosSystems.yolab-ci.config.systemd.services;
@@ -355,10 +354,7 @@ in let
       mustNotRestart = [
         "yolab-reset-wipe"
         "yolab-ceph-osd@"
-        "yolab-ceph-system-osd"
         "yolab-ceph-bootstrap"
-        "yolab-images-rbd"
-        "yolab-containerd-store"
       ];
       missing = builtins.filter (n: !(svcs ? ${n})) mustNotRestart;
       restarted =
@@ -569,9 +565,6 @@ in let
         "yolab-caddy-credentials"
         "yolab-ceph-bootstrap"
         "yolab-ceph-noout"
-        "yolab-ceph-system-osd"
-        "yolab-containerd-store"
-        "yolab-images-rbd"
         "yolab-ntfy-credentials"
         "yolab-reset-wipe"
       ];

@@ -32,6 +32,12 @@ pub enum Requirement {
 impl Requirement {
     pub const ALL: [Requirement; 2] = [Requirement::KubeApi, Requirement::Ceph];
 
+    pub fn from_resource_name(name: &str) -> Option<Requirement> {
+        Requirement::ALL
+            .into_iter()
+            .find(|r| r.resource_name() == name)
+    }
+
     pub fn resource_name(self) -> &'static str {
         match self {
             Requirement::KubeApi => "kube-api",
@@ -53,6 +59,7 @@ impl std::fmt::Display for Requirement {
 pub enum Tick {
     Done,
     Idle(String),
+    NotYet(String),
     RequeueAfter(Duration),
 }
 
@@ -144,19 +151,14 @@ async fn wait_or_wake(notify: &Notify, d: Duration) {
 }
 
 pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
-    let node = crate::system::hostname();
-    if controller.scope() == Scope::Cluster && !leader::held_by(&node).await? {
-        anyhow::bail!(
-            "{} is cluster-scoped and {node} does not hold the cluster lease — run it on the leader",
-            controller.name()
-        );
-    }
-    if let Some(missing) = activity::unmet(controller.requires()).await {
-        anyhow::bail!("not running {}: waiting for {missing}", controller.name());
-    }
-    if let activity::Gate::Paused(why) = activity::gate(controller.pauses_during()).await {
-        anyhow::bail!("not running {}: {why}", controller.name());
-    }
+    let node = resource::preflight(
+        controller.name(),
+        controller.scope(),
+        &resource::deps_of(controller.requires()),
+        resource::Disruption::None,
+        controller.pauses_during(),
+    )
+    .await?;
     controller.reconcile(&Ctx { node }).await
 }
 

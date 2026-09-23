@@ -200,50 +200,6 @@ in {
       };
     };
 
-    systemd.services.yolab-ceph-system-osd = {
-      description = "Make this machine's system LV an OSD of the cluster";
-      wantedBy = ["multi-user.target"];
-      after = ["yolab-ceph-bootstrap.service" "ceph-mon-${host}.service"];
-      wants = ["ceph-mon-${host}.service"];
-      restartIfChanged = false;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # NOT infinity, unlike this looked before: `local-api storage
-        # system-osd` retries forever with no give-up (wait::until_ready has
-        # no bound) when /dev/mapper/pool-ceph does not exist — a real,
-        # tolerated state for "this machine was not installed with the YoLab
-        # disk layout" (see the error text in disks_reconciler.rs, and
-        # nix/tests/disk-loss.nix, whose node never has a system LV at all).
-        # yolab-images-rbd is explicitly After=/Wants= this unit (see
-        # containerd-store-after-order in nix/checks.nix), so a start job
-        # that never reaches a terminal state here holds up the ENTIRE k3s
-        # boot line behind it forever, not just this one OSD.
-        #
-        # A bounded timeout still fails loudly — systemd marks the unit
-        # failed, which `systemctl --failed` shows, matching the existing
-        # a_machine_without_the_system_lv_is_an_error_not_a_skip Rust test —
-        # it just also lets ordering resolve so images-rbd, containerd-store
-        # and k3s can come up regardless.
-        #
-        # 120s, not the 600s this first landed with: this bound sits at the
-        # HEAD of a three-deep chain (system-osd -> images-rbd ->
-        # containerd-store, see images-store.nix), and when the underlying
-        # condition genuinely never resolves — no system LV, ever — all
-        # three legitimately hit their own bound in sequence. 600s each
-        # compounds to a 30-minute worst case before k3s so much as gets a
-        # start job queued, comfortably past disk-loss-test's own 900s
-        # multi-user.target budget: it timed out for exactly this reason
-        # once this bound existed but was still 600s. Real transient
-        # conditions (the mon coming up, the LV appearing) resolve in
-        # single-digit seconds; 120s is still generous for those, and three
-        # of them in the worst case is 360s, not 1800s.
-        TimeoutStartSec = "120s";
-        ExecStart = "${localApiEnv}/bin/local-api storage system-osd";
-      };
-      path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
-    };
-
     environment.systemPackages = with pkgs; [
       ceph
       ceph-client
