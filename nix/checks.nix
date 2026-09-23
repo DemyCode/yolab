@@ -309,7 +309,7 @@ in let
         "routers/disks.rs" = 4;
         "routers/restore.rs" = 11;
         "runtime/leader.rs" = 4;
-        "storage/controllers.rs" = 1;
+
         "storage/mod.rs" = 2;
         "topology.rs" = 2;
       };
