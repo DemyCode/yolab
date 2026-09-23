@@ -93,5 +93,4 @@ export interface StoragePolicyData {
   policy: StoragePolicy | null;
   topology: StorageTopology | null;
   target: StorageTarget | null;
-  min_size: number;
 }

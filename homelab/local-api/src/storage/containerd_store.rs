@@ -87,6 +87,10 @@ pub async fn attempt<H: Host>(
         mkfs(host, &dev, policy.filesystem).await?;
     }
 
+    if let Some(why) = carry_over_existing_store(host, root, &dev, &croot).await? {
+        return Ok(Attempt::NotYet(why));
+    }
+
     std::fs::create_dir_all(&croot)?;
 
     let mounted = host
@@ -228,6 +232,66 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
     }
     std::fs::remove_dir(&probe).debug_on_err(format!("remove {probe_s}"));
     usable
+}
+
+fn should_carry_over(local_has_store: bool, image_has_store: bool) -> bool {
+    local_has_store && !image_has_store
+}
+
+fn staging_dir(root: &Path) -> PathBuf {
+    let uniq: u64 = rand::random();
+    root.join(format!("tmp/yolab-containerd-staging-{uniq:016x}"))
+}
+
+async fn carry_over_existing_store<H: Host>(
+    host: &H,
+    root: &Path,
+    dev: &str,
+    croot: &Path,
+) -> Result<Option<String>> {
+    if !dir_has_any_entries(croot) {
+        return Ok(None);
+    }
+
+    let staging = staging_dir(root);
+    std::fs::create_dir_all(&staging)?;
+    let staging_s = staging.to_string_lossy().into_owned();
+
+    let mounted = host
+        .run_cmd("mount", &[dev, staging_s.as_str()])
+        .await?
+        .success;
+    if !mounted {
+        let _ = std::fs::remove_dir(&staging);
+        return Ok(Some(format!(
+            "cannot stage {dev} at {staging_s} to carry the existing image store over"
+        )));
+    }
+
+    let outcome = if !should_carry_over(dir_has_any_entries(croot), dir_has_any_entries(&staging)) {
+        Ok(None)
+    } else {
+        let from = format!("{}/.", croot.to_string_lossy());
+        let copied = host
+            .run_cmd_bounded("cp", &["-a", &from, staging_s.as_str()], FS_OP_TIMEOUT)
+            .await;
+        match copied {
+            Ok(o) if o.success => Ok(None),
+            Ok(o) => Ok(Some(format!(
+                "could not carry the existing image store onto {dev}: {}",
+                o.stderr.trim()
+            ))),
+            Err(e) => Ok(Some(format!(
+                "could not carry the existing image store onto {dev}: {e}"
+            ))),
+        }
+    };
+
+    host.run_cmd("umount", &[staging_s.as_str()])
+        .await
+        .warn_on_err(format!("unmount the staging mount {staging_s}"));
+    std::fs::remove_dir(&staging).debug_on_err(format!("remove {staging_s}"));
+    outcome
 }
 
 async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
@@ -662,6 +726,136 @@ mod tests {
         assert!(
             host.ran("systemctl start"),
             "a failed pivot left k3s stopped: {:?}",
+            host.calls()
+        );
+    }
+
+    fn store_with(root: &Path, entries: &[&str]) -> PathBuf {
+        let croot = containerd_root(root);
+        std::fs::create_dir_all(&croot).unwrap();
+        for e in entries {
+            std::fs::write(croot.join(e), b"x").unwrap();
+        }
+        croot
+    }
+
+    #[tokio::test]
+    async fn an_empty_store_is_not_carried_over() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
+        let host = FakeHost::new();
+        let out =
+            carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &containerd_root(dir.path()))
+                .await
+                .unwrap();
+        assert_eq!(out, None);
+        assert!(
+            !host.ran("cp -a"),
+            "nothing to carry over, so nothing should have been copied"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_populated_store_is_copied_onto_the_image_before_it_is_mounted_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let croot = store_with(dir.path(), &["layer-a", "layer-b"]);
+        let host = FakeHost::new()
+            .ok("mount ", "")
+            .ok("cp -a", "")
+            .ok("umount", "");
+        let out = carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &croot)
+            .await
+            .unwrap();
+        assert_eq!(out, None);
+        let staged = host
+            .position("mount /dev/rbd0")
+            .expect("never staged the image");
+        let copied = host
+            .position("cp -a")
+            .expect("the existing image store was discarded instead of carried over");
+        let released = host
+            .position("umount")
+            .expect("never unmounted the staging mount");
+        assert!(staged < copied && copied < released, "{:?}", host.calls());
+    }
+
+    #[test]
+    fn an_image_that_already_holds_a_store_is_never_overwritten() {
+        assert!(
+            !should_carry_over(true, true),
+            "the image already carries this node's store from a previous boot; \
+             copying the root filesystem over it would replace newer layers with older"
+        );
+    }
+
+    #[test]
+    fn a_populated_local_store_is_carried_onto_a_blank_image() {
+        assert!(should_carry_over(true, false));
+    }
+
+    #[test]
+    fn nothing_is_carried_over_when_there_is_nothing_to_carry() {
+        assert!(!should_carry_over(false, false));
+        assert!(!should_carry_over(false, true));
+    }
+
+    #[tokio::test]
+    async fn a_failed_copy_leaves_the_old_store_in_place_and_does_not_mount() {
+        let dir = tempfile::tempdir().unwrap();
+        let croot = store_with(dir.path(), &["layer-a"]);
+        let host = FakeHost::new()
+            .ok("mount ", "")
+            .fail("cp -a", "no space left on device")
+            .ok("umount", "");
+        let why = carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &croot)
+            .await
+            .unwrap()
+            .expect("a failed copy must not report success");
+        assert!(why.contains("no space left"), "{why}");
+        assert!(
+            host.ran("umount"),
+            "the staging mount was leaked after a failed copy"
+        );
+        assert!(
+            std::fs::read_dir(&croot).unwrap().count() > 0,
+            "the old store was destroyed by a failed carry-over"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_staging_mount_that_fails_is_reported_and_nothing_is_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let croot = store_with(dir.path(), &["layer-a"]);
+        let host = FakeHost::new().fail("mount ", "no such device");
+        let why = carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &croot)
+            .await
+            .unwrap()
+            .expect("a failed staging mount must not report success");
+        assert!(why.contains("stage"), "{why}");
+        assert!(!host.ran("cp -a"));
+    }
+
+    #[tokio::test]
+    async fn a_pivot_carries_the_running_nodes_images_across() {
+        let dir = tempfile::tempdir().unwrap();
+        store_with(dir.path(), &["layer-a"]);
+        let host = mapped()
+            .fail("blkid", "")
+            .ok("mkfs.xfs", "")
+            .ok("mount ", "")
+            .ok("cp -a", "")
+            .ok("umount", "")
+            .ok("systemctl is-active", "")
+            .ok("systemctl stop", "")
+            .ok("systemctl reset-failed", "")
+            .ok("systemctl start", "");
+        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
+            .await
+            .unwrap();
+        assert_eq!(out, Attempt::Ready(()));
+        assert!(
+            host.ran("cp -a"),
+            "the pivot threw away every image the node had already pulled: {:?}",
             host.calls()
         );
     }
