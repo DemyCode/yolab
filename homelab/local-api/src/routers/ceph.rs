@@ -57,7 +57,15 @@ pub(crate) fn used_percent_from_df(out: &str) -> Option<u64> {
 }
 
 pub(crate) fn root_disk_issue(used: Option<u64>) -> Option<HealthIssue> {
-    let used = used?;
+    let Some(used) = used else {
+        return Some(HealthIssue {
+            level: HealthLevel::Warn,
+            title: "Cannot tell how full this machine's system disk is".into(),
+            description: "Asking the system disk how much space is left did not work, so a \
+                          disk filling up would go unnoticed here."
+                .into(),
+        });
+    };
     let (level, title) = if used >= ROOT_DISK_ERROR_PERCENT {
         (HealthLevel::Error, "This machine's system disk is full")
     } else if used >= ROOT_DISK_WARN_PERCENT {
@@ -74,6 +82,55 @@ pub(crate) fn root_disk_issue(used: Option<u64>) -> Option<HealthIssue> {
         description: format!(
             "The system disk is {used}% full. It holds the operating system, logs and swap; \
              when it fills, this machine stops being able to update, log or start apps."
+        ),
+    })
+}
+
+async fn failed_units() -> Option<Vec<String>> {
+    let out = crate::host::Host::run_cmd(
+        &crate::host::HOST,
+        "systemctl",
+        &[
+            "list-units",
+            "--failed",
+            "--plain",
+            "--no-legend",
+            "--no-pager",
+        ],
+    )
+    .await
+    .ok()?;
+    out.success.then(|| failed_units_from(&out.stdout))
+}
+
+pub(crate) fn failed_units_from(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|u| u.ends_with(".service") || u.ends_with(".mount") || u.ends_with(".timer"))
+        .map(str::to_string)
+        .collect()
+}
+
+pub(crate) fn failed_units_issue(units: Option<&[String]>) -> Option<HealthIssue> {
+    let Some(units) = units else {
+        return Some(HealthIssue {
+            level: HealthLevel::Warn,
+            title: "Cannot tell whether anything on this machine failed".into(),
+            description: "Asking systemd for failed services did not work, so a service that \
+                          died would go unnoticed here."
+                .into(),
+        });
+    };
+    if units.is_empty() {
+        return None;
+    }
+    Some(HealthIssue {
+        level: HealthLevel::Warn,
+        title: "Something on this machine did not start".into(),
+        description: format!(
+            "These services are in a failed state: {}. The machine keeps running, but \
+             whatever they do is not happening.",
+            units.join(", ")
         ),
     })
 }
@@ -174,6 +231,9 @@ async fn compute_cluster_health() -> ClusterHealth {
         }
     }
     if let Some(issue) = root_disk_issue(root_disk_used_percent().await) {
+        issues.push(issue);
+    }
+    if let Some(issue) = failed_units_issue(failed_units().await.as_deref()) {
         issues.push(issue);
     }
 
@@ -1777,7 +1837,7 @@ mod dashboard_route_tests {
 }
 
 #[cfg(test)]
-mod root_disk_tests {
+mod machine_health_tests {
     use super::*;
 
     const DF: &str = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n\
@@ -1802,8 +1862,48 @@ mod root_disk_tests {
     }
 
     #[test]
-    fn an_unreadable_root_disk_is_not_reported_as_healthy_or_full() {
-        assert!(root_disk_issue(None).is_none());
+    fn an_unreadable_root_disk_is_reported_as_unknown_not_as_healthy() {
+        let issue = root_disk_issue(None)
+            .expect("a disk whose fullness cannot be read must not be silently treated as fine");
+        assert_eq!(issue.level, HealthLevel::Warn);
+        assert!(issue.title.contains("Cannot tell"), "{}", issue.title);
+    }
+
+    #[test]
+    fn no_failed_units_raises_nothing() {
+        assert!(failed_units_issue(Some(&[])).is_none());
+    }
+
+    #[test]
+    fn failed_units_are_named_so_the_user_knows_which() {
+        let units = vec![
+            "yolab-ceph-bootstrap.service".to_string(),
+            "k3s.service".to_string(),
+        ];
+        let issue = failed_units_issue(Some(&units)).expect("two failed units must be reported");
+        assert_eq!(issue.level, HealthLevel::Warn);
+        assert!(issue.description.contains("yolab-ceph-bootstrap.service"));
+        assert!(issue.description.contains("k3s.service"));
+    }
+
+    #[test]
+    fn not_being_able_to_ask_systemd_is_not_the_same_as_nothing_being_wrong() {
+        let issue = failed_units_issue(None)
+            .expect("an unanswered systemctl must not read as a healthy machine");
+        assert_eq!(issue.level, HealthLevel::Warn);
+        assert!(issue.title.contains("Cannot tell"), "{}", issue.title);
+    }
+
+    #[test]
+    fn systemctl_output_is_parsed_into_unit_names_and_junk_is_ignored() {
+        let raw = "  yolab-ceph-bootstrap.service loaded failed failed Create the Ceph cluster\n\
+                    k3s.service                  loaded failed failed Lightweight Kubernetes\n";
+        assert_eq!(
+            failed_units_from(raw),
+            vec!["yolab-ceph-bootstrap.service", "k3s.service"]
+        );
+        assert!(failed_units_from("").is_empty());
+        assert!(failed_units_from("0 loaded units listed.\n").is_empty());
     }
 
     #[test]
