@@ -12,7 +12,9 @@ pub struct StoragePolicy {
     pub failure_domain: String,
 }
 
-pub const MIN_SIZE: u32 = 1;
+pub fn min_size_for(size: u32) -> u32 {
+    size.saturating_sub(1).max(1)
+}
 
 pub enum PolicyState {
     NotChosen,
@@ -40,7 +42,7 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
 
     Target {
         size: policy.size,
-        min_size: MIN_SIZE,
+        min_size: min_size_for(policy.size),
         failure_domain: policy.failure_domain.clone(),
         mon,
         mgr,
@@ -231,7 +233,7 @@ async fn apply_pools(target: &Target) {
             continue;
         };
         let want = target.size;
-        let min = MIN_SIZE;
+        let min = min_size_for(want);
 
         crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule])
             .await
@@ -280,7 +282,6 @@ pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
         "policy": chosen,
         "topology": topo,
         "target": target,
-        "min_size": MIN_SIZE,
     }))
 }
 
@@ -397,19 +398,34 @@ mod tests {
     }
 
     #[test]
-    fn min_size_is_one_whatever_is_asked_for() {
-        for size in [1u32, 2, 3, 7] {
-            for fd in ["osd", "host"] {
-                let t = compute_target(&policy(size, fd), &topo(3, 6, 3));
-                assert_eq!(t.min_size, 1, "size={size} fd={fd}");
-            }
+    fn a_single_copy_still_accepts_writes_because_refusing_would_mean_no_storage_at_all() {
+        assert_eq!(min_size_for(1), 1);
+        let t = compute_target(&policy(1, "osd"), &topo(1, 1, 1));
+        assert_eq!(t.min_size, 1);
+    }
+
+    #[test]
+    fn replicated_pools_stop_accepting_writes_before_the_last_copy_is_left() {
+        for size in [2u32, 3, 7] {
+            assert_eq!(
+                min_size_for(size),
+                size - 1,
+                "size={size}: a pool that keeps taking writes down to one surviving \
+                 copy loses acknowledged data the moment that copy dies, which is \
+                 exactly what the Storage page promises it will not do"
+            );
         }
     }
 
     #[test]
     fn min_size_never_exceeds_size() {
-        let t = compute_target(&policy(1, "osd"), &topo(1, 1, 1));
-        assert!(t.min_size <= t.size);
+        for size in [1u32, 2, 3, 7] {
+            for fd in ["osd", "host"] {
+                let t = compute_target(&policy(size, fd), &topo(3, 6, 3));
+                assert!(t.min_size <= t.size, "size={size} fd={fd}");
+                assert!(t.min_size >= 1, "size={size} fd={fd}");
+            }
+        }
     }
 
     #[test]
