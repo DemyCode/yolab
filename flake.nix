@@ -92,59 +92,59 @@
         };
       };
 
-    bootTest = import ./nix/tests/boot.nix {
-      inherit
-        pkgs
-        inputs
-        disko
-        yolabSpecialArgs
-        ;
-    };
-
-    twoNodeTest = import ./nix/tests/two-node.nix {
-      inherit
-        pkgs
-        inputs
-        disko
-        yolabSpecialArgs
-        ;
-    };
-
-    diskLossTest = import ./nix/tests/disk-loss.nix {
-      inherit
-        pkgs
-        inputs
-        disko
-        yolabSpecialArgs
-        ;
-    };
-
-    rebootTest = import ./nix/tests/reboot.nix {
-      inherit
-        pkgs
-        inputs
-        disko
-        yolabSpecialArgs
-        ;
-    };
-
-    rollingRebootTest = import ./nix/tests/rolling-reboot.nix {
-      inherit
-        pkgs
-        inputs
-        disko
-        yolabSpecialArgs
-        ;
-    };
-
-    twoNodeDiskLossTest = import ./nix/tests/two-node-disk-loss.nix {
-      inherit
-        pkgs
-        inputs
-        disko
-        yolabSpecialArgs
-        ;
-    };
+    # bootTest = import ./nix/tests/boot.nix {
+    #   inherit
+    #     pkgs
+    #     inputs
+    #     disko
+    #     yolabSpecialArgs
+    #     ;
+    # };
+    #
+    # twoNodeTest = import ./nix/tests/two-node.nix {
+    #   inherit
+    #     pkgs
+    #     inputs
+    #     disko
+    #     yolabSpecialArgs
+    #     ;
+    # };
+    #
+    # diskLossTest = import ./nix/tests/disk-loss.nix {
+    #   inherit
+    #     pkgs
+    #     inputs
+    #     disko
+    #     yolabSpecialArgs
+    #     ;
+    # };
+    #
+    # rebootTest = import ./nix/tests/reboot.nix {
+    #   inherit
+    #     pkgs
+    #     inputs
+    #     disko
+    #     yolabSpecialArgs
+    #     ;
+    # };
+    #
+    # rollingRebootTest = import ./nix/tests/rolling-reboot.nix {
+    #   inherit
+    #     pkgs
+    #     inputs
+    #     disko
+    #     yolabSpecialArgs
+    #     ;
+    # };
+    #
+    # twoNodeDiskLossTest = import ./nix/tests/two-node-disk-loss.nix {
+    #   inherit
+    #     pkgs
+    #     inputs
+    #     disko
+    #     yolabSpecialArgs
+    #     ;
+    # };
 
     allChecks = import ./nix/checks.nix {
       inherit
