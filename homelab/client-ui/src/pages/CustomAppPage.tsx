@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { buttonClass } from "@/components/ui/button-variants";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
@@ -168,7 +169,7 @@ export default function CustomAppPage() {
                   if (f) void uploadChart(f);
                 }}
               />
-              <span className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-fg transition hover:opacity-90">
+              <span className={buttonClass({ size: "sm" })}>
                 <Upload className="h-3.5 w-3.5" />
                 {busy ? "Checking…" : "Choose file"}
               </span>

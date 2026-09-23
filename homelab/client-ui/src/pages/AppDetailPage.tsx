@@ -863,14 +863,6 @@ export function AppDetailPage() {
           <RotateCcw className="h-4 w-4" />
           Restore
         </Button>
-        <Button
-          variant="quiet"
-          onClick={() => setConfirmRemove(true)}
-          className="flex-1"
-        >
-          <Trash2 className="h-4 w-4" />
-          Remove
-        </Button>
       </div>
 
       <BackupCard app={app} onChanged={() => void apps.refresh()} />
@@ -882,6 +874,25 @@ export function AppDetailPage() {
       />
 
       <TechnicalDetails app={app} />
+
+      {}
+      <section className="mt-10 rounded-card border border-danger/25 bg-danger-soft p-5">
+        <h2 className="text-sm font-semibold text-danger">Danger zone</h2>
+        <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-fg-muted">
+            Remove {name} and delete everything stored in it. Backups you have
+            already taken are kept.
+          </p>
+          <Button
+            variant="danger"
+            onClick={() => setConfirmRemove(true)}
+            className="shrink-0"
+          >
+            <Trash2 className="h-4 w-4" />
+            Remove this app
+          </Button>
+        </div>
+      </section>
 
       <ConfirmDialog
         open={confirmRemove}

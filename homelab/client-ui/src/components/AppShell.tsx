@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { Home, Plus, Settings2, Moon, Sun, LogOut } from "lucide-react";
+import { Box, Home, LayoutGrid, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api";
 import { Wordmark } from "@/components/Logo";
+import { ThemeControl } from "@/components/ThemeControl";
 
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
-  { to: "/add", icon: Plus, label: "Add" },
-  { to: "/box", icon: Settings2, label: "Settings" },
+  { to: "/add", icon: LayoutGrid, label: "Apps" },
+  { to: "/box", icon: Box, label: "Box" },
 ];
 
 function useHideOnScroll(threshold = 10) {
@@ -39,25 +39,6 @@ function useHideOnScroll(threshold = 10) {
   }, [threshold]);
 
   return hidden;
-}
-
-function ThemeButton({ compact }: { compact?: boolean }) {
-  const { resolved, setTheme } = useTheme();
-  const next = resolved === "dark" ? "light" : "dark";
-  const Icon = resolved === "dark" ? Sun : Moon;
-  return (
-    <button
-      onClick={() => setTheme(next)}
-      className={cn(
-        "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg",
-        compact ? "" : "w-full",
-      )}
-      aria-label={`Switch to ${next} theme`}
-    >
-      <Icon className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} />
-      {!compact && <span>{resolved === "dark" ? "Light" : "Dark"} theme</span>}
-    </button>
-  );
 }
 
 export function AppShell({ onLogout }: { onLogout: () => void }) {
@@ -100,8 +81,8 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
           ))}
         </nav>
 
-        <div className="space-y-1 border-t border-border pt-3">
-          <ThemeButton />
+        <div className="space-y-3 border-t border-border pt-3">
+          <ThemeControl compact />
           <button
             onClick={() => void signOut()}
             className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
@@ -114,7 +95,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
 
       {}
       <main className="min-w-0 flex-1 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
-        <Outlet />
+        <Outlet context={{ signOut }} />
       </main>
 
       {}

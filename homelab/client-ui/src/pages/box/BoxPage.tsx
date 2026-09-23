@@ -1,10 +1,11 @@
-import { Link } from "react-router-dom";
+import { Link, useOutletContext } from "react-router-dom";
 import {
   ChevronRight,
   Cloud,
   CreditCard,
   Database,
   ExternalLink,
+  LogOut,
   Server,
   ScrollText,
   TerminalSquare,
@@ -15,9 +16,9 @@ import { Card } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
+import { ThemeControl } from "@/components/ThemeControl";
 import type { CacheMeta } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { useTheme, type ThemeChoice } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { StorageDetailResponse } from "@/types/storage";
 import type { NodeInfo } from "@/types/nodes";
@@ -33,6 +34,7 @@ function NavRow({
   detail,
   tone,
   cache,
+  external,
 }: {
   to?: string;
   href?: string;
@@ -42,6 +44,7 @@ function NavRow({
   detail?: string;
   tone?: "warn" | "error";
   cache?: CacheMeta | null;
+  external?: boolean;
 }) {
   const inner = (
     <>
@@ -66,7 +69,7 @@ function NavRow({
           </div>
         )}
       </div>
-      {href || onClick ? (
+      {href || external ? (
         <ExternalLink className="h-4 w-4 shrink-0 text-fg-subtle" />
       ) : (
         <ChevronRight className="h-5 w-5 shrink-0 text-fg-subtle" />
@@ -104,14 +107,8 @@ function NavRow({
   );
 }
 
-const THEMES: { id: ThemeChoice; label: string }[] = [
-  { id: "light", label: "Light" },
-  { id: "dark", label: "Dark" },
-  { id: "system", label: "Automatic" },
-];
-
 export function BoxPage() {
-  const { choice, setTheme } = useTheme();
+  const { signOut } = useOutletContext<{ signOut: () => void }>();
 
   const health = useApi<ClusterHealth>("health", "/api/cluster/health");
   const storage = useApi<StorageDetailResponse>(
@@ -164,7 +161,7 @@ export function BoxPage() {
 
   return (
     <Page
-      title="Settings"
+      title="Box"
       subtitle="Storage, backups and the machines everything runs on."
     >
       <Card className="mb-4 overflow-hidden p-0">
@@ -216,28 +213,14 @@ export function BoxPage() {
             icon={CreditCard}
             label="Account and billing"
             detail="Your plan, invoices and payment details"
+            external
           />
         )}
       </Card>
 
       <Card className="mb-4 p-5">
         <div className="mb-3 text-sm font-medium text-fg">Appearance</div>
-        <div className="flex gap-1 rounded-xl bg-surface-2 p-1">
-          {THEMES.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTheme(t.id)}
-              className={cn(
-                "flex-1 rounded-lg px-3 py-2 text-sm transition-colors",
-                choice === t.id
-                  ? "bg-surface font-medium text-fg shadow-[var(--shadow-card)]"
-                  : "text-fg-muted hover:text-fg",
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <ThemeControl />
       </Card>
 
       <h2 className="mb-2 mt-8 px-1 text-sm font-semibold text-fg-muted">
@@ -247,7 +230,7 @@ export function BoxPage() {
         You should not need these. They are here for when something has gone
         wrong and someone is helping you.
       </p>
-      <Card className="overflow-hidden p-0">
+      <Card className="mb-4 overflow-hidden p-0">
         {}
         <NavRow
           to="/box/logs"
@@ -260,6 +243,15 @@ export function BoxPage() {
           icon={TerminalSquare}
           label="Terminal"
           detail="Run commands on the machine"
+        />
+      </Card>
+
+      <Card className="overflow-hidden p-0">
+        <NavRow
+          onClick={() => void signOut()}
+          icon={LogOut}
+          label="Sign out"
+          detail="Leave this box on this device"
         />
       </Card>
     </Page>
