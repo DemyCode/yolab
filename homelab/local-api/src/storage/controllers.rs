@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::host::{Host, RealHost};
+use crate::host::Host;
+
+static HOST: crate::host::RealHost = crate::host::RealHost;
 use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
 use super::{
@@ -112,7 +114,7 @@ storage_controller! {
     OsdActivateController, name: "osd-activate", job: "osd-activate",
     every: Duration::from_secs(120), after_boot: Duration::ZERO,
     requires: [Requirement::Ceph],
-    run: |_env, _node| done(osd::run(&RealHost))
+    run: |_env, _node| done(osd::run(&HOST))
 }
 
 storage_controller! {
@@ -120,7 +122,7 @@ storage_controller! {
     every: Duration::from_secs(60), after_boot: Duration::ZERO,
     requires: [Requirement::Ceph],
     run: |_env, _node| async {
-        Ok(tick_of(crate::disks_reconciler::system_osd_attempt(&RealHost).await?))
+        Ok(tick_of(crate::disks_reconciler::system_osd_attempt(&HOST).await?))
     }
 }
 
@@ -130,7 +132,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let policy = env.images_rbd_policy();
-        Ok(tick_of(images_rbd::attempt(&RealHost, node, &policy).await?))
+        Ok(tick_of(images_rbd::attempt(&HOST, node, &policy).await?))
     }
 }
 
@@ -140,7 +142,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let policy = env.grow_policy();
-        done(images_grow::run(&RealHost, root(), node, &policy)).await
+        done(images_grow::run(&HOST, root(), node, &policy)).await
     }
 }
 
@@ -150,7 +152,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let policy = env.dashboard_policy();
-        done(dashboard::run(&RealHost, node, &policy)).await
+        done(dashboard::run(&HOST, node, &policy)).await
     }
 }
 
@@ -160,7 +162,7 @@ storage_controller! {
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let args = env.mon_member_args();
-        done(mon_member::run(&RealHost, root(), node, &args)).await
+        done(mon_member::run(&HOST, root(), node, &args)).await
     }
 }
 
@@ -180,7 +182,7 @@ impl Controller for CsiSecretsController {
         &[Requirement::Ceph, Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        locked("csi-secrets", || csi_secrets::run(&RealHost)).await
+        locked("csi-secrets", || csi_secrets::run(&HOST)).await
     }
 }
 
@@ -210,8 +212,8 @@ impl Controller for CephKeysController {
         for daemon in daemons {
             let job = format!("{daemon}-key");
             let outcome = locked(&job, || async {
-                keys::mint(&RealHost, daemon).await?;
-                ensure_started(&RealHost, &format!("ceph-{daemon}-{}.service", ctx.node)).await;
+                keys::mint(&HOST, daemon).await?;
+                ensure_started(&HOST, &format!("ceph-{daemon}-{}.service", ctx.node)).await;
                 Ok(())
             })
             .await;
@@ -250,8 +252,8 @@ impl Controller for CephJoinController {
         }
         let args = self.env.bootstrap_args();
         locked("bootstrap", || async {
-            bootstrap::run(&RealHost, root(), &ctx.node, &args).await?;
-            ensure_started(&RealHost, &format!("ceph-mon-{}.service", ctx.node)).await;
+            bootstrap::run(&HOST, root(), &ctx.node, &args).await?;
+            ensure_started(&HOST, &format!("ceph-mon-{}.service", ctx.node)).await;
             Ok(())
         })
         .await
@@ -292,7 +294,7 @@ impl Controller for CsiRecoveryController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        once_per_boot(std::path::Path::new(CSI_RECOVERED_MARKER), &RealHost).await
+        once_per_boot(std::path::Path::new(CSI_RECOVERED_MARKER), &HOST).await
     }
 }
 
@@ -332,7 +334,7 @@ impl crate::runtime::resource::Resource for ContainerdStoreResource {
     }
     async fn check(&self, _ctx: &Ctx) -> crate::runtime::resource::State {
         use crate::runtime::resource::State;
-        if containerd_store::is_mounted(&RealHost, root()).await {
+        if containerd_store::is_mounted(&HOST, root()).await {
             State::Ready
         } else {
             State::NotYet("containerd's data-root is still on the root filesystem".into())
@@ -342,7 +344,7 @@ impl crate::runtime::resource::Resource for ContainerdStoreResource {
         let policy = self.env.containerd_store_policy();
         locked_tick("containerd-store", || async {
             Ok(tick_of(
-                containerd_store::pivot(&RealHost, root(), &ctx.node, &policy, K3S_UNIT).await?,
+                containerd_store::pivot(&HOST, root(), &ctx.node, &policy, K3S_UNIT).await?,
             ))
         })
         .await
