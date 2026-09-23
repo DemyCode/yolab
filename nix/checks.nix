@@ -532,6 +532,44 @@ in let
         fi
         touch $out
       '';
+    vm-tests-give-swap-room = pkgs.runCommand "vm-tests-give-swap-room" {nativeBuildInputs = [pkgs.gnugrep];} ''
+      problems=""
+      for f in ${treeSrc}/nix/tests/*.nix; do
+        # Only nodes that actually boot off the disk this check is about:
+        # grub-booted, default-filesystem VMs build their root as an
+        # overlay on nixos-lib's own systemImage, sized
+        # max(virtualisation.diskSize, backing image size) — see
+        # nixos/modules/virtualisation/qemu-vm.nix's startVM script. A
+        # node without this line never reads virtualisation.diskSize at
+        # all, so it is out of scope here.
+        grep -q 'boot.loader.grub.enable = lib.mkForce true' "$f" || continue
+
+        size=$(grep -oE 'virtualisation\.diskSize = [0-9]+' "$f" | grep -oE '[0-9]+' | head -1)
+        if [ -z "$size" ]; then
+          problems="$problems\n$(basename "$f"): boots via grub but sets no virtualisation.diskSize"
+        elif [ "$size" -lt 4096 ]; then
+          problems="$problems\n$(basename "$f"): virtualisation.diskSize=$size is below the 4096 floor"
+        fi
+      done
+      if [ -n "$problems" ]; then
+        echo "The VM's root disk defaults to 'auto'-sized to the system" >&2
+        echo "closure with zero slack (qemu-vm.nix's additionalSpace =" >&2
+        echo "\"0M\", hardcoded, not exposed as an option). services.swapspace" >&2
+        echo "(homelab/nixos/common.nix) creates its swapfiles at" >&2
+        echo "/var/lib/swapspace, on that same root disk — with no slack" >&2
+        echo "there, it can never allocate any swap, so real memory" >&2
+        echo "pressure goes straight to the OOM killer instead of being" >&2
+        echo "absorbed. This is exactly what OOM-killed coredns mid-test" >&2
+        echo "once VM tests got real internet access and their k3s addons" >&2
+        echo "started actually pulling and running real images (2026-09-22)." >&2
+        echo "Set virtualisation.diskSize to at least 4096 (MiB) on any" >&2
+        echo "grub-booted test node:" >&2
+        printf "%b\n" "$problems" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {

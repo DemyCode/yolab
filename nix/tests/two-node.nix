@@ -25,6 +25,12 @@
     virtualisation.memorySize = 4096;
     virtualisation.cores = 2;
     virtualisation.emptyDiskImages = [8192 8192];
+    # The default root disk ("auto"-sized to the system closure, no slack)
+    # leaves swapspace (homelab/nixos/common.nix's services.swapspace) no
+    # room to ever create a swapfile at /var/lib/swapspace, so real memory
+    # pressure goes straight to the OOM killer instead of being absorbed by
+    # swap. Room for a few GB of swap on top of the closure.
+    virtualisation.diskSize = 8192;
 
     networking.wireguard.interfaces = lib.mkForce {};
     networking.interfaces.eth1.ipv6.addresses = [
