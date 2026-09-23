@@ -535,13 +535,6 @@ in let
     vm-tests-give-swap-room = pkgs.runCommand "vm-tests-give-swap-room" {nativeBuildInputs = [pkgs.gnugrep];} ''
       problems=""
       for f in ${treeSrc}/nix/tests/*.nix; do
-        # Only nodes that actually boot off the disk this check is about:
-        # grub-booted, default-filesystem VMs build their root as an
-        # overlay on nixos-lib's own systemImage, sized
-        # max(virtualisation.diskSize, backing image size) — see
-        # nixos/modules/virtualisation/qemu-vm.nix's startVM script. A
-        # node without this line never reads virtualisation.diskSize at
-        # all, so it is out of scope here.
         grep -q 'boot.loader.grub.enable = lib.mkForce true' "$f" || continue
 
         size=$(grep -oE 'virtualisation\.diskSize = [0-9]+' "$f" | grep -oE '[0-9]+' | head -1)
