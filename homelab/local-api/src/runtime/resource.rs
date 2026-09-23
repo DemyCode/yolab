@@ -14,6 +14,7 @@ pub enum State {
     Ready,
     Unchecked,
     NotYet(String),
+    Standby,
     Failed(String),
 }
 
@@ -24,7 +25,7 @@ impl State {
 
     pub fn reason(&self) -> Option<&str> {
         match self {
-            State::Ready | State::Unchecked => None,
+            State::Ready | State::Unchecked | State::Standby => None,
             State::NotYet(why) | State::Failed(why) => Some(why),
         }
     }
@@ -397,12 +398,16 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         }
 
         if resource.scope() == Scope::Cluster && !leader.is_leader() {
+            set_state(name, State::Standby);
+            was_settled = false;
             reg.set_phase(name, Phase::Standby);
             super::wait_or_wake(&notify, super::RECHECK).await;
             continue;
         }
 
         if let Some(missing) = activity::unmet(resource.requires()).await {
+            set_state(name, State::NotYet(format!("waiting for {missing}")));
+            was_settled = false;
             reg.set_phase(name, Phase::Waiting(format!("waiting for {missing}")));
             super::wait_or_wake(&notify, super::RECHECK).await;
             continue;
@@ -414,6 +419,8 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         ))
         .await
         {
+            set_state(name, State::NotYet(why.clone()));
+            was_settled = false;
             reg.set_phase(name, Phase::Paused(why));
             super::wait_or_wake(&notify, super::RECHECK).await;
             continue;
@@ -875,5 +882,80 @@ mod tests {
             Some(State::NotYet(why)) => assert_eq!(why, "no OSD is up yet"),
             other => panic!("NotYet was mistaken for readiness: {other:?}"),
         }
+    }
+
+    struct ClusterProbe {
+        ready: Arc<AtomicBool>,
+    }
+
+    impl Resource for ClusterProbe {
+        fn name(&self) -> &'static str {
+            "test-standby-truth"
+        }
+        fn depends_on(&self) -> &[&'static str] {
+            &["test-standby-dep"]
+        }
+        fn scope(&self) -> Scope {
+            Scope::Cluster
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            State::Unchecked
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            self.ready.store(true, Ordering::SeqCst);
+            Ok(Tick::Done)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_resource_on_a_standby_machine_says_so_instead_of_blaming_a_dependency() {
+        let converged = Arc::new(AtomicBool::new(false));
+        let leader = leader::Leadership::fixed_for_tests(false);
+
+        spawn(
+            ClusterProbe {
+                ready: converged.clone(),
+            },
+            leader.clone(),
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        match state_of("test-standby-truth") {
+            Some(State::NotYet(why)) => assert!(
+                why.contains("test-standby-dep"),
+                "before its dependency exists it should name the dependency: {why}"
+            ),
+            other => panic!("expected NotYet naming the dependency, got {other:?}"),
+        }
+
+        spawn(
+            Probe {
+                name: "test-standby-dep",
+                deps: &[],
+                ready: Arc::new(AtomicBool::new(true)),
+                converges: Arc::new(AtomicU32::new(0)),
+            },
+            leader,
+        );
+
+        for _ in 0..120 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if state_of("test-standby-truth") == Some(State::Standby) {
+                break;
+            }
+        }
+        assert_eq!(
+            state_of("test-standby-truth"),
+            Some(State::Standby),
+            "its dependency is ready and this machine is not the leader, so the state \
+             must say standby — leaving the old dependency reason behind makes the \
+             Storage page blame Ceph for work another machine owns"
+        );
+        assert!(
+            !converged.load(Ordering::SeqCst),
+            "cluster-scoped work must not run on a standby machine"
+        );
     }
 }
