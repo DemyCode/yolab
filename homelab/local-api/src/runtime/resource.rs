@@ -33,7 +33,7 @@ impl State {
 pub trait Resource: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
-    fn depends_on(&self) -> &'static [&'static str] {
+    fn depends_on(&self) -> &[&'static str] {
         &[]
     }
 
@@ -60,31 +60,41 @@ pub trait Resource: Send + Sync + 'static {
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
 }
 
-pub struct ControllerResource<C>(pub C);
+pub struct ControllerResource<C> {
+    inner: C,
+    deps: Vec<&'static str>,
+}
+
+impl<C: Controller> ControllerResource<C> {
+    pub fn new(inner: C) -> Self {
+        let deps = inner.requires().iter().map(|r| r.resource_name()).collect();
+        Self { inner, deps }
+    }
+}
 
 impl<C: Controller> Resource for ControllerResource<C> {
     fn name(&self) -> &'static str {
-        self.0.name()
+        self.inner.name()
+    }
+
+    fn depends_on(&self) -> &[&'static str] {
+        &self.deps
     }
 
     fn scope(&self) -> Scope {
-        self.0.scope()
+        self.inner.scope()
     }
 
     fn interval(&self) -> Duration {
-        self.0.interval()
-    }
-
-    fn requires(&self) -> &'static [Requirement] {
-        self.0.requires()
+        self.inner.interval()
     }
 
     fn pauses_during(&self) -> &'static [activity::Activity] {
-        self.0.pauses_during()
+        self.inner.pauses_during()
     }
 
     fn not_before_uptime(&self) -> Duration {
-        self.0.not_before_uptime()
+        self.inner.not_before_uptime()
     }
 
     async fn check(&self, _ctx: &Ctx) -> State {
@@ -92,13 +102,37 @@ impl<C: Controller> Resource for ControllerResource<C> {
     }
 
     async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
-        self.0.reconcile(ctx).await
+        self.inner.reconcile(ctx).await
+    }
+}
+
+pub struct Observed(pub Requirement);
+
+impl Resource for Observed {
+    fn name(&self) -> &'static str {
+        self.0.resource_name()
+    }
+
+    fn interval(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+
+    async fn check(&self, _ctx: &Ctx) -> State {
+        if activity::is_met(self.0).await {
+            State::Ready
+        } else {
+            State::NotYet(format!("{} is not answering", self.0))
+        }
+    }
+
+    async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        Ok(Tick::Idle(format!("{} is observed, not managed", self.0)))
     }
 }
 
 #[derive(Default)]
 pub(super) struct Graph {
-    edges: std::sync::Mutex<BTreeMap<&'static str, &'static [&'static str]>>,
+    edges: std::sync::Mutex<BTreeMap<&'static str, Vec<&'static str>>>,
     states: std::sync::RwLock<BTreeMap<&'static str, State>>,
 }
 
@@ -106,7 +140,7 @@ fn graph() -> &'static Graph {
     &super::shared().graph
 }
 
-fn lock_edges<T>(f: impl FnOnce(&mut BTreeMap<&'static str, &'static [&'static str]>) -> T) -> T {
+fn lock_edges<T>(f: impl FnOnce(&mut BTreeMap<&'static str, Vec<&'static str>>) -> T) -> T {
     let mut e = graph()
         .edges
         .lock()
@@ -114,7 +148,7 @@ fn lock_edges<T>(f: impl FnOnce(&mut BTreeMap<&'static str, &'static [&'static s
     f(&mut e)
 }
 
-fn record_edges(name: &'static str, deps: &'static [&'static str]) {
+fn record_edges(name: &'static str, deps: Vec<&'static str>) {
     lock_edges(|e| e.insert(name, deps));
 }
 
@@ -175,11 +209,11 @@ pub fn problems() -> Vec<String> {
     problems_in(&lock_edges(|e| e.clone()))
 }
 
-fn problems_in(edges: &BTreeMap<&'static str, &'static [&'static str]>) -> Vec<String> {
+fn problems_in(edges: &BTreeMap<&'static str, Vec<&'static str>>) -> Vec<String> {
     let mut out = Vec::new();
 
     for (name, deps) in edges {
-        for dep in *deps {
+        for dep in deps {
             if !edges.contains_key(dep) {
                 out.push(format!(
                     "{name} depends on '{dep}', which is not a registered resource"
@@ -204,7 +238,7 @@ fn problems_in(edges: &BTreeMap<&'static str, &'static [&'static str]>) -> Vec<S
 
 fn walk(
     name: &'static str,
-    edges: &BTreeMap<&'static str, &'static [&'static str]>,
+    edges: &BTreeMap<&'static str, Vec<&'static str>>,
     done: &mut BTreeSet<&'static str>,
     path: &mut Vec<&'static str>,
     on_path: &mut BTreeSet<&'static str>,
@@ -220,7 +254,7 @@ fn walk(
     }
     path.push(name);
     on_path.insert(name);
-    for dep in edges.get(name).copied().unwrap_or(&[]) {
+    for dep in edges.get(name).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(cycle) = walk(dep, edges, done, path, on_path) {
             return Some(cycle);
         }
@@ -234,7 +268,7 @@ fn walk(
 pub fn spawn<R: Resource>(resource: R, leader: leader::Leadership) {
     let resource = Arc::new(resource);
     let name = resource.name();
-    record_edges(name, resource.depends_on());
+    record_edges(name, resource.depends_on().to_vec());
     let notify = super::waker(name);
     super::registry().register(name, resource.scope(), resource.interval());
     tokio::spawn(async move {
@@ -372,8 +406,8 @@ mod tests {
 
     fn edges(
         pairs: &[(&'static str, &'static [&'static str])],
-    ) -> BTreeMap<&'static str, &'static [&'static str]> {
-        pairs.iter().copied().collect()
+    ) -> BTreeMap<&'static str, Vec<&'static str>> {
+        pairs.iter().map(|(n, d)| (*n, d.to_vec())).collect()
     }
 
     #[test]
@@ -448,7 +482,7 @@ mod tests {
         fn name(&self) -> &'static str {
             self.name
         }
-        fn depends_on(&self) -> &'static [&'static str] {
+        fn depends_on(&self) -> &[&'static str] {
             self.deps
         }
         fn interval(&self) -> Duration {
@@ -568,7 +602,7 @@ mod tests {
     async fn an_adapted_controller_keeps_running_and_holds_its_readiness_steady() {
         let converges = Arc::new(AtomicU32::new(0));
         spawn(
-            ControllerResource(Plain {
+            ControllerResource::new(Plain {
                 converges: converges.clone(),
             }),
             leader::Leadership::fixed_for_tests(true),
@@ -654,5 +688,53 @@ mod tests {
             }
             other => panic!("expected Waiting, got {other:?}"),
         }
+    }
+
+    struct NeedsCeph;
+
+    impl Controller for NeedsCeph {
+        fn name(&self) -> &'static str {
+            "test-needs-ceph"
+        }
+        fn scope(&self) -> Scope {
+            Scope::Node
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn requires(&self) -> &'static [Requirement] {
+            &[Requirement::Ceph]
+        }
+        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            Ok(Tick::Done)
+        }
+    }
+
+    #[test]
+    fn a_controllers_requirements_become_edges_to_observed_resources() {
+        let r = ControllerResource::new(NeedsCeph);
+        assert_eq!(r.depends_on(), &["ceph"]);
+    }
+
+    #[test]
+    fn every_requirement_names_a_distinct_observed_resource() {
+        let names: BTreeSet<&str> = Requirement::ALL
+            .iter()
+            .map(|r| Observed(*r).name())
+            .collect();
+        assert_eq!(
+            names.len(),
+            Requirement::ALL.len(),
+            "two requirements share a resource name, so one shadows the other"
+        );
+        assert!(names.iter().all(|n| !n.is_empty()));
+    }
+
+    #[test]
+    fn a_controller_waits_on_a_requirement_no_one_registers() {
+        let g = edges(&[("test-needs-ceph", &["ceph"])]);
+        let found = problems_in(&g);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("'ceph'"), "{found:?}");
     }
 }
