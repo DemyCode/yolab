@@ -1,8 +1,6 @@
 {
   config,
   lib,
-  pkgs,
-  localApiEnv,
   ...
 }:
 with lib; let
@@ -18,23 +16,6 @@ in {
     services.ceph.mds = {
       enable = true;
       daemons = [host];
-    };
-
-    systemd.services.yolab-ceph-mds-key = {
-      description = "Create the MDS auth key";
-      wantedBy = ["multi-user.target"];
-      after = ["ceph-mon-${host}.service"];
-      before = ["ceph-mds-${host}.service"];
-      requiredBy = ["ceph-mds-${host}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        TimeoutStartSec = "180s";
-        ExecStart = "${localApiEnv}/bin/local-api storage mds-key";
-      };
-      path = with pkgs; [ceph ceph-client coreutils systemd];
-      postStart = ''
-        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mds-${host}.service || true
-      '';
     };
 
     systemd.tmpfiles.rules = [

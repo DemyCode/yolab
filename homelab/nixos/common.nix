@@ -41,7 +41,6 @@ in {
     ./ceph
     ./ceph/images-store.nix
     ./ceph/filesystem.nix
-    ./ceph/csi-secrets.nix
     ./ceph/maintenance.nix
     ./ceph/dashboard.nix
   ];
@@ -89,7 +88,6 @@ in {
       joinSeedAddr = cephSeedAddr;
       imagesStore.enable = true;
       filesystem.enable = true;
-      csiSecrets.enable = true;
       maintenance.enable = true;
     };
 
@@ -478,20 +476,6 @@ in {
         ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
       };
     });
-
-    systemd.services.yolab-csi-recovery = {
-      description = "Restart CephFS CSI plugin to clear stale volume locks";
-      after = ["k3s.service"];
-      wantedBy = ["multi-user.target"];
-      environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${localApiEnv}/bin/local-api boot csi-recovery";
-        TimeoutStartSec = "300";
-      };
-      path = [pkgs.k3s];
-    };
 
     users.users.root.openssh.authorizedKeys.keys =
       lib.optional (s.rootSshKey != "") s.rootSshKey
