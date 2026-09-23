@@ -224,7 +224,7 @@ in let
           echo "loop can — the unit's start job never reaches a terminal state, and" >&2
           echo "nothing ordered After= it can start either. This is exactly what" >&2
           echo "held disk-loss-test's multi-user.target hostage on" >&2
-          echo "yolab-ceph-system-osd, yolab-images-rbd and yolab-containerd-store" >&2
+          echo "the storage resources in yolabd" >&2
           echo "when a machine has no system LV: it is a real, tolerated state, not" >&2
           echo "just a test artifact, and it used to mean the machine never finished" >&2
           echo "booting. Bound the timeout — a unit that fails still fails loudly" >&2
@@ -598,6 +598,46 @@ in let
           echo "             nix/checks.nix in the same commit." >&2
           echo "" >&2
           cat delta >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
+    tests-name-units-that-exist = let
+      svcs = builtins.attrNames nixosSystems.yolab-ci.config.systemd.services;
+      timers = builtins.attrNames nixosSystems.yolab-ci.config.systemd.timers;
+      known = pkgs.writeText "known-units" (
+        pkgs.lib.concatStrings (
+          (map (n: "${n}.service\n") svcs) ++ (map (n: "${n}.timer\n") timers)
+        )
+      );
+    in
+      pkgs.runCommand "tests-name-units-that-exist" {
+        nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+      } ''
+        LC_ALL=C sort -u ${known} > known
+
+        grep -rhoE '[A-Za-z0-9@_.-]+\.(service|timer)' \
+          ${treeSrc}/nix/tests ${treeSrc}/nix/checks.nix \
+          | grep -E '^yolab-' \
+          | LC_ALL=C sort -u > named
+
+        if ! comm -23 named known > ghosts; then
+          echo "could not compare unit names" >&2
+          exit 1
+        fi
+
+        if [ -s ghosts ]; then
+          echo "These unit names appear in nix/tests or nix/checks.nix but no" >&2
+          echo "such unit exists in the evaluated NixOS config:" >&2
+          echo "" >&2
+          sed 's/^/  /' ghosts >&2
+          echo "" >&2
+          echo "A VM test that waits on, or asserts about, a unit that was" >&2
+          echo "renamed or deleted does not fail loudly — systemctl answers for" >&2
+          echo "a unit that does not exist, so the assertion quietly stops" >&2
+          echo "meaning anything. Every timer assertion in two-node.nix and" >&2
+          echo "reboot.nix outlived the timers themselves by nine days this way." >&2
           exit 1
         fi
         touch $out

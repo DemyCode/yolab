@@ -61,7 +61,7 @@ pub async fn attempt<H: Host>(
         ImageState::Present => {}
         ImageState::Absent => {
             return Ok(Attempt::NotYet(format!(
-                "{image} does not exist yet (yolab-images-rbd creates it)"
+                "{image} does not exist yet (the images-rbd resource creates it)"
             )))
         }
         ImageState::Unavailable(why) => {

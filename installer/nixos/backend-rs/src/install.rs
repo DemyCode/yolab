@@ -32,7 +32,6 @@ struct ConfigToml {
     disk: DiskSection,
     #[serde(skip_serializing_if = "Option::is_none")]
     tunnel: Option<TunnelSection>,
-    swarm: SwarmSection,
     node: NodeSection,
     ceph: CephSection,
 }
@@ -68,11 +67,6 @@ struct TunnelSection {
     dns_url: String,
     wg_server_endpoint: String,
     wg_server_public_key: String,
-}
-
-#[derive(Serialize)]
-struct SwarmSection {
-    enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -154,7 +148,6 @@ fn build_config(
             wg_server_endpoint: tunnel.wg_server_endpoint.clone(),
             wg_server_public_key: tunnel.wg_server_public_key.clone(),
         }),
-        swarm: SwarmSection { enabled: false },
         node: NodeSection {
             node_id: tunnel.node_id.clone(),
             wg_private_key: tunnel.node_wg_private_key.clone(),
@@ -512,10 +505,27 @@ mod tests {
     #[test]
     fn the_rendered_config_has_every_section_the_nixos_modules_read() {
         let cfg = rendered(&params());
-        for section in ["homelab", "disk", "tunnel", "swarm", "node"] {
+        for section in ["homelab", "disk", "tunnel", "node"] {
             assert!(cfg.contains_key(section), "missing [{section}]");
         }
         assert!(cfg["node"].as_table().unwrap().contains_key("k3s"));
+    }
+
+    #[test]
+    fn the_rendered_config_carries_no_section_nothing_reads() {
+        let cfg = rendered(&params());
+        for dead in ["swarm", "docker", "velero", "wifi"] {
+            assert!(
+                !cfg.contains_key(dead),
+                "[{dead}] is written into every machine's config.toml and no NixOS \
+                 module or local-api reader consumes it"
+            );
+        }
+        assert!(
+            !cfg["disk"].as_table().unwrap().contains_key("swap_size"),
+            "disk.swap_size is dead: there is no swap partition, services.swapspace \
+             manages swap on the root filesystem"
+        );
     }
 
     #[test]
@@ -614,7 +624,6 @@ mod tests {
         assert_eq!(cfg["homelab"]["locale"].as_str(), Some("en_US.UTF-8"));
         assert_eq!(cfg["homelab"]["ssh_port"].as_integer(), Some(22));
         assert_eq!(cfg["disk"]["esp_size"].as_str(), Some("500M"));
-        assert_eq!(cfg["swarm"]["enabled"].as_bool(), Some(false));
         assert_eq!(cfg["tunnel"]["enabled"].as_bool(), Some(true));
     }
 

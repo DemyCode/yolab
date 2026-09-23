@@ -169,7 +169,7 @@ in {
         RestartSec = "30s";
         TimeoutStartSec = "180s";
         ExecStartPre =
-          pkgs.writeShellScript "yolab-ceph-osd-activate" ''
+          pkgs.writeShellScript "yolab-ceph-osd-prestart" ''
             set -euo pipefail
             export PATH=${lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux coreutils jq])}:$PATH
             OSD_ID="$1"

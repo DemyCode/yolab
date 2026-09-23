@@ -42,8 +42,8 @@
 
     systemd.services.yolab-test-system-lv = {
       description = "The system LV disko would have created (VM test)";
-      before = ["yolab-ceph-system-osd.service"];
-      requiredBy = ["yolab-ceph-system-osd.service"];
+      before = ["yolab-local-api.service"];
+      wantedBy = ["multi-user.target"];
       after = ["local-fs.target"];
       path = [pkgs.lvm2 pkgs.util-linux];
       serviceConfig = {
@@ -63,19 +63,68 @@
   };
 
   preamble = ''
-    # The boot line to k3s, in order, plus the daemon that reports on it. A
-    # failure anywhere here explains every failure after it — see the
-    # containerd-store-after-order check in nix/checks.nix for the ordering.
+    import json
+
     YOLAB_UNITS = [
         "yolab-reset-wipe",
         "yolab-ceph-bootstrap",
-        "yolab-ceph-system-osd",
-        "yolab-ceph-osd-activate",
-        "yolab-images-rbd",
-        "yolab-containerd-store",
         "k3s",
         "yolab-local-api",
     ]
+
+    YOLAB_SNAPSHOT = "/run/yolab/controllers.json"
+
+
+    def yolab_snapshot(machine):
+        """yolabd's own view of every resource it supervises."""
+        return json.loads(machine.succeed(f"cat {YOLAB_SNAPSHOT}"))
+
+
+    def yolab_controllers(machine):
+        return {c["name"]: c for c in yolab_snapshot(machine)["controllers"]}
+
+
+    def assert_yolabd_is_ticking(machines, names, settle=90):
+        """The modern form of "every self-healing timer is armed".
+
+        There are no systemd timers any more — commit 998caf8 dropped them when
+        the controller runtime landed, and the timer assertions these replace
+        outlived them, asserting about units that no longer existed.
+        """
+        machines = machines if isinstance(machines, list) else [machines]
+        before = {m.name: yolab_controllers(m) for m in machines}
+        for m in machines:
+            for n in names:
+                assert n in before[m.name], (
+                    f"{n} is not registered on {m.name} — yolabd supervises "
+                    f"{sorted(before[m.name])}"
+                )
+
+        for m in machines:
+            m.sleep(settle)
+
+        after = {m.name: yolab_controllers(m) for m in machines}
+        for m in machines:
+            moved = [
+                n
+                for n in after[m.name]
+                if after[m.name][n]["runs"] > before[m.name].get(n, {}).get("runs", 0)
+            ]
+            assert moved, (
+                f"not one of yolabd's {len(after[m.name])} resources ran on "
+                f"{m.name} in {settle}s — the supervisor has stopped ticking"
+            )
+            for n in names:
+                b, a = before[m.name][n], after[m.name][n]
+                interval = max(int(b["interval_secs"]), 1)
+                delta = a["runs"] - b["runs"]
+                cap = settle // interval + 3
+                assert delta <= cap, (
+                    f"{n} on {m.name} ran {delta} times in {settle}s with a "
+                    f"{interval}s interval (cap {cap}) — it is hot-looping, "
+                    "which is what a retry that measures from the start of the "
+                    "run instead of its end does"
+                )
 
 
     def yolab_diagnose(machine, what):
@@ -88,6 +137,7 @@
             ("ceph", "timeout 15 ceph -s --connect-timeout 10 2>&1 | head -30"),
             ("block devices", "lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>&1"),
             ("memory", "free -m"),
+            ("yolabd", f"cat {YOLAB_SNAPSHOT} 2>&1 | head -60"),
         ):
             status, out = machine.execute(cmd)
             print(f"\n-- {machine.name} {label} (exit {status}) --\n{out}")
@@ -98,11 +148,8 @@
             )
             state = " ".join(state.split())
             print(f"\n-- {machine.name} {unit}: {state} --")
-            # Only the tail: a unit that is fine needs one line, and a unit that
-            # is not puts its reason at the end.
             _, log = machine.execute(f"journalctl -u {unit}.service --no-pager -n 40 2>&1")
             print(log)
-
 
     class step:
         """Wrap an assertion so a failure explains itself.
