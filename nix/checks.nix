@@ -563,6 +563,53 @@ in let
       touch $out
     '';
 
+    yolabd-migration-ratchet = let
+      budget = [
+        "yolab-banner"
+        "yolab-caddy-credentials"
+        "yolab-ceph-bootstrap"
+        "yolab-ceph-noout"
+        "yolab-ceph-system-osd"
+        "yolab-containerd-store"
+        "yolab-images-rbd"
+        "yolab-ntfy-credentials"
+        "yolab-reset-wipe"
+      ];
+      svcs = nixosSystems.yolab-ci.config.systemd.services;
+      execOf = n: toString (svcs.${n}.serviceConfig.ExecStart or "");
+      isOneshot = n: (svcs.${n}.serviceConfig.Type or "") == "oneshot";
+      remaining = builtins.filter (
+        n:
+          pkgs.lib.hasPrefix "yolab-" n
+          && isOneshot n
+          && pkgs.lib.hasInfix "local-api" (execOf n)
+      ) (builtins.attrNames svcs);
+      expected = pkgs.writeText "expected" (
+        pkgs.lib.concatStrings (map (n: "${n}\n") (builtins.sort builtins.lessThan budget))
+      );
+      actual = pkgs.writeText "actual" (
+        pkgs.lib.concatStrings (map (n: "${n}\n") (builtins.sort builtins.lessThan remaining))
+      );
+    in
+      pkgs.runCommand "yolabd-migration-ratchet" {nativeBuildInputs = [pkgs.diffutils];} ''
+        if ! diff -u ${expected} ${actual} > delta; then
+          echo "The set of yolab systemd oneshots that shell out to local-api has" >&2
+          echo "changed. This list is a ratchet: it may only shrink." >&2
+          echo "" >&2
+          echo "  '+' lines: a new oneshot doing convergent work in the boot" >&2
+          echo "             transaction. A systemd job gets ONE attempt and is" >&2
+          echo "             never retried, so anything that can legitimately be" >&2
+          echo "             'not yet' belongs in yolabd's resource graph instead" >&2
+          echo "             (homelab/local-api/src/runtime/resource.rs)." >&2
+          echo "  '-' lines: you migrated one — delete the name from this list in" >&2
+          echo "             nix/checks.nix in the same commit." >&2
+          echo "" >&2
+          cat delta >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {

@@ -125,17 +125,5 @@ in {
       after = ["yolab-containerd-store.service"];
       wants = ["yolab-containerd-store.service"];
     };
-
-    systemd.services.yolab-images-rbd-grow = {
-      description = "Grow the images RBD as the Ceph pool grows";
-      after = ["yolab-containerd-store.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        TimeoutStartSec = "300s";
-        ExecStart = "${localApiEnv}/bin/local-api storage images-grow";
-      };
-      path = cephPath;
-      environment = imagesStoreEnv;
-    };
   };
 }

@@ -156,35 +156,6 @@ in {
       '';
     };
 
-    systemd.services.yolab-ceph-mon-member = mkIf (!isBootstrap) {
-      description = "Ensure this node's mon is in the monmap";
-      after = ["ceph-mon-${host}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        TimeoutStartSec = "300s";
-        ExecStart = "${localApiEnv}/bin/local-api storage mon-member";
-      };
-      path = with pkgs; [ceph ceph-client coreutils systemd];
-      environment.YOLAB_CEPH_MON_ADDR = cfg.monAddr;
-    };
-
-    systemd.services.yolab-ceph-mgr-key = {
-      description = "Create the mgr auth key";
-      wantedBy = ["multi-user.target"];
-      after = ["ceph-mon-${host}.service"];
-      before = ["ceph-mgr-${host}.service"];
-      requiredBy = ["ceph-mgr-${host}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        TimeoutStartSec = "180s";
-        ExecStart = "${localApiEnv}/bin/local-api storage mgr-key";
-      };
-      path = with pkgs; [ceph ceph-client coreutils systemd];
-      postStart = ''
-        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mgr-${host}.service || true
-      '';
-    };
-
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
       after = ["network-online.target" "ceph-mon-${host}.service"];
@@ -269,18 +240,6 @@ in {
         # of them in the worst case is 360s, not 1800s.
         TimeoutStartSec = "120s";
         ExecStart = "${localApiEnv}/bin/local-api storage system-osd";
-      };
-      path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
-    };
-
-    systemd.services.yolab-ceph-osd-activate = {
-      description = "Start a yolab-ceph-osd@ instance for every OSD prepared on this host";
-      wantedBy = ["multi-user.target"];
-      after = ["ceph-mon-${host}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        TimeoutStartSec = "600s";
-        ExecStart = "${localApiEnv}/bin/local-api storage osd-activate";
       };
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];
     };

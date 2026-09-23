@@ -76,8 +76,8 @@ macro_rules! storage_controller {
 
 storage_controller! {
     OsdActivateController, name: "osd-activate", job: "osd-activate",
-    every: Duration::from_secs(120), after_boot: Duration::from_secs(180),
-    requires: [],
+    every: Duration::from_secs(120), after_boot: Duration::ZERO,
+    requires: [Requirement::Ceph],
     run: |_env, _node| osd::run(&RealHost)
 }
 
@@ -93,7 +93,7 @@ storage_controller! {
 
 storage_controller! {
     DashboardController, name: "ceph-dashboard", job: "dashboard",
-    every: Duration::from_secs(120), after_boot: Duration::from_secs(240),
+    every: Duration::from_secs(120), after_boot: Duration::ZERO,
     requires: [Requirement::Ceph],
     run: |env, node| async {
         let policy = env.dashboard_policy();
@@ -103,8 +103,8 @@ storage_controller! {
 
 storage_controller! {
     MonMemberController, name: "mon-member", job: "mon-member",
-    every: Duration::from_secs(120), after_boot: Duration::from_secs(180),
-    requires: [],
+    every: Duration::from_secs(120), after_boot: Duration::ZERO,
+    requires: [Requirement::Ceph],
     run: |env, node| async {
         let args = env.mon_member_args();
         mon_member::run(&RealHost, root(), node, &args).await
@@ -122,9 +122,6 @@ impl Controller for CsiSecretsController {
     }
     fn interval(&self) -> Duration {
         Duration::from_secs(120)
-    }
-    fn not_before_uptime(&self) -> Duration {
-        Duration::from_secs(240)
     }
     fn requires(&self) -> &'static [Requirement] {
         &[Requirement::Ceph, Requirement::KubeApi]
@@ -148,8 +145,8 @@ impl Controller for CephKeysController {
     fn interval(&self) -> Duration {
         Duration::from_secs(300)
     }
-    fn not_before_uptime(&self) -> Duration {
-        Duration::from_secs(120)
+    fn requires(&self) -> &'static [Requirement] {
+        &[Requirement::Ceph]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let mut daemons = vec!["mgr"];
@@ -216,6 +213,7 @@ async fn ensure_started<H: Host>(host: &H, unit: &str) {
     if active {
         return;
     }
+    let _ = host.systemctl(&["reset-failed", unit]).await;
     match host.systemctl(&["start", "--no-block", unit]).await {
         Ok(o) if o.success => tracing::info!("started {unit}"),
         Ok(o) => tracing::warn!("could not start {unit}: {}", o.stderr.trim()),
@@ -357,5 +355,31 @@ mod tests {
             .ok("systemctl start", "");
         ensure_started(&stopped, "ceph-mgr-n1.service").await;
         assert!(stopped.ran("systemctl start --no-block ceph-mgr-n1.service"));
+    }
+
+    #[tokio::test]
+    async fn a_running_daemon_is_left_alone() {
+        let host = FakeHost::new().ok("systemctl is-active", "");
+        ensure_started(&host, "ceph-mgr-n1.service").await;
+        assert!(!host.ran("systemctl start"));
+        assert!(!host.ran("systemctl reset-failed"));
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_hit_its_start_limit_is_cleared_before_being_started() {
+        let host = FakeHost::new()
+            .fail("systemctl is-active", "inactive")
+            .ok("systemctl reset-failed", "")
+            .ok("systemctl start", "");
+        ensure_started(&host, "ceph-mgr-n1.service").await;
+        let cleared = host
+            .position("systemctl reset-failed")
+            .expect("a failed unit was never cleared, so systemctl start refuses it");
+        let started = host.position("systemctl start").expect("never started");
+        assert!(
+            cleared < started,
+            "reset-failed must come before start: {:?}",
+            host.calls()
+        );
     }
 }
