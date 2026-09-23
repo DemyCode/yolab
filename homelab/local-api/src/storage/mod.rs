@@ -141,22 +141,7 @@ pub async fn run(args: &[String]) -> i32 {
     let env = StorageEnv::from_env();
     let node = crate::system::hostname();
 
-    let known = [
-        "mgr-key",
-        "mds-key",
-        "osd-activate",
-        "system-osd",
-        "noout-clear",
-        "noout-set",
-        "bootstrap",
-        "mon-member",
-        "images-rbd",
-        "containerd-store",
-        "images-grow",
-        "dashboard",
-        "csi-secrets",
-        "reset-wipe",
-    ];
+    let known = ["noout-clear", "noout-set", "bootstrap", "reset-wipe"];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
         return 2;
@@ -180,38 +165,10 @@ pub async fn run(args: &[String]) -> i32 {
             }
         }
     };
-
     let result: Result<()> = match sub {
-        "mgr-key" => keys::mint(&host, "mgr").await,
-        "mds-key" => keys::mint(&host, "mds").await,
-        "osd-activate" => osd::run(&host).await,
         "noout-clear" => noout::clear(&host, root()).await,
         "noout-set" => noout::set(&host, root()).await,
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
-        "mon-member" => mon_member::run(&host, root(), &node, &env.mon_member_args()).await,
-        "system-osd" => {
-            wait::until_ready("system-osd", || {
-                crate::disks_reconciler::system_osd_attempt(&host)
-            })
-            .await;
-            Ok(())
-        }
-        "images-rbd" => {
-            let policy = env.images_rbd_policy();
-            wait::until_ready("images-rbd", || images_rbd::attempt(&host, &node, &policy)).await;
-            Ok(())
-        }
-        "containerd-store" => {
-            let policy = env.containerd_store_policy();
-            wait::until_ready("containerd-store", || {
-                containerd_store::attempt(&host, root(), &node, &policy)
-            })
-            .await;
-            Ok(())
-        }
-        "images-grow" => images_grow::run(&host, root(), &node, &env.grow_policy()).await,
-        "dashboard" => dashboard::run(&host, &node, &env.dashboard_policy()).await,
-        "csi-secrets" => csi_secrets::run(&host).await,
         "reset-wipe" => {
             let config = crate::config::machine_dir().join("config.toml");
             reset_wipe::run(&host, root(), &config).await

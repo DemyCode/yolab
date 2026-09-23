@@ -17,6 +17,9 @@ pub const NAMES: &[&str] = &[
     "mesh-discovery",
     "chart-sync",
     "osd-activate",
+    "system-osd",
+    "images-rbd",
+    "containerd-store",
     "images-grow",
     "ceph-dashboard",
     "mon-member",
@@ -84,6 +87,12 @@ pub fn spawn_all(leader: Leadership) {
     let env = StorageEnv::from_env();
     if env.is_configured() {
         spawn(storage::OsdActivateController { env: env.clone() }, &leader);
+        spawn(storage::SystemOsdController { env: env.clone() }, &leader);
+        spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
+        runtime::resource::spawn(
+            storage::ContainerdStoreResource { env: env.clone() },
+            leader.clone(),
+        );
         spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
         spawn(storage::DashboardController { env: env.clone() }, &leader);
         spawn(storage::MonMemberController { env: env.clone() }, &leader);
@@ -142,6 +151,8 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "mesh-discovery" => runtime::run_once(&crate::mesh::MeshDiscoveryController::new()).await,
         "chart-sync" => runtime::run_once(&crate::charts::ChartSyncController).await,
         "osd-activate" => runtime::run_once(&storage::OsdActivateController { env }).await,
+        "system-osd" => runtime::run_once(&storage::SystemOsdController { env }).await,
+        "images-rbd" => runtime::run_once(&storage::ImagesRbdController { env }).await,
         "images-grow" => runtime::run_once(&storage::ImagesGrowController { env }).await,
         "ceph-dashboard" => runtime::run_once(&storage::DashboardController { env }).await,
         "mon-member" => runtime::run_once(&storage::MonMemberController { env }).await,
@@ -149,6 +160,9 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-keys" => runtime::run_once(&storage::CephKeysController { env }).await,
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
+        "containerd-store" => {
+            runtime::resource::run_once(&storage::ContainerdStoreResource { env }).await
+        }
         _ => anyhow::bail!("unknown controller '{name}' (known: {})", NAMES.join(", ")),
     }
 }
