@@ -1,18 +1,19 @@
 pub mod activity;
 pub mod leader;
 pub mod lock;
+pub mod resource;
 pub mod status;
 pub mod watch;
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::Notify;
 
 pub use activity::Activity;
-use status::{Phase, Registry};
+use status::Registry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +79,7 @@ fn failure_backoff(consecutive: u32, interval: Duration) -> Duration {
 struct Shared {
     wakers: std::sync::Mutex<HashMap<&'static str, Arc<Notify>>>,
     registry: Registry,
+    graph: resource::Graph,
 }
 
 fn shared() -> &'static Shared {
@@ -85,6 +87,7 @@ fn shared() -> &'static Shared {
     S.get_or_init(|| Shared {
         wakers: std::sync::Mutex::new(HashMap::new()),
         registry: Registry::default(),
+        graph: resource::Graph::default(),
     })
 }
 
@@ -118,99 +121,22 @@ fn uptime() -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
+/// Run a `Controller` under the resource supervisor.
+///
+/// Every controller enters the graph with no edges, which makes this exactly
+/// the loop it replaces: `ControllerResource::check` reports `Unchecked`, so
+/// the supervisor always falls through to `converge` on the interval, with the
+/// same leader, requirement and activity gates, the same backoff and the same
+/// panic isolation. A controller earns real ordering by implementing `Resource`
+/// directly and declaring `depends_on`.
 pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership) {
-    let controller = Arc::new(controller);
-    let name = controller.name();
-    let notify = waker(name);
-    registry().register(name, controller.scope(), controller.interval());
-    tokio::spawn(async move {
-        run(controller, notify, leader).await;
-    });
+    resource::spawn(resource::ControllerResource(controller), leader);
 }
 
 async fn wait_or_wake(notify: &Notify, d: Duration) {
     tokio::select! {
         _ = tokio::time::sleep(d) => {}
         _ = notify.notified() => {}
-    }
-}
-
-async fn run<C: Controller>(controller: Arc<C>, notify: Arc<Notify>, leader: leader::Leadership) {
-    let name = controller.name();
-    let reg = registry();
-    let node = crate::system::hostname();
-
-    let min_uptime = controller.not_before_uptime();
-    if let Some(up) = uptime() {
-        if up < min_uptime {
-            reg.set_phase(
-                name,
-                Phase::Waiting(format!("starts {}s after boot", min_uptime.as_secs())),
-            );
-            tokio::time::sleep(min_uptime - up).await;
-        }
-    }
-
-    let mut last_start: Option<Instant> = None;
-    loop {
-        if let Some(t) = last_start {
-            let since = t.elapsed();
-            if since < MIN_GAP {
-                tokio::time::sleep(MIN_GAP - since).await;
-            }
-        }
-
-        if controller.scope() == Scope::Cluster && !leader.is_leader() {
-            reg.set_phase(name, Phase::Standby);
-            wait_or_wake(&notify, RECHECK).await;
-            continue;
-        }
-
-        if let Some(missing) = activity::unmet(controller.requires()).await {
-            reg.set_phase(name, Phase::Waiting(format!("waiting for {missing}")));
-            wait_or_wake(&notify, RECHECK).await;
-            continue;
-        }
-
-        if let activity::Gate::Paused(why) = activity::gate(controller.pauses_during()).await {
-            reg.set_phase(name, Phase::Paused(why));
-            wait_or_wake(&notify, RECHECK).await;
-            continue;
-        }
-
-        last_start = Some(Instant::now());
-        reg.started(name);
-        let c = controller.clone();
-        let ctx = Ctx { node: node.clone() };
-        let outcome = tokio::spawn(async move { c.reconcile(&ctx).await }).await;
-
-        let interval = controller.interval();
-        let next = match outcome {
-            Ok(Ok(Tick::Done)) => {
-                reg.succeeded(name, None);
-                interval
-            }
-            Ok(Ok(Tick::Idle(why))) => {
-                reg.succeeded(name, Some(why));
-                interval
-            }
-            Ok(Ok(Tick::RequeueAfter(d))) => {
-                reg.succeeded(name, None);
-                d.min(interval)
-            }
-            Ok(Err(e)) => {
-                let n = reg.failed(name, format!("{e:#}"));
-                tracing::warn!("controller {name}: {e:#}");
-                failure_backoff(n, interval)
-            }
-            Err(join) => {
-                let n = reg.panicked(name, join.to_string());
-                tracing::error!("controller {name}: tick panicked ({join}) — continuing");
-                failure_backoff(n, interval)
-            }
-        };
-        status::publish_snapshot();
-        wait_or_wake(&notify, next).await;
     }
 }
 
@@ -233,6 +159,7 @@ pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
 
 #[cfg(test)]
 mod tests {
+    use super::status::Phase;
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
