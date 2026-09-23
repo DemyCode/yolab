@@ -1,34 +1,3 @@
-//! yolabd's resource graph.
-//!
-//! A `Resource` is one thing about this machine that should be true: the mon is
-//! in quorum, the images RBD exists, containerd's data-root is on it. Each one
-//! knows what it depends on, how to tell whether it is already true, and how to
-//! make it true.
-//!
-//! This exists because the same dependency graph is currently written down three
-//! times and agrees with itself only by hand:
-//!
-//!   * as `After=`/`Wants=` edges between systemd oneshots, evaluated once per
-//!     boot, one attempt each;
-//!   * as `containerd-store-after-order` in nix/checks.nix, which re-derives
-//!     those edges from the evaluated config to police them;
-//!   * as `after_boot:` sleeps in storage/controllers.rs — `images-grow` waits
-//!     600s after boot, which is not a schedule, it is "wait until
-//!     containerd-store has probably mounted" written as a guess about
-//!     wall-clock time.
-//!
-//! Here an edge is an edge. A resource that is not ready stalls exactly its
-//! dependents and nothing else, and it says which dependency it is waiting on.
-//!
-//! ## Why this is not one serial pass over a sorted graph
-//!
-//! The obvious implementation — sort topologically, walk the list once per tick
-//! — would be a regression against the per-controller tasks this replaces: one
-//! slow resource would stall every unrelated one behind it. Instead each
-//! resource keeps its own task and its own pacing, consults a shared readiness
-//! map before doing work, and wakes its dependents when it becomes ready.
-//! Ordering falls out of the gating rather than out of a scheduler.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -39,26 +8,16 @@ use tokio::sync::Notify;
 use super::status::Phase;
 use super::{activity, leader, Controller, Ctx, Requirement, Scope, Tick};
 
-/// What a resource's cheap, read-only `check` found.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "state", content = "reason", rename_all = "snake_case")]
 pub enum State {
-    /// Already true. Nothing to do, and dependents may proceed.
     Ready,
-    /// This resource has no cheap check, so the only way to find out is to run
-    /// `converge`, which is idempotent. Every adapted `Controller` reports this,
-    /// which is what makes the adapter behave exactly like the loop it replaces.
     Unchecked,
-    /// Not true yet, and that is not an error — a precondition outside this
-    /// resource's control has not happened. Carries the reason, verbatim, for
-    /// the status surface.
     NotYet(String),
-    /// Broken in a way `converge` is expected to address.
     Failed(String),
 }
 
 impl State {
-    /// Whether dependents are allowed to proceed.
     pub fn settled(&self) -> bool {
         matches!(self, State::Ready)
     }
@@ -71,18 +30,9 @@ impl State {
     }
 }
 
-/// One thing about this machine that should be true.
-///
-/// `check` must be cheap and side-effect free: it runs every pass, including
-/// when the resource is already ready, and it is what the status surface is
-/// built from. `converge` may do work, and is only ever called when `check` did
-/// not say `Ready` *and* every dependency is ready.
 pub trait Resource: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
-    /// Names of resources that must be `Ready` before this one's `converge`
-    /// runs. Every name must belong to a registered resource; `validate` is
-    /// what enforces that.
     fn depends_on(&self) -> &'static [&'static str] {
         &[]
     }
@@ -110,13 +60,6 @@ pub trait Resource: Send + Sync + 'static {
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
 }
 
-/// Carries an existing `Controller` into the graph unchanged.
-///
-/// Not a blanket `impl<C: Controller> Resource for C`: coherence rejects that
-/// (E0119) because the compiler may not assume a future type will not implement
-/// `Controller` too. An explicit newtype also makes migration legible — a
-/// resource has finished moving when it implements `Resource` directly and this
-/// wrapper is gone from its registration.
 pub struct ControllerResource<C>(pub C);
 
 impl<C: Controller> Resource for ControllerResource<C> {
@@ -144,10 +87,6 @@ impl<C: Controller> Resource for ControllerResource<C> {
         self.0.not_before_uptime()
     }
 
-    /// A `Controller` has no cheap check — `reconcile` is all it offers, and it
-    /// is idempotent. Reporting `Unchecked` means the supervisor always falls
-    /// through to `converge` on the interval, which is what the loop this
-    /// replaces did.
     async fn check(&self, _ctx: &Ctx) -> State {
         State::Unchecked
     }
@@ -156,8 +95,6 @@ impl<C: Controller> Resource for ControllerResource<C> {
         self.0.reconcile(ctx).await
     }
 }
-
-// ── the shared graph ──────────────────────────────────────────────────────────
 
 #[derive(Default)]
 pub(super) struct Graph {
@@ -189,8 +126,6 @@ fn set_state(name: &'static str, state: State) {
         .insert(name, state);
 }
 
-/// The last `check` result for a resource, or `None` if it has never reported —
-/// which is the state of anything whose task has not had its first pass yet.
 pub fn state_of(name: &str) -> Option<State> {
     graph()
         .states
@@ -200,7 +135,6 @@ pub fn state_of(name: &str) -> Option<State> {
         .cloned()
 }
 
-/// Every resource's last known state, for the status surface.
 pub fn states() -> BTreeMap<&'static str, State> {
     graph()
         .states
@@ -209,11 +143,6 @@ pub fn states() -> BTreeMap<&'static str, State> {
         .clone()
 }
 
-/// The first dependency of `name` that is not ready, if any.
-///
-/// A dependency that has never reported counts as not ready: at startup every
-/// task begins at once, and letting an unreported dependency pass would be a
-/// race that usually resolves the right way and occasionally does not.
 fn first_unready_dep(deps: &[&'static str]) -> Option<String> {
     for dep in deps {
         match state_of(dep) {
@@ -230,9 +159,6 @@ fn first_unready_dep(deps: &[&'static str]) -> Option<String> {
     None
 }
 
-/// Wake everything that lists `name` as a dependency, so a resource that has
-/// just become ready releases its dependents immediately rather than leaving
-/// them to notice on their next poll.
 fn wake_dependents(name: &'static str) {
     let dependents: Vec<&'static str> = lock_edges(|e| {
         e.iter()
@@ -245,17 +171,10 @@ fn wake_dependents(name: &'static str) {
     }
 }
 
-/// Everything wrong with the registered graph: a dependency naming a resource
-/// that does not exist, or a cycle. Empty means the graph is sound.
-///
-/// This is the check that replaces `containerd-store-after-order`: that one had
-/// to re-derive the edges out of an evaluated NixOS config to police them, and
-/// this one reads the graph itself.
 pub fn problems() -> Vec<String> {
     problems_in(&lock_edges(|e| e.clone()))
 }
 
-/// The pure half, so it can be tested without touching the process-wide graph.
 fn problems_in(edges: &BTreeMap<&'static str, &'static [&'static str]>) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -269,8 +188,6 @@ fn problems_in(edges: &BTreeMap<&'static str, &'static [&'static str]>) -> Vec<S
         }
     }
 
-    // Depth-first, tracking the path so a cycle can be named rather than merely
-    // reported. `done` keeps this linear rather than exponential on diamonds.
     let mut done: BTreeSet<&'static str> = BTreeSet::new();
     for start in edges.keys() {
         let mut path: Vec<&'static str> = Vec::new();
@@ -314,8 +231,6 @@ fn walk(
     None
 }
 
-// ── the supervisor ────────────────────────────────────────────────────────────
-
 pub fn spawn<R: Resource>(resource: R, leader: leader::Leadership) {
     let resource = Arc::new(resource);
     let name = resource.name();
@@ -346,8 +261,6 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
     let mut last_start: Option<Instant> = None;
     let mut was_settled = false;
 
-    // Only on the transition, so a resource that is simply fine does not wake
-    // its dependents every interval forever.
     macro_rules! becomes_ready {
         () => {{
             set_state(name, State::Ready);
@@ -369,15 +282,8 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         let ctx = Ctx { node: node.clone() };
         let interval = resource.interval();
 
-        // The cheap half. Runs every pass, including when nothing needs doing,
-        // and is the only thing the status surface is built from.
         let state = resource.check(&ctx).await;
 
-        // `Unchecked` is the absence of information, not a state, so it must not
-        // overwrite what a previous `converge` established. Overwriting it was a
-        // flap: an adapted `Controller` would report Ready right after
-        // converging and Unchecked on the very next pass, so anything depending
-        // on it would see readiness blink on and off every interval.
         let unchecked = matches!(state, State::Unchecked);
         if !unchecked {
             set_state(name, state.clone());
@@ -392,9 +298,6 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         }
 
         if let Some(dep) = first_unready_dep(resource.depends_on()) {
-            // The resource's own state, not just its phase: something blocked on
-            // a blocked dependency has to carry a reason of its own, so that ITS
-            // dependents are told what is actually wrong rather than a bare name.
             let why = format!("waiting on {dep}");
             set_state(name, State::NotYet(why.clone()));
             was_settled = false;
@@ -436,9 +339,6 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
                     Tick::RequeueAfter(d) => (None, d.min(interval)),
                 };
                 reg.succeeded(name, note);
-                // With no cheap check, a successful idempotent converge is the
-                // only evidence this resource is satisfied — and it is what
-                // dependents have to go on.
                 if unchecked {
                     becomes_ready!();
                 }
@@ -489,8 +389,6 @@ mod tests {
 
     #[test]
     fn a_diamond_is_not_a_cycle() {
-        // Two paths to the same ancestor is the shape a naive depth-first walk
-        // reports as a cycle, and it is a perfectly ordinary graph.
         let g = edges(&[
             ("mon", &[]),
             ("left", &["mon"]),
@@ -608,8 +506,6 @@ mod tests {
         spawn(
             Probe {
                 name: "test-edge-dependent",
-                // never ready on its own, so it always wants to converge —
-                // anything stopping it is the dependency gate, not its check
                 deps: &["test-edge-dependency"],
                 ready: Arc::new(AtomicBool::new(false)),
                 converges: dep_converges.clone(),
@@ -670,10 +566,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_adapted_controller_keeps_running_and_holds_its_readiness_steady() {
-        // The regression this guards: `check` reporting `Unchecked` used to
-        // overwrite the state a successful `converge` had just set, so an
-        // adapted controller blinked Ready/Unchecked every interval and nothing
-        // could depend on one without flapping.
         let converges = Arc::new(AtomicU32::new(0));
         spawn(
             ControllerResource(Plain {
@@ -694,8 +586,6 @@ mod tests {
             "a controller that converged cleanly never became ready"
         );
 
-        // It must still run on its interval — being "ready" must not switch off
-        // an adapted controller, which has no cheap check to re-derive it from.
         let before = converges.load(Ordering::SeqCst);
         for _ in 0..20 {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -709,5 +599,60 @@ mod tests {
             converges.load(Ordering::SeqCst) > before,
             "the adapted controller stopped running once it was ready"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_resource_blocked_on_a_dependency_reports_that_as_its_own_state() {
+        let leader = leader::Leadership::fixed_for_tests(true);
+        spawn(
+            Probe {
+                name: "test-chain-root",
+                deps: &[],
+                ready: Arc::new(AtomicBool::new(false)),
+                converges: Arc::new(AtomicU32::new(0)),
+            },
+            leader.clone(),
+        );
+        spawn(
+            Probe {
+                name: "test-chain-middle",
+                deps: &["test-chain-root"],
+                ready: Arc::new(AtomicBool::new(false)),
+                converges: Arc::new(AtomicU32::new(0)),
+            },
+            leader.clone(),
+        );
+        spawn(
+            Probe {
+                name: "test-chain-leaf",
+                deps: &["test-chain-middle"],
+                ready: Arc::new(AtomicBool::new(false)),
+                converges: Arc::new(AtomicU32::new(0)),
+            },
+            leader,
+        );
+
+        tokio::time::sleep(Duration::from_secs(60)).await;
+
+        match state_of("test-chain-middle") {
+            Some(State::NotYet(why)) => assert!(why.contains("test-chain-root"), "{why}"),
+            other => panic!("expected NotYet naming its dependency, got {other:?}"),
+        }
+
+        let leaf = super::super::registry()
+            .get("test-chain-leaf")
+            .expect("registered")
+            .phase;
+        match leaf {
+            Phase::Waiting(why) => {
+                assert!(why.contains("test-chain-middle"), "{why}");
+                assert!(
+                    why.contains("test-chain-root"),
+                    "the leaf is told which name it waits on but not what is actually \
+                     wrong underneath it: {why}"
+                );
+            }
+            other => panic!("expected Waiting, got {other:?}"),
+        }
     }
 }
