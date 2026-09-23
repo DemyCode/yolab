@@ -8,7 +8,6 @@ import { buttonClass } from "@/components/ui/button-variants";
 import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
 import { HealBanner } from "@/components/ForceHeal";
-import { AddFromBackupButton } from "@/components/AddFromBackup";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
@@ -77,8 +76,6 @@ export function HomePage() {
             <CacheDot cache={health.cache ?? apps.cache} />
           </p>
         </div>
-        {}
-        <AddFromBackupButton />
       </header>
 
       {}

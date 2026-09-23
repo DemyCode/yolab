@@ -10,6 +10,7 @@ import {
   Power,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { streamEvents } from "@/lib/api";
@@ -322,22 +323,22 @@ export function SystemPage() {
                   <label className="text-xs text-fg-muted mb-1 block">
                     Flake source
                   </label>
-                  <input
+                  <Input
                     value={editUrl}
                     onChange={(e) => setEditUrl(e.target.value)}
                     placeholder="github:DemyCode/yolab"
-                    className="w-full rounded-md border border-border bg-bg text-fg text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                    className="font-mono"
                   />
                 </div>
                 <div className="flex-1 min-w-[120px]">
                   <label className="text-xs text-fg-muted mb-1 block">
                     Branch / tag / commit
                   </label>
-                  <input
+                  <Input
                     value={editRef}
                     onChange={(e) => setEditRef(e.target.value)}
                     placeholder="main"
-                    className="w-full rounded-md border border-border bg-bg text-fg text-sm px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                    className="font-mono"
                   />
                 </div>
                 <div className="flex items-end">

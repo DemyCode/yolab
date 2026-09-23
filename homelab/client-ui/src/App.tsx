@@ -4,10 +4,9 @@ import { AppShell } from "@/components/AppShell";
 import { Spinner } from "@/components/ui/feedback";
 import { LoginPage } from "@/pages/LoginPage";
 import { HomePage } from "@/pages/HomePage";
-import { DiscoverPage } from "@/pages/DiscoverPage";
+import { AppsPage } from "@/pages/AppsPage";
 import { InstallPage } from "@/pages/InstallPage";
 import CustomAppPage from "@/pages/CustomAppPage";
-import SearchPage from "@/pages/SearchPage";
 import { AppDetailPage } from "@/pages/AppDetailPage";
 import { BoxPage } from "@/pages/box/BoxPage";
 import { BoxSubPage } from "@/pages/box/BoxSubPage";
@@ -73,8 +72,7 @@ export default function App() {
           <Route element={<AppShell onLogout={handleLogout} />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/app/:instanceName" element={<AppDetailPage />} />
-            <Route path="/add" element={<DiscoverPage />} />
-            <Route path="/search" element={<SearchPage />} />
+            <Route path="/add" element={<AppsPage />} />
             <Route path="/add/custom" element={<CustomAppPage />} />
             <Route path="/add/:appId" element={<InstallPage />} />
             <Route path="/box" element={<BoxPage />} />

@@ -214,7 +214,7 @@ function RecoveryKeyOverlay({
           <Button
             onClick={onClose}
             disabled={mandatory && !acknowledged}
-            className="h-8 px-4 text-xs bg-primary hover:bg-primary text-bg font-medium disabled:opacity-40"
+            size="sm"
           >
             {mandatory ? "I've saved it — continue" : "Close"}
           </Button>
@@ -266,16 +266,10 @@ function EnableCard({
               <Button
                 onClick={handle}
                 disabled={busy || disabled}
-                className="bg-primary hover:bg-primary text-bg font-medium text-sm h-8 px-3 disabled:opacity-40"
+                loading={busy}
+                size="sm"
               >
-                {busy ? (
-                  <>
-                    <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                    Enabling…
-                  </>
-                ) : (
-                  "Enable Backups"
-                )}
+                Enable Backups
               </Button>
             </div>
             {error && <p className="mt-2 text-xs text-danger">{error}</p>}
@@ -417,32 +411,25 @@ export function BackupsPage() {
         </div>
         <div className="flex items-center gap-2">
           {s3Status?.provisioned && (
-            <button
+            <Button
               onClick={() => void showRecoveryKey(false)}
-              className="flex-shrink-0 flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg"
+              variant="ghost"
+              size="sm"
             >
               <KeyRound className="h-3.5 w-3.5" />
               View recovery key
-            </button>
+            </Button>
           )}
           {s3Status?.provisioned && (
             <Button
               onClick={handleBackupNow}
               disabled={backingUp}
               variant="outline"
-              className="flex-shrink-0 h-8 px-3 text-xs border-border-strong text-fg-muted hover:text-fg disabled:opacity-40"
+              size="sm"
+              loading={backingUp}
             >
-              {backingUp ? (
-                <>
-                  <RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />
-                  Backing up…
-                </>
-              ) : (
-                <>
-                  <RotateCcw className="h-3 w-3 mr-1.5" />
-                  Backup Now
-                </>
-              )}
+              <RotateCcw className="h-3 w-3" />
+              Back up now
             </Button>
           )}
         </div>
