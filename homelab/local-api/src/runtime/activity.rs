@@ -82,6 +82,17 @@ async fn ceph_ready() -> Answer {
     )
 }
 
+pub async fn is_met(r: Requirement) -> bool {
+    cached(Key::Req(r), async {
+        match r {
+            Requirement::KubeApi => kube_api_ready().await,
+            Requirement::Ceph => ceph_ready().await,
+        }
+    })
+    .await
+        == Some(true)
+}
+
 pub async fn unmet(requires: &[Requirement]) -> Option<Requirement> {
     for r in requires {
         let answer = cached(Key::Req(*r), async {

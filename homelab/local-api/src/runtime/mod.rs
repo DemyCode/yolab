@@ -29,6 +29,17 @@ pub enum Requirement {
     Ceph,
 }
 
+impl Requirement {
+    pub const ALL: [Requirement; 2] = [Requirement::KubeApi, Requirement::Ceph];
+
+    pub fn resource_name(self) -> &'static str {
+        match self {
+            Requirement::KubeApi => "kube-api",
+            Requirement::Ceph => "ceph",
+        }
+    }
+}
+
 impl std::fmt::Display for Requirement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -122,7 +133,7 @@ fn uptime() -> Option<Duration> {
 }
 
 pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership) {
-    resource::spawn(resource::ControllerResource(controller), leader);
+    resource::spawn(resource::ControllerResource::new(controller), leader);
 }
 
 async fn wait_or_wake(notify: &Notify, d: Duration) {

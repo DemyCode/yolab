@@ -26,6 +26,12 @@ pub const NAMES: &[&str] = &[
     "csi-recovery",
 ];
 
+fn spawn_observed(leader: &Leadership) {
+    for r in runtime::Requirement::ALL {
+        runtime::resource::spawn(runtime::resource::Observed(r), leader.clone());
+    }
+}
+
 fn spawn<C: runtime::Controller>(controller: C, leader: &Leadership) {
     debug_assert!(
         NAMES.contains(&controller.name()),
@@ -86,6 +92,8 @@ pub fn spawn_all(leader: Leadership) {
         spawn(storage::CsiSecretsController, &leader);
         spawn(storage::CsiRecoveryController, &leader);
     }
+
+    spawn_observed(&leader);
 
     for watch in runtime::watch::standard() {
         runtime::watch::spawn(watch);
