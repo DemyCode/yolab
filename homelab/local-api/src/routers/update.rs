@@ -215,40 +215,98 @@ fn clear_stale_rebuild_unit() {
         .status();
 }
 
+const PEER_SETTLE_TIMEOUT: Duration = Duration::from_secs(1800);
+const PEER_SETTLE_POLL: Duration = Duration::from_secs(15);
+
+struct UpdateFleet {
+    client: reqwest::Client,
+    port: u16,
+    token: String,
+    channel: serde_json::Value,
+}
+
+impl crate::runtime::fleet::Fleet for UpdateFleet {
+    async fn act(&self, node: &str) -> anyhow::Result<()> {
+        let base = format!("http://[{node}]:{}", self.port);
+        let set = self
+            .client
+            .put(format!("{base}/api/update/channel"))
+            .header(crate::auth::CLUSTER_AUTH_HEADER, &self.token)
+            .json(&self.channel)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?;
+        anyhow::ensure!(
+            set.status().is_success(),
+            "{node} refused the channel: {}",
+            set.status()
+        );
+        let go = self
+            .client
+            .post(format!("{base}/api/update/trigger"))
+            .header(crate::auth::CLUSTER_AUTH_HEADER, &self.token)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?;
+        anyhow::ensure!(
+            go.status().is_success(),
+            "{node} refused to start updating: {}",
+            go.status()
+        );
+        Ok(())
+    }
+
+    async fn settled(&self, node: &str) -> bool {
+        self.client
+            .get(format!("http://[{node}]:{}/api/status", self.port))
+            .header(crate::auth::CLUSTER_AUTH_HEADER, &self.token)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+    }
+}
+
 pub async fn update_all(State(state): State<AppState>) -> Response {
     let cfg = state.config.clone();
     let self_ip = cfg.node_ipv6.clone();
-
     let ch = cfg.channel();
-    let channel_body = serde_json::json!({ "url": ch.url, "ref": ch.ref_ });
-    let cluster_token = cfg.cluster_token();
 
     let nodes = kubectl::get_nodes().await.unwrap_or_default();
-    for addr in kubectl::peer_ipv6(&nodes, &self_ip) {
-        let base = format!("http://[{}]:{}", addr, cfg.port);
-        let body = channel_body.clone();
-        let token = cluster_token.clone();
-        tokio::spawn(async move {
-            let client = reqwest::Client::new();
-            let _ = client
-                .put(format!("{base}/api/update/channel"))
-                .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
-                .json(&body)
-                .timeout(Duration::from_secs(10))
-                .send()
-                .await;
-            let _ = client
-                .post(format!("{base}/api/update/trigger"))
-                .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
-                .timeout(Duration::from_secs(10))
-                .send()
-                .await;
-        });
+    let peers = crate::runtime::fleet::order(&kubectl::peer_ipv6(&nodes, &self_ip), &self_ip);
+
+    let fleet = UpdateFleet {
+        client: reqwest::Client::new(),
+        port: cfg.port,
+        token: cfg.cluster_token(),
+        channel: serde_json::json!({ "url": ch.url, "ref": ch.ref_ }),
+    };
+
+    let rolled =
+        crate::runtime::fleet::rolling(&fleet, &peers, PEER_SETTLE_TIMEOUT, PEER_SETTLE_POLL).await;
+
+    if let Some(stuck) = rolled.stopped_at.as_deref() {
+        tracing::error!(
+            "update: stopped at {stuck} ({}) — {:?} were left alone and this machine keeps its \
+             current build, so the cluster is not left half-updated with nobody serving",
+            rolled.why.clone().unwrap_or_default(),
+            rolled.skipped
+        );
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "status": "stopped",
+                "updated": rolled.done,
+                "stopped_at": stuck,
+                "why": rolled.why,
+                "skipped": rolled.skipped,
+            })),
+        )
+            .into_response();
     }
 
     update(State(state)).await
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

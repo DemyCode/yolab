@@ -643,6 +643,47 @@ in let
         touch $out
       '';
 
+    peer-fanout-goes-through-the-fleet =
+      pkgs.runCommand "peer-fanout-goes-through-the-fleet" {
+        nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];
+      } ''
+        src=${treeSrc}/homelab/local-api/src
+
+        grep -rl 'peer_ipv6' "$src" \
+          | sed "s|^$src/||" \
+          | grep -v '^kubectl.rs$' \
+          | LC_ALL=C sort -u > fanning
+
+        cat > expected <<'EOF'
+        routers/reboot.rs
+        routers/update.rs
+        EOF
+        sed 's/^ *//' expected > want
+
+        if ! diff -u want fanning > delta; then
+          echo "The set of files that fan an action out to peer machines changed." >&2
+          echo "" >&2
+          echo "Anything acting on every machine must go through" >&2
+          echo "runtime::fleet::rolling, which takes them one at a time and waits" >&2
+          echo "for each to come back before touching the next. Both of these did" >&2
+          echo "it themselves once: update_all and reboot_all spawned a request" >&2
+          echo "per peer and returned, so every machine restarted at the same" >&2
+          echo "moment — a guaranteed outage on a cluster of any size, and on two" >&2
+          echo "machines an etcd that has to recover from losing both members." >&2
+          echo "" >&2
+          cat delta >&2
+          exit 1
+        fi
+
+        for f in $(cat fanning); do
+          if ! grep -q 'runtime::fleet' "$src/$f"; then
+            echo "$f fans out to peers without using runtime::fleet" >&2
+            exit 1
+          fi
+        done
+        touch $out
+      '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {
