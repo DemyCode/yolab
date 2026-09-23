@@ -91,10 +91,6 @@ pub fn spawn_all(leader: Leadership) {
         runtime::watch::spawn(watch);
     }
 
-    // Every resource has registered its edges by now. A dependency naming
-    // something that does not exist, or a cycle, means part of the graph can
-    // never converge — and unlike a systemd ordering bug it would otherwise be
-    // silent, because a resource waiting on a name nobody provides simply waits.
     for problem in runtime::resource::problems() {
         tracing::error!("resource graph: {problem}");
     }

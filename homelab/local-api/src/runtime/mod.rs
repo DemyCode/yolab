@@ -121,14 +121,6 @@ fn uptime() -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
-/// Run a `Controller` under the resource supervisor.
-///
-/// Every controller enters the graph with no edges, which makes this exactly
-/// the loop it replaces: `ControllerResource::check` reports `Unchecked`, so
-/// the supervisor always falls through to `converge` on the interval, with the
-/// same leader, requirement and activity gates, the same backoff and the same
-/// panic isolation. A controller earns real ordering by implementing `Resource`
-/// directly and declaring `depends_on`.
 pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership) {
     resource::spawn(resource::ControllerResource(controller), leader);
 }
