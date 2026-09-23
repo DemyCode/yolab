@@ -25,11 +25,6 @@
     virtualisation.memorySize = 4096;
     virtualisation.cores = 2;
     virtualisation.emptyDiskImages = [8192 8192];
-    # The default root disk ("auto"-sized to the system closure, no slack)
-    # leaves swapspace (homelab/nixos/common.nix's services.swapspace) no
-    # room to ever create a swapfile at /var/lib/swapspace, so real memory
-    # pressure goes straight to the OOM killer instead of being absorbed by
-    # swap. Room for a few GB of swap on top of the closure.
     virtualisation.diskSize = 8192;
 
     networking.wireguard.interfaces = lib.mkForce {};
@@ -110,14 +105,6 @@ in
             node1.wait_for_unit("multi-user.target", timeout=900)
         assert_stack_healthy("first boot")
 
-        # ── services.swapspace exists so real memory pressure gets absorbed
-        #    instead of going straight to the OOM killer — but the VM's root
-        #    disk (where it creates swapfiles, /var/lib/swapspace) is
-        #    "auto"-sized to the system closure with zero slack by default,
-        #    which left swapspace unable to ever allocate anything and let a
-        #    2026-09-22 CI run OOM-kill coredns mid-test. virtualisation.diskSize
-        #    above fixes the room; this proves swap actually engages, not
-        #    just that the daemon starts ──────────────────────────────────
         with step(node1, "first boot: swap actually has room to engage under pressure"):
             total_mb = int(node1.succeed("free -m | awk '/^Mem:/{print $2}'").strip())
             fill_mb = total_mb * 9 // 10

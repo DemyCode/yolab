@@ -23,11 +23,6 @@
     virtualisation.memorySize = 4096;
     virtualisation.cores = 2;
     virtualisation.emptyDiskImages = [8192 8192];
-    # The default root disk ("auto"-sized to the system closure, no slack)
-    # leaves swapspace (homelab/nixos/common.nix's services.swapspace) no
-    # room to ever create a swapfile at /var/lib/swapspace, so real memory
-    # pressure goes straight to the OOM killer instead of being absorbed by
-    # swap. Room for a few GB of swap on top of the closure.
     virtualisation.diskSize = 8192;
 
     networking.wireguard.interfaces = lib.mkForce {};
@@ -47,6 +42,11 @@
         RemainAfterExit = true;
         ExecStart = "${pkgs.coreutils}/bin/true";
       };
+    };
+
+    systemd.services.k3s-node-ip.environment = {
+      YOLAB_NODE_IP_MAX_ATTEMPTS = "2";
+      YOLAB_NODE_IP_RETRY_DELAY_SECS = "1";
     };
   };
 in
@@ -99,5 +99,28 @@ in
                 "http://[::1]:3001/api/disks",
                 timeout=300,
             )
+
+        with step(node1, "the node-ip config k3s actually started with is dual-stack"):
+            good_config = node1.succeed("cat /etc/rancher/k3s/config.yaml")
+            assert "fd00:cafe::1" in good_config
+            assert "," in good_config
+
+        with step(node1, "losing the IPv4 route makes k3s-node-ip refuse, not write a broken config"):
+            node1.succeed("ip route del default 2>/dev/null; true")
+            node1.fail("systemctl restart k3s-node-ip.service")
+            node1.succeed("systemctl is-failed k3s-node-ip.service")
+            journal = node1.succeed(
+                "journalctl -u k3s-node-ip.service --no-pager -n 50"
+            )
+            assert "dual-stack cluster-cidr" in journal
+            assert node1.succeed("cat /etc/rancher/k3s/config.yaml") == good_config
+
+        with step(node1, "k3s keeps serving on the last known-good config, not crash-looping"):
+            node1.succeed("systemctl restart k3s.service")
+            node1.wait_until_succeeds("k3s kubectl get --raw /readyz", timeout=300)
+            restarts = node1.succeed(
+                "systemctl show -p NRestarts --value k3s.service"
+            ).strip()
+            assert restarts == "0", f"k3s restarted {restarts} times, expected a clean start"
       '';
   })
