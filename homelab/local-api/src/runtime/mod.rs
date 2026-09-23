@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod fleet;
 pub mod leader;
 pub mod lock;
 pub mod resource;
