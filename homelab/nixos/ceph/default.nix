@@ -253,9 +253,21 @@ in {
         # failed, which `systemctl --failed` shows, matching the existing
         # a_machine_without_the_system_lv_is_an_error_not_a_skip Rust test —
         # it just also lets ordering resolve so images-rbd, containerd-store
-        # and k3s can come up regardless, exactly like
-        # yolab-ceph-osd-activate's own bounded 600s just below.
-        TimeoutStartSec = "600s";
+        # and k3s can come up regardless.
+        #
+        # 120s, not the 600s this first landed with: this bound sits at the
+        # HEAD of a three-deep chain (system-osd -> images-rbd ->
+        # containerd-store, see images-store.nix), and when the underlying
+        # condition genuinely never resolves — no system LV, ever — all
+        # three legitimately hit their own bound in sequence. 600s each
+        # compounds to a 30-minute worst case before k3s so much as gets a
+        # start job queued, comfortably past disk-loss-test's own 900s
+        # multi-user.target budget: it timed out for exactly this reason
+        # once this bound existed but was still 600s. Real transient
+        # conditions (the mon coming up, the LV appearing) resolve in
+        # single-digit seconds; 120s is still generous for those, and three
+        # of them in the worst case is 360s, not 1800s.
+        TimeoutStartSec = "120s";
         ExecStart = "${localApiEnv}/bin/local-api storage system-osd";
       };
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils systemd];

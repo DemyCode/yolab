@@ -77,8 +77,13 @@ in {
         # containerd-store-after-order in nix/checks.nix), so a start job
         # that never reaches a terminal state here holds up k3s — and
         # multi-user.target with it — exactly like yolab-ceph-system-osd did
-        # (see the comment there). Bounded the same way, for the same reason.
-        TimeoutStartSec = "600s";
+        # (see the comment there).
+        #
+        # 120s, matching system-osd's own bound and for the same reason: this
+        # is the middle link of a three-deep chain, and 600s here compounded
+        # with 600s on either side of it into a 30-minute worst case that
+        # blew past disk-loss-test's 900s budget.
+        TimeoutStartSec = "120s";
         ExecStart = "${localApiEnv}/bin/local-api storage images-rbd";
       };
       path = with pkgs; [ceph ceph-client];
@@ -105,7 +110,11 @@ in {
         # is an OSD yet" in nix/tests/boot.nix's own comment. containerd_store
         # ::attempt has no explicit fallback branch; this bound is what makes
         # that comment true rather than aspirational.
-        TimeoutStartSec = "600s";
+        #
+        # 120s, matching its two predecessors in the chain — see
+        # yolab-ceph-system-osd's comment for why 600s here compounded into a
+        # 30-minute worst case.
+        TimeoutStartSec = "120s";
         ExecStart = "${localApiEnv}/bin/local-api storage containerd-store";
       };
       path = cephPath;
