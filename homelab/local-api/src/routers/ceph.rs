@@ -37,6 +37,47 @@ pub struct ClusterHealth {
     pub storage_unrecoverable: bool,
 }
 
+pub(crate) const ROOT_DISK_WARN_PERCENT: u64 = 85;
+pub(crate) const ROOT_DISK_ERROR_PERCENT: u64 = 95;
+
+async fn root_disk_used_percent() -> Option<u64> {
+    let out = crate::host::Host::run_cmd(&crate::host::HOST, "df", &["-P", "-k", "/"])
+        .await
+        .ok()?;
+    if !out.success {
+        return None;
+    }
+    used_percent_from_df(&out.stdout)
+}
+
+pub(crate) fn used_percent_from_df(out: &str) -> Option<u64> {
+    let line = out.lines().nth(1)?;
+    let capacity = line.split_whitespace().nth(4)?;
+    capacity.trim_end_matches('%').parse().ok()
+}
+
+pub(crate) fn root_disk_issue(used: Option<u64>) -> Option<HealthIssue> {
+    let used = used?;
+    let (level, title) = if used >= ROOT_DISK_ERROR_PERCENT {
+        (HealthLevel::Error, "This machine's system disk is full")
+    } else if used >= ROOT_DISK_WARN_PERCENT {
+        (
+            HealthLevel::Warn,
+            "This machine's system disk is nearly full",
+        )
+    } else {
+        return None;
+    };
+    Some(HealthIssue {
+        level,
+        title: title.to_string(),
+        description: format!(
+            "The system disk is {used}% full. It holds the operating system, logs and swap; \
+             when it fills, this machine stops being able to update, log or start apps."
+        ),
+    })
+}
+
 fn system_uptime_secs() -> u64 {
     std::fs::read_to_string("/proc/uptime")
         .ok()
@@ -64,6 +105,12 @@ pub async fn cluster_health() -> Json<ClusterHealth> {
     Json(compute_cluster_health().await)
 }
 
+async fn mon_quorum() -> bool {
+    crate::heal::mon_status(&crate::host::HOST, &crate::system::hostname())
+        .await
+        .is_ok_and(|m| m.in_quorum)
+}
+
 async fn compute_cluster_health() -> ClusterHealth {
     let raw = match ceph_health_and_details().await {
         Ok(s) => s,
@@ -83,7 +130,7 @@ async fn compute_cluster_health() -> ClusterHealth {
                 message: if starting {
                     "Your storage is starting after a restart. Apps will be available in a few minutes.".into()
                 } else {
-                    "Cannot connect to the storage control plane. Check that Rook is running."
+                    "Cannot reach this machine's Ceph monitor, so the storage cluster cannot be asked how it is."
                         .into()
                 },
                 issues: vec![],
@@ -126,6 +173,9 @@ async fn compute_cluster_health() -> ClusterHealth {
             }
         }
     }
+    if let Some(issue) = root_disk_issue(root_disk_used_percent().await) {
+        issues.push(issue);
+    }
 
     issues.sort_by_key(|i| {
         if i.level == HealthLevel::Error {
@@ -154,6 +204,7 @@ async fn compute_cluster_health() -> ClusterHealth {
     let storage_unrecoverable = loss
         .as_ref()
         .is_some_and(|l| l.unrecoverable && l.stuck > 0);
+    let mon_quorum_ok = mon_quorum().await;
 
     match level {
         HealthLevel::Ok => ClusterHealth {
@@ -162,7 +213,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             message: "Your storage cluster is running normally.".into(),
             issues,
             pg_unavailable,
-            mon_quorum_ok: true,
+            mon_quorum_ok,
             osd_full,
             starting: false,
             provisioning,
@@ -182,7 +233,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             },
             issues,
             pg_unavailable,
-            mon_quorum_ok: true,
+            mon_quorum_ok,
             osd_full,
             starting,
             provisioning,
@@ -206,7 +257,7 @@ async fn compute_cluster_health() -> ClusterHealth {
             },
             issues: if starting { vec![] } else { issues },
             pg_unavailable,
-            mon_quorum_ok: true,
+            mon_quorum_ok,
             osd_full,
             starting,
             provisioning,
@@ -1722,5 +1773,51 @@ mod dashboard_route_tests {
             StatusCode::NOT_FOUND,
             "matchit's /*rest requires at least one character after the slash"
         );
+    }
+}
+
+#[cfg(test)]
+mod root_disk_tests {
+    use super::*;
+
+    const DF: &str = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n\
+                      /dev/mapper/pool-root 61890000 14000000  44000000      24% /\n";
+
+    #[test]
+    fn the_root_disk_percentage_is_read_from_dfs_posix_output() {
+        assert_eq!(used_percent_from_df(DF), Some(24));
+    }
+
+    #[test]
+    fn df_output_that_makes_no_sense_is_unknown_rather_than_zero() {
+        for junk in ["", "Filesystem\n", "a b c\n", "h\nonly four fields here\n"] {
+            assert_eq!(used_percent_from_df(junk), None, "{junk:?}");
+        }
+    }
+
+    #[test]
+    fn a_healthy_root_disk_raises_nothing() {
+        assert!(root_disk_issue(Some(24)).is_none());
+        assert!(root_disk_issue(Some(ROOT_DISK_WARN_PERCENT - 1)).is_none());
+    }
+
+    #[test]
+    fn an_unreadable_root_disk_is_not_reported_as_healthy_or_full() {
+        assert!(root_disk_issue(None).is_none());
+    }
+
+    #[test]
+    fn a_filling_root_disk_warns_before_it_is_an_emergency() {
+        let issue = root_disk_issue(Some(ROOT_DISK_WARN_PERCENT)).expect("should warn");
+        assert_eq!(issue.level, HealthLevel::Warn);
+        assert!(issue.description.contains("85%"), "{}", issue.description);
+    }
+
+    #[test]
+    fn a_full_root_disk_is_an_error_not_a_warning() {
+        let issue = root_disk_issue(Some(ROOT_DISK_ERROR_PERCENT)).expect("should error");
+        assert_eq!(issue.level, HealthLevel::Error);
+        let worse = root_disk_issue(Some(100)).expect("should error");
+        assert_eq!(worse.level, HealthLevel::Error);
     }
 }

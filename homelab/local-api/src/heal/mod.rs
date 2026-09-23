@@ -341,9 +341,9 @@ impl Network for RealNetwork {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct MonStatus {
-    in_quorum: bool,
-    mons: Vec<(String, String)>,
+pub(crate) struct MonStatus {
+    pub(crate) in_quorum: bool,
+    pub(crate) mons: Vec<(String, String)>,
 }
 
 fn parse_mon_status(raw: &str) -> Result<MonStatus> {
@@ -383,7 +383,7 @@ fn normalize(addr: &str) -> String {
         .unwrap_or_else(|_| bare.to_string())
 }
 
-async fn mon_status<H: Host>(host: &H, me: &str) -> Result<MonStatus> {
+pub(crate) async fn mon_status<H: Host>(host: &H, me: &str) -> Result<MonStatus> {
     let raw = host
         .ceph(&["daemon", &format!("mon.{me}"), "mon_status"])
         .await

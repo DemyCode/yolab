@@ -144,6 +144,8 @@ pub trait Host: Send + Sync + Clone {
 #[derive(Clone, Default)]
 pub struct RealHost;
 
+pub static HOST: RealHost = RealHost;
+
 #[allow(clippy::manual_async_fn)]
 impl Host for RealHost {
     fn ceph<'a>(&self, args: &'a [&str]) -> impl Future<Output = HostResult<String>> + Send + 'a {

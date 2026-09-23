@@ -3,9 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::host::Host;
-
-static HOST: crate::host::RealHost = crate::host::RealHost;
+use crate::host::{Host, HOST};
 use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
 use super::{
