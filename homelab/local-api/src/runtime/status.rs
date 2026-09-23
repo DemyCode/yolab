@@ -147,6 +147,7 @@ pub fn publish_snapshot() {
         "written_at": Utc::now(),
         "leader": super::leader::current_holder_is_me(),
         "controllers": super::registry().snapshot(),
+        "resources": super::resource::states(),
     });
     let Ok(body) = serde_json::to_vec_pretty(&snap) else {
         return;
@@ -169,6 +170,7 @@ pub async fn handler() -> axum::Json<serde_json::Value> {
         "node": crate::system::hostname(),
         "leader": super::leader::current_holder_is_me(),
         "controllers": super::registry().snapshot(),
+        "resources": super::resource::states(),
     }))
 }
 
