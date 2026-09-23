@@ -194,7 +194,7 @@ in
         assert len(switched_on) == 2, f"expected a disk on each node, got {switched_on}"
 
         # FOUR OSDs, not two. Each machine makes its own system LV an OSD at boot
-        # (yolab-ceph-system-osd), and the loop above switched on one spare disk
+        # (the system-osd resource), and the loop above switched on one spare disk
         # per machine on top of that. This assertion read "2 osds" for as long as
         # the test could not run at all — back when nothing created the system LV,
         # so there was no system OSD to count.
@@ -229,48 +229,17 @@ in
         for m in (node1, node2):
             m.succeed("systemctl is-active k3s.service")
 
-        # ── Every self-healing timer must actually be armed ───────────────────
+        # ── Self-healing must keep running, and must not hot-loop ────────────
         #
-        # `NEXT: -` with a stale `LAST` is precisely what a RemainAfterExit oneshot
-        # produces, and it is invisible unless something looks. Two separate
-        # outages came from exactly this state going unnoticed for days.
-        for m in (node1, node2):
-            for unit in (
-                "yolab-containerd-store",
-                "yolab-ceph-mgr-key",
-                "yolab-ceph-mds-key",
-                "yolab-images-rbd",
-            ):
-                nxt = m.succeed(
-                    f"systemctl show {unit}.timer -p NextElapseUSecRealtime "
-                    "-p NextElapseUSecMonotonic --value"
-                ).split()
-                assert any(v not in ("", "infinity") for v in nxt), (
-                    f"{unit}.timer on {m.name} will never fire again "
-                    f"(next elapse: {nxt!r}) — a timer whose service cannot go "
-                    "inactive stops re-arming, see nix/checks.nix"
-                )
-
-        # ── ...and must not be re-firing back to back ─────────────────────────
-        #
-        # The other half of the same bug: a timer counting from the run's START
-        # re-triggers the instant a long run ends, and each containerd-store run
-        # stops k3s. Two consecutive triggers separated by ~0s is the signature.
-        def last_trigger(m, unit):
-            out = m.succeed(f"systemctl show {unit}.timer -p LastTriggerUSecMonotonic --value")
-            return int(out.strip() or 0)
-
-        for m in (node1, node2):
-            before = last_trigger(m, "yolab-containerd-store")
-            m.sleep(90)
-            after = last_trigger(m, "yolab-containerd-store")
-            if after != before:
-                gap_s = (after - before) / 1e6
-                assert gap_s > 30, (
-                    f"yolab-containerd-store.timer on {m.name} re-fired {gap_s:.1f}s "
-                    "after the previous run — a timer that measures from the start of "
-                    "the run hot-loops once a run outlives its interval"
-                )
+        # These two assertions used to be written against systemd .timer units.
+        # Commit 998caf8 dropped the timers when the controller runtime landed
+        # and the assertions stayed, naming units that no longer existed — see
+        # tests-name-units-that-exist in nix/checks.nix.
+        with step([node1, node2], "yolabd keeps supervising and does not hot-loop"):
+            assert_yolabd_is_ticking(
+                [node1, node2],
+                ["containerd-store", "images-rbd", "system-osd", "ceph-keys"],
+            )
 
         # ── The store is on Ceph, so growing the pool grows image space ───────
         #

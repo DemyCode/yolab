@@ -10,8 +10,6 @@
   tunnelCfg = homelabConfig.tunnel or {};
   nodeCfg = homelabConfig.node or {};
 
-  tunnelEnabled = (tunnelCfg.sub_ipv6 or "") != "";
-
   privateSubnet = nodeCfg.sub_ipv6_private_subnet or "fd00:cafe::/112";
 
   builds = import ./builds.nix {inherit pkgs rust;};
@@ -29,7 +27,6 @@ in {
     homelabConfig
     tunnelCfg
     nodeCfg
-    tunnelEnabled
     privateSubnet
     clientUi
     localApiEnv

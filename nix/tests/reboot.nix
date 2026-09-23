@@ -235,24 +235,12 @@ in
                 f"PVC was recreated across the reboot instead of surviving: "
                 f"{pvc_uid_before!r} -> {pvc_uid_after!r}"
             )
-
-        # ── The other half of the timer-rearm bug: it has to survive a real
-        #    reboot, not just a fresh boot where every timer is armed for the
-        #    first time and nothing has run yet to fail to re-arm ───────────
-        with step(node1, "after reboot: self-healing timers are armed for next time"):
-            for unit in (
-                "yolab-containerd-store",
-                "yolab-ceph-mgr-key",
-                "yolab-ceph-mds-key",
-                "yolab-images-rbd",
-            ):
-                nxt = node1.succeed(
-                    f"systemctl show {unit}.timer -p NextElapseUSecRealtime "
-                    "-p NextElapseUSecMonotonic --value"
-                ).split()
-                assert any(v not in ("", "infinity") for v in nxt), (
-                    f"{unit}.timer will never fire again after a reboot "
-                    f"(next elapse: {nxt!r})"
-                )
+        # ── The other half of the re-arm bug: self-healing has to survive a
+        #    real reboot, not just a fresh boot where nothing has run yet ───
+        with step(node1, "after reboot: yolabd is still supervising, not stuck"):
+            assert_yolabd_is_ticking(
+                node1,
+                ["containerd-store", "images-rbd", "system-osd", "ceph-keys"],
+            )
       '';
   })
