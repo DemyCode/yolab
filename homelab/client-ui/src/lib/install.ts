@@ -1,4 +1,3 @@
-import { nextInstanceName } from "@/lib/apps";
 import type { AppDefinition, AppInfo } from "@/types/apps";
 
 export type InstallMode = "fresh" | "duplicate" | "restore";
@@ -68,16 +67,15 @@ export function keepsSourceAddress(mode: InstallMode): boolean {
   return mode === "restore";
 }
 
-export function suggestedName(
+export function instanceNameFor(
   mode: InstallMode,
   appId: string,
   source: AppDefinition | null,
-  installed: AppInfo[],
 ): string {
   if (mode === "restore" && source?.instance_name) {
     return stripInstanceId(source.instance_name);
   }
-  return nextInstanceName(appId, installed);
+  return appId;
 }
 
 const INSTANCE_ID = /-[abcdefghijkmnpqrstuvwxyz23456789]{4}$/;
@@ -97,7 +95,6 @@ export function addressTakenBy(
 
 export interface BlockerInput {
   instanceName: string;
-  nameTaken: boolean;
   addressTakenBy: string | null;
   requiredMissing: boolean;
   withData: boolean;
@@ -107,8 +104,7 @@ export interface BlockerInput {
 }
 
 export function installBlocker(input: BlockerInput): string | null {
-  if (!input.instanceName) return "Give this app a name.";
-  if (input.nameTaken) return "You already have something with that name.";
+  if (!input.instanceName) return "This app has no name to install under.";
   if (input.addressTakenBy) {
     return `That web address already belongs to ${input.addressTakenBy}. Pick another.`;
   }

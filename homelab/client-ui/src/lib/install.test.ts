@@ -9,7 +9,7 @@ import {
   snapshotNamespace,
   stripInstanceId,
   phaseFrom,
-  suggestedName,
+  instanceNameFor,
 } from "./install";
 import type { AppDefinition, AppInfo } from "@/types/apps";
 
@@ -188,29 +188,37 @@ describe("keepsSourceAddress", () => {
   });
 });
 
-describe("suggestedName", () => {
-  it("proposes the app's own name when nothing is installed", () => {
-    expect(suggestedName("fresh", "gitea", null, [])).toBe("gitea");
+describe("instanceNameFor", () => {
+  it("uses the chart's own id for a new app — nobody is asked to invent one", () => {
+    expect(instanceNameFor("fresh", "gitea", null)).toBe("gitea");
   });
 
-  it("proposes the restored app's own name, without its generated id", () => {
+  it("uses the chart id for a duplicate too; the server adds the unique part", () => {
     expect(
-      suggestedName(
+      instanceNameFor(
+        "duplicate",
+        "gitea",
+        definition({ instance_name: "gitea-ab12" }),
+      ),
+    ).toBe("gitea");
+  });
+
+  it("gives a restored app its own name back, without its generated id", () => {
+    expect(
+      instanceNameFor(
         "restore",
         "gitea",
         definition({ instance_name: "my-code-x7k2" }),
-        [],
       ),
     ).toBe("my-code");
   });
 
-  it("falls back to the chart name when the backup never recorded one", () => {
+  it("falls back to the chart id when the backup never recorded a name", () => {
     expect(
-      suggestedName("restore", "gitea", definition({ instance_name: "" }), []),
+      instanceNameFor("restore", "gitea", definition({ instance_name: "" })),
     ).toBe("gitea");
   });
 });
-
 describe("stripInstanceId", () => {
   it("removes a generated id", () => {
     expect(stripInstanceId("gitea-ab23")).toBe("gitea");
@@ -244,7 +252,6 @@ describe("addressTakenBy", () => {
 describe("installBlocker", () => {
   const ok = {
     instanceName: "gitea",
-    nameTaken: false,
     addressTakenBy: null,
     requiredMissing: false,
     withData: false,

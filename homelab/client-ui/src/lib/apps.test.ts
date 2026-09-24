@@ -3,10 +3,11 @@ import {
   appFactRows,
   appLinks,
   appState,
+  appDisplayName,
   installedByChart,
   nextInstanceName,
 } from "./apps";
-import type { AppInfo, AppOutput, OutputSpec } from "@/types/apps";
+import type { AppInfo, AppOutput, CatalogApp, OutputSpec } from "@/types/apps";
 
 function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
@@ -202,5 +203,62 @@ describe("appState", () => {
     expect(appState(app({ status: "uninstalling" }))).toBe("removing");
     expect(appState(app({ status: "starting" }))).toBe("starting");
     expect(appState(app({ status: "running" }))).toBe("ready");
+  });
+});
+
+describe("appDisplayName", () => {
+  const catalog = [
+    { id: "gitea", name: "Gitea" } as unknown as CatalogApp,
+    { id: "immich", name: "Immich" } as unknown as CatalogApp,
+  ];
+
+  it("shows the catalog name when you have exactly one", () => {
+    const only = app({ instance_name: "gitea-ab23", instance_id: "ab23" });
+    expect(appDisplayName(only, catalog, [only])).toBe("Gitea");
+  });
+
+  it("tells two copies apart by their web address, since that is what differs", () => {
+    const work = app({
+      instance_name: "gitea-ab23",
+      instance_id: "ab23",
+      config: { subdomain: "git-work" },
+    });
+    const home = app({
+      instance_name: "gitea-cd34",
+      instance_id: "cd34",
+      config: { subdomain: "git-home" },
+    });
+    expect(appDisplayName(work, catalog, [work, home])).toBe(
+      "Gitea (git-work)",
+    );
+    expect(appDisplayName(home, catalog, [work, home])).toBe(
+      "Gitea (git-home)",
+    );
+  });
+
+  it("does not disambiguate against a different chart", () => {
+    const gitea = app({ instance_name: "gitea-ab23", instance_id: "ab23" });
+    const immich = app({
+      app_id: "immich",
+      instance_name: "immich-cd34",
+      instance_id: "cd34",
+    });
+    expect(appDisplayName(gitea, catalog, [gitea, immich])).toBe("Gitea");
+  });
+
+  it("falls back to the generated id when a copy publishes no address", () => {
+    const a = app({ instance_name: "gitea-ab23", instance_id: "ab23" });
+    const b = app({ instance_name: "gitea-cd34", instance_id: "cd34" });
+    expect(appDisplayName(a, catalog, [a, b])).toBe("Gitea (ab23)");
+  });
+
+  it("still honours a name chosen before names were dropped", () => {
+    const named = app({ instance_name: "my-code-x7k2", instance_id: "x7k2" });
+    expect(appDisplayName(named, catalog, [named])).toBe("my-code");
+  });
+
+  it("copes with a chart that is no longer in the catalog", () => {
+    const gone = app({ instance_name: "gitea-ab23", instance_id: "ab23" });
+    expect(appDisplayName(gone, [], [gone])).toBe("gitea");
   });
 });
