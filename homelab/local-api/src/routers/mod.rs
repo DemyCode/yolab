@@ -4,6 +4,7 @@ pub mod backup_common;
 pub mod backups;
 pub mod ceph;
 pub mod ceph_join;
+pub mod copy;
 pub mod custom_app;
 pub mod disks;
 pub mod install;

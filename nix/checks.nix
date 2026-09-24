@@ -303,11 +303,12 @@ in let
         "mesh/mod.rs" = 5;
         "ops.rs" = 1;
         "routers/apps.rs" = 24;
-        "routers/backup.rs" = 11;
+        "routers/backup.rs" = 12;
         "routers/backup_common.rs" = 10;
         "routers/ceph.rs" = 2;
+        "routers/copy.rs" = 10;
         "routers/disks.rs" = 4;
-        "routers/restore.rs" = 11;
+        "routers/restore.rs" = 10;
         "runtime/leader.rs" = 4;
 
         "storage/mod.rs" = 2;
