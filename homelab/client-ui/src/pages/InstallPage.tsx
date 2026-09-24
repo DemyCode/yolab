@@ -535,6 +535,7 @@ export function InstallPage() {
             schema={rjsfSchema}
             uiSchema={rjsfUiSchema}
             formData={formData}
+            formContext={{ formData }}
             validator={validator}
             widgets={widgets}
             templates={templates}
