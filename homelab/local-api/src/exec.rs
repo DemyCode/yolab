@@ -1,9 +1,11 @@
 use std::fmt;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
@@ -203,11 +205,30 @@ pub fn render(bin: &str, args: &[&str]) -> String {
     }
 }
 
+fn subprocess_slots() -> &'static Semaphore {
+    static SLOTS: OnceLock<Semaphore> = OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .max(2);
+        Semaphore::new(cores)
+    })
+}
+
+async fn subprocess_slot() -> SemaphorePermit<'static> {
+    subprocess_slots()
+        .acquire()
+        .await
+        .expect("the subprocess semaphore is never closed")
+}
+
 pub async fn output(
     bin: &str,
     args: &[&str],
     timeout: Duration,
 ) -> Result<CommandOutput, CmdError> {
+    let _slot = subprocess_slot().await;
     let cmd = render(bin, args);
     let work = Command::new(bin)
         .args(args)
@@ -258,6 +279,7 @@ pub async fn with_stdin(
     input: &str,
     timeout: Duration,
 ) -> Result<String, CmdError> {
+    let _slot = subprocess_slot().await;
     let cmd = render(bin, args);
     let work = async {
         let mut child = Command::new(bin)

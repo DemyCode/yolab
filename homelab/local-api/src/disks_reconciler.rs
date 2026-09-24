@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::{collections::HashMap, io::Read, path::Path};
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+use std::{collections::HashMap, io::Read, path::Path, sync::Mutex};
 use tokio::time::{sleep, Duration};
 
 use crate::ceph::destructive;
@@ -8,7 +10,7 @@ use crate::error::Outcome;
 use crate::host::{Host, RealHost};
 use crate::storage::settings;
 
-const INTERVAL_SECS: u64 = 30;
+const INTERVAL_SECS: u64 = 60;
 
 const BLUESTORE_MAGIC: &[u8] = b"bluestore block device\n";
 const CEPH_FSID_KEY: &[u8] = b"\x09\x00\x00\x00ceph_fsid";
@@ -446,8 +448,12 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
 
     match &desired {
         Some(d) => {
-            auto_register_all_disks(host, node, &meta, d).await;
-            let d = read_desired(host).await.unwrap_or_else(|| d.clone());
+            let registered = auto_register_all_disks(host, node, &meta, d).await;
+            let d = if registered > 0 {
+                read_desired(host).await.unwrap_or_else(|| d.clone())
+            } else {
+                d.clone()
+            };
             reconcile_local_osds(host, node, &meta, &d, disk_to_osd.as_ref(), can_create).await;
         }
         None => {
@@ -1602,14 +1608,17 @@ async fn auto_register_all_disks<H: Host>(
     node: &str,
     meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
-) {
-    for (key, setting) in new_disk_records(node, meta, desired) {
+) -> usize {
+    let records = new_disk_records(node, meta, desired);
+    let registered = records.len();
+    for (key, setting) in records {
         let full = format!("{}{key}", settings::DISKS);
         match settings::set(host, &full, setting).await {
             Ok(()) => tracing::info!("disk {key}: first seen on {node}, registered {setting}"),
             Err(e) => tracing::warn!("disk {key}: could not register it ({e})"),
         }
     }
+    registered
 }
 
 fn new_disk_records(
@@ -1811,14 +1820,40 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
 }
 
 async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk>) {
-    let wire: HashMap<&str, Value> = meta
+    let wire: BTreeMap<&str, Value> = meta
         .iter()
         .map(|(k, d)| (k.as_str(), d.to_value()))
         .collect();
+    let payload = json!({ "disks": wire }).to_string();
+    if last_published(node).as_deref() == Some(payload.as_str()) {
+        return;
+    }
     let key = format!("{}{node}", settings::DISK_STATUS);
-    settings::set_json(host, &key, &json!({ "disks": wire }))
+    settings::set(host, &key, &payload)
         .await
         .warn_on_err("publish this node's disk inventory");
+    remember_published(node, payload);
+}
+
+static PUBLISHED_STATUS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn published_status() -> &'static Mutex<HashMap<String, String>> {
+    PUBLISHED_STATUS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn last_published(node: &str) -> Option<String> {
+    published_status()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(node)
+        .cloned()
+}
+
+fn remember_published(node: &str, payload: String) {
+    published_status()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(node.to_string(), payload);
 }
 
 async fn read_desired<H: Host>(host: &H) -> Option<HashMap<String, String>> {
@@ -2682,6 +2717,31 @@ mod tests {
         let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
         write_status(&host, "node1", &meta).await;
         assert!(host.ran("ceph config-key set yolab/disk-status/node1 {\"disks\":{\"dev-sdb\":"));
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_inventory_is_not_published_again() {
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+        let first = FakeHost::new().ok("ceph config-key set yolab/disk-status/node-once", "");
+        write_status(&first, "node-once", &meta).await;
+        assert!(first.ran("ceph config-key set yolab/disk-status/node-once"));
+
+        let second = FakeHost::new();
+        write_status(&second, "node-once", &meta).await;
+        assert!(
+            second.calls().is_empty(),
+            "nothing changed, so nothing should be written: {:?}",
+            second.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn registering_reports_how_many_disks_were_new() {
+        let host = FakeHost::new().ok("ceph config-key set yolab/disks/node1--dev-sdb", "");
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+        let registered = auto_register_all_disks(&host, "node1", &meta, &HashMap::new()).await;
+        assert_eq!(registered, 1);
+        assert!(host.ran("ceph config-key set yolab/disks/node1--dev-sdb"));
     }
 
     fn disk(ownership: Ownership) -> Disk {
