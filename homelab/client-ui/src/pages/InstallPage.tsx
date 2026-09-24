@@ -263,6 +263,7 @@ export function InstallPage() {
     addressTakenBy: addressClash,
     requiredMissing: [...required].some((n) => !String(values[n] ?? "").trim()),
     withData: copyData,
+    needsBackup: origin.mode === "restore",
     snapshot,
     snapshotsLoaded: snapshots !== null,
     snapshotCount: snapshots?.length ?? 0,
@@ -471,7 +472,7 @@ export function InstallPage() {
           This creates a separate app from the same chart and settings, with its
           own name, storage and web address.{" "}
           {copyData
-            ? "Its files are copied from the backup you pick below."
+            ? "Its files are copied from the app itself."
             : "It starts empty — none of its files are copied."}
         </Banner>
       )}
@@ -560,6 +561,7 @@ export function InstallPage() {
                 : "Bring this app’s files back too"}
             </label>
             {copyData &&
+              origin.mode === "restore" &&
               (snapshots === null ? (
                 <p className="text-xs text-fg-muted">Looking for backups…</p>
               ) : snapshots.length === 0 ? (

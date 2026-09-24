@@ -712,11 +712,13 @@ async fn fill_volume(
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
+    let source_instance = source_namespace.trim_start_matches("yolab-");
+    let dest_name = rebase_pvc_name(&pvc.name, source_instance, release);
     let manifest = json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {
-            "name": pvc.name,
+            "name": dest_name,
             "namespace": namespace,
             "labels": { "app.kubernetes.io/managed-by": "Helm" },
             "annotations": {
@@ -731,7 +733,15 @@ async fn fill_volume(
         }
     });
     kubectl_apply(&manifest.to_string()).await?;
-    restore_into(namespace, source_namespace, &pvc.name, cfg, restore_as_of).await
+    restore_into(
+        namespace,
+        source_namespace,
+        &pvc.name,
+        &dest_name,
+        cfg,
+        restore_as_of,
+    )
+    .await
 }
 
 async fn restore_volume(
@@ -754,17 +764,18 @@ async fn restore_volume(
     wait_for_pvc_deleted(namespace, pvc).await?;
 
     ensure_destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany").await?;
-    restore_into(namespace, namespace, pvc, cfg, restore_as_of).await
+    restore_into(namespace, namespace, pvc, pvc, cfg, restore_as_of).await
 }
 
 async fn restore_into(
     namespace: &str,
     source_namespace: &str,
-    pvc: &str,
+    source_pvc: &str,
+    dest_pvc: &str,
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
-    let cid = canonical_pvc_id(pvc);
+    let cid = canonical_pvc_id(source_pvc);
     let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
     restic_unlock(
         &pvc_repo,
@@ -775,13 +786,13 @@ async fn restore_into(
     .await;
     annotate_ns_privileged_movers(namespace).await;
 
-    ensure_restic_secret_for_repo(namespace, source_namespace, pvc, cfg).await?;
+    ensure_restic_secret_for_repo(namespace, source_namespace, source_pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let mut restic_spec = json!({
         "repository": secret_name,
         "copyMethod": "Direct",
         "cacheStorageClassName": "yolab-cephfs",
-        "destinationPVC": pvc,
+        "destinationPVC": dest_pvc,
         "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
     });
     if let Some(t) = restore_as_of {

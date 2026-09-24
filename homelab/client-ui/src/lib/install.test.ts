@@ -89,18 +89,18 @@ describe("copiesDataByDefault", () => {
 });
 
 describe("snapshotNamespace", () => {
-  it("looks for a duplicate's backups under the original's namespace", () => {
-    expect(snapshotNamespace(installOrigin(params("from=gitea-ab12")))).toBe(
-      "yolab-gitea-ab12",
-    );
-  });
-
   it("looks for a restore's backups under the namespace being restored", () => {
     expect(
       snapshotNamespace(
         installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
       ),
     ).toBe("yolab-gitea-ab12");
+  });
+
+  it("a duplicate copies the app's own files, not a backup, so there is nowhere to look", () => {
+    expect(snapshotNamespace(installOrigin(params("from=gitea-ab12")))).toBe(
+      null,
+    );
   });
 
   it("has nowhere to look for a brand new app", () => {
@@ -126,17 +126,16 @@ describe("installSource", () => {
     });
   });
 
-  it("duplicates with data, naming the backup to copy", () => {
+  it("duplicates with data without naming any backup — the copy is direct", () => {
     const source = installSource(
       installOrigin(params("from=gitea-ab12")),
       true,
-      "d1",
+      "",
     );
     expect(source).toEqual({
       kind: "duplicate",
       from_instance: "gitea-ab12",
       with_data: true,
-      snapshot_id: "d1",
     });
   });
 
@@ -255,6 +254,7 @@ describe("installBlocker", () => {
     addressTakenBy: null,
     requiredMissing: false,
     withData: false,
+    needsBackup: true,
     snapshot: "",
     snapshotsLoaded: true,
     snapshotCount: 0,
@@ -280,10 +280,15 @@ describe("installBlocker", () => {
     );
   });
 
-  it("says so when data was asked for and there is no backup at all", () => {
-    expect(installBlocker({ ...ok, withData: true, snapshotCount: 0 })).toMatch(
-      /no backup/i,
-    );
+  it("says so when a restore asked for data and there is no backup at all", () => {
+    expect(
+      installBlocker({
+        ...ok,
+        withData: true,
+        needsBackup: true,
+        snapshotCount: 0,
+      }),
+    ).toMatch(/no backup/i);
   });
 
   it("waits rather than complaining while the backups are still loading", () => {
@@ -291,19 +296,33 @@ describe("installBlocker", () => {
       installBlocker({
         ...ok,
         withData: true,
+        needsBackup: true,
         snapshotsLoaded: false,
         snapshotCount: 0,
       }),
     ).toMatch(/pick the backup/i);
   });
 
-  it("lets data through once a backup is picked", () => {
+  it("lets a restore through once a backup is picked", () => {
     expect(
       installBlocker({
         ...ok,
         withData: true,
+        needsBackup: true,
         snapshot: "d1",
         snapshotCount: 3,
+      }),
+    ).toBeNull();
+  });
+
+  it("never asks a duplicate for a backup, even when copying its files", () => {
+    expect(
+      installBlocker({
+        ...ok,
+        withData: true,
+        needsBackup: false,
+        snapshot: "",
+        snapshotCount: 0,
       }),
     ).toBeNull();
   });

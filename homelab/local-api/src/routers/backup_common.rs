@@ -61,6 +61,17 @@ pub(crate) fn canonical_pvc_id(pvc_name: &str) -> String {
     id.to_string()
 }
 
+pub(crate) fn rebase_pvc_name(
+    source_name: &str,
+    source_instance: &str,
+    dest_instance: &str,
+) -> String {
+    match source_name.strip_prefix(source_instance) {
+        Some(suffix) => format!("{dest_instance}{suffix}"),
+        None => source_name.to_string(),
+    }
+}
+
 pub(crate) const MASTER_SECRET: &str = "yolab-backup-config";
 pub(crate) const MASTER_NS: &str = "kube-system";
 pub(crate) const RESTIC_SECRET_SUFFIX: &str = "-restic";
@@ -618,6 +629,26 @@ mod tests {
     fn canonical_pvc_id_strips_nested_restore_layers() {
         let mangled = "volsync-emergency-restore-volsync-emergency-restore-gitea-data-dest-dest";
         assert_eq!(canonical_pvc_id(mangled), "gitea-data");
+    }
+
+    #[test]
+    fn rebase_pvc_name_replaces_the_instance_prefix() {
+        assert_eq!(
+            rebase_pvc_name(
+                "filebrowser-test-yq46-data",
+                "filebrowser-test-yq46",
+                "filebrowser-test-k3m9"
+            ),
+            "filebrowser-test-k3m9-data"
+        );
+    }
+
+    #[test]
+    fn rebase_pvc_name_keeps_a_name_that_does_not_start_with_the_instance() {
+        assert_eq!(
+            rebase_pvc_name("data", "filebrowser-test-yq46", "filebrowser-test-k3m9"),
+            "data"
+        );
     }
 
     #[test]

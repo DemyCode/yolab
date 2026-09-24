@@ -51,9 +51,14 @@ pub(crate) enum ConfigOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DataOrigin {
-    pub(crate) namespace: String,
-    pub(crate) snapshot_id: String,
+pub(crate) enum DataOrigin {
+    Backup {
+        namespace: String,
+        snapshot_id: String,
+    },
+    Live {
+        namespace: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +113,7 @@ fn data_origin(
     }
     let snapshot_id = snapshot_id
         .ok_or_else(|| "pick the backup this app's data should be copied from".to_string())?;
-    Ok(Some(DataOrigin {
+    Ok(Some(DataOrigin::Backup {
         namespace: namespace.to_string(),
         snapshot_id,
     }))
@@ -138,7 +143,9 @@ pub(crate) fn resolve_sources(source: Option<&InstallSource>) -> Result<Sources,
                 return Err(format!("{from:?} is not the name of an app"));
             }
             let namespace = format!("yolab-{from}");
-            let data = data_origin(source.with_data, &namespace, given(&source.snapshot_id))?;
+            let data = source.with_data.then(|| DataOrigin::Live {
+                namespace: namespace.clone(),
+            });
             Ok(Sources {
                 config: ConfigOrigin::LiveApp { namespace },
                 data,
@@ -266,10 +273,16 @@ struct ChartJob<'a> {
     verb: &'static str,
 }
 
+enum DataFill<'a> {
+    None,
+    Backup(Box<crate::routers::restore::BackupPayload>),
+    Live { source_namespace: &'a str },
+}
+
 async fn apply_chart(
     cfg: &Config,
     job: &ChartJob<'_>,
-    payload: Option<&crate::routers::restore::BackupPayload>,
+    fill: &DataFill<'_>,
     log: &Log,
 ) -> anyhow::Result<()> {
     let staged = stage_install(
@@ -281,15 +294,27 @@ async fn apply_chart(
     )
     .await?;
 
-    if let Some(payload) = payload {
-        log.say("Copying this app's files…");
-        payload.fill_volumes(&staged.ns, job.instance_name).await?;
+    match fill {
+        DataFill::Backup(payload) => {
+            log.say("Copying this app's files…");
+            payload.fill_volumes(&staged.ns, job.instance_name).await?;
+        }
+        DataFill::Live { source_namespace } => {
+            log.say("Copying this app's files…");
+            crate::routers::copy::copy_live_volumes(
+                source_namespace,
+                &staged.ns,
+                job.instance_name,
+            )
+            .await?;
+        }
+        DataFill::None => {}
     }
 
     log.say(job.verb);
     helm_install(&staged, job.instance_name, log).await?;
 
-    if let Some(payload) = payload {
+    if let DataFill::Backup(payload) = fill {
         log.say("Putting this app's saved settings back…");
         payload.reapply().await?;
     }
@@ -329,16 +354,21 @@ pub(crate) async fn execute(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyh
 
 async fn install_inner(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyhow::Result<()> {
     log.say("Getting things ready…");
-    let payload = match &plan.data {
-        Some(data) => {
+    let fill = match &plan.data {
+        Some(DataOrigin::Backup {
+            namespace,
+            snapshot_id,
+        }) => {
             log.say("Reading the backup…");
-            let payload =
-                crate::routers::restore::backup_payload(&data.namespace, &data.snapshot_id).await?;
+            let payload = crate::routers::restore::backup_payload(namespace, snapshot_id).await?;
             same_app(&plan.app_id, payload.app_id(), "that backup")
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            Some(payload)
+            DataFill::Backup(Box::new(payload))
         }
-        None => None,
+        Some(DataOrigin::Live { namespace }) => DataFill::Live {
+            source_namespace: namespace.as_str(),
+        },
+        None => DataFill::None,
     };
 
     let job = ChartJob {
@@ -349,7 +379,7 @@ async fn install_inner(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyhow::R
         backup: &plan.backup,
         verb: "Installing…",
     };
-    apply_chart(cfg, &job, payload.as_ref(), log).await?;
+    apply_chart(cfg, &job, &fill, log).await?;
 
     let namespace = format!("yolab-{}", plan.instance_name);
     if let Err(e) = crate::routers::backups::setup_namespace_backup(&namespace).await {
@@ -379,7 +409,7 @@ pub(crate) async fn upgrade(cfg: &Config, plan: &UpgradePlan, log: &Log) -> anyh
         backup: &plan.backup,
         verb: "Updating…",
     };
-    apply_chart(cfg, &job, None, log).await
+    apply_chart(cfg, &job, &DataFill::None, log).await
 }
 
 async fn helm_install(
@@ -582,31 +612,29 @@ mod tests {
     }
 
     #[test]
-    fn duplicating_with_data_takes_it_from_the_originals_own_backup() {
+    fn duplicating_with_data_copies_the_originals_live_files() {
         let src = InstallSource {
             from_instance: Some("gitea-ab12".into()),
-            snapshot_id: Some("deadbeef".into()),
             with_data: true,
             ..source("duplicate")
         };
         let sources = resolve_sources(Some(&src)).unwrap();
         assert_eq!(
             sources.data,
-            Some(DataOrigin {
+            Some(DataOrigin::Live {
                 namespace: "yolab-gitea-ab12".into(),
-                snapshot_id: "deadbeef".into(),
             })
         );
     }
 
     #[test]
-    fn duplicating_with_data_needs_a_backup_to_copy_from() {
+    fn duplicating_with_data_needs_no_backup_to_copy_from() {
         let src = InstallSource {
             from_instance: Some("gitea-ab12".into()),
             with_data: true,
             ..source("duplicate")
         };
-        assert!(resolve_sources(Some(&src)).unwrap_err().contains("backup"));
+        assert!(resolve_sources(Some(&src)).is_ok());
     }
 
     #[test]
@@ -650,7 +678,7 @@ mod tests {
         let sources = resolve_sources(Some(&src)).unwrap();
         assert_eq!(
             sources.data,
-            Some(DataOrigin {
+            Some(DataOrigin::Backup {
                 namespace: "yolab-gitea-ab12".into(),
                 snapshot_id: "deadbeef".into(),
             })

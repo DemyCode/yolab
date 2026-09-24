@@ -35,8 +35,7 @@ export function copiesDataByDefault(mode: InstallMode): boolean {
 }
 
 export function snapshotNamespace(origin: InstallOrigin): string | null {
-  if (origin.mode === "duplicate") return `yolab-${origin.fromInstance}`;
-  return origin.namespace;
+  return origin.mode === "restore" ? origin.namespace : null;
 }
 
 export function installSource(
@@ -49,7 +48,6 @@ export function installSource(
       kind: "duplicate",
       from_instance: origin.fromInstance ?? "",
       with_data: withData,
-      ...(withData ? { snapshot_id: snapshot } : {}),
     };
   }
   if (origin.mode === "restore") {
@@ -98,6 +96,7 @@ export interface BlockerInput {
   addressTakenBy: string | null;
   requiredMissing: boolean;
   withData: boolean;
+  needsBackup: boolean;
   snapshot: string;
   snapshotsLoaded: boolean;
   snapshotCount: number;
@@ -109,7 +108,7 @@ export function installBlocker(input: BlockerInput): string | null {
     return `That web address already belongs to ${input.addressTakenBy}. Pick another.`;
   }
   if (input.requiredMissing) return "Fill in everything marked required.";
-  if (input.withData) {
+  if (input.withData && input.needsBackup) {
     if (input.snapshotsLoaded && input.snapshotCount === 0) {
       return "There is no backup to copy data from yet.";
     }
