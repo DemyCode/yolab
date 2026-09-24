@@ -139,7 +139,12 @@ pub(crate) async fn backups_blocked() -> Option<String> {
     };
     match lost.await {
         Ok(lost) => blocked_by_loss(&lost).map(str::to_string),
-        Err(e) => Some(format!("cannot tell whether storage is healthy ({e:#})")),
+        Err(e) => {
+            tracing::warn!(
+                "cannot tell whether storage is healthy ({e:#}) — backing up anyway rather than stopping"
+            );
+            None
+        }
     }
 }
 

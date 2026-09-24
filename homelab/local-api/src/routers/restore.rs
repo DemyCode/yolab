@@ -383,6 +383,47 @@ async fn restic_json(
     })?))
 }
 
+pub(crate) async fn restore_points(
+    cfg: &BackupConfig,
+    namespace: &str,
+) -> anyhow::Result<Vec<AppVersion>> {
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock("cluster-backup").await;
+    let Some(snapshots) = restic_json(
+        &repo,
+        cfg,
+        &[
+            "snapshots",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+        ],
+    )
+    .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let pattern = format!("{namespace}.yaml");
+    let found = restic_json(
+        &repo,
+        cfg,
+        &[
+            "find",
+            "--no-lock",
+            "--json",
+            "--tag",
+            "cluster-backup",
+            &pattern,
+        ],
+    )
+    .await?
+    .unwrap_or(Value::Null);
+    Ok(versions_by_app(&snapshots, &found)
+        .remove(namespace)
+        .unwrap_or_default())
+}
+
 fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<AppVersion>> {
     let listed: Vec<(String, chrono::DateTime<Utc>, String)> = snapshots
         .as_array()
@@ -413,7 +454,7 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
                 .as_str()
                 .and_then(|p| p.rsplit('/').next())
                 .and_then(|file| file.strip_suffix(".yaml"))
-                .filter(|ns| !ns.is_empty())
+                .filter(|ns| crate::routers::install::is_app_namespace(ns))
             else {
                 continue;
             };
@@ -437,11 +478,21 @@ fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<App
         .collect()
 }
 
-pub(crate) async fn install_from_backup(
+pub(crate) struct BackupPayload {
+    cfg: BackupConfig,
+    snapshot_id: String,
+    source_namespace: String,
+    app_id: String,
+    objects: Value,
+    volumes: Vec<(CatalogPvc, Option<String>)>,
+}
+
+pub(crate) async fn backup_payload(
     source_namespace: &str,
     snapshot_id: &str,
-    target: Option<(&str, serde_json::Map<String, Value>)>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BackupPayload> {
+    crate::routers::install::check_backup_ref(source_namespace, snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let Some(cfg) = load_master_config().await? else {
         anyhow::bail!("backup not configured");
     };
@@ -464,17 +515,7 @@ pub(crate) async fn install_from_backup(
     else {
         anyhow::bail!("backup {snapshot_id} has no saved settings for {source_namespace}");
     };
-    let objects_raw = tokio::fs::read(&path).await?;
-    let objects: Value = serde_json::from_slice(&objects_raw)?;
-
-    let (instance_name, config) = match target {
-        Some((name, config)) => (name.to_string(), config),
-        None => (
-            app.instance_name.clone(),
-            saved_config(&objects).unwrap_or_default(),
-        ),
-    };
-    let dest_namespace = format!("yolab-{instance_name}");
+    let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
     let restore_as_of = snapshot_time(&repo, &cfg, snapshot_id).await;
 
     let mut volumes = Vec::new();
@@ -487,7 +528,7 @@ pub(crate) async fn install_from_backup(
             restore_as_of.as_deref(),
         ) {
             VolumePlan::NoBackup => tracing::warn!(
-                "install {dest_namespace} from backup: {} was never backed up — the chart creates it empty",
+                "{source_namespace}/{} was never backed up — the chart creates it empty",
                 pvc.name
             ),
             VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
@@ -495,59 +536,64 @@ pub(crate) async fn install_from_backup(
         }
     }
 
-    let install =
-        crate::routers::apps::prepare_install(&app.app_id, &instance_name, &config).await?;
-    let (id, _, _guard) = begin(&dest_namespace, snapshot_id).await?;
+    Ok(BackupPayload {
+        cfg,
+        snapshot_id: snapshot_id.to_string(),
+        source_namespace: source_namespace.to_string(),
+        app_id: app.app_id,
+        objects,
+        volumes,
+    })
+}
 
-    let mut filled = Ok(());
-    for (pvc, as_of) in &volumes {
-        filled = fill_volume(
-            &dest_namespace,
-            source_namespace,
-            &instance_name,
-            pvc,
-            &cfg,
-            as_of.as_deref(),
-        )
-        .await;
-        if filled.is_err() {
-            break;
-        }
+impl BackupPayload {
+    pub(crate) fn app_id(&self) -> &str {
+        &self.app_id
     }
-    if let Err(e) = filled {
-        crate::kubectl::run(&["delete", "namespace", &dest_namespace, "--wait=false"])
+
+    pub(crate) async fn fill_volumes(
+        &self,
+        dest_namespace: &str,
+        instance_name: &str,
+    ) -> anyhow::Result<()> {
+        let (id, _, _guard) = begin(dest_namespace, &self.snapshot_id).await?;
+        let mut outcome = Ok(());
+        for (pvc, as_of) in &self.volumes {
+            outcome = fill_volume(
+                dest_namespace,
+                &self.source_namespace,
+                instance_name,
+                pvc,
+                &self.cfg,
+                as_of.as_deref(),
+            )
+            .await;
+            if outcome.is_err() {
+                break;
+            }
+        }
+        let recorded = match &outcome {
+            Ok(()) => Ok(!self.volumes.is_empty()),
+            Err(e) => Err(anyhow::anyhow!("{e}")),
+        };
+        record_done(&id, &recorded).await;
+        outcome
+    }
+
+    pub(crate) async fn reapply(&self) -> anyhow::Result<()> {
+        let Some(objects) = objects_to_reapply(&self.objects) else {
+            return Ok(());
+        };
+        kubectl_apply(&objects.to_string())
             .await
-            .warn_on_err(format!(
-                "install {dest_namespace} from backup failed; remove its namespace"
-            ));
-        let failed = Err(e);
-        record_done(&id, &failed).await;
-        return failed.map(|_: bool| ());
+            .map_err(|e| anyhow::anyhow!("apply {}.yaml: {e}", self.source_namespace))
     }
-
-    let result = async {
-        install.run().await?;
-        if let Some(reapply) = objects_to_reapply(&objects) {
-            kubectl_apply(&reapply.to_string())
-                .await
-                .map_err(|e| anyhow::anyhow!("apply {source_namespace}.yaml: {e}"))?;
-        }
-        anyhow::Ok(!volumes.is_empty())
-    }
-    .await;
-    record_done(&id, &result).await;
-    result?;
-    tracing::info!("install {dest_namespace} from backup {snapshot_id}: done");
-
-    crate::routers::backups::setup_namespace_backup(&dest_namespace).await?;
-    Ok(())
 }
 
 #[derive(Debug, PartialEq)]
 struct CatalogApp {
     namespace: String,
     app_id: String,
-    instance_name: String,
 }
 
 fn catalog_apps(catalog: &Value) -> Vec<CatalogApp> {
@@ -561,10 +607,6 @@ fn catalog_apps(catalog: &Value) -> Vec<CatalogApp> {
             Some(CatalogApp {
                 namespace: namespace.to_string(),
                 app_id: app_id.to_string(),
-                instance_name: s["instance_name"]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| namespace.trim_start_matches("yolab-").to_string()),
             })
         })
         .collect()
@@ -586,6 +628,8 @@ pub(crate) async fn definition_from_backup(
     namespace: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<crate::routers::apps::AppDefinition> {
+    crate::routers::install::check_backup_ref(namespace, snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let Some(cfg) = load_master_config().await? else {
         anyhow::bail!("backup not configured");
     };
@@ -1401,12 +1445,10 @@ mod tests {
                 CatalogApp {
                     namespace: "yolab-fb-pgxw".into(),
                     app_id: "filebrowser".into(),
-                    instance_name: "fb-pgxw".into(),
                 },
                 CatalogApp {
                     namespace: "yolab-nameless".into(),
                     app_id: "gitea".into(),
-                    instance_name: "nameless".into(),
                 },
             ]
         );

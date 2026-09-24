@@ -325,6 +325,109 @@ pub async fn setup_namespace_backup(namespace: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppBackup {
+    pub namespace: String,
+    pub instance_name: String,
+    pub app_id: String,
+    pub enabled: bool,
+    pub schedule: String,
+    pub state: String,
+    pub last_ok_at: Option<String>,
+    pub error: Option<String>,
+}
+
+pub(crate) fn app_backup_state(set: Option<&serde_json::Value>) -> (String, Option<String>) {
+    let Some(set) = set else {
+        return ("never".to_string(), None);
+    };
+    let state = set["state"].as_str().unwrap_or("");
+    let error = set["error"]
+        .as_str()
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    match state {
+        "queued" => ("queued".to_string(), None),
+        "running" => ("running".to_string(), None),
+        "restorable" => ("ok".to_string(), None),
+        _ => ("failed".to_string(), error),
+    }
+}
+
+fn app_backup_json(app: &AppBackup) -> serde_json::Value {
+    serde_json::json!({
+        "namespace": app.namespace,
+        "instance_name": app.instance_name,
+        "app_id": app.app_id,
+        "enabled": app.enabled,
+        "schedule": app.schedule,
+        "state": app.state,
+        "last_ok_at": app.last_ok_at,
+        "error": app.error,
+    })
+}
+
+pub async fn list_protected_apps(
+    State(_state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    let configured = read_master_config().await.is_some();
+    if !configured {
+        return Ok(Json(serde_json::json!({ "configured": false, "apps": [] })));
+    }
+    let sets = backup::list().await.unwrap_or_default();
+    let mut apps = Vec::new();
+    for namespace in list_managed_namespaces().await? {
+        let Some(def) = crate::routers::apps::read_definition_opt(&namespace).await else {
+            continue;
+        };
+        let newest = sets
+            .iter()
+            .find(|s| s["namespace"].as_str() == Some(namespace.as_str()));
+        let (state, error) = app_backup_state(newest);
+        let last_ok_at = sets
+            .iter()
+            .find(|s| {
+                s["namespace"].as_str() == Some(namespace.as_str())
+                    && s["state"].as_str() == Some("restorable")
+            })
+            .and_then(|s| s["finished_at"].as_str())
+            .map(str::to_string);
+        apps.push(AppBackup {
+            instance_name: def.instance_name.clone(),
+            app_id: def.app_id.clone(),
+            enabled: def.backup.enabled,
+            schedule: def.backup.schedule.clone(),
+            namespace,
+            state,
+            last_ok_at,
+            error,
+        });
+    }
+    apps.sort_by(|a, b| a.instance_name.cmp(&b.instance_name));
+    let apps: Vec<serde_json::Value> = apps.iter().map(app_backup_json).collect();
+    Ok(Json(
+        serde_json::json!({ "configured": true, "apps": apps }),
+    ))
+}
+
+pub async fn app_restore_points(
+    State(_state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    if !crate::routers::install::is_app_namespace(&namespace) {
+        return Err(anyhow::anyhow!("{namespace} is not an app namespace").into());
+    }
+    let Some(cfg) = read_master_config().await else {
+        return Ok(Json(
+            serde_json::json!({ "configured": false, "points": [] }),
+        ));
+    };
+    let points = restore::restore_points(&cfg, &namespace).await?;
+    Ok(Json(
+        serde_json::json!({ "configured": true, "points": points }),
+    ))
+}
+
 pub struct LockSweeperController;
 
 impl crate::runtime::Controller for LockSweeperController {

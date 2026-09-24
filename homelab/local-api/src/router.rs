@@ -58,6 +58,11 @@ pub fn build_router(state: AppState) -> Router {
             "/api/backups/apps/:namespace/definition",
             get(backups::app_definition_from_backup),
         )
+        .route("/api/backups/protected", get(backups::list_protected_apps))
+        .route(
+            "/api/backups/apps/:namespace/points",
+            get(backups::app_restore_points),
+        )
         .route("/api/logs", get(logs::list_logs))
         .route("/api/disks", get(disks::list_disks))
         .route(
