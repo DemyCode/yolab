@@ -1,12 +1,10 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { History } from "lucide-react";
+import { ChevronRight, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
-import { api } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
+import { RestorePointList } from "@/components/RestorePoints";
+import { useRestorePoints } from "@/lib/useRestorePoints";
 
 interface BackedUpApps {
   configured: boolean;
@@ -18,73 +16,49 @@ interface BackedUpApps {
   }[];
 }
 
-function AppRow({ app }: { app: BackedUpApps["apps"][number] }) {
-  const navigate = useNavigate();
-  const [snapshot, setSnapshot] = useState(app.versions[0]?.snapshot_id ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+type BackedUpApp = BackedUpApps["apps"][number];
 
-  async function restore() {
-    setBusy(true);
-    setError(null);
-    try {
-      const def = await api.get<{ app_id: string }>(
-        `/api/backups/apps/${app.namespace}/definition?snapshot_id=${encodeURIComponent(snapshot)}`,
-      );
-      navigate(
-        `/add/${def.app_id}?restore=${encodeURIComponent(app.namespace)}&snapshot=${encodeURIComponent(snapshot)}`,
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read that backup");
-    } finally {
-      setBusy(false);
-    }
-  }
-
+function AppPoints({ app, onBack }: { app: BackedUpApp; onBack: () => void }) {
+  const { points, error } = useRestorePoints(app.namespace);
   return (
-    <li className="space-y-2 border-b border-border py-3 last:border-0">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-fg">{app.instance_name}</span>
-        {app.installed ? (
-          <span className="text-sm text-fg-muted">Installed</span>
-        ) : null}
-      </div>
-      {!app.installed && (
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Select
-            value={snapshot}
-            onChange={(e) => setSnapshot(e.target.value)}
-            aria-label={`Version of ${app.instance_name}`}
-          >
-            {app.versions.map((v, i) => (
-              <option key={v.snapshot_id} value={v.snapshot_id}>
-                {i === 0 ? "Latest — " : ""}
-                {formatDateTime(v.time)}
-              </option>
-            ))}
-          </Select>
-          <Button
-            onClick={() => void restore()}
-            loading={busy}
-            disabled={!snapshot}
-          >
-            Restore
-          </Button>
-        </div>
+    <div className="space-y-3">
+      <button
+        onClick={onBack}
+        className="text-sm text-fg-muted underline underline-offset-2 hover:text-fg"
+      >
+        All backed-up apps
+      </button>
+      {app.installed && (
+        <p className="text-xs text-fg-muted">
+          Restoring here adds a separate copy alongside the one you already run.
+          To put this backup back into the app you are running, open it and use
+          Restore there.
+        </p>
       )}
-      {error && <p className="text-sm text-danger">{error}</p>}
-    </li>
+      <RestorePointList
+        namespace={app.namespace}
+        points={points}
+        error={error}
+        emptyHint="No backup of this app could be read."
+      />
+    </div>
   );
 }
 
 export function AddFromBackupButton() {
   const [open, setOpen] = useState(false);
+  const [chosen, setChosen] = useState<BackedUpApp | null>(null);
   const res = useApi<BackedUpApps>(
     open ? "backed-up-apps" : null,
     "/api/backups/apps",
-    { pollMs: 5_000 },
   );
   const data = res.data;
+
+  function close() {
+    setOpen(false);
+    setChosen(null);
+  }
+
   return (
     <>
       <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
@@ -93,35 +67,60 @@ export function AddFromBackupButton() {
       </Button>
       <Sheet
         open={open}
-        onClose={() => setOpen(false)}
-        title="Add from backup"
-        subtitle="Bring an app back with its settings and files, as they were at the moment you pick."
+        onClose={close}
+        title={chosen ? chosen.instance_name : "Add from backup"}
+        subtitle={
+          chosen
+            ? "Pick the moment you want back."
+            : "Bring an app back as it was, with its settings and files."
+        }
         wide
       >
-        {res.loading && (
-          <p className="text-sm text-fg-muted">Reading your backups…</p>
-        )}
-        {res.error && !data && (
-          <p className="text-sm text-danger">
-            Your backups could not be read: {res.error}
-          </p>
-        )}
-        {data && !data.configured && (
-          <p className="text-sm text-fg-muted">
-            Backups are not turned on yet.
-          </p>
-        )}
-        {data && data.configured && data.apps.length === 0 && (
-          <p className="text-sm text-fg-muted">
-            No app has been backed up yet.
-          </p>
-        )}
-        {data && data.apps.length > 0 && (
-          <ul>
-            {data.apps.map((app) => (
-              <AppRow key={app.namespace} app={app} />
-            ))}
-          </ul>
+        {chosen ? (
+          <AppPoints app={chosen} onBack={() => setChosen(null)} />
+        ) : (
+          <>
+            {res.loading && !data && (
+              <p className="text-sm text-fg-muted">Reading your backups…</p>
+            )}
+            {res.error && !data && (
+              <p className="text-sm text-danger">
+                Your backups could not be read: {res.error}
+              </p>
+            )}
+            {data && !data.configured && (
+              <p className="text-sm text-fg-muted">Backups are not on yet.</p>
+            )}
+            {data?.configured && data.apps.length === 0 && (
+              <p className="text-sm text-fg-muted">
+                No app has been backed up yet.
+              </p>
+            )}
+            {data && data.apps.length > 0 && (
+              <ul className="divide-y divide-border">
+                {data.apps.map((app) => (
+                  <li key={app.namespace}>
+                    <button
+                      onClick={() => setChosen(app)}
+                      className="flex w-full items-center justify-between gap-3 py-3 text-left"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-fg">
+                          {app.instance_name}
+                        </div>
+                        <div className="text-xs text-fg-muted">
+                          {app.versions.length} point
+                          {app.versions.length === 1 ? "" : "s"} in time
+                          {app.installed ? " · already installed" : ""}
+                        </div>
+                      </div>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-fg-subtle" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </Sheet>
     </>

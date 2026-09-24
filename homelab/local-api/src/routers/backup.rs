@@ -78,7 +78,7 @@ impl Claimed for BackupSet {
         &self.id
     }
     fn is_running(&self) -> bool {
-        self.state == "running"
+        self.state == RUNNING
     }
     fn claim(&self) -> &Claim {
         &self.claim
@@ -88,8 +88,14 @@ impl Claimed for BackupSet {
     }
 }
 
+pub(crate) const QUEUED: &str = "queued";
+pub(crate) const RUNNING: &str = "running";
+pub(crate) const SUCCEEDED: &str = "succeeded";
+pub(crate) const FAILED: &str = "failed";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SetState {
+    Queued,
     Running,
     Restorable,
     Crashed,
@@ -97,6 +103,7 @@ pub(crate) enum SetState {
 
 fn state_str(s: SetState) -> &'static str {
     match s {
+        SetState::Queued => "queued",
         SetState::Running => "running",
         SetState::Restorable => "restorable",
         SetState::Crashed => "crashed",
@@ -117,26 +124,6 @@ async fn read_sets() -> anyhow::Result<Vec<BackupSet>> {
     Ok(SETS.read(&RealHost).await?)
 }
 
-async fn record_running(id: &str, triggered_by: &str, target: &BackupTarget) -> anyhow::Result<()> {
-    let set = BackupSet {
-        id: id.to_string(),
-        triggered_by: triggered_by.to_string(),
-        namespace: target.namespace().to_string(),
-        started_at: Utc::now().to_rfc3339(),
-        state: "running".to_string(),
-        finished_at: None,
-        snapshot_id: None,
-        error: None,
-        services: vec![],
-        claim: Claim::mine(Utc::now()),
-    };
-    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| {
-        upsert(sets, set.clone())
-    })
-    .await?;
-    Ok(())
-}
-
 async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSummary>)>) {
     let finished_at = Utc::now().to_rfc3339();
     let written = SETS
@@ -147,13 +134,13 @@ async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSumma
             s.finished_at = Some(finished_at.clone());
             match result {
                 Ok((snapshot_id, services)) => {
-                    s.state = "succeeded".to_string();
+                    s.state = SUCCEEDED.to_string();
                     s.snapshot_id = Some(snapshot_id.clone());
                     s.error = None;
                     s.services = services.clone();
                 }
                 Err(e) => {
-                    s.state = "failed".to_string();
+                    s.state = FAILED.to_string();
                     s.snapshot_id = None;
                     s.error = Some(e.to_string());
                     s.services = vec![];
@@ -168,8 +155,9 @@ async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSumma
 
 fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
     match set.state.as_str() {
-        "succeeded" => SetState::Restorable,
-        "failed" => SetState::Crashed,
+        SUCCEEDED => SetState::Restorable,
+        FAILED => SetState::Crashed,
+        QUEUED => SetState::Queued,
         _ if liveness.is_live() => SetState::Running,
         _ => SetState::Crashed,
     }
@@ -177,7 +165,7 @@ fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
 
 fn last_ok_for(sets: &[BackupSet], namespace: &str) -> Option<DateTime<Utc>> {
     sets.iter()
-        .filter(|s| s.namespace == namespace && s.state == "succeeded")
+        .filter(|s| s.namespace == namespace && s.state == SUCCEEDED)
         .find_map(|s| s.finished_at.as_deref())
         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
         .map(|t| t.with_timezone(&Utc))
@@ -188,40 +176,142 @@ fn running_for(sets: &[BackupSet], namespace: &str) -> bool {
         .any(|s| s.namespace == namespace && s.is_running() && liveness_of(s).is_live())
 }
 
+pub(crate) fn queued_for<'a>(sets: &'a [BackupSet], namespace: &str) -> Option<&'a BackupSet> {
+    sets.iter()
+        .find(|s| s.namespace == namespace && s.state == QUEUED)
+}
+
+fn anything_running(sets: &[BackupSet]) -> bool {
+    sets.iter()
+        .any(|s| s.is_running() && liveness_of(s).is_live())
+}
+
+pub(crate) fn next_in_line(sets: &[BackupSet]) -> Option<&BackupSet> {
+    sets.iter()
+        .filter(|s| s.state == QUEUED)
+        .min_by(|a, b| a.started_at.cmp(&b.started_at))
+}
+
 const DR_SCHEDULE: &str = "0 4 * * *";
 
 pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
-    start_target(BackupTarget::Cluster, triggered_by).await
+    enqueue(BackupTarget::Cluster, triggered_by).await
 }
 
 pub(crate) async fn start_app(namespace: &str, triggered_by: &str) -> anyhow::Result<String> {
-    start_target(BackupTarget::App(namespace.to_string()), triggered_by).await
+    enqueue(BackupTarget::App(namespace.to_string()), triggered_by).await
 }
 
-async fn start_target(target: BackupTarget, triggered_by: &str) -> anyhow::Result<String> {
-    let Some(cfg) = read_master_config().await else {
+async fn enqueue(target: BackupTarget, triggered_by: &str) -> anyhow::Result<String> {
+    if read_master_config().await.is_none() {
         anyhow::bail!("backup not configured");
-    };
+    }
     if let Some(why) = crate::heal::backups_blocked().await {
         anyhow::bail!("not backing up: {why}");
     }
-    let id = new_id();
-    let guard = IN_FLIGHT.claim(&id);
-    record_running(&id, triggered_by, &target).await?;
 
-    let task_id = id.clone();
+    let namespace = target.namespace().to_string();
+    let id = new_id();
+    let queued = BackupSet {
+        id: id.clone(),
+        triggered_by: triggered_by.to_string(),
+        namespace: namespace.clone(),
+        started_at: Utc::now().to_rfc3339(),
+        state: QUEUED.to_string(),
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+        services: vec![],
+        claim: Claim::default(),
+    };
+
+    let mut existing = None;
+    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| {
+        existing = queued_for(sets, &namespace)
+            .map(|s| s.id.clone())
+            .or_else(|| {
+                sets.iter()
+                    .find(|s| {
+                        s.namespace == namespace && s.is_running() && liveness_of(s).is_live()
+                    })
+                    .map(|s| s.id.clone())
+            });
+        if existing.is_none() {
+            upsert(sets, queued.clone());
+        }
+    })
+    .await?;
+
+    crate::runtime::wake("backup-scheduler");
+    Ok(existing.unwrap_or(id))
+}
+
+pub(crate) struct Promoted {
+    id: String,
+    target: BackupTarget,
+    guard: ops::InFlightGuard,
+}
+
+async fn promote_next() -> anyhow::Result<Option<Promoted>> {
+    let sets = read_sets().await?;
+    if anything_running(&sets) {
+        return Ok(None);
+    }
+    let Some(next) = next_in_line(&sets) else {
+        return Ok(None);
+    };
+    let (id, target) = (next.id.clone(), target_of(next));
+
+    let guard = IN_FLIGHT.claim(&id);
+    let mut won = false;
+    let claim_id = id.clone();
+    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| {
+        won = false;
+        if anything_running(sets) {
+            return;
+        }
+        let Some(s) = sets
+            .iter_mut()
+            .find(|s| s.id == claim_id && s.state == QUEUED)
+        else {
+            return;
+        };
+        s.state = RUNNING.to_string();
+        s.started_at = Utc::now().to_rfc3339();
+        s.claim = Claim::mine(Utc::now());
+        won = true;
+    })
+    .await?;
+
+    if !won {
+        drop(guard);
+        return Ok(None);
+    }
+    Ok(Some(Promoted { id, target, guard }))
+}
+
+fn target_of(set: &BackupSet) -> BackupTarget {
+    if set.namespace.is_empty() {
+        BackupTarget::Cluster
+    } else {
+        BackupTarget::App(set.namespace.clone())
+    }
+}
+
+fn spawn_run(cfg: BackupConfig, promoted: Promoted) {
+    let Promoted { id, target, guard } = promoted;
     tokio::spawn(async move {
         let _guard = guard;
-        let result = run_set(&cfg, &target).await;
-        record_done(&task_id, &result).await;
+        let result = run_set(&cfg, &target, &id).await;
+        record_done(&id, &result).await;
+        crate::runtime::wake("backup-scheduler");
     });
-
-    Ok(id)
 }
 
 async fn run_set(
     cfg: &BackupConfig,
     target: &BackupTarget,
+    run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let pvcs: Vec<PvcInfo> = list_user_pvcs()
         .await?
@@ -272,7 +362,7 @@ async fn run_set(
         }
     }
 
-    let (snapshot_id, services) = snapshot_cluster(cfg, &pinned, target).await?;
+    let (snapshot_id, services) = snapshot_cluster(cfg, &pinned, target, run_id).await?;
 
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock("cluster-backup").await;
@@ -457,12 +547,46 @@ fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> V
     v
 }
 
+pub(crate) const STAGING_ROOT: &str = "/var/lib/yolab/backup-staging";
+
+pub(crate) fn staging_dir(root: &str, run_id: &str) -> String {
+    format!("{root}/{run_id}")
+}
+
+pub(crate) fn stale_staging_dirs(present: &[String], keep: &[String]) -> Vec<String> {
+    present
+        .iter()
+        .filter(|name| !keep.contains(name))
+        .cloned()
+        .collect()
+}
+
+async fn sweep_staging(keep: &[String]) {
+    let Ok(mut entries) = tokio::fs::read_dir(STAGING_ROOT).await else {
+        return;
+    };
+    let mut present = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            present.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    for name in stale_staging_dirs(&present, keep) {
+        tokio::fs::remove_dir_all(staging_dir(STAGING_ROOT, &name))
+            .await
+            .debug_on_err(format!(
+                "backup: clear the leftover staging directory {name}"
+            ));
+    }
+}
+
 async fn snapshot_cluster(
     cfg: &BackupConfig,
     pinned: &PinnedVolumes,
     target: &BackupTarget,
+    run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    let tmp_dir = "/var/lib/yolab/backup-staging".to_string();
+    let tmp_dir = staging_dir(STAGING_ROOT, run_id);
 
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
@@ -903,7 +1027,7 @@ pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool
         if s.is_running() && liveness_of(s).is_live() {
             e.1 = true;
         }
-        if e.0.is_none() && s.state == "succeeded" {
+        if e.0.is_none() && s.state == SUCCEEDED {
             e.0 = s.finished_at.clone();
         }
     }
@@ -913,7 +1037,7 @@ pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool
 pub(crate) async fn last_ok_age_hours() -> Option<i64> {
     let sets = read_sets().await.ok()?;
     sets.iter()
-        .find(|s| s.state == "succeeded")
+        .find(|s| s.state == SUCCEEDED)
         .and_then(|s| s.finished_at.as_deref())
         .and_then(hours_since)
 }
@@ -956,64 +1080,65 @@ impl Controller for BackupSchedulerController {
         Duration::from_secs(60)
     }
     async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
-        if read_master_config().await.is_none() {
+        let Some(cfg) = read_master_config().await else {
             return Ok(Tick::Idle("backups are not enabled".into()));
-        }
+        };
         let sets = read_sets().await?;
         let now = Utc::now();
 
-        let live = |s: &BackupSet| s.is_running() && liveness_of(s).is_live();
-        let cluster_running = sets.iter().any(|s| s.namespace.is_empty() && live(s));
-        let any_running = sets.iter().any(live);
-
-        let mut started = 0usize;
-
-        if !cluster_running {
-            for ns in list_managed_namespaces().await? {
-                if running_for(&sets, &ns) {
-                    continue;
+        let mut queued = 0usize;
+        for ns in list_managed_namespaces().await? {
+            if running_for(&sets, &ns) || queued_for(&sets, &ns).is_some() {
+                continue;
+            }
+            let Some(def) = crate::routers::apps::read_definition_opt(&ns).await else {
+                continue;
+            };
+            if !def.backup.enabled {
+                continue;
+            }
+            let Ok(schedule) = crate::cron::Cron::parse(&def.backup.schedule) else {
+                tracing::warn!(
+                    "{ns}: backup schedule {:?} is not a valid cron expression — skipping",
+                    def.backup.schedule
+                );
+                continue;
+            };
+            if !schedule.due(last_ok_for(&sets, &ns), now) {
+                continue;
+            }
+            match start_app(&ns, "schedule").await {
+                Ok(id) => {
+                    tracing::info!("backup: queued {ns} ({id})");
+                    queued += 1;
                 }
-                let Some(def) = crate::routers::apps::read_definition_opt(&ns).await else {
-                    continue;
-                };
-                if !def.backup.enabled {
-                    continue;
-                }
-                let Ok(schedule) = crate::cron::Cron::parse(&def.backup.schedule) else {
-                    tracing::warn!(
-                        "{ns}: backup schedule {:?} is not a valid cron expression — skipping",
-                        def.backup.schedule
-                    );
-                    continue;
-                };
-                if !schedule.due(last_ok_for(&sets, &ns), now) {
-                    continue;
-                }
-                match start_app(&ns, "schedule").await {
-                    Ok(id) => {
-                        tracing::info!("backup: scheduled {ns} ({id})");
-                        started += 1;
-                    }
-                    Err(e) => tracing::warn!("backup: could not schedule {ns}: {e}"),
-                }
+                Err(e) => tracing::warn!("backup: could not queue {ns}: {e}"),
             }
         }
 
-        if !any_running {
+        if queued_for(&sets, "").is_none() && !running_for(&sets, "") {
             if let Ok(schedule) = crate::cron::Cron::parse(DR_SCHEDULE) {
                 if schedule.due(last_ok_for(&sets, ""), now) {
                     match start("schedule-dr").await {
                         Ok(id) => {
-                            tracing::info!("backup: scheduled DR snapshot ({id})");
-                            started += 1;
+                            tracing::info!("backup: queued DR snapshot ({id})");
+                            queued += 1;
                         }
-                        Err(e) => tracing::warn!("backup: could not schedule DR snapshot: {e}"),
+                        Err(e) => tracing::warn!("backup: could not queue DR snapshot: {e}"),
                     }
                 }
             }
         }
 
-        if started == 0 {
+        let promoted = promote_next().await?;
+        sweep_staging(&promoted.iter().map(|p| p.id.clone()).collect::<Vec<_>>()).await;
+        let started = promoted.is_some();
+        if let Some(promoted) = promoted {
+            tracing::info!("backup: starting {}", promoted.id);
+            spawn_run(cfg, promoted);
+        }
+
+        if queued == 0 && !started {
             Ok(Tick::Idle("no app is due for a backup".into()))
         } else {
             Ok(Tick::Done)
@@ -1302,5 +1427,103 @@ mod tests {
         assert_eq!(summary[0].pvc_count, 2);
         assert_eq!(summary[1].instance_name, "filebrowser");
         assert_eq!(summary[1].pvc_count, 0);
+    }
+
+    fn queued_at(id: &str, namespace: &str, started_at: &str) -> BackupSet {
+        let mut s = set(id, QUEUED);
+        s.namespace = namespace.into();
+        s.started_at = started_at.into();
+        s.finished_at = None;
+        s.claim = Claim::default();
+        s
+    }
+
+    #[test]
+    fn a_queued_set_reads_as_waiting_not_as_a_failure() {
+        assert_eq!(
+            classify(
+                &queued_at("a", "yolab-a", "2026-01-01T00:00:00Z"),
+                Liveness::Abandoned
+            ),
+            SetState::Queued,
+            "nobody drives a queued set yet — that is not a crash"
+        );
+        assert_eq!(state_str(SetState::Queued), "queued");
+    }
+
+    #[test]
+    fn the_oldest_queued_set_goes_first() {
+        let sets = vec![
+            queued_at("newer", "yolab-b", "2026-01-01T03:00:00Z"),
+            queued_at("older", "yolab-a", "2026-01-01T01:00:00Z"),
+            queued_at("middle", "yolab-c", "2026-01-01T02:00:00Z"),
+        ];
+        assert_eq!(next_in_line(&sets).map(|s| s.id.as_str()), Some("older"));
+    }
+
+    #[test]
+    fn nothing_is_in_line_when_nothing_is_queued() {
+        assert!(next_in_line(&[]).is_none());
+        assert!(next_in_line(&[set("a", SUCCEEDED), set("b", RUNNING)]).is_none());
+    }
+
+    #[test]
+    fn a_queued_set_is_found_by_its_namespace_so_it_is_not_queued_twice() {
+        let sets = vec![queued_at("a", "yolab-a", "2026-01-01T00:00:00Z")];
+        assert_eq!(
+            queued_for(&sets, "yolab-a").map(|s| s.id.as_str()),
+            Some("a")
+        );
+        assert!(queued_for(&sets, "yolab-b").is_none());
+    }
+
+    #[test]
+    fn a_cluster_run_is_queued_under_the_empty_namespace() {
+        let sets = vec![queued_at("dr", "", "2026-01-01T00:00:00Z")];
+        assert!(queued_for(&sets, "").is_some());
+        assert!(queued_for(&sets, "yolab-a").is_none());
+    }
+
+    #[test]
+    fn a_set_carries_enough_to_know_what_to_back_up() {
+        assert_eq!(target_of(&queued_at("dr", "", "t")), BackupTarget::Cluster);
+        assert_eq!(
+            target_of(&queued_at("a", "yolab-a", "t")),
+            BackupTarget::App("yolab-a".into())
+        );
+    }
+
+    #[test]
+    fn every_run_stages_into_its_own_directory() {
+        assert_eq!(
+            staging_dir("/var/lib/yolab/backup-staging", "bk-1"),
+            "/var/lib/yolab/backup-staging/bk-1"
+        );
+        assert_ne!(
+            staging_dir(STAGING_ROOT, "bk-1"),
+            staging_dir(STAGING_ROOT, "bk-2"),
+            "two runs must never share a staging directory"
+        );
+    }
+
+    #[test]
+    fn leftovers_from_dead_runs_are_swept_and_the_live_one_is_kept() {
+        let present = vec!["bk-dead".to_string(), "bk-live".to_string()];
+        assert_eq!(
+            stale_staging_dirs(&present, &["bk-live".to_string()]),
+            vec!["bk-dead".to_string()]
+        );
+    }
+
+    #[test]
+    fn nothing_is_swept_out_from_under_a_running_backup() {
+        let present = vec!["bk-live".to_string()];
+        assert!(stale_staging_dirs(&present, &["bk-live".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn with_no_run_in_flight_every_leftover_goes() {
+        let present = vec!["bk-1".to_string(), "bk-2".to_string()];
+        assert_eq!(stale_staging_dirs(&present, &[]).len(), 2);
     }
 }

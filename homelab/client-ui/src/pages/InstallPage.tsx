@@ -19,7 +19,17 @@ import Form from "@rjsf/core";
 import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { templates, widgets } from "@/components/form/registry";
-import { nextInstanceName } from "@/lib/apps";
+import {
+  addressTakenBy,
+  copiesDataByDefault,
+  installBlocker,
+  installOrigin,
+  installSource,
+  keepsSourceAddress,
+  phaseFrom,
+  snapshotNamespace,
+  suggestedName,
+} from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
@@ -56,16 +66,6 @@ function configSchema(schema: object | undefined): ConfigSchema {
   return s.properties ? s : {};
 }
 
-function phaseFrom(line: string): string | null {
-  const l = line.toLowerCase();
-  if (l.includes("namespace") || l.includes("staging")) return "Getting ready";
-  if (l.includes("tunnel") || l.includes("record"))
-    return "Reserving your web address";
-  if (l.includes("pending-install") || l.includes("helm")) return "Installing";
-  if (l.includes("deployed") || l.includes("status:")) return "Almost there";
-  return null;
-}
-
 export function InstallPage() {
   const { appId } = useParams<{ appId: string }>();
   const navigate = useNavigate();
@@ -97,48 +97,43 @@ export function InstallPage() {
   const app = fresh ?? cached;
 
   const [params] = useSearchParams();
-  const fromInstance = params.get("from");
-  const restoreNs = params.get("restore");
-  const restoreSnapshot = params.get("snapshot");
-  const isRestore = Boolean(restoreNs && restoreSnapshot);
+  const origin = useMemo(() => installOrigin(params), [params]);
   const [sourceDef, setSourceDef] = useState<AppDefinition | null>(null);
-  const [copyData, setCopyData] = useState(isRestore);
-  const [snapshots, setSnapshots] = useState<{ id: string; time: string }[]>(
-    [],
-  );
-  const [snapshot, setSnapshot] = useState(restoreSnapshot ?? "");
+  const [copyData, setCopyData] = useState(copiesDataByDefault(origin.mode));
+  const [snapshots, setSnapshots] = useState<
+    { id: string; time: string }[] | null
+  >(null);
+  const [snapshot, setSnapshot] = useState(origin.snapshot ?? "");
 
   useEffect(() => {
+    if (origin.mode === "fresh") return;
     let cancelled = false;
-    void (async () => {
-      try {
-        if (fromInstance) {
-          const d = await api.get<AppDefinition>(
-            `/api/apps/${fromInstance}/definition`,
-          );
-          if (!cancelled) setSourceDef(d);
-        } else if (restoreNs && restoreSnapshot) {
-          const d = await api.get<AppDefinition>(
-            `/api/backups/apps/${restoreNs}/definition?snapshot_id=${encodeURIComponent(restoreSnapshot)}`,
-          );
-          if (!cancelled) setSourceDef(d);
-        }
-        // eslint-disable-next-line no-empty
-      } catch {}
-    })();
+    const url =
+      origin.mode === "duplicate"
+        ? `/api/apps/${origin.fromInstance}/definition`
+        : `/api/backups/apps/${origin.namespace}/definition?snapshot_id=${encodeURIComponent(origin.snapshot ?? "")}`;
+    void api
+      .get<AppDefinition>(url)
+      .then((d) => {
+        if (!cancelled) setSourceDef(d);
+      })
+      .catch(() => {
+        if (!cancelled) setSourceDef(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [fromInstance, restoreNs, restoreSnapshot]);
+  }, [origin]);
 
+  const backupNamespace = snapshotNamespace(origin);
   useEffect(() => {
-    if (!fromInstance || !copyData) return;
+    if (!backupNamespace || !copyData) return;
     let cancelled = false;
-    void fetch(
-      `/api/backups/snapshots?namespace=${encodeURIComponent(`yolab-${fromInstance}`)}`,
-    )
-      .then((r) => r.json())
-      .then((d: { snapshots?: { id: string; time: string }[] }) => {
+    void api
+      .get<{ snapshots?: { id: string; time: string }[] }>(
+        `/api/backups/snapshots?namespace=${encodeURIComponent(backupNamespace)}`,
+      )
+      .then((d) => {
         if (cancelled) return;
         const list = (d.snapshots ?? [])
           .slice()
@@ -154,7 +149,7 @@ export function InstallPage() {
     return () => {
       cancelled = true;
     };
-  }, [fromInstance, copyData]);
+  }, [backupNamespace, copyData]);
 
   const schema = useMemo(() => configSchema(app?.schema), [app?.schema]);
   const required = useMemo(
@@ -172,9 +167,14 @@ export function InstallPage() {
   const installedOfThisApp = (apps.data ?? []).filter(
     (a) => a.app_id === appId,
   );
-  const suggestedName = nextInstanceName(appId ?? "", apps.data ?? []);
+  const suggested = suggestedName(
+    origin.mode,
+    appId ?? "",
+    sourceDef,
+    apps.data ?? [],
+  );
   const [nameEdit, setNameEdit] = useState<string | null>(null);
-  const instanceName = nameEdit ?? suggestedName;
+  const instanceName = nameEdit ?? suggested;
   const isCopy = instanceName !== appId;
 
   const addressKey = useMemo(
@@ -228,10 +228,19 @@ export function InstallPage() {
         seed[name] = prop.default;
       }
     }
-    if (sourceDef && addressKey) delete seed[addressKey];
+    if (sourceDef && addressKey && !keepsSourceAddress(origin.mode)) {
+      delete seed[addressKey];
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFormData(seed);
-  }, [appId, schema.properties, app?.uischema, sourceDef, addressKey]);
+  }, [
+    appId,
+    schema.properties,
+    app?.uischema,
+    sourceDef,
+    addressKey,
+    origin.mode,
+  ]);
 
   const values = useMemo(() => {
     if (!addressKey) return formData;
@@ -259,11 +268,17 @@ export function InstallPage() {
   const nameTaken = (apps.data ?? []).some(
     (a) => a.instance_name === instanceName,
   );
-  const blocking =
-    !instanceName ||
-    nameTaken ||
-    (copyData && !snapshot) ||
-    [...required].some((n) => !String(values[n] ?? "").trim());
+  const addressClash = addressTakenBy(subdomain, apps.data ?? []);
+  const blocker = installBlocker({
+    instanceName,
+    nameTaken,
+    addressTakenBy: addressClash,
+    requiredMissing: [...required].some((n) => !String(values[n] ?? "").trim()),
+    withData: copyData,
+    snapshot,
+    snapshotsLoaded: snapshots !== null,
+    snapshotCount: snapshots?.length ?? 0,
+  });
 
   async function install() {
     if (!app) return;
@@ -279,16 +294,7 @@ export function InstallPage() {
       }),
     );
 
-    const source = fromInstance
-      ? {
-          kind: "duplicate",
-          from_instance: fromInstance,
-          with_data: copyData,
-          snapshot_id: copyData ? snapshot : undefined,
-        }
-      : isRestore
-        ? { kind: "backup", namespace: restoreNs, snapshot_id: restoreSnapshot }
-        : undefined;
+    const source = installSource(origin, copyData, snapshot);
 
     const result = await streamEvents(
       `/api/apps/${app.id}`,
@@ -468,31 +474,34 @@ export function InstallPage() {
         </div>
       </div>
 
-      {fromInstance && (
+      {origin.mode === "duplicate" && (
         <Banner
           tone="info"
-          title={`Duplicating ${sourceDef?.instance_name ?? fromInstance}`}
+          title={`Duplicating ${sourceDef?.instance_name ?? origin.fromInstance}`}
           className="mb-5"
         >
           This creates a separate app from the same chart and settings, with its
           own name, storage and web address.{" "}
           {copyData
-            ? "Its data is copied from the backup you pick below."
-            : "Its data is not copied."}
+            ? "Its files are copied from the backup you pick below."
+            : "It starts empty — none of its files are copied."}
         </Banner>
       )}
-      {isRestore && (
+      {origin.mode === "restore" && (
         <Banner
           tone="info"
-          title={`Restoring ${sourceDef?.instance_name ?? restoreNs}`}
+          title={`Restoring ${sourceDef?.instance_name ?? origin.namespace}`}
           className="mb-5"
         >
-          This installs a fresh copy of the app and fills it from the backup you
-          picked.
+          Its settings come back from the backup, and you can change any of them
+          here before it is installed.{" "}
+          {copyData
+            ? "Its files come back from the backup you pick below."
+            : "It starts empty — none of its files come back."}
         </Banner>
       )}
 
-      {isCopy && !fromInstance && !isRestore && (
+      {isCopy && origin.mode === "fresh" && (
         <Banner
           tone="info"
           title={
@@ -571,7 +580,7 @@ export function InstallPage() {
             />
           </Field>
 
-          {fromInstance && (
+          {origin.mode !== "fresh" && (
             <div className="space-y-3 border-t border-border pt-5">
               <label className="flex items-center gap-2 text-sm text-fg">
                 <input
@@ -580,13 +589,17 @@ export function InstallPage() {
                   onChange={(e) => setCopyData(e.target.checked)}
                   className="accent-primary"
                 />
-                Copy this app&rsquo;s data too
+                {origin.mode === "duplicate"
+                  ? "Copy this app’s files too"
+                  : "Bring this app’s files back too"}
               </label>
               {copyData &&
-                (snapshots.length === 0 ? (
+                (snapshots === null ? (
+                  <p className="text-xs text-fg-muted">Looking for backups…</p>
+                ) : snapshots.length === 0 ? (
                   <p className="text-xs text-fg-muted">
-                    This app has no backup yet, so there is nothing to copy. You
-                    can install it without data, or back it up first.
+                    There is no backup of this app yet, so there is nothing to
+                    copy. Install it empty, or back it up first.
                   </p>
                 ) : (
                   <Select
@@ -612,10 +625,13 @@ export function InstallPage() {
           full
           size="lg"
           onClick={() => void install()}
-          disabled={blocking}
+          disabled={blocker !== null}
         >
           Install {app.name}
         </Button>
+        {blocker && (
+          <p className="mt-2 text-center text-sm text-fg-muted">{blocker}</p>
+        )}
       </div>
     </Page>
   );

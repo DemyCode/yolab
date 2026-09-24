@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Outcome;
+use crate::routers::install;
 use crate::{config::Config, error::Result, proc::KillOnDrop, AppState};
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
@@ -110,48 +111,7 @@ pub struct InstallRequest {
     pub instance_name: String,
     pub config: serde_json::Map<String, Value>,
     #[serde(default)]
-    pub source: Option<InstallSource>,
-}
-
-#[derive(Deserialize, Clone, Default)]
-pub struct InstallSource {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub from_instance: Option<String>,
-    #[serde(default)]
-    pub namespace: Option<String>,
-    #[serde(default)]
-    pub snapshot_id: Option<String>,
-    #[serde(default)]
-    pub with_data: bool,
-}
-
-async fn resolve_install_source(src: &InstallSource) -> anyhow::Result<(String, AppDefinition)> {
-    match src.kind.as_str() {
-        "backup" => {
-            let ns = src
-                .namespace
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("a namespace is required to restore from backup"))?;
-            let snapshot = src
-                .snapshot_id
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("a snapshot is required to restore from backup"))?;
-            let def = crate::routers::restore::definition_from_backup(&ns, &snapshot).await?;
-            Ok((ns, def))
-        }
-        "duplicate" => {
-            let from = src
-                .from_instance
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("which app should be duplicated?"))?;
-            let ns = format!("yolab-{from}");
-            let def = read_definition(&ns).await?;
-            Ok((ns, def))
-        }
-        other => anyhow::bail!("unknown install source {other:?}"),
-    }
+    pub source: Option<install::InstallSource>,
 }
 
 async fn annotate_ns(ns: &str, key: &str, value: &str) {
@@ -532,7 +492,7 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
     Some(ChartMeta { chart, schema })
 }
 
-fn chart_uischema(catalog_dir: &std::path::Path, id: &str) -> Value {
+pub(crate) fn chart_uischema(catalog_dir: &std::path::Path, id: &str) -> Value {
     if id.is_empty() {
         return Value::Null;
     }
@@ -587,51 +547,6 @@ fn build_values(
         },
     })
     .to_string()
-}
-
-fn helm_stream(
-    args: Vec<String>,
-    failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
-    async_stream::stream! {
-        let child = tokio::process::Command::new("helm")
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        let mut guard = match child {
-            Ok(c) => KillOnDrop(c),
-            Err(e) => {
-                failed.store(true, std::sync::atomic::Ordering::Relaxed);
-                yield Ok(Event::default().data(format!("[ERROR] could not run helm: {e}")));
-                return;
-            }
-        };
-        use tokio::io::AsyncBufReadExt;
-        let stdout = guard.0.stdout.take();
-        let stderr = guard.0.stderr.take();
-        let mut out = stdout.map(|s| tokio::io::BufReader::new(s).lines());
-        let mut err = stderr.map(|s| tokio::io::BufReader::new(s).lines());
-        let mut out_done = out.is_none();
-        let mut err_done = err.is_none();
-        while !out_done || !err_done {
-            tokio::select! {
-                l = async { out.as_mut().unwrap().next_line().await }, if !out_done => match l {
-                    Ok(Some(line)) => yield Ok(Event::default().data(line)),
-                    _ => out_done = true,
-                },
-                l = async { err.as_mut().unwrap().next_line().await }, if !err_done => match l {
-                    Ok(Some(line)) => yield Ok(Event::default().data(line)),
-                    _ => err_done = true,
-                },
-            }
-        }
-        let rc = guard.0.wait().await.map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-        if rc != 0 {
-            failed.store(true, std::sync::atomic::Ordering::Relaxed);
-            yield Ok(Event::default().data(format!("[ERROR] helm exited {rc}")));
-        }
-    }
 }
 
 async fn ensure_tunnel_credentials(ns: &str, tunnel_cfg: &toml::Table) -> anyhow::Result<()> {
@@ -1120,147 +1035,44 @@ async fn namespace_exists(ns: &str) -> bool {
 pub async fn install_app(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(mut body): Json<InstallRequest>,
+    Json(body): Json<InstallRequest>,
 ) -> impl IntoResponse {
-    if !body
-        .instance_name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            "instance_name must be lowercase alphanumeric and hyphens",
-        )
-            .into_response();
+    let refuse = |why: String| (StatusCode::BAD_REQUEST, why).into_response();
+
+    if !install::is_instance_name(&body.instance_name) {
+        return refuse("the name may only use lowercase letters, numbers and hyphens".into());
     }
     if let Err(e) = validate_config_values(&body.config) {
-        return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
+        return refuse(format!("invalid config: {e}"));
     }
     if !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
     }
 
+    let sources = match install::resolve_sources(body.source.as_ref()) {
+        Ok(s) => s,
+        Err(e) => return refuse(e),
+    };
+    let source_definition = match install::source_definition(&sources.config).await {
+        Ok(d) => d,
+        Err(e) => return refuse(format!("{e}")),
+    };
     let Some(instance_name) = unique_instance_name(&body.instance_name).await else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "could not derive a unique name for this app",
-        )
-            .into_response();
+        return refuse("could not derive a unique name for this app".into());
+    };
+    let plan = match install::plan(
+        &id,
+        &instance_name,
+        body.config,
+        source_definition.as_ref(),
+        sources.data,
+        &chart_uischema(&state.config.catalog_dir(), &id),
+    ) {
+        Ok(p) => p,
+        Err(e) => return refuse(e),
     };
 
-    if let Some(src) = body.source.clone() {
-        let with_data = src.kind == "backup" || (src.kind == "duplicate" && src.with_data);
-        if with_data {
-            let (source_ns, def) = match resolve_install_source(&src).await {
-                Ok(v) => v,
-                Err(e) => return (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
-            };
-            let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
-            let config = merge_credentials(body.config.clone(), &def.config, &uischema);
-            let Some(snapshot) = src.snapshot_id.clone().filter(|s| !s.is_empty()) else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "a snapshot is required to copy an app's data",
-                )
-                    .into_response();
-            };
-            let instance_name = instance_name.clone();
-            let stream = async_stream::stream! {
-                yield Ok::<_, Infallible>(Event::default().data("Restoring this app's data from backup..."));
-                match crate::routers::restore::install_from_backup(
-                    &source_ns,
-                    &snapshot,
-                    Some((instance_name.as_str(), config)),
-                )
-                .await
-                {
-                    Ok(()) => yield Ok(Event::default().data(format!(
-                        "[DONE] {id} installed with its data"
-                    ))),
-                    Err(e) => yield Ok(Event::default().data(format!("[ERROR] {e}"))),
-                }
-            };
-            return Sse::new(stream).into_response();
-        }
-        if src.kind == "duplicate" {
-            if let Ok((_, def)) = resolve_install_source(&src).await {
-                let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
-                body.config = merge_credentials(body.config, &def.config, &uischema);
-            }
-        }
-    }
-    let config = body.config;
-
-    let stream = async_stream::stream! {
-        yield Ok(Event::default().data("Preparing namespace..."));
-        let staged = match stage_install(&state.config, &id, &instance_name, &config).await {
-            Ok(s) => s,
-            Err(e) => {
-                yield Ok(Event::default().data(format!("[ERROR] {e}")));
-                return;
-            }
-        };
-        let StagedInstall {
-            ns,
-            app_id,
-            chart_repo,
-            chart_version,
-            service_name,
-            chart_dir,
-            values: tmp,
-        } = staged;
-
-        yield Ok(Event::default().data("Installing chart..."));
-        let args: Vec<String> = vec![
-            "upgrade".into(), "--install".into(), "--dependency-update".into(),
-            instance_name.clone(), chart_dir.to_string_lossy().to_string(),
-            "-n".into(), ns.clone(),
-            "--values".into(), tmp.path().to_string_lossy().to_string(),
-        ];
-        let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let s = helm_stream(args, failed.clone());
-        tokio::pin!(s);
-        use futures::StreamExt;
-        while let Some(ev) = s.next().await { yield ev; }
-        drop(tmp);
-
-        if failed.load(std::sync::atomic::Ordering::Relaxed) {
-            rollback_failed_install(&ns, &instance_name).await;
-            yield Ok(Event::default().data(format!(
-                "[ERROR] {app_id} could not be installed; nothing was left behind. The log above is helm's own."
-            )));
-            return;
-        }
-
-        let (volumes, resources) = collect_runtime(&ns).await;
-        let def = AppDefinition {
-            schema: DEFINITION_SCHEMA,
-            app_id: app_id.clone(),
-            chart_repo: chart_repo.clone(),
-            chart_version: chart_version.clone(),
-            instance_name: instance_name.clone(),
-            service_name: service_name.clone(),
-            config: config.clone(),
-            volumes,
-            resources,
-            backup: BackupPolicy::default(),
-        };
-        if let Err(e) = write_definition(&ns, &def, &chart_uischema(&state.config.catalog_dir(), &app_id)).await {
-            yield Ok(Event::default().data(format!(
-                "[ERROR] {app_id} was installed, but its settings could not be saved ({e}) — reinstall it before changing its settings"
-            )));
-            return;
-        }
-
-        if let Err(e) = crate::routers::backups::setup_namespace_backup(&ns).await {
-            yield Ok(Event::default().data(format!(
-                "[WARN] backup was not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
-            )));
-        }
-        yield Ok(Event::default().data(format!("[DONE] {app_id} installed — run 'Scan outputs' once the pod is ready")));
-    };
-
-    Sse::new(stream).into_response()
+    Sse::new(install::install_stream(state.config.clone(), plan)).into_response()
 }
 
 pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
@@ -1276,25 +1088,25 @@ pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
         .debug_on_err(format!("rollback {ns}: delete namespace"));
 }
 
-struct StagedInstall {
-    ns: String,
-    app_id: String,
-    chart_repo: String,
-    chart_version: String,
-    service_name: String,
-    chart_dir: std::path::PathBuf,
-    values: tempfile::NamedTempFile,
+pub(crate) struct StagedInstall {
+    pub(crate) ns: String,
+    pub(crate) chart_repo: String,
+    pub(crate) chart_version: String,
+    pub(crate) service_name: String,
+    pub(crate) chart_dir: std::path::PathBuf,
+    pub(crate) values: tempfile::NamedTempFile,
 }
 
-async fn stage_install(
+pub(crate) async fn stage_install(
     cfg: &Config,
     id: &str,
     instance_name: &str,
     config: &serde_json::Map<String, Value>,
+    prefer_repo: Option<&str>,
 ) -> anyhow::Result<StagedInstall> {
     let tunnel_cfg =
         tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
-    let Some((repo, chart_dir)) = crate::charts::resolve_chart(id, None).await else {
+    let Some((repo, chart_dir)) = crate::charts::resolve_chart(id, prefer_repo).await else {
         anyhow::bail!("no chart named {id} in any configured repository");
     };
     let Some(meta) = read_chart(&chart_dir) else {
@@ -1319,98 +1131,12 @@ async fn stage_install(
     .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
     Ok(StagedInstall {
         ns,
-        app_id: id.to_string(),
         chart_repo: repo,
         chart_version: meta.chart.version.clone(),
         service_name,
         chart_dir,
         values,
     })
-}
-
-pub(crate) struct PreparedInstall {
-    cfg: Config,
-    staged: StagedInstall,
-    id: String,
-    instance_name: String,
-    config: serde_json::Map<String, Value>,
-}
-
-pub(crate) async fn prepare_install(
-    id: &str,
-    instance_name: &str,
-    config: &serde_json::Map<String, Value>,
-) -> anyhow::Result<PreparedInstall> {
-    let cfg = Config::from_env();
-    let staged = stage_install(&cfg, id, instance_name, config).await?;
-    Ok(PreparedInstall {
-        cfg,
-        staged,
-        id: id.to_string(),
-        instance_name: instance_name.to_string(),
-        config: config.clone(),
-    })
-}
-
-impl PreparedInstall {
-    pub(crate) async fn run(self) -> anyhow::Result<()> {
-        let PreparedInstall {
-            cfg,
-            staged,
-            id,
-            instance_name,
-            config,
-        } = self;
-        helm_install(&cfg, &staged, &id, &instance_name, &config).await
-    }
-}
-
-async fn helm_install(
-    cfg: &Config,
-    staged: &StagedInstall,
-    id: &str,
-    instance_name: &str,
-    config: &serde_json::Map<String, Value>,
-) -> anyhow::Result<()> {
-    const HELM_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
-    let work = tokio::process::Command::new("helm")
-        .args([
-            "upgrade",
-            "--install",
-            "--dependency-update",
-            instance_name,
-            &staged.chart_dir.to_string_lossy(),
-            "-n",
-            &staged.ns,
-            "--values",
-            &staged.values.path().to_string_lossy(),
-        ])
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(HELM_INSTALL_TIMEOUT, work)
-        .await
-        .map_err(|_| anyhow::anyhow!("helm install of {instance_name} timed out"))??;
-    if !out.status.success() {
-        anyhow::bail!(
-            "helm install of {instance_name}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let (volumes, resources) = collect_runtime(&staged.ns).await;
-    let def = AppDefinition {
-        schema: DEFINITION_SCHEMA,
-        app_id: staged.app_id.clone(),
-        chart_repo: staged.chart_repo.clone(),
-        chart_version: staged.chart_version.clone(),
-        instance_name: instance_name.to_string(),
-        service_name: staged.service_name.clone(),
-        config: config.clone(),
-        volumes,
-        resources,
-        backup: BackupPolicy::default(),
-    };
-    write_definition(&staged.ns, &def, &chart_uischema(&cfg.catalog_dir(), id)).await?;
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1439,11 +1165,13 @@ pub async fn update_app(
         .as_object()
         .cloned()
         .unwrap_or_default();
-    let id = ann
-        .get(ANN_APP_ID)
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let annotation = |key: &str| {
+        ann.get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let id = annotation(ANN_APP_ID).unwrap_or_default();
     let uischema = chart_uischema(&state.config.catalog_dir(), &id);
     let stored_config = match read_config(&ns).await {
         Ok(c) => c,
@@ -1457,108 +1185,28 @@ pub async fn update_app(
     };
 
     let config = match body.and_then(|b| b.0.config) {
-        Some(mut incoming) => {
-            for field in credential_fields(&uischema) {
-                let untouched = incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
-                if untouched {
-                    match stored_config.get(&field) {
-                        Some(kept) => {
-                            incoming.insert(field, kept.clone());
-                        }
-                        None => {
-                            incoming.remove(&field);
-                        }
-                    }
-                }
-            }
-            incoming
-        }
+        Some(incoming) => merge_credentials(incoming, &stored_config, &uischema),
         None => stored_config,
     };
 
     if let Err(e) = validate_config_values(&config) {
         return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
     }
-
     if id.is_empty() || !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
     }
 
-    let existing_backup = read_definition_opt(&ns)
-        .await
-        .map(|d| d.backup)
-        .unwrap_or_default();
-
-    let stream = async_stream::stream! {
-        let Ok(tunnel_cfg) = tunnel_config(&state.config) else {
-            yield Ok(Event::default().data("[ERROR] could not read tunnel config"));
-            return;
-        };
-        let installed_repo = ann.get(ANN_CHART_REPO).and_then(|v| v.as_str()).map(String::from);
-        let Some((_, chart_dir)) = crate::charts::resolve_chart(&id, installed_repo.as_deref()).await else {
-            yield Ok(Event::default().data(format!("[ERROR] chart {id} is no longer available in {:?}", installed_repo)));
-            return;
-        };
-        let Some(meta) = read_chart(&chart_dir) else {
-            yield Ok(Event::default().data(format!("[ERROR] {id} is not a valid chart")));
-            return;
-        };
-
-        let service_name = resolve_service_name(&meta.schema, &config);
-        let values = build_values(&config, &tunnel_cfg, &service_name);
-        let tmp = match tempfile::Builder::new().suffix(".json").tempfile() {
-            Ok(t) => t,
-            Err(e) => { yield Ok(Event::default().data(format!("[ERROR] staging values: {e}"))); return; }
-        };
-        if let Err(e) = std::fs::write(tmp.path(), &values) {
-            yield Ok(Event::default().data(format!("[ERROR] write values: {e}")));
-            return;
-        }
-
-        yield Ok(Event::default().data("Upgrading release..."));
-        let args: Vec<String> = vec![
-            "upgrade".into(), "--install".into(), "--dependency-update".into(),
-            instance_name.clone(), chart_dir.to_string_lossy().to_string(),
-            "-n".into(), ns.clone(),
-            "--values".into(), tmp.path().to_string_lossy().to_string(),
-        ];
-        let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let s = helm_stream(args, failed.clone());
-        tokio::pin!(s);
-        use futures::StreamExt;
-        while let Some(ev) = s.next().await { yield ev; }
-        drop(tmp);
-
-        if failed.load(std::sync::atomic::Ordering::Relaxed) {
-            yield Ok(Event::default().data(format!(
-                "[ERROR] {id} was not updated — the release was left as it was"
-            )));
-            return;
-        }
-
-        let (volumes, resources) = collect_runtime(&ns).await;
-        let def = AppDefinition {
-            schema: DEFINITION_SCHEMA,
-            app_id: id.clone(),
-            chart_repo: installed_repo.clone().unwrap_or_default(),
-            chart_version: meta.chart.version.clone(),
-            instance_name: instance_name.clone(),
-            service_name: service_name.clone(),
-            config: config.clone(),
-            volumes,
-            resources,
-            backup: existing_backup.clone(),
-        };
-        if let Err(e) = write_definition(&ns, &def, &uischema).await {
-            yield Ok(Event::default().data(format!(
-                "[ERROR] {id} was updated, but its new settings could not be saved ({e})"
-            )));
-            return;
-        }
-        yield Ok(Event::default().data(format!("[DONE] {id} updated")));
+    let plan = install::UpgradePlan {
+        app_id: id,
+        instance_name,
+        config,
+        chart_repo: annotation(ANN_CHART_REPO),
+        backup: read_definition_opt(&ns)
+            .await
+            .map(|d| d.backup)
+            .unwrap_or_default(),
     };
-
-    Sse::new(stream).into_response()
+    Sse::new(install::upgrade_stream(state.config.clone(), plan)).into_response()
 }
 
 #[derive(Deserialize)]

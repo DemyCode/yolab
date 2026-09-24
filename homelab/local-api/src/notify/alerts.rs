@@ -140,29 +140,91 @@ fn heal_source(problems: &[&str], silent: bool) -> Source {
     }
 }
 
-fn backup_alerts(sets: &[serde_json::Value]) -> Vec<Alert> {
-    let Some(last) = sets.iter().find(|s| s["state"] != "running") else {
-        return Vec::new();
-    };
-    if last["state"] != "crashed" {
-        return Vec::new();
+const BACKUP_STALE_AFTER_HOURS: i64 = 36;
+
+fn app_label(namespace: &str) -> String {
+    if namespace.is_empty() {
+        "This machine".to_string()
+    } else {
+        namespace
+            .strip_prefix("yolab-")
+            .unwrap_or(namespace)
+            .to_string()
     }
-    let id = last["id"].as_str().unwrap_or("unknown");
-    let why = last["error"]
-        .as_str()
-        .filter(|e| !e.is_empty())
-        .unwrap_or("it did not finish");
-    vec![Alert {
-        key: format!("backup:{id}"),
-        title: "The last backup failed".into(),
-        message: why.to_string(),
-        page: "/box/backups".into(),
-    }]
+}
+
+fn newest_for<'a>(sets: &'a [serde_json::Value], namespace: &str) -> Option<&'a serde_json::Value> {
+    sets.iter()
+        .find(|s| s["namespace"].as_str().unwrap_or("") == namespace)
+}
+
+fn backup_alerts(
+    sets: &[serde_json::Value],
+    namespaces: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+    stale_after_hours: i64,
+) -> Vec<Alert> {
+    let mut alerts = Vec::new();
+    for namespace in namespaces {
+        let newest = newest_for(sets, namespace);
+        let state = newest.and_then(|s| s["state"].as_str()).unwrap_or("never");
+        if matches!(state, "running" | "queued") {
+            continue;
+        }
+        let name = app_label(namespace);
+        if state == "crashed" {
+            let why = newest
+                .and_then(|s| s["error"].as_str())
+                .filter(|e| !e.is_empty())
+                .unwrap_or("it did not finish");
+            alerts.push(Alert {
+                key: format!("backup:{namespace}"),
+                title: format!("{name} could not be backed up"),
+                message: why.to_string(),
+                page: "/box/backups".into(),
+            });
+            continue;
+        }
+        let age = newest
+            .and_then(|s| s["finished_at"].as_str())
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| (now - t.with_timezone(&chrono::Utc)).num_hours());
+        let stale = match age {
+            Some(hours) => hours >= stale_after_hours,
+            None => true,
+        };
+        if stale {
+            alerts.push(Alert {
+                key: format!("backup:{namespace}"),
+                title: format!("{name} has no recent backup"),
+                message: match age {
+                    Some(hours) => format!("The last good copy is {hours}h old."),
+                    None => "It has never been backed up.".to_string(),
+                },
+                page: "/box/backups".into(),
+            });
+        }
+    }
+    alerts
 }
 
 async fn backup_source(silent: bool) -> Source {
     let alerts = match crate::routers::backup::list().await {
-        Ok(sets) => Some(backup_alerts(&sets)),
+        Ok(sets) => match crate::routers::backup_common::list_managed_namespaces().await {
+            Ok(mut namespaces) => {
+                namespaces.push(String::new());
+                Some(backup_alerts(
+                    &sets,
+                    &namespaces,
+                    chrono::Utc::now(),
+                    BACKUP_STALE_AFTER_HOURS,
+                ))
+            }
+            Err(e) => {
+                tracing::debug!("notifier: app list unreadable: {e:#}");
+                None
+            }
+        },
         Err(e) => {
             tracing::debug!("notifier: backup records unreadable: {e:#}");
             None
@@ -332,24 +394,99 @@ mod tests {
         );
     }
 
-    #[test]
-    fn only_the_newest_finished_backup_counts() {
-        let failed_then_running = [
-            json!({"id": "bk-3", "state": "running"}),
-            json!({"id": "bk-2", "state": "crashed", "error": "S3 refused"}),
-            json!({"id": "bk-1", "state": "restorable"}),
-        ];
-        let alerts = backup_alerts(&failed_then_running);
-        assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].key, "backup:bk-2");
-        assert_eq!(alerts[0].message, "S3 refused");
+    fn at(hours_ago: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::hours(hours_ago)).to_rfc3339()
+    }
 
-        let fixed = [
-            json!({"id": "bk-4", "state": "restorable"}),
-            json!({"id": "bk-2", "state": "crashed"}),
+    fn ns(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn alerts_now(sets: &[serde_json::Value], namespaces: &[String]) -> Vec<Alert> {
+        backup_alerts(sets, namespaces, chrono::Utc::now(), 36)
+    }
+
+    #[test]
+    fn one_apps_failure_is_not_hidden_by_another_apps_success() {
+        let sets = [
+            json!({"id": "bk-2", "namespace": "yolab-b", "state": "restorable", "finished_at": at(1)}),
+            json!({"id": "bk-1", "namespace": "yolab-a", "state": "crashed", "error": "S3 refused"}),
         ];
-        assert!(backup_alerts(&fixed).is_empty());
-        assert!(backup_alerts(&[]).is_empty());
+        let alerts = alerts_now(&sets, &ns(&["yolab-a", "yolab-b"]));
+        assert_eq!(alerts.len(), 1, "b is fine, a is not");
+        assert_eq!(alerts[0].key, "backup:yolab-a");
+        assert!(alerts[0].title.contains('a'), "{}", alerts[0].title);
+        assert_eq!(alerts[0].message, "S3 refused");
+    }
+
+    #[test]
+    fn an_alert_is_keyed_by_app_so_it_clears_when_that_app_succeeds() {
+        let broken = [json!({"id": "bk-1", "namespace": "yolab-a", "state": "crashed"})];
+        let key = alerts_now(&broken, &ns(&["yolab-a"]))[0].key.clone();
+        let fixed = [
+            json!({"id": "bk-2", "namespace": "yolab-a", "state": "restorable", "finished_at": at(1)}),
+            json!({"id": "bk-1", "namespace": "yolab-a", "state": "crashed"}),
+        ];
+        assert!(alerts_now(&fixed, &ns(&["yolab-a"])).is_empty());
+        assert_eq!(
+            key, "backup:yolab-a",
+            "the same key, so the old alert clears"
+        );
+    }
+
+    #[test]
+    fn an_app_that_silently_stopped_being_backed_up_is_reported() {
+        let sets = [
+            json!({"id": "bk-1", "namespace": "yolab-a", "state": "restorable", "finished_at": at(80)}),
+        ];
+        let alerts = alerts_now(&sets, &ns(&["yolab-a"]));
+        assert_eq!(
+            alerts.len(),
+            1,
+            "a backup that stopped running is the worst case"
+        );
+        assert!(
+            alerts[0].title.contains("no recent backup"),
+            "{}",
+            alerts[0].title
+        );
+    }
+
+    #[test]
+    fn an_app_that_was_never_backed_up_at_all_is_reported() {
+        let alerts = alerts_now(&[], &ns(&["yolab-a"]));
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].message.contains("never"), "{}", alerts[0].message);
+    }
+
+    #[test]
+    fn a_recent_success_raises_nothing() {
+        let sets = [
+            json!({"id": "bk-1", "namespace": "yolab-a", "state": "restorable", "finished_at": at(2)}),
+        ];
+        assert!(alerts_now(&sets, &ns(&["yolab-a"])).is_empty());
+    }
+
+    #[test]
+    fn an_app_being_backed_up_right_now_is_not_nagged_about() {
+        for state in ["running", "queued"] {
+            let sets = [json!({"id": "bk-1", "namespace": "yolab-a", "state": state})];
+            assert!(
+                alerts_now(&sets, &ns(&["yolab-a"])).is_empty(),
+                "{state} is work in progress, not a problem"
+            );
+        }
+    }
+
+    #[test]
+    fn the_machine_snapshot_is_named_for_a_person_not_by_its_empty_namespace() {
+        let alerts = alerts_now(&[], &[String::new()]);
+        assert_eq!(alerts.len(), 1);
+        assert!(
+            alerts[0].title.starts_with("This machine"),
+            "{}",
+            alerts[0].title
+        );
     }
 
     fn tunnel() -> Tunnel {
