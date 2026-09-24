@@ -73,6 +73,14 @@ async fn copy_one(
         &source_snapshot_manifest(&src_snap, source_namespace, pvc_name).to_string(),
     )
     .await?;
+    let mut guard = CleanupGuard {
+        armed: true,
+        dest_namespace: dest_namespace.to_string(),
+        dest_snapshot: dst_snap.clone(),
+        content: content.clone(),
+        source_namespace: source_namespace.to_string(),
+        source_snapshot: src_snap.clone(),
+    };
     wait_for_snapshot_ready(source_namespace, &src_snap).await?;
     let snap_ref = snapshot_ref_of(source_namespace, &src_snap).await?;
 
@@ -108,6 +116,7 @@ async fn copy_one(
         &src_snap,
     )
     .await;
+    guard.armed = false;
     Ok(())
 }
 
@@ -211,10 +220,11 @@ fn bound_content_name(snapshot: &Value) -> Option<String> {
 }
 
 fn snapshot_ref(vsc: &Value) -> Option<SnapshotRef> {
+    let handle = vsc["status"]["snapshotHandle"]
+        .as_str()
+        .or_else(|| vsc["spec"]["source"]["snapshotHandle"].as_str())?;
     Some(SnapshotRef {
-        handle: vsc["spec"]["source"]["snapshotHandle"]
-            .as_str()?
-            .to_string(),
+        handle: handle.to_string(),
         driver: vsc["spec"]["driver"].as_str()?.to_string(),
     })
 }
@@ -316,6 +326,37 @@ async fn cleanup(
     }
 }
 
+struct CleanupGuard {
+    armed: bool,
+    dest_namespace: String,
+    dest_snapshot: String,
+    content: String,
+    source_namespace: String,
+    source_snapshot: String,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let args = (
+            self.dest_namespace.clone(),
+            self.dest_snapshot.clone(),
+            self.content.clone(),
+            self.source_namespace.clone(),
+            self.source_snapshot.clone(),
+        );
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::error!("copy cleanup: no runtime left to drop the temporary snapshots");
+            return;
+        };
+        handle.spawn(async move {
+            cleanup(&args.0, &args.1, &args.2, &args.3, &args.4).await;
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,7 +454,25 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_ref_comes_from_the_content_spec() {
+    fn the_snapshot_ref_prefers_the_drivers_own_status_handle() {
+        let vsc = json!({
+            "spec": {
+                "driver": "rook-ceph.cephfs.csi.ceph.com",
+                "source": { "volumeHandle": "source-volume-handle" }
+            },
+            "status": { "snapshotHandle": "cephfs-snapshot-id" }
+        });
+        assert_eq!(
+            snapshot_ref(&vsc),
+            Some(SnapshotRef {
+                handle: "cephfs-snapshot-id".into(),
+                driver: "rook-ceph.cephfs.csi.ceph.com".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_snapshot_ref_falls_back_to_the_spec_handle() {
         let vsc = json!({
             "spec": {
                 "driver": "rook-ceph.cephfs.csi.ceph.com",
