@@ -635,7 +635,7 @@ export function AppDetailPage() {
   }
 
   const entry = catalogEntry(app, catalog.data ?? []);
-  const name = appDisplayName(app, catalog.data ?? []);
+  const name = appDisplayName(app, catalog.data ?? [], apps.data ?? []);
   const links = appLinks(app, domain.data?.domain ?? "");
   const factRows = appFactRows(app);
   const expected = (app.outputs_spec ?? []).length;

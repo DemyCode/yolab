@@ -139,7 +139,7 @@ export function HomePage() {
                 <AppTile
                   key={app.instance_name}
                   app={app}
-                  name={appDisplayName(app, catalogApps)}
+                  name={appDisplayName(app, catalogApps, installed)}
                   icon={entry?.icon ?? "📦"}
                 />
               );

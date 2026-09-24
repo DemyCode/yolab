@@ -112,11 +112,26 @@ export function catalogEntry(
   return catalog.find((c) => c.id === app.app_id);
 }
 
-export function appDisplayName(app: AppInfo, catalog: CatalogApp[]): string {
-  const entry = catalogEntry(app, catalog);
+export function appAddress(app: AppInfo): string {
+  const subdomain = app.config?.subdomain;
+  return typeof subdomain === "string" ? subdomain : "";
+}
+
+export function appDisplayName(
+  app: AppInfo,
+  catalog: CatalogApp[],
+  installed: AppInfo[] = [],
+): string {
   const stem = instanceStem(app);
-  if (!entry) return stem;
-  return stem === app.app_id ? entry.name : stem;
+  if (stem !== app.app_id) return stem;
+  const entry = catalogEntry(app, catalog);
+  const base = entry?.name ?? stem;
+  const copies = installed.filter((a) => a.app_id === app.app_id).length;
+  if (copies < 2) return base;
+  const address = appAddress(app);
+  return address
+    ? `${base} (${address})`
+    : `${base} (${app.instance_id ?? ""})`;
 }
 
 export function instanceStem(app: AppInfo): string {

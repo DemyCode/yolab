@@ -10,7 +10,7 @@ import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
-import { Field, Input, Select } from "@/components/ui/input";
+import { Select } from "@/components/ui/input";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
@@ -28,7 +28,7 @@ import {
   keepsSourceAddress,
   phaseFrom,
   snapshotNamespace,
-  suggestedName,
+  instanceNameFor,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
@@ -167,15 +167,7 @@ export function InstallPage() {
   const installedOfThisApp = (apps.data ?? []).filter(
     (a) => a.app_id === appId,
   );
-  const suggested = suggestedName(
-    origin.mode,
-    appId ?? "",
-    sourceDef,
-    apps.data ?? [],
-  );
-  const [nameEdit, setNameEdit] = useState<string | null>(null);
-  const instanceName = nameEdit ?? suggested;
-  const isCopy = instanceName !== appId;
+  const instanceName = instanceNameFor(origin.mode, appId ?? "", sourceDef);
 
   const addressKey = useMemo(
     () =>
@@ -265,13 +257,9 @@ export function InstallPage() {
       ? `https://${subdomain}.${domain.data.domain}`
       : null;
 
-  const nameTaken = (apps.data ?? []).some(
-    (a) => a.instance_name === instanceName,
-  );
   const addressClash = addressTakenBy(subdomain, apps.data ?? []);
   const blocker = installBlocker({
     instanceName,
-    nameTaken,
     addressTakenBy: addressClash,
     requiredMissing: [...required].some((n) => !String(values[n] ?? "").trim()),
     withData: copyData,
@@ -501,7 +489,7 @@ export function InstallPage() {
         </Banner>
       )}
 
-      {isCopy && origin.mode === "fresh" && (
+      {installedOfThisApp.length > 0 && origin.mode === "fresh" && (
         <Banner
           tone="info"
           title={
@@ -558,66 +546,43 @@ export function InstallPage() {
           </Form>
         </div>
 
-        <div className="space-y-5 p-5">
-          <Field
-            label="Name"
-            help={
-              nameTaken
-                ? undefined
-                : "What this copy is called on your home server. The web address follows it unless you set one below."
-            }
-            error={
-              nameTaken ? "You already have something with that name." : null
-            }
-          >
-            <Input
-              value={instanceName}
-              onChange={(e) =>
-                setNameEdit(
-                  e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                )
-              }
-            />
-          </Field>
-
-          {origin.mode !== "fresh" && (
-            <div className="space-y-3 border-t border-border pt-5">
-              <label className="flex items-center gap-2 text-sm text-fg">
-                <input
-                  type="checkbox"
-                  checked={copyData}
-                  onChange={(e) => setCopyData(e.target.checked)}
-                  className="accent-primary"
-                />
-                {origin.mode === "duplicate"
-                  ? "Copy this app’s files too"
-                  : "Bring this app’s files back too"}
-              </label>
-              {copyData &&
-                (snapshots === null ? (
-                  <p className="text-xs text-fg-muted">Looking for backups…</p>
-                ) : snapshots.length === 0 ? (
-                  <p className="text-xs text-fg-muted">
-                    There is no backup of this app yet, so there is nothing to
-                    copy. Install it empty, or back it up first.
-                  </p>
-                ) : (
-                  <Select
-                    value={snapshot}
-                    onChange={(e) => setSnapshot(e.target.value)}
-                    aria-label="Backup to copy from"
-                  >
-                    {snapshots.map((s, i) => (
-                      <option key={s.id} value={s.id}>
-                        {i === 0 ? "Latest — " : ""}
-                        {new Date(s.time).toLocaleString()}
-                      </option>
-                    ))}
-                  </Select>
-                ))}
-            </div>
-          )}
-        </div>
+        {origin.mode !== "fresh" && (
+          <div className="space-y-3 p-5">
+            <label className="flex items-center gap-2 text-sm text-fg">
+              <input
+                type="checkbox"
+                checked={copyData}
+                onChange={(e) => setCopyData(e.target.checked)}
+                className="accent-primary"
+              />
+              {origin.mode === "duplicate"
+                ? "Copy this app’s files too"
+                : "Bring this app’s files back too"}
+            </label>
+            {copyData &&
+              (snapshots === null ? (
+                <p className="text-xs text-fg-muted">Looking for backups…</p>
+              ) : snapshots.length === 0 ? (
+                <p className="text-xs text-fg-muted">
+                  There is no backup of this app yet, so there is nothing to
+                  copy. Install it empty, or back it up first.
+                </p>
+              ) : (
+                <Select
+                  value={snapshot}
+                  onChange={(e) => setSnapshot(e.target.value)}
+                  aria-label="Backup to copy from"
+                >
+                  {snapshots.map((s, i) => (
+                    <option key={s.id} value={s.id}>
+                      {i === 0 ? "Latest — " : ""}
+                      {new Date(s.time).toLocaleString()}
+                    </option>
+                  ))}
+                </Select>
+              ))}
+          </div>
+        )}
       </Card>
 
       <div className="mt-7">
