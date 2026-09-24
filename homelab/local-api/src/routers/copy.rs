@@ -7,7 +7,7 @@ use crate::error::Outcome;
 const SNAPSHOT_CLASS: &str = "csi-cephfs-snapclass";
 const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
 const SNAPSHOT_WAIT_SECS: u64 = 300;
-const PVC_WAIT_SECS: u64 = 300;
+const CLONE_WAIT_SECS: u64 = 6 * 60 * 60;
 const POLL_SECS: u64 = 5;
 
 #[derive(Debug, PartialEq)]
@@ -106,18 +106,37 @@ async fn copy_one(
         .to_string(),
     )
     .await?;
-    wait_for_pvc_bound(dest_namespace, &dest_name).await?;
-
-    cleanup(
-        dest_namespace,
-        &dst_snap,
-        &content,
-        source_namespace,
-        &src_snap,
-    )
-    .await;
     guard.armed = false;
+    spawn_clone_cleanup(
+        dest_namespace.to_string(),
+        dest_name,
+        dst_snap,
+        content,
+        source_namespace.to_string(),
+        src_snap,
+    );
     Ok(())
+}
+
+fn spawn_clone_cleanup(
+    dest_namespace: String,
+    dest_pvc: String,
+    dest_snapshot: String,
+    content: String,
+    source_namespace: String,
+    source_snapshot: String,
+) {
+    tokio::spawn(async move {
+        let _ = wait_for_pvc_bound(&dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
+        cleanup(
+            &dest_namespace,
+            &dest_snapshot,
+            &content,
+            &source_namespace,
+            &source_snapshot,
+        )
+        .await;
+    });
 }
 
 fn source_snapshot_manifest(name: &str, namespace: &str, pvc: &str) -> Value {
@@ -282,21 +301,25 @@ async fn wait_for_snapshot_ready(namespace: &str, snapshot: &str) -> anyhow::Res
     }
 }
 
-async fn wait_for_pvc_bound(namespace: &str, pvc: &str) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(PVC_WAIT_SECS);
+async fn wait_for_pvc_bound(namespace: &str, pvc: &str, timeout_secs: u64) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let v = crate::kubectl::get_json(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
-            .await
-            .ok();
-        match v.as_ref().and_then(|v| v["status"]["phase"].as_str()) {
-            Some("Bound") => return Ok(()),
-            Some(other) if other != "Pending" => {
-                anyhow::bail!("{namespace}/{pvc} entered {other} instead of binding")
+        let v = crate::kubectl::get_json(&["get", "pvc", pvc, "-n", namespace, "-o", "json"]).await;
+        match v {
+            Err(e) if crate::kubectl::is_not_found(&e) => {
+                anyhow::bail!("{namespace}/{pvc} was removed before it bound")
             }
-            _ => {}
+            Err(_) => {}
+            Ok(v) => match v["status"]["phase"].as_str() {
+                Some("Bound") => return Ok(()),
+                Some(other) if other != "Pending" => {
+                    anyhow::bail!("{namespace}/{pvc} entered {other} instead of binding")
+                }
+                _ => {}
+            },
         }
         if std::time::Instant::now() > deadline {
-            anyhow::bail!("{namespace}/{pvc} did not bind after {PVC_WAIT_SECS}s");
+            anyhow::bail!("{namespace}/{pvc} did not bind after {timeout_secs}s");
         }
         tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
     }
