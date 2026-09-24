@@ -1,10 +1,5 @@
 export type ProtectionState =
-  | "ok"
-  | "running"
-  | "queued"
-  | "failed"
-  | "never"
-  | "off";
+  "ok" | "running" | "queued" | "failed" | "never" | "off";
 
 export interface ProtectedApp {
   namespace: string;
