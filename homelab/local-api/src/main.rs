@@ -25,6 +25,7 @@ mod routers;
 mod runtime;
 mod shared_names;
 mod storage;
+mod store;
 
 #[cfg(test)]
 mod surface;
