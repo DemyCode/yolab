@@ -8,12 +8,22 @@ describe("showIfMet", () => {
   });
 
   it("shows the field when the controlling value matches", () => {
-    expect(showIfMet({ file_explorer_enabled: true }, { file_explorer_enabled: true })).toBe(true);
+    expect(
+      showIfMet(
+        { file_explorer_enabled: true },
+        { file_explorer_enabled: true },
+      ),
+    ).toBe(true);
     expect(showIfMet({ mode: "advanced" }, { mode: "advanced" })).toBe(true);
   });
 
   it("hides the field when the controlling value differs", () => {
-    expect(showIfMet({ file_explorer_enabled: true }, { file_explorer_enabled: false })).toBe(false);
+    expect(
+      showIfMet(
+        { file_explorer_enabled: true },
+        { file_explorer_enabled: false },
+      ),
+    ).toBe(false);
     expect(showIfMet({ mode: "advanced" }, { mode: "simple" })).toBe(false);
   });
 
@@ -23,10 +33,7 @@ describe("showIfMet", () => {
 
   it("requires every condition to hold", () => {
     expect(
-      showIfMet(
-        { a: true, b: "x" },
-        { a: true, b: "x", c: "anything" },
-      ),
+      showIfMet({ a: true, b: "x" }, { a: true, b: "x", c: "anything" }),
     ).toBe(true);
     expect(showIfMet({ a: true, b: "x" }, { a: true, b: "y" })).toBe(false);
   });
