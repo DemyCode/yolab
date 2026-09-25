@@ -9,6 +9,12 @@ const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
 const SNAPSHOT_WAIT_SECS: u64 = 300;
 const CLONE_WAIT_SECS: u64 = 6 * 60 * 60;
 const POLL_SECS: u64 = 5;
+const COPY_LABEL: &str = "yolab.io/copy";
+const COPY_SELECTOR: &str = "yolab.io/copy=true";
+const ANN_DEST_NAMESPACE: &str = "yolab.io/copy-dest-namespace";
+const ANN_DEST_PVC: &str = "yolab.io/copy-dest-pvc";
+const SWEEP_TICK_SECS: u64 = 600;
+const ABANDONED_AFTER_SECS: i64 = 12 * 3600;
 
 #[derive(Debug, PartialEq)]
 struct SourceVolume {
@@ -60,39 +66,44 @@ async fn copy_one(
         );
     }
 
-    let suffix = crate::routers::backup_common::random_hex(4);
-    let src_snap = format!("yolab-copy-{suffix}");
-    let dst_snap = format!("yolab-copy-{suffix}");
-    let content = format!("yolab-copy-{suffix}");
+    let copy_name = format!(
+        "yolab-copy-{}",
+        crate::routers::backup_common::random_hex(4)
+    );
 
     let source_instance = source_namespace.trim_start_matches("yolab-");
     let dest_name =
         crate::routers::backup_common::rebase_pvc_name(pvc_name, source_instance, instance_name);
 
     crate::kubectl::apply(
-        &source_snapshot_manifest(&src_snap, source_namespace, pvc_name).to_string(),
+        &source_snapshot_manifest(
+            &copy_name,
+            source_namespace,
+            pvc_name,
+            dest_namespace,
+            &dest_name,
+        )
+        .to_string(),
     )
     .await?;
     let mut guard = CleanupGuard {
         armed: true,
-        dest_namespace: dest_namespace.to_string(),
-        dest_snapshot: dst_snap.clone(),
-        content: content.clone(),
+        name: copy_name.clone(),
         source_namespace: source_namespace.to_string(),
-        source_snapshot: src_snap.clone(),
+        dest_namespace: dest_namespace.to_string(),
     };
-    wait_for_snapshot_ready(source_namespace, &src_snap).await?;
-    let snap_ref = snapshot_ref_of(source_namespace, &src_snap).await?;
+    wait_for_snapshot_ready(source_namespace, &copy_name).await?;
+    let snap_ref = snapshot_ref_of(source_namespace, &copy_name).await?;
 
     crate::kubectl::apply(
-        &rebind_content_manifest(&content, dest_namespace, &dst_snap, &snap_ref).to_string(),
+        &rebind_content_manifest(&copy_name, dest_namespace, &copy_name, &snap_ref).to_string(),
     )
     .await?;
     crate::kubectl::apply(
-        &rebound_snapshot_manifest(&dst_snap, dest_namespace, &content).to_string(),
+        &rebound_snapshot_manifest(&copy_name, dest_namespace, &copy_name).to_string(),
     )
     .await?;
-    wait_for_snapshot_ready(dest_namespace, &dst_snap).await?;
+    wait_for_snapshot_ready(dest_namespace, &copy_name).await?;
 
     crate::kubectl::apply(
         &destination_pvc_manifest(
@@ -101,49 +112,52 @@ async fn copy_one(
             instance_name,
             &volume.capacity,
             &volume.access_modes,
-            &dst_snap,
+            &copy_name,
         )
         .to_string(),
     )
     .await?;
     guard.armed = false;
     spawn_clone_cleanup(
+        source_namespace.to_string(),
         dest_namespace.to_string(),
         dest_name,
-        dst_snap,
-        content,
-        source_namespace.to_string(),
-        src_snap,
+        copy_name,
     );
     Ok(())
 }
 
 fn spawn_clone_cleanup(
+    source_namespace: String,
     dest_namespace: String,
     dest_pvc: String,
-    dest_snapshot: String,
-    content: String,
-    source_namespace: String,
-    source_snapshot: String,
+    name: String,
 ) {
     tokio::spawn(async move {
         let _ = wait_for_pvc_bound(&dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
-        cleanup(
-            &dest_namespace,
-            &dest_snapshot,
-            &content,
-            &source_namespace,
-            &source_snapshot,
-        )
-        .await;
+        cleanup(&name, &source_namespace, &dest_namespace).await;
     });
 }
 
-fn source_snapshot_manifest(name: &str, namespace: &str, pvc: &str) -> Value {
+fn source_snapshot_manifest(
+    name: &str,
+    namespace: &str,
+    pvc: &str,
+    dest_namespace: &str,
+    dest_pvc: &str,
+) -> Value {
     json!({
         "apiVersion": "snapshot.storage.k8s.io/v1",
         "kind": "VolumeSnapshot",
-        "metadata": { "name": name, "namespace": namespace },
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": { COPY_LABEL: "true" },
+            "annotations": {
+                ANN_DEST_NAMESPACE: dest_namespace,
+                ANN_DEST_PVC: dest_pvc,
+            }
+        },
         "spec": {
             "volumeSnapshotClassName": SNAPSHOT_CLASS,
             "source": { "persistentVolumeClaimName": pvc }
@@ -325,19 +339,13 @@ async fn wait_for_pvc_bound(namespace: &str, pvc: &str, timeout_secs: u64) -> an
     }
 }
 
-async fn cleanup(
-    dest_namespace: &str,
-    dest_snapshot: &str,
-    content: &str,
-    source_namespace: &str,
-    source_snapshot: &str,
-) {
-    let steps: [(&str, &str, Option<&str>); 3] = [
-        ("volumesnapshot", dest_snapshot, Some(dest_namespace)),
-        ("volumesnapshotcontent", content, None),
-        ("volumesnapshot", source_snapshot, Some(source_namespace)),
+async fn cleanup(name: &str, source_namespace: &str, dest_namespace: &str) {
+    let steps: [(&str, Option<&str>); 3] = [
+        ("volumesnapshot", Some(dest_namespace)),
+        ("volumesnapshotcontent", None),
+        ("volumesnapshot", Some(source_namespace)),
     ];
-    for (kind, name, namespace) in steps {
+    for (kind, namespace) in steps {
         let mut args = vec!["delete", kind, name, "--ignore-not-found", "--wait=false"];
         if let Some(ns) = namespace {
             args.push("-n");
@@ -351,11 +359,9 @@ async fn cleanup(
 
 struct CleanupGuard {
     armed: bool,
-    dest_namespace: String,
-    dest_snapshot: String,
-    content: String,
+    name: String,
     source_namespace: String,
-    source_snapshot: String,
+    dest_namespace: String,
 }
 
 impl Drop for CleanupGuard {
@@ -364,19 +370,151 @@ impl Drop for CleanupGuard {
             return;
         }
         let args = (
-            self.dest_namespace.clone(),
-            self.dest_snapshot.clone(),
-            self.content.clone(),
+            self.name.clone(),
             self.source_namespace.clone(),
-            self.source_snapshot.clone(),
+            self.dest_namespace.clone(),
         );
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             tracing::error!("copy cleanup: no runtime left to drop the temporary snapshots");
             return;
         };
         handle.spawn(async move {
-            cleanup(&args.0, &args.1, &args.2, &args.3, &args.4).await;
+            cleanup(&args.0, &args.1, &args.2).await;
         });
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Sweep {
+    Keep,
+    Clean(&'static str),
+}
+
+pub(crate) fn sweep_verdict(
+    dest_namespace_exists: bool,
+    dest_pvc_phase: Option<&str>,
+    age_secs: i64,
+) -> Sweep {
+    if !dest_namespace_exists {
+        return Sweep::Clean("the app it was copying into is gone");
+    }
+    if dest_pvc_phase == Some("Bound") {
+        return Sweep::Clean("the copy finished");
+    }
+    if age_secs >= ABANDONED_AFTER_SECS {
+        return Sweep::Clean("it was abandoned");
+    }
+    Sweep::Keep
+}
+
+fn age_secs(created: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> i64 {
+    created
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| (now - t.with_timezone(&chrono::Utc)).num_seconds())
+        .unwrap_or(0)
+}
+
+struct LeftoverCopy {
+    name: String,
+    namespace: String,
+    dest_namespace: String,
+    dest_pvc: String,
+    age_secs: i64,
+}
+
+fn leftover_copies(list: &Value, now: chrono::DateTime<chrono::Utc>) -> Vec<LeftoverCopy> {
+    list["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let meta = &item["metadata"];
+            let ann = &meta["annotations"];
+            Some(LeftoverCopy {
+                name: meta["name"].as_str()?.to_string(),
+                namespace: meta["namespace"].as_str()?.to_string(),
+                dest_namespace: ann[ANN_DEST_NAMESPACE].as_str()?.to_string(),
+                dest_pvc: ann[ANN_DEST_PVC].as_str()?.to_string(),
+                age_secs: age_secs(meta["creationTimestamp"].as_str(), now),
+            })
+        })
+        .collect()
+}
+
+async fn namespace_exists(namespace: &str) -> bool {
+    crate::kubectl::get_opt(&["get", "namespace", namespace, "-o", "json"])
+        .await
+        .map(|v| v.is_some())
+        .unwrap_or(true)
+}
+
+async fn pvc_phase(namespace: &str, pvc: &str) -> Option<String> {
+    crate::kubectl::get_opt(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v["status"]["phase"].as_str().map(String::from))
+}
+
+pub struct CopySweeperController;
+
+impl crate::runtime::Controller for CopySweeperController {
+    fn name(&self) -> &'static str {
+        "copy-sweeper"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Cluster
+    }
+    fn interval(&self) -> Duration {
+        Duration::from_secs(SWEEP_TICK_SECS)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        let list = crate::kubectl::get_json(&[
+            "get",
+            "volumesnapshot",
+            "-A",
+            "-l",
+            COPY_SELECTOR,
+            "-o",
+            "json",
+        ])
+        .await?;
+        let now = chrono::Utc::now();
+        let mut swept = 0usize;
+        for leftover in leftover_copies(&list, now) {
+            let exists = namespace_exists(&leftover.dest_namespace).await;
+            let phase = if exists {
+                pvc_phase(&leftover.dest_namespace, &leftover.dest_pvc).await
+            } else {
+                None
+            };
+            let Sweep::Clean(why) = sweep_verdict(exists, phase.as_deref(), leftover.age_secs)
+            else {
+                continue;
+            };
+            tracing::info!(
+                "copy sweeper: clearing {}/{} — {why}",
+                leftover.namespace,
+                leftover.name
+            );
+            cleanup(
+                &leftover.name,
+                &leftover.namespace,
+                &leftover.dest_namespace,
+            )
+            .await;
+            swept += 1;
+        }
+        if swept == 0 {
+            Ok(crate::runtime::Tick::Idle(
+                "no leftover copy snapshots".into(),
+            ))
+        } else {
+            Ok(crate::runtime::Tick::Done)
+        }
     }
 }
 
@@ -386,10 +524,36 @@ mod tests {
 
     #[test]
     fn a_source_snapshot_points_at_the_pvc_and_the_snapclass() {
-        let m = source_snapshot_manifest("s", "yolab-gitea-ab12", "data");
+        let m = source_snapshot_manifest(
+            "s",
+            "yolab-gitea-ab12",
+            "data",
+            "yolab-gitea-cd34",
+            "gitea-cd34-data",
+        );
         assert_eq!(m["kind"], "VolumeSnapshot");
         assert_eq!(m["spec"]["volumeSnapshotClassName"], SNAPSHOT_CLASS);
         assert_eq!(m["spec"]["source"]["persistentVolumeClaimName"], "data");
+    }
+
+    #[test]
+    fn a_source_snapshot_records_where_it_was_copying_to_so_it_can_be_swept() {
+        let m = source_snapshot_manifest(
+            "s",
+            "yolab-gitea-ab12",
+            "data",
+            "yolab-gitea-cd34",
+            "gitea-cd34-data",
+        );
+        assert_eq!(m["metadata"]["labels"][COPY_LABEL], "true");
+        assert_eq!(
+            m["metadata"]["annotations"][ANN_DEST_NAMESPACE],
+            "yolab-gitea-cd34"
+        );
+        assert_eq!(
+            m["metadata"]["annotations"][ANN_DEST_PVC],
+            "gitea-cd34-data"
+        );
     }
 
     #[test]
@@ -519,5 +683,100 @@ mod tests {
             bound_content_name(&json!({"status": {"boundVolumeSnapshotContentName": "c"}})),
             Some("c".into())
         );
+    }
+
+    #[test]
+    fn a_copy_still_running_is_left_alone() {
+        assert_eq!(sweep_verdict(true, Some("Pending"), 60), Sweep::Keep);
+    }
+
+    #[test]
+    fn a_finished_copy_has_its_temporary_snapshots_cleared() {
+        assert!(matches!(
+            sweep_verdict(true, Some("Bound"), 60),
+            Sweep::Clean(_)
+        ));
+    }
+
+    #[test]
+    fn a_copy_whose_destination_was_rolled_back_is_cleared() {
+        assert!(
+            matches!(sweep_verdict(false, None, 60), Sweep::Clean(_)),
+            "a failed install deletes the namespace — its snapshots must not outlive it"
+        );
+    }
+
+    #[test]
+    fn a_copy_nobody_is_driving_any_more_is_cleared_once_it_is_old() {
+        assert_eq!(
+            sweep_verdict(true, Some("Pending"), ABANDONED_AFTER_SECS - 1),
+            Sweep::Keep,
+            "a long clone of a large volume is not abandoned"
+        );
+        assert!(matches!(
+            sweep_verdict(true, Some("Pending"), ABANDONED_AFTER_SECS),
+            Sweep::Clean(_)
+        ));
+    }
+
+    #[test]
+    fn the_abandoned_cutoff_outlasts_the_longest_clone_we_wait_for() {
+        assert!(
+            ABANDONED_AFTER_SECS > CLONE_WAIT_SECS as i64,
+            "sweeping sooner than the clone wait would cut a running copy off at the knees"
+        );
+    }
+
+    #[test]
+    fn leftovers_are_read_with_where_they_were_going_and_how_old_they_are() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-25T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let list = json!({"items": [{
+            "metadata": {
+                "name": "yolab-copy-abcd1234",
+                "namespace": "yolab-gitea-ab12",
+                "creationTimestamp": "2026-09-25T11:00:00Z",
+                "annotations": {
+                    ANN_DEST_NAMESPACE: "yolab-gitea-cd34",
+                    ANN_DEST_PVC: "gitea-cd34-data",
+                }
+            }
+        }]});
+        let found = leftover_copies(&list, now);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].dest_namespace, "yolab-gitea-cd34");
+        assert_eq!(found[0].dest_pvc, "gitea-cd34-data");
+        assert_eq!(found[0].age_secs, 3600);
+    }
+
+    #[test]
+    fn a_snapshot_without_the_copy_annotations_is_not_touched() {
+        let now = chrono::Utc::now();
+        let list = json!({"items": [{
+            "metadata": {"name": "someone-elses", "namespace": "yolab-gitea-ab12"}
+        }]});
+        assert!(leftover_copies(&list, now).is_empty());
+    }
+
+    #[test]
+    fn a_leftover_with_no_creation_stamp_is_not_treated_as_ancient() {
+        let now = chrono::Utc::now();
+        let list = json!({"items": [{
+            "metadata": {
+                "name": "yolab-copy-abcd1234",
+                "namespace": "yolab-gitea-ab12",
+                "annotations": {
+                    ANN_DEST_NAMESPACE: "yolab-gitea-cd34",
+                    ANN_DEST_PVC: "gitea-cd34-data",
+                }
+            }
+        }]});
+        assert_eq!(leftover_copies(&list, now)[0].age_secs, 0);
+    }
+
+    #[test]
+    fn the_sweeper_selector_matches_the_label_the_copy_writes() {
+        assert_eq!(COPY_SELECTOR, format!("{COPY_LABEL}=true"));
     }
 }
