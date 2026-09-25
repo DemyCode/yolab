@@ -9,6 +9,8 @@ use crate::ceph::destructive;
 use crate::error::Outcome;
 use crate::host::{Host, RealHost};
 use crate::storage::settings;
+use crate::store::entry::Origin;
+use crate::store::{DiskIntent, Store};
 
 const INTERVAL_SECS: u64 = 60;
 
@@ -444,13 +446,15 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
         mark_known_osds(&mut meta, map);
     }
 
-    let desired = read_desired(host).await;
+    let desired = read_desired(host, node, &meta).await;
 
     match &desired {
         Some(d) => {
             let registered = auto_register_all_disks(host, node, &meta, d).await;
             let d = if registered > 0 {
-                read_desired(host).await.unwrap_or_else(|| d.clone())
+                read_desired(host, node, &meta)
+                    .await
+                    .unwrap_or_else(|| d.clone())
             } else {
                 d.clone()
             };
@@ -1856,13 +1860,116 @@ fn remember_published(node: &str, payload: String) {
         .insert(node.to_string(), payload);
 }
 
-async fn read_desired<H: Host>(host: &H) -> Option<HashMap<String, String>> {
+async fn read_mirror<H: Host>(host: &H) -> Option<HashMap<String, String>> {
     match settings::dump(host, settings::DISKS).await {
         Ok(records) => Some(records.into_iter().collect()),
         Err(e) => {
             tracing::warn!("disk settings are unreadable right now ({e})");
             None
         }
+    }
+}
+
+struct Synced {
+    claims: Option<HashMap<String, String>>,
+    seeded: bool,
+    changed: bool,
+}
+
+fn sync_store(
+    store: &mut Store,
+    node: &str,
+    meta: &HashMap<String, Disk>,
+    mirror: Option<&HashMap<String, String>>,
+) -> Synced {
+    let mut changed = false;
+
+    if let Some(records) = mirror {
+        for (key, setting) in records {
+            let intent = DiskIntent::from(setting.to_lowercase());
+            match store.import_claim(key, intent, origin_of(setting)) {
+                Ok(written) => changed |= written,
+                Err(e) => {
+                    tracing::warn!("{key}: could not be taken into the desired-state store ({e})")
+                }
+            }
+        }
+        match store.mark_disks_seeded() {
+            Ok(true) => {
+                changed = true;
+                tracing::info!(
+                    "the desired-state store now holds every disk setting and can be used on its own"
+                );
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("could not record the store as seeded ({e})"),
+        }
+    }
+
+    for disk_id in meta.keys() {
+        if disk_id == SYSTEM_OSD_ID {
+            continue;
+        }
+        match store.observe_disk(node, disk_id) {
+            Ok(written) => changed |= written,
+            Err(e) => tracing::warn!("{disk_id}: could not be recorded as present ({e})"),
+        }
+    }
+
+    let claims = match store.desired_records() {
+        Ok(records) => Some(records),
+        Err(e) => {
+            tracing::error!("the desired-state store is unreadable ({e})");
+            None
+        }
+    };
+    Synced {
+        claims,
+        seeded: store.disks_seeded(),
+        changed,
+    }
+}
+
+async fn read_desired<H: Host>(
+    host: &H,
+    node: &str,
+    meta: &HashMap<String, Disk>,
+) -> Option<HashMap<String, String>> {
+    let mirror = read_mirror(host).await;
+    let synced = {
+        let mut store = crate::store::locked();
+        let synced = sync_store(&mut store, node, meta, mirror.as_ref());
+        if synced.changed {
+            if let Err(e) = store.persist(&crate::store::default_path()) {
+                tracing::warn!("the desired-state store could not be saved ({e})");
+            }
+        }
+        synced
+    };
+    merge_desired(mirror, synced.claims, synced.seeded)
+}
+
+fn origin_of(setting: &str) -> Origin {
+    if setting == "ON" {
+        Origin::User
+    } else {
+        Origin::Discovered
+    }
+}
+
+fn merge_desired(
+    mirror: Option<HashMap<String, String>>,
+    claims: Option<HashMap<String, String>>,
+    seeded: bool,
+) -> Option<HashMap<String, String>> {
+    match (mirror, claims) {
+        (Some(mut merged), Some(claims)) => {
+            merged.extend(claims);
+            Some(merged)
+        }
+        (Some(mirror), None) => Some(mirror),
+        (None, Some(claims)) if seeded && !claims.is_empty() => Some(claims),
+        (None, _) => None,
     }
 }
 
@@ -1879,6 +1986,72 @@ mod tests {
 
     const OURS: &str = "11111111-2222-3333-4444-555555555555";
     const THEIRS: &str = "99999999-8888-7777-6666-555555555555";
+
+    fn records(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn an_unreachable_cluster_with_an_unseeded_store_changes_nothing() {
+        assert_eq!(
+            merge_desired(None, Some(records(&[("node1--wwn-a", "ON")])), false),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unreachable_cluster_with_a_seeded_store_is_served_from_the_store() {
+        let claims = records(&[("node1--wwn-a", "ON"), ("node1--wwn-b", "OFF")]);
+        assert_eq!(
+            merge_desired(None, Some(claims.clone()), true),
+            Some(claims)
+        );
+    }
+
+    #[test]
+    fn an_unreachable_cluster_and_an_empty_store_changes_nothing_even_when_seeded() {
+        assert_eq!(merge_desired(None, Some(HashMap::new()), true), None);
+    }
+
+    #[test]
+    fn an_unreadable_store_falls_back_to_the_cluster_settings() {
+        let mirror = records(&[("node1--wwn-a", "ON")]);
+        assert_eq!(
+            merge_desired(Some(mirror.clone()), None, true),
+            Some(mirror)
+        );
+    }
+
+    #[test]
+    fn neither_source_available_changes_nothing() {
+        assert_eq!(merge_desired(None, None, true), None);
+    }
+
+    #[test]
+    fn a_choice_in_the_store_wins_over_a_stale_cluster_setting() {
+        let mirror = records(&[("node1--wwn-a", "OFF")]);
+        let claims = records(&[("node1--wwn-a", "ON")]);
+        let merged = merge_desired(Some(mirror), Some(claims), true).unwrap();
+        assert_eq!(merged.get("node1--wwn-a").map(String::as_str), Some("ON"));
+    }
+
+    #[test]
+    fn settings_the_store_has_not_taken_in_yet_are_still_honoured() {
+        let mirror = records(&[("node2--wwn-z", "ON")]);
+        let claims = records(&[("node1--wwn-a", "OFF")]);
+        let merged = merge_desired(Some(mirror), Some(claims), true).unwrap();
+        assert_eq!(merged.get("node2--wwn-z").map(String::as_str), Some("ON"));
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn an_on_setting_is_a_choice_and_an_off_setting_is_only_a_default() {
+        assert_eq!(origin_of("ON"), Origin::User);
+        assert_eq!(origin_of("OFF"), Origin::Discovered);
+    }
 
     #[derive(Clone, Default)]
     struct RecordingHost {
@@ -2696,19 +2869,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switches_are_read_from_ceph_and_an_unreadable_store_changes_nothing() {
+    async fn switches_are_read_from_ceph_and_an_unreachable_cluster_reads_as_absent() {
         let host = FakeHost::new().ok(
             "ceph config-key dump yolab/disks/",
             r#"{"yolab/disks/node1--dev-sdb":"ON"}"#,
         );
-        let desired = read_desired(&host).await.expect("readable");
-        assert_eq!(
-            desired.get("node1--dev-sdb").map(String::as_str),
-            Some("ON")
-        );
+        let mirror = read_mirror(&host).await.expect("readable");
+        assert_eq!(mirror.get("node1--dev-sdb").map(String::as_str), Some("ON"));
 
         let down = FakeHost::new().fail("ceph config-key dump", "error connecting to the cluster");
-        assert_eq!(read_desired(&down).await, None);
+        assert_eq!(read_mirror(&down).await, None);
+    }
+
+    #[test]
+    fn every_local_disk_is_recorded_as_present_without_being_switched_on() {
+        let mut store = Store::new("node1");
+        let meta = HashMap::from([
+            ("dev-sdb".to_string(), disk(Ownership::Blank)),
+            (SYSTEM_OSD_ID.to_string(), disk(Ownership::Ours)),
+        ]);
+
+        let Synced { claims, seeded, .. } = sync_store(&mut store, "node1", &meta, None);
+
+        let claims = claims.unwrap();
+        assert_eq!(
+            claims.get("node1--dev-sdb").map(String::as_str),
+            Some("OFF")
+        );
+        assert!(!claims.contains_key("node1--system"));
+        assert!(!seeded);
+    }
+
+    #[test]
+    fn taking_in_the_cluster_settings_is_what_makes_the_store_usable_alone() {
+        let mut store = Store::new("node1");
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+        let mirror = records(&[("node1--dev-sdb", "ON"), ("node2--wwn-z", "ON")]);
+
+        let Synced { claims, seeded, .. } = sync_store(&mut store, "node1", &meta, Some(&mirror));
+
+        assert!(seeded);
+        let claims = claims.unwrap();
+        assert_eq!(claims.get("node1--dev-sdb").map(String::as_str), Some("ON"));
+        assert_eq!(claims.get("node2--wwn-z").map(String::as_str), Some("ON"));
+    }
+
+    #[test]
+    fn an_unplugged_disk_that_was_switched_on_stays_switched_on_in_the_store() {
+        let mut store = Store::new("node1");
+        let mirror = records(&[("node1--wwn-gone", "ON")]);
+        sync_store(&mut store, "node1", &HashMap::new(), Some(&mirror));
+
+        let Synced { claims, seeded, .. } = sync_store(&mut store, "node1", &HashMap::new(), None);
+        assert!(seeded);
+        assert_eq!(
+            claims.unwrap().get("node1--wwn-gone").map(String::as_str),
+            Some("ON")
+        );
+    }
+
+    #[test]
+    fn a_disk_seen_while_the_cluster_was_down_is_still_switched_on_once_the_settings_arrive() {
+        let mut store = Store::new("node1");
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+
+        let Synced {
+            claims: blind,
+            seeded,
+            ..
+        } = sync_store(&mut store, "node1", &meta, None);
+        assert!(!seeded);
+        assert_eq!(
+            blind.unwrap().get("node1--dev-sdb").map(String::as_str),
+            Some("OFF")
+        );
+
+        let mirror = records(&[("node1--dev-sdb", "ON")]);
+        let Synced { claims, seeded, .. } = sync_store(&mut store, "node1", &meta, Some(&mirror));
+
+        assert!(seeded);
+        assert_eq!(
+            claims.unwrap().get("node1--dev-sdb").map(String::as_str),
+            Some("ON")
+        );
+    }
+
+    #[test]
+    fn taking_the_settings_in_again_does_not_undo_a_switch_made_since() {
+        let mut store = Store::new("node1");
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+        let mirror = records(&[("node1--dev-sdb", "ON")]);
+        sync_store(&mut store, "node1", &meta, Some(&mirror));
+
+        store
+            .set_disk_intent("node1", "dev-sdb", DiskIntent::Off)
+            .unwrap();
+
+        let Synced { claims, .. } = sync_store(&mut store, "node1", &meta, Some(&mirror));
+        assert_eq!(
+            claims.unwrap().get("node1--dev-sdb").map(String::as_str),
+            Some("OFF")
+        );
     }
 
     #[tokio::test]

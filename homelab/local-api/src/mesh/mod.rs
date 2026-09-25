@@ -116,7 +116,7 @@ fn path_statuses(peers: &[wg::Peer], addrs: &[String], now: u64) -> Vec<PathStat
 
 const PEER_CACHE: &str = "/var/lib/yolab/mesh-peers.json";
 
-async fn peer_addresses(self_ip: &str) -> Vec<String> {
+pub(crate) async fn peer_addresses(self_ip: &str) -> Vec<String> {
     match live_peer_addresses(self_ip).await {
         Some(peers) => {
             if let Ok(json) = serde_json::to_string(&peers) {

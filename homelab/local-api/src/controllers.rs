@@ -57,6 +57,7 @@ pub fn spawn_all(leader: Leadership) {
     spawn(backups::LockSweeperController, &leader);
     spawn(crate::routers::copy::CopySweeperController, &leader);
 
+    spawn(crate::store::sync::StoreSyncController, &leader);
     spawn(crate::disks_reconciler::DisksController, &leader);
     spawn(crate::cephfs::CephFsController, &leader);
     spawn(crate::topology::TopologyController, &leader);
