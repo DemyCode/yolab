@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::disks_reconciler::{is_globally_unique_id, record_key, SYSTEM_OSD_ID};
 use crate::host::RealHost;
 use crate::storage::settings;
+use crate::store::DiskIntent;
 use crate::AppState;
 
 #[derive(Serialize, Debug)]
@@ -184,8 +185,28 @@ pub(crate) async fn record_switch(node: &str, disk_id: &str, desired: &str) -> R
     settings::set(&RealHost, &key, desired)
         .await
         .map_err(|e| format!("the setting could not be saved: {e}"))?;
+    record_intent(node, disk_id, desired);
     crate::runtime::wake("disks");
     Ok(())
+}
+
+fn record_intent(node: &str, disk_id: &str, desired: &str) {
+    let intent = if desired == "ON" {
+        DiskIntent::On
+    } else {
+        DiskIntent::Off
+    };
+    let mut store = crate::store::locked();
+    if let Err(e) = store.set_disk_intent(node, disk_id, intent) {
+        tracing::warn!(
+            "{node}--{disk_id}: the switch was saved but not recorded as a choice ({e}) — the \
+             next reconcile will take it from the cluster settings"
+        );
+        return;
+    }
+    if let Err(e) = store.persist(&crate::store::default_path()) {
+        tracing::warn!("{node}--{disk_id}: the choice could not be saved to disk ({e})");
+    }
 }
 
 pub async fn set_disk_state(
