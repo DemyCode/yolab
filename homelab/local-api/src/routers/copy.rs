@@ -956,7 +956,10 @@ mod tests {
                 "kubectl get volumesnapshot -A",
                 &leftover_list("2026-09-25T11:00:00Z").to_string(),
             )
-            .ok("kubectl get namespace yolab-gitea-cd34", r#"{"kind":"Namespace"}"#)
+            .ok(
+                "kubectl get namespace yolab-gitea-cd34",
+                r#"{"kind":"Namespace"}"#,
+            )
             .ok(
                 "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
                 r#"{"status":{"phase":"Bound"}}"#,
@@ -975,7 +978,10 @@ mod tests {
                 "kubectl get volumesnapshot -A",
                 &leftover_list("2026-09-25T11:00:00Z").to_string(),
             )
-            .ok("kubectl get namespace yolab-gitea-cd34", r#"{"kind":"Namespace"}"#)
+            .ok(
+                "kubectl get namespace yolab-gitea-cd34",
+                r#"{"kind":"Namespace"}"#,
+            )
             .ok(
                 "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
                 r#"{"status":{"phase":"Pending"}}"#,
