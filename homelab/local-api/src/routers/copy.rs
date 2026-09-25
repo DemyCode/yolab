@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::error::Outcome;
+use crate::host::{Host, RealHost};
 
 const SNAPSHOT_CLASS: &str = "csi-cephfs-snapclass";
 const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
@@ -34,6 +35,15 @@ pub(crate) async fn copy_live_volumes(
     dest_namespace: &str,
     instance_name: &str,
 ) -> anyhow::Result<()> {
+    copy_live_volumes_on(&RealHost, source_namespace, dest_namespace, instance_name).await
+}
+
+async fn copy_live_volumes_on<H: Host + 'static>(
+    host: &H,
+    source_namespace: &str,
+    dest_namespace: &str,
+    instance_name: &str,
+) -> anyhow::Result<()> {
     let sources = crate::routers::backup_common::list_user_pvcs()
         .await?
         .into_iter()
@@ -41,20 +51,28 @@ pub(crate) async fn copy_live_volumes(
         .collect::<Vec<_>>();
 
     for pvc in &sources {
-        copy_one(source_namespace, dest_namespace, instance_name, &pvc.name).await?;
+        copy_one(
+            host,
+            source_namespace,
+            dest_namespace,
+            instance_name,
+            &pvc.name,
+        )
+        .await?;
     }
     Ok(())
 }
 
-async fn copy_one(
+async fn copy_one<H: Host + 'static>(
+    host: &H,
     source_namespace: &str,
     dest_namespace: &str,
     instance_name: &str,
     pvc_name: &str,
 ) -> anyhow::Result<()> {
-    let source =
-        crate::kubectl::get_json(&["get", "pvc", pvc_name, "-n", source_namespace, "-o", "json"])
-            .await?;
+    let source = host
+        .kubectl_json(&["get", "pvc", pvc_name, "-n", source_namespace, "-o", "json"])
+        .await?;
     let volume = parse_source_volume(&source).ok_or_else(|| {
         anyhow::anyhow!("{source_namespace}/{pvc_name}: could not read its storage")
     })?;
@@ -75,7 +93,7 @@ async fn copy_one(
     let dest_name =
         crate::routers::backup_common::rebase_pvc_name(pvc_name, source_instance, instance_name);
 
-    crate::kubectl::apply(
+    host.kubectl_apply(
         &source_snapshot_manifest(
             &copy_name,
             source_namespace,
@@ -88,24 +106,25 @@ async fn copy_one(
     .await?;
     let mut guard = CleanupGuard {
         armed: true,
+        host: host.clone(),
         name: copy_name.clone(),
         source_namespace: source_namespace.to_string(),
         dest_namespace: dest_namespace.to_string(),
     };
-    wait_for_snapshot_ready(source_namespace, &copy_name).await?;
-    let snap_ref = snapshot_ref_of(source_namespace, &copy_name).await?;
+    wait_for_snapshot_ready(host, source_namespace, &copy_name).await?;
+    let snap_ref = snapshot_ref_of(host, source_namespace, &copy_name).await?;
 
-    crate::kubectl::apply(
+    host.kubectl_apply(
         &rebind_content_manifest(&copy_name, dest_namespace, &copy_name, &snap_ref).to_string(),
     )
     .await?;
-    crate::kubectl::apply(
+    host.kubectl_apply(
         &rebound_snapshot_manifest(&copy_name, dest_namespace, &copy_name).to_string(),
     )
     .await?;
-    wait_for_snapshot_ready(dest_namespace, &copy_name).await?;
+    wait_for_snapshot_ready(host, dest_namespace, &copy_name).await?;
 
-    crate::kubectl::apply(
+    host.kubectl_apply(
         &destination_pvc_manifest(
             &dest_name,
             dest_namespace,
@@ -119,6 +138,7 @@ async fn copy_one(
     .await?;
     guard.armed = false;
     spawn_clone_cleanup(
+        host.clone(),
         source_namespace.to_string(),
         dest_namespace.to_string(),
         dest_name,
@@ -127,15 +147,16 @@ async fn copy_one(
     Ok(())
 }
 
-fn spawn_clone_cleanup(
+fn spawn_clone_cleanup<H: Host + 'static>(
+    host: H,
     source_namespace: String,
     dest_namespace: String,
     dest_pvc: String,
     name: String,
 ) {
     tokio::spawn(async move {
-        let _ = wait_for_pvc_bound(&dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
-        cleanup(&name, &source_namespace, &dest_namespace).await;
+        let _ = wait_for_pvc_bound(&host, &dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
+        cleanup(&host, &name, &source_namespace, &dest_namespace).await;
     });
 }
 
@@ -262,28 +283,13 @@ fn snapshot_ref(vsc: &Value) -> Option<SnapshotRef> {
     })
 }
 
-async fn snapshot_ref_of(namespace: &str, snapshot: &str) -> anyhow::Result<SnapshotRef> {
-    let snap = crate::kubectl::get_json(&[
-        "get",
-        "volumesnapshot",
-        snapshot,
-        "-n",
-        namespace,
-        "-o",
-        "json",
-    ])
-    .await?;
-    let content = bound_content_name(&snap)
-        .ok_or_else(|| anyhow::anyhow!("{namespace}/{snapshot} has no bound snapshot content"))?;
-    let vsc =
-        crate::kubectl::get_json(&["get", "volumesnapshotcontent", &content, "-o", "json"]).await?;
-    snapshot_ref(&vsc).ok_or_else(|| anyhow::anyhow!("{content} carries no snapshot handle"))
-}
-
-async fn wait_for_snapshot_ready(namespace: &str, snapshot: &str) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(SNAPSHOT_WAIT_SECS);
-    loop {
-        let v = crate::kubectl::get_json(&[
+async fn snapshot_ref_of<H: Host>(
+    host: &H,
+    namespace: &str,
+    snapshot: &str,
+) -> anyhow::Result<SnapshotRef> {
+    let snap = host
+        .kubectl_json(&[
             "get",
             "volumesnapshot",
             snapshot,
@@ -292,8 +298,34 @@ async fn wait_for_snapshot_ready(namespace: &str, snapshot: &str) -> anyhow::Res
             "-o",
             "json",
         ])
-        .await
-        .ok();
+        .await?;
+    let content = bound_content_name(&snap)
+        .ok_or_else(|| anyhow::anyhow!("{namespace}/{snapshot} has no bound snapshot content"))?;
+    let vsc = host
+        .kubectl_json(&["get", "volumesnapshotcontent", &content, "-o", "json"])
+        .await?;
+    snapshot_ref(&vsc).ok_or_else(|| anyhow::anyhow!("{content} carries no snapshot handle"))
+}
+
+async fn wait_for_snapshot_ready<H: Host>(
+    host: &H,
+    namespace: &str,
+    snapshot: &str,
+) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(SNAPSHOT_WAIT_SECS);
+    loop {
+        let v = host
+            .kubectl_json(&[
+                "get",
+                "volumesnapshot",
+                snapshot,
+                "-n",
+                namespace,
+                "-o",
+                "json",
+            ])
+            .await
+            .ok();
         if let Some(err) = v
             .as_ref()
             .and_then(|v| v["status"]["error"]["message"].as_str())
@@ -315,12 +347,19 @@ async fn wait_for_snapshot_ready(namespace: &str, snapshot: &str) -> anyhow::Res
     }
 }
 
-async fn wait_for_pvc_bound(namespace: &str, pvc: &str, timeout_secs: u64) -> anyhow::Result<()> {
+async fn wait_for_pvc_bound<H: Host>(
+    host: &H,
+    namespace: &str,
+    pvc: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let v = crate::kubectl::get_json(&["get", "pvc", pvc, "-n", namespace, "-o", "json"]).await;
+        let v = host
+            .kubectl_json(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
+            .await;
         match v {
-            Err(e) if crate::kubectl::is_not_found(&e) => {
+            Err(e) if e.is_not_found() => {
                 anyhow::bail!("{namespace}/{pvc} was removed before it bound")
             }
             Err(_) => {}
@@ -339,7 +378,7 @@ async fn wait_for_pvc_bound(namespace: &str, pvc: &str, timeout_secs: u64) -> an
     }
 }
 
-async fn cleanup(name: &str, source_namespace: &str, dest_namespace: &str) {
+async fn cleanup<H: Host>(host: &H, name: &str, source_namespace: &str, dest_namespace: &str) {
     let steps: [(&str, Option<&str>); 3] = [
         ("volumesnapshot", Some(dest_namespace)),
         ("volumesnapshotcontent", None),
@@ -351,24 +390,26 @@ async fn cleanup(name: &str, source_namespace: &str, dest_namespace: &str) {
             args.push("-n");
             args.push(ns);
         }
-        crate::kubectl::run(&args)
+        host.kubectl(&args)
             .await
             .debug_on_err(format!("copy cleanup: delete {kind} {name}"));
     }
 }
 
-struct CleanupGuard {
+struct CleanupGuard<H: Host + 'static> {
     armed: bool,
+    host: H,
     name: String,
     source_namespace: String,
     dest_namespace: String,
 }
 
-impl Drop for CleanupGuard {
+impl<H: Host + 'static> Drop for CleanupGuard<H> {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
+        let host = self.host.clone();
         let args = (
             self.name.clone(),
             self.source_namespace.clone(),
@@ -379,7 +420,7 @@ impl Drop for CleanupGuard {
             return;
         };
         handle.spawn(async move {
-            cleanup(&args.0, &args.1, &args.2).await;
+            cleanup(&host, &args.0, &args.1, &args.2).await;
         });
     }
 }
@@ -441,15 +482,15 @@ fn leftover_copies(list: &Value, now: chrono::DateTime<chrono::Utc>) -> Vec<Left
         .collect()
 }
 
-async fn namespace_exists(namespace: &str) -> bool {
-    crate::kubectl::get_opt(&["get", "namespace", namespace, "-o", "json"])
+async fn namespace_exists<H: Host>(host: &H, namespace: &str) -> bool {
+    host.kubectl_get_opt(&["get", "namespace", namespace, "-o", "json"])
         .await
         .map(|v| v.is_some())
         .unwrap_or(true)
 }
 
-async fn pvc_phase(namespace: &str, pvc: &str) -> Option<String> {
-    crate::kubectl::get_opt(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
+async fn pvc_phase<H: Host>(host: &H, namespace: &str, pvc: &str) -> Option<String> {
+    host.kubectl_get_opt(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
         .await
         .ok()
         .flatten()
@@ -472,7 +513,16 @@ impl crate::runtime::Controller for CopySweeperController {
         &[crate::runtime::Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        let list = crate::kubectl::get_json(&[
+        sweep_once(&RealHost, chrono::Utc::now()).await
+    }
+}
+
+async fn sweep_once<H: Host>(
+    host: &H,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<crate::runtime::Tick> {
+    let list = host
+        .kubectl_json(&[
             "get",
             "volumesnapshot",
             "-A",
@@ -482,45 +532,44 @@ impl crate::runtime::Controller for CopySweeperController {
             "json",
         ])
         .await?;
-        let now = chrono::Utc::now();
-        let mut swept = 0usize;
-        for leftover in leftover_copies(&list, now) {
-            let exists = namespace_exists(&leftover.dest_namespace).await;
-            let phase = if exists {
-                pvc_phase(&leftover.dest_namespace, &leftover.dest_pvc).await
-            } else {
-                None
-            };
-            let Sweep::Clean(why) = sweep_verdict(exists, phase.as_deref(), leftover.age_secs)
-            else {
-                continue;
-            };
-            tracing::info!(
-                "copy sweeper: clearing {}/{} — {why}",
-                leftover.namespace,
-                leftover.name
-            );
-            cleanup(
-                &leftover.name,
-                &leftover.namespace,
-                &leftover.dest_namespace,
-            )
-            .await;
-            swept += 1;
-        }
-        if swept == 0 {
-            Ok(crate::runtime::Tick::Idle(
-                "no leftover copy snapshots".into(),
-            ))
+    let mut swept = 0usize;
+    for leftover in leftover_copies(&list, now) {
+        let exists = namespace_exists(host, &leftover.dest_namespace).await;
+        let phase = if exists {
+            pvc_phase(host, &leftover.dest_namespace, &leftover.dest_pvc).await
         } else {
-            Ok(crate::runtime::Tick::Done)
-        }
+            None
+        };
+        let Sweep::Clean(why) = sweep_verdict(exists, phase.as_deref(), leftover.age_secs) else {
+            continue;
+        };
+        tracing::info!(
+            "copy sweeper: clearing {}/{} — {why}",
+            leftover.namespace,
+            leftover.name
+        );
+        cleanup(
+            host,
+            &leftover.name,
+            &leftover.namespace,
+            &leftover.dest_namespace,
+        )
+        .await;
+        swept += 1;
+    }
+    if swept == 0 {
+        Ok(crate::runtime::Tick::Idle(
+            "no leftover copy snapshots".into(),
+        ))
+    } else {
+        Ok(crate::runtime::Tick::Done)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::fake::FakeHost;
 
     #[test]
     fn a_source_snapshot_points_at_the_pvc_and_the_snapclass() {
@@ -778,5 +827,166 @@ mod tests {
     #[test]
     fn the_sweeper_selector_matches_the_label_the_copy_writes() {
         assert_eq!(COPY_SELECTOR, format!("{COPY_LABEL}=true"));
+    }
+
+    fn leftover_list(created: &str) -> Value {
+        json!({"items": [{
+            "metadata": {
+                "name": "yolab-copy-abcd1234",
+                "namespace": "yolab-gitea-ab12",
+                "creationTimestamp": created,
+                "annotations": {
+                    ANN_DEST_NAMESPACE: "yolab-gitea-cd34",
+                    ANN_DEST_PVC: "gitea-cd34-data",
+                }
+            }
+        }]})
+    }
+
+    fn at(stamp: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[tokio::test]
+    async fn cleanup_clears_the_destination_snapshot_then_its_content_then_the_source() {
+        let host = FakeHost::new().ok("kubectl delete", "");
+        cleanup(
+            &host,
+            "yolab-copy-abcd1234",
+            "yolab-gitea-ab12",
+            "yolab-gitea-cd34",
+        )
+        .await;
+
+        let dest = host
+            .position("delete volumesnapshot yolab-copy-abcd1234 --ignore-not-found --wait=false -n yolab-gitea-cd34")
+            .expect("the destination snapshot is cleared");
+        let content = host
+            .position("delete volumesnapshotcontent yolab-copy-abcd1234")
+            .expect("the content is cleared");
+        let source = host
+            .position("delete volumesnapshot yolab-copy-abcd1234 --ignore-not-found --wait=false -n yolab-gitea-ab12")
+            .expect("the source snapshot is cleared");
+        assert!(
+            dest < content && content < source,
+            "the content is retained, so it has to go before the source snapshot it was cut from"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_cluster_is_not_mistaken_for_a_deleted_namespace() {
+        let gone = FakeHost::new().fail(
+            "kubectl get namespace yolab-gitea-cd34",
+            "Error from server (NotFound): namespaces \"yolab-gitea-cd34\" not found",
+        );
+        assert!(!namespace_exists(&gone, "yolab-gitea-cd34").await);
+
+        let down = FakeHost::new().fail(
+            "kubectl get namespace yolab-gitea-cd34",
+            "The connection to the server localhost:6443 was refused",
+        );
+        assert!(
+            namespace_exists(&down, "yolab-gitea-cd34").await,
+            "reading an unreachable cluster as a deleted namespace would sweep a live copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pvc_phase_is_read_and_a_pvc_that_is_gone_has_none() {
+        let bound = FakeHost::new().ok(
+            "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
+            r#"{"status":{"phase":"Bound"}}"#,
+        );
+        assert_eq!(
+            pvc_phase(&bound, "yolab-gitea-cd34", "gitea-cd34-data").await,
+            Some("Bound".to_string())
+        );
+
+        let missing = FakeHost::new().fail(
+            "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
+            "Error from server (NotFound): persistentvolumeclaims \"gitea-cd34-data\" not found",
+        );
+        assert_eq!(
+            pvc_phase(&missing, "yolab-gitea-cd34", "gitea-cd34-data").await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_destination_pvc_that_was_removed_ends_the_wait_instead_of_spinning() {
+        let host = FakeHost::new().fail(
+            "kubectl get pvc data -n yolab-gitea-cd34",
+            "Error from server (NotFound): persistentvolumeclaims \"data\" not found",
+        );
+        let e = wait_for_pvc_bound(&host, "yolab-gitea-cd34", "data", 60)
+            .await
+            .expect_err("a removed pvc never binds");
+        assert!(e.to_string().contains("removed before it bound"));
+    }
+
+    #[tokio::test]
+    async fn a_bound_destination_pvc_ends_the_wait() {
+        let host = FakeHost::new().ok(
+            "kubectl get pvc data -n yolab-gitea-cd34",
+            r#"{"status":{"phase":"Bound"}}"#,
+        );
+        assert!(wait_for_pvc_bound(&host, "yolab-gitea-cd34", "data", 60)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_destination_pvc_that_will_never_bind_ends_the_wait() {
+        let host = FakeHost::new().ok(
+            "kubectl get pvc data -n yolab-gitea-cd34",
+            r#"{"status":{"phase":"Lost"}}"#,
+        );
+        let e = wait_for_pvc_bound(&host, "yolab-gitea-cd34", "data", 60)
+            .await
+            .expect_err("a lost pvc never binds");
+        assert!(e.to_string().contains("Lost"));
+    }
+
+    #[tokio::test]
+    async fn the_sweeper_clears_a_copy_whose_destination_has_bound() {
+        let host = FakeHost::new()
+            .ok(
+                "kubectl get volumesnapshot -A",
+                &leftover_list("2026-09-25T11:00:00Z").to_string(),
+            )
+            .ok("kubectl get namespace yolab-gitea-cd34", r#"{"kind":"Namespace"}"#)
+            .ok(
+                "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
+                r#"{"status":{"phase":"Bound"}}"#,
+            )
+            .ok("kubectl delete", "");
+
+        let tick = sweep_once(&host, at("2026-09-25T12:00:00Z")).await.unwrap();
+        assert!(matches!(tick, crate::runtime::Tick::Done));
+        assert!(host.ran("delete volumesnapshot yolab-copy-abcd1234"));
+    }
+
+    #[tokio::test]
+    async fn the_sweeper_leaves_a_copy_that_is_still_running() {
+        let host = FakeHost::new()
+            .ok(
+                "kubectl get volumesnapshot -A",
+                &leftover_list("2026-09-25T11:00:00Z").to_string(),
+            )
+            .ok("kubectl get namespace yolab-gitea-cd34", r#"{"kind":"Namespace"}"#)
+            .ok(
+                "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
+                r#"{"status":{"phase":"Pending"}}"#,
+            )
+            .ok("kubectl delete", "");
+
+        let tick = sweep_once(&host, at("2026-09-25T12:00:00Z")).await.unwrap();
+        assert!(matches!(tick, crate::runtime::Tick::Idle(_)));
+        assert!(
+            !host.ran("kubectl delete"),
+            "a clone still being filled must not have its snapshots pulled out from under it"
+        );
     }
 }
