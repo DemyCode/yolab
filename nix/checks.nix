@@ -306,7 +306,7 @@ in let
         "routers/backup.rs" = 12;
         "routers/backup_common.rs" = 10;
         "routers/ceph.rs" = 2;
-        "routers/copy.rs" = 10;
+        "routers/copy.rs" = 3;
         "routers/disks.rs" = 4;
         "routers/restore.rs" = 10;
         "runtime/leader.rs" = 4;
