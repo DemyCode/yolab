@@ -7,8 +7,17 @@ import { Plus, X } from "lucide-react";
 import { showIfMet, type ShowIf } from "@/lib/form";
 
 export function FieldTemplate(props: FieldTemplateProps) {
-  const { id, label, help, errors, children, schema, hidden, uiSchema, formContext } =
-    props;
+  const {
+    id,
+    label,
+    help,
+    errors,
+    children,
+    schema,
+    hidden,
+    uiSchema,
+    formContext,
+  } = props;
 
   if (hidden) return null;
 
