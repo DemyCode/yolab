@@ -6,15 +6,7 @@ import type {
 import { Plus, X } from "lucide-react";
 
 export function FieldTemplate(props: FieldTemplateProps) {
-  const {
-    id,
-    label,
-    help,
-    errors,
-    children,
-    schema,
-    hidden,
-  } = props;
+  const { id, label, help, errors, children, schema, hidden } = props;
 
   if (hidden) return null;
 

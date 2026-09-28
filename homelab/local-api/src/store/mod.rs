@@ -330,7 +330,9 @@ impl Store {
     }
 
     pub fn storage_policy(&self) -> Result<Option<StoragePolicy>, StoreError> {
-        Ok(self.read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?.map(|e| e.value))
+        Ok(self
+            .read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?
+            .map(|e| e.value))
     }
 
     pub fn mark_policy_seeded(&mut self) -> Result<bool, StoreError> {
@@ -341,11 +343,7 @@ impl Store {
         self.flagged(POLICY_SEEDED_KEY)
     }
 
-    pub fn set_machine_state(
-        &mut self,
-        node: &str,
-        state: MachineState,
-    ) -> Result<(), StoreError> {
+    pub fn set_machine_state(&mut self, node: &str, state: MachineState) -> Result<(), StoreError> {
         self.write_at(&format!("{MACHINE_PREFIX}{node}"), &state, Origin::User)
     }
 
@@ -819,7 +817,9 @@ mod tests {
         let mut store = Store::new("node1");
         let mut newer = definition("gitea");
         newer.chart_version = "2.0.0".to_string();
-        store.set_app_definition("yolab-gitea-ab12", &newer).unwrap();
+        store
+            .set_app_definition("yolab-gitea-ab12", &newer)
+            .unwrap();
 
         assert!(!store
             .import_app_definition("yolab-gitea-ab12", &definition("gitea"))
@@ -881,7 +881,11 @@ mod tests {
             Some(MachineState::Draining)
         );
         assert_eq!(
-            after.app_definition("yolab-gitea-ab12").unwrap().unwrap().app_id,
+            after
+                .app_definition("yolab-gitea-ab12")
+                .unwrap()
+                .unwrap()
+                .app_id,
             "gitea"
         );
         assert_eq!(after.storage_policy().unwrap(), Some(policy(3)));

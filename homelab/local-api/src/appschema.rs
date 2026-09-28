@@ -128,7 +128,10 @@ impl OutputSpec {
         match jsonschema::validator_for(when) {
             Ok(validator) => validator.is_valid(settings),
             Err(e) => {
-                tracing::warn!("output {}: its `when` is not a valid schema ({e})", self.key);
+                tracing::warn!(
+                    "output {}: its `when` is not a valid schema ({e})",
+                    self.key
+                );
                 false
             }
         }
@@ -149,7 +152,8 @@ pub fn parse_output(key: &str, spec: &Value) -> Result<OutputSpec, String> {
     let source = match &spec["source"] {
         Value::Object(s) if s.len() == 1 => {
             if let Some(pattern) = s.get("logs").and_then(Value::as_str) {
-                let re = Regex::new(pattern).map_err(|e| format!("its logs pattern is invalid: {e}"))?;
+                let re =
+                    Regex::new(pattern).map_err(|e| format!("its logs pattern is invalid: {e}"))?;
                 if re.captures_len() < 2 {
                     return Err("its logs pattern has no capture group for the value".into());
                 }
@@ -157,7 +161,9 @@ pub fn parse_output(key: &str, spec: &Value) -> Result<OutputSpec, String> {
             } else if let Some(field) = s.get("config").and_then(Value::as_str) {
                 Source::Config(field.to_string())
             } else {
-                return Err("its source is neither {\"logs\": <pattern>} nor {\"config\": <field>}".into());
+                return Err(
+                    "its source is neither {\"logs\": <pattern>} nor {\"config\": <field>}".into(),
+                );
             }
         }
         _ => return Err("it has no source".into()),
@@ -221,7 +227,8 @@ mod legacy {
     fn outputs_from(document: &mut Value, list: &Value) {
         let mut outputs = Map::new();
         for item in list.as_array().into_iter().flatten() {
-            let (Some(key), Some(pattern)) = (item["key"].as_str(), item["pattern"].as_str()) else {
+            let (Some(key), Some(pattern)) = (item["key"].as_str(), item["pattern"].as_str())
+            else {
                 continue;
             };
             let format = match item["type"].as_str() {
@@ -309,7 +316,10 @@ mod tests {
     #[test]
     fn an_output_whose_condition_fails_is_not_expected() {
         let off = settings(json!({ "file_explorer_enabled": false }));
-        assert_eq!(keys(&explorer_app().applicable_outputs(&off)), vec!["url", "password"]);
+        assert_eq!(
+            keys(&explorer_app().applicable_outputs(&off)),
+            vec!["url", "password"]
+        );
     }
 
     #[test]
@@ -373,13 +383,17 @@ mod tests {
 
     #[test]
     fn parse_output_explains_what_is_wrong() {
-        assert!(parse_output("a", &json!({})).unwrap_err().contains("no source"));
+        assert!(parse_output("a", &json!({}))
+            .unwrap_err()
+            .contains("no source"));
         assert!(parse_output("a", &json!({ "source": { "logs": "x" } }))
             .unwrap_err()
             .contains("capture group"));
-        assert!(parse_output("a", &json!({ "source": { "config": "p" }, "when": 3 }))
-            .unwrap_err()
-            .contains("when"));
+        assert!(
+            parse_output("a", &json!({ "source": { "config": "p" }, "when": 3 }))
+                .unwrap_err()
+                .contains("when")
+        );
     }
 
     #[test]
@@ -416,11 +430,18 @@ mod tests {
             app.credentials(),
             HashSet::from(["admin_password".to_string(), "pin".to_string()])
         );
-        assert_eq!(app.config()["properties"]["admin_password"]["generate"], json!(true));
+        assert_eq!(
+            app.config()["properties"]["admin_password"]["generate"],
+            json!(true)
+        );
         assert!(app.config()["properties"]["pin"].get("generate").is_none());
 
         let outputs = app.outputs();
-        assert_eq!(keys(&outputs), vec!["url", "owner_password"], "hidden outputs are not shown");
+        assert_eq!(
+            keys(&outputs),
+            vec!["url", "owner_password"],
+            "hidden outputs are not shown"
+        );
         assert_eq!(outputs[0].format, Format::Uri);
         assert_eq!(outputs[1].format, Format::Secret);
     }

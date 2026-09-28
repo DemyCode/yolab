@@ -91,7 +91,9 @@ class CheckSchema(unittest.TestCase):
 
     def test_an_unknown_source_is_refused(self):
         out = {"type": "string", "title": "X", "source": {"env": "X"}}
-        self.assertTrue(any("unknown source" in f for f in failures(schema(outputs={"x": out}))))
+        self.assertTrue(
+            any("unknown source" in f for f in failures(schema(outputs={"x": out})))
+        )
 
     def test_a_logs_pattern_must_compile(self):
         found = failures(schema(outputs={"x": logs("(")}))

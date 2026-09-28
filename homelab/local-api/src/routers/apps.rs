@@ -253,10 +253,12 @@ pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
 }
 
 fn stored_definition(ns: &str) -> Option<AppDefinition> {
-    crate::store::locked().app_definition(ns).unwrap_or_else(|e| {
-        tracing::error!("{ns}: the replicated copy of its settings is unreadable ({e})");
-        None
-    })
+    crate::store::locked()
+        .app_definition(ns)
+        .unwrap_or_else(|e| {
+            tracing::error!("{ns}: the replicated copy of its settings is unreadable ({e})");
+            None
+        })
 }
 
 fn take_definition_in(ns: &str, def: &AppDefinition) {
@@ -932,7 +934,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let config = saved_settings(&ann);
         let outputs = listed_outputs(
             &app_schema(&catalog_dir, &id),
-            remembered.remove(&format!("yolab-{name}")).unwrap_or_default(),
+            remembered
+                .remove(&format!("yolab-{name}"))
+                .unwrap_or_default(),
             &ann,
             &config,
         );
@@ -1343,7 +1347,9 @@ async fn outputs_of(
     let full_config = match read_definition(&ns).await {
         Ok(def) => def.config,
         Err(e) => {
-            tracing::warn!("{ns}: settings unreadable, outputs taken from settings are hidden ({e})");
+            tracing::warn!(
+                "{ns}: settings unreadable, outputs taken from settings are hidden ({e})"
+            );
             without_redacted(&known.settings)
         }
     };
@@ -2207,7 +2213,9 @@ mod tests {
     #[test]
     fn an_app_missing_from_the_catalog_has_no_schema() {
         let dir = chart_dir_with(filebrowser_schema());
-        assert!(app_schema(dir.path(), "not-in-the-catalog").outputs().is_empty());
+        assert!(app_schema(dir.path(), "not-in-the-catalog")
+            .outputs()
+            .is_empty());
         assert!(app_schema(dir.path(), "").outputs().is_empty());
     }
 
@@ -2265,7 +2273,8 @@ mod tests {
         use crate::host::fake::FakeHost;
 
         const NS: &str = "yolab-filebrowser-ab12";
-        const NOT_FOUND: &str = r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
+        const NOT_FOUND: &str =
+            r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
 
         fn namespace_with(annotations: Value) -> String {
             json!({ "metadata": { "name": NS, "annotations": annotations } }).to_string()
@@ -2280,7 +2289,8 @@ mod tests {
 
         fn stored_secret(key: &str, value: &str) -> String {
             use base64::Engine as _;
-            let json = format!(r#"{{"{key}":{{"value":"{value}","found_at":"2026-09-28T12:00:00Z"}}}}"#);
+            let json =
+                format!(r#"{{"{key}":{{"value":"{value}","found_at":"2026-09-28T12:00:00Z"}}}}"#);
             let encoded = base64::engine::general_purpose::STANDARD.encode(json);
             json!({ "data": { "outputs.json": encoded } }).to_string()
         }
@@ -2289,10 +2299,18 @@ mod tests {
         async fn showing_the_page_reads_what_is_remembered_without_touching_the_logs() {
             let catalog = chart_dir_with(filebrowser_schema());
             let host = FakeHost::new()
-                .ok("kubectl get namespace yolab-filebrowser-ab12", &filebrowser_ns(true))
-                .ok("kubectl get secret yolab-outputs", &stored_secret("url", "https://files.x"));
+                .ok(
+                    "kubectl get namespace yolab-filebrowser-ab12",
+                    &filebrowser_ns(true),
+                )
+                .ok(
+                    "kubectl get secret yolab-outputs",
+                    &stored_secret("url", "https://files.x"),
+                );
 
-            let known = known_outputs(&host, catalog.path(), NS, false).await.unwrap();
+            let known = known_outputs(&host, catalog.path(), NS, false)
+                .await
+                .unwrap();
 
             assert_eq!(known.remembered["url"].value, "https://files.x");
             assert!(!host.ran("logs") && !host.ran("get pods"));
@@ -2303,7 +2321,10 @@ mod tests {
             let catalog = chart_dir_with(filebrowser_schema());
             let pods = r#"{"items":[{"metadata":{"name":"gw"},"spec":{"initContainers":[{"name":"file-explorer-init"}],"containers":[]}}]}"#;
             let host = FakeHost::new()
-                .ok("kubectl get namespace yolab-filebrowser-ab12", &filebrowser_ns(true))
+                .ok(
+                    "kubectl get namespace yolab-filebrowser-ab12",
+                    &filebrowser_ns(true),
+                )
                 .fail("kubectl get secret yolab-outputs", NOT_FOUND)
                 .ok("kubectl get pods", pods)
                 .ok(
@@ -2312,7 +2333,9 @@ mod tests {
                 )
                 .ok("kubectl-apply", "");
 
-            let known = known_outputs(&host, catalog.path(), NS, true).await.unwrap();
+            let known = known_outputs(&host, catalog.path(), NS, true)
+                .await
+                .unwrap();
 
             assert_eq!(known.remembered["file_explorer_password"].value, "pw123");
         }
@@ -2321,10 +2344,15 @@ mod tests {
         async fn the_page_only_expects_outputs_that_apply_to_this_install() {
             let catalog = chart_dir_with(filebrowser_schema());
             let host = FakeHost::new()
-                .ok("kubectl get namespace yolab-filebrowser-ab12", &filebrowser_ns(false))
+                .ok(
+                    "kubectl get namespace yolab-filebrowser-ab12",
+                    &filebrowser_ns(false),
+                )
                 .fail("kubectl get secret yolab-outputs", NOT_FOUND);
 
-            let known = known_outputs(&host, catalog.path(), NS, false).await.unwrap();
+            let known = known_outputs(&host, catalog.path(), NS, false)
+                .await
+                .unwrap();
 
             let keys: Vec<&str> = known.specs.iter().map(|s| s.key.as_str()).collect();
             assert_eq!(keys, vec!["url", "password"]);
@@ -2341,7 +2369,9 @@ mod tests {
                 .ok("kubectl get namespace yolab-filebrowser-ab12", &ns)
                 .fail("kubectl get secret yolab-outputs", NOT_FOUND);
 
-            let known = known_outputs(&host, catalog.path(), NS, false).await.unwrap();
+            let known = known_outputs(&host, catalog.path(), NS, false)
+                .await
+                .unwrap();
 
             assert_eq!(known.remembered["url"].value, "https://old.x");
         }
@@ -2349,8 +2379,11 @@ mod tests {
         #[tokio::test]
         async fn an_app_whose_namespace_cannot_be_read_is_an_error() {
             let catalog = chart_dir_with(filebrowser_schema());
-            let host = FakeHost::new().fail("kubectl get namespace", "Unable to connect to the server");
-            assert!(known_outputs(&host, catalog.path(), NS, false).await.is_err());
+            let host =
+                FakeHost::new().fail("kubectl get namespace", "Unable to connect to the server");
+            assert!(known_outputs(&host, catalog.path(), NS, false)
+                .await
+                .is_err());
         }
 
         #[tokio::test]
