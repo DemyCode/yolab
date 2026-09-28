@@ -252,8 +252,8 @@ pub async fn rescan<H: Host>(
     let mut remembered = stored.unwrap_or_default();
     let mut changed = false;
     for (key, found) in from_legacy_annotation(ann, Utc::now()) {
-        if !remembered.contains_key(&key) {
-            remembered.insert(key, found);
+        if let std::collections::btree_map::Entry::Vacant(slot) = remembered.entry(key) {
+            slot.insert(found);
             changed = true;
         }
     }
