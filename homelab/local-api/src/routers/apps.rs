@@ -868,7 +868,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let (ns_out, pods_out, mut remembered) = tokio::join!(
         crate::kubectl::get_json(&ns_args),
         crate::kubectl::get_json(&pod_args),
-        crate::outputs::remembered_everywhere(),
+        crate::outputs::remembered_everywhere(&crate::host::HOST),
     );
     let v: Value = ns_out?;
 
@@ -1258,10 +1258,13 @@ fn listed_outputs(
     )
 }
 
-pub(crate) async fn installed_apps() -> anyhow::Result<Vec<InstalledApp>> {
+pub(crate) async fn installed_apps<H: crate::host::Host>(
+    host: &H,
+) -> anyhow::Result<Vec<InstalledApp>> {
     let selector = format!("{LABEL_MANAGED}=true");
-    let listed =
-        crate::kubectl::get_json(&["get", "namespaces", "-l", &selector, "-o", "json"]).await?;
+    let listed = host
+        .kubectl_json(&["get", "namespaces", "-l", &selector, "-o", "json"])
+        .await?;
     Ok(listed["items"]
         .as_array()
         .into_iter()
@@ -1282,48 +1285,70 @@ pub(crate) async fn installed_apps() -> anyhow::Result<Vec<InstalledApp>> {
         .collect())
 }
 
-async fn outputs_of(
-    state: &AppState,
-    instance_name: &str,
+pub(crate) struct KnownOutputs {
+    pub specs: Vec<crate::appschema::OutputSpec>,
+    pub remembered: crate::outputs::Remembered,
+    pub settings: serde_json::Map<String, Value>,
+}
+
+pub(crate) async fn known_outputs<H: crate::host::Host>(
+    host: &H,
+    catalog_dir: &std::path::Path,
+    ns: &str,
     rescan_first: bool,
-) -> Result<Json<OutputsResponse>> {
-    let ns = format!("yolab-{instance_name}");
-    let ns_v = crate::kubectl::get_json(&["get", "namespace", &ns, "-o", "json"]).await?;
+) -> anyhow::Result<KnownOutputs> {
+    let ns_v = host
+        .kubectl_json(&["get", "namespace", ns, "-o", "json"])
+        .await?;
     let ann = ns_v["metadata"]["annotations"]
         .as_object()
         .cloned()
         .unwrap_or_default();
-    let id = ann
-        .get(ANN_APP_ID)
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let app = app_schema(&state.config.catalog_dir(), &id);
+    let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("");
+    let app = app_schema(catalog_dir, id);
     let settings = saved_settings(&ann);
 
     let remembered = if rescan_first {
-        crate::outputs::rescan(&ns, &app, &settings, &ann).await?
+        crate::outputs::rescan(host, ns, &app, &settings, &ann).await?
     } else {
-        let mut stored = crate::outputs::read_remembered(&ns).await?;
+        let mut stored = crate::outputs::read_remembered(host, ns)
+            .await?
+            .unwrap_or_default();
         for (key, found) in crate::outputs::from_legacy_annotation(&ann, chrono::Utc::now()) {
             stored.entry(key).or_insert(found);
         }
         stored
     };
 
+    Ok(KnownOutputs {
+        specs: app.applicable_outputs(&settings),
+        remembered,
+        settings,
+    })
+}
+
+async fn outputs_of(
+    state: &AppState,
+    instance_name: &str,
+    rescan_first: bool,
+) -> Result<Json<OutputsResponse>> {
+    let ns = format!("yolab-{instance_name}");
+    let known = known_outputs(
+        &crate::host::HOST,
+        &state.config.catalog_dir(),
+        &ns,
+        rescan_first,
+    )
+    .await?;
     let full_config = match read_definition(&ns).await {
         Ok(def) => def.config,
         Err(e) => {
             tracing::warn!("{ns}: settings unreadable, outputs taken from settings are hidden ({e})");
-            without_redacted(&settings)
+            without_redacted(&known.settings)
         }
     };
     Ok(Json(OutputsResponse {
-        outputs: crate::outputs::shown(
-            &app.applicable_outputs(&settings),
-            &remembered,
-            &full_config,
-        ),
+        outputs: crate::outputs::shown(&known.specs, &known.remembered, &full_config),
     }))
 }
 
@@ -2234,6 +2259,121 @@ mod tests {
         assert_eq!(saved_settings(&ann)["file_explorer_enabled"], json!(false));
         assert!(saved_settings(&serde_json::Map::new()).is_empty());
     }
+
+    mod outputs_endpoints {
+        use super::*;
+        use crate::host::fake::FakeHost;
+
+        const NS: &str = "yolab-filebrowser-ab12";
+        const NOT_FOUND: &str = r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
+
+        fn namespace_with(annotations: Value) -> String {
+            json!({ "metadata": { "name": NS, "annotations": annotations } }).to_string()
+        }
+
+        fn filebrowser_ns(explorer: bool) -> String {
+            namespace_with(json!({
+                ANN_APP_ID: "filebrowser",
+                ANN_CONFIG: format!(r#"{{"password":"{REDACTED}","file_explorer_enabled":{explorer}}}"#)
+            }))
+        }
+
+        fn stored_secret(key: &str, value: &str) -> String {
+            use base64::Engine as _;
+            let json = format!(r#"{{"{key}":{{"value":"{value}","found_at":"2026-09-28T12:00:00Z"}}}}"#);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(json);
+            json!({ "data": { "outputs.json": encoded } }).to_string()
+        }
+
+        #[tokio::test]
+        async fn showing_the_page_reads_what_is_remembered_without_touching_the_logs() {
+            let catalog = chart_dir_with(filebrowser_schema());
+            let host = FakeHost::new()
+                .ok("kubectl get namespace yolab-filebrowser-ab12", &filebrowser_ns(true))
+                .ok("kubectl get secret yolab-outputs", &stored_secret("url", "https://files.x"));
+
+            let known = known_outputs(&host, catalog.path(), NS, false).await.unwrap();
+
+            assert_eq!(known.remembered["url"].value, "https://files.x");
+            assert!(!host.ran("logs") && !host.ran("get pods"));
+        }
+
+        #[tokio::test]
+        async fn check_again_reads_the_logs_now() {
+            let catalog = chart_dir_with(filebrowser_schema());
+            let pods = r#"{"items":[{"metadata":{"name":"gw"},"spec":{"initContainers":[{"name":"file-explorer-init"}],"containers":[]}}]}"#;
+            let host = FakeHost::new()
+                .ok("kubectl get namespace yolab-filebrowser-ab12", &filebrowser_ns(true))
+                .fail("kubectl get secret yolab-outputs", NOT_FOUND)
+                .ok("kubectl get pods", pods)
+                .ok(
+                    "kubectl logs -n yolab-filebrowser-ab12 gw -c file-explorer-init",
+                    "2026-09-28T12:00:00Z YOLAB_OUTPUT file_explorer_password pw123",
+                )
+                .ok("kubectl-apply", "");
+
+            let known = known_outputs(&host, catalog.path(), NS, true).await.unwrap();
+
+            assert_eq!(known.remembered["file_explorer_password"].value, "pw123");
+        }
+
+        #[tokio::test]
+        async fn the_page_only_expects_outputs_that_apply_to_this_install() {
+            let catalog = chart_dir_with(filebrowser_schema());
+            let host = FakeHost::new()
+                .ok("kubectl get namespace yolab-filebrowser-ab12", &filebrowser_ns(false))
+                .fail("kubectl get secret yolab-outputs", NOT_FOUND);
+
+            let known = known_outputs(&host, catalog.path(), NS, false).await.unwrap();
+
+            let keys: Vec<&str> = known.specs.iter().map(|s| s.key.as_str()).collect();
+            assert_eq!(keys, vec!["url", "password"]);
+        }
+
+        #[tokio::test]
+        async fn values_found_by_the_old_scanner_still_show_before_the_first_rescan() {
+            let catalog = chart_dir_with(filebrowser_schema());
+            let ns = namespace_with(json!({
+                ANN_APP_ID: "filebrowser",
+                "yolab.io/outputs": r#"[{"key":"url","value":"https://old.x","type":"url"}]"#
+            }));
+            let host = FakeHost::new()
+                .ok("kubectl get namespace yolab-filebrowser-ab12", &ns)
+                .fail("kubectl get secret yolab-outputs", NOT_FOUND);
+
+            let known = known_outputs(&host, catalog.path(), NS, false).await.unwrap();
+
+            assert_eq!(known.remembered["url"].value, "https://old.x");
+        }
+
+        #[tokio::test]
+        async fn an_app_whose_namespace_cannot_be_read_is_an_error() {
+            let catalog = chart_dir_with(filebrowser_schema());
+            let host = FakeHost::new().fail("kubectl get namespace", "Unable to connect to the server");
+            assert!(known_outputs(&host, catalog.path(), NS, false).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn installed_apps_leaves_out_what_is_being_removed_or_is_not_an_app() {
+            let listed = json!({ "items": [
+                { "metadata": { "name": "yolab-a", "annotations": { ANN_APP_ID: "gitea" } },
+                  "status": { "phase": "Active" } },
+                { "metadata": { "name": "yolab-b", "annotations": { ANN_APP_ID: "gitea" } },
+                  "status": { "phase": "Terminating" } },
+                { "metadata": { "name": "yolab-c", "annotations": {} },
+                  "status": { "phase": "Active" } },
+                { "metadata": { "name": "yolab-d" }, "status": { "phase": "Active" } }
+            ]});
+            let host = FakeHost::new().ok("kubectl get namespaces", &listed.to_string());
+
+            let apps = installed_apps(&host).await.unwrap();
+
+            let names: Vec<&str> = apps.iter().map(|a| a.namespace.as_str()).collect();
+            assert_eq!(names, vec!["yolab-a"]);
+            assert_eq!(apps[0].app_id, "gitea");
+        }
+    }
+
     #[test]
     fn saved_settings_are_read_exactly_or_reported() {
         use std::collections::HashMap;

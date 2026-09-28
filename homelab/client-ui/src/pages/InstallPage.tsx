@@ -25,8 +25,8 @@ import {
   installBlocker,
   installOrigin,
   installSource,
-  keepsSourceAddress,
   phaseFrom,
+  seedForm,
   snapshotNamespace,
   instanceNameFor,
 } from "@/lib/install";
@@ -168,30 +168,15 @@ export function InstallPage() {
     const key = `${appId}|${sourceDef ? "source" : "new"}`;
     if (seeded.current === key) return;
     seeded.current = key;
-    const seed: Record<string, unknown> = sourceDef
-      ? { ...(sourceDef.config as Record<string, unknown>) }
-      : {};
-    for (const [name, prop] of Object.entries(schema.properties)) {
-      if (prop.writeOnly) {
-        if (prop.generate && !sourceDef) {
-          seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
-        }
-      } else if (seed[name] === undefined && prop.default !== undefined) {
-        seed[name] = prop.default;
-      }
-    }
-    if (sourceDef && addressKey && !keepsSourceAddress(origin.mode)) {
-      delete seed[addressKey];
-    }
+    const seed = seedForm(
+      schema,
+      sourceDef ? (sourceDef.config as Record<string, unknown>) : null,
+      origin.mode,
+      generateSecret,
+    );
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFormData(seed);
-  }, [
-    appId,
-    schema.properties,
-    sourceDef,
-    addressKey,
-    origin.mode,
-  ]);
+  }, [appId, schema, sourceDef, origin.mode]);
 
   const values = useMemo(() => {
     if (!addressKey) return formData;

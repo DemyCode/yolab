@@ -9,6 +9,7 @@ import {
   snapshotNamespace,
   stripInstanceId,
   phaseFrom,
+  seedForm,
   instanceNameFor,
 } from "./install";
 import type { AppDefinition, AppInfo } from "@/types/apps";
@@ -350,5 +351,88 @@ describe("phaseFrom", () => {
   it("leaves ordinary chatter alone rather than inventing a step", () => {
     expect(phaseFrom("NOTES:")).toBeNull();
     expect(phaseFrom("")).toBeNull();
+  });
+});
+
+describe("seedForm", () => {
+  const schema = {
+    properties: {
+      subdomain: { type: "string", format: "tunnel", default: "files" },
+      password: {
+        type: "string",
+        writeOnly: true,
+        generate: true,
+        minLength: 32,
+      },
+      pin: { type: "string", writeOnly: true },
+      storage_size: { type: "string", default: "50Gi" },
+    },
+  };
+  const counter = () => {
+    const lengths: number[] = [];
+    const generate = (n: number) => {
+      lengths.push(n);
+      return "x".repeat(n);
+    };
+    return { lengths, generate };
+  };
+
+  it("fills defaults and generates the credentials that ask for it", () => {
+    const { lengths, generate } = counter();
+    const seed = seedForm(schema, null, "fresh", generate);
+    expect(seed).toEqual({
+      subdomain: "files",
+      password: "x".repeat(32),
+      storage_size: "50Gi",
+    });
+    expect(lengths).toEqual([32]);
+  });
+
+  it("never invents a credential the person is meant to type", () => {
+    const seed = seedForm(schema, null, "fresh", counter().generate);
+    expect(seed.pin).toBeUndefined();
+  });
+
+  it("generates at least 24 characters even when the schema allows fewer", () => {
+    const { lengths, generate } = counter();
+    seedForm(
+      { properties: { key: { writeOnly: true, generate: true } } },
+      null,
+      "fresh",
+      generate,
+    );
+    expect(lengths).toEqual([24]);
+  });
+
+  it("keeps a copied app's settings, credentials included, instead of generating new ones", () => {
+    const { lengths, generate } = counter();
+    const seed = seedForm(
+      schema,
+      {
+        subdomain: "files",
+        password: "__redacted__",
+        storage_size: "500Gi",
+      },
+      "restore",
+      generate,
+    );
+    expect(seed.password).toBe("__redacted__");
+    expect(seed.storage_size).toBe("500Gi");
+    expect(lengths).toEqual([]);
+  });
+
+  it("gives a duplicate its own address rather than the original's", () => {
+    const seed = seedForm(
+      schema,
+      { subdomain: "files", storage_size: "500Gi" },
+      "duplicate",
+      counter().generate,
+    );
+    expect(seed.subdomain).toBeUndefined();
+  });
+
+  it("fills in defaults for settings the copied app never had", () => {
+    const seed = seedForm(schema, { subdomain: "files" }, "restore", counter().generate);
+    expect(seed.storage_size).toBe("50Gi");
   });
 });
