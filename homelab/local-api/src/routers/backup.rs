@@ -1658,7 +1658,8 @@ mod tests {
                 "yolab-backups",
                 json!([{
                     "id": "bk-waiting", "namespace": "yolab-notes",
-                    "started_at": "2026-09-28T00:00:00Z", "state": QUEUED
+                    "started_at": "2026-09-28T00:00:00Z", "state": QUEUED,
+                    "owner": "", "heartbeat": ""
                 }]),
             )
             .await;
