@@ -3,7 +3,7 @@ name: mastodon
 description: "Your own corner of the fediverse — a social server you run"
 home: https://joinmastodon.org
 type: application
-version: 0.1.1
+version: 0.1.2
 
 dependencies:
   - name: yolab-common
@@ -14,19 +14,3 @@ annotations:
   yolab.io/display-name: "Mastodon"
   yolab.io/icon: "🐘"
   yolab.io/category: "social"
-  yolab.io/uischema: |
-    {
-      "subdomain": {
-        "ui:widget": "TunnelWidget"
-      },
-      "smtp_password": {
-        "ui:widget": "password"
-      }
-    }
-  yolab.io/outputs: |
-    [
-      { "key": "owner_user", "label": "Owner username", "type": "text", "pattern": "YOLAB_OUTPUT owner_user (\\S+)" },
-      { "key": "owner_password", "label": "Owner password", "type": "text", "pattern": "YOLAB_OUTPUT owner_password (\\S+)" },
-      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
-      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
-    ]

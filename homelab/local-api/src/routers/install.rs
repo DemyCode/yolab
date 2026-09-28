@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::config::Config;
 use crate::proc::KillOnDrop;
 use crate::routers::apps::{
-    chart_uischema, collect_runtime, merge_credentials, rollback_failed_install, stage_install,
+    app_schema, collect_runtime, merge_credentials, rollback_failed_install, stage_install,
     write_definition, AppDefinition, BackupPolicy, StagedInstall, DEFINITION_SCHEMA,
 };
 
@@ -201,7 +201,7 @@ pub(crate) fn plan(
     config: Map<String, Value>,
     source: Option<&AppDefinition>,
     data: Option<DataOrigin>,
-    uischema: &Value,
+    app: &crate::appschema::AppSchema,
 ) -> Result<InstallPlan, String> {
     let mut plan = InstallPlan {
         app_id: app_id.to_string(),
@@ -214,7 +214,7 @@ pub(crate) fn plan(
         return Ok(plan);
     };
     same_app(app_id, &source.app_id, "the app you are copying")?;
-    plan.config = merge_credentials(plan.config, &source.config, uischema);
+    plan.config = merge_credentials(plan.config, &source.config, app);
     plan.backup = source.backup.clone();
     Ok(plan)
 }
@@ -335,7 +335,7 @@ async fn apply_chart(
     write_definition(
         &staged.ns,
         &definition,
-        &chart_uischema(&cfg.catalog_dir(), job.app_id),
+        &app_schema(&cfg.catalog_dir(), job.app_id),
     )
     .await
     .map_err(|e| anyhow::anyhow!("save this app's settings: {e}"))
@@ -545,6 +545,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn no_schema() -> crate::appschema::AppSchema {
+        crate::appschema::AppSchema::from_parts(Value::Null, &Default::default())
+    }
+
     fn source(kind: &str) -> InstallSource {
         InstallSource {
             kind: kind.to_string(),
@@ -750,7 +754,7 @@ mod tests {
             config.clone(),
             None,
             None,
-            &json!({}),
+            &no_schema(),
         )
         .unwrap();
         assert_eq!(plan.config, config);
@@ -760,14 +764,19 @@ mod tests {
 
     #[test]
     fn a_copy_keeps_the_originals_password_when_the_form_never_showed_it() {
-        let uischema = json!({"admin_password": {"ui:widget": "PasswordWidget"}});
+        let app = crate::appschema::AppSchema::from_parts(
+            json!({ "properties": { "config": { "properties": {
+                "admin_password": { "type": "string", "writeOnly": true, "generate": true }
+            }}}}),
+            &Default::default(),
+        );
         let mut source = definition("gitea");
         source.config = Map::from_iter([("admin_password".into(), json!("original"))]);
         let form = Map::from_iter([
             ("admin_password".into(), json!("__redacted__")),
             ("subdomain".into(), json!("git-copy")),
         ]);
-        let plan = plan("gitea", "gitea-cd34", form, Some(&source), None, &uischema).unwrap();
+        let plan = plan("gitea", "gitea-cd34", form, Some(&source), None, &app).unwrap();
         assert_eq!(plan.config["admin_password"], json!("original"));
         assert_eq!(plan.config["subdomain"], json!("git-copy"));
     }
@@ -785,7 +794,7 @@ mod tests {
             Map::new(),
             Some(&source),
             None,
-            &json!({}),
+            &no_schema(),
         )
         .unwrap();
         assert_eq!(plan.backup, source.backup);
@@ -800,7 +809,7 @@ mod tests {
             Map::new(),
             Some(&source),
             None,
-            &json!({}),
+            &no_schema(),
         )
         .unwrap_err();
         assert!(err.contains("nextcloud") && err.contains("gitea"), "{err}");
@@ -815,7 +824,7 @@ mod tests {
             Map::new(),
             Some(&source),
             None,
-            &json!({})
+            &no_schema()
         )
         .is_ok());
         assert_eq!(same_app("gitea", "", "that backup"), Ok(()));

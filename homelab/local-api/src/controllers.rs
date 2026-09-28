@@ -5,6 +5,8 @@ pub const NAMES: &[&str] = &[
     "backup-scheduler",
     "restore-watchdog",
     "uninstall-watchdog",
+    "outputs",
+    "store-sync",
     "backup-lock-sweeper",
     "copy-sweeper",
     "disks",
@@ -54,6 +56,7 @@ pub fn spawn_all(leader: Leadership) {
     backup::start_heartbeat();
     restore::start_heartbeat();
     spawn(apps::UninstallWatchdogController, &leader);
+    spawn(crate::outputs::OutputsController, &leader);
     spawn(backups::LockSweeperController, &leader);
     spawn(crate::routers::copy::CopySweeperController, &leader);
 
@@ -125,6 +128,8 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "backup-scheduler" => runtime::run_once(&backup::BackupSchedulerController).await,
         "restore-watchdog" => runtime::run_once(&restore::RestoreWatchdogController).await,
         "uninstall-watchdog" => runtime::run_once(&apps::UninstallWatchdogController).await,
+        "outputs" => runtime::run_once(&crate::outputs::OutputsController).await,
+        "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,
         "backup-lock-sweeper" => runtime::run_once(&backups::LockSweeperController).await,
         "copy-sweeper" => runtime::run_once(&crate::routers::copy::CopySweeperController).await,
         "disks" => runtime::run_once(&crate::disks_reconciler::DisksController).await,

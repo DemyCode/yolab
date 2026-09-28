@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
+import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +30,6 @@ import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
   appDisplayName,
-  appFactRows,
   appLinks,
   appState,
   catalogEntry,
@@ -42,7 +42,6 @@ import type {
   CatalogApp,
   DomainResponse,
   PodInfo,
-  ScanOutputsResponse,
 } from "@/types/apps";
 
 function CopyValue({ label, value }: { label: string; value: string }) {
@@ -546,7 +545,6 @@ export function AppDetailPage() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [error, setError] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
 
@@ -574,31 +572,6 @@ export function AppDetailPage() {
       clearInterval(id);
     };
   }, [instanceName]);
-
-  const refreshApps = apps.refresh;
-  const scan = useCallback(async () => {
-    if (!instanceName) return;
-    setScanning(true);
-    try {
-      await api.post<ScanOutputsResponse>(
-        `/api/apps/${instanceName}/scan-outputs`,
-      );
-      await refreshApps();
-      // eslint-disable-next-line no-empty
-    } catch {
-    } finally {
-      setScanning(false);
-    }
-  }, [instanceName, refreshApps]);
-
-  const autoScanned = useRef<string | null>(null);
-  useEffect(() => {
-    if (!app || state !== "ready") return;
-    const missing = (app.outputs_spec ?? []).length > 0 && !app.outputs?.length;
-    if (!missing || autoScanned.current === app.instance_name) return;
-    autoScanned.current = app.instance_name;
-    void scan();
-  }, [app, state, scan]);
 
   if (apps.loading) {
     return (
@@ -637,8 +610,6 @@ export function AppDetailPage() {
   const entry = catalogEntry(app, catalog.data ?? []);
   const name = appDisplayName(app, catalog.data ?? [], apps.data ?? []);
   const links = appLinks(app, domain.data?.domain ?? "");
-  const factRows = appFactRows(app);
-  const expected = (app.outputs_spec ?? []).length;
 
   async function remove() {
     if (!app) return;
@@ -767,52 +738,7 @@ export function AppDetailPage() {
       )}
 
       {}
-      {factRows.length > 0 && (
-        <Card className="mb-4 divide-y divide-border p-0">
-          {factRows.map((f) =>
-            f.value !== null ? (
-              <CopyValue key={f.key} label={f.label} value={f.value} />
-            ) : (
-              <div
-                key={f.key}
-                className="flex items-center justify-between gap-3 p-4"
-              >
-                <span className="text-sm text-fg-muted">{f.label}</span>
-                <span className="flex items-center gap-2 text-sm text-fg-subtle">
-                  <Spinner className="h-3 w-3" />
-                  Waiting for the app to report this…
-                </span>
-              </div>
-            ),
-          )}
-        </Card>
-      )}
-
-      {links.length === 0 && factRows.length === 0 && expected > 0 && (
-        <Card className="mb-4 p-5">
-          <div className="flex items-center gap-3 text-sm text-fg-muted">
-            {scanning ? (
-              <>
-                <Spinner className="h-4 w-4" />
-                Looking for this app&rsquo;s details…
-              </>
-            ) : (
-              <>
-                <span className="flex-1">
-                  This app has not reported its details yet.
-                </span>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => void scan()}
-                >
-                  Look again
-                </Button>
-              </>
-            )}
-          </div>
-        </Card>
-      )}
+      <AppAccess instanceName={app.instance_name} appReady={state === "ready"} />
 
       {entry && (
         <div className="mb-6 flex flex-wrap items-center gap-2">

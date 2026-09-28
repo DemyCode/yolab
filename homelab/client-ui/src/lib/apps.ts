@@ -1,4 +1,4 @@
-import type { AppInfo, CatalogApp } from "@/types/apps";
+import type { AppInfo, AppOutput, CatalogApp } from "@/types/apps";
 
 export interface AppLink {
   label: string;
@@ -20,9 +20,9 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
   const seen = new Set<string>();
 
   for (const o of app.outputs ?? []) {
-    if (o.type !== "url" || !o.value || seen.has(o.value)) continue;
+    if (o.format !== "uri" || !o.value || seen.has(o.value)) continue;
     seen.add(o.value);
-    links.push({ label: o.label || "Open", url: o.value });
+    links.push({ label: o.title || "Open", url: o.value });
   }
 
   const subdomain = app.config?.subdomain;
@@ -37,39 +37,19 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
   return links;
 }
 
-export interface AppFactRow {
-  key: string;
-  label: string;
-  value: string | null;
+export type OutputState = "ready" | "waiting" | "unset";
+
+export function outputState(output: AppOutput): OutputState {
+  if (output.value) return "ready";
+  return output.from_config ? "unset" : "waiting";
 }
 
-export function appFactRows(app: AppInfo): AppFactRow[] {
-  const found = new Map(
-    (app.outputs ?? [])
-      .filter((o) => o.type !== "url" && o.type !== "hidden" && o.value)
-      .map((o) => [o.key, o]),
-  );
+export function accessRows(outputs: AppOutput[]): AppOutput[] {
+  return outputs.filter((o) => !(o.format === "uri" && o.value));
+}
 
-  const rows: AppFactRow[] = [];
-  const seen = new Set<string>();
-
-  for (const spec of app.outputs_spec ?? []) {
-    if (spec.type === "url" || spec.type === "hidden") continue;
-    seen.add(spec.key);
-    const hit = found.get(spec.key);
-    rows.push({
-      key: spec.key,
-      label: hit?.label || spec.label || spec.key,
-      value: hit?.value ?? null,
-    });
-  }
-
-  for (const [key, o] of found) {
-    if (!seen.has(key))
-      rows.push({ key, label: o.label || key, value: o.value });
-  }
-
-  return rows;
+export function stillWaiting(outputs: AppOutput[]): boolean {
+  return outputs.some((o) => outputState(o) === "waiting");
 }
 
 export function nextInstanceName(appId: string, installed: AppInfo[]): string {

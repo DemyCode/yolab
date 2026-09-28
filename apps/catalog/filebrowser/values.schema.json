@@ -1,12 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["config"],
+  "required": [
+    "config"
+  ],
   "properties": {
     "config": {
       "title": "File Browser",
       "type": "object",
-      "required": ["subdomain", "password"],
+      "required": [
+        "subdomain",
+        "password"
+      ],
       "properties": {
         "subdomain": {
           "type": "string",
@@ -18,7 +23,9 @@
           "type": "string",
           "title": "Admin password",
           "description": "At least 12 characters — File Browser rejects anything shorter.",
-          "minLength": 12
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true
         },
         "storage_size": {
           "type": "string",
@@ -34,20 +41,54 @@
         }
       }
     },
-    "yolab": {
+    "outputs": {
       "type": "object",
-      "description": "Injected by local-api at install time; not user-editable.",
+      "readOnly": true,
       "properties": {
-        "platformApiUrl": { "type": "string" },
-        "accountToken": { "type": "string" },
-        "serviceName": { "type": "string" },
-        "images": { "type": "object" },
-        "gateway": {
-          "type": "object",
-          "properties": {
-            "upstream": { "type": "string" },
-            "caddyfile": { "type": "string" },
-            "pvcName": { "type": "string" }
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT url (\\S+)"
+          }
+        },
+        "password": {
+          "type": "string",
+          "title": "Admin password",
+          "format": "secret",
+          "source": {
+            "config": "password"
+          }
+        },
+        "file_explorer_url": {
+          "type": "string",
+          "title": "File explorer",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_password": {
+          "type": "string",
+          "title": "File explorer password",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
           }
         }
       }

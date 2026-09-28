@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::error::Outcome;
 use crate::storage::settings;
+use crate::store::Store;
 use crate::{kubectl, AppState};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -53,10 +54,9 @@ pub async fn read_policy() -> Option<PolicyState> {
     read_policy_from(&crate::host::RealHost).await
 }
 
-async fn read_policy_from<H: crate::host::Host>(host: &H) -> Option<PolicyState> {
+async fn read_mirror_policy<H: crate::host::Host>(host: &H) -> Option<Option<StoragePolicy>> {
     match settings::get_json::<_, StoragePolicy>(host, settings::STORAGE_POLICY).await {
-        Ok(Some(p)) => Some(PolicyState::Chosen(p)),
-        Ok(None) => Some(PolicyState::NotChosen),
+        Ok(found) => Some(found),
         Err(e) => {
             tracing::warn!("storage policy is unreadable right now ({e})");
             None
@@ -64,11 +64,98 @@ async fn read_policy_from<H: crate::host::Host>(host: &H) -> Option<PolicyState>
     }
 }
 
+struct SyncedPolicy {
+    stored: Option<StoragePolicy>,
+    seeded: bool,
+    changed: bool,
+}
+
+fn sync_policy(store: &mut Store, mirror: Option<Option<&StoragePolicy>>) -> SyncedPolicy {
+    let mut changed = false;
+    if let Some(found) = mirror {
+        if let Some(p) = found {
+            match store.import_storage_policy(p) {
+                Ok(written) => changed |= written,
+                Err(e) => {
+                    tracing::warn!("the storage policy could not be taken into the store ({e})")
+                }
+            }
+        }
+        match store.mark_policy_seeded() {
+            Ok(written) => changed |= written,
+            Err(e) => tracing::warn!("could not record the storage policy as seeded ({e})"),
+        }
+    }
+    let stored = store.storage_policy().unwrap_or_else(|e| {
+        tracing::error!("the stored storage policy is unreadable ({e})");
+        None
+    });
+    SyncedPolicy {
+        stored,
+        seeded: store.policy_seeded(),
+        changed,
+    }
+}
+
+fn merge_policy(
+    mirror: Option<Option<StoragePolicy>>,
+    stored: Option<StoragePolicy>,
+    seeded: bool,
+) -> Option<PolicyState> {
+    if let Some(p) = stored {
+        return Some(PolicyState::Chosen(p));
+    }
+    match mirror {
+        Some(Some(p)) => Some(PolicyState::Chosen(p)),
+        Some(None) => Some(PolicyState::NotChosen),
+        None if seeded => Some(PolicyState::NotChosen),
+        None => None,
+    }
+}
+
+async fn read_policy_from<H: crate::host::Host>(host: &H) -> Option<PolicyState> {
+    let mirror = read_mirror_policy(host).await;
+    let synced = {
+        let mut store = crate::store::locked();
+        let synced = sync_policy(&mut store, mirror.as_ref().map(|f| f.as_ref()));
+        if synced.changed {
+            if let Err(e) = store.persist(&crate::store::default_path()) {
+                tracing::warn!("the desired-state store could not be saved ({e})");
+            }
+        }
+        synced
+    };
+    merge_policy(mirror, synced.stored, synced.seeded)
+}
+
 async fn write_policy<H: crate::host::Host>(host: &H, p: &StoragePolicy) -> anyhow::Result<()> {
-    settings::set_json(host, settings::STORAGE_POLICY, p).await?;
+    write_policy_to_cluster(host, p).await?;
+    record_policy_choice(p);
     crate::runtime::wake("topology");
     crate::runtime::wake("disks");
     Ok(())
+}
+
+async fn write_policy_to_cluster<H: crate::host::Host>(
+    host: &H,
+    p: &StoragePolicy,
+) -> anyhow::Result<()> {
+    settings::set_json(host, settings::STORAGE_POLICY, p).await?;
+    Ok(())
+}
+
+fn record_policy_choice(p: &StoragePolicy) {
+    let mut store = crate::store::locked();
+    if let Err(e) = store.set_storage_policy(p) {
+        tracing::warn!(
+            "the storage policy was saved to the cluster but not recorded as a choice ({e}) — the \
+             next read will take it from the cluster settings"
+        );
+        return;
+    }
+    if let Err(e) = store.persist(&crate::store::default_path()) {
+        tracing::warn!("the chosen storage policy could not be saved to disk ({e})");
+    }
 }
 
 pub(crate) async fn observe() -> Option<Topology> {
@@ -470,7 +557,7 @@ mod tests {
             "ceph config-key get yolab/storage-policy",
             r#"{"size":2,"failure_domain":"host"}"#,
         );
-        match read_policy_from(&chosen).await {
+        match merge_policy(read_mirror_policy(&chosen).await, None, false) {
             Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(2, "host")),
             _ => panic!("expected a chosen policy"),
         }
@@ -480,7 +567,7 @@ mod tests {
             "Error ENOENT: key 'yolab/storage-policy' doesn't exist",
         );
         assert!(matches!(
-            read_policy_from(&fresh).await,
+            merge_policy(read_mirror_policy(&fresh).await, None, false),
             Some(PolicyState::NotChosen)
         ));
 
@@ -488,14 +575,14 @@ mod tests {
             "ceph config-key get yolab/storage-policy",
             "error connecting to the cluster",
         );
-        assert!(read_policy_from(&down).await.is_none());
+        assert!(merge_policy(read_mirror_policy(&down).await, None, false).is_none());
 
         let junk = FakeHost::new().ok(
             "ceph config-key get yolab/storage-policy",
             r#"{"size":"two"}"#,
         );
         assert!(
-            read_policy_from(&junk).await.is_none(),
+            merge_policy(read_mirror_policy(&junk).await, None, false).is_none(),
             "unreadable is not 'not chosen'"
         );
     }
@@ -504,8 +591,83 @@ mod tests {
     async fn a_chosen_policy_is_stored_in_ceph() {
         use crate::host::fake::FakeHost;
         let host = FakeHost::new().ok("ceph config-key set yolab/storage-policy", "");
-        write_policy(&host, &policy(3, "osd")).await.unwrap();
+        write_policy_to_cluster(&host, &policy(3, "osd")).await.unwrap();
         assert!(host
             .ran(r#"ceph config-key set yolab/storage-policy {"size":3,"failure_domain":"osd"}"#));
+    }
+
+    #[test]
+    fn a_policy_in_the_store_is_used_even_when_the_cluster_cannot_be_read() {
+        match merge_policy(None, Some(policy(3, "host")), true) {
+            Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(3, "host")),
+            _ => panic!("a stored choice is still a choice when ceph is down"),
+        }
+    }
+
+    #[test]
+    fn an_unreadable_cluster_with_a_seeded_store_means_nobody_has_chosen_yet() {
+        assert!(matches!(
+            merge_policy(None, None, true),
+            Some(PolicyState::NotChosen)
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_cluster_with_an_unseeded_store_stays_unknown() {
+        assert!(
+            merge_policy(None, None, false).is_none(),
+            "never report 'not chosen' from a store that has never seen the cluster"
+        );
+    }
+
+    #[test]
+    fn the_store_wins_over_a_stale_cluster_copy() {
+        match merge_policy(Some(Some(policy(2, "osd"))), Some(policy(3, "host")), true) {
+            Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(3, "host")),
+            _ => panic!("expected the stored policy"),
+        }
+    }
+
+    #[test]
+    fn taking_the_cluster_policy_in_records_it_and_marks_the_store_seeded() {
+        let mut store = Store::new("node1");
+        let cluster = policy(2, "host");
+
+        let synced = sync_policy(&mut store, Some(Some(&cluster)));
+
+        assert_eq!(synced.stored, Some(cluster));
+        assert!(synced.seeded);
+        assert!(synced.changed);
+    }
+
+    #[test]
+    fn a_cluster_with_no_policy_still_marks_the_store_seeded() {
+        let mut store = Store::new("node1");
+        let synced = sync_policy(&mut store, Some(None));
+        assert_eq!(synced.stored, None);
+        assert!(
+            synced.seeded,
+            "having read the cluster and found nothing is still having read it"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_cluster_does_not_mark_the_store_seeded() {
+        let mut store = Store::new("node1");
+        let synced = sync_policy(&mut store, None);
+        assert!(!synced.seeded);
+        assert!(!synced.changed);
+    }
+
+    #[test]
+    fn taking_the_cluster_policy_in_does_not_undo_one_chosen_since() {
+        let mut store = Store::new("node1");
+        store.mark_policy_seeded().unwrap();
+        store.set_storage_policy(&policy(3, "host")).unwrap();
+
+        let synced = sync_policy(&mut store, Some(Some(&policy(2, "osd"))));
+
+        assert_eq!(synced.stored, Some(policy(3, "host")));
+        assert!(!synced.changed, "nothing to write means nothing to save");
     }
 }

@@ -3,7 +3,7 @@ name: excalidraw
 description: "Virtual whiteboard for hand-drawn style diagrams"
 home: https://excalidraw.com
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "0"
 
 dependencies:
@@ -15,26 +15,3 @@ annotations:
   yolab.io/display-name: "Excalidraw"
   yolab.io/icon: "✏️"
   yolab.io/category: "productivity"
-  yolab.io/uischema: |
-    {
-      "ui:order": ["subdomain", "auth_enabled", "auth_users", "*"],
-      "subdomain": {
-        "ui:widget": "TunnelWidget"
-      },
-      "auth_users": {
-        "ui:options": {
-          "attached": true
-        },
-        "items": {
-          "password": {
-            "ui:widget": "PasswordWidget"
-          }
-        }
-      }
-    }
-  yolab.io/outputs: |
-    [
-      { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" },
-      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
-      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
-    ]

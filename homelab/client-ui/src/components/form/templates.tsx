@@ -4,7 +4,6 @@ import type {
   ObjectFieldTemplateProps,
 } from "@rjsf/utils";
 import { Plus, X } from "lucide-react";
-import { showIfMet, type ShowIf } from "@/lib/form";
 
 export function FieldTemplate(props: FieldTemplateProps) {
   const {
@@ -15,20 +14,9 @@ export function FieldTemplate(props: FieldTemplateProps) {
     children,
     schema,
     hidden,
-    uiSchema,
-    formContext,
   } = props;
 
   if (hidden) return null;
-
-  const showIf = (uiSchema?.["ui:options"] as { showIf?: ShowIf } | undefined)
-    ?.showIf;
-  if (showIf) {
-    const data =
-      (formContext as { formData?: Record<string, unknown> } | undefined)
-        ?.formData ?? {};
-    if (!showIfMet(showIf, data)) return null;
-  }
 
   if (schema.type === "boolean") return <div className="py-1">{children}</div>;
 

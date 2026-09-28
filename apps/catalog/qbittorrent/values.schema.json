@@ -32,33 +32,61 @@
         }
       }
     },
-    "yolab": {
+    "outputs": {
       "type": "object",
-      "description": "Injected by local-api at install time; not user-editable.",
+      "readOnly": true,
       "properties": {
-        "platformApiUrl": {
-          "type": "string"
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT url (\\S+)"
+          }
         },
-        "accountToken": {
-          "type": "string"
+        "username": {
+          "type": "string",
+          "title": "Username",
+          "format": "text",
+          "source": {
+            "logs": "The WebUI administrator username is: (\\S+)"
+          }
         },
-        "serviceName": {
-          "type": "string"
+        "password": {
+          "type": "string",
+          "title": "Temporary password",
+          "format": "secret",
+          "source": {
+            "logs": "A temporary password is provided for this session: (\\S+)"
+          }
         },
-        "images": {
-          "type": "object"
+        "file_explorer_url": {
+          "type": "string",
+          "title": "File explorer",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
         },
-        "gateway": {
-          "type": "object",
-          "properties": {
-            "upstream": {
-              "type": "string"
-            },
-            "caddyfile": {
-              "type": "string"
-            },
-            "pvcName": {
-              "type": "string"
+        "file_explorer_password": {
+          "type": "string",
+          "title": "File explorer password",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
             }
           }
         }

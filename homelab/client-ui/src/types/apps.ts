@@ -1,14 +1,12 @@
+export type OutputFormat = "text" | "uri" | "secret" | "multiline";
+
 export interface AppOutput {
   key: string;
-  label: string;
-  value: string;
-  type: "url" | "text" | "hidden";
-}
-
-export interface OutputSpec {
-  key: string;
-  label: string;
-  type: "url" | "text" | "hidden";
+  title: string;
+  format: OutputFormat;
+  value: string | null;
+  found_at: string | null;
+  from_config: boolean;
 }
 
 export interface AppInfo {
@@ -18,7 +16,6 @@ export interface AppInfo {
   status: "starting" | "running" | "uninstalling";
   detail: string;
   outputs: AppOutput[];
-  outputs_spec: OutputSpec[];
   config: Record<string, unknown>;
   backup: AppBackupStatus;
 }
@@ -58,7 +55,6 @@ export interface CatalogApp {
   icon: string;
   category: string;
   schema: object;
-  uischema: object;
 }
 
 export interface PodInfo {
@@ -67,7 +63,7 @@ export interface PodInfo {
   ready: boolean;
 }
 
-export interface ScanOutputsResponse {
+export interface OutputsResponse {
   outputs: AppOutput[];
 }
 

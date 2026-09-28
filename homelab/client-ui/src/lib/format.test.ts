@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, generateSecret } from "./format";
+import { formatBytes, generateSecret, relativeTime } from "./format";
 
 describe("formatBytes", () => {
   it("never renders a non-number as a size", () => {
@@ -56,5 +56,28 @@ describe("generateSecret", () => {
 
   it("uses more than one character, i.e. is actually random", () => {
     expect(new Set(generateSecret(64)).size).toBeGreaterThan(8);
+  });
+});
+
+describe("relativeTime", () => {
+  const now = new Date("2026-09-28T12:00:00Z");
+
+  it("says just now for the last minute", () => {
+    expect(relativeTime("2026-09-28T11:59:30Z", now)).toBe("just now");
+  });
+
+  it("counts minutes, then hours", () => {
+    expect(relativeTime("2026-09-28T11:59:00Z", now)).toBe("a minute ago");
+    expect(relativeTime("2026-09-28T11:45:00Z", now)).toBe("15 minutes ago");
+    expect(relativeTime("2026-09-28T11:00:00Z", now)).toBe("an hour ago");
+    expect(relativeTime("2026-09-28T07:00:00Z", now)).toBe("5 hours ago");
+  });
+
+  it("gives the date for anything older than a day", () => {
+    expect(relativeTime("2026-09-20T12:00:00Z", now)).not.toMatch(/ago/);
+  });
+
+  it("says nothing about a time it cannot read", () => {
+    expect(relativeTime("not a date", now)).toBe("");
   });
 });
