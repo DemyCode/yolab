@@ -17,8 +17,8 @@ export function AppTile({
 }) {
   const state = appState(app);
   const label = appLabel(app, state);
-  const tone =
-    state === "removing" ? "warn" : state === "starting" ? "busy" : "ok";
+  const busy = state === "starting" || state === "copying";
+  const tone = state === "removing" ? "warn" : busy ? "busy" : "ok";
 
   return (
     <Link
@@ -37,7 +37,7 @@ export function AppTile({
         />
         <StatusDot
           tone={tone}
-          pulse={state === "starting"}
+          pulse={busy}
           className="absolute -right-0.5 -top-0.5"
         />
       </div>
