@@ -295,25 +295,39 @@ in let
 
     host-seam-ratchet = let
       budget = {
-        "auth.rs" = 2;
-        "boot/mod.rs" = 2;
-        "charts.rs" = 5;
+        "boot/mod.rs" = 3;
+        "cephfs.rs" = 1;
+        "charts.rs" = 1;
         "disks_reconciler.rs" = 2;
         "heal/credentials.rs" = 1;
         "heal/mod.rs" = 9;
-        "mesh/mod.rs" = 5;
+        "main.rs" = 1;
+        "mesh/mod.rs" = 7;
+        "notify/mod.rs" = 2;
         "ops.rs" = 1;
-        "routers/apps.rs" = 21;
-        "routers/backup.rs" = 12;
-        "routers/backup_common.rs" = 10;
-        "routers/ceph.rs" = 2;
-        "routers/copy.rs" = 3;
+        "outputs.rs" = 1;
+        "routers/backup_common.rs" = 4;
+        "routers/backups.rs" = 1;
+        "routers/ceph.rs" = 5;
+        "routers/ceph_join.rs" = 1;
+        "routers/copy.rs" = 1;
+        "routers/custom_app.rs" = 8;
         "routers/disks.rs" = 4;
-        "routers/restore.rs" = 10;
-        "runtime/leader.rs" = 4;
-
+        "routers/logs.rs" = 1;
+        "routers/nodes.rs" = 1;
+        "routers/reboot.rs" = 2;
+        "routers/terminal.rs" = 1;
+        "routers/update.rs" = 3;
+        "runtime/activity.rs" = 3;
+        "runtime/resource.rs" = 1;
+        "runtime/watch.rs" = 1;
+        "shared_names.rs" = 1;
+        "storage/bootstrap.rs" = 1;
+        "storage/controllers.rs" = 14;
+        "storage/dashboard.rs" = 1;
         "storage/mod.rs" = 2;
-        "topology.rs" = 2;
+        "store/sync.rs" = 1;
+        "topology.rs" = 1;
       };
       expected =
         pkgs.writeText "seam-budget"
@@ -326,8 +340,10 @@ in let
         # redirection below has to happen back in the build directory.
         (
           cd ${treeSrc}/homelab/local-api/src
-          find . -name '*.rs' ! -path './host.rs' ! -path './kubectl.rs' -print0 \
-            | xargs -0 grep -cE 'RealHost|crate::kubectl::' /dev/null
+          find . -name '*.rs' \
+            ! -path './host.rs' ! -path './ceph_cli.rs' \
+            ! -path './exec.rs' ! -path './k8s.rs' ! -path './http.rs' -print0 \
+            | xargs -0 grep -cE 'RealHost|\bHOST\b|\bkubectl::|ceph_cli::|exec::(output|checked|with_stdin|stream_lines)|k8s::client\(\)|http::client|Command::new|reqwest::' /dev/null
         ) \
           | grep -v ':0$' \
           | sed 's|^\./||; s|:| |' \
@@ -337,10 +353,12 @@ in let
           echo "Direct machine access moved. This list is a ratchet: it may only" >&2
           echo "shrink, and nix/checks.nix says why." >&2
           echo "" >&2
-          echo "  '+' lines: more direct RealHost / crate::kubectl:: use than the" >&2
-          echo "             budget allows, or a file that had none and now does." >&2
-          echo "             Take a 'host: &H' and call through the seam instead," >&2
-          echo "             the way homelab/local-api/src/heal/ does." >&2
+          echo "  '+' lines: more direct machine access (RealHost, HOST, kubectl," >&2
+          echo "             ceph_cli, exec, k8s::client(), http::client*, Command::new," >&2
+          echo "             reqwest) than the budget allows, or a file that had none" >&2
+          echo "             and now does. Take a 'client: &kube::Client', a" >&2
+          echo "             'http: &crate::http::Client' or a 'host: &H' and call" >&2
+          echo "             through it; entry points hand in the real ones." >&2
           echo "  '-' lines: fewer than the budget — thank you. Lower the number" >&2
           echo "             in nix/checks.nix in this same commit." >&2
           echo "" >&2
@@ -653,7 +671,7 @@ in let
 
         grep -rl 'peer_ipv6' "$src" \
           | sed "s|^$src/||" \
-          | grep -v '^kubectl.rs$' \
+          | grep -v '^k8s.rs$' \
           | LC_ALL=C sort -u > fanning
 
         cat > expected <<'EOF'

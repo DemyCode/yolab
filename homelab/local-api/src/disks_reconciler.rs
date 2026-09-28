@@ -736,7 +736,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
         }
     };
 
-    let (want_copies, failure_domain) = match crate::topology::read_policy().await {
+    let (want_copies, failure_domain) = match crate::topology::read_policy_from(host).await {
         Some(crate::topology::PolicyState::Chosen(p)) => (Some(p.size), p.failure_domain),
         _ => (None, "osd".to_string()),
     };
@@ -2090,27 +2090,6 @@ mod tests {
                 *calls.lock().unwrap() += 1;
                 Err(unreachable_err("ceph-volume"))
             }
-        }
-
-        fn kubectl<'a>(
-            &self,
-            _args: &'a [&str],
-        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
-            async move { Err(unreachable_err("kubectl")) }
-        }
-
-        fn kubectl_json<'a>(
-            &self,
-            _args: &'a [&str],
-        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
-            async move { Err(unreachable_err("kubectl")) }
-        }
-
-        fn kubectl_apply<'a>(
-            &self,
-            _manifest: &'a str,
-        ) -> impl Future<Output = HostResult<()>> + Send + 'a {
-            async move { Err(unreachable_err("kubectl")) }
         }
 
         fn systemctl<'a>(

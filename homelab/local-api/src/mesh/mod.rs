@@ -12,7 +12,7 @@ use crate::{
     auth::CLUSTER_AUTH_HEADER,
     error::{Outcome, Result},
     host::{Host, RealHost},
-    kubectl, AppState,
+    AppState,
 };
 
 pub use candidates::Candidates;
@@ -147,7 +147,9 @@ pub(crate) async fn peer_addresses(self_ip: &str) -> Vec<String> {
 
 async fn live_peer_addresses(self_ip: &str) -> Option<Vec<String>> {
     Some(parse_peer_addresses(
-        &kubectl::get_nodes().await.ok()?,
+        &crate::k8s::nodes(&crate::k8s::client().await.ok()?)
+            .await
+            .ok()?,
         self_ip,
     ))
 }
@@ -458,9 +460,11 @@ async fn fetch_candidates(
     token: &str,
     self_key: &str,
 ) -> anyhow::Result<Candidates> {
-    Ok(reqwest::Client::new()
-        .get(format!(
-            "http://[{peer}]:{port}/api/cluster/mesh-candidates"
+    Ok(crate::http::client()
+        .get(crate::http::peer_url(
+            peer,
+            port,
+            "/api/cluster/mesh-candidates",
         ))
         .header(CLUSTER_AUTH_HEADER, token)
         .header(MESH_PUBKEY_HEADER, self_key)

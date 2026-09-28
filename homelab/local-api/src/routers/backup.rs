@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::Outcome;
-use crate::host::RealHost;
+use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, InFlight, Liveness};
 use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
 use crate::routers::backup_common::*;
 use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
 use chrono::{DateTime, Utc};
-use tokio::process::Command;
+use kube::Client;
 
 pub(crate) const SETS: Store = Store {
     name: "yolab-backups",
@@ -120,14 +120,18 @@ fn upsert(sets: &mut Vec<BackupSet>, set: BackupSet) {
     sets.truncate(MAX_SETS);
 }
 
-async fn read_sets() -> anyhow::Result<Vec<BackupSet>> {
-    Ok(SETS.read(&RealHost).await?)
+async fn read_sets(client: &Client) -> anyhow::Result<Vec<BackupSet>> {
+    Ok(SETS.read(client).await?)
 }
 
-async fn record_done(id: &str, result: &anyhow::Result<(String, Vec<ServiceSummary>)>) {
+async fn record_done(
+    client: &Client,
+    id: &str,
+    result: &anyhow::Result<(String, Vec<ServiceSummary>)>,
+) {
     let finished_at = Utc::now().to_rfc3339();
     let written = SETS
-        .update(&RealHost, |sets: &mut Vec<BackupSet>| {
+        .update(client, |sets: &mut Vec<BackupSet>| {
             let Some(s) = sets.iter_mut().find(|s| s.id == id) else {
                 return;
             };
@@ -194,19 +198,27 @@ pub(crate) fn next_in_line(sets: &[BackupSet]) -> Option<&BackupSet> {
 
 const DR_SCHEDULE: &str = "0 4 * * *";
 
-pub(crate) async fn start(triggered_by: &str) -> anyhow::Result<String> {
-    enqueue(BackupTarget::Cluster, triggered_by).await
+pub(crate) async fn start<H: Host>(b: &Backend<H>, triggered_by: &str) -> anyhow::Result<String> {
+    enqueue(b, BackupTarget::Cluster, triggered_by).await
 }
 
-pub(crate) async fn start_app(namespace: &str, triggered_by: &str) -> anyhow::Result<String> {
-    enqueue(BackupTarget::App(namespace.to_string()), triggered_by).await
+pub(crate) async fn start_app<H: Host>(
+    b: &Backend<H>,
+    namespace: &str,
+    triggered_by: &str,
+) -> anyhow::Result<String> {
+    enqueue(b, BackupTarget::App(namespace.to_string()), triggered_by).await
 }
 
-async fn enqueue(target: BackupTarget, triggered_by: &str) -> anyhow::Result<String> {
-    if read_master_config().await.is_none() {
+async fn enqueue<H: Host>(
+    b: &Backend<H>,
+    target: BackupTarget,
+    triggered_by: &str,
+) -> anyhow::Result<String> {
+    if master_config(&b.kube).await?.is_none() {
         anyhow::bail!("backup not configured");
     }
-    if let Some(why) = crate::heal::backups_blocked().await {
+    if let Some(why) = crate::heal::backups_blocked(&b.host).await {
         anyhow::bail!("not backing up: {why}");
     }
 
@@ -226,7 +238,7 @@ async fn enqueue(target: BackupTarget, triggered_by: &str) -> anyhow::Result<Str
     };
 
     let mut existing = None;
-    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| {
+    SETS.update(&b.kube, |sets: &mut Vec<BackupSet>| {
         existing = queued_for(sets, &namespace)
             .map(|s| s.id.clone())
             .or_else(|| {
@@ -252,8 +264,8 @@ pub(crate) struct Promoted {
     guard: ops::InFlightGuard,
 }
 
-async fn promote_next() -> anyhow::Result<Option<Promoted>> {
-    let sets = read_sets().await?;
+async fn promote_next(client: &Client) -> anyhow::Result<Option<Promoted>> {
+    let sets = read_sets(client).await?;
     if anything_running(&sets) {
         return Ok(None);
     }
@@ -265,7 +277,7 @@ async fn promote_next() -> anyhow::Result<Option<Promoted>> {
     let guard = IN_FLIGHT.claim(&id);
     let mut won = false;
     let claim_id = id.clone();
-    SETS.update(&RealHost, |sets: &mut Vec<BackupSet>| {
+    SETS.update(client, |sets: &mut Vec<BackupSet>| {
         won = false;
         if anything_running(sets) {
             return;
@@ -298,22 +310,23 @@ fn target_of(set: &BackupSet) -> BackupTarget {
     }
 }
 
-fn spawn_run(cfg: BackupConfig, promoted: Promoted) {
+fn spawn_run<H: Host + 'static>(b: Backend<H>, cfg: BackupConfig, promoted: Promoted) {
     let Promoted { id, target, guard } = promoted;
     tokio::spawn(async move {
         let _guard = guard;
-        let result = run_set(&cfg, &target, &id).await;
-        record_done(&id, &result).await;
+        let result = run_set(&b, &cfg, &target, &id).await;
+        record_done(&b.kube, &id, &result).await;
         crate::runtime::wake("backup-scheduler");
     });
 }
 
-async fn run_set(
+async fn run_set<H: Host>(
+    b: &Backend<H>,
     cfg: &BackupConfig,
     target: &BackupTarget,
     run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    let pvcs: Vec<PvcInfo> = list_user_pvcs()
+    let pvcs: Vec<PvcInfo> = user_pvcs(&b.kube)
         .await?
         .into_iter()
         .filter(|p| match target {
@@ -324,16 +337,17 @@ async fn run_set(
     let mut pending = Vec::new();
     let mut failures = Vec::new();
     for pvc in &pvcs {
-        annotate_ns_privileged_movers(&pvc.namespace).await;
-        if let Err(e) = ensure_restic_secret(&pvc.namespace, &pvc.name, cfg).await {
+        allow_privileged_movers(&b.kube, &pvc.namespace).await;
+        if let Err(e) = restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, cfg).await
+        {
             failures.push(format!(
                 "{}/{}: could not write its backup credentials: {e}",
                 pvc.namespace, pvc.name
             ));
             continue;
         }
-        let before = replication_source(&pvc.namespace, &pvc.name).await;
-        match ensure_replication_source(pvc, true).await {
+        let before = replication_source_status(&b.kube, &pvc.namespace, &pvc.name).await;
+        match replication_source(&b.kube, pvc, true).await {
             Ok(Some(trigger)) => pending.push(PendingSync {
                 pvc: pvc.clone(),
                 trigger,
@@ -346,12 +360,12 @@ async fn run_set(
             )),
         }
     }
-    let (sync_failures, synced) = wait_for_volume_syncs(&pending).await;
+    let (sync_failures, synced) = wait_for_volume_syncs(&b.kube, &pending).await;
     failures.extend(sync_failures);
 
     let mut pinned = HashMap::new();
     for (pvc, rs) in &synced {
-        match pin_volume_snapshot(cfg, pvc, rs).await {
+        match pin_volume_snapshot(&b.host, cfg, pvc, rs).await {
             Some(snap) => {
                 pinned.insert((pvc.namespace.clone(), pvc.name.clone()), snap);
             }
@@ -362,11 +376,12 @@ async fn run_set(
         }
     }
 
-    let (snapshot_id, services) = snapshot_cluster(cfg, &pinned, target, run_id).await?;
+    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
-    restic_timeout(
+    cfg.unlock(&b.host, "cluster-backup").await;
+    restic_with(
+        &b.host,
         &repo,
         cfg,
         &[
@@ -414,17 +429,19 @@ enum SyncOutcome {
     Pending,
 }
 
-async fn replication_source(namespace: &str, pvc: &str) -> Value {
-    crate::kubectl::get_json(&[
-        "get",
-        "replicationsource",
-        &replication_source_name(pvc),
-        "-n",
-        namespace,
-        "-o",
-        "json",
-    ])
+async fn replication_source_status(client: &Client, namespace: &str, pvc: &str) -> Value {
+    crate::k8s::get(
+        client,
+        &crate::k8s::reference(
+            "volsync.backube/v1alpha1",
+            "ReplicationSource",
+            namespace,
+            &replication_source_name(pvc),
+        ),
+    )
     .await
+    .ok()
+    .flatten()
     .unwrap_or(Value::Null)
 }
 
@@ -479,7 +496,8 @@ fn parse_pinned(v: &Value) -> Option<VolumeSnapshot> {
     })
 }
 
-async fn pin_volume_snapshot(
+async fn pin_volume_snapshot<H: Host>(
+    host: &H,
     cfg: &BackupConfig,
     pvc: &PvcInfo,
     rs: &Value,
@@ -490,16 +508,25 @@ async fn pin_volume_snapshot(
         pvc.namespace,
         canonical_pvc_id(&pvc.name)
     ));
-    let out = restic(&repo, cfg, &["snapshots", "--no-lock", "--json", &short])
-        .await
-        .ok()?;
-    if !out.status.success() {
+    let out = restic_with(
+        host,
+        &repo,
+        cfg,
+        &["snapshots", "--no-lock", "--json", &short],
+        RESTIC_TIMEOUT,
+    )
+    .await
+    .ok()?;
+    if !out.success {
         return None;
     }
-    parse_pinned(&serde_json::from_slice(&out.stdout).ok()?)
+    parse_pinned(&serde_json::from_str(&out.stdout).ok()?)
 }
 
-async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(PvcInfo, Value)>) {
+async fn wait_for_volume_syncs(
+    client: &Client,
+    pending: &[PendingSync],
+) -> (Vec<String>, Vec<(PvcInfo, Value)>) {
     let deadline = std::time::Instant::now() + VOLUME_SYNC_TIMEOUT;
     let mut waiting: Vec<&PendingSync> = pending.iter().collect();
     let mut failures = Vec::new();
@@ -507,7 +534,7 @@ async fn wait_for_volume_syncs(pending: &[PendingSync]) -> (Vec<String>, Vec<(Pv
     while !waiting.is_empty() {
         let mut still = Vec::new();
         for p in waiting {
-            let rs = replication_source(&p.pvc.namespace, &p.pvc.name).await;
+            let rs = replication_source_status(client, &p.pvc.namespace, &p.pvc.name).await;
             match sync_outcome(&rs, &p.trigger, p.logs_before.as_deref()) {
                 SyncOutcome::Done => synced.push((p.pvc.clone(), rs)),
                 SyncOutcome::Failed(why) => {
@@ -580,7 +607,8 @@ async fn sweep_staging(keep: &[String]) {
     }
 }
 
-async fn snapshot_cluster(
+async fn snapshot_cluster<H: Host>(
+    b: &Backend<H>,
     cfg: &BackupConfig,
     pinned: &PinnedVolumes,
     target: &BackupTarget,
@@ -598,49 +626,67 @@ async fn snapshot_cluster(
         tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
     }
 
-    let result = snapshot_cluster_inner(cfg, &tmp_dir, pinned, target).await;
+    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target).await;
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
         .debug_on_err("backup: clear the staging directory");
     result
 }
 
-const CLUSTER_SCOPED_EXPORT: &[&str] = &[
-    "namespaces",
-    "customresourcedefinitions.apiextensions.k8s.io",
-    "storageclasses.storage.k8s.io",
-    "persistentvolumes",
-    "priorityclasses.scheduling.k8s.io",
-    "clusterroles.rbac.authorization.k8s.io",
-    "clusterrolebindings.rbac.authorization.k8s.io",
-    "volumeattachments.storage.k8s.io",
-    "volumesnapshotclasses.snapshot.storage.k8s.io",
-    "csidrivers.storage.k8s.io",
-    "csinodes.storage.k8s.io",
-    "mutatingwebhookconfigurations.admissionregistration.k8s.io",
-    "validatingwebhookconfigurations.admissionregistration.k8s.io",
-    "ingressclasses.networking.k8s.io",
-    "runtimeclasses.node.k8s.io",
+const CLUSTER_SCOPED_EXPORT: &[(&str, &str)] = &[
+    ("v1", "Namespace"),
+    ("apiextensions.k8s.io/v1", "CustomResourceDefinition"),
+    ("storage.k8s.io/v1", "StorageClass"),
+    ("v1", "PersistentVolume"),
+    ("scheduling.k8s.io/v1", "PriorityClass"),
+    ("rbac.authorization.k8s.io/v1", "ClusterRole"),
+    ("rbac.authorization.k8s.io/v1", "ClusterRoleBinding"),
+    ("storage.k8s.io/v1", "VolumeAttachment"),
+    ("snapshot.storage.k8s.io/v1", "VolumeSnapshotClass"),
+    ("storage.k8s.io/v1", "CSIDriver"),
+    ("storage.k8s.io/v1", "CSINode"),
+    (
+        "admissionregistration.k8s.io/v1",
+        "MutatingWebhookConfiguration",
+    ),
+    (
+        "admissionregistration.k8s.io/v1",
+        "ValidatingWebhookConfiguration",
+    ),
+    ("networking.k8s.io/v1", "IngressClass"),
+    ("node.k8s.io/v1", "RuntimeClass"),
 ];
 
-async fn export_cluster_scoped(tmp_dir: &str) -> anyhow::Result<()> {
+const NAMESPACED_EXPORT: &[(&str, &str)] = &[
+    ("apps/v1", "Deployment"),
+    ("v1", "Service"),
+    ("v1", "Secret"),
+    ("v1", "ConfigMap"),
+];
+
+async fn cluster_scoped_objects(client: &Client) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
-    for res in CLUSTER_SCOPED_EXPORT {
-        match crate::kubectl::run(&["get", res, "-o", "json", "--ignore-not-found"]).await {
-            Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str::<Value>(&raw) {
-                Ok(v) => {
-                    if let Some(list) = v["items"].as_array() {
-                        items.extend(list.iter().cloned());
-                    } else {
-                        items.push(v);
-                    }
-                }
-                Err(e) => tracing::warn!("cluster-backup: parse {res}: {e}"),
-            },
-            Ok(_) => {}
-            Err(e) => tracing::warn!("cluster-backup: export {res}: {e}"),
+    for (api_version, kind) in CLUSTER_SCOPED_EXPORT {
+        match crate::k8s::list(client, api_version, kind, None, &Default::default()).await {
+            Ok(found) => items.extend(found),
+            Err(e) => tracing::warn!("cluster-backup: export {kind}: {e}"),
         }
     }
+    items
+}
+
+async fn namespace_objects(client: &Client, ns: &str) -> anyhow::Result<Vec<Value>> {
+    let mut items = Vec::new();
+    for (api_version, kind) in NAMESPACED_EXPORT {
+        items.extend(
+            crate::k8s::list(client, api_version, kind, Some(ns), &Default::default()).await?,
+        );
+    }
+    Ok(items)
+}
+
+async fn export_cluster_scoped(client: &Client, tmp_dir: &str) -> anyhow::Result<()> {
+    let items = cluster_scoped_objects(client).await;
     let sanitized = sanitize_k8s_items_for_backup(&items);
     let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
     tokio::fs::write(
@@ -651,7 +697,57 @@ async fn export_cluster_scoped(tmp_dir: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn snapshot_cluster_inner(
+const ETCD_SNAPSHOT_DIR: &str = "/var/lib/rancher/k3s/server/db/snapshots";
+
+async fn save_etcd_snapshot<H: Host>(b: &Backend<H>, tmp_dir: &str, snap_name: &str) {
+    let saved = b
+        .host
+        .run_cmd(
+            "k3s",
+            &["etcd-snapshot", "save", &format!("--name={snap_name}")],
+        )
+        .await;
+    match saved {
+        Ok(o) if o.success => {}
+        Ok(o) => {
+            tracing::warn!("cluster-backup: etcd-snapshot: {}", o.stderr.trim());
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("cluster-backup: etcd-snapshot: {e}");
+            return;
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(ETCD_SNAPSHOT_DIR) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let fname_str = fname.to_string_lossy();
+        if !fname_str.starts_with(snap_name) {
+            continue;
+        }
+        let dst = format!("{tmp_dir}/etcd.db");
+        if let Err(e) = std::fs::copy(entry.path(), &dst) {
+            tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
+        } else {
+            std::fs::remove_file(entry.path())
+                .warn_on_err("cluster-backup: remove the local etcd snapshot copy");
+        }
+        let record = json!({
+            "apiVersion": "k3s.cattle.io/v1",
+            "kind": "ETCDSnapshotFile",
+            "metadata": { "name": fname_str.as_ref() }
+        });
+        crate::k8s::delete_if_present(&b.kube, &record)
+            .await
+            .warn_on_err("cluster-backup: delete the etcdsnapshotfile record");
+        break;
+    }
+}
+
+async fn snapshot_cluster_inner<H: Host>(
+    b: &Backend<H>,
     cfg: &BackupConfig,
     tmp_dir: &str,
     pinned: &PinnedVolumes,
@@ -661,13 +757,13 @@ async fn snapshot_cluster_inner(
     let repo = cfg.restic_repo("cluster-backup");
 
     let namespaces: Vec<String> = match target {
-        BackupTarget::Cluster => list_managed_namespaces().await?,
+        BackupTarget::Cluster => managed_namespaces(&b.kube).await?,
         BackupTarget::App(ns) => vec![ns.clone()],
     };
     let include_etcd = target.is_cluster();
 
     let mut pvcs_by_ns: HashMap<String, Vec<PvcInfo>> = HashMap::new();
-    for pvc in list_user_pvcs().await? {
+    for pvc in user_pvcs(&b.kube).await? {
         pvcs_by_ns
             .entry(pvc.namespace.clone())
             .or_default()
@@ -675,52 +771,8 @@ async fn snapshot_cluster_inner(
     }
 
     if include_etcd {
-        let snap_name = format!("yolab-cluster-{date}");
-        let snap_saved = Command::new("k3s")
-            .args(["etcd-snapshot", "save", &format!("--name={snap_name}")])
-            .kill_on_drop(true)
-            .output()
-            .await;
-
-        if let Ok(o) = &snap_saved {
-            if o.status.success() {
-                let snap_dir = "/var/lib/rancher/k3s/server/db/snapshots";
-                if let Ok(entries) = std::fs::read_dir(snap_dir) {
-                    for entry in entries.flatten() {
-                        let fname = entry.file_name();
-                        let fname_str = fname.to_string_lossy();
-                        if fname_str.starts_with(&snap_name) {
-                            let dst = format!("{tmp_dir}/etcd.db");
-                            if let Err(e) = std::fs::copy(entry.path(), &dst) {
-                                tracing::warn!("cluster-backup: copy etcd snapshot: {e}");
-                            } else {
-                                std::fs::remove_file(entry.path()).warn_on_err(
-                                    "cluster-backup: remove the local etcd snapshot copy",
-                                );
-                            }
-                            crate::kubectl::run(&[
-                                "delete",
-                                "etcdsnapshotfile",
-                                fname_str.as_ref(),
-                                "--ignore-not-found",
-                            ])
-                            .await
-                            .warn_on_err("cluster-backup: delete the etcdsnapshotfile record");
-                            break;
-                        }
-                    }
-                }
-            } else {
-                tracing::warn!(
-                    "cluster-backup: etcd-snapshot: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                );
-            }
-        }
-    }
-
-    if include_etcd {
-        if let Err(e) = export_cluster_scoped(tmp_dir).await {
+        save_etcd_snapshot(b, tmp_dir, &format!("yolab-cluster-{date}")).await;
+        if let Err(e) = export_cluster_scoped(&b.kube, tmp_dir).await {
             tracing::warn!("cluster-backup: cluster-scoped export: {e}");
         }
     }
@@ -730,31 +782,18 @@ async fn snapshot_cluster_inner(
     for ns in &namespaces {
         let mut items: Vec<Value> = Vec::new();
 
-        let Some(ns_obj) = crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"]).await?
+        let Some(ns_obj) = crate::k8s::get(
+            &b.kube,
+            &json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": ns } }),
+        )
+        .await?
         else {
             continue;
         };
         items.push(ns_obj.clone());
         let ns_obj = Some(ns_obj);
 
-        let raw = crate::kubectl::run(&[
-            "get",
-            "deploy,svc,secret,configmap",
-            "-n",
-            ns,
-            "-o",
-            "json",
-            "--ignore-not-found",
-        ])
-        .await?;
-        let workloads: Vec<Value> = if raw.trim().is_empty() {
-            Vec::new()
-        } else {
-            serde_json::from_str::<Value>(&raw)?["items"]
-                .as_array()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("kubectl get -n {ns}: no items list"))?
-        };
+        let workloads = namespace_objects(&b.kube, ns).await?;
         items.extend(workloads.iter().cloned());
 
         let sanitized = sanitize_k8s_items_for_backup(&items);
@@ -798,7 +837,7 @@ async fn snapshot_cluster_inner(
 
         let images = collect_images(&workloads);
 
-        let definition = crate::routers::apps::read_definition_opt(ns).await;
+        let definition = crate::routers::apps::read_definition_opt(&b.kube, ns).await;
         let (service_name, resources, volumes, backup_policy) = match &definition {
             Some(d) => (
                 d.service_name.clone(),
@@ -839,22 +878,26 @@ async fn snapshot_cluster_inner(
     });
     tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await?;
 
-    let manifest = rebuild_manifest(&services).await;
+    let manifest = rebuild_manifest(&b.kube, &services).await;
     tokio::fs::write(
         format!("{tmp_dir}/manifest.json"),
         serde_json::to_string_pretty(&manifest)?,
     )
     .await?;
 
-    cfg.unlock("cluster-backup").await;
-    let check = restic(&repo, cfg, &["snapshots", "--no-lock"]).await;
-    if check.map(|o| !o.status.success()).unwrap_or(true) {
-        let init = restic(&repo, cfg, &["init"]).await?;
-        if !init.status.success() {
-            anyhow::bail!(
-                "restic init failed: {}",
-                String::from_utf8_lossy(&init.stderr).trim()
-            );
+    cfg.unlock(&b.host, "cluster-backup").await;
+    let check = restic_with(
+        &b.host,
+        &repo,
+        cfg,
+        &["snapshots", "--no-lock"],
+        RESTIC_TIMEOUT,
+    )
+    .await;
+    if check.map(|o| !o.success).unwrap_or(true) {
+        let init = restic_with(&b.host, &repo, cfg, &["init"], RESTIC_TIMEOUT).await?;
+        if !init.success {
+            anyhow::bail!("restic init failed: {}", init.stderr.trim());
         }
     }
 
@@ -862,7 +905,8 @@ async fn snapshot_cluster_inner(
         BackupTarget::Cluster => "scope:cluster".to_string(),
         BackupTarget::App(ns) => format!("namespace:{ns}"),
     };
-    let backup = restic_timeout(
+    let backup = restic_with(
+        &b.host,
         &repo,
         cfg,
         &[
@@ -876,35 +920,36 @@ async fn snapshot_cluster_inner(
         Duration::from_secs(CLUSTER_BACKUP_TIMEOUT_SECS),
     )
     .await?;
-    if !backup.status.success() {
-        anyhow::bail!(
-            "restic backup failed: {}",
-            String::from_utf8_lossy(&backup.stderr).trim()
-        );
+    if !backup.success {
+        anyhow::bail!("restic backup failed: {}", backup.stderr.trim());
     }
 
-    newest_snapshot_id(&repo, cfg, &scope_tag)
+    newest_snapshot_id(&b.host, &repo, cfg, &scope_tag)
         .await
         .ok_or_else(|| anyhow::anyhow!("backup completed but no snapshot id could be read"))
         .map(|snapshot_id| (snapshot_id, summarize_services(&services)))
 }
 
-async fn rebuild_manifest(services: &[Value]) -> Value {
+async fn rebuild_manifest(client: &Client, services: &[Value]) -> Value {
+    use k8s_openapi::api::core::v1::Node;
     let (nodes, node_cpu_millicores, node_memory_bytes) =
-        match crate::kubectl::get_json(&["get", "nodes", "-o", "json"]).await {
-            Ok(v) => {
-                let items = v["items"].as_array().cloned().unwrap_or_default();
+        match kube::Api::<Node>::all(client.clone())
+            .list(&Default::default())
+            .await
+        {
+            Ok(listed) => {
                 let mut cpu = 0u64;
                 let mut mem = 0u64;
-                for n in &items {
-                    if let Some(c) = n["status"]["allocatable"]["cpu"].as_str() {
-                        cpu += crate::routers::apps::parse_cpu_millicores(c);
+                for n in &listed.items {
+                    let allocatable = n.status.as_ref().and_then(|s| s.allocatable.as_ref());
+                    if let Some(c) = allocatable.and_then(|a| a.get("cpu")) {
+                        cpu += crate::routers::apps::parse_cpu_millicores(&c.0);
                     }
-                    if let Some(m) = n["status"]["allocatable"]["memory"].as_str() {
-                        mem += crate::routers::apps::parse_memory_bytes(m);
+                    if let Some(m) = allocatable.and_then(|a| a.get("memory")) {
+                        mem += crate::routers::apps::parse_memory_bytes(&m.0);
                     }
                 }
-                (items.len(), cpu, mem)
+                (listed.items.len(), cpu, mem)
             }
             Err(_) => (0, 0, 0),
         };
@@ -946,18 +991,25 @@ fn summarize_services(services: &[Value]) -> Vec<ServiceSummary> {
         .collect()
 }
 
-async fn newest_snapshot_id(repo: &str, cfg: &BackupConfig, tag: &str) -> Option<String> {
-    let out = restic(
+async fn newest_snapshot_id<H: Host>(
+    host: &H,
+    repo: &str,
+    cfg: &BackupConfig,
+    tag: &str,
+) -> Option<String> {
+    let out = restic_with(
+        host,
         repo,
         cfg,
         &["snapshots", "--no-lock", "--json", "--tag", tag],
+        RESTIC_TIMEOUT,
     )
     .await
     .ok()?;
-    if !out.status.success() {
+    if !out.success {
         return None;
     }
-    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let v: Value = serde_json::from_str(&out.stdout).ok()?;
     v.as_array()?
         .iter()
         .max_by_key(|s| s["time"].as_str().unwrap_or("").to_string())
@@ -993,8 +1045,8 @@ fn liveness_of(s: &BackupSet) -> Liveness {
     s.liveness(&crate::system::hostname(), &IN_FLIGHT)
 }
 
-pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
-    let sets = read_sets().await?;
+pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
+    let sets = read_sets(client).await?;
     Ok(sets
         .iter()
         .map(|s| {
@@ -1014,8 +1066,8 @@ pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
         .collect())
 }
 
-pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool)> {
-    let Ok(sets) = read_sets().await else {
+pub(crate) async fn app_backup_status(client: &Client) -> HashMap<String, (Option<String>, bool)> {
+    let Ok(sets) = read_sets(client).await else {
         return HashMap::new();
     };
     let mut map: HashMap<String, (Option<String>, bool)> = HashMap::new();
@@ -1034,28 +1086,29 @@ pub(crate) async fn app_backup_status() -> HashMap<String, (Option<String>, bool
     map
 }
 
-pub(crate) async fn last_ok_age_hours() -> Option<i64> {
-    let sets = read_sets().await.ok()?;
+pub(crate) async fn last_ok_age_hours(client: &Client) -> Option<i64> {
+    let sets = read_sets(client).await.ok()?;
     sets.iter()
         .find(|s| s.state == SUCCEEDED)
         .and_then(|s| s.finished_at.as_deref())
         .and_then(hours_since)
 }
 
-pub(crate) async fn volsync_mover_running() -> bool {
-    crate::kubectl::run(&[
-        "get",
-        "pods",
-        "-A",
-        "-l",
-        "app.kubernetes.io/created-by=volsync",
-        "--field-selector=status.phase=Running",
-        "-o",
-        "name",
-    ])
-    .await
-    .map(|s| s.lines().any(|l| l.contains("volsync-src-")))
-    .unwrap_or(false)
+pub(crate) async fn volsync_mover_running(client: &Client) -> bool {
+    use k8s_openapi::api::core::v1::Pod;
+    let params = kube::api::ListParams::default()
+        .labels("app.kubernetes.io/created-by=volsync")
+        .fields("status.phase=Running");
+    kube::Api::<Pod>::all(client.clone())
+        .list(&params)
+        .await
+        .map(|pods| {
+            pods.items
+                .iter()
+                .filter_map(|p| p.metadata.name.as_deref())
+                .any(|name| name.contains("volsync-src-"))
+        })
+        .unwrap_or(false)
 }
 
 pub struct BackupSchedulerController;
@@ -1080,69 +1133,73 @@ impl Controller for BackupSchedulerController {
         Duration::from_secs(60)
     }
     async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
-        let Some(cfg) = read_master_config().await else {
-            return Ok(Tick::Idle("backups are not enabled".into()));
+        schedule(&Backend::real().await?).await
+    }
+}
+
+async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<Tick> {
+    let Some(cfg) = master_config(&b.kube).await? else {
+        return Ok(Tick::Idle("backups are not enabled".into()));
+    };
+    let sets = read_sets(&b.kube).await?;
+    let now = Utc::now();
+
+    let mut queued = 0usize;
+    for ns in managed_namespaces(&b.kube).await? {
+        if running_for(&sets, &ns) || queued_for(&sets, &ns).is_some() {
+            continue;
+        }
+        let Some(def) = crate::routers::apps::read_definition_opt(&b.kube, &ns).await else {
+            continue;
         };
-        let sets = read_sets().await?;
-        let now = Utc::now();
-
-        let mut queued = 0usize;
-        for ns in list_managed_namespaces().await? {
-            if running_for(&sets, &ns) || queued_for(&sets, &ns).is_some() {
-                continue;
-            }
-            let Some(def) = crate::routers::apps::read_definition_opt(&ns).await else {
-                continue;
-            };
-            if !def.backup.enabled {
-                continue;
-            }
-            let Ok(schedule) = crate::cron::Cron::parse(&def.backup.schedule) else {
-                tracing::warn!(
-                    "{ns}: backup schedule {:?} is not a valid cron expression — skipping",
-                    def.backup.schedule
-                );
-                continue;
-            };
-            if !schedule.due(last_ok_for(&sets, &ns), now) {
-                continue;
-            }
-            match start_app(&ns, "schedule").await {
-                Ok(id) => {
-                    tracing::info!("backup: queued {ns} ({id})");
-                    queued += 1;
-                }
-                Err(e) => tracing::warn!("backup: could not queue {ns}: {e}"),
-            }
+        if !def.backup.enabled {
+            continue;
         }
+        let Ok(schedule) = crate::cron::Cron::parse(&def.backup.schedule) else {
+            tracing::warn!(
+                "{ns}: backup schedule {:?} is not a valid cron expression — skipping",
+                def.backup.schedule
+            );
+            continue;
+        };
+        if !schedule.due(last_ok_for(&sets, &ns), now) {
+            continue;
+        }
+        match start_app(b, &ns, "schedule").await {
+            Ok(id) => {
+                tracing::info!("backup: queued {ns} ({id})");
+                queued += 1;
+            }
+            Err(e) => tracing::warn!("backup: could not queue {ns}: {e}"),
+        }
+    }
 
-        if queued_for(&sets, "").is_none() && !running_for(&sets, "") {
-            if let Ok(schedule) = crate::cron::Cron::parse(DR_SCHEDULE) {
-                if schedule.due(last_ok_for(&sets, ""), now) {
-                    match start("schedule-dr").await {
-                        Ok(id) => {
-                            tracing::info!("backup: queued DR snapshot ({id})");
-                            queued += 1;
-                        }
-                        Err(e) => tracing::warn!("backup: could not queue DR snapshot: {e}"),
+    if queued_for(&sets, "").is_none() && !running_for(&sets, "") {
+        if let Ok(schedule) = crate::cron::Cron::parse(DR_SCHEDULE) {
+            if schedule.due(last_ok_for(&sets, ""), now) {
+                match start(b, "schedule-dr").await {
+                    Ok(id) => {
+                        tracing::info!("backup: queued DR snapshot ({id})");
+                        queued += 1;
                     }
+                    Err(e) => tracing::warn!("backup: could not queue DR snapshot: {e}"),
                 }
             }
         }
+    }
 
-        let promoted = promote_next().await?;
-        sweep_staging(&promoted.iter().map(|p| p.id.clone()).collect::<Vec<_>>()).await;
-        let started = promoted.is_some();
-        if let Some(promoted) = promoted {
-            tracing::info!("backup: starting {}", promoted.id);
-            spawn_run(cfg, promoted);
-        }
+    let promoted = promote_next(&b.kube).await?;
+    sweep_staging(&promoted.iter().map(|p| p.id.clone()).collect::<Vec<_>>()).await;
+    let started = promoted.is_some();
+    if let Some(promoted) = promoted {
+        tracing::info!("backup: starting {}", promoted.id);
+        spawn_run(b.clone(), cfg, promoted);
+    }
 
-        if queued == 0 && !started {
-            Ok(Tick::Idle("no app is due for a backup".into()))
-        } else {
-            Ok(Tick::Done)
-        }
+    if queued == 0 && !started {
+        Ok(Tick::Idle("no app is due for a backup".into()))
+    } else {
+        Ok(Tick::Done)
     }
 }
 
@@ -1525,5 +1582,235 @@ mod tests {
     fn with_no_run_in_flight_every_leftover_goes() {
         let present = vec!["bk-1".to_string(), "bk-2".to_string()];
         assert_eq!(stale_staging_dirs(&present, &[]).len(), 2);
+    }
+
+    mod against_the_cluster {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{api_server, list, status};
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const CONFIG_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-config";
+
+        fn enabled() -> Value {
+            use base64::Engine as _;
+            let b = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+            json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "yolab-backup-config", "namespace": "kube-system" },
+                "data": {
+                    "access_key_id": b("AKID"), "secret_access_key": b("SECRET"),
+                    "bucket": b("bucket-1"), "endpoint": b("https://s3.example"),
+                    "restic_password": b("pw")
+                }
+            })
+        }
+
+        async fn config(server: &MockServer, code: u16, body: Value) {
+            Mock::given(method("GET"))
+                .and(path(CONFIG_PATH))
+                .respond_with(ResponseTemplate::new(code).set_body_json(body))
+                .mount(server)
+                .await;
+        }
+
+        async fn wrote_records(server: &MockServer) -> bool {
+            !crate::records::testing::written(server, "yolab-backups")
+                .await
+                .is_empty()
+        }
+
+        #[tokio::test]
+        async fn nothing_is_queued_while_backups_are_not_enabled() {
+            let (server, kube) = api_server().await;
+            config(&server, 404, status(404, "NotFound")).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            let err = start_app(&b, "yolab-notes", "user").await.unwrap_err();
+            assert!(err.to_string().contains("not configured"), "{err}");
+            assert!(!wrote_records(&server).await);
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_is_not_reported_as_backups_being_off() {
+            let (server, kube) = api_server().await;
+            config(&server, 503, status(503, "ServiceUnavailable")).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            let err = start(&b, "schedule").await.unwrap_err();
+            assert!(!err.to_string().contains("not configured"), "{err}");
+            assert!(!wrote_records(&server).await);
+        }
+
+        #[tokio::test]
+        async fn asking_twice_for_the_same_app_joins_the_queued_backup() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            crate::records::testing::records(
+                &server,
+                "yolab-backups",
+                json!([{
+                    "id": "bk-waiting", "namespace": "yolab-notes",
+                    "started_at": "2026-09-28T00:00:00Z", "state": QUEUED
+                }]),
+            )
+            .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            assert_eq!(
+                start_app(&b, "yolab-notes", "user").await.unwrap(),
+                "bk-waiting"
+            );
+            assert!(!wrote_records(&server).await);
+        }
+
+        #[tokio::test]
+        async fn a_new_request_is_recorded_as_queued() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            crate::records::testing::no_records(&server, "yolab-backups").await;
+            crate::records::testing::accept_writes(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            let id = start_app(&b, "yolab-notes", "user").await.unwrap();
+            let written = crate::records::testing::written(&server, "yolab-backups").await;
+            assert_eq!(written.len(), 1);
+            assert_eq!(written[0][0]["id"], id.as_str());
+            assert_eq!(written[0][0]["namespace"], "yolab-notes");
+            assert_eq!(written[0][0]["state"], QUEUED);
+        }
+
+        #[tokio::test]
+        async fn exported_cluster_objects_carry_their_kind_so_a_restore_can_apply_them() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Namespace",
+                    vec![json!({ "metadata": { "name": "yolab-notes" } })],
+                )))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/apis/storage.k8s.io/v1/storageclasses"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+
+            let items = cluster_scoped_objects(&kube).await;
+            let ns = items
+                .iter()
+                .find(|i| i["metadata"]["name"] == "yolab-notes")
+                .expect("the namespace is exported even though another kind failed");
+            assert_eq!(ns["apiVersion"], "v1");
+            assert_eq!(ns["kind"], "Namespace");
+        }
+
+        #[tokio::test]
+        async fn an_app_export_fails_whole_rather_than_missing_a_kind() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/apis/apps/v1/namespaces/yolab-notes/deployments"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list("Deployment", vec![])))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/services"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+
+            assert!(namespace_objects(&kube, "yolab-notes").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_failed_etcd_snapshot_touches_nothing_in_the_cluster() {
+            let (server, kube) = api_server().await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().fail("k3s etcd-snapshot save", "etcd is not running"),
+            };
+            let dir = tempfile::tempdir().unwrap();
+
+            save_etcd_snapshot(&b, &dir.path().to_string_lossy(), "yolab-bk-1").await;
+            assert!(b.host.ran("k3s etcd-snapshot save --name=yolab-bk-1"));
+            assert!(server.received_requests().await.unwrap().is_empty());
+            assert!(!dir.path().join("etcd.db").exists());
+        }
+
+        #[tokio::test]
+        async fn only_a_running_source_mover_counts_as_a_backup_in_progress() {
+            let pods = |names: &[&str]| {
+                list(
+                    "Pod",
+                    names
+                        .iter()
+                        .map(|n| json!({ "metadata": { "name": n } }))
+                        .collect(),
+                )
+            };
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/pods"))
+                .and(query_param("fieldSelector", "status.phase=Running"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(pods(&["volsync-dst-notes-x"])),
+                )
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/pods"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(pods(&["volsync-src-notes-y"])),
+                )
+                .mount(&server)
+                .await;
+
+            assert!(!volsync_mover_running(&kube).await);
+            assert!(volsync_mover_running(&kube).await);
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_does_not_claim_a_mover_is_running() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            assert!(!volsync_mover_running(&kube).await);
+        }
+
+        #[tokio::test]
+        async fn a_missing_replication_source_reads_as_null() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            assert_eq!(
+                replication_source_status(&kube, "yolab-notes", "data").await,
+                Value::Null
+            );
+        }
     }
 }

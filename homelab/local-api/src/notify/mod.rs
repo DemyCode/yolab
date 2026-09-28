@@ -135,7 +135,7 @@ async fn publish_local(topic: &str, n: &Notification) -> Result<()> {
     if let Some(click) = &n.click {
         body["click"] = Value::String(click.clone());
     }
-    let response = reqwest::Client::new()
+    let response = crate::http::client()
         .post(NTFY_LOCAL)
         .json(&body)
         .timeout(Duration::from_secs(10))
@@ -157,13 +157,14 @@ pub(crate) async fn publish_everywhere(
     peer_addrs: &[String],
 ) -> Result<()> {
     publish_local(topic, n).await?;
-    let client = reqwest::Client::new();
+    let client = crate::http::client();
     let token = cfg.cluster_token();
     let deliveries = peer_addrs.iter().map(|addr| {
         let request = client
-            .post(format!(
-                "http://[{addr}]:{}/api/notifications/deliver",
-                cfg.port
+            .post(crate::http::peer_url(
+                addr,
+                cfg.port,
+                "/api/notifications/deliver",
             ))
             .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
             .timeout(Duration::from_secs(10))

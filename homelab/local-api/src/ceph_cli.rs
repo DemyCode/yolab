@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -68,12 +67,6 @@ pub async fn ceph_json(args: &[&str]) -> Result<Value, CmdError> {
     exec::parse_json(&exec::render("ceph", &a), &raw)
 }
 
-pub async fn ceph_typed<T: DeserializeOwned>(args: &[&str]) -> Result<T, CmdError> {
-    let a = with_json_format(args);
-    let raw = ceph(&a).await?;
-    exec::parse_json(&exec::render("ceph", &a), &raw)
-}
-
 pub async fn ceph_volume(args: &[&str]) -> Result<String, CmdError> {
     refuse_destructive("ceph-volume", args)?;
     ceph_volume_inner(args).await
@@ -98,25 +91,6 @@ async fn ceph_volume_inner(args: &[&str]) -> Result<String, CmdError> {
     };
     let out = exec::output("ceph-volume", args, CEPH_VOLUME_TIMEOUT).await?;
     exec::into_checked("ceph-volume", args, out)
-}
-
-pub async fn cluster_fsid() -> Result<String, CmdError> {
-    let json_err = match ceph_json(&["fsid"]).await {
-        Ok(v) => match v["fsid"].as_str().filter(|s| !s.is_empty()) {
-            Some(f) => return Ok(f.to_string()),
-            None => CmdError::parse("ceph fsid -f json", "no fsid field"),
-        },
-        Err(e) => e,
-    };
-    if json_err.is_unanswered() {
-        return Err(json_err);
-    }
-    let plain = ceph(&["fsid"]).await?;
-    let f = plain.trim();
-    if f.is_empty() {
-        return Err(CmdError::parse("ceph fsid", "empty output"));
-    }
-    Ok(f.to_string())
 }
 
 #[cfg(test)]

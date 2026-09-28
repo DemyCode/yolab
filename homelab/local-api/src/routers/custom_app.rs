@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+use crate::host::Host;
 use crate::AppState;
 
 pub const CUSTOM_REPO: &str = "custom";
@@ -477,27 +478,36 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
 
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-async fn run(cmd: &str, args: &[&str]) -> Result<String, Rejection> {
-    let work = tokio::process::Command::new(cmd)
-        .args(args)
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(RUN_TIMEOUT, work)
+async fn run<H: Host>(host: &H, cmd: &str, args: &[&str]) -> Result<String, Rejection> {
+    let out = host
+        .run_cmd_bounded(cmd, args, RUN_TIMEOUT)
         .await
-        .map_err(|_| reject(format!("{cmd} timed out after {}s", RUN_TIMEOUT.as_secs())))?
         .map_err(|e| reject(format!("could not run {cmd}: {e}")))?;
-    if !out.status.success() {
-        return Err(reject(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+    if !out.success {
+        return Err(reject(out.stderr.trim().to_string()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out.stdout)
 }
 
 pub async fn upload_chart(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    upload(
+        &crate::host::RealHost,
+        &state.config.catalog_dir(),
+        &custom_dir(),
+        &body,
+    )
+    .await
+}
+
+async fn upload<H: Host>(
+    host: &H,
+    catalog_dir: &std::path::Path,
+    custom_root: &std::path::Path,
+    body: &[u8],
+) -> (StatusCode, Json<Value>) {
     let bad = |msg: String| {
         (
             StatusCode::BAD_REQUEST,
@@ -505,7 +515,7 @@ pub async fn upload_chart(
         )
     };
 
-    let Some(kind) = sniff(&body) else {
+    let Some(kind) = sniff(body) else {
         return bad("that file is not a .zip or a .tgz — package a chart with `helm package`, or zip the chart folder".into());
     };
 
@@ -522,7 +532,7 @@ pub async fn upload_chart(
         );
     }
     let archive = tmp.join("upload");
-    if let Err(e) = tokio::fs::write(&archive, &body).await {
+    if let Err(e) = tokio::fs::write(&archive, body).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -534,6 +544,7 @@ pub async fn upload_chart(
     let extracted = match kind {
         Archive::TarGz => {
             run(
+                host,
                 "tar",
                 &[
                     "-xzf",
@@ -547,6 +558,7 @@ pub async fn upload_chart(
         }
         Archive::Zip => {
             run(
+                host,
                 "unzip",
                 &[
                     "-q",
@@ -592,11 +604,12 @@ pub async fn upload_chart(
     }
 
     if meta.dependencies.iter().any(|d| d.name == "yolab-common") {
-        let lib = state.config.catalog_dir().join("yolab-common");
+        let lib = catalog_dir.join("yolab-common");
         if lib.is_dir() {
             let charts_dir = root.join("charts");
             let _ = tokio::fs::create_dir_all(&charts_dir).await;
             let _ = run(
+                host,
                 "cp",
                 &[
                     "-r",
@@ -610,6 +623,7 @@ pub async fn upload_chart(
 
     let release_ns = format!("yolab-{}", meta.name);
     let rendered = match run(
+        host,
         "helm",
         &[
             "template",
@@ -632,8 +646,8 @@ pub async fn upload_chart(
         return bad(r.reason);
     }
 
-    let final_dir = custom_dir().join(&meta.name);
-    if let Err(e) = tokio::fs::create_dir_all(custom_dir()).await {
+    let final_dir = custom_root.join(&meta.name);
+    if let Err(e) = tokio::fs::create_dir_all(custom_root).await {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -642,6 +656,7 @@ pub async fn upload_chart(
     }
     let _ = tokio::fs::remove_dir_all(&final_dir).await;
     if let Err(r) = run(
+        host,
         "cp",
         &[
             "-r",
@@ -1143,5 +1158,46 @@ spec:
     fn a_manifest_containing_go_templates_is_accepted() {
         let doc = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: dash\ndata:\n  rule: \"{{ $labels.instance }} is down\"\n";
         assert!(validate_manifest(doc).is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_archive_that_will_not_unpack_is_refused_and_nothing_is_kept() {
+        let host = crate::host::fake::FakeHost::new()
+            .fail("tar -xzf", "gzip: stdin: unexpected end of file");
+        let custom = tempfile::tempdir().unwrap();
+        let (status, Json(body)) =
+            upload(&host, custom.path(), custom.path(), b"\x1f\x8b\x08broken").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("unexpected end of file"),
+            "{body}"
+        );
+        assert_eq!(std::fs::read_dir(custom.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_archive_without_a_chart_is_refused_before_helm_runs() {
+        let host = crate::host::fake::FakeHost::new().ok("unzip", "");
+        let custom = tempfile::tempdir().unwrap();
+        let (status, Json(body)) =
+            upload(&host, custom.path(), custom.path(), b"PK\x03\x04empty").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"].as_str().unwrap().contains("no Chart.yaml"),
+            "{body}"
+        );
+        assert!(!host.ran("helm"));
+    }
+
+    #[tokio::test]
+    async fn something_that_is_no_archive_never_reaches_a_tool() {
+        let host = crate::host::fake::FakeHost::new();
+        let custom = tempfile::tempdir().unwrap();
+        let (status, _) = upload(&host, custom.path(), custom.path(), b"hello").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(host.calls().is_empty());
     }
 }

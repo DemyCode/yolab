@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Outcome;
+use crate::host::Host;
+use crate::routers::backup_common::Backend;
 use crate::storage::settings;
 use crate::store::Store;
-use crate::{kubectl, AppState};
+use crate::AppState;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct StoragePolicy {
@@ -48,10 +50,6 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
         mon,
         mgr,
     }
-}
-
-pub async fn read_policy() -> Option<PolicyState> {
-    read_policy_from(&crate::host::RealHost).await
 }
 
 async fn read_mirror_policy<H: crate::host::Host>(host: &H) -> Option<Option<StoragePolicy>> {
@@ -113,7 +111,7 @@ fn merge_policy(
     }
 }
 
-async fn read_policy_from<H: crate::host::Host>(host: &H) -> Option<PolicyState> {
+pub(crate) async fn read_policy_from<H: Host>(host: &H) -> Option<PolicyState> {
     let mirror = read_mirror_policy(host).await;
     let synced = {
         let mut store = crate::store::locked();
@@ -158,12 +156,14 @@ fn record_policy_choice(p: &StoragePolicy) {
     }
 }
 
-pub(crate) async fn observe() -> Option<Topology> {
-    let nodes = kubectl::get_nodes().await.ok()?.len() as u32;
-    let osds =
-        crate::ceph_cli::ceph_json(&["osd", "stat"]).await.ok()?["num_up_osds"].as_u64()? as u32;
+pub(crate) async fn observe<H: Host>(b: &Backend<H>) -> Option<Topology> {
+    let nodes = crate::k8s::list(&b.kube, "v1", "Node", None, &Default::default())
+        .await
+        .ok()?
+        .len() as u32;
+    let osds = b.host.ceph_json(&["osd", "stat"]).await.ok()?["num_up_osds"].as_u64()? as u32;
 
-    let tree = crate::ceph_cli::ceph_json(&["osd", "tree"]).await.ok()?;
+    let tree = b.host.ceph_json(&["osd", "tree"]).await.ok()?;
     let osd_hosts = tree["nodes"]
         .as_array()?
         .iter()
@@ -180,8 +180,8 @@ pub(crate) async fn observe() -> Option<Topology> {
     })
 }
 
-async fn cluster_health() -> Option<String> {
-    crate::ceph_cli::ceph_json(&["health"]).await.ok()?["status"]
+async fn cluster_health<H: Host>(host: &H) -> Option<String> {
+    host.ceph_json(&["health"]).await.ok()?["status"]
         .as_str()
         .map(str::to_string)
 }
@@ -208,43 +208,42 @@ impl crate::runtime::Controller for TopologyController {
         &[crate::runtime::Activity::Restore]
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        tick().await?;
+        tick(&Backend::real().await?).await;
         Ok(crate::runtime::Tick::Done)
     }
 }
 
-async fn tick() -> anyhow::Result<()> {
-    let Some(topo) = observe().await else {
+async fn tick<H: Host>(b: &Backend<H>) {
+    let Some(topo) = observe(b).await else {
         tracing::debug!("topology: cluster shape unknown this tick — not touching replication");
-        return Ok(());
+        return;
     };
     if topo.osds == 0 {
-        return Ok(());
+        return;
     }
-    match cluster_health().await.as_deref() {
-        Some("HEALTH_ERR") | None => return Ok(()),
+    match cluster_health(&b.host).await.as_deref() {
+        Some("HEALTH_ERR") | None => return,
         _ => {}
     }
 
-    let policy = match read_policy().await {
+    let policy = match read_policy_from(&b.host).await {
         None => {
             tracing::debug!("topology: storage policy unreadable this tick — changing nothing");
-            return Ok(());
+            return;
         }
         Some(PolicyState::NotChosen) => {
-            return Ok(());
+            return;
         }
         Some(PolicyState::Chosen(p)) => p,
     };
     let target = compute_target(&policy, &topo);
 
-    apply_mon_mgr(&target).await;
-    apply_pools(&target).await;
-    Ok(())
+    apply_mon_mgr(&b.host, &target).await;
+    apply_pools(&b.host, &target).await;
 }
 
-async fn apply_mon_mgr(target: &Target) {
-    let Ok(dump) = crate::ceph_cli::ceph_json(&["mon", "dump"]).await else {
+async fn apply_mon_mgr<H: Host>(host: &H, target: &Target) {
+    let Ok(dump) = host.ceph_json(&["mon", "dump"]).await else {
         return;
     };
     let cur_mon = dump["mons"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
@@ -272,8 +271,8 @@ fn apply_pools_selects(pool: &str) -> bool {
     !pool.is_empty() && !pool.starts_with(".nfs") && !pool.starts_with(".rgw")
 }
 
-async fn pool_size(pool: &str) -> Option<u32> {
-    crate::ceph_cli::ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
+async fn pool_size<H: Host>(host: &H, pool: &str) -> Option<u32> {
+    host.ceph(&["osd", "pool", "get", pool, "size", "-f", "json"])
         .await
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -281,7 +280,7 @@ async fn pool_size(pool: &str) -> Option<u32> {
         .map(|x| x as u32)
 }
 
-async fn apply_pools(target: &Target) {
+async fn apply_pools<H: Host>(host: &H, target: &Target) {
     let rule = if target.failure_domain == "osd" {
         "replicated_osd"
     } else {
@@ -289,11 +288,12 @@ async fn apply_pools(target: &Target) {
     };
 
     if target.failure_domain == "osd" {
-        let have = crate::ceph_cli::ceph(&["osd", "crush", "rule", "ls"])
+        let have = host
+            .ceph(&["osd", "crush", "rule", "ls"])
             .await
             .unwrap_or_default();
         if !have.lines().any(|l| l.trim() == rule) {
-            crate::ceph_cli::ceph(&[
+            host.ceph(&[
                 "osd",
                 "crush",
                 "rule",
@@ -307,28 +307,26 @@ async fn apply_pools(target: &Target) {
         }
     }
 
-    let pools = crate::ceph_cli::ceph(&["osd", "pool", "ls"])
-        .await
-        .unwrap_or_default();
+    let pools = host.ceph(&["osd", "pool", "ls"]).await.unwrap_or_default();
     for pool in pools
         .lines()
         .map(|l| l.trim())
         .filter(|p| apply_pools_selects(p))
     {
-        let Some(cur) = pool_size(pool).await else {
+        let Some(cur) = pool_size(host, pool).await else {
             tracing::debug!("topology: size of {pool} unknown this tick — leaving it");
             continue;
         };
         let want = target.size;
         let min = min_size_for(want);
 
-        crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "crush_rule", rule])
+        host.ceph(&["osd", "pool", "set", pool, "crush_rule", rule])
             .await
             .warn_on_err(format!("topology: set crush_rule on {pool}"));
         if want != cur {
             let ws = want.to_string();
             let res = if want == 1 {
-                crate::ceph_cli::ceph(&[
+                host.ceph(&[
                     "osd",
                     "pool",
                     "set",
@@ -339,7 +337,7 @@ async fn apply_pools(target: &Target) {
                 ])
                 .await
             } else {
-                crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "size", &ws]).await
+                host.ceph(&["osd", "pool", "set", pool, "size", &ws]).await
             };
             if res.is_ok() {
                 tracing::info!(
@@ -349,27 +347,28 @@ async fn apply_pools(target: &Target) {
             }
         }
         let ms = min.to_string();
-        crate::ceph_cli::ceph(&["osd", "pool", "set", pool, "min_size", &ms])
+        host.ceph(&["osd", "pool", "set", pool, "min_size", &ms])
             .await
             .warn_on_err(format!("topology: set min_size on {pool}"));
     }
 }
 
-pub async fn get_policy(State(_s): State<AppState>) -> Json<Value> {
-    let chosen = match read_policy().await {
+pub async fn get_policy(State(state): State<AppState>) -> crate::error::Result<Json<Value>> {
+    let b = state.backend().await?;
+    let chosen = match read_policy_from(&b.host).await {
         Some(PolicyState::Chosen(p)) => Some(p),
         _ => None,
     };
-    let topo = observe().await;
+    let topo = observe(&b).await;
     let target = match (&chosen, &topo) {
         (Some(p), Some(t)) => Some(compute_target(p, t)),
         _ => None,
     };
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "policy": chosen,
         "topology": topo,
         "target": target,
-    }))
+    })))
 }
 
 #[derive(Deserialize)]
@@ -671,5 +670,114 @@ mod tests {
 
         assert_eq!(synced.stored, Some(policy(3, "host")));
         assert!(!synced.changed, "nothing to write means nothing to save");
+    }
+
+    mod against_the_cluster {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{api_server, list};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        fn target(size: u32, fd: &str) -> Target {
+            compute_target(
+                &policy(size, fd),
+                &Topology {
+                    nodes: 2,
+                    osds: 2,
+                    osd_hosts: 2,
+                },
+            )
+        }
+
+        #[tokio::test]
+        async fn a_pool_is_resized_to_the_chosen_copies_and_its_floor() {
+            let host = FakeHost::new()
+                .ok("ceph osd pool ls", "images\n.nfs\n")
+                .ok("ceph osd pool get images size", r#"{"size": 1}"#)
+                .ok("ceph osd pool set", "");
+            apply_pools(&host, &target(2, "host")).await;
+            assert!(host.ran("ceph osd pool set images size 2"));
+            assert!(host.ran("ceph osd pool set images min_size 1"));
+            assert!(host.ran("ceph osd pool set images crush_rule replicated_rule"));
+            assert!(!host.ran(".nfs"), "{:?}", host.calls());
+        }
+
+        #[tokio::test]
+        async fn one_copy_needs_ceph_to_be_told_it_is_meant() {
+            let host = FakeHost::new()
+                .ok("ceph osd pool ls", "images\n")
+                .ok("ceph osd pool get images size", r#"{"size": 2}"#)
+                .ok("ceph osd crush rule ls", "replicated_rule\n")
+                .ok("ceph osd crush rule create-replicated", "")
+                .ok("ceph osd pool set", "");
+            apply_pools(&host, &target(1, "osd")).await;
+            assert!(host.ran("ceph osd crush rule create-replicated replicated_osd default osd"));
+            assert!(host.ran("ceph osd pool set images size 1 --yes-i-really-mean-it"));
+        }
+
+        #[tokio::test]
+        async fn a_pool_of_unknown_size_is_left_alone() {
+            let host = FakeHost::new()
+                .ok("ceph osd pool ls", "images\n")
+                .fail("ceph osd pool get images size", "timed out");
+            apply_pools(&host, &target(3, "host")).await;
+            assert!(!host.ran("ceph osd pool set"));
+        }
+
+        #[tokio::test]
+        async fn the_shape_counts_nodes_osds_and_hosts_that_hold_osds() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/nodes"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Node",
+                    vec![
+                        serde_json::json!({ "metadata": { "name": "node1" } }),
+                        serde_json::json!({ "metadata": { "name": "node2" } }),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+            let host = FakeHost::new()
+                .ok("ceph osd stat", r#"{"num_up_osds": 3}"#)
+                .ok(
+                    "ceph osd tree",
+                    r#"{"nodes": [
+                        {"type": "root", "children": [-2, -3]},
+                        {"type": "host", "children": [0, 1]},
+                        {"type": "host", "children": []}
+                    ]}"#,
+                );
+            let topo = observe(&Backend { kube, host }).await.unwrap();
+            assert_eq!(
+                topo,
+                Topology {
+                    nodes: 2,
+                    osds: 3,
+                    osd_hosts: 1
+                }
+            );
+        }
+
+        #[tokio::test]
+        async fn nothing_is_changed_while_the_cluster_is_in_error() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/nodes"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Node",
+                    vec![serde_json::json!({ "metadata": { "name": "node1" } })],
+                )))
+                .mount(&server)
+                .await;
+            let host = FakeHost::new()
+                .ok("ceph osd stat", r#"{"num_up_osds": 1}"#)
+                .ok("ceph osd tree", r#"{"nodes": []}"#)
+                .ok("ceph health", r#"{"status": "HEALTH_ERR"}"#);
+            let b = Backend { kube, host };
+            tick(&b).await;
+            assert!(!b.host.ran("ceph osd pool"), "{:?}", b.host.calls());
+        }
     }
 }

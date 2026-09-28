@@ -17,7 +17,10 @@ pub async fn run(args: &[String]) -> i32 {
 
     let result: Result<()> = match sub {
         "node-ip" => node_ip::run(&host, &env("YOLAB_NODE_IPV6"), std::path::Path::new("/")).await,
-        "csi-recovery" => csi_recovery::run(&host).await,
+        "csi-recovery" => match crate::k8s::client().await {
+            Ok(client) => csi_recovery::run(&client).await,
+            Err(e) => Err(e),
+        },
         "banner" => {
             let config_path = env("YOLAB_CONFIG");
             banner::run(&host, &config_path, std::path::Path::new("/run/issue")).await

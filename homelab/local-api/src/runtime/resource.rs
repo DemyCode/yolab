@@ -100,7 +100,7 @@ pub(crate) async fn preflight(
     pauses: &[activity::Activity],
 ) -> anyhow::Result<String> {
     let node = crate::system::hostname();
-    if scope == Scope::Cluster && !leader::held_by(&node).await? {
+    if scope == Scope::Cluster && !leader::held_by(&crate::k8s::client().await?, &node).await? {
         anyhow::bail!(
             "{name} is cluster-scoped and {node} does not hold the cluster lease — run it on the leader"
         );

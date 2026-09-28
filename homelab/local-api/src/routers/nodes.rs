@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::{extract::State, Json};
 use serde::Serialize;
 
-use crate::{error::Result, kubectl, AppState};
+use crate::{error::Result, AppState};
 
 #[derive(Serialize)]
 pub struct NodeLink {
@@ -29,8 +29,8 @@ pub struct JoinInfo {
     pub ceph_fsid: String,
 }
 
-pub async fn nodes() -> Result<Json<Vec<NodeInfo>>> {
-    let items = kubectl::get_nodes().await?;
+pub async fn nodes(State(state): State<AppState>) -> Result<Json<Vec<NodeInfo>>> {
+    let items = crate::k8s::nodes(&state.kube.client().await?).await?;
     Ok(Json(
         items
             .iter()
@@ -86,12 +86,23 @@ pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLi
         .unwrap_or("")
         .to_string();
 
-    let resp = reqwest::Client::new()
+    Ok(Json(
+        links_to_nodes(&crate::http::client(), &platform_api_url, &account_token).await?,
+    ))
+}
+
+async fn links_to_nodes(
+    client: &crate::http::Client,
+    platform_api_url: &str,
+    account_token: &str,
+) -> anyhow::Result<Vec<NodeLink>> {
+    let resp = client
         .get(format!("{platform_api_url}/tunnels"))
-        .bearer_auth(&account_token)
+        .bearer_auth(account_token)
         .timeout(Duration::from_secs(10))
         .send()
         .await?
+        .error_for_status()?
         .json::<serde_json::Value>()
         .await?;
 
@@ -120,7 +131,7 @@ pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLi
         .collect();
 
     links.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Json(links))
+    Ok(links)
 }
 
 pub async fn join_info(State(state): State<AppState>) -> Result<Json<JoinInfo>> {
@@ -312,5 +323,52 @@ token = "deadbeef"
         let j = parse_join_info(bad).unwrap();
         assert_eq!(j.account_token, "");
         assert_eq!(j.platform_api_url, "");
+    }
+
+    mod against_the_platform {
+        use super::*;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn only_node_records_become_links_sorted_by_name() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tunnels"))
+                .and(header("authorization", "Bearer acct"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    { "dns_records": [
+                        { "name": "node2", "fqdn": "node2.6.yolab.io" },
+                        { "name": "cluster", "fqdn": "cluster.6.yolab.io" }
+                    ] },
+                    { "dns_records": [{ "name": "node1", "fqdn": "node1.6.yolab.io" }] }
+                ])))
+                .mount(&server)
+                .await;
+            let links = links_to_nodes(&crate::http::Client::new(), &server.uri(), "acct")
+                .await
+                .unwrap();
+            let urls: Vec<&str> = links.iter().map(|l| l.url.as_str()).collect();
+            assert_eq!(
+                urls,
+                vec!["https://node1.6.yolab.io", "https://node2.6.yolab.io"]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_refused_request_is_an_error_not_an_empty_list() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(401).set_body_json(serde_json::json!({"detail": "no"})),
+                )
+                .mount(&server)
+                .await;
+            assert!(
+                links_to_nodes(&crate::http::Client::new(), &server.uri(), "acct")
+                    .await
+                    .is_err()
+            );
+        }
     }
 }

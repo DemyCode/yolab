@@ -155,11 +155,15 @@ pub fn spawn_heartbeat<T: Claimed + 'static>(
             }
             let me = crate::system::hostname();
             let now = Utc::now();
-            let result = store
-                .update(&crate::host::RealHost, |sets: &mut Vec<T>| {
-                    beat(sets, &ids, &me, now);
-                })
-                .await;
+            let result = match crate::k8s::client().await {
+                Ok(client) => store
+                    .update(&client, |sets: &mut Vec<T>| {
+                        beat(sets, &ids, &me, now);
+                    })
+                    .await
+                    .map_err(anyhow::Error::from),
+                Err(e) => Err(e),
+            };
             if let Err(e) = result {
                 tracing::warn!(
                     "heartbeat for {}/{}: {e} — other nodes will treat these as abandoned after {}s",

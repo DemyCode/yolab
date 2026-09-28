@@ -6,12 +6,14 @@ use axum::{
     response::{sse::Event, IntoResponse, Sse},
     Json,
 };
+use kube::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Outcome;
+use crate::routers::backup_common::Backend;
 use crate::routers::install;
-use crate::{config::Config, error::Result, proc::KillOnDrop, AppState};
+use crate::{config::Config, error::Result, AppState};
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
 pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
@@ -100,16 +102,18 @@ pub struct InstallRequest {
     pub source: Option<install::InstallSource>,
 }
 
-async fn annotate_ns(ns: &str, key: &str, value: &str) {
-    if let Err(e) = crate::kubectl::run(&[
-        "annotate",
-        "namespace",
-        ns,
-        &format!("{key}={value}"),
-        "--overwrite=true",
-    ])
-    .await
-    {
+fn namespace_ref(ns: &str) -> Value {
+    crate::k8s::cluster_reference("v1", "Namespace", ns)
+}
+
+async fn namespace(client: &Client, ns: &str) -> anyhow::Result<Option<Value>> {
+    crate::k8s::get(client, &namespace_ref(ns)).await
+}
+
+async fn annotate_ns(client: &Client, ns: &str, key: &str, value: &str) {
+    let mut patch = namespace_ref(ns);
+    patch["metadata"]["annotations"] = serde_json::json!({ key: value });
+    if let Err(e) = crate::k8s::merge_patch(client, &patch).await {
         tracing::warn!("annotate {ns} {key} failed: {e}");
     }
 }
@@ -134,8 +138,8 @@ fn redact_credentials(
         .collect()
 }
 
-async fn read_config(ns: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
-    let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
+async fn read_config(client: &Client, ns: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+    let data = crate::k8s::secret_data(client, ns, CONFIG_SECRET)
         .await?
         .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
     parse_saved_config(ns, &data)
@@ -209,32 +213,36 @@ pub struct AppDefinition {
 }
 
 pub(crate) async fn write_definition(
+    client: &Client,
     ns: &str,
     def: &AppDefinition,
     app: &crate::appschema::AppSchema,
 ) -> anyhow::Result<()> {
     let full = serde_json::to_string(def)?;
     let config_json = serde_json::to_string(&def.config)?;
-    crate::kubectl::apply_secret(
-        CONFIG_SECRET,
-        ns,
-        &[
-            (CONFIG_SECRET_KEY, config_json.as_str()),
-            (DEFINITION_SECRET_KEY, full.as_str()),
-        ],
-        &[("yolab.io/managed", "true")],
+    crate::k8s::apply(
+        client,
+        &crate::k8s::secret_manifest(
+            CONFIG_SECRET,
+            ns,
+            &[
+                (CONFIG_SECRET_KEY, config_json.as_str()),
+                (DEFINITION_SECRET_KEY, full.as_str()),
+            ],
+            &[(LABEL_MANAGED, "true")],
+        ),
     )
     .await?;
     record_definition(ns, def);
     let redacted = redact_credentials(&def.config, &app.credentials());
-    annotate_ns(ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
-    annotate_ns(ns, ANN_BACKUP, &serde_json::to_string(&def.backup)?).await;
+    annotate_ns(client, ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
+    annotate_ns(client, ns, ANN_BACKUP, &serde_json::to_string(&def.backup)?).await;
     crate::runtime::wake("outputs");
     Ok(())
 }
 
-pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
-    match read_definition_from_cluster(ns).await {
+pub(crate) async fn read_definition(client: &Client, ns: &str) -> anyhow::Result<AppDefinition> {
+    match read_definition_from_cluster(client, ns).await {
         Ok(def) => {
             take_definition_in(ns, &def);
             Ok(def)
@@ -288,8 +296,8 @@ fn record_definition(ns: &str, def: &AppDefinition) {
     }
 }
 
-async fn read_definition_from_cluster(ns: &str) -> anyhow::Result<AppDefinition> {
-    let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
+async fn read_definition_from_cluster(client: &Client, ns: &str) -> anyhow::Result<AppDefinition> {
+    let data = crate::k8s::secret_data(client, ns, CONFIG_SECRET)
         .await?
         .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
     if let Some(raw) = data.get(DEFINITION_SECRET_KEY) {
@@ -299,14 +307,12 @@ async fn read_definition_from_cluster(ns: &str) -> anyhow::Result<AppDefinition>
         tracing::warn!("{ns}: {DEFINITION_SECRET_KEY} is unreadable — falling back to annotations");
     }
     let config = parse_saved_config(ns, &data)?;
-    let ns_v = crate::kubectl::get_opt(&["get", "namespace", ns, "-o", "json"])
-        .await?
-        .unwrap_or(Value::Null);
+    let ns_v = namespace(client, ns).await?.unwrap_or(Value::Null);
     Ok(definition_from_annotations(&ns_v, config))
 }
 
-pub(crate) async fn read_definition_opt(ns: &str) -> Option<AppDefinition> {
-    read_definition(ns).await.ok()
+pub(crate) async fn read_definition_opt(client: &Client, ns: &str) -> Option<AppDefinition> {
+    read_definition(client, ns).await.ok()
 }
 
 pub(crate) fn redact_definition(
@@ -369,8 +375,11 @@ pub(crate) fn definition_from_annotations(
     }
 }
 
-pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec) {
-    let volumes = crate::routers::backup_common::list_user_pvcs()
+pub(crate) async fn collect_runtime(
+    client: &kube::Client,
+    ns: &str,
+) -> (Vec<VolumeSpec>, ResourceSpec) {
+    let volumes = crate::routers::backup_common::user_pvcs(client)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -381,18 +390,29 @@ pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec)
         })
         .collect();
 
+    let resources = match workloads(client, ns).await {
+        Ok(items) => requested_resources(&items),
+        Err(e) => {
+            tracing::warn!("{ns}: could not read what this app runs: {e:#}");
+            ResourceSpec::default()
+        }
+    };
+    (volumes, resources)
+}
+
+async fn workloads(client: &kube::Client, ns: &str) -> anyhow::Result<Vec<Value>> {
+    let params = kube::api::ListParams::default();
+    let mut items = Vec::new();
+    for kind in ["Deployment", "StatefulSet", "DaemonSet"] {
+        items.extend(crate::k8s::list(client, "apps/v1", kind, Some(ns), &params).await?);
+    }
+    Ok(items)
+}
+
+fn requested_resources(items: &[Value]) -> ResourceSpec {
     let mut resources = ResourceSpec::default();
-    if let Ok(v) = crate::kubectl::get_json(&[
-        "get",
-        "deploy,statefulset,daemonset",
-        "-n",
-        ns,
-        "-o",
-        "json",
-    ])
-    .await
     {
-        for item in v["items"].as_array().into_iter().flatten() {
+        for item in items {
             let replicas = item["spec"]["replicas"].as_u64().unwrap_or(1);
             resources.replicas += replicas;
             for c in item["spec"]["template"]["spec"]["containers"]
@@ -419,7 +439,7 @@ pub(crate) async fn collect_runtime(ns: &str) -> (Vec<VolumeSpec>, ResourceSpec)
             }
         }
     }
-    (volumes, resources)
+    resources
 }
 
 pub(crate) fn parse_cpu_millicores(s: &str) -> u64 {
@@ -566,28 +586,36 @@ fn build_values(
     .to_string()
 }
 
-async fn ensure_tunnel_credentials(ns: &str, tunnel_cfg: &toml::Table) -> anyhow::Result<()> {
+async fn ensure_tunnel_credentials(
+    client: &Client,
+    ns: &str,
+    tunnel_cfg: &toml::Table,
+) -> anyhow::Result<()> {
     let token = tunnel_cfg
         .get("account_token")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    crate::kubectl::apply_secret(
-        "yolab-tunnel-credentials",
-        ns,
-        &[("account-token", token)],
-        &[("app.kubernetes.io/managed-by", "yolab")],
+    crate::k8s::apply(
+        client,
+        &crate::k8s::secret_manifest(
+            "yolab-tunnel-credentials",
+            ns,
+            &[("account-token", token)],
+            &[("app.kubernetes.io/managed-by", "yolab")],
+        ),
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 async fn ensure_app_namespace(
+    client: &Client,
     ns: &str,
     app_id: &str,
     repo: &str,
     chart_version: &str,
 ) -> anyhow::Result<()> {
-    crate::kubectl::apply(
+    crate::k8s::apply(
+        client,
         &serde_json::json!({
             "apiVersion": "v1",
             "kind": "Namespace",
@@ -601,11 +629,9 @@ async fn ensure_app_namespace(
                     "volsync.backube/privileged-movers": "true",
                 },
             },
-        })
-        .to_string(),
+        }),
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 fn validate_config_values(
@@ -669,14 +695,22 @@ fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
 }
 
 pub async fn refresh_catalog_app(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>> {
+    let b = state.backend().await?;
     let mut refreshed = false;
     let mut note = String::new();
 
-    for repo in crate::charts::list_repos().await {
-        match crate::charts::sync_chart(&repo, &id).await {
+    for repo in crate::charts::list_repos(&b.kube).await {
+        match crate::charts::sync_chart(
+            &b.host,
+            std::path::Path::new(crate::charts::CACHE_DIR),
+            &repo,
+            &id,
+        )
+        .await
+        {
             Ok(()) => {
                 refreshed = true;
                 break;
@@ -685,7 +719,7 @@ pub async fn refresh_catalog_app(
         }
     }
 
-    let entry = crate::charts::chart_sources()
+    let entry = crate::charts::chart_sources(&b.kube)
         .await
         .into_iter()
         .find_map(|(repo, dir)| {
@@ -693,18 +727,18 @@ pub async fn refresh_catalog_app(
             Some(catalog_entry_from(repo, m))
         });
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "refreshed": refreshed,
         "note": note,
         "app": entry,
-    }))
+    })))
 }
 
-pub async fn catalog(State(_state): State<AppState>) -> Json<Vec<CatalogApp>> {
+pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogApp>>> {
     let mut apps: Vec<CatalogApp> = vec![];
     let mut seen: std::collections::HashSet<String> = Default::default();
 
-    for (repo, dir) in crate::charts::chart_sources().await {
+    for (repo, dir) in crate::charts::chart_sources(&state.kube.client().await?).await {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -719,7 +753,7 @@ pub async fn catalog(State(_state): State<AppState>) -> Json<Vec<CatalogApp>> {
         }
     }
     apps.sort_by_key(|a| a.name.to_lowercase());
-    Json(apps)
+    Ok(Json(apps))
 }
 
 #[derive(Deserialize)]
@@ -728,20 +762,31 @@ pub struct AddRepoBody {
     pub url: String,
 }
 
-pub async fn list_repos(State(_s): State<AppState>) -> Json<Vec<crate::charts::ChartRepo>> {
-    Json(crate::charts::list_repos().await)
+pub async fn list_repos(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::charts::ChartRepo>>> {
+    Ok(Json(
+        crate::charts::list_repos(&state.kube.client().await?).await,
+    ))
 }
 
 pub async fn add_repo(
-    State(_s): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<AddRepoBody>,
 ) -> impl IntoResponse {
-    if let Err(e) = crate::charts::add_repo(&body.name, &body.url).await {
+    let b = match state.backend().await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
+    };
+    if let Err(e) = crate::charts::add_repo(&b.kube, &body.name, &body.url).await {
         return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
     }
-    let repos = crate::charts::list_repos().await;
+    let repos = crate::charts::list_repos(&b.kube).await;
     if let Some(r) = repos.iter().find(|r| r.name == body.name) {
-        if let Err(e) = crate::charts::sync_repo(r).await {
+        if let Err(e) =
+            crate::charts::sync_repo(&b.host, std::path::Path::new(crate::charts::CACHE_DIR), r)
+                .await
+        {
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("added, but sync failed: {e}"),
@@ -753,25 +798,36 @@ pub async fn add_repo(
 }
 
 pub async fn remove_repo(
-    State(_s): State<AppState>,
+    State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    match crate::charts::remove_repo(&name).await {
+    let client = match state.kube.client().await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
+    };
+    match crate::charts::remove_repo(&client, &name).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 
-pub async fn sync_repos(State(_s): State<AppState>) -> Json<serde_json::Value> {
+pub async fn sync_repos(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let b = state.backend().await?;
     let mut results = serde_json::Map::new();
-    for repo in crate::charts::list_repos().await {
-        let entry = match crate::charts::sync_repo(&repo).await {
+    for repo in crate::charts::list_repos(&b.kube).await {
+        let entry = match crate::charts::sync_repo(
+            &b.host,
+            std::path::Path::new(crate::charts::CACHE_DIR),
+            &repo,
+        )
+        .await
+        {
             Ok(n) => serde_json::json!({ "ok": true, "charts": n }),
             Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
         };
         results.insert(repo.name.clone(), entry);
     }
-    Json(Value::Object(results))
+    Ok(Json(Value::Object(results)))
 }
 
 pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
@@ -862,31 +918,28 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
 }
 
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
+    let client = &state.kube.client().await?;
     let catalog_dir = state.config.catalog_dir();
-    let backup_status = crate::routers::backup::app_backup_status().await;
-    let ns_selector = format!("{LABEL_MANAGED}=true");
-    let ns_args = ["get", "namespaces", "-l", &ns_selector, "-o", "json"];
-    let pod_args = ["get", "pods", "--all-namespaces", "-o", "json"];
+    let backup_status = crate::routers::backup::app_backup_status(client).await;
+    let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
+    let all_pods = kube::api::ListParams::default();
     let (ns_out, pods_out, mut remembered) = tokio::join!(
-        crate::kubectl::get_json(&ns_args),
-        crate::kubectl::get_json(&pod_args),
-        crate::outputs::remembered_everywhere(&crate::host::HOST),
+        crate::k8s::list(client, "v1", "Namespace", None, &managed),
+        crate::k8s::list(client, "v1", "Pod", None, &all_pods),
+        crate::outputs::remembered_everywhere(client),
     );
-    let v: Value = ns_out?;
+    let namespaces = ns_out?;
 
-    let pods_v: Value = pods_out.unwrap_or_else(|_| serde_json::json!({"items": []}));
-    let empty_pods: Vec<Value> = vec![];
-    let all_pod_items = pods_v["items"].as_array().unwrap_or(&empty_pods);
+    let all_pod_items = pods_out.unwrap_or_default();
     let mut pods_by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
-    for pod in all_pod_items {
+    for pod in &all_pod_items {
         if let Some(ns) = pod["metadata"]["namespace"].as_str() {
             pods_by_ns.entry(ns).or_default().push(pod);
         }
     }
 
     let mut apps = vec![];
-    let empty_ns: Vec<Value> = vec![];
-    for ns in v["items"].as_array().unwrap_or(&empty_ns) {
+    for ns in &namespaces {
         let ann = ns["metadata"]["annotations"]
             .as_object()
             .cloned()
@@ -1004,21 +1057,20 @@ fn instance_stem(requested: &str) -> Option<String> {
     (!stem.is_empty()).then(|| stem.to_string())
 }
 
-async fn unique_instance_name(requested: &str) -> Option<String> {
+async fn unique_instance_name(client: &Client, requested: &str) -> Option<String> {
     let stem = instance_stem(requested)?;
     for _ in 0..8 {
         let candidate = format!("{stem}-{}", instance_suffix());
-        if !namespace_exists(&format!("yolab-{candidate}")).await {
-            return Some(candidate);
+        match crate::k8s::exists(client, &namespace_ref(&format!("yolab-{candidate}"))).await {
+            Ok(false) => return Some(candidate),
+            Ok(true) => {}
+            Err(e) => {
+                tracing::warn!("cannot tell whether yolab-{candidate} is taken: {e:#}");
+                return None;
+            }
         }
     }
     None
-}
-
-async fn namespace_exists(ns: &str) -> bool {
-    crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
-        .await
-        .is_ok()
 }
 
 pub async fn install_app(
@@ -1042,11 +1094,15 @@ pub async fn install_app(
         Ok(s) => s,
         Err(e) => return refuse(e),
     };
-    let source_definition = match install::source_definition(&sources.config).await {
+    let b = match state.backend().await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
+    };
+    let source_definition = match install::source_definition(&b, &sources.config).await {
         Ok(d) => d,
         Err(e) => return refuse(format!("{e}")),
     };
-    let Some(instance_name) = unique_instance_name(&body.instance_name).await else {
+    let Some(instance_name) = unique_instance_name(&b.kube, &body.instance_name).await else {
         return refuse("could not derive a unique name for this app".into());
     };
     let plan = match install::plan(
@@ -1061,18 +1117,30 @@ pub async fn install_app(
         Err(e) => return refuse(e),
     };
 
-    Sse::new(install::install_stream(state.config.clone(), plan)).into_response()
+    Sse::new(install::install_stream(b, state.config.clone(), plan)).into_response()
 }
 
-pub(crate) async fn rollback_failed_install(ns: &str, instance_name: &str) {
-    crate::exec::checked(
-        "helm",
-        &["uninstall", instance_name, "-n", ns],
-        std::time::Duration::from_secs(120),
-    )
-    .await
-    .debug_on_err(format!("rollback {ns}: helm uninstall"));
-    crate::kubectl::run(&["delete", "namespace", ns, "--wait=false"])
+pub(crate) async fn rollback_failed_install<H: crate::host::Host>(
+    b: &Backend<H>,
+    ns: &str,
+    instance_name: &str,
+) {
+    match b
+        .host
+        .run_cmd_bounded(
+            "helm",
+            &["uninstall", instance_name, "-n", ns],
+            std::time::Duration::from_secs(120),
+        )
+        .await
+    {
+        Ok(o) if !o.success => {
+            tracing::debug!("rollback {ns}: helm uninstall: {}", o.stderr.trim())
+        }
+        Err(e) => tracing::debug!("rollback {ns}: helm uninstall: {e}"),
+        Ok(_) => {}
+    }
+    crate::k8s::delete_if_present(&b.kube, &namespace_ref(ns))
         .await
         .debug_on_err(format!("rollback {ns}: delete namespace"));
 }
@@ -1087,6 +1155,7 @@ pub(crate) struct StagedInstall {
 }
 
 pub(crate) async fn stage_install(
+    client: &Client,
     cfg: &Config,
     id: &str,
     instance_name: &str,
@@ -1095,17 +1164,18 @@ pub(crate) async fn stage_install(
 ) -> anyhow::Result<StagedInstall> {
     let tunnel_cfg =
         tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
-    let Some((repo, chart_dir)) = crate::charts::resolve_chart(id, prefer_repo).await else {
+    let Some((repo, chart_dir)) = crate::charts::resolve_chart(client, id, prefer_repo).await
+    else {
         anyhow::bail!("no chart named {id} in any configured repository");
     };
     let Some(meta) = read_chart(&chart_dir) else {
         anyhow::bail!("{id} is not a valid chart");
     };
     let ns = format!("yolab-{instance_name}");
-    ensure_app_namespace(&ns, id, &repo, &meta.chart.version)
+    ensure_app_namespace(client, &ns, id, &repo, &meta.chart.version)
         .await
         .map_err(|e| anyhow::anyhow!("create namespace: {e}"))?;
-    ensure_tunnel_credentials(&ns, &tunnel_cfg)
+    ensure_tunnel_credentials(client, &ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
     let service_name = resolve_service_name(&meta.app.config(), config);
@@ -1139,7 +1209,11 @@ pub async fn update_app(
     body: Option<Json<UpdateRequest>>,
 ) -> impl IntoResponse {
     let ns = format!("yolab-{instance_name}");
-    let ns_v = match crate::kubectl::get_opt(&["get", "namespace", &ns, "-o", "json"]).await {
+    let client = match state.kube.client().await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
+    };
+    let ns_v = match namespace(&client, &ns).await {
         Ok(Some(v)) => v,
         Ok(None) => return (StatusCode::NOT_FOUND, "Instance not found").into_response(),
         Err(e) => {
@@ -1162,7 +1236,7 @@ pub async fn update_app(
     };
     let id = annotation(ANN_APP_ID).unwrap_or_default();
     let app = app_schema(&state.config.catalog_dir(), &id);
-    let stored_config = match read_config(&ns).await {
+    let stored_config = match read_config(&client, &ns).await {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1190,12 +1264,16 @@ pub async fn update_app(
         instance_name,
         config,
         chart_repo: annotation(ANN_CHART_REPO),
-        backup: read_definition_opt(&ns)
+        backup: read_definition_opt(&client, &ns)
             .await
             .map(|d| d.backup)
             .unwrap_or_default(),
     };
-    Sse::new(install::upgrade_stream(state.config.clone(), plan)).into_response()
+    let b = match state.backend().await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
+    };
+    Sse::new(install::upgrade_stream(b, state.config.clone(), plan)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1212,13 +1290,14 @@ pub async fn set_backup_policy(
     crate::cron::Cron::parse(&body.schedule)
         .map_err(|e| anyhow::anyhow!("that schedule is not valid: {e}"))?;
     let ns = format!("yolab-{instance_name}");
-    let mut def = read_definition(&ns).await?;
+    let client = state.kube.client().await?;
+    let mut def = read_definition(&client, &ns).await?;
     def.backup = BackupPolicy {
         enabled: body.enabled,
         schedule: body.schedule,
     };
     let app = app_schema(&state.config.catalog_dir(), &def.app_id);
-    write_definition(&ns, &def, &app).await?;
+    write_definition(&client, &ns, &def, &app).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -1227,7 +1306,7 @@ pub async fn app_definition(
     Path(instance_name): Path<String>,
 ) -> Result<Json<AppDefinition>> {
     let ns = format!("yolab-{instance_name}");
-    let def = read_definition(&ns).await?;
+    let def = read_definition(&state.kube.client().await?, &ns).await?;
     Ok(Json(redact_definition(&def, &state.config.catalog_dir())))
 }
 
@@ -1262,17 +1341,11 @@ fn listed_outputs(
     )
 }
 
-pub(crate) async fn installed_apps<H: crate::host::Host>(
-    host: &H,
-) -> anyhow::Result<Vec<InstalledApp>> {
-    let selector = format!("{LABEL_MANAGED}=true");
-    let listed = host
-        .kubectl_json(&["get", "namespaces", "-l", &selector, "-o", "json"])
-        .await?;
-    Ok(listed["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
+pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<InstalledApp>> {
+    let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
+    let listed = crate::k8s::list(client, "v1", "Namespace", None, &managed).await?;
+    Ok(listed
+        .iter()
         .filter(|ns| ns["status"]["phase"].as_str() != Some("Terminating"))
         .filter_map(|ns| {
             let annotations = ns["metadata"]["annotations"].as_object().cloned()?;
@@ -1295,15 +1368,15 @@ pub(crate) struct KnownOutputs {
     pub settings: serde_json::Map<String, Value>,
 }
 
-pub(crate) async fn known_outputs<H: crate::host::Host>(
-    host: &H,
+pub(crate) async fn known_outputs(
+    client: &Client,
     catalog_dir: &std::path::Path,
     ns: &str,
     rescan_first: bool,
 ) -> anyhow::Result<KnownOutputs> {
-    let ns_v = host
-        .kubectl_json(&["get", "namespace", ns, "-o", "json"])
-        .await?;
+    let ns_v = namespace(client, ns)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{ns} does not exist"))?;
     let ann = ns_v["metadata"]["annotations"]
         .as_object()
         .cloned()
@@ -1313,9 +1386,9 @@ pub(crate) async fn known_outputs<H: crate::host::Host>(
     let settings = saved_settings(&ann);
 
     let remembered = if rescan_first {
-        crate::outputs::rescan(host, ns, &app, &settings, &ann).await?
+        crate::outputs::rescan(client, ns, &app, &settings, &ann).await?
     } else {
-        let mut stored = crate::outputs::read_remembered(host, ns)
+        let mut stored = crate::outputs::read_remembered(client, ns)
             .await?
             .unwrap_or_default();
         for (key, found) in crate::outputs::from_legacy_annotation(&ann, chrono::Utc::now()) {
@@ -1337,14 +1410,9 @@ async fn outputs_of(
     rescan_first: bool,
 ) -> Result<Json<OutputsResponse>> {
     let ns = format!("yolab-{instance_name}");
-    let known = known_outputs(
-        &crate::host::HOST,
-        &state.config.catalog_dir(),
-        &ns,
-        rescan_first,
-    )
-    .await?;
-    let full_config = match read_definition(&ns).await {
+    let client = state.kube.client().await?;
+    let known = known_outputs(&client, &state.config.catalog_dir(), &ns, rescan_first).await?;
+    let full_config = match read_definition(&client, &ns).await {
         Ok(def) => def.config,
         Err(e) => {
             tracing::warn!(
@@ -1383,28 +1451,10 @@ fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> bool {
         .unwrap_or(false)
 }
 
-async fn claim_uninstall_lock(ns: &str) -> Result<bool> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let first_claim = crate::kubectl::run(&[
-        "annotate",
-        "namespace",
-        ns,
-        &format!("{ANN_UNINSTALLING}={now}"),
-        "--overwrite=false",
-    ])
-    .await;
-    match first_claim {
-        Ok(_) => return Ok(true),
-        Err(e) if crate::kubectl::is_not_found(&e) => return Ok(true),
-        Err(_) => {}
-    }
-
-    let raw =
-        crate::kubectl::run(&["get", "namespace", ns, "-o", "json", "--ignore-not-found"]).await?;
-    if raw.trim().is_empty() {
+async fn claim_uninstall_lock(client: &Client, ns: &str) -> anyhow::Result<bool> {
+    let Some(existing) = namespace(client, ns).await? else {
         return Ok(true);
-    }
-    let existing: Value = serde_json::from_str(&raw)?;
+    };
     let ann = existing["metadata"]["annotations"]
         .as_object()
         .cloned()
@@ -1412,36 +1462,33 @@ async fn claim_uninstall_lock(ns: &str) -> Result<bool> {
     if uninstall_lock_is_fresh(&ann) {
         return Ok(false);
     }
-    tracing::warn!("uninstall {ns}: reclaiming a stale uninstall lock");
-    crate::kubectl::run(&[
-        "annotate",
-        "namespace",
-        ns,
-        &format!("{ANN_UNINSTALLING}={now}"),
-        "--overwrite=true",
-    ])
-    .await?;
-    Ok(true)
+    if ann.contains_key(ANN_UNINSTALLING) {
+        tracing::warn!("uninstall {ns}: reclaiming a stale uninstall lock");
+    }
+    let mut claim = namespace_ref(ns);
+    claim["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"].clone();
+    claim["metadata"]["annotations"] =
+        serde_json::json!({ ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339() });
+    match crate::k8s::merge_patch(client, &claim).await {
+        Ok(()) => Ok(true),
+        Err(e) if crate::k8s::refused_with(&e, 409) => Ok(false),
+        Err(e) if crate::k8s::refused_with(&e, 404) => Ok(true),
+        Err(e) => Err(e),
+    }
 }
 
-async fn delete_namespace_with_retry(ns: &str) {
-    const ATTEMPTS: u32 = 4;
-    let mut delay = std::time::Duration::from_secs(2);
-    for attempt in 1..=ATTEMPTS {
-        match crate::kubectl::run(&[
-            "delete",
-            "namespace",
-            ns,
-            "--ignore-not-found=true",
-            "--wait=false",
-        ])
-        .await
-        {
-            Ok(_) => return,
-            Err(e) if attempt == ATTEMPTS => {
+const NAMESPACE_DELETE_ATTEMPTS: u32 = 4;
+const NAMESPACE_DELETE_FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn delete_namespace_with_retry(client: &Client, ns: &str) {
+    let mut delay = NAMESPACE_DELETE_FIRST_RETRY;
+    for attempt in 1..=NAMESPACE_DELETE_ATTEMPTS {
+        match crate::k8s::delete_if_present(client, &namespace_ref(ns)).await {
+            Ok(()) => return,
+            Err(e) if attempt == NAMESPACE_DELETE_ATTEMPTS => {
                 tracing::warn!(
-                    "uninstall {ns}: delete namespace failed after {ATTEMPTS} attempts, \
-                     leaving it for a future retry: {e}"
+                    "uninstall {ns}: delete namespace failed after {NAMESPACE_DELETE_ATTEMPTS} \
+                     attempts, leaving it for a future retry: {e}"
                 );
             }
             Err(e) => {
@@ -1456,19 +1503,19 @@ async fn delete_namespace_with_retry(ns: &str) {
 }
 
 pub async fn uninstall_app(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(instance_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let ns = format!("yolab-{instance_name}");
+    let b = state.backend().await?;
 
-    if !claim_uninstall_lock(&ns).await? {
+    if !claim_uninstall_lock(&b.kube, &ns).await? {
         return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
     }
 
-    let ns_owned = ns.clone();
     let instance_owned = instance_name.clone();
     let task = tokio::spawn(async move {
-        run_teardown(&instance_owned, &ns_owned).await;
+        run_teardown(&b, &instance_owned, &ns).await;
     });
     if let Err(e) = task.await {
         tracing::error!("uninstall {instance_name}: teardown task failed: {e}");
@@ -1478,58 +1525,57 @@ pub async fn uninstall_app(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
-async fn namespace_is_terminating(ns: &str) -> bool {
-    crate::kubectl::get_json(&["get", "namespace", ns, "-o", "json"])
+async fn namespace_is_terminating(client: &Client, ns: &str) -> bool {
+    namespace(client, ns)
         .await
-        .map(|v| v["status"]["phase"] == "Terminating")
-        .unwrap_or(false)
+        .ok()
+        .flatten()
+        .is_some_and(|v| v["status"]["phase"] == "Terminating")
 }
 
-async fn run_teardown(instance_name: &str, ns: &str) {
-    if namespace_is_terminating(ns).await {
+const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+async fn run_teardown<H: crate::host::Host>(b: &Backend<H>, instance_name: &str, ns: &str) {
+    if namespace_is_terminating(&b.kube, ns).await {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
              to finish rather than re-running helm"
         );
-        delete_namespace_with_retry(ns).await;
+        delete_namespace_with_retry(&b.kube, ns).await;
         return;
     }
 
-    const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-    let work = tokio::process::Command::new("helm")
-        .args([
-            "uninstall",
-            instance_name,
-            "-n",
-            ns,
-            "--ignore-not-found",
-            "--wait",
-        ])
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(HELM_UNINSTALL_TIMEOUT, work).await;
+    let out = b
+        .host
+        .run_cmd_bounded(
+            "helm",
+            &[
+                "uninstall",
+                instance_name,
+                "-n",
+                ns,
+                "--ignore-not-found",
+                "--wait",
+            ],
+            HELM_UNINSTALL_TIMEOUT,
+        )
+        .await;
     match out {
-        Ok(Ok(o)) if !o.status.success() => {
-            tracing::warn!(
-                "uninstall {instance_name}: helm uninstall failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-        }
-        Ok(Err(e)) => tracing::warn!("uninstall {instance_name}: could not run helm: {e}"),
-        Err(_) => tracing::warn!(
-            "uninstall {instance_name}: helm uninstall timed out after {}s — deleting the namespace anyway",
-            HELM_UNINSTALL_TIMEOUT.as_secs()
+        Ok(o) if !o.success => tracing::warn!(
+            "uninstall {instance_name}: helm uninstall failed: {}",
+            o.stderr.trim()
         ),
-        _ => {}
+        Err(e) => tracing::warn!(
+            "uninstall {instance_name}: helm uninstall did not finish ({e}) — deleting the namespace anyway"
+        ),
+        Ok(_) => {}
     }
 
-    delete_namespace_with_retry(ns).await;
+    delete_namespace_with_retry(&b.kube, ns).await;
 }
 
-fn abandoned_in(v: &Value) -> Vec<(String, String)> {
-    v["items"]
-        .as_array()
-        .unwrap_or(&vec![])
+fn abandoned_in(namespaces: &[Value]) -> Vec<(String, String)> {
+    namespaces
         .iter()
         .filter_map(|ns| {
             let name = ns["metadata"]["name"].as_str()?;
@@ -1544,17 +1590,10 @@ fn abandoned_in(v: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-async fn abandoned_uninstalls() -> anyhow::Result<Vec<(String, String)>> {
-    let v = crate::kubectl::get_json(&[
-        "get",
-        "namespaces",
-        "-l",
-        "yolab.io/managed=true",
-        "-o",
-        "json",
-    ])
-    .await?;
-    Ok(abandoned_in(&v))
+async fn abandoned_uninstalls(client: &Client) -> anyhow::Result<Vec<(String, String)>> {
+    let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
+    let namespaces = crate::k8s::list(client, "v1", "Namespace", None, &managed).await?;
+    Ok(abandoned_in(&namespaces))
 }
 
 pub struct UninstallWatchdogController;
@@ -1576,36 +1615,41 @@ impl crate::runtime::Controller for UninstallWatchdogController {
         std::time::Duration::from_secs(90)
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        let abandoned = abandoned_uninstalls().await?;
-        if abandoned.is_empty() {
-            return Ok(crate::runtime::Tick::Idle("no abandoned uninstalls".into()));
-        }
-        for (ns, instance) in abandoned {
-            tracing::warn!(
-                "uninstall {instance}: claim is stale and nothing is driving it — \
-                 finishing the teardown"
-            );
-            run_teardown(&instance, &ns).await;
-        }
-        Ok(crate::runtime::Tick::Done)
+        finish_abandoned_uninstalls(&Backend::real().await?).await
     }
 }
 
-pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<PodInfo>>> {
-    let v = crate::kubectl::get_json(&[
-        "get",
-        "pods",
-        "-n",
-        &format!("yolab-{instance_name}"),
-        "-o",
-        "json",
-    ])
+async fn finish_abandoned_uninstalls<H: crate::host::Host>(
+    b: &Backend<H>,
+) -> anyhow::Result<crate::runtime::Tick> {
+    let abandoned = abandoned_uninstalls(&b.kube).await?;
+    if abandoned.is_empty() {
+        return Ok(crate::runtime::Tick::Idle("no abandoned uninstalls".into()));
+    }
+    for (ns, instance) in abandoned {
+        tracing::warn!(
+            "uninstall {instance}: claim is stale and nothing is driving it — \
+             finishing the teardown"
+        );
+        run_teardown(b, &instance, &ns).await;
+    }
+    Ok(crate::runtime::Tick::Done)
+}
+
+pub async fn list_pods(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+) -> Result<Json<Vec<PodInfo>>> {
+    let pods = crate::k8s::list(
+        &state.kube.client().await?,
+        "v1",
+        "Pod",
+        Some(&format!("yolab-{instance_name}")),
+        &Default::default(),
+    )
     .await?;
     Ok(Json(
-        v["items"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
+        pods.iter()
             .filter(|p| !is_backup_mover_pod(p))
             .map(|p| PodInfo {
                 name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
@@ -1626,46 +1670,72 @@ pub async fn list_pods(Path(instance_name): Path<String>) -> Result<Json<Vec<Pod
 }
 
 pub async fn pod_logs(
+    State(state): State<AppState>,
     Path((instance_name, pod_name)): Path<(String, String)>,
 ) -> Sse<impl futures::Stream<Item = std::result::Result<Event, Infallible>>> {
     let ns = format!("yolab-{instance_name}");
-    let tail = format!("--tail={LOGS_FOLLOW_TAIL}");
+    let kube = state.kube.clone();
     let stream = async_stream::stream! {
-        let child = tokio::process::Command::new("kubectl")
-            .args(["logs", "-n", &ns, &pod_name,
-                   "--all-containers=true", "--follow", "--prefix=true",
-                   &tail, "--max-log-requests=20"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        let Ok(c) = child else {
-            yield Ok(Event::default().data("[yolab] could not run kubectl to read the logs"));
-            return;
+        use futures::StreamExt as _;
+        let followed = match kube.client().await {
+            Ok(client) => follow_pod_logs(&client, &ns, &pod_name).await,
+            Err(e) => Err(e),
         };
-        let mut guard = KillOnDrop(c);
-        use tokio::io::AsyncBufReadExt;
-        let stdout = guard.0.stdout.take().unwrap();
-        let stderr = guard.0.stderr.take().unwrap();
-        let mut out = tokio::io::BufReader::new(stdout).lines();
-        let mut err = tokio::io::BufReader::new(stderr).lines();
-        loop {
-            tokio::select! {
-                line = out.next_line() => match line {
-                    Ok(Some(l)) => yield Ok(Event::default().data(l)),
-                    _ => break,
-                },
-                line = err.next_line() => match line {
-                    Ok(Some(l)) => yield Ok(Event::default().data(format!("[yolab] {l}"))),
-                    _ => continue,
-                },
+        let mut lines = match followed {
+            Ok(lines) => lines,
+            Err(e) => {
+                yield Ok(Event::default().data(format!("[yolab] could not read the logs: {e:#}")));
+                return;
             }
+        };
+        while let Some(line) = lines.next().await {
+            yield Ok(Event::default().data(line));
         }
-        while let Ok(Some(l)) = err.next_line().await {
-            yield Ok(Event::default().data(format!("[yolab] {l}")));
-        }
-        guard.0.wait().await.debug_on_err("reap kubectl logs");
     };
     Sse::new(stream)
+}
+
+async fn follow_pod_logs(
+    client: &Client,
+    ns: &str,
+    pod: &str,
+) -> anyhow::Result<futures::stream::BoxStream<'static, String>> {
+    use futures::{AsyncBufReadExt as _, StreamExt as _};
+    use k8s_openapi::api::core::v1::Pod;
+    let pods = kube::Api::<Pod>::namespaced(client.clone(), ns);
+    let spec = pods.get(pod).await?.spec.unwrap_or_default();
+    let containers = spec
+        .init_containers
+        .unwrap_or_default()
+        .into_iter()
+        .chain(spec.containers)
+        .map(|c| c.name);
+    let mut streams = Vec::new();
+    for container in containers {
+        let prefix = format!("[pod/{pod}/{container}]");
+        let params = kube::api::LogParams {
+            container: Some(container),
+            follow: true,
+            tail_lines: Some(i64::from(LOGS_FOLLOW_TAIL)),
+            ..Default::default()
+        };
+        match pods.log_stream(pod, &params).await {
+            Ok(reader) => streams.push(
+                reader
+                    .lines()
+                    .filter_map(move |line| {
+                        let prefixed = line.ok().map(|l| format!("{prefix} {l}"));
+                        async move { prefixed }
+                    })
+                    .boxed(),
+            ),
+            Err(e) => {
+                let said = format!("[yolab] {prefix} {e}");
+                streams.push(futures::stream::once(async move { said }).boxed());
+            }
+        }
+    }
+    Ok(futures::stream::select_all(streams).boxed())
 }
 
 #[cfg(test)]
@@ -2122,7 +2192,7 @@ mod tests {
         .to_rfc3339();
         let fresh = chrono::Utc::now().to_rfc3339();
 
-        let list = serde_json::json!({ "items": [
+        let list = serde_json::json!([
             { "metadata": { "name": "yolab-minecraft",
                             "annotations": { ANN_UNINSTALLING: stale } } },
             { "metadata": { "name": "yolab-filebrowser",
@@ -2130,10 +2200,10 @@ mod tests {
             { "metadata": { "name": "yolab-vaultwarden",
                             "annotations": { "yolab.io/app-id": "vaultwarden" } } },
             { "metadata": { "name": "yolab-babybuddy" } },
-        ]});
+        ]);
 
         assert_eq!(
-            abandoned_in(&list),
+            abandoned_in(list.as_array().unwrap()),
             vec![("yolab-minecraft".to_string(), "minecraft".to_string())],
             "only the stale claim, and the instance name comes off the prefix"
         );
@@ -2144,17 +2214,16 @@ mod tests {
         let stale = (chrono::Utc::now()
             - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
         .to_rfc3339();
-        let list = serde_json::json!({ "items": [
+        let list = vec![serde_json::json!(
             { "metadata": { "name": "kube-system",
-                            "annotations": { ANN_UNINSTALLING: stale } } },
-        ]});
+                            "annotations": { ANN_UNINSTALLING: stale } } }
+        )];
         assert!(abandoned_in(&list).is_empty());
     }
 
     #[test]
-    fn an_empty_or_missing_list_is_handled() {
-        assert!(abandoned_in(&serde_json::json!({})).is_empty());
-        assert!(abandoned_in(&serde_json::json!({ "items": [] })).is_empty());
+    fn no_namespaces_means_nothing_abandoned() {
+        assert!(abandoned_in(&[]).is_empty());
     }
 
     #[test]
@@ -2270,87 +2339,97 @@ mod tests {
 
     mod outputs_endpoints {
         use super::*;
-        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{
+            accept_patches, api_server, asked, list, patched, secret_with, serve, serve_logs,
+            status,
+        };
 
         const NS: &str = "yolab-filebrowser-ab12";
-        const NOT_FOUND: &str =
-            r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
+        const NS_PATH: &str = "/api/v1/namespaces/yolab-filebrowser-ab12";
+        const SECRET_PATH: &str = "/api/v1/namespaces/yolab-filebrowser-ab12/secrets/yolab-outputs";
 
-        fn namespace_with(annotations: Value) -> String {
-            json!({ "metadata": { "name": NS, "annotations": annotations } }).to_string()
+        fn namespace_with(annotations: Value) -> Value {
+            json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": NS, "annotations": annotations } })
         }
 
-        fn filebrowser_ns(explorer: bool) -> String {
+        fn filebrowser_ns(explorer: bool) -> Value {
             namespace_with(json!({
                 ANN_APP_ID: "filebrowser",
                 ANN_CONFIG: format!(r#"{{"password":"{REDACTED}","file_explorer_enabled":{explorer}}}"#)
             }))
         }
 
-        fn stored_secret(key: &str, value: &str) -> String {
-            use base64::Engine as _;
-            let json =
-                format!(r#"{{"{key}":{{"value":"{value}","found_at":"2026-09-28T12:00:00Z"}}}}"#);
-            let encoded = base64::engine::general_purpose::STANDARD.encode(json);
-            json!({ "data": { "outputs.json": encoded } }).to_string()
+        fn stored_secret(key: &str, value: &str) -> Value {
+            secret_with(
+                "outputs.json",
+                &format!(r#"{{"{key}":{{"value":"{value}","found_at":"2026-09-28T12:00:00Z"}}}}"#),
+            )
+        }
+
+        fn gone() -> Value {
+            status(404, "NotFound")
         }
 
         #[tokio::test]
         async fn showing_the_page_reads_what_is_remembered_without_touching_the_logs() {
             let catalog = chart_dir_with(filebrowser_schema());
-            let host = FakeHost::new()
-                .ok(
-                    "kubectl get namespace yolab-filebrowser-ab12",
-                    &filebrowser_ns(true),
-                )
-                .ok(
-                    "kubectl get secret yolab-outputs",
-                    &stored_secret("url", "https://files.x"),
-                );
+            let (server, kube) = api_server().await;
+            serve(&server, NS_PATH, 200, filebrowser_ns(true)).await;
+            serve(
+                &server,
+                SECRET_PATH,
+                200,
+                stored_secret("url", "https://files.x"),
+            )
+            .await;
 
-            let known = known_outputs(&host, catalog.path(), NS, false)
+            let known = known_outputs(&kube, catalog.path(), NS, false)
                 .await
                 .unwrap();
 
             assert_eq!(known.remembered["url"].value, "https://files.x");
-            assert!(!host.ran("logs") && !host.ran("get pods"));
+            assert!(!asked(&server, "/pods").await);
         }
 
         #[tokio::test]
         async fn check_again_reads_the_logs_now() {
             let catalog = chart_dir_with(filebrowser_schema());
-            let pods = r#"{"items":[{"metadata":{"name":"gw"},"spec":{"initContainers":[{"name":"file-explorer-init"}],"containers":[]}}]}"#;
-            let host = FakeHost::new()
-                .ok(
-                    "kubectl get namespace yolab-filebrowser-ab12",
-                    &filebrowser_ns(true),
-                )
-                .fail("kubectl get secret yolab-outputs", NOT_FOUND)
-                .ok("kubectl get pods", pods)
-                .ok(
-                    "kubectl logs -n yolab-filebrowser-ab12 gw -c file-explorer-init",
-                    "2026-09-28T12:00:00Z YOLAB_OUTPUT file_explorer_password pw123",
-                )
-                .ok("kubectl-apply", "");
+            let (server, kube) = api_server().await;
+            serve(&server, NS_PATH, 200, filebrowser_ns(true)).await;
+            serve(&server, SECRET_PATH, 404, gone()).await;
+            serve(
+                &server,
+                &format!("{NS_PATH}/pods"),
+                200,
+                list("Pod", vec![json!({ "metadata": { "name": "gw" },
+                    "spec": { "initContainers": [{ "name": "file-explorer-init" }], "containers": [] } })]),
+            )
+            .await;
+            serve_logs(
+                &server,
+                &format!("{NS_PATH}/pods/gw"),
+                "file-explorer-init",
+                "2026-09-28T12:00:00Z YOLAB_OUTPUT file_explorer_password pw123",
+            )
+            .await;
+            accept_patches(&server).await;
 
-            let known = known_outputs(&host, catalog.path(), NS, true)
+            let known = known_outputs(&kube, catalog.path(), NS, true)
                 .await
                 .unwrap();
 
             assert_eq!(known.remembered["file_explorer_password"].value, "pw123");
+            assert_eq!(patched(&server).await.len(), 1);
         }
 
         #[tokio::test]
         async fn the_page_only_expects_outputs_that_apply_to_this_install() {
             let catalog = chart_dir_with(filebrowser_schema());
-            let host = FakeHost::new()
-                .ok(
-                    "kubectl get namespace yolab-filebrowser-ab12",
-                    &filebrowser_ns(false),
-                )
-                .fail("kubectl get secret yolab-outputs", NOT_FOUND);
+            let (server, kube) = api_server().await;
+            serve(&server, NS_PATH, 200, filebrowser_ns(false)).await;
+            serve(&server, SECRET_PATH, 404, gone()).await;
 
-            let known = known_outputs(&host, catalog.path(), NS, false)
+            let known = known_outputs(&kube, catalog.path(), NS, false)
                 .await
                 .unwrap();
 
@@ -2361,15 +2440,20 @@ mod tests {
         #[tokio::test]
         async fn values_found_by_the_old_scanner_still_show_before_the_first_rescan() {
             let catalog = chart_dir_with(filebrowser_schema());
-            let ns = namespace_with(json!({
-                ANN_APP_ID: "filebrowser",
-                "yolab.io/outputs": r#"[{"key":"url","value":"https://old.x","type":"url"}]"#
-            }));
-            let host = FakeHost::new()
-                .ok("kubectl get namespace yolab-filebrowser-ab12", &ns)
-                .fail("kubectl get secret yolab-outputs", NOT_FOUND);
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                NS_PATH,
+                200,
+                namespace_with(json!({
+                    ANN_APP_ID: "filebrowser",
+                    "yolab.io/outputs": r#"[{"key":"url","value":"https://old.x","type":"url"}]"#
+                })),
+            )
+            .await;
+            serve(&server, SECRET_PATH, 404, gone()).await;
 
-            let known = known_outputs(&host, catalog.path(), NS, false)
+            let known = known_outputs(&kube, catalog.path(), NS, false)
                 .await
                 .unwrap();
 
@@ -2379,27 +2463,36 @@ mod tests {
         #[tokio::test]
         async fn an_app_whose_namespace_cannot_be_read_is_an_error() {
             let catalog = chart_dir_with(filebrowser_schema());
-            let host =
-                FakeHost::new().fail("kubectl get namespace", "Unable to connect to the server");
-            assert!(known_outputs(&host, catalog.path(), NS, false)
+            let (server, kube) = api_server().await;
+            serve(&server, NS_PATH, 503, status(503, "ServiceUnavailable")).await;
+            assert!(known_outputs(&kube, catalog.path(), NS, false)
                 .await
                 .is_err());
         }
 
         #[tokio::test]
         async fn installed_apps_leaves_out_what_is_being_removed_or_is_not_an_app() {
-            let listed = json!({ "items": [
-                { "metadata": { "name": "yolab-a", "annotations": { ANN_APP_ID: "gitea" } },
-                  "status": { "phase": "Active" } },
-                { "metadata": { "name": "yolab-b", "annotations": { ANN_APP_ID: "gitea" } },
-                  "status": { "phase": "Terminating" } },
-                { "metadata": { "name": "yolab-c", "annotations": {} },
-                  "status": { "phase": "Active" } },
-                { "metadata": { "name": "yolab-d" }, "status": { "phase": "Active" } }
-            ]});
-            let host = FakeHost::new().ok("kubectl get namespaces", &listed.to_string());
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/namespaces",
+                200,
+                list(
+                    "Namespace",
+                    vec![
+                        json!({ "metadata": { "name": "yolab-a", "annotations": { ANN_APP_ID: "gitea" } },
+                          "status": { "phase": "Active" } }),
+                        json!({ "metadata": { "name": "yolab-b", "annotations": { ANN_APP_ID: "gitea" } },
+                          "status": { "phase": "Terminating" } }),
+                        json!({ "metadata": { "name": "yolab-c", "annotations": {} },
+                          "status": { "phase": "Active" } }),
+                        json!({ "metadata": { "name": "yolab-d" }, "status": { "phase": "Active" } }),
+                    ],
+                ),
+            )
+            .await;
 
-            let apps = installed_apps(&host).await.unwrap();
+            let apps = installed_apps(&kube).await.unwrap();
 
             let names: Vec<&str> = apps.iter().map(|a| a.namespace.as_str()).collect();
             assert_eq!(names, vec!["yolab-a"]);
@@ -2428,5 +2521,354 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("unreadable"), "{e}");
+    }
+
+    #[test]
+    fn requested_resources_add_up_across_replicas_and_containers() {
+        let items = vec![
+            json!({ "spec": { "replicas": 2, "template": { "spec": { "containers": [
+                { "resources": { "requests": { "cpu": "250m", "memory": "64Mi", "nvidia.com/gpu": "1" } } },
+                { "resources": {} }
+            ] } } } }),
+            json!({ "spec": { "template": { "spec": { "containers": [
+                { "resources": { "requests": { "cpu": "1" } } }
+            ] } } } }),
+        ];
+        let r = requested_resources(&items);
+        assert_eq!(r.replicas, 3);
+        assert_eq!(r.cpu_millicores, 1500);
+        assert_eq!(r.memory_bytes, 2 * 64 * 1024 * 1024);
+        assert_eq!(r.gpu, 2);
+    }
+
+    mod against_the_cluster {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{api_server, list, status};
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const NS_PATH: &str = "/api/v1/namespaces/yolab-notes";
+
+        async fn namespace_is(server: &MockServer, code: u16, body: Value) {
+            Mock::given(method("GET"))
+                .and(path(NS_PATH))
+                .respond_with(ResponseTemplate::new(code).set_body_json(body))
+                .mount(server)
+                .await;
+        }
+
+        fn ns(annotations: Value, phase: &str) -> Value {
+            json!({
+                "metadata": { "name": "yolab-notes", "resourceVersion": "42", "annotations": annotations },
+                "status": { "phase": phase }
+            })
+        }
+
+        fn gone() -> Value {
+            status(404, "NotFound")
+        }
+
+        #[tokio::test]
+        async fn an_app_that_is_already_gone_may_be_uninstalled() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 404, gone()).await;
+            assert!(claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn a_fresh_uninstall_is_not_started_twice() {
+            let (server, kube) = api_server().await;
+            let now = chrono::Utc::now().to_rfc3339();
+            namespace_is(&server, 200, ns(json!({ ANN_UNINSTALLING: now }), "Active")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            assert!(!claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn the_uninstall_claim_is_conditional_on_what_was_read() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .and(body_partial_json(
+                    json!({ "metadata": { "resourceVersion": "42" } }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert!(claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn losing_the_race_for_the_uninstall_claim_is_not_an_error() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(409).set_body_json(status(409, "Conflict")))
+                .mount(&server)
+                .await;
+            assert!(!claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_blocks_the_uninstall_claim() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 503, status(503, "ServiceUnavailable")).await;
+            assert!(claim_uninstall_lock(&kube, "yolab-notes").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn teardown_uninstalls_the_release_then_deletes_the_namespace() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("helm uninstall", ""),
+            };
+
+            run_teardown(&b, "notes", "yolab-notes").await;
+            assert!(b
+                .host
+                .ran("helm uninstall notes -n yolab-notes --ignore-not-found --wait"));
+        }
+
+        #[tokio::test]
+        async fn a_namespace_already_going_away_is_not_handed_to_helm_again() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Terminating")).await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            run_teardown(&b, "notes", "yolab-notes").await;
+            assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
+        }
+
+        #[tokio::test]
+        async fn a_failed_helm_uninstall_still_deletes_the_namespace() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().fail("helm uninstall", "timed out"),
+            };
+            run_teardown(&b, "notes", "yolab-notes").await;
+        }
+
+        #[tokio::test]
+        async fn a_failed_install_is_rolled_back_by_release_and_namespace() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("helm uninstall", ""),
+            };
+            rollback_failed_install(&b, "yolab-notes", "notes").await;
+            assert!(b.host.ran("helm uninstall notes -n yolab-notes"));
+        }
+
+        #[tokio::test]
+        async fn no_name_is_handed_out_while_the_cluster_cannot_say_it_is_free() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            assert_eq!(unique_instance_name(&kube, "notes").await, None);
+        }
+
+        #[tokio::test]
+        async fn a_free_name_keeps_the_requested_stem() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            let name = unique_instance_name(&kube, "notes").await.unwrap();
+            assert_eq!(split_instance_name(&name).0, "notes");
+        }
+
+        #[tokio::test]
+        async fn settings_without_a_saved_definition_are_rebuilt_from_the_namespace() {
+            use base64::Engine as _;
+            let b = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "metadata": { "name": "yolab-config", "namespace": "yolab-notes" },
+                    "data": { "config.json": b(r#"{"title":"mine"}"#) }
+                })))
+                .mount(&server)
+                .await;
+            namespace_is(
+                &server,
+                200,
+                ns(
+                    json!({ ANN_APP_ID: "notes", ANN_CHART_VERSION: "1.2.0" }),
+                    "Active",
+                ),
+            )
+            .await;
+
+            let def = read_definition_from_cluster(&kube, "yolab-notes")
+                .await
+                .unwrap();
+            assert_eq!(def.app_id, "notes");
+            assert_eq!(def.chart_version, "1.2.0");
+            assert_eq!(def.instance_name, "notes");
+            assert_eq!(def.config["title"], "mine");
+        }
+
+        #[tokio::test]
+        async fn an_app_without_saved_settings_is_an_error() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            let e = read_definition_from_cluster(&kube, "yolab-notes")
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("no saved settings"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn the_pods_route_lists_the_apps_pods_but_not_backup_movers() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/pods"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Pod",
+                    vec![
+                        json!({ "metadata": { "name": "notes-0" }, "status": { "phase": "Running",
+                            "conditions": [{ "type": "Ready", "status": "True" }] } }),
+                        json!({ "metadata": { "name": "volsync-src-notes-x" }, "status": { "phase": "Running" } }),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+
+            let res = api.get("/api/apps/notes/pods").await;
+            assert_eq!(res.status, axum::http::StatusCode::OK, "{}", res.body);
+            assert_eq!(
+                res.json(),
+                json!([{ "name": "notes-0", "phase": "Running", "ready": true }])
+            );
+        }
+
+        #[tokio::test]
+        async fn the_repos_route_always_offers_the_official_catalog() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(
+                    "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos",
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "metadata": { "name": "yolab-chart-repos", "namespace": "kube-system" },
+                    "data": { "community": "https://charts.example/catalog.yaml" }
+                })))
+                .mount(&server)
+                .await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+
+            let repos = api.get("/api/apps/repos").await.json();
+            let names: Vec<&str> = repos
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, vec!["official", "community"]);
+        }
+        #[tokio::test]
+        async fn logs_follow_every_container_each_line_marked_with_where_it_came_from() {
+            use futures::StreamExt as _;
+            use wiremock::matchers::query_param;
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/pods/notes-0"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "metadata": { "name": "notes-0", "namespace": "yolab-notes" },
+                    "spec": {
+                        "initContainers": [{ "name": "setup" }],
+                        "containers": [{ "name": "app" }]
+                    }
+                })))
+                .mount(&server)
+                .await;
+            for (container, text) in [("setup", "migrated\n"), ("app", "listening\nready\n")] {
+                Mock::given(method("GET"))
+                    .and(path("/api/v1/namespaces/yolab-notes/pods/notes-0/log"))
+                    .and(query_param("container", container))
+                    .and(query_param("follow", "true"))
+                    .and(query_param("tailLines", "100"))
+                    .respond_with(ResponseTemplate::new(200).set_body_string(text))
+                    .mount(&server)
+                    .await;
+            }
+
+            let mut lines: Vec<String> = follow_pod_logs(&kube, "yolab-notes", "notes-0")
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            lines.sort();
+            assert_eq!(
+                lines,
+                vec![
+                    "[pod/notes-0/app] listening",
+                    "[pod/notes-0/app] ready",
+                    "[pod/notes-0/setup] migrated",
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn logs_of_a_pod_that_does_not_exist_are_an_error() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            assert!(follow_pod_logs(&kube, "yolab-notes", "nope").await.is_err());
+        }
     }
 }

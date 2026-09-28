@@ -19,6 +19,13 @@ pub(crate) const CLUSTER_TOKEN: &str = "cluster-tok";
 const OFF_BOX: &str = "[fd00:cafe::9]:40000";
 const LOOPBACK: &str = "127.0.0.1:40000";
 
+fn provisioned_config() -> String {
+    format!(
+        "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{PASSWORD_HASH}\"\n\
+         [tunnel]\naccount_token = \"{CLUSTER_TOKEN}\"\n"
+    )
+}
+
 pub(crate) struct Res {
     pub status: StatusCode,
     pub body: String,
@@ -44,6 +51,14 @@ pub(crate) struct TestApi {
 
 impl TestApi {
     fn with_config(body: &str) -> Self {
+        Self::with_config_and_kube(body, crate::k8s::testing::unreachable())
+    }
+
+    pub fn with_kube(kube: kube::Client) -> Self {
+        Self::with_config_and_kube(&provisioned_config(), kube)
+    }
+
+    fn with_config_and_kube(body: &str, kube: kube::Client) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, body).expect("write config");
@@ -53,7 +68,11 @@ impl TestApi {
             config: Arc::clone(&config),
         };
         Self {
-            router: crate::router::build_router(AppState { config, auth }),
+            router: crate::router::build_router(AppState {
+                config,
+                auth,
+                kube: crate::k8s::Kube::with(kube),
+            }),
             _dir: dir,
             session: None,
             peer: OFF_BOX,
@@ -62,10 +81,7 @@ impl TestApi {
     }
 
     pub fn provisioned() -> Self {
-        Self::with_config(&format!(
-            "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{PASSWORD_HASH}\"\n\
-             [tunnel]\naccount_token = \"{CLUSTER_TOKEN}\"\n"
-        ))
+        Self::with_config(&provisioned_config())
     }
 
     pub fn unprovisioned() -> Self {

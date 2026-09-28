@@ -6,12 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::Outcome;
-use crate::host::RealHost;
+use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, InFlight, Liveness};
 use crate::records::Store;
 use crate::routers::backup_common::*;
 use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
-use tokio::process::Command;
+use kube::Client;
 
 pub(crate) const RESTORES: Store = Store {
     name: "yolab-restores",
@@ -23,6 +23,9 @@ const MAX_RESTORES: usize = 50;
 const PVC_DELETE_TIMEOUT_SECS: u64 = 180;
 const RD_TIMEOUT_SECS: u64 = 3600;
 const WATCHDOG_TICK_SECS: u64 = 30;
+
+const PVC_DELETE_POLL: Duration = Duration::from_secs(5);
+const RD_POLL: Duration = Duration::from_secs(10);
 
 pub(crate) static RESTORE_IN_FLIGHT: InFlight = InFlight::new();
 
@@ -71,13 +74,17 @@ fn upsert(sets: &mut Vec<RestoreSet>, set: RestoreSet) {
     sets.truncate(MAX_RESTORES);
 }
 
-async fn read_sets() -> anyhow::Result<Vec<RestoreSet>> {
-    Ok(RESTORES.read(&RealHost).await?)
+async fn read_sets(client: &Client) -> anyhow::Result<Vec<RestoreSet>> {
+    Ok(RESTORES.read(client).await?)
 }
 
-async fn patch_set(id: &str, mut update: impl FnMut(&mut RestoreSet)) -> anyhow::Result<()> {
+async fn patch_set(
+    client: &Client,
+    id: &str,
+    mut update: impl FnMut(&mut RestoreSet),
+) -> anyhow::Result<()> {
     RESTORES
-        .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
+        .update(client, |sets: &mut Vec<RestoreSet>| {
             if let Some(s) = sets.iter_mut().find(|s| s.id == id) {
                 update(s);
             }
@@ -86,33 +93,39 @@ async fn patch_set(id: &str, mut update: impl FnMut(&mut RestoreSet)) -> anyhow:
     Ok(())
 }
 
-pub(crate) async fn start(namespace: &str, snapshot_id: Option<String>) -> anyhow::Result<String> {
-    let Some(cfg) = read_master_config().await else {
+pub(crate) async fn start<H: Host + 'static>(
+    b: &Backend<H>,
+    namespace: &str,
+    snapshot_id: Option<String>,
+) -> anyhow::Result<String> {
+    let Some(cfg) = master_config(&b.kube).await? else {
         anyhow::bail!("backup not configured");
     };
-    let resolved = resolve_snapshot(&cfg, namespace, snapshot_id).await?;
+    let resolved = resolve_snapshot(&b.host, &cfg, namespace, snapshot_id).await?;
     let Some(snapshot_id) = resolved else {
         anyhow::bail!("no cluster-backup snapshot to restore from");
     };
 
-    let (id, original, guard) = begin(namespace, &snapshot_id).await?;
+    let (id, original, guard) = begin(b, namespace, &snapshot_id).await?;
     let task_id = id.clone();
     let ns = namespace.to_string();
+    let b = b.clone();
     tokio::spawn(async move {
         let _guard = guard;
-        let result = run_restore(&ns, &snapshot_id, &cfg, &original).await;
-        record_done(&task_id, &result).await;
+        let result = run_restore(&b, &ns, &snapshot_id, &cfg, &original).await;
+        record_done(&b.kube, &task_id, &result).await;
         crate::runtime::wake("restore-watchdog");
     });
 
     Ok(id)
 }
 
-async fn begin(
+async fn begin<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<(String, Vec<DeploymentScale>, ops::InFlightGuard)> {
-    let scaled_deployments = read_deployment_scales(namespace).await?;
+    let scaled_deployments = read_deployment_scales(&b.kube, namespace).await?;
 
     let id = format!("rs-{}", random_hex(8));
     let guard = RESTORE_IN_FLIGHT.claim(&id);
@@ -128,17 +141,17 @@ async fn begin(
         claim: Claim::mine(Utc::now()),
     };
     RESTORES
-        .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
+        .update(&b.kube, |sets: &mut Vec<RestoreSet>| {
             upsert(sets, set.clone())
         })
         .await?;
     Ok((id, scaled_deployments, guard))
 }
 
-async fn record_done(id: &str, result: &anyhow::Result<bool>) {
+async fn record_done(client: &Client, id: &str, result: &anyhow::Result<bool>) {
     let finished_at = Utc::now().to_rfc3339();
     let error = result.as_ref().err().map(|e| e.to_string());
-    patch_set(id, |s| {
+    patch_set(client, id, |s| {
         s.state = if error.is_none() {
             "succeeded"
         } else {
@@ -154,16 +167,17 @@ async fn record_done(id: &str, result: &anyhow::Result<bool>) {
     ));
 }
 
-async fn run_restore(
+async fn run_restore<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     snapshot_id: &str,
     cfg: &BackupConfig,
     original: &[DeploymentScale],
 ) -> anyhow::Result<bool> {
-    let result = restore_inner(namespace, snapshot_id, cfg).await;
+    let result = restore_inner(b, namespace, snapshot_id, cfg).await;
     if result.is_err() {
         for d in original {
-            scale_deployment(namespace, &d.name, d.replicas)
+            scale(&b.kube, namespace, &d.name, d.replicas)
                 .await
                 .warn_on_err(format!(
                     "restore of {namespace} failed; scale {} back up",
@@ -174,32 +188,34 @@ async fn run_restore(
     result
 }
 
-async fn restore_inner(
+async fn restore_inner<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     snapshot_id: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<bool> {
-    crate::kubectl::run(&[
-        "scale",
-        "deployment",
-        "--all",
-        "-n",
-        namespace,
-        "--replicas=0",
-    ])
-    .await?;
+    for d in read_deployment_scales(&b.kube, namespace).await? {
+        scale(&b.kube, namespace, &d.name, 0).await?;
+    }
 
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
+    cfg.unlock(&b.host, "cluster-backup").await;
 
-    let catalog = extract_json_file(&repo, cfg, snapshot_id, "catalog.json").await?;
-    let ns_yaml = extract_file(&repo, cfg, snapshot_id, &format!("**/{namespace}.yaml")).await?;
-    let restore_as_of = snapshot_time(&repo, cfg, snapshot_id).await;
+    let catalog = extract_json_file(&b.host, &repo, cfg, snapshot_id, "catalog.json").await?;
+    let ns_yaml = extract_file(
+        &b.host,
+        &repo,
+        cfg,
+        snapshot_id,
+        &format!("**/{namespace}.yaml"),
+    )
+    .await?;
+    let restore_as_of = snapshot_time(&b.host, &repo, cfg, snapshot_id).await;
 
     let pvcs = catalog_pvcs(&catalog, namespace);
     let mut backed_up = Vec::new();
     for pvc in &pvcs {
-        let snaps = volume_snapshots(namespace, &pvc.name, cfg).await?;
+        let snaps = volume_snapshots(&b.host, namespace, &pvc.name, cfg).await?;
         match plan_volume(
             &pvc.name,
             pvc.snapshot.as_ref(),
@@ -216,12 +232,22 @@ async fn restore_inner(
     }
 
     for (pvc, as_of) in &backed_up {
-        restore_volume(namespace, &pvc.name, &pvc.capacity, cfg, as_of.as_deref()).await?;
+        restore_volume(
+            b,
+            namespace,
+            &pvc.name,
+            &pvc.capacity,
+            cfg,
+            as_of.as_deref(),
+        )
+        .await?;
     }
 
     if let Some(path) = ns_yaml {
         if let Ok(bytes) = tokio::fs::read(&path).await {
-            if let Err(e) = kubectl_apply(&String::from_utf8_lossy(&bytes)).await {
+            if let Err(e) =
+                crate::k8s::apply_documents(&b.kube, &String::from_utf8_lossy(&bytes)).await
+            {
                 anyhow::bail!("apply {namespace}.yaml: {e}");
             }
         }
@@ -277,21 +303,29 @@ fn plan_volume(
     }
 }
 
-async fn volume_snapshots(
+async fn volume_snapshots<H: Host>(
+    host: &H,
     namespace: &str,
     pvc: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<Vec<SnapshotEntry>> {
     let repo = cfg.restic_repo(&format!("volsync/{namespace}/{}", canonical_pvc_id(pvc)));
-    let out = restic(&repo, cfg, &["snapshots", "--no-lock", "--json"]).await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
+    let out = restic_with(
+        host,
+        &repo,
+        cfg,
+        &["snapshots", "--no-lock", "--json"],
+        RESTIC_TIMEOUT,
+    )
+    .await?;
+    if !out.success {
+        let stderr = &out.stderr;
         if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
             return Ok(Vec::new());
         }
         anyhow::bail!("{}", stderr.trim());
     }
-    Ok(parse_snapshots(&serde_json::from_slice(&out.stdout)?))
+    Ok(parse_snapshots(&serde_json::from_str(&out.stdout)?))
 }
 
 fn parse_snapshots(v: &Value) -> Vec<SnapshotEntry> {
@@ -321,13 +355,14 @@ pub(crate) struct BackupVersions {
     pub apps: BTreeMap<String, Vec<AppVersion>>,
 }
 
-pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
-    let Some(cfg) = load_master_config().await? else {
+pub(crate) async fn backup_versions<H: Host>(b: &Backend<H>) -> anyhow::Result<BackupVersions> {
+    let Some(cfg) = master_config(&b.kube).await? else {
         return Ok(BackupVersions::default());
     };
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
+    cfg.unlock(&b.host, "cluster-backup").await;
     let Some(snapshots) = restic_json(
+        &b.host,
         &repo,
         &cfg,
         &[
@@ -346,6 +381,7 @@ pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
         });
     };
     let found = restic_json(
+        &b.host,
         &repo,
         &cfg,
         &[
@@ -365,31 +401,34 @@ pub(crate) async fn backup_versions() -> anyhow::Result<BackupVersions> {
     })
 }
 
-async fn restic_json(
+async fn restic_json<H: Host>(
+    host: &H,
     repo: &str,
     cfg: &BackupConfig,
     args: &[&str],
 ) -> anyhow::Result<Option<Value>> {
-    let out = restic(repo, cfg, args).await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
+    let out = restic_with(host, repo, cfg, args, RESTIC_TIMEOUT).await?;
+    if !out.success {
+        let stderr = &out.stderr;
         if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
             return Ok(None);
         }
         anyhow::bail!("restic {}: {}", args.join(" "), stderr.trim());
     }
-    Ok(Some(serde_json::from_slice(&out.stdout).map_err(|e| {
+    Ok(Some(serde_json::from_str(&out.stdout).map_err(|e| {
         anyhow::anyhow!("restic {}: unreadable output: {e}", args.join(" "))
     })?))
 }
 
-pub(crate) async fn restore_points(
+pub(crate) async fn restore_points<H: Host>(
+    host: &H,
     cfg: &BackupConfig,
     namespace: &str,
 ) -> anyhow::Result<Vec<AppVersion>> {
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
+    cfg.unlock(host, "cluster-backup").await;
     let Some(snapshots) = restic_json(
+        host,
         &repo,
         cfg,
         &[
@@ -406,6 +445,7 @@ pub(crate) async fn restore_points(
     };
     let pattern = format!("{namespace}.yaml");
     let found = restic_json(
+        host,
         &repo,
         cfg,
         &[
@@ -487,18 +527,19 @@ pub(crate) struct BackupPayload {
     volumes: Vec<(CatalogPvc, Option<String>)>,
 }
 
-pub(crate) async fn backup_payload(
+pub(crate) async fn backup_payload<H: Host>(
+    b: &Backend<H>,
     source_namespace: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<BackupPayload> {
     crate::routers::install::check_backup_ref(source_namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let Some(cfg) = load_master_config().await? else {
+    let Some(cfg) = master_config(&b.kube).await? else {
         anyhow::bail!("backup not configured");
     };
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
-    let catalog = extract_json_file(&repo, &cfg, snapshot_id, "catalog.json").await?;
+    cfg.unlock(&b.host, "cluster-backup").await;
+    let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
     let Some(app) = catalog_apps(&catalog)
         .into_iter()
         .find(|a| a.namespace == source_namespace)
@@ -506,6 +547,7 @@ pub(crate) async fn backup_payload(
         anyhow::bail!("{source_namespace} is not in backup {snapshot_id}");
     };
     let Some(path) = extract_file(
+        &b.host,
         &repo,
         &cfg,
         snapshot_id,
@@ -516,11 +558,11 @@ pub(crate) async fn backup_payload(
         anyhow::bail!("backup {snapshot_id} has no saved settings for {source_namespace}");
     };
     let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
-    let restore_as_of = snapshot_time(&repo, &cfg, snapshot_id).await;
+    let restore_as_of = snapshot_time(&b.host, &repo, &cfg, snapshot_id).await;
 
     let mut volumes = Vec::new();
     for pvc in catalog_pvcs(&catalog, source_namespace) {
-        let snaps = volume_snapshots(source_namespace, &pvc.name, &cfg).await?;
+        let snaps = volume_snapshots(&b.host, source_namespace, &pvc.name, &cfg).await?;
         match plan_volume(
             &pvc.name,
             pvc.snapshot.as_ref(),
@@ -551,15 +593,17 @@ impl BackupPayload {
         &self.app_id
     }
 
-    pub(crate) async fn fill_volumes(
+    pub(crate) async fn fill_volumes<H: Host>(
         &self,
+        b: &Backend<H>,
         dest_namespace: &str,
         instance_name: &str,
     ) -> anyhow::Result<()> {
-        let (id, _, _guard) = begin(dest_namespace, &self.snapshot_id).await?;
+        let (id, _, _guard) = begin(b, dest_namespace, &self.snapshot_id).await?;
         let mut outcome = Ok(());
         for (pvc, as_of) in &self.volumes {
             outcome = fill_volume(
+                b,
                 dest_namespace,
                 &self.source_namespace,
                 instance_name,
@@ -576,15 +620,15 @@ impl BackupPayload {
             Ok(()) => Ok(!self.volumes.is_empty()),
             Err(e) => Err(anyhow::anyhow!("{e}")),
         };
-        record_done(&id, &recorded).await;
+        record_done(&b.kube, &id, &recorded).await;
         outcome
     }
 
-    pub(crate) async fn reapply(&self) -> anyhow::Result<()> {
+    pub(crate) async fn reapply(&self, client: &Client) -> anyhow::Result<()> {
         let Some(objects) = objects_to_reapply(&self.objects) else {
             return Ok(());
         };
-        kubectl_apply(&objects.to_string())
+        crate::k8s::apply_documents(client, &objects.to_string())
             .await
             .map_err(|e| anyhow::anyhow!("apply {}.yaml: {e}", self.source_namespace))
     }
@@ -624,18 +668,19 @@ fn saved_config(objects: &Value) -> Option<serde_json::Map<String, Value>> {
     serde_json::from_slice(&raw).ok()
 }
 
-pub(crate) async fn definition_from_backup(
+pub(crate) async fn definition_from_backup<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<crate::routers::apps::AppDefinition> {
     crate::routers::install::check_backup_ref(namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let Some(cfg) = load_master_config().await? else {
+    let Some(cfg) = master_config(&b.kube).await? else {
         anyhow::bail!("backup not configured");
     };
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
-    let catalog = extract_json_file(&repo, &cfg, snapshot_id, "catalog.json").await?;
+    cfg.unlock(&b.host, "cluster-backup").await;
+    let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
     let Some(service) = catalog["services"]
         .as_array()
         .and_then(|a| a.iter().find(|s| s["namespace"] == namespace))
@@ -651,15 +696,22 @@ pub(crate) async fn definition_from_backup(
         }
     }
 
-    let config =
-        match extract_file(&repo, &cfg, snapshot_id, &format!("**/{namespace}.yaml")).await? {
-            Some(path) => {
-                let raw = tokio::fs::read(&path).await?;
-                let objects: Value = serde_json::from_slice(&raw)?;
-                saved_config(&objects).unwrap_or_default()
-            }
-            None => serde_json::Map::new(),
-        };
+    let config = match extract_file(
+        &b.host,
+        &repo,
+        &cfg,
+        snapshot_id,
+        &format!("**/{namespace}.yaml"),
+    )
+    .await?
+    {
+        Some(path) => {
+            let raw = tokio::fs::read(&path).await?;
+            let objects: Value = serde_json::from_slice(&raw)?;
+            saved_config(&objects).unwrap_or_default()
+        }
+        None => serde_json::Map::new(),
+    };
     Ok(crate::routers::apps::AppDefinition {
         schema: crate::routers::apps::DEFINITION_SCHEMA,
         app_id: service["app_id"].as_str().unwrap_or("").to_string(),
@@ -704,7 +756,8 @@ fn objects_to_reapply(objects: &Value) -> Option<Value> {
     Some(json!({ "apiVersion": "v1", "kind": "List", "items": items }))
 }
 
-async fn fill_volume(
+async fn fill_volume<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     source_namespace: &str,
     release: &str,
@@ -732,8 +785,9 @@ async fn fill_volume(
             "resources": { "requests": { "storage": pvc.capacity } }
         }
     });
-    kubectl_apply(&manifest.to_string()).await?;
+    crate::k8s::apply(&b.kube, &manifest).await?;
     restore_into(
+        b,
         namespace,
         source_namespace,
         &pvc.name,
@@ -744,30 +798,28 @@ async fn fill_volume(
     .await
 }
 
-async fn restore_volume(
+async fn restore_volume<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     pvc: &str,
     capacity: &str,
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
-    crate::kubectl::run(&[
-        "delete",
-        "pvc",
-        pvc,
-        "-n",
-        namespace,
-        "--wait=false",
-        "--ignore-not-found",
-    ])
-    .await?;
-    wait_for_pvc_deleted(namespace, pvc).await?;
+    let claim = crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, pvc);
+    crate::k8s::delete_if_present(&b.kube, &claim).await?;
+    wait_for_pvc_deleted(&b.kube, namespace, pvc).await?;
 
-    ensure_destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany").await?;
-    restore_into(namespace, namespace, pvc, pvc, cfg, restore_as_of).await
+    crate::k8s::apply(
+        &b.kube,
+        &destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany"),
+    )
+    .await?;
+    restore_into(b, namespace, namespace, pvc, pvc, cfg, restore_as_of).await
 }
 
-async fn restore_into(
+async fn restore_into<H: Host>(
+    b: &Backend<H>,
     namespace: &str,
     source_namespace: &str,
     source_pvc: &str,
@@ -777,16 +829,18 @@ async fn restore_into(
 ) -> anyhow::Result<()> {
     let cid = canonical_pvc_id(source_pvc);
     let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
-    restic_unlock(
+    restic_unlock_with(
+        &b.host,
         &pvc_repo,
         &cfg.restic_password,
         &cfg.access_key_id,
         &cfg.secret_access_key,
+        false,
     )
     .await;
-    annotate_ns_privileged_movers(namespace).await;
+    allow_privileged_movers(&b.kube, namespace).await;
 
-    ensure_restic_secret_for_repo(namespace, source_namespace, source_pvc, cfg).await?;
+    restic_secret(&b.kube, namespace, source_namespace, source_pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let mut restic_spec = json!({
         "repository": secret_name,
@@ -812,43 +866,41 @@ async fn restore_into(
             "restic": restic_spec
         }
     });
-    kubectl_apply(&manifest.to_string()).await?;
+    crate::k8s::apply(&b.kube, &manifest).await?;
 
-    wait_for_rd(namespace, &dest_name).await?;
-    delete_replication_destination_without_touching_pvc(&dest_name, namespace).await;
+    wait_for_rd(&b.kube, namespace, &dest_name).await?;
+    drop_replication_destination(&b.kube, &dest_name, namespace).await;
     Ok(())
 }
 
-async fn wait_for_pvc_deleted(namespace: &str, pvc: &str) -> anyhow::Result<()> {
+async fn wait_for_pvc_deleted(client: &Client, namespace: &str, pvc: &str) -> anyhow::Result<()> {
+    let claim = crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, pvc);
     let deadline = std::time::Instant::now() + Duration::from_secs(PVC_DELETE_TIMEOUT_SECS);
     while std::time::Instant::now() < deadline {
-        let exists = crate::kubectl::run(&["get", "pvc", pvc, "-n", namespace])
-            .await
-            .is_ok();
-        if !exists {
-            return Ok(());
+        match crate::k8s::exists(client, &claim).await {
+            Ok(false) => return Ok(()),
+            Ok(true) => {}
+            Err(e) => {
+                tracing::debug!("restore: cannot tell yet whether {namespace}/{pvc} is gone ({e})")
+            }
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(PVC_DELETE_POLL).await;
     }
     anyhow::bail!(
         "PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
     )
 }
 
-async fn wait_for_rd(namespace: &str, dest_name: &str) -> anyhow::Result<()> {
+async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyhow::Result<()> {
+    let destination = crate::k8s::reference(
+        "volsync.backube/v1alpha1",
+        "ReplicationDestination",
+        namespace,
+        dest_name,
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(RD_TIMEOUT_SECS);
     loop {
-        let v = crate::kubectl::get_json(&[
-            "get",
-            "replicationdestination",
-            dest_name,
-            "-n",
-            namespace,
-            "-o",
-            "json",
-        ])
-        .await
-        .ok();
+        let v = crate::k8s::get(client, &destination).await.ok().flatten();
         let result = v.as_ref().and_then(|v| {
             v["status"]["latestMoverStatus"]["result"]
                 .as_str()
@@ -861,15 +913,22 @@ async fn wait_for_rd(namespace: &str, dest_name: &str) -> anyhow::Result<()> {
                 if std::time::Instant::now() > deadline {
                     anyhow::bail!("restore timed out after {}s", RD_TIMEOUT_SECS);
                 }
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::time::sleep(RD_POLL).await;
             }
         }
     }
 }
 
-async fn read_deployment_scales(ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
-    let v = crate::kubectl::get_json(&["get", "deployments", "-n", ns, "-o", "json"]).await?;
-    parse_deployment_scales(&v)
+async fn read_deployment_scales(client: &Client, ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
+    let items = crate::k8s::list(
+        client,
+        "apps/v1",
+        "Deployment",
+        Some(ns),
+        &Default::default(),
+    )
+    .await?;
+    parse_deployment_scales(&json!({ "items": items }))
 }
 
 fn parse_deployment_scales(v: &Value) -> anyhow::Result<Vec<DeploymentScale>> {
@@ -891,7 +950,8 @@ fn parse_deployment_scales(v: &Value) -> anyhow::Result<Vec<DeploymentScale>> {
         .collect()
 }
 
-async fn resolve_snapshot(
+async fn resolve_snapshot<H: Host>(
+    host: &H,
     cfg: &BackupConfig,
     namespace: &str,
     requested: Option<String>,
@@ -900,8 +960,9 @@ async fn resolve_snapshot(
         return Ok(requested);
     }
     let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock("cluster-backup").await;
+    cfg.unlock(host, "cluster-backup").await;
     let Some(snapshots) = restic_json(
+        host,
         &repo,
         cfg,
         &[
@@ -917,6 +978,7 @@ async fn resolve_snapshot(
         return Ok(None);
     };
     let found = restic_json(
+        host,
         &repo,
         cfg,
         &[
@@ -937,25 +999,38 @@ async fn resolve_snapshot(
         .map(|v| v.snapshot_id.clone()))
 }
 
-async fn snapshot_time(repo: &str, cfg: &BackupConfig, id: &str) -> Option<String> {
-    let out = restic(repo, cfg, &["snapshots", "--no-lock", id, "--json"])
-        .await
-        .ok()?;
-    if !out.status.success() {
+async fn snapshot_time<H: Host>(
+    host: &H,
+    repo: &str,
+    cfg: &BackupConfig,
+    id: &str,
+) -> Option<String> {
+    let out = restic_with(
+        host,
+        repo,
+        cfg,
+        &["snapshots", "--no-lock", id, "--json"],
+        RESTIC_TIMEOUT,
+    )
+    .await
+    .ok()?;
+    if !out.success {
         return None;
     }
-    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let v: Value = serde_json::from_str(&out.stdout).ok()?;
     v.as_array()?.first()?["time"].as_str().map(String::from)
 }
 
-async fn extract_file(
+async fn extract_file<H: Host>(
+    host: &H,
     repo: &str,
     cfg: &BackupConfig,
     snapshot_id: &str,
     pattern: &str,
 ) -> anyhow::Result<Option<String>> {
     let target = format!("/tmp/yolab-restore-{}", random_hex(8));
-    let out = restic(
+    let out = restic_with(
+        host,
         repo,
         cfg,
         &[
@@ -966,38 +1041,41 @@ async fn extract_file(
             "--include",
             pattern,
         ],
+        RESTIC_TIMEOUT,
     )
     .await?;
-    if !out.status.success() {
+    if !out.success {
         tokio::fs::remove_dir_all(&target)
             .await
             .debug_on_err("clean up a failed restic restore");
-        anyhow::bail!(
-            "restic restore failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        anyhow::bail!("restic restore failed: {}", out.stderr.trim());
     }
-    let find = Command::new("find")
-        .args([&target, "-type", "f"])
-        .output()
-        .await;
-    Ok(find.ok().and_then(|f| {
-        let p = String::from_utf8_lossy(&f.stdout).trim().to_string();
-        if p.is_empty() {
-            None
-        } else {
-            Some(p)
-        }
-    }))
+    Ok(first_file_under(std::path::Path::new(&target)).map(|p| p.to_string_lossy().into_owned()))
 }
 
-async fn extract_json_file(
+fn first_file_under(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in &entries {
+        let path = entry.path();
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    entries
+        .iter()
+        .filter(|e| e.path().is_dir())
+        .find_map(|e| first_file_under(&e.path()))
+}
+
+async fn extract_json_file<H: Host>(
+    host: &H,
     repo: &str,
     cfg: &BackupConfig,
     snapshot_id: &str,
     filename: &str,
 ) -> anyhow::Result<Value> {
-    match extract_file(repo, cfg, snapshot_id, &format!("**/{filename}")).await? {
+    match extract_file(host, repo, cfg, snapshot_id, &format!("**/{filename}")).await? {
         Some(path) => {
             let bytes = tokio::fs::read(&path)
                 .await
@@ -1053,8 +1131,8 @@ fn liveness_of(s: &RestoreSet) -> Liveness {
     s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT)
 }
 
-pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
-    let sets = read_sets().await?;
+pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
+    let sets = read_sets(client).await?;
     Ok(sets
         .iter()
         .map(|s| {
@@ -1072,8 +1150,8 @@ pub(crate) async fn list() -> anyhow::Result<Vec<Value>> {
         .collect())
 }
 
-pub(crate) async fn running_anywhere() -> anyhow::Result<bool> {
-    let sets = read_sets().await?;
+pub(crate) async fn running_anywhere(client: &Client) -> anyhow::Result<bool> {
+    let sets = read_sets(client).await?;
     Ok(sets
         .iter()
         .any(|s| s.is_running() && liveness_of(s).is_live()))
@@ -1111,46 +1189,49 @@ impl Controller for RestoreWatchdogController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
-        let now = Utc::now();
-        let crashed = abandoned(&read_sets().await?, &ctx.node);
-        if crashed.is_empty() {
-            return Ok(Tick::Idle("no abandoned restores".into()));
-        }
-        for set in crashed {
-            let mut claimed_by_us = false;
-            let me = ctx.node.clone();
-            RESTORES
-                .update(&RealHost, |sets: &mut Vec<RestoreSet>| {
-                    claimed_by_us = false;
-                    if let Some(s) = sets.iter_mut().find(|s| s.id == set.id) {
-                        if s.is_running()
-                            && s.liveness(&me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
-                        {
-                            s.state = "failed".to_string();
-                            s.finished_at = Some(now.to_rfc3339());
-                            s.error = Some("interrupted — scaled back up".to_string());
-                            claimed_by_us = true;
-                        }
-                    }
-                })
-                .await?;
-            if !claimed_by_us {
-                continue;
-            }
-            tracing::warn!(
-                "restore {} ({}) was abandoned by {} — scaling back up",
-                set.id,
-                set.namespace,
-                set.claim.owner
-            );
-            for d in &set.scaled_deployments {
-                scale_deployment(&set.namespace, &d.name, d.replicas)
-                    .await
-                    .warn_on_err(format!("restore {}: scale {} back up", set.id, d.name));
-            }
-        }
-        Ok(Tick::Done)
+        scale_back_abandoned(&Backend::real().await?, &ctx.node).await
     }
+}
+
+async fn scale_back_abandoned<H: Host>(b: &Backend<H>, node: &str) -> anyhow::Result<Tick> {
+    let now = Utc::now();
+    let crashed = abandoned(&read_sets(&b.kube).await?, node);
+    if crashed.is_empty() {
+        return Ok(Tick::Idle("no abandoned restores".into()));
+    }
+    for set in crashed {
+        let mut claimed_by_us = false;
+        let me = node.to_string();
+        RESTORES
+            .update(&b.kube, |sets: &mut Vec<RestoreSet>| {
+                claimed_by_us = false;
+                if let Some(s) = sets.iter_mut().find(|s| s.id == set.id) {
+                    if s.is_running() && s.liveness(&me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
+                    {
+                        s.state = "failed".to_string();
+                        s.finished_at = Some(now.to_rfc3339());
+                        s.error = Some("interrupted — scaled back up".to_string());
+                        claimed_by_us = true;
+                    }
+                }
+            })
+            .await?;
+        if !claimed_by_us {
+            continue;
+        }
+        tracing::warn!(
+            "restore {} ({}) was abandoned by {} — scaling back up",
+            set.id,
+            set.namespace,
+            set.claim.owner
+        );
+        for d in &set.scaled_deployments {
+            scale(&b.kube, &set.namespace, &d.name, d.replicas)
+                .await
+                .warn_on_err(format!("restore {}: scale {} back up", set.id, d.name));
+        }
+    }
+    Ok(Tick::Done)
 }
 
 pub(crate) fn start_heartbeat() {
@@ -1533,5 +1614,203 @@ mod tests {
             &Value::Null
         )
         .is_empty());
+    }
+
+    #[test]
+    fn the_first_file_is_found_in_name_order_files_before_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(first_file_under(dir.path()), None);
+        std::fs::create_dir_all(dir.path().join("a/deep")).unwrap();
+        std::fs::write(dir.path().join("a/deep/catalog.json"), "{}").unwrap();
+        assert_eq!(
+            first_file_under(dir.path()),
+            Some(dir.path().join("a/deep/catalog.json"))
+        );
+        std::fs::write(dir.path().join("z.yaml"), "").unwrap();
+        std::fs::write(dir.path().join("m.yaml"), "").unwrap();
+        assert_eq!(
+            first_file_under(dir.path()),
+            Some(dir.path().join("m.yaml"))
+        );
+        assert_eq!(first_file_under(&dir.path().join("missing")), None);
+    }
+
+    mod against_the_cluster {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{api_server, list, status};
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        const CLAIM_PATH: &str = "/api/v1/namespaces/yolab-notes/persistentvolumeclaims/data";
+
+        fn cfg() -> BackupConfig {
+            BackupConfig {
+                access_key_id: "AKID".into(),
+                secret_access_key: "SECRET".into(),
+                bucket: "bucket-1".into(),
+                endpoint: "https://s3.example".into(),
+                restic_password: "pw".into(),
+            }
+        }
+
+        fn deployment(name: &str, replicas: u32) -> Value {
+            json!({ "metadata": { "name": name, "namespace": "yolab-notes" }, "spec": { "replicas": replicas } })
+        }
+
+        fn scaled(name: &str, replicas: u32) -> Mock {
+            Mock::given(method("PATCH"))
+                .and(path(format!(
+                    "/apis/apps/v1/namespaces/yolab-notes/deployments/{name}"
+                )))
+                .and(body_partial_json(
+                    json!({ "spec": { "replicas": replicas } }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "apps/v1", "kind": "Deployment",
+                    "metadata": { "name": name, "namespace": "yolab-notes" }
+                })))
+        }
+
+        #[tokio::test]
+        async fn a_restore_stops_every_deployment_before_reading_the_backup() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/apis/apps/v1/namespaces/yolab-notes/deployments"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Deployment",
+                    vec![deployment("web", 2), deployment("worker", 1)],
+                )))
+                .mount(&server)
+                .await;
+            scaled("web", 0).expect(1).mount(&server).await;
+            scaled("worker", 0).expect(1).mount(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().fail("restic restore", "repository is locked"),
+            };
+
+            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg())
+                .await
+                .is_err());
+            assert!(b.host.ran("restic restore snap-1"));
+            let deleted = server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .any(|r| r.method.as_str() == "DELETE");
+            assert!(
+                !deleted,
+                "no volume is touched when the backup cannot be read"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_restore_that_cannot_stop_the_app_goes_no_further() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/apis/apps/v1/namespaces/yolab-notes/deployments"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg())
+                .await
+                .is_err());
+            assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
+        }
+
+        #[tokio::test]
+        async fn a_claim_is_gone_only_once_the_cluster_says_so() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(CLAIM_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            wait_for_pvc_deleted(&kube, "yolab-notes", "data")
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_never_counts_as_the_claim_being_gone() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(CLAIM_PATH))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            let waited = tokio::time::timeout(
+                Duration::from_millis(300),
+                wait_for_pvc_deleted(&kube, "yolab-notes", "data"),
+            )
+            .await;
+            assert!(waited.is_err(), "still waiting, not done: {waited:?}");
+        }
+
+        #[tokio::test]
+        async fn a_failed_mover_fails_the_restore() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/apis/volsync.backube/v1alpha1/namespaces/yolab-notes/replicationdestinations/rd"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "metadata": { "name": "rd", "namespace": "yolab-notes" },
+                    "status": { "latestMoverStatus": { "result": "Failed" } }
+                })))
+                .mount(&server)
+                .await;
+            let err = wait_for_rd(&kube, "yolab-notes", "rd").await.unwrap_err();
+            assert!(err.to_string().contains("failure"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn nothing_to_reapply_sends_nothing() {
+            let (server, kube) = api_server().await;
+            let payload = BackupPayload {
+                app_id: "notes".into(),
+                source_namespace: "yolab-notes".into(),
+                snapshot_id: "snap-1".into(),
+                cfg: cfg(),
+                volumes: vec![],
+                objects: json!({ "items": [] }),
+            };
+            payload.reapply(&kube).await.unwrap();
+            assert!(server.received_requests().await.unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn an_abandoned_restore_scales_the_app_back_to_what_it_was() {
+            let (server, kube) = api_server().await;
+            scaled("web", 3).expect(1).mount(&server).await;
+            let running = json!([{
+                "id": "rs-1", "namespace": "yolab-notes", "started_at": "2026-09-28T00:00:00Z",
+                "state": "running", "scaled_deployments": [{ "name": "web", "replicas": 3 }],
+                "owner": "node1", "heartbeat": "2026-09-28T00:00:00Z"
+            }]);
+            crate::records::testing::records(&server, "yolab-restores", running).await;
+            crate::records::testing::accept_writes(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            assert!(matches!(
+                scale_back_abandoned(&b, "node1").await.unwrap(),
+                Tick::Done
+            ));
+            let marked = crate::records::testing::written(&server, "yolab-restores").await;
+            assert_eq!(marked[0][0]["state"], "failed");
+            assert_eq!(marked[0][0]["error"], "interrupted — scaled back up");
+        }
     }
 }

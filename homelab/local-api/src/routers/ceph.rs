@@ -1,5 +1,5 @@
 use axum::{
-    extract::Path,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -7,6 +7,9 @@ use axum::{
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
+
+use crate::host::Host;
+use crate::AppState;
 
 #[derive(Serialize, Clone, PartialEq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -40,10 +43,8 @@ pub struct ClusterHealth {
 pub(crate) const ROOT_DISK_WARN_PERCENT: u64 = 85;
 pub(crate) const ROOT_DISK_ERROR_PERCENT: u64 = 95;
 
-async fn root_disk_used_percent() -> Option<u64> {
-    let out = crate::host::Host::run_cmd(&crate::host::HOST, "df", &["-P", "-k", "/"])
-        .await
-        .ok()?;
+async fn root_disk_used_percent<H: Host>(host: &H) -> Option<u64> {
+    let out = host.run_cmd("df", &["-P", "-k", "/"]).await.ok()?;
     if !out.success {
         return None;
     }
@@ -86,20 +87,20 @@ pub(crate) fn root_disk_issue(used: Option<u64>) -> Option<HealthIssue> {
     })
 }
 
-async fn failed_units() -> Option<Vec<String>> {
-    let out = crate::host::Host::run_cmd(
-        &crate::host::HOST,
-        "systemctl",
-        &[
-            "list-units",
-            "--failed",
-            "--plain",
-            "--no-legend",
-            "--no-pager",
-        ],
-    )
-    .await
-    .ok()?;
+async fn failed_units<H: Host>(host: &H) -> Option<Vec<String>> {
+    let out = host
+        .run_cmd(
+            "systemctl",
+            &[
+                "list-units",
+                "--failed",
+                "--plain",
+                "--no-legend",
+                "--no-pager",
+            ],
+        )
+        .await
+        .ok()?;
     out.success.then(|| failed_units_from(&out.stdout))
 }
 
@@ -143,11 +144,11 @@ fn system_uptime_secs() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-async fn osd_provisioning_active(data_unavailable: bool) -> bool {
+async fn osd_provisioning_active<H: Host>(host: &H, data_unavailable: bool) -> bool {
     if data_unavailable {
         return false;
     }
-    crate::ceph_cli::ceph_json(&["osd", "stat"])
+    host.ceph_json(&["osd", "stat"])
         .await
         .ok()
         .map(|v| {
@@ -158,18 +159,19 @@ async fn osd_provisioning_active(data_unavailable: bool) -> bool {
         .unwrap_or(false)
 }
 
-pub async fn cluster_health() -> Json<ClusterHealth> {
-    Json(compute_cluster_health().await)
+pub async fn cluster_health(State(state): State<AppState>) -> Json<ClusterHealth> {
+    let kube = state.kube.client().await.ok();
+    Json(compute_cluster_health(&crate::host::RealHost, kube.as_ref()).await)
 }
 
-async fn mon_quorum() -> bool {
-    crate::heal::mon_status(&crate::host::HOST, &crate::system::hostname())
+async fn mon_quorum<H: Host>(host: &H) -> bool {
+    crate::heal::mon_status(host, &crate::system::hostname())
         .await
         .is_ok_and(|m| m.in_quorum)
 }
 
-async fn compute_cluster_health() -> ClusterHealth {
-    let raw = match ceph_health_and_details().await {
+async fn compute_cluster_health<H: Host>(host: &H, kube: Option<&kube::Client>) -> ClusterHealth {
+    let raw = match ceph_health_and_details(host).await {
         Ok(s) => s,
         Err(_) => {
             let starting = system_uptime_secs() < 900;
@@ -208,7 +210,17 @@ async fn compute_cluster_health() -> ClusterHealth {
 
     let mut issues: Vec<HealthIssue> = vec![];
 
-    let places = match crate::topology::observe().await {
+    let shape = match kube {
+        Some(kube) => {
+            crate::topology::observe(&crate::routers::backup_common::Backend {
+                kube: kube.clone(),
+                host: host.clone(),
+            })
+            .await
+        }
+        None => None,
+    };
+    let places = match shape {
         Some(t) if t.osd_hosts > 1 => t.osd_hosts,
         Some(t) => t.osds,
         None => 0,
@@ -218,7 +230,7 @@ async fn compute_cluster_health() -> ClusterHealth {
         .as_object()
         .is_some_and(|o| o.contains_key("PG_AVAILABILITY") || o.contains_key("PG_DOWN"))
     {
-        assess_pg_loss().await
+        assess_pg_loss_via(host).await
     } else {
         None
     };
@@ -230,10 +242,10 @@ async fn compute_cluster_health() -> ClusterHealth {
             }
         }
     }
-    if let Some(issue) = root_disk_issue(root_disk_used_percent().await) {
+    if let Some(issue) = root_disk_issue(root_disk_used_percent(host).await) {
         issues.push(issue);
     }
-    if let Some(issue) = failed_units_issue(failed_units().await.as_deref()) {
+    if let Some(issue) = failed_units_issue(failed_units(host).await.as_deref()) {
         issues.push(issue);
     }
 
@@ -260,11 +272,11 @@ async fn compute_cluster_health() -> ClusterHealth {
         obj.contains_key("OSD_FULL") || obj.contains_key("NOSPC") || obj.contains_key("POOL_FULL")
     });
     let starting = pg_unavailable && system_uptime_secs() < 900;
-    let provisioning = osd_provisioning_active(pg_unavailable).await;
+    let provisioning = osd_provisioning_active(host, pg_unavailable).await;
     let storage_unrecoverable = loss
         .as_ref()
         .is_some_and(|l| l.unrecoverable && l.stuck > 0);
-    let mon_quorum_ok = mon_quorum().await;
+    let mon_quorum_ok = mon_quorum(host).await;
 
     match level {
         HealthLevel::Ok => ClusterHealth {
@@ -374,14 +386,6 @@ fn pg_is_confirmed_lost(pg: &Value, still_in: &std::collections::HashSet<i64>) -
             .any(|id| still_in.contains(&id)),
         None => true,
     }
-}
-
-pub(crate) async fn assess_pg_loss() -> Option<PgLoss> {
-    let dump = crate::ceph_cli::ceph_json(&["osd", "dump"]).await.ok()?;
-    let pgs = crate::ceph_cli::ceph_json(&["pg", "dump", "pgs_brief"])
-        .await
-        .ok()?;
-    compute_pg_loss(&dump, &pgs)
 }
 
 pub(crate) async fn assess_pg_loss_via<H: crate::host::Host>(host: &H) -> Option<PgLoss> {
@@ -626,8 +630,8 @@ fn translate_health_check(
     })
 }
 
-async fn ceph_health_and_details() -> anyhow::Result<String> {
-    let h = crate::ceph_cli::ceph_json(&["health", "detail"]).await?;
+async fn ceph_health_and_details<H: Host>(host: &H) -> anyhow::Result<String> {
+    let h = host.ceph_json(&["health", "detail"]).await?;
     let status = h["status"].as_str().unwrap_or("");
     let checks = h.get("checks").cloned().unwrap_or(serde_json::json!({}));
     Ok(format!("{status}\n{checks}"))
@@ -674,19 +678,23 @@ pub struct StorageDetail {
     pub used_bytes: u64,
 }
 
-async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
-    use crate::ceph_cli::ceph_json;
-
-    let osd_df = ceph_json(&["osd", "df", "tree"]).await.unwrap_or_default();
-    let pool_detail = ceph_json(&["osd", "pool", "ls", "detail"])
+async fn fetch_storage_raw<H: Host>(host: &H) -> anyhow::Result<serde_json::Value> {
+    let osd_df = host
+        .ceph_json(&["osd", "df", "tree"])
         .await
         .unwrap_or_default();
-    let ceph_df = ceph_json(&["df"]).await.unwrap_or_default();
-    let crush_rules = ceph_json(&["osd", "crush", "rule", "dump"])
+    let pool_detail = host
+        .ceph_json(&["osd", "pool", "ls", "detail"])
+        .await
+        .unwrap_or_default();
+    let ceph_df = host.ceph_json(&["df"]).await.unwrap_or_default();
+    let crush_rules = host
+        .ceph_json(&["osd", "crush", "rule", "dump"])
         .await
         .unwrap_or_default();
 
-    let ids: Vec<i64> = ceph_json(&["osd", "ls"])
+    let ids: Vec<i64> = host
+        .ceph_json(&["osd", "ls"])
         .await
         .ok()
         .and_then(|v| {
@@ -698,13 +706,14 @@ async fn fetch_storage_raw() -> anyhow::Result<serde_json::Value> {
     let mut safe_to_destroy = Vec::new();
     let mut ok_to_stop = Vec::new();
     for id in ids {
-        if crate::ceph::destructive::safe_to_destroy(&crate::host::RealHost, id)
+        if crate::ceph::destructive::safe_to_destroy(host, id)
             .await
             .is_ok_and(|p| p.is_some())
         {
             safe_to_destroy.push(id);
         }
-        if crate::ceph_cli::ceph(&["osd", "ok-to-stop", &format!("osd.{id}")])
+        if host
+            .ceph(&["osd", "ok-to-stop", &format!("osd.{id}")])
             .await
             .is_ok()
         {
@@ -882,7 +891,7 @@ fn parse_storage_detail(v: &serde_json::Value) -> StorageDetail {
 }
 
 pub async fn storage_detail() -> Json<serde_json::Value> {
-    match fetch_storage_raw().await {
+    match fetch_storage_raw(&crate::host::RealHost).await {
         Ok(raw) => Json(serde_json::json!({ "ok": true, "data": parse_storage_detail(&raw) })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
@@ -1612,16 +1621,14 @@ mod tests {
     }
 }
 
-async fn active_dashboard_origin() -> Option<String> {
-    let services = crate::ceph_cli::ceph_json(&["mgr", "services"])
-        .await
-        .ok()?;
+async fn active_dashboard_origin<H: Host>(host: &H) -> Option<String> {
+    let services = host.ceph_json(&["mgr", "services"]).await.ok()?;
     dashboard_origin_from(&services)
 }
 
 pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<String> {
     let url = services["dashboard"].as_str().filter(|u| !u.is_empty())?;
-    let parsed = reqwest::Url::parse(url).ok()?;
+    let parsed = crate::http::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port().unwrap_or(7000);
     let host = if host.contains(':') && !host.starts_with('[') {
@@ -1633,7 +1640,7 @@ pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<Stri
 }
 
 pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
-    let Some(origin) = active_dashboard_origin().await else {
+    let Some(origin) = active_dashboard_origin(&crate::host::RealHost).await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "The storage dashboard is not available right now. It runs on whichever \
@@ -1649,17 +1656,7 @@ pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
         .unwrap_or_else(|| "/".into());
     let url = format!("{origin}{path_and_query}");
 
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("dashboard proxy: could not build client: {e}");
-            return (StatusCode::BAD_GATEWAY, "dashboard unavailable").into_response();
-        }
-    };
+    let client = crate::http::client_without_redirects();
 
     let (parts, body) = req.into_parts();
     let body_bytes = match axum::body::to_bytes(body, 32 * 1024 * 1024).await {
@@ -1667,7 +1664,10 @@ pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
         Err(_) => return (StatusCode::BAD_REQUEST, "request body too large").into_response(),
     };
 
-    let mut upstream = client.request(parts.method.clone(), &url).body(body_bytes);
+    let mut upstream = client
+        .request(parts.method.clone(), &url)
+        .timeout(std::time::Duration::from_secs(30))
+        .body(body_bytes);
     for (name, value) in parts.headers.iter() {
         let n = name.as_str().to_ascii_lowercase();
         if matches!(
@@ -1919,5 +1919,85 @@ mod machine_health_tests {
         assert_eq!(issue.level, HealthLevel::Error);
         let worse = root_disk_issue(Some(100)).expect("should error");
         assert_eq!(worse.level, HealthLevel::Error);
+    }
+
+    mod against_the_machine {
+        use super::*;
+        use crate::host::fake::FakeHost;
+
+        const DF: &str = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 40 60 40% /\n";
+
+        fn machine(df: &str, failed: &str, osd_stat: &str) -> FakeHost {
+            FakeHost::new()
+                .ok(
+                    "ceph health detail",
+                    r#"{"status": "HEALTH_OK", "checks": {}}"#,
+                )
+                .ok("df", df)
+                .ok("systemctl list-units", failed)
+                .ok("ceph osd stat", osd_stat)
+                .fail("ceph daemon", "no admin socket")
+        }
+
+        const ALL_UP: &str = r#"{"num_up_osds": 2, "num_in_osds": 2}"#;
+
+        fn healthy() -> FakeHost {
+            machine(DF, "", ALL_UP)
+        }
+
+        #[tokio::test]
+        async fn a_healthy_cluster_on_a_roomy_disk_reports_nothing_to_do() {
+            let h = compute_cluster_health(&healthy(), None).await;
+            assert_eq!(h.level, HealthLevel::Ok);
+            assert!(
+                h.issues.is_empty(),
+                "{:?}",
+                h.issues.iter().map(|i| &i.title).collect::<Vec<_>>()
+            );
+            assert!(!h.mon_quorum_ok);
+            assert!(!h.provisioning);
+        }
+
+        #[tokio::test]
+        async fn a_nearly_full_system_disk_is_raised_even_when_ceph_is_fine() {
+            let host = machine(
+                "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 90 10 90% /\n",
+                "",
+                ALL_UP,
+            );
+            let h = compute_cluster_health(&host, None).await;
+            assert!(h.issues.iter().any(|i| i.title.contains("nearly full")));
+        }
+
+        #[tokio::test]
+        async fn a_failed_service_is_named() {
+            let host = machine(
+                DF,
+                "yolab-ceph-bootstrap.service loaded failed failed Ceph bootstrap\n",
+                ALL_UP,
+            );
+            let h = compute_cluster_health(&host, None).await;
+            assert!(h
+                .issues
+                .iter()
+                .any(|i| i.description.contains("yolab-ceph-bootstrap.service")));
+        }
+
+        #[tokio::test]
+        async fn osds_that_are_in_but_not_yet_up_mean_disks_are_still_being_prepared() {
+            let host = machine(DF, "", r#"{"num_up_osds": 1, "num_in_osds": 2}"#);
+            assert!(compute_cluster_health(&host, None).await.provisioning);
+        }
+
+        #[tokio::test]
+        async fn every_osd_is_asked_whether_it_can_stop() {
+            let host = FakeHost::new()
+                .ok("ceph osd ls", "[0, 1]")
+                .ok("ceph osd ok-to-stop osd.1", "")
+                .fail("ceph osd ok-to-stop osd.0", "would make PGs inactive")
+                .fail("ceph osd", "unscripted");
+            let raw = fetch_storage_raw(&host).await.unwrap();
+            assert_eq!(raw["ok_to_stop"]["ok_to_stop"], serde_json::json!([1]));
+        }
     }
 }

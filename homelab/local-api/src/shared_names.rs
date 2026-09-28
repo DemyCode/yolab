@@ -67,23 +67,26 @@ impl Controller for SharedNamesController {
                 "this machine is not connected to the YoLab platform".into(),
             ));
         }
-        let client = reqwest::Client::new();
-        for name in NAMES {
-            client
-                .put(record_url(&tunnel, name))
-                .bearer_auth(&tunnel.account_token)
-                .timeout(Duration::from_secs(15))
-                .send()
-                .await
-                .with_context(|| format!("add this machine under {name}"))?
-                .error_for_status()
-                .with_context(|| format!("add this machine under {name}"))?;
-        }
-        Ok(Tick::Idle(format!(
-            "this machine answers for {}",
-            NAMES.join(" and ")
-        )))
+        claim_names(&crate::http::client(), &tunnel).await
     }
+}
+
+async fn claim_names(client: &crate::http::Client, tunnel: &Tunnel) -> Result<Tick> {
+    for name in NAMES {
+        client
+            .put(record_url(tunnel, name))
+            .bearer_auth(&tunnel.account_token)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .with_context(|| format!("add this machine under {name}"))?
+            .error_for_status()
+            .with_context(|| format!("add this machine under {name}"))?;
+    }
+    Ok(Tick::Idle(format!(
+        "this machine answers for {}",
+        NAMES.join(" and ")
+    )))
 }
 
 fn record_url(tunnel: &Tunnel, name: &str) -> String {
@@ -145,5 +148,48 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    mod against_the_platform {
+        use super::*;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn tunnel_at(server: &MockServer) -> Tunnel {
+            Tunnel {
+                platform_api_url: server.uri(),
+                ..tunnel("tok")
+            }
+        }
+
+        #[tokio::test]
+        async fn every_shared_name_is_claimed_with_the_account_token() {
+            let server = MockServer::start().await;
+            for name in NAMES {
+                Mock::given(method("PUT"))
+                    .and(path(format!("/tunnels/25/shared-records/{name}")))
+                    .and(header("authorization", "Bearer tok"))
+                    .respond_with(ResponseTemplate::new(200))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            claim_names(&crate::http::Client::new(), &tunnel_at(&server))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_refused_claim_is_an_error_naming_the_record() {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+            let e = claim_names(&crate::http::Client::new(), &tunnel_at(&server))
+                .await
+                .unwrap_err();
+            assert!(format!("{e:#}").contains("cluster"), "{e:#}");
+        }
     }
 }

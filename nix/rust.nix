@@ -17,7 +17,8 @@
   }: let
     args =
       {
-        inherit pname nativeBuildInputs buildInputs;
+        inherit pname buildInputs;
+        nativeBuildInputs = nativeBuildInputs ++ [pkgs.cacert];
         version = "0.1.0";
         src =
           if src != null
@@ -25,6 +26,7 @@
           else craneLib.cleanCargoSource (craneLib.path path);
         strictDeps = true;
         RUSTFLAGS = "-D warnings";
+        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       }
       // extraArgs;
 

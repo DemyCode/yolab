@@ -1,27 +1,38 @@
+use kube::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::process::Command;
+
+use crate::host::{CommandOutput, Host};
 
 const MANAGED_BY: (&str, &str) = ("app.kubernetes.io/managed-by", "yolab");
 
-pub(crate) async fn kubectl_apply(manifest: &str) -> anyhow::Result<()> {
-    Ok(crate::kubectl::apply(manifest).await?)
+#[derive(Clone)]
+pub(crate) struct Backend<H: Host = crate::host::RealHost> {
+    pub kube: Client,
+    pub host: H,
 }
 
-pub(crate) async fn kubectl_get_secret(
-    name: &str,
-    ns: &str,
-) -> Result<Option<HashMap<String, String>>, crate::exec::CmdError> {
-    crate::kubectl::get_secret(name, ns).await
+impl Backend {
+    pub(crate) async fn real() -> anyhow::Result<Self> {
+        Ok(Backend {
+            kube: crate::k8s::client().await?,
+            host: crate::host::RealHost,
+        })
+    }
 }
 
-pub(crate) async fn kubectl_apply_secret(
+pub(crate) async fn apply_secret(
+    client: &Client,
     name: &str,
     ns: &str,
     data: &[(&str, &str)],
 ) -> anyhow::Result<()> {
-    Ok(crate::kubectl::apply_secret(name, ns, data, &[MANAGED_BY]).await?)
+    crate::k8s::apply(
+        client,
+        &crate::k8s::secret_manifest(name, ns, data, &[MANAGED_BY]),
+    )
+    .await
 }
 
 pub(crate) fn random_hex(bytes: usize) -> String {
@@ -29,13 +40,6 @@ pub(crate) fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     rand::thread_rng().fill_bytes(&mut buf);
     hex::encode(buf)
-}
-
-pub(crate) fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -105,12 +109,13 @@ impl BackupConfig {
         )
     }
 
-    pub async fn unlock(&self, path: &str) {
-        self.unlock_reporting(path, false).await
+    pub async fn unlock<H: Host>(&self, host: &H, path: &str) {
+        self.unlock_reporting(host, path, false).await
     }
 
-    pub async fn unlock_reporting(&self, path: &str, loud: bool) {
-        restic_unlock_reporting(
+    pub async fn unlock_reporting<H: Host>(&self, host: &H, path: &str, loud: bool) {
+        restic_unlock_with(
+            host,
             &self.restic_repo(path),
             &self.restic_password,
             &self.access_key_id,
@@ -121,102 +126,66 @@ impl BackupConfig {
     }
 }
 
-const RESTIC_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const RESTIC_TIMEOUT: Duration = Duration::from_secs(180);
 
-pub(crate) async fn restic(
-    repo: &str,
-    cfg: &BackupConfig,
-    args: &[&str],
-) -> anyhow::Result<std::process::Output> {
-    restic_timeout(repo, cfg, args, RESTIC_TIMEOUT).await
+fn restic_env<'a>(
+    repo: &'a str,
+    password: &'a str,
+    key_id: &'a str,
+    secret_key: &'a str,
+) -> [(&'a str, &'a str); 4] {
+    [
+        ("RESTIC_REPOSITORY", repo),
+        ("RESTIC_PASSWORD", password),
+        ("AWS_ACCESS_KEY_ID", key_id),
+        ("AWS_SECRET_ACCESS_KEY", secret_key),
+    ]
 }
 
-pub(crate) async fn restic_timeout(
+pub(crate) async fn restic_with<H: Host>(
+    host: &H,
     repo: &str,
     cfg: &BackupConfig,
     args: &[&str],
     timeout: Duration,
-) -> anyhow::Result<std::process::Output> {
-    let work = Command::new("restic")
-        .args(args)
-        .kill_on_drop(true)
-        .env("RESTIC_REPOSITORY", repo)
-        .env("RESTIC_PASSWORD", &cfg.restic_password)
-        .env("AWS_ACCESS_KEY_ID", &cfg.access_key_id)
-        .env("AWS_SECRET_ACCESS_KEY", &cfg.secret_access_key)
-        .output();
-    tokio::time::timeout(timeout, work)
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "restic {}: timed out after {}s",
-                args.join(" "),
-                timeout.as_secs()
-            )
-        })?
-        .map_err(|e| anyhow::anyhow!("restic {}: {e}", args.join(" ")))
+) -> anyhow::Result<CommandOutput> {
+    let env = restic_env(
+        repo,
+        &cfg.restic_password,
+        &cfg.access_key_id,
+        &cfg.secret_access_key,
+    );
+    Ok(host.run_cmd_env("restic", args, &env, timeout).await?)
 }
 
-pub(crate) async fn restic_unlock(repo: &str, password: &str, key_id: &str, secret_key: &str) {
-    restic_unlock_reporting(repo, password, key_id, secret_key, false).await
-}
-
-pub(crate) async fn restic_unlock_reporting(
+pub(crate) async fn restic_unlock_with<H: Host>(
+    host: &H,
     repo: &str,
     password: &str,
     key_id: &str,
     secret_key: &str,
     loud: bool,
 ) {
-    let work = Command::new("restic")
-        .args(["unlock"])
-        .kill_on_drop(true)
-        .env("RESTIC_REPOSITORY", repo)
-        .env("RESTIC_PASSWORD", password)
-        .env("AWS_ACCESS_KEY_ID", key_id)
-        .env("AWS_SECRET_ACCESS_KEY", secret_key)
-        .output();
-    let out = tokio::time::timeout(RESTIC_TIMEOUT, work).await;
-    match out {
-        Ok(Ok(o)) if o.status.success() => {
-            let msg = String::from_utf8_lossy(&o.stdout);
-            if !msg.trim().is_empty() {
-                tracing::info!("restic unlock ({repo}): {}", msg.trim());
+    let env = restic_env(repo, password, key_id, secret_key);
+    match host
+        .run_cmd_env("restic", &["unlock"], &env, RESTIC_TIMEOUT)
+        .await
+    {
+        Ok(o) if o.success => {
+            let msg = o.stdout.trim();
+            if !msg.is_empty() {
+                tracing::info!("restic unlock ({repo}): {msg}");
             }
         }
-        Ok(Ok(o)) => {
-            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            if loud {
-                tracing::warn!("restic unlock ({repo}) failed: {err}");
-            } else {
-                tracing::debug!("restic unlock ({repo}): {err}");
-            }
-        }
-        Ok(Err(e)) if loud => tracing::warn!("restic unlock ({repo}) could not run: {e}"),
-        Ok(Err(e)) => tracing::debug!("restic unlock ({repo}): {e}"),
-        Err(_) if loud => tracing::warn!(
-            "restic unlock ({repo}) timed out after {}s",
-            RESTIC_TIMEOUT.as_secs()
-        ),
-        Err(_) => tracing::debug!(
-            "restic unlock ({repo}): timed out after {}s",
-            RESTIC_TIMEOUT.as_secs()
-        ),
+        Ok(o) if loud => tracing::warn!("restic unlock ({repo}) failed: {}", o.stderr.trim()),
+        Ok(o) => tracing::debug!("restic unlock ({repo}): {}", o.stderr.trim()),
+        Err(e) if loud => tracing::warn!("restic unlock ({repo}) could not run: {e}"),
+        Err(e) => tracing::debug!("restic unlock ({repo}): {e}"),
     }
 }
 
-pub(crate) async fn read_master_config() -> Option<BackupConfig> {
-    match load_master_config().await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::debug!("backup config unreadable right now: {e}");
-            None
-        }
-    }
-}
-
-pub(crate) async fn load_master_config() -> Result<Option<BackupConfig>, crate::exec::CmdError> {
-    let Some(data) = kubectl_get_secret(MASTER_SECRET, MASTER_NS).await? else {
+pub(crate) async fn master_config(client: &Client) -> anyhow::Result<Option<BackupConfig>> {
+    let Some(data) = crate::k8s::secret_data(client, MASTER_NS, MASTER_SECRET).await? else {
         return Ok(None);
     };
     Ok(config_from_secret(&data))
@@ -236,12 +205,16 @@ fn config_from_secret(data: &HashMap<String, String>) -> Option<BackupConfig> {
     })
 }
 
-pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Result<BackupConfig> {
-    if let Some(cfg) = load_master_config().await? {
+pub(crate) async fn ensure_master_config_with(
+    client: &Client,
+    url: &str,
+    token: &str,
+) -> anyhow::Result<BackupConfig> {
+    if let Some(cfg) = master_config(client).await? {
         return Ok(cfg);
     }
 
-    let resp = http_client()
+    let resp = crate::http::client()
         .post(format!("{url}/storage/s3"))
         .bearer_auth(token)
         .send()
@@ -253,7 +226,8 @@ pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Resu
 
     let restic_password = random_hex(32);
 
-    kubectl_apply_secret(
+    apply_secret(
+        client,
         MASTER_SECRET,
         MASTER_NS,
         &[
@@ -275,26 +249,22 @@ pub(crate) async fn ensure_master_config(url: &str, token: &str) -> anyhow::Resu
     })
 }
 
-pub(crate) async fn annotate_ns_privileged_movers(ns: &str) {
-    let _ = crate::kubectl::run(&[
-        "annotate",
-        "namespace",
-        ns,
-        "volsync.backube/privileged-movers=true",
-        "--overwrite",
-    ])
-    .await;
+pub(crate) async fn allow_privileged_movers(client: &Client, ns: &str) {
+    let patch = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": ns,
+            "annotations": { "volsync.backube/privileged-movers": "true" }
+        }
+    });
+    if let Err(e) = crate::k8s::merge_patch(client, &patch).await {
+        tracing::debug!("{ns}: could not allow privileged backup movers ({e})");
+    }
 }
 
-pub(crate) async fn ensure_restic_secret(
-    ns: &str,
-    pvc: &str,
-    cfg: &BackupConfig,
-) -> anyhow::Result<()> {
-    ensure_restic_secret_for_repo(ns, ns, pvc, cfg).await
-}
-
-pub(crate) async fn ensure_restic_secret_for_repo(
+pub(crate) async fn restic_secret(
+    client: &Client,
     ns: &str,
     repo_ns: &str,
     pvc: &str,
@@ -303,7 +273,8 @@ pub(crate) async fn ensure_restic_secret_for_repo(
     let cid = canonical_pvc_id(pvc);
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let repo = cfg.restic_repo(&format!("volsync/{repo_ns}/{cid}"));
-    kubectl_apply_secret(
+    apply_secret(
+        client,
         &secret_name,
         ns,
         &[
@@ -323,54 +294,60 @@ pub(crate) struct PvcInfo {
     pub capacity: String,
 }
 
-pub(crate) async fn list_user_pvcs() -> anyhow::Result<Vec<PvcInfo>> {
+pub(crate) async fn user_pvcs(client: &Client) -> anyhow::Result<Vec<PvcInfo>> {
+    use k8s_openapi::api::core::v1::PersistentVolumeClaim;
     let managed: std::collections::HashSet<String> =
-        list_managed_namespaces().await?.into_iter().collect();
+        managed_namespaces(client).await?.into_iter().collect();
 
-    let v = crate::kubectl::get_json(&["get", "pvc", "-A", "-o", "json"]).await?;
-    let items = v["items"].as_array().cloned().unwrap_or_default();
+    let claims = kube::Api::<PersistentVolumeClaim>::all(client.clone())
+        .list(&Default::default())
+        .await?;
 
-    Ok(items
+    Ok(claims
+        .items
         .into_iter()
-        .filter_map(|item| {
-            let ns = item["metadata"]["namespace"].as_str()?.to_string();
-            let name = item["metadata"]["name"].as_str()?.to_string();
+        .filter_map(|claim| {
+            let ns = claim.metadata.namespace?;
+            let name = claim.metadata.name?;
             if EXCLUDED_NS.contains(&ns.as_str()) || !managed.contains(&ns) {
                 return None;
             }
             if name.starts_with("volsync-") {
                 return None;
             }
+            let capacity = claim
+                .spec
+                .and_then(|s| s.resources)
+                .and_then(|r| r.requests)
+                .and_then(|r| r.get("storage").map(|q| q.0.clone()))
+                .unwrap_or_else(|| "?".to_string());
             Some(PvcInfo {
                 namespace: ns,
                 name,
-                capacity: item["spec"]["resources"]["requests"]["storage"]
-                    .as_str()
-                    .unwrap_or("?")
-                    .to_string(),
+                capacity,
             })
         })
         .collect())
 }
 
-pub(crate) async fn list_managed_namespaces() -> anyhow::Result<Vec<String>> {
-    let out = crate::kubectl::run(&[
-        "get",
-        "namespaces",
-        "-l",
-        "yolab.io/managed=true",
-        "-o",
-        "jsonpath={.items[*].metadata.name}",
-    ])
-    .await?;
-    Ok(out.split_whitespace().map(String::from).collect())
+pub(crate) async fn managed_namespaces(client: &Client) -> anyhow::Result<Vec<String>> {
+    use k8s_openapi::api::core::v1::Namespace;
+    let listed = kube::Api::<Namespace>::all(client.clone())
+        .list(&kube::api::ListParams::default().labels("yolab.io/managed=true"))
+        .await?;
+    Ok(listed
+        .items
+        .into_iter()
+        .filter_map(|ns| ns.metadata.name)
+        .collect())
 }
 
 pub(crate) fn replication_source_name(pvc_name: &str) -> String {
     format!("volsync-{}", canonical_pvc_id(pvc_name))
 }
 
-pub(crate) async fn ensure_replication_source(
+pub(crate) async fn replication_source(
+    client: &Client,
     pvc: &PvcInfo,
     trigger_now: bool,
 ) -> anyhow::Result<Option<String>> {
@@ -379,11 +356,13 @@ pub(crate) async fn ensure_replication_source(
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
 
     if !trigger_now {
-        let exists =
-            crate::kubectl::run(&["get", "replicationsource", &rs_name, "-n", &pvc.namespace])
-                .await
-                .is_ok();
-        if exists {
+        let existing = crate::k8s::reference(
+            "volsync.backube/v1alpha1",
+            "ReplicationSource",
+            &pvc.namespace,
+            &rs_name,
+        );
+        if crate::k8s::exists(client, &existing).await? {
             return Ok(None);
         }
     }
@@ -421,7 +400,7 @@ pub(crate) async fn ensure_replication_source(
             }
         }
     });
-    kubectl_apply(&manifest.to_string()).await?;
+    crate::k8s::apply(client, &manifest).await?;
     Ok(Some(manual))
 }
 
@@ -501,57 +480,46 @@ pub(crate) fn parse_capacity_bytes(s: &str) -> u64 {
     s.parse::<u64>().unwrap_or(0)
 }
 
-pub(crate) async fn delete_replication_destination_without_touching_pvc(
-    name: &str,
-    namespace: &str,
-) {
-    let _ = crate::kubectl::run(&[
-        "patch",
-        "replicationdestination",
-        name,
-        "-n",
-        namespace,
-        "--type=merge",
-        "-p",
-        r#"{"metadata":{"finalizers":[]}}"#,
-    ])
-    .await;
-    let _ = crate::kubectl::run(&[
-        "delete",
-        "replicationdestination",
-        name,
-        "-n",
-        namespace,
-        "--ignore-not-found",
-    ])
-    .await;
+pub(crate) async fn drop_replication_destination(client: &Client, name: &str, namespace: &str) {
+    let release = serde_json::json!({
+        "apiVersion": "volsync.backube/v1alpha1",
+        "kind": "ReplicationDestination",
+        "metadata": { "name": name, "namespace": namespace, "finalizers": [] }
+    });
+    if let Err(e) = crate::k8s::merge_patch(client, &release).await {
+        tracing::debug!("{namespace}/{name}: finalizers not cleared ({e})");
+    }
+    if let Err(e) = crate::k8s::delete_if_present(client, &release).await {
+        tracing::debug!("{namespace}/{name}: not deleted ({e})");
+    }
 }
 
-pub(crate) async fn scale_deployment(
+pub(crate) async fn scale(
+    client: &Client,
     namespace: &str,
     name: &str,
     replicas: u32,
 ) -> anyhow::Result<()> {
-    crate::kubectl::run(&[
-        "scale",
-        "deployment",
-        name,
-        "-n",
-        namespace,
-        &format!("--replicas={replicas}"),
-    ])
-    .await?;
-    Ok(())
+    crate::k8s::merge_patch(
+        client,
+        &serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": name, "namespace": namespace },
+            "spec": { "replicas": replicas }
+        }),
+    )
+    .await
 }
 
-pub(crate) async fn ensure_destination_pvc(
+pub(crate) fn destination_pvc(
     name: &str,
     namespace: &str,
     capacity: &str,
     storage_class: &str,
     access_mode: &str,
-) -> anyhow::Result<()> {
-    let manifest = serde_json::json!({
+) -> serde_json::Value {
+    serde_json::json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {
@@ -564,8 +532,7 @@ pub(crate) async fn ensure_destination_pvc(
             "storageClassName": storage_class,
             "resources": { "requests": { "storage": capacity } }
         }
-    });
-    kubectl_apply(&manifest.to_string()).await
+    })
 }
 
 #[cfg(test)]
@@ -898,5 +865,469 @@ mod tests {
             serde_json::json!({"kind": "Service"}),
         ];
         assert_eq!(sanitize_k8s_items_for_backup(&items).len(), 2);
+    }
+
+    mod against_the_cluster {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{api_server, list, status};
+        use serde_json::json;
+        use wiremock::matchers::{body_partial_json, header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const CONFIG_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-config";
+
+        fn cfg() -> BackupConfig {
+            BackupConfig {
+                access_key_id: "AKID".into(),
+                secret_access_key: "SECRET".into(),
+                bucket: "bucket-1".into(),
+                endpoint: "https://s3.example".into(),
+                restic_password: "pw".into(),
+            }
+        }
+
+        fn stored_config(restic_password: &str) -> serde_json::Value {
+            use base64::Engine as _;
+            let b = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+            json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "yolab-backup-config", "namespace": "kube-system" },
+                "data": {
+                    "access_key_id": b("AKID"), "secret_access_key": b("SECRET"),
+                    "bucket": b("bucket-1"), "endpoint": b("https://s3.example"),
+                    "restic_password": b(restic_password)
+                }
+            })
+        }
+
+        async fn serve_config(server: &MockServer, code: u16, body: serde_json::Value) {
+            Mock::given(method("GET"))
+                .and(path(CONFIG_PATH))
+                .respond_with(ResponseTemplate::new(code).set_body_json(body))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn restic_gets_the_repository_and_credentials_through_its_environment() {
+            let host = FakeHost::new().ok("restic snapshots", "[]");
+            let out = restic_with(
+                &host,
+                "s3:x/cluster-backup",
+                &cfg(),
+                &["snapshots", "--no-lock", "--json"],
+                RESTIC_TIMEOUT,
+            )
+            .await
+            .unwrap();
+            assert!(out.success);
+            assert_eq!(
+                host.env_of("restic snapshots").unwrap(),
+                vec![
+                    (
+                        "RESTIC_REPOSITORY".to_string(),
+                        "s3:x/cluster-backup".to_string()
+                    ),
+                    ("RESTIC_PASSWORD".to_string(), "pw".to_string()),
+                    ("AWS_ACCESS_KEY_ID".to_string(), "AKID".to_string()),
+                    ("AWS_SECRET_ACCESS_KEY".to_string(), "SECRET".to_string()),
+                ]
+            );
+            assert!(host
+                .calls()
+                .iter()
+                .all(|c| !c.contains("pw") && !c.contains("SECRET")));
+        }
+
+        #[tokio::test]
+        async fn a_failing_unlock_is_logged_not_fatal() {
+            let host = FakeHost::new().fail("restic unlock", "repository does not exist");
+            restic_unlock_with(&host, "s3:x/y", "pw", "AKID", "SECRET", true).await;
+            assert!(host.ran("restic unlock"));
+        }
+
+        #[tokio::test]
+        async fn the_backup_config_is_read_from_its_secret() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("pw")).await;
+            let found = master_config(&client).await.unwrap().unwrap();
+            assert_eq!(found.restic_password, "pw");
+            assert_eq!(
+                found.restic_repo("cluster-backup"),
+                "s3:https://s3.example/bucket-1/cluster-backup"
+            );
+        }
+
+        #[tokio::test]
+        async fn no_secret_means_backups_are_not_set_up() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 404, status(404, "NotFound")).await;
+            assert!(master_config(&client).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn a_secret_without_a_password_is_not_a_usable_config() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("")).await;
+            assert!(master_config(&client).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn an_existing_config_is_used_as_it_is_and_the_platform_is_not_asked() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("pw")).await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&platform)
+                .await;
+
+            let found = ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .unwrap();
+
+            assert_eq!(found.restic_password, "pw");
+        }
+
+        #[tokio::test]
+        async fn a_first_backup_asks_the_platform_for_storage_and_keeps_a_new_recovery_key() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 404, status(404, "NotFound")).await;
+            Mock::given(method("PATCH"))
+                .and(path(CONFIG_PATH))
+                .and(body_partial_json(
+                    json!({ "stringData": { "bucket": "b-new", "endpoint": "https://s3.new" } }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(stored_config("x")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/storage/s3"))
+                .and(header("authorization", "Bearer tok"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "bucket_name": "b-new", "endpoint": "https://s3.new", "region": "eu",
+                    "access_key_id": "K", "secret_access_key": "S", "created_at": "now"
+                })))
+                .expect(1)
+                .mount(&platform)
+                .await;
+
+            let made = ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .unwrap();
+
+            assert_eq!(made.bucket, "b-new");
+            assert_eq!(
+                made.restic_password.len(),
+                64,
+                "32 random bytes, hex-encoded"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_never_replaces_the_recovery_key() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 503, status(503, "ServiceUnavailable")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&platform)
+                .await;
+
+            assert!(ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_platform_that_refuses_leaves_nothing_half_written() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 404, status(404, "NotFound")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(402))
+                .mount(&platform)
+                .await;
+
+            assert!(ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_volumes_restic_secret_points_at_its_own_repository() {
+            let (server, client) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/v1/namespaces/yolab-new/secrets/data-restic"))
+                .and(body_partial_json(json!({ "stringData": {
+                    "RESTIC_REPOSITORY": "s3:https://s3.example/bucket-1/volsync/yolab-old/data",
+                    "RESTIC_PASSWORD": "pw"
+                }})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "Secret",
+                    "metadata": { "name": "data-restic", "namespace": "yolab-new" }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            restic_secret(&client, "yolab-new", "yolab-old", "data", &cfg())
+                .await
+                .unwrap();
+        }
+
+        fn claim(ns: &str, name: &str, storage: Option<&str>) -> serde_json::Value {
+            let mut c = json!({ "metadata": { "name": name, "namespace": ns }, "spec": {} });
+            if let Some(s) = storage {
+                c["spec"] = json!({ "resources": { "requests": { "storage": s } } });
+            }
+            c
+        }
+
+        #[tokio::test]
+        async fn only_the_volumes_of_installed_apps_are_backed_up() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .and(query_param("labelSelector", "yolab.io/managed=true"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Namespace",
+                    vec![
+                        json!({ "metadata": { "name": "yolab-a" } }),
+                        json!({ "metadata": { "name": "default" } }),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumeclaims"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "PersistentVolumeClaim",
+                    vec![
+                        claim("yolab-a", "data", Some("5Gi")),
+                        claim("yolab-a", "volsync-data-cache", Some("1Gi")),
+                        claim("yolab-a", "config", None),
+                        claim("default", "stray", Some("1Gi")),
+                        claim("yolab-unmanaged", "x", Some("1Gi")),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+
+            let pvcs = user_pvcs(&client).await.unwrap();
+
+            let names: Vec<(&str, &str)> = pvcs
+                .iter()
+                .map(|p| (p.name.as_str(), p.capacity.as_str()))
+                .collect();
+            assert_eq!(names, vec![("data", "5Gi"), ("config", "?")]);
+        }
+
+        fn source(pvc: &str) -> PvcInfo {
+            PvcInfo {
+                namespace: "yolab-a".into(),
+                name: pvc.into(),
+                capacity: "5Gi".into(),
+            }
+        }
+
+        const RS_PATH: &str =
+            "/apis/volsync.backube/v1alpha1/namespaces/yolab-a/replicationsources/volsync-data";
+
+        fn rs_body() -> serde_json::Value {
+            json!({
+                "apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationSource",
+                "metadata": { "name": "volsync-data", "namespace": "yolab-a" }
+            })
+        }
+
+        #[tokio::test]
+        async fn an_existing_schedule_is_left_alone_when_not_asked_to_run_now() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(RS_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(rs_body()))
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            assert_eq!(
+                replication_source(&client, &source("data"), false)
+                    .await
+                    .unwrap(),
+                None
+            );
+        }
+
+        #[tokio::test]
+        async fn a_volume_never_backed_up_gets_its_first_backup_started() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(RS_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .and(path(RS_PATH))
+                .and(body_partial_json(json!({ "spec": { "sourcePVC": "data", "restic": { "repository": "data-restic" } } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(rs_body()))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let trigger = replication_source(&client, &source("data"), false)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(trigger.starts_with("init-"));
+        }
+
+        #[tokio::test]
+        async fn back_up_now_triggers_a_run_without_asking_whether_one_exists() {
+            let (server, client) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path(RS_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(rs_body()))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let trigger = replication_source(&client, &source("data"), true)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(trigger.starts_with("backup-"));
+            assert!(server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method.as_str() != "GET"));
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_does_not_start_a_backup_blindly() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            assert!(replication_source(&client, &source("data"), false)
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn backup_movers_are_allowed_to_run_privileged_in_the_apps_namespace() {
+            let (server, client) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/v1/namespaces/yolab-a"))
+                .and(body_partial_json(json!({ "metadata": { "annotations": {
+                    "volsync.backube/privileged-movers": "true"
+                }}})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": "yolab-a" }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            allow_privileged_movers(&client, "yolab-a").await;
+        }
+
+        #[tokio::test]
+        async fn a_finished_restore_destination_is_released_then_removed() {
+            let (server, client) = api_server().await;
+            let rd = "/apis/volsync.backube/v1alpha1/namespaces/yolab-a/replicationdestinations/restore-data";
+            Mock::given(method("PATCH"))
+                .and(path(rd))
+                .and(body_partial_json(
+                    json!({ "metadata": { "finalizers": [] } }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationDestination",
+                    "metadata": { "name": "restore-data", "namespace": "yolab-a" }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(rd))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            drop_replication_destination(&client, "restore-data", "yolab-a").await;
+
+            let order: Vec<String> = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.method.to_string())
+                .collect();
+            assert_eq!(
+                order,
+                vec!["PATCH", "DELETE"],
+                "finalizers go first, or the delete hangs"
+            );
+        }
+
+        #[tokio::test]
+        async fn scaling_sets_the_replica_count() {
+            let (server, client) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path("/apis/apps/v1/namespaces/yolab-a/deployments/web"))
+                .and(body_partial_json(json!({ "spec": { "replicas": 0 } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "apps/v1", "kind": "Deployment",
+                    "metadata": { "name": "web", "namespace": "yolab-a" }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            scale(&client, "yolab-a", "web", 0).await.unwrap();
+        }
+
+        #[test]
+        fn a_restore_volume_asks_for_the_size_class_and_access_it_needs() {
+            let pvc = destination_pvc("data", "yolab-a", "5Gi", "yolab-cephfs", "ReadWriteMany");
+            assert_eq!(pvc["spec"]["resources"]["requests"]["storage"], "5Gi");
+            assert_eq!(pvc["spec"]["storageClassName"], "yolab-cephfs");
+            assert_eq!(pvc["spec"]["accessModes"], json!(["ReadWriteMany"]));
+            assert_eq!(
+                pvc["metadata"]["labels"]["app.kubernetes.io/managed-by"],
+                "yolab"
+            );
+        }
     }
 }

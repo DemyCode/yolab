@@ -14,7 +14,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     config::{Channel, Config},
-    kubectl, AppState,
+    AppState,
 };
 
 static IS_UPDATING: AtomicBool = AtomicBool::new(false);
@@ -219,7 +219,7 @@ const PEER_SETTLE_TIMEOUT: Duration = Duration::from_secs(1800);
 const PEER_SETTLE_POLL: Duration = Duration::from_secs(15);
 
 struct UpdateFleet {
-    client: reqwest::Client,
+    client: crate::http::Client,
     port: u16,
     token: String,
     channel: serde_json::Value,
@@ -227,7 +227,7 @@ struct UpdateFleet {
 
 impl crate::runtime::fleet::Fleet for UpdateFleet {
     async fn act(&self, node: &str) -> anyhow::Result<()> {
-        let base = format!("http://[{node}]:{}", self.port);
+        let base = crate::http::peer_url(node, self.port, "");
         let set = self
             .client
             .put(format!("{base}/api/update/channel"))
@@ -258,7 +258,7 @@ impl crate::runtime::fleet::Fleet for UpdateFleet {
 
     async fn settled(&self, node: &str) -> bool {
         self.client
-            .get(format!("http://[{node}]:{}/api/status", self.port))
+            .get(crate::http::peer_url(node, self.port, "/api/status"))
             .header(crate::auth::CLUSTER_AUTH_HEADER, &self.token)
             .timeout(Duration::from_secs(5))
             .send()
@@ -272,11 +272,14 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
     let self_ip = cfg.node_ipv6.clone();
     let ch = cfg.channel();
 
-    let nodes = kubectl::get_nodes().await.unwrap_or_default();
-    let peers = crate::runtime::fleet::order(&kubectl::peer_ipv6(&nodes, &self_ip), &self_ip);
+    let nodes = match state.kube.client().await {
+        Ok(client) => crate::k8s::nodes(&client).await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let peers = crate::runtime::fleet::order(&crate::k8s::peer_ipv6(&nodes, &self_ip), &self_ip);
 
     let fleet = UpdateFleet {
-        client: reqwest::Client::new(),
+        client: crate::http::client(),
         port: cfg.port,
         token: cfg.cluster_token(),
         channel: serde_json::json!({ "url": ch.url, "ref": ch.ref_ }),

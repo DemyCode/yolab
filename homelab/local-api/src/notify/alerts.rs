@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{publish_everywhere, topic, Notification, Tunnel};
+use crate::host::Host;
+use crate::routers::backup_common::Backend;
 use crate::runtime::{Controller, Ctx, Scope, Tick};
 
 const NAME: &str = "notifier";
@@ -208,9 +210,14 @@ fn backup_alerts(
     alerts
 }
 
-async fn backup_source(silent: bool) -> Source {
-    let alerts = match crate::routers::backup::list().await {
-        Ok(sets) => match crate::routers::backup_common::list_managed_namespaces().await {
+async fn backup_source<H: Host>(b: anyhow::Result<&Backend<H>>, silent: bool) -> Source {
+    let read = async {
+        let b = b?;
+        let sets = crate::routers::backup::list(&b.kube).await?;
+        anyhow::Ok((sets, b))
+    };
+    let alerts = match read.await {
+        Ok((sets, b)) => match crate::routers::backup_common::managed_namespaces(&b.kube).await {
             Ok(mut namespaces) => {
                 namespaces.push(String::new());
                 Some(backup_alerts(
@@ -285,7 +292,14 @@ impl Controller for NotifierController {
         let quiet = !sends_for_cluster(&ctx.node, &view.answering);
         let sources = [
             heal_source(&view.problems, quiet),
-            backup_source(quiet).await,
+            backup_source(
+                Backend::real()
+                    .await
+                    .as_ref()
+                    .map_err(|e| anyhow::anyhow!("{e:#}")),
+                quiet,
+            )
+            .await,
             disk_source(),
         ];
         let mut sent = load(root)?;

@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::error::Outcome;
-use crate::host::{Host, RealHost};
+use kube::Client;
 
 const SNAPSHOT_CLASS: &str = "csi-cephfs-snapclass";
 const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
@@ -31,20 +31,12 @@ struct SnapshotRef {
 }
 
 pub(crate) async fn copy_live_volumes(
+    client: &Client,
     source_namespace: &str,
     dest_namespace: &str,
     instance_name: &str,
 ) -> anyhow::Result<()> {
-    copy_live_volumes_on(&RealHost, source_namespace, dest_namespace, instance_name).await
-}
-
-async fn copy_live_volumes_on<H: Host + 'static>(
-    host: &H,
-    source_namespace: &str,
-    dest_namespace: &str,
-    instance_name: &str,
-) -> anyhow::Result<()> {
-    let sources = crate::routers::backup_common::list_user_pvcs()
+    let sources = crate::routers::backup_common::user_pvcs(client)
         .await?
         .into_iter()
         .filter(|p| p.namespace == source_namespace)
@@ -52,7 +44,7 @@ async fn copy_live_volumes_on<H: Host + 'static>(
 
     for pvc in &sources {
         copy_one(
-            host,
+            client,
             source_namespace,
             dest_namespace,
             instance_name,
@@ -63,16 +55,19 @@ async fn copy_live_volumes_on<H: Host + 'static>(
     Ok(())
 }
 
-async fn copy_one<H: Host + 'static>(
-    host: &H,
+async fn copy_one(
+    client: &Client,
     source_namespace: &str,
     dest_namespace: &str,
     instance_name: &str,
     pvc_name: &str,
 ) -> anyhow::Result<()> {
-    let source = host
-        .kubectl_json(&["get", "pvc", pvc_name, "-n", source_namespace, "-o", "json"])
-        .await?;
+    let source = crate::k8s::get(
+        client,
+        &crate::k8s::reference("v1", "PersistentVolumeClaim", source_namespace, pvc_name),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("{source_namespace}/{pvc_name} does not exist"))?;
     let volume = parse_source_volume(&source).ok_or_else(|| {
         anyhow::anyhow!("{source_namespace}/{pvc_name}: could not read its storage")
     })?;
@@ -93,38 +88,41 @@ async fn copy_one<H: Host + 'static>(
     let dest_name =
         crate::routers::backup_common::rebase_pvc_name(pvc_name, source_instance, instance_name);
 
-    host.kubectl_apply(
+    crate::k8s::apply(
+        client,
         &source_snapshot_manifest(
             &copy_name,
             source_namespace,
             pvc_name,
             dest_namespace,
             &dest_name,
-        )
-        .to_string(),
+        ),
     )
     .await?;
     let mut guard = CleanupGuard {
         armed: true,
-        host: host.clone(),
+        client: client.clone(),
         name: copy_name.clone(),
         source_namespace: source_namespace.to_string(),
         dest_namespace: dest_namespace.to_string(),
     };
-    wait_for_snapshot_ready(host, source_namespace, &copy_name).await?;
-    let snap_ref = snapshot_ref_of(host, source_namespace, &copy_name).await?;
+    wait_for_snapshot_ready(client, source_namespace, &copy_name).await?;
+    let snap_ref = snapshot_ref_of(client, source_namespace, &copy_name).await?;
 
-    host.kubectl_apply(
-        &rebind_content_manifest(&copy_name, dest_namespace, &copy_name, &snap_ref).to_string(),
+    crate::k8s::apply(
+        client,
+        &rebind_content_manifest(&copy_name, dest_namespace, &copy_name, &snap_ref),
     )
     .await?;
-    host.kubectl_apply(
-        &rebound_snapshot_manifest(&copy_name, dest_namespace, &copy_name).to_string(),
+    crate::k8s::apply(
+        client,
+        &rebound_snapshot_manifest(&copy_name, dest_namespace, &copy_name),
     )
     .await?;
-    wait_for_snapshot_ready(host, dest_namespace, &copy_name).await?;
+    wait_for_snapshot_ready(client, dest_namespace, &copy_name).await?;
 
-    host.kubectl_apply(
+    crate::k8s::apply(
+        client,
         &destination_pvc_manifest(
             &dest_name,
             dest_namespace,
@@ -132,13 +130,12 @@ async fn copy_one<H: Host + 'static>(
             &volume.capacity,
             &volume.access_modes,
             &copy_name,
-        )
-        .to_string(),
+        ),
     )
     .await?;
     guard.armed = false;
     spawn_clone_cleanup(
-        host.clone(),
+        client.clone(),
         source_namespace.to_string(),
         dest_namespace.to_string(),
         dest_name,
@@ -147,16 +144,16 @@ async fn copy_one<H: Host + 'static>(
     Ok(())
 }
 
-fn spawn_clone_cleanup<H: Host + 'static>(
-    host: H,
+fn spawn_clone_cleanup(
+    client: Client,
     source_namespace: String,
     dest_namespace: String,
     dest_pvc: String,
     name: String,
 ) {
     tokio::spawn(async move {
-        let _ = wait_for_pvc_bound(&host, &dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
-        cleanup(&host, &name, &source_namespace, &dest_namespace).await;
+        let _ = wait_for_pvc_bound(&client, &dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
+        cleanup(&client, &name, &source_namespace, &dest_namespace).await;
     });
 }
 
@@ -283,49 +280,50 @@ fn snapshot_ref(vsc: &Value) -> Option<SnapshotRef> {
     })
 }
 
-async fn snapshot_ref_of<H: Host>(
-    host: &H,
+fn volume_snapshot(namespace: &str, name: &str) -> Value {
+    crate::k8s::reference(
+        "snapshot.storage.k8s.io/v1",
+        "VolumeSnapshot",
+        namespace,
+        name,
+    )
+}
+
+fn volume_snapshot_content(name: &str) -> Value {
+    crate::k8s::cluster_reference("snapshot.storage.k8s.io/v1", "VolumeSnapshotContent", name)
+}
+
+fn claim(namespace: &str, name: &str) -> Value {
+    crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, name)
+}
+
+async fn snapshot_ref_of(
+    client: &Client,
     namespace: &str,
     snapshot: &str,
 ) -> anyhow::Result<SnapshotRef> {
-    let snap = host
-        .kubectl_json(&[
-            "get",
-            "volumesnapshot",
-            snapshot,
-            "-n",
-            namespace,
-            "-o",
-            "json",
-        ])
-        .await?;
+    let snap = crate::k8s::get(client, &volume_snapshot(namespace, snapshot))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{namespace}/{snapshot} is gone"))?;
     let content = bound_content_name(&snap)
         .ok_or_else(|| anyhow::anyhow!("{namespace}/{snapshot} has no bound snapshot content"))?;
-    let vsc = host
-        .kubectl_json(&["get", "volumesnapshotcontent", &content, "-o", "json"])
-        .await?;
+    let vsc = crate::k8s::get(client, &volume_snapshot_content(&content))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{content} is gone"))?;
     snapshot_ref(&vsc).ok_or_else(|| anyhow::anyhow!("{content} carries no snapshot handle"))
 }
 
-async fn wait_for_snapshot_ready<H: Host>(
-    host: &H,
+async fn wait_for_snapshot_ready(
+    client: &Client,
     namespace: &str,
     snapshot: &str,
 ) -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(SNAPSHOT_WAIT_SECS);
     loop {
-        let v = host
-            .kubectl_json(&[
-                "get",
-                "volumesnapshot",
-                snapshot,
-                "-n",
-                namespace,
-                "-o",
-                "json",
-            ])
+        let v = crate::k8s::get(client, &volume_snapshot(namespace, snapshot))
             .await
-            .ok();
+            .ok()
+            .flatten();
         if let Some(err) = v
             .as_ref()
             .and_then(|v| v["status"]["error"]["message"].as_str())
@@ -347,23 +345,18 @@ async fn wait_for_snapshot_ready<H: Host>(
     }
 }
 
-async fn wait_for_pvc_bound<H: Host>(
-    host: &H,
+async fn wait_for_pvc_bound(
+    client: &Client,
     namespace: &str,
     pvc: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let v = host
-            .kubectl_json(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
-            .await;
-        match v {
-            Err(e) if e.is_not_found() => {
-                anyhow::bail!("{namespace}/{pvc} was removed before it bound")
-            }
+        match crate::k8s::get(client, &claim(namespace, pvc)).await {
+            Ok(None) => anyhow::bail!("{namespace}/{pvc} was removed before it bound"),
             Err(_) => {}
-            Ok(v) => match v["status"]["phase"].as_str() {
+            Ok(Some(v)) => match v["status"]["phase"].as_str() {
                 Some("Bound") => return Ok(()),
                 Some(other) if other != "Pending" => {
                     anyhow::bail!("{namespace}/{pvc} entered {other} instead of binding")
@@ -378,38 +371,36 @@ async fn wait_for_pvc_bound<H: Host>(
     }
 }
 
-async fn cleanup<H: Host>(host: &H, name: &str, source_namespace: &str, dest_namespace: &str) {
-    let steps: [(&str, Option<&str>); 3] = [
-        ("volumesnapshot", Some(dest_namespace)),
-        ("volumesnapshotcontent", None),
-        ("volumesnapshot", Some(source_namespace)),
+async fn cleanup(client: &Client, name: &str, source_namespace: &str, dest_namespace: &str) {
+    let steps = [
+        volume_snapshot(dest_namespace, name),
+        volume_snapshot_content(name),
+        volume_snapshot(source_namespace, name),
     ];
-    for (kind, namespace) in steps {
-        let mut args = vec!["delete", kind, name, "--ignore-not-found", "--wait=false"];
-        if let Some(ns) = namespace {
-            args.push("-n");
-            args.push(ns);
-        }
-        host.kubectl(&args)
+    for step in steps {
+        crate::k8s::delete_if_present(client, &step)
             .await
-            .debug_on_err(format!("copy cleanup: delete {kind} {name}"));
+            .debug_on_err(format!(
+                "copy cleanup: delete {} {name}",
+                step["kind"].as_str().unwrap_or("object")
+            ));
     }
 }
 
-struct CleanupGuard<H: Host + 'static> {
+struct CleanupGuard {
     armed: bool,
-    host: H,
+    client: Client,
     name: String,
     source_namespace: String,
     dest_namespace: String,
 }
 
-impl<H: Host + 'static> Drop for CleanupGuard<H> {
+impl Drop for CleanupGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
-        let host = self.host.clone();
+        let client = self.client.clone();
         let args = (
             self.name.clone(),
             self.source_namespace.clone(),
@@ -420,7 +411,7 @@ impl<H: Host + 'static> Drop for CleanupGuard<H> {
             return;
         };
         handle.spawn(async move {
-            cleanup(&host, &args.0, &args.1, &args.2).await;
+            cleanup(&client, &args.0, &args.1, &args.2).await;
         });
     }
 }
@@ -482,15 +473,17 @@ fn leftover_copies(list: &Value, now: chrono::DateTime<chrono::Utc>) -> Vec<Left
         .collect()
 }
 
-async fn namespace_exists<H: Host>(host: &H, namespace: &str) -> bool {
-    host.kubectl_get_opt(&["get", "namespace", namespace, "-o", "json"])
-        .await
-        .map(|v| v.is_some())
-        .unwrap_or(true)
+async fn namespace_exists(client: &Client, namespace: &str) -> bool {
+    crate::k8s::exists(
+        client,
+        &crate::k8s::cluster_reference("v1", "Namespace", namespace),
+    )
+    .await
+    .unwrap_or(true)
 }
 
-async fn pvc_phase<H: Host>(host: &H, namespace: &str, pvc: &str) -> Option<String> {
-    host.kubectl_get_opt(&["get", "pvc", pvc, "-n", namespace, "-o", "json"])
+async fn pvc_phase(client: &Client, namespace: &str, pvc: &str) -> Option<String> {
+    crate::k8s::get(client, &claim(namespace, pvc))
         .await
         .ok()
         .flatten()
@@ -513,30 +506,29 @@ impl crate::runtime::Controller for CopySweeperController {
         &[crate::runtime::Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        sweep_once(&RealHost, chrono::Utc::now()).await
+        sweep_once(&crate::k8s::client().await?, chrono::Utc::now()).await
     }
 }
 
-async fn sweep_once<H: Host>(
-    host: &H,
+async fn sweep_once(
+    client: &Client,
     now: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<crate::runtime::Tick> {
-    let list = host
-        .kubectl_json(&[
-            "get",
-            "volumesnapshot",
-            "-A",
-            "-l",
-            COPY_SELECTOR,
-            "-o",
-            "json",
-        ])
-        .await?;
+    let labelled = kube::api::ListParams::default().labels(COPY_SELECTOR);
+    let items = crate::k8s::list(
+        client,
+        "snapshot.storage.k8s.io/v1",
+        "VolumeSnapshot",
+        None,
+        &labelled,
+    )
+    .await?;
+    let list = json!({ "items": items });
     let mut swept = 0usize;
     for leftover in leftover_copies(&list, now) {
-        let exists = namespace_exists(host, &leftover.dest_namespace).await;
+        let exists = namespace_exists(client, &leftover.dest_namespace).await;
         let phase = if exists {
-            pvc_phase(host, &leftover.dest_namespace, &leftover.dest_pvc).await
+            pvc_phase(client, &leftover.dest_namespace, &leftover.dest_pvc).await
         } else {
             None
         };
@@ -549,7 +541,7 @@ async fn sweep_once<H: Host>(
             leftover.name
         );
         cleanup(
-            host,
+            client,
             &leftover.name,
             &leftover.namespace,
             &leftover.dest_namespace,
@@ -569,7 +561,7 @@ async fn sweep_once<H: Host>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::fake::FakeHost;
+    use crate::k8s::testing::{api_server, list, serve, status};
 
     #[test]
     fn a_source_snapshot_points_at_the_pvc_and_the_snapclass() {
@@ -849,78 +841,95 @@ mod tests {
             .with_timezone(&chrono::Utc)
     }
 
+    const DEST_PVC: &str =
+        "/api/v1/namespaces/yolab-gitea-cd34/persistentvolumeclaims/gitea-cd34-data";
+    const DEST_NS: &str = "/api/v1/namespaces/yolab-gitea-cd34";
+
+    async fn deletions(server: &wiremock::MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.method.as_str() == "DELETE")
+            .map(|r| r.url.path().to_string())
+            .collect()
+    }
+
+    async fn deletes_accepted(server: &wiremock::MockServer) {
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(server)
+            .await;
+    }
+
     #[tokio::test]
     async fn cleanup_clears_the_destination_snapshot_then_its_content_then_the_source() {
-        let host = FakeHost::new().ok("kubectl delete", "");
+        let (server, client) = api_server().await;
+        deletes_accepted(&server).await;
         cleanup(
-            &host,
+            &client,
             "yolab-copy-abcd1234",
             "yolab-gitea-ab12",
             "yolab-gitea-cd34",
         )
         .await;
 
-        let dest = host
-            .position("delete volumesnapshot yolab-copy-abcd1234 --ignore-not-found --wait=false -n yolab-gitea-cd34")
-            .expect("the destination snapshot is cleared");
-        let content = host
-            .position("delete volumesnapshotcontent yolab-copy-abcd1234")
-            .expect("the content is cleared");
-        let source = host
-            .position("delete volumesnapshot yolab-copy-abcd1234 --ignore-not-found --wait=false -n yolab-gitea-ab12")
-            .expect("the source snapshot is cleared");
-        assert!(
-            dest < content && content < source,
+        assert_eq!(
+            deletions(&server).await,
+            vec![
+                "/apis/snapshot.storage.k8s.io/v1/namespaces/yolab-gitea-cd34/volumesnapshots/yolab-copy-abcd1234",
+                "/apis/snapshot.storage.k8s.io/v1/volumesnapshotcontents/yolab-copy-abcd1234",
+                "/apis/snapshot.storage.k8s.io/v1/namespaces/yolab-gitea-ab12/volumesnapshots/yolab-copy-abcd1234",
+            ],
             "the content is retained, so it has to go before the source snapshot it was cut from"
         );
     }
 
     #[tokio::test]
     async fn an_unreachable_cluster_is_not_mistaken_for_a_deleted_namespace() {
-        let gone = FakeHost::new().fail(
-            "kubectl get namespace yolab-gitea-cd34",
-            "Error from server (NotFound): namespaces \"yolab-gitea-cd34\" not found",
-        );
-        assert!(!namespace_exists(&gone, "yolab-gitea-cd34").await);
+        let (gone, client) = api_server().await;
+        serve(&gone, DEST_NS, 404, status(404, "NotFound")).await;
+        assert!(!namespace_exists(&client, "yolab-gitea-cd34").await);
 
-        let down = FakeHost::new().fail(
-            "kubectl get namespace yolab-gitea-cd34",
-            "The connection to the server localhost:6443 was refused",
-        );
+        let (down, client) = api_server().await;
+        serve(&down, DEST_NS, 503, status(503, "ServiceUnavailable")).await;
         assert!(
-            namespace_exists(&down, "yolab-gitea-cd34").await,
+            namespace_exists(&client, "yolab-gitea-cd34").await,
             "reading an unreachable cluster as a deleted namespace would sweep a live copy"
         );
     }
 
     #[tokio::test]
     async fn a_pvc_phase_is_read_and_a_pvc_that_is_gone_has_none() {
-        let bound = FakeHost::new().ok(
-            "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
-            r#"{"status":{"phase":"Bound"}}"#,
-        );
+        let (bound, client) = api_server().await;
+        serve(
+            &bound,
+            DEST_PVC,
+            200,
+            json!({ "metadata": { "name": "gitea-cd34-data" }, "status": { "phase": "Bound" } }),
+        )
+        .await;
         assert_eq!(
-            pvc_phase(&bound, "yolab-gitea-cd34", "gitea-cd34-data").await,
+            pvc_phase(&client, "yolab-gitea-cd34", "gitea-cd34-data").await,
             Some("Bound".to_string())
         );
 
-        let missing = FakeHost::new().fail(
-            "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
-            "Error from server (NotFound): persistentvolumeclaims \"gitea-cd34-data\" not found",
-        );
+        let (missing, client) = api_server().await;
+        serve(&missing, DEST_PVC, 404, status(404, "NotFound")).await;
         assert_eq!(
-            pvc_phase(&missing, "yolab-gitea-cd34", "gitea-cd34-data").await,
+            pvc_phase(&client, "yolab-gitea-cd34", "gitea-cd34-data").await,
             None
         );
     }
 
+    const DATA_PVC: &str = "/api/v1/namespaces/yolab-gitea-cd34/persistentvolumeclaims/data";
+
     #[tokio::test]
     async fn a_destination_pvc_that_was_removed_ends_the_wait_instead_of_spinning() {
-        let host = FakeHost::new().fail(
-            "kubectl get pvc data -n yolab-gitea-cd34",
-            "Error from server (NotFound): persistentvolumeclaims \"data\" not found",
-        );
-        let e = wait_for_pvc_bound(&host, "yolab-gitea-cd34", "data", 60)
+        let (server, client) = api_server().await;
+        serve(&server, DATA_PVC, 404, status(404, "NotFound")).await;
+        let e = wait_for_pvc_bound(&client, "yolab-gitea-cd34", "data", 60)
             .await
             .expect_err("a removed pvc never binds");
         assert!(e.to_string().contains("removed before it bound"));
@@ -928,71 +937,126 @@ mod tests {
 
     #[tokio::test]
     async fn a_bound_destination_pvc_ends_the_wait() {
-        let host = FakeHost::new().ok(
-            "kubectl get pvc data -n yolab-gitea-cd34",
-            r#"{"status":{"phase":"Bound"}}"#,
-        );
-        assert!(wait_for_pvc_bound(&host, "yolab-gitea-cd34", "data", 60)
+        let (server, client) = api_server().await;
+        serve(
+            &server,
+            DATA_PVC,
+            200,
+            json!({ "metadata": { "name": "data" }, "status": { "phase": "Bound" } }),
+        )
+        .await;
+        assert!(wait_for_pvc_bound(&client, "yolab-gitea-cd34", "data", 60)
             .await
             .is_ok());
     }
 
     #[tokio::test]
     async fn a_destination_pvc_that_will_never_bind_ends_the_wait() {
-        let host = FakeHost::new().ok(
-            "kubectl get pvc data -n yolab-gitea-cd34",
-            r#"{"status":{"phase":"Lost"}}"#,
-        );
-        let e = wait_for_pvc_bound(&host, "yolab-gitea-cd34", "data", 60)
+        let (server, client) = api_server().await;
+        serve(
+            &server,
+            DATA_PVC,
+            200,
+            json!({ "metadata": { "name": "data" }, "status": { "phase": "Lost" } }),
+        )
+        .await;
+        let e = wait_for_pvc_bound(&client, "yolab-gitea-cd34", "data", 60)
             .await
             .expect_err("a lost pvc never binds");
         assert!(e.to_string().contains("Lost"));
     }
 
+    async fn leftover_in(server: &wiremock::MockServer, created: &str) {
+        let item = leftover_list(created)["items"][0].clone();
+        serve(
+            server,
+            "/apis/snapshot.storage.k8s.io/v1/volumesnapshots",
+            200,
+            list("VolumeSnapshot", vec![item]),
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn the_sweeper_clears_a_copy_whose_destination_has_bound() {
-        let host = FakeHost::new()
-            .ok(
-                "kubectl get volumesnapshot -A",
-                &leftover_list("2026-09-25T11:00:00Z").to_string(),
-            )
-            .ok(
-                "kubectl get namespace yolab-gitea-cd34",
-                r#"{"kind":"Namespace"}"#,
-            )
-            .ok(
-                "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
-                r#"{"status":{"phase":"Bound"}}"#,
-            )
-            .ok("kubectl delete", "");
+        let (server, client) = api_server().await;
+        leftover_in(&server, "2026-09-25T11:00:00Z").await;
+        serve(
+            &server,
+            DEST_NS,
+            200,
+            json!({ "metadata": { "name": "yolab-gitea-cd34" } }),
+        )
+        .await;
+        serve(
+            &server,
+            DEST_PVC,
+            200,
+            json!({ "metadata": { "name": "gitea-cd34-data" }, "status": { "phase": "Bound" } }),
+        )
+        .await;
+        deletes_accepted(&server).await;
 
-        let tick = sweep_once(&host, at("2026-09-25T12:00:00Z")).await.unwrap();
+        let tick = sweep_once(&client, at("2026-09-25T12:00:00Z"))
+            .await
+            .unwrap();
         assert!(matches!(tick, crate::runtime::Tick::Done));
-        assert!(host.ran("delete volumesnapshot yolab-copy-abcd1234"));
+        assert_eq!(deletions(&server).await.len(), 3);
     }
 
     #[tokio::test]
     async fn the_sweeper_leaves_a_copy_that_is_still_running() {
-        let host = FakeHost::new()
-            .ok(
-                "kubectl get volumesnapshot -A",
-                &leftover_list("2026-09-25T11:00:00Z").to_string(),
-            )
-            .ok(
-                "kubectl get namespace yolab-gitea-cd34",
-                r#"{"kind":"Namespace"}"#,
-            )
-            .ok(
-                "kubectl get pvc gitea-cd34-data -n yolab-gitea-cd34",
-                r#"{"status":{"phase":"Pending"}}"#,
-            )
-            .ok("kubectl delete", "");
+        let (server, client) = api_server().await;
+        leftover_in(&server, "2026-09-25T11:00:00Z").await;
+        serve(
+            &server,
+            DEST_NS,
+            200,
+            json!({ "metadata": { "name": "yolab-gitea-cd34" } }),
+        )
+        .await;
+        serve(
+            &server,
+            DEST_PVC,
+            200,
+            json!({ "metadata": { "name": "gitea-cd34-data" }, "status": { "phase": "Pending" } }),
+        )
+        .await;
+        deletes_accepted(&server).await;
 
-        let tick = sweep_once(&host, at("2026-09-25T12:00:00Z")).await.unwrap();
+        let tick = sweep_once(&client, at("2026-09-25T12:00:00Z"))
+            .await
+            .unwrap();
         assert!(matches!(tick, crate::runtime::Tick::Idle(_)));
         assert!(
-            !host.ran("kubectl delete"),
+            deletions(&server).await.is_empty(),
             "a clone still being filled must not have its snapshots pulled out from under it"
         );
+    }
+
+    #[tokio::test]
+    async fn a_copy_names_its_snapshot_after_the_source_and_points_the_clone_at_it() {
+        let (server, client) = api_server().await;
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-gitea-ab12/persistentvolumeclaims/data",
+            200,
+            json!({ "metadata": { "name": "data" }, "spec": {
+                "storageClassName": "local-path", "accessModes": ["ReadWriteOnce"],
+                "resources": { "requests": { "storage": "1Gi" } }
+            } }),
+        )
+        .await;
+        let e = copy_one(
+            &client,
+            "yolab-gitea-ab12",
+            "yolab-gitea-cd34",
+            "gitea-cd34",
+            "data",
+        )
+        .await
+        .unwrap_err();
+        assert!(e.to_string().contains("cannot be copied directly"), "{e}");
+        assert!(crate::k8s::testing::patched(&server).await.is_empty());
     }
 }

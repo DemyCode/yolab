@@ -7,11 +7,12 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::config::Config;
-use crate::proc::KillOnDrop;
+use crate::host::Host;
 use crate::routers::apps::{
     app_schema, collect_runtime, merge_credentials, rollback_failed_install, stage_install,
     write_definition, AppDefinition, BackupPolicy, StagedInstall, DEFINITION_SCHEMA,
 };
+use crate::routers::backup_common::Backend;
 
 const HELM_TIMEOUT: Duration = Duration::from_secs(900);
 const MAX_LABEL_LEN: usize = 63;
@@ -219,18 +220,21 @@ pub(crate) fn plan(
     Ok(plan)
 }
 
-pub(crate) async fn source_definition(
+pub(crate) async fn source_definition<H: Host>(
+    b: &Backend<H>,
     origin: &ConfigOrigin,
 ) -> anyhow::Result<Option<AppDefinition>> {
     match origin {
         ConfigOrigin::Fresh => Ok(None),
-        ConfigOrigin::LiveApp { namespace } => crate::routers::apps::read_definition(namespace)
-            .await
-            .map(Some),
+        ConfigOrigin::LiveApp { namespace } => {
+            crate::routers::apps::read_definition(&b.kube, namespace)
+                .await
+                .map(Some)
+        }
         ConfigOrigin::Backup {
             namespace,
             snapshot_id,
-        } => crate::routers::restore::definition_from_backup(namespace, snapshot_id)
+        } => crate::routers::restore::definition_from_backup(b, namespace, snapshot_id)
             .await
             .map(Some),
     }
@@ -244,13 +248,14 @@ impl Log {
     }
 }
 
-struct Rollback {
+struct Rollback<H: Host + 'static> {
+    backend: Backend<H>,
     namespace: String,
     instance_name: String,
     armed: bool,
 }
 
-impl Drop for Rollback {
+impl<H: Host + 'static> Drop for Rollback<H> {
     fn drop(&mut self) {
         if !self.armed {
             return;
@@ -260,7 +265,10 @@ impl Drop for Rollback {
             tracing::error!("{namespace}: no runtime left to undo the failed install");
             return;
         };
-        handle.spawn(async move { rollback_failed_install(&namespace, &instance_name).await });
+        let backend = self.backend.clone();
+        handle.spawn(
+            async move { rollback_failed_install(&backend, &namespace, &instance_name).await },
+        );
     }
 }
 
@@ -279,13 +287,15 @@ enum DataFill<'a> {
     Live { source_namespace: &'a str },
 }
 
-async fn apply_chart(
+async fn apply_chart<H: Host + 'static>(
+    b: &Backend<H>,
     cfg: &Config,
     job: &ChartJob<'_>,
     fill: &DataFill<'_>,
     log: &Log,
 ) -> anyhow::Result<()> {
     let staged = stage_install(
+        &b.kube,
         cfg,
         job.app_id,
         job.instance_name,
@@ -297,11 +307,14 @@ async fn apply_chart(
     match fill {
         DataFill::Backup(payload) => {
             log.say("Copying this app's files…");
-            payload.fill_volumes(&staged.ns, job.instance_name).await?;
+            payload
+                .fill_volumes(b, &staged.ns, job.instance_name)
+                .await?;
         }
         DataFill::Live { source_namespace } => {
             log.say("Copying this app's files…");
             crate::routers::copy::copy_live_volumes(
+                &b.kube,
                 source_namespace,
                 &staged.ns,
                 job.instance_name,
@@ -312,14 +325,14 @@ async fn apply_chart(
     }
 
     log.say(job.verb);
-    helm_install(&staged, job.instance_name, log).await?;
+    helm_install(&b.host, &staged, job.instance_name, log).await?;
 
     if let DataFill::Backup(payload) = fill {
         log.say("Putting this app's saved settings back…");
-        payload.reapply().await?;
+        payload.reapply(&b.kube).await?;
     }
 
-    let (volumes, resources) = collect_runtime(&staged.ns).await;
+    let (volumes, resources) = collect_runtime(&b.kube, &staged.ns).await;
     let definition = AppDefinition {
         schema: DEFINITION_SCHEMA,
         app_id: job.app_id.to_string(),
@@ -333,6 +346,7 @@ async fn apply_chart(
         backup: job.backup.clone(),
     };
     write_definition(
+        &b.kube,
         &staged.ns,
         &definition,
         &app_schema(&cfg.catalog_dir(), job.app_id),
@@ -341,18 +355,29 @@ async fn apply_chart(
     .map_err(|e| anyhow::anyhow!("save this app's settings: {e}"))
 }
 
-pub(crate) async fn execute(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyhow::Result<()> {
+pub(crate) async fn execute<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    plan: &InstallPlan,
+    log: &Log,
+) -> anyhow::Result<()> {
     let mut rollback = Rollback {
+        backend: b.clone(),
         namespace: format!("yolab-{}", plan.instance_name),
         instance_name: plan.instance_name.clone(),
         armed: true,
     };
-    let outcome = install_inner(cfg, plan, log).await;
+    let outcome = install_inner(b, cfg, plan, log).await;
     rollback.armed = outcome.is_err();
     outcome
 }
 
-async fn install_inner(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyhow::Result<()> {
+async fn install_inner<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    plan: &InstallPlan,
+    log: &Log,
+) -> anyhow::Result<()> {
     log.say("Getting things ready…");
     let fill = match &plan.data {
         Some(DataOrigin::Backup {
@@ -360,7 +385,8 @@ async fn install_inner(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyhow::R
             snapshot_id,
         }) => {
             log.say("Reading the backup…");
-            let payload = crate::routers::restore::backup_payload(namespace, snapshot_id).await?;
+            let payload =
+                crate::routers::restore::backup_payload(b, namespace, snapshot_id).await?;
             same_app(&plan.app_id, payload.app_id(), "that backup")
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             DataFill::Backup(Box::new(payload))
@@ -379,10 +405,10 @@ async fn install_inner(cfg: &Config, plan: &InstallPlan, log: &Log) -> anyhow::R
         backup: &plan.backup,
         verb: "Installing…",
     };
-    apply_chart(cfg, &job, &fill, log).await?;
+    apply_chart(b, cfg, &job, &fill, log).await?;
 
     let namespace = format!("yolab-{}", plan.instance_name);
-    if let Err(e) = crate::routers::backups::setup_namespace_backup(&namespace).await {
+    if let Err(e) = crate::routers::backups::setup_namespace_backup(b, &namespace).await {
         log.say(format!(
             "[WARN] backups are not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
         ));
@@ -399,7 +425,12 @@ pub(crate) struct UpgradePlan {
     pub(crate) backup: BackupPolicy,
 }
 
-pub(crate) async fn upgrade(cfg: &Config, plan: &UpgradePlan, log: &Log) -> anyhow::Result<()> {
+pub(crate) async fn upgrade<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    plan: &UpgradePlan,
+    log: &Log,
+) -> anyhow::Result<()> {
     log.say("Getting things ready…");
     let job = ChartJob {
         app_id: &plan.app_id,
@@ -409,71 +440,46 @@ pub(crate) async fn upgrade(cfg: &Config, plan: &UpgradePlan, log: &Log) -> anyh
         backup: &plan.backup,
         verb: "Updating…",
     };
-    apply_chart(cfg, &job, &DataFill::None, log).await
+    apply_chart(b, cfg, &job, &DataFill::None, log).await
 }
 
-async fn helm_install(
+async fn helm_install<H: Host>(
+    host: &H,
     staged: &StagedInstall,
     instance_name: &str,
     log: &Log,
 ) -> anyhow::Result<()> {
-    let mut child = KillOnDrop(
-        tokio::process::Command::new("helm")
-            .args([
+    let chart_dir = staged.chart_dir.to_string_lossy();
+    let values = staged.values.path().to_string_lossy();
+    let say = |line: String| log.say(line);
+    let finished = host
+        .run_lines(
+            "helm",
+            &[
                 "upgrade",
                 "--install",
                 "--dependency-update",
                 instance_name,
-                &staged.chart_dir.to_string_lossy(),
+                &chart_dir,
                 "-n",
                 &staged.ns,
                 "--values",
-                &staged.values.path().to_string_lossy(),
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("could not run helm: {e}"))?,
-    );
-    let status = tokio::time::timeout(HELM_TIMEOUT, pump(&mut child, log))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!("installing {instance_name} took too long and was stopped")
-        })??;
-    if !status.success() {
-        anyhow::bail!("{instance_name} could not be installed — the log above is helm's own");
-    }
-    Ok(())
-}
-
-async fn pump(child: &mut KillOnDrop, log: &Log) -> anyhow::Result<std::process::ExitStatus> {
-    use tokio::io::AsyncBufReadExt;
-    let mut out = child
-        .0
-        .stdout
-        .take()
-        .map(|s| tokio::io::BufReader::new(s).lines());
-    let mut err = child
-        .0
-        .stderr
-        .take()
-        .map(|s| tokio::io::BufReader::new(s).lines());
-    let mut out_done = out.is_none();
-    let mut err_done = err.is_none();
-    while !out_done || !err_done {
-        tokio::select! {
-            line = async { out.as_mut().unwrap().next_line().await }, if !out_done => match line {
-                Ok(Some(line)) => log.say(line),
-                _ => out_done = true,
-            },
-            line = async { err.as_mut().unwrap().next_line().await }, if !err_done => match line {
-                Ok(Some(line)) => log.say(line),
-                _ => err_done = true,
-            },
+                &values,
+            ],
+            HELM_TIMEOUT,
+            &say,
+        )
+        .await;
+    match finished {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            anyhow::bail!("{instance_name} could not be installed — the log above is helm's own")
         }
+        Err(crate::exec::CmdError::Timeout { .. }) => {
+            anyhow::bail!("installing {instance_name} took too long and was stopped")
+        }
+        Err(e) => anyhow::bail!("could not run helm: {e}"),
     }
-    Ok(child.0.wait().await?)
 }
 
 pub(crate) fn verdict(
@@ -514,6 +520,7 @@ where
 }
 
 pub(crate) fn install_stream(
+    b: Backend,
     cfg: Arc<Config>,
     plan: InstallPlan,
 ) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
@@ -522,19 +529,20 @@ pub(crate) fn install_stream(
         plan.app_id
     );
     sse(
-        move |log| async move { execute(&cfg, &plan, &log).await },
+        move |log| async move { execute(&b, &cfg, &plan, &log).await },
         done,
         "Nothing was left behind, so you can try again.",
     )
 }
 
 pub(crate) fn upgrade_stream(
+    b: Backend,
     cfg: Arc<Config>,
     plan: UpgradePlan,
 ) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
     let done = format!("{} updated", plan.app_id);
     sse(
-        move |log| async move { upgrade(&cfg, &plan, &log).await },
+        move |log| async move { upgrade(&b, &cfg, &plan, &log).await },
         done,
         "Your app was left as it was.",
     )
