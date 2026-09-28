@@ -1,4 +1,5 @@
 import type { AppDefinition, AppInfo } from "@/types/apps";
+import { addressField, type ConfigSchema } from "./schema";
 
 export type InstallMode = "fresh" | "duplicate" | "restore";
 
@@ -126,4 +127,27 @@ export function phaseFrom(line: string): string | null {
     return "Almost there";
   }
   return null;
+}
+
+export function seedForm(
+  schema: ConfigSchema,
+  source: Record<string, unknown> | null,
+  mode: InstallMode,
+  generate: (length: number) => string,
+): Record<string, unknown> {
+  const seed: Record<string, unknown> = source ? { ...source } : {};
+  for (const [name, prop] of Object.entries(schema.properties ?? {})) {
+    if (prop.writeOnly) {
+      if (prop.generate && !source) {
+        seed[name] = generate(Math.max(24, prop.minLength ?? 0));
+      }
+    } else if (seed[name] === undefined && prop.default !== undefined) {
+      seed[name] = prop.default;
+    }
+  }
+  const address = addressField(schema);
+  if (source && address && !keepsSourceAddress(mode)) {
+    delete seed[address];
+  }
+  return seed;
 }

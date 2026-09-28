@@ -63,6 +63,7 @@ in let
         # helm needs a writable home, and the sandbox has none.
         export HOME=$PWD/home
         mkdir -p "$HOME"
+        (cd ./catalog && python3 -m unittest check_charts_test)
         python3 ./catalog/check_charts.py
         touch $out
       '';
@@ -302,7 +303,7 @@ in let
         "heal/mod.rs" = 9;
         "mesh/mod.rs" = 5;
         "ops.rs" = 1;
-        "routers/apps.rs" = 24;
+        "routers/apps.rs" = 21;
         "routers/backup.rs" = 12;
         "routers/backup_common.rs" = 10;
         "routers/ceph.rs" = 2;
