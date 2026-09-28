@@ -728,35 +728,6 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_that_is_seen_becomes_a_member_without_being_chosen() {
-        let mut store = Store::new("node1");
-        assert!(store.observe_machine("node2").unwrap());
-        assert_eq!(
-            store.machine_state("node2").unwrap(),
-            Some(MachineState::Member)
-        );
-        assert_eq!(
-            store.machines().unwrap().get("node2").map(|e| e.origin),
-            Some(Origin::Discovered)
-        );
-    }
-
-    #[test]
-    fn a_machine_taken_out_stays_out_even_though_it_is_still_being_seen() {
-        let mut store = Store::new("node1");
-        store.observe_machine("node2").unwrap();
-        store
-            .set_machine_state("node2", MachineState::Removed)
-            .unwrap();
-
-        assert!(!store.observe_machine("node2").unwrap());
-        assert_eq!(
-            store.machine_state("node2").unwrap(),
-            Some(MachineState::Removed)
-        );
-    }
-
-    #[test]
     fn a_machine_state_from_a_newer_version_is_kept_rather_than_guessed_at() {
         let mut store = Store::new("node1");
         store
@@ -768,8 +739,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            store.machine_state("node2").unwrap(),
-            Some(MachineState::Unknown("quarantined".to_string()))
+            store.machines().unwrap()["node2"].value,
+            MachineState::Unknown("quarantined".to_string())
         );
     }
 
@@ -809,12 +780,11 @@ mod tests {
     }
 
     #[test]
-    fn the_four_kinds_of_record_do_not_bleed_into_each_other() {
+    fn the_kinds_of_record_do_not_bleed_into_each_other() {
         let mut store = Store::new("node1");
         store
             .set_disk_intent("node1", "wwn-a", DiskIntent::On)
             .unwrap();
-        store.observe_machine("node1").unwrap();
         store
             .set_app_definition("yolab-gitea-ab12", &definition("gitea"))
             .unwrap();
@@ -822,7 +792,7 @@ mod tests {
         store.mark_disks_seeded().unwrap();
 
         assert_eq!(store.disk_claims().unwrap().len(), 1);
-        assert_eq!(store.machines().unwrap().len(), 1);
+        assert!(store.machines().unwrap().is_empty());
         assert_eq!(store.app_definitions().unwrap().len(), 1);
         assert_eq!(store.storage_policy().unwrap(), Some(policy(2)));
         assert!(store.disks_seeded());
@@ -839,21 +809,13 @@ mod tests {
             .set_disk_intent("node1", "wwn-a", DiskIntent::On)
             .unwrap();
         before
-            .set_machine_state("node2", MachineState::Draining)
-            .unwrap();
-        before
             .set_app_definition("yolab-gitea-ab12", &definition("gitea"))
             .unwrap();
         before.set_storage_policy(&policy(3)).unwrap();
-        before.mark_machines_seeded().unwrap();
         before.persist(&path).unwrap();
 
         let after = Store::open("node1", &path).unwrap();
         assert_eq!(after.disk_claims().unwrap(), before.disk_claims().unwrap());
-        assert_eq!(
-            after.machine_state("node2").unwrap(),
-            Some(MachineState::Draining)
-        );
         assert_eq!(
             after
                 .app_definition("yolab-gitea-ab12")
@@ -863,7 +825,6 @@ mod tests {
             "gitea"
         );
         assert_eq!(after.storage_policy().unwrap(), Some(policy(3)));
-        assert!(after.machines_seeded());
     }
 
     #[test]
@@ -871,15 +832,16 @@ mod tests {
         let mut a = Store::new("node1");
         let mut b = Store::new("node2");
         a.set_storage_policy(&policy(3)).unwrap();
-        b.set_machine_state("node3", MachineState::Removed).unwrap();
+        b.set_disk_intent("node3", "wwn-c", DiskIntent::Off)
+            .unwrap();
 
         a.merge(&mut b).unwrap();
         b.merge(&mut a).unwrap();
 
         assert_eq!(a.storage_policy().unwrap(), Some(policy(3)));
         assert_eq!(
-            a.machine_state("node3").unwrap(),
-            Some(MachineState::Removed)
+            a.disk_claims().unwrap()["node3--wwn-c"].value,
+            DiskIntent::Off
         );
         assert_eq!(b.storage_policy().unwrap(), Some(policy(3)));
     }
