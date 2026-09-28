@@ -306,13 +306,17 @@ pub mod testing {
 
     pub async fn api_server() -> (MockServer, Client) {
         let server = MockServer::start().await;
-        let config = Config::new(server.uri().parse().expect("the mock server has a URL"));
+        let mut config = Config::new(server.uri().parse().expect("the mock server has a URL"));
+        // kube retries 503/429/504 with backoff for minutes; a test wants the
+        // error now, not production resilience.
+        config.default_retry = false;
         let client = Client::try_from(config).expect("a client for the mock API server");
         (server, client)
     }
 
     pub fn unreachable() -> Client {
-        let config = Config::new("http://127.0.0.1:9".parse().expect("a URL"));
+        let mut config = Config::new("http://127.0.0.1:9".parse().expect("a URL"));
+        config.default_retry = false;
         Client::try_from(config).expect("a client that reaches nothing")
     }
 
