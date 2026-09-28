@@ -3,7 +3,6 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -54,14 +53,6 @@ impl CmdError {
 
     pub fn is_not_found(&self) -> bool {
         self.failure() == Some(Failure::NotFound)
-    }
-
-    pub fn is_conflict(&self) -> bool {
-        self.failure() == Some(Failure::Conflict)
-    }
-
-    pub fn is_already_exists(&self) -> bool {
-        self.failure() == Some(Failure::AlreadyExists)
     }
 
     pub fn is_unanswered(&self) -> bool {
@@ -143,10 +134,6 @@ impl AsCmdError for anyhow::Error {
     fn as_cmd_error(&self) -> Option<&CmdError> {
         self.chain().find_map(|e| e.downcast_ref::<CmdError>())
     }
-}
-
-pub fn is_not_found(e: &impl AsCmdError) -> bool {
-    e.as_cmd_error().is_some_and(CmdError::is_not_found)
 }
 
 pub fn classify(bin: &str, stderr: &str) -> Failure {
@@ -252,9 +239,88 @@ pub async fn output(
     })
 }
 
-pub async fn checked(bin: &str, args: &[&str], timeout: Duration) -> Result<String, CmdError> {
-    let out = output(bin, args, timeout).await?;
-    into_checked(bin, args, out)
+pub async fn output_env_unthrottled(
+    bin: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<CommandOutput, CmdError> {
+    let cmd = render(bin, args);
+    let work = Command::new(bin)
+        .args(args)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(timeout, work)
+        .await
+        .map_err(|_| CmdError::Timeout {
+            cmd: cmd.clone(),
+            after: timeout,
+        })?
+        .map_err(|source| CmdError::Spawn {
+            cmd: cmd.clone(),
+            source,
+        })?;
+    Ok(CommandOutput {
+        success: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+pub async fn stream_lines(
+    bin: &str,
+    args: &[&str],
+    timeout: Duration,
+    on_line: &(dyn Fn(String) + Send + Sync),
+) -> Result<bool, CmdError> {
+    use tokio::io::AsyncBufReadExt;
+    let cmd = render(bin, args);
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|source| CmdError::Spawn {
+            cmd: cmd.clone(),
+            source,
+        })?;
+    let mut out = child
+        .stdout
+        .take()
+        .map(|s| tokio::io::BufReader::new(s).lines());
+    let mut err = child
+        .stderr
+        .take()
+        .map(|s| tokio::io::BufReader::new(s).lines());
+    let work = async {
+        let mut out_done = out.is_none();
+        let mut err_done = err.is_none();
+        while !out_done || !err_done {
+            tokio::select! {
+                line = async { out.as_mut().unwrap().next_line().await }, if !out_done => match line {
+                    Ok(Some(line)) => on_line(line),
+                    _ => out_done = true,
+                },
+                line = async { err.as_mut().unwrap().next_line().await }, if !err_done => match line {
+                    Ok(Some(line)) => on_line(line),
+                    _ => err_done = true,
+                },
+            }
+        }
+        child.wait().await
+    };
+    let status = tokio::time::timeout(timeout, work)
+        .await
+        .map_err(|_| CmdError::Timeout {
+            cmd: cmd.clone(),
+            after: timeout,
+        })?
+        .map_err(|source| CmdError::Spawn { cmd, source })?;
+    Ok(status.success())
 }
 
 pub(crate) fn into_checked(
@@ -273,48 +339,6 @@ pub(crate) fn into_checked(
     })
 }
 
-pub async fn with_stdin(
-    bin: &str,
-    args: &[&str],
-    input: &str,
-    timeout: Duration,
-) -> Result<String, CmdError> {
-    let _slot = subprocess_slot().await;
-    let cmd = render(bin, args);
-    let work = async {
-        let mut child = Command::new(bin)
-            .args(args)
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(input.as_bytes()).await?;
-        }
-        child.wait_with_output().await
-    };
-    let out = tokio::time::timeout(timeout, work)
-        .await
-        .map_err(|_| CmdError::Timeout {
-            cmd: cmd.clone(),
-            after: timeout,
-        })?
-        .map_err(|source| CmdError::Spawn {
-            cmd: cmd.clone(),
-            source,
-        })?;
-    into_checked(
-        bin,
-        args,
-        CommandOutput {
-            success: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        },
-    )
-}
-
 pub fn parse_json<T: serde::de::DeserializeOwned>(cmd: &str, raw: &str) -> Result<T, CmdError> {
     serde_json::from_str(raw).map_err(|e| CmdError::parse(cmd, e))
 }
@@ -330,7 +354,7 @@ mod tests {
             "Error from server (NotFound): configmaps \"yolab-disk-config\" not found",
         );
         assert!(e.is_not_found());
-        assert!(is_not_found(&e));
+        assert!(e.as_cmd_error().is_some_and(CmdError::is_not_found));
         assert!(!e.is_unanswered());
     }
 
@@ -412,13 +436,13 @@ mod tests {
     fn not_found_survives_anyhow_context() {
         let inner = CmdError::failed("kubectl get lease x", "Error from server (NotFound): x");
         let wrapped = anyhow::Error::new(inner).context("reading the lease");
-        assert!(is_not_found(&wrapped));
+        assert!(wrapped.as_cmd_error().is_some_and(CmdError::is_not_found));
     }
 
     #[test]
     fn prose_that_merely_mentions_notfound_is_not_a_not_found() {
         let e = anyhow::anyhow!("helm: release NotFound in cache");
-        assert!(!is_not_found(&e));
+        assert!(!e.as_cmd_error().is_some_and(CmdError::is_not_found));
     }
 
     #[test]
@@ -451,13 +475,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_zero_exit_is_a_classified_failure() {
-        let err = checked(
-            "sh",
-            &["-c", "echo nope >&2; exit 3"],
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap_err();
+        let args = ["-c", "echo nope >&2; exit 3"];
+        let out = output("sh", &args, Duration::from_secs(5)).await.unwrap();
+        let err = into_checked("sh", &args, out).unwrap_err();
         match err {
             CmdError::Failed { stderr, kind, .. } => {
                 assert_eq!(stderr, "nope");

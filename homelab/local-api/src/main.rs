@@ -15,7 +15,8 @@ mod error;
 mod exec;
 mod heal;
 mod host;
-mod kubectl;
+mod http;
+mod k8s;
 mod mesh;
 mod notify;
 mod ops;
@@ -45,6 +46,16 @@ use config::Config;
 pub struct AppState {
     pub config: Arc<Config>,
     pub auth: AuthState,
+    pub kube: k8s::Kube,
+}
+
+impl AppState {
+    pub(crate) async fn backend(&self) -> anyhow::Result<routers::backup_common::Backend> {
+        Ok(routers::backup_common::Backend {
+            kube: self.kube.client().await?,
+            host: host::RealHost,
+        })
+    }
 }
 
 #[tokio::main]
@@ -85,8 +96,9 @@ async fn main() {
     }
 
     let cfg = Arc::new(Config::from_env());
+    let kube = k8s::Kube::from_environment();
     let sessions = auth::new_sessions();
-    auth::init_sessions(&sessions).await;
+    auth::init_sessions(&sessions, kube.clone()).await;
     let auth_state = AuthState {
         sessions,
         config: Arc::clone(&cfg),
@@ -94,11 +106,12 @@ async fn main() {
     let state = AppState {
         config: Arc::clone(&cfg),
         auth: auth_state,
+        kube: kube.clone(),
     };
 
     let app = router::build_router(state);
 
-    controllers::spawn_all(runtime::leader::start(system::hostname()));
+    controllers::spawn_all(runtime::leader::start(system::hostname(), kube));
 
     let addr = format!("[::]:{}", cfg.port);
     tracing::info!("listening on {addr}");

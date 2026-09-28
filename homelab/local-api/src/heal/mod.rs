@@ -130,8 +130,7 @@ impl LocalRecord {
     }
 }
 
-pub(crate) async fn backups_blocked() -> Option<String> {
-    let host = RealHost;
+pub(crate) async fn backups_blocked<H: Host>(host: &H) -> Option<String> {
     let lost = async {
         let dump = host.osd_dump().await?;
         let pgs = host.pgs_brief().await?;
@@ -188,10 +187,13 @@ pub(crate) trait Network: Send + Sync {
     fn platform_nodes(&self)
         -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_;
     fn delete_platform_node(&self, id: i64) -> impl Future<Output = Result<()>> + Send + '_;
+    fn kubernetes_nodes(&self)
+        -> impl Future<Output = Result<Option<KubernetesNodes>>> + Send + '_;
 }
 
 pub(crate) struct RealNetwork {
-    client: reqwest::Client,
+    kube: crate::k8s::Kube,
+    client: crate::http::Client,
     port: u16,
     token: String,
     platform_url: String,
@@ -210,7 +212,8 @@ impl RealNetwork {
             })
             .unwrap_or_default();
         Self {
-            client: reqwest::Client::new(),
+            kube: crate::k8s::Kube::from_environment(),
+            client: crate::http::client(),
             port: cfg.port,
             token: cfg.cluster_token(),
             platform_url: platform_url.trim_end_matches('/').to_string(),
@@ -218,14 +221,14 @@ impl RealNetwork {
     }
 
     fn url(&self, addr: &str, path: &str) -> String {
-        format!("http://[{addr}]:{}{path}", self.port)
+        crate::http::peer_url(addr, self.port, path)
     }
 
     async fn send(
         &self,
-        request: reqwest::RequestBuilder,
+        request: crate::http::RequestBuilder,
         timeout: Duration,
-    ) -> Result<reqwest::Response> {
+    ) -> Result<crate::http::Response> {
         let response = request
             .header(crate::auth::CLUSTER_AUTH_HEADER, &self.token)
             .timeout(timeout)
@@ -336,11 +339,26 @@ impl Network for RealNetwork {
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?;
-            if response.status() == reqwest::StatusCode::NOT_FOUND {
+            if response.status() == crate::http::StatusCode::NOT_FOUND {
                 return Ok(());
             }
             response.error_for_status()?;
             Ok(())
+        }
+    }
+
+    fn kubernetes_nodes(
+        &self,
+    ) -> impl Future<Output = Result<Option<KubernetesNodes>>> + Send + '_ {
+        async move {
+            let Ok(client) = self.kube.client().await else {
+                return Ok(None);
+            };
+            if !crate::k8s::ready(&client).await {
+                return Ok(None);
+            }
+            let items = crate::k8s::nodes(&client).await?;
+            Ok(Some(named_addresses(&items)))
         }
     }
 }
@@ -396,20 +414,10 @@ pub(crate) async fn mon_status<H: Host>(host: &H, me: &str) -> Result<MonStatus>
     parse_mon_status(&raw)
 }
 
-async fn kubernetes_answers<H: Host>(host: &H) -> bool {
-    host.kubectl(&["get", "--raw", "/readyz", "--request-timeout=5s"])
-        .await
-        .is_ok()
-}
+type KubernetesNodes = Vec<(String, Option<String>)>;
 
-async fn kubernetes_nodes<H: Host>(host: &H) -> Result<Vec<(String, Option<String>)>> {
-    let v = host
-        .kubectl_json(&["get", "nodes", "-o", "json", "--request-timeout=10s"])
-        .await?;
-    let items = v["items"]
-        .as_array()
-        .context("kubectl get nodes: no items list")?;
-    Ok(items
+fn named_addresses(items: &[Value]) -> KubernetesNodes {
+    items
         .iter()
         .filter_map(|n| {
             let name = n["metadata"]["name"].as_str()?.to_string();
@@ -425,7 +433,7 @@ async fn kubernetes_nodes<H: Host>(host: &H) -> Result<Vec<(String, Option<Strin
                 .map(str::to_string);
             Some((name, addr))
         })
-        .collect())
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -557,22 +565,22 @@ async fn survey<H: Host, N: Network>(
         }
         Err(e) => unreadable.push(format!("Ceph's monmap: {e:#}")),
     }
-    let kubernetes = kubernetes_answers(host).await;
-    if kubernetes {
-        match kubernetes_nodes(host).await {
-            Ok(nodes) => {
-                any_list = true;
-                for (name, addr) in nodes {
-                    if let Some(addr) = addr {
-                        let entry = listed.entry(normalize(&addr)).or_default();
-                        if entry.name.is_none() {
-                            entry.name = Some(name);
-                        }
+    let kubernetes_nodes = net.kubernetes_nodes().await;
+    let kubernetes = !matches!(kubernetes_nodes, Ok(None));
+    match kubernetes_nodes {
+        Ok(None) => {}
+        Ok(Some(nodes)) => {
+            any_list = true;
+            for (name, addr) in nodes {
+                if let Some(addr) = addr {
+                    let entry = listed.entry(normalize(&addr)).or_default();
+                    if entry.name.is_none() {
+                        entry.name = Some(name);
                     }
                 }
             }
-            Err(e) => unreadable.push(format!("Kubernetes' nodes: {e:#}")),
         }
+        Err(e) => unreadable.push(format!("Kubernetes' nodes: {e:#}")),
     }
 
     let probes = listed.keys().map(|addr| net.peer(addr));
@@ -982,7 +990,7 @@ async fn prepare_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<Step
     Ok(StepResult::NotYet(waiting.join("; ")))
 }
 
-async fn rebuild_step<H: Host, N: Network>(host: &H, net: &N, heal: &Heal) -> Result<StepResult> {
+async fn rebuild_step<H: Host, N: Network>(_host: &H, net: &N, heal: &Heal) -> Result<StepResult> {
     let mut waiting = Vec::new();
     for m in heal.members.iter().filter(|m| m.name != heal.driver) {
         let Ok(info) = net.peer(&m.addr).await else {
@@ -998,15 +1006,11 @@ async fn rebuild_step<H: Host, N: Network>(host: &H, net: &N, heal: &Heal) -> Re
             waiting.push(format!("{} has not restarted yet", m.name));
         }
     }
-    if !kubernetes_answers(host).await {
+    let Some(listed) = net.kubernetes_nodes().await? else {
         waiting.push("Kubernetes is starting".into());
         return Ok(StepResult::NotYet(waiting.join("; ")));
-    }
-    let nodes: BTreeSet<String> = kubernetes_nodes(host)
-        .await?
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
+    };
+    let nodes: BTreeSet<String> = listed.into_iter().map(|(name, _)| name).collect();
     for m in heal.members.iter().filter(|m| !nodes.contains(&m.name)) {
         waiting.push(format!("{} has not joined the new cluster yet", m.name));
     }

@@ -1,8 +1,7 @@
+use k8s_openapi::api::core::v1::ConfigMap;
+use kube::api::{Api, ObjectMeta, PostParams};
+use kube::Client;
 use serde::{de::DeserializeOwned, Serialize};
-use serde_json::{json, Value};
-
-use crate::exec::CmdError;
-use crate::host::Host;
 
 const CAS_ATTEMPTS: usize = 8;
 
@@ -15,7 +14,7 @@ pub struct Store {
 
 #[derive(Debug)]
 pub enum RecordError {
-    Cluster(CmdError),
+    Cluster(kube::Error),
     Corrupt { store: String, detail: String },
     Contended { store: String },
 }
@@ -44,8 +43,8 @@ impl std::error::Error for RecordError {
     }
 }
 
-impl From<CmdError> for RecordError {
-    fn from(e: CmdError) -> Self {
+impl From<kube::Error> for RecordError {
+    fn from(e: kube::Error) -> Self {
         RecordError::Cluster(e)
     }
 }
@@ -61,45 +60,30 @@ impl Store {
         format!("{}/{}", self.namespace, self.name)
     }
 
-    async fn load<H: Host>(&self, host: &H) -> Result<Loaded, CmdError> {
-        let got = host
-            .kubectl_get_opt(&[
-                "get",
-                "configmap",
-                self.name,
-                "-n",
-                self.namespace,
-                "-o",
-                "json",
-            ])
-            .await?;
-        let Some(cm) = got else {
+    fn api(&self, client: &Client) -> Api<ConfigMap> {
+        Api::namespaced(client.clone(), self.namespace)
+    }
+
+    async fn load(&self, client: &Client) -> Result<Loaded, kube::Error> {
+        let Some(cm) = self.api(client).get_opt(self.name).await? else {
             return Ok(Loaded {
                 raw: None,
                 resource_version: None,
                 exists: false,
             });
         };
-        if cm["kind"].as_str() != Some("ConfigMap") {
-            return Err(CmdError::parse(
-                format!("kubectl get configmap {}", self.name),
-                "not a ConfigMap",
-            ));
-        }
         Ok(Loaded {
-            raw: cm["data"][self.key].as_str().map(str::to_string),
-            resource_version: cm["metadata"]["resourceVersion"]
-                .as_str()
-                .map(str::to_string),
+            raw: cm.data.and_then(|mut d| d.remove(self.key)),
+            resource_version: cm.metadata.resource_version,
             exists: true,
         })
     }
 
-    pub async fn read<H: Host, T: DeserializeOwned + Default>(
+    pub async fn read<T: DeserializeOwned + Default>(
         &self,
-        host: &H,
+        client: &Client,
     ) -> Result<T, RecordError> {
-        let loaded = self.load(host).await?;
+        let loaded = self.load(client).await?;
         match loaded.raw {
             None => Ok(T::default()),
             Some(raw) => serde_json::from_str(&raw).map_err(|e| RecordError::Corrupt {
@@ -109,17 +93,16 @@ impl Store {
         }
     }
 
-    pub async fn update<H, T, R>(
+    pub async fn update<T, R>(
         &self,
-        host: &H,
+        client: &Client,
         mut f: impl FnMut(&mut T) -> R,
     ) -> Result<R, RecordError>
     where
-        H: Host,
         T: DeserializeOwned + Serialize + Default,
     {
         for _ in 0..CAS_ATTEMPTS {
-            let loaded = self.load(host).await?;
+            let loaded = self.load(client).await?;
             let mut corrupt: Option<String> = None;
             let mut value: T = match &loaded.raw {
                 None => T::default(),
@@ -149,21 +132,25 @@ impl Store {
             if corrupt.is_none() && before == body {
                 return Ok(result);
             }
-            let manifest = self.manifest(
-                &body,
-                corrupt.as_deref(),
-                loaded.resource_version.as_deref(),
-            );
             if loaded.exists && loaded.resource_version.is_none() {
-                return Err(RecordError::Cluster(CmdError::parse(
-                    format!("kubectl get configmap {}", self.name),
-                    "no metadata.resourceVersion",
-                )));
+                return Err(RecordError::Corrupt {
+                    store: self.label(),
+                    detail: "the stored object has no resourceVersion".into(),
+                });
             }
-            let verb = if loaded.exists { "replace" } else { "create" };
-            match host.kubectl_write(verb, &manifest.to_string()).await {
-                Ok(()) => return Ok(result),
-                Err(e) if e.is_conflict() || e.is_already_exists() => continue,
+            let written = self.object(&body, corrupt, loaded.resource_version);
+            let sent = if loaded.exists {
+                self.api(client)
+                    .replace(self.name, &PostParams::default(), &written)
+                    .await
+            } else {
+                self.api(client)
+                    .create(&PostParams::default(), &written)
+                    .await
+            };
+            match sent {
+                Ok(_) => return Ok(result),
+                Err(e) if crate::k8s::is_conflict(&e) => continue,
                 Err(e) => return Err(e.into()),
             }
         }
@@ -172,36 +159,116 @@ impl Store {
         })
     }
 
-    fn manifest(&self, body: &str, corrupt: Option<&str>, resource_version: Option<&str>) -> Value {
-        let mut data = serde_json::Map::new();
-        data.insert(self.key.to_string(), Value::String(body.to_string()));
+    fn object(
+        &self,
+        body: &str,
+        corrupt: Option<String>,
+        resource_version: Option<String>,
+    ) -> ConfigMap {
+        let mut data = std::collections::BTreeMap::new();
+        data.insert(self.key.to_string(), body.to_string());
         if let Some(c) = corrupt {
-            data.insert(
-                format!("{}.corrupt", self.key),
-                Value::String(c.to_string()),
-            );
+            data.insert(format!("{}.corrupt", self.key), c);
         }
-        let mut metadata = json!({
-            "name": self.name,
-            "namespace": self.namespace,
-            "labels": { "app.kubernetes.io/managed-by": "yolab" },
-        });
-        if let Some(rv) = resource_version {
-            metadata["resourceVersion"] = json!(rv);
+        ConfigMap {
+            metadata: ObjectMeta {
+                name: Some(self.name.to_string()),
+                namespace: Some(self.namespace.to_string()),
+                labels: Some(
+                    [(
+                        "app.kubernetes.io/managed-by".to_string(),
+                        "yolab".to_string(),
+                    )]
+                    .into(),
+                ),
+                resource_version,
+                ..Default::default()
+            },
+            data: Some(data),
+            ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use serde_json::{json, Value};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    pub fn path_of(name: &str) -> String {
+        format!("/api/v1/namespaces/kube-system/configmaps/{name}")
+    }
+
+    pub fn stored(name: &str, sets: &Value, rv: &str) -> Value {
         json!({
             "apiVersion": "v1",
             "kind": "ConfigMap",
-            "metadata": metadata,
-            "data": data,
+            "metadata": { "name": name, "namespace": "kube-system", "resourceVersion": rv },
+            "data": { "sets": sets.to_string() },
         })
+    }
+
+    pub async fn records(server: &MockServer, name: &str, sets: Value) {
+        Mock::given(method("GET"))
+            .and(path(path_of(name)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(stored(name, &sets, "1")))
+            .mount(server)
+            .await;
+    }
+
+    pub async fn no_records(server: &MockServer, name: &str) {
+        Mock::given(method("GET"))
+            .and(path(path_of(name)))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+            )
+            .mount(server)
+            .await;
+    }
+
+    pub async fn written(server: &MockServer, name: &str) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| matches!(r.method.as_str(), "PUT" | "POST"))
+            .filter(|r| r.url.path().contains("/configmaps"))
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .filter(|v| v["metadata"]["name"] == name)
+            .map(|v| {
+                let sets = v["data"]["sets"].as_str().unwrap_or("null");
+                serde_json::from_str(sets).unwrap_or(Value::Null)
+            })
+            .collect()
+    }
+
+    pub async fn accept_writes(server: &MockServer) {
+        Mock::given(wiremock::matchers::method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "x" }
+            })))
+            .mount(server)
+            .await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "x" }
+            })))
+            .mount(server)
+            .await;
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{path_of, stored};
     use super::*;
-    use crate::host::fake::FakeHost;
+    use crate::k8s::testing::{api_server, status};
+    use serde_json::{json, Value};
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const STORE: Store = Store {
         name: "yolab-test",
@@ -209,65 +276,97 @@ mod tests {
         key: "sets",
     };
 
-    fn cm(sets: &str, rv: &str) -> String {
+    fn cm(sets: &str, rv: &str) -> Value {
         json!({
+            "apiVersion": "v1",
             "kind": "ConfigMap",
-            "metadata": {"resourceVersion": rv},
-            "data": {"sets": sets},
+            "metadata": { "name": "yolab-test", "namespace": "kube-system", "resourceVersion": rv },
+            "data": { "sets": sets },
         })
-        .to_string()
+    }
+
+    async fn get_answers(server: &MockServer, code: u16, body: Value, times: Option<u64>) {
+        let mock = Mock::given(method("GET"))
+            .and(path(path_of("yolab-test")))
+            .respond_with(ResponseTemplate::new(code).set_body_json(body));
+        match times {
+            Some(n) => mock.up_to_n_times(n).mount(server).await,
+            None => mock.mount(server).await,
+        }
+    }
+
+    fn ok_write() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(cm("[]", "99"))
+    }
+
+    fn conflict() -> ResponseTemplate {
+        ResponseTemplate::new(409).set_body_json(status(409, "Conflict"))
+    }
+
+    async fn writes(server: &MockServer, verb: &str) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.method.as_str() == verb)
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
     }
 
     #[tokio::test]
     async fn a_failed_read_is_an_error_never_an_empty_history() {
-        let host = FakeHost::new().fail(
-            "kubectl get configmap yolab-test",
-            "The connection to the server localhost:6443 was refused",
-        );
-        let r: Result<Vec<String>, _> = STORE.read(&host).await;
+        let (server, client) = api_server().await;
+        get_answers(&server, 503, status(503, "ServiceUnavailable"), None).await;
+        let r: Result<Vec<String>, _> = STORE.read(&client).await;
         assert!(r.is_err());
 
         let wrote = STORE
-            .update(&host, |v: &mut Vec<String>| v.push("new".into()))
+            .update(&client, |v: &mut Vec<String>| v.push("new".into()))
             .await;
         assert!(wrote.is_err());
-        assert!(
-            !host.ran("kubectl-replace") && !host.ran("kubectl-create"),
-            "nothing may be written after a failed read: {:?}",
-            host.calls()
-        );
+        assert!(writes(&server, "PUT").await.is_empty());
+        assert!(writes(&server, "POST").await.is_empty());
     }
 
     #[tokio::test]
     async fn a_missing_configmap_is_empty_and_is_created() {
-        let host = FakeHost::new()
-            .fail(
-                "kubectl get configmap yolab-test",
-                "Error from server (NotFound): configmaps \"yolab-test\" not found",
-            )
-            .ok("kubectl-create", "");
-        let r: Vec<String> = STORE.read(&host).await.unwrap();
+        let (server, client) = api_server().await;
+        get_answers(&server, 404, status(404, "NotFound"), None).await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/namespaces/kube-system/configmaps"))
+            .and(body_partial_json(json!({ "data": { "sets": "[\"a\"]" } })))
+            .respond_with(ok_write())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let r: Vec<String> = STORE.read(&client).await.unwrap();
         assert!(r.is_empty());
         STORE
-            .update(&host, |v: &mut Vec<String>| v.push("a".into()))
+            .update(&client, |v: &mut Vec<String>| v.push("a".into()))
             .await
             .unwrap();
-        assert!(host.ran("kubectl-create"));
     }
 
     #[tokio::test]
     async fn an_update_is_a_compare_and_swap_that_retries_from_a_fresh_read() {
-        let host = FakeHost::new()
-            .ok("kubectl get configmap yolab-test", &cm(r#"["a"]"#, "1"))
-            .ok("kubectl get configmap yolab-test", &cm(r#"["a","b"]"#, "2"))
-            .fail(
-                "kubectl-replace",
-                "Error from server (Conflict): the object has been modified",
-            )
-            .ok("kubectl-replace", "");
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm(r#"["a"]"#, "1"), Some(1)).await;
+        get_answers(&server, 200, cm(r#"["a","b"]"#, "2"), None).await;
+        Mock::given(method("PUT"))
+            .and(path(path_of("yolab-test")))
+            .respond_with(conflict())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(path_of("yolab-test")))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
         let mut seen = Vec::new();
         STORE
-            .update(&host, |v: &mut Vec<String>| {
+            .update(&client, |v: &mut Vec<String>| {
                 seen.push(v.clone());
                 v.push("c".into());
             })
@@ -277,109 +376,75 @@ mod tests {
             seen.last().unwrap(),
             &vec!["a".to_string(), "b".to_string()]
         );
-        let replaces: Vec<String> = host
-            .calls()
-            .into_iter()
-            .filter(|c| c.starts_with("kubectl-replace"))
-            .collect();
+        let replaces = writes(&server, "PUT").await;
         assert_eq!(replaces.len(), 2);
-        assert!(
-            replaces[0].contains(r#"\"resourceVersion\":\"1\""#)
-                || replaces[0].contains(r#""resourceVersion":"1""#)
-        );
-        assert!(
-            replaces[1].contains(r#"["a","b","c"]"#)
-                || replaces[1].contains(r#"[\"a\",\"b\",\"c\"]"#)
-        );
+        assert_eq!(replaces[0]["metadata"]["resourceVersion"], "1");
+        assert_eq!(replaces[1]["metadata"]["resourceVersion"], "2");
+        assert_eq!(replaces[1]["data"]["sets"], r#"["a","b","c"]"#);
     }
 
     #[tokio::test]
     async fn unreadable_content_is_kept_aside_rather_than_discarded() {
-        let host = FakeHost::new()
-            .ok("kubectl get configmap yolab-test", &cm("not json {", "7"))
-            .ok("kubectl-replace", "");
-        let r: Result<Vec<String>, _> = STORE.read(&host).await;
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("not json {", "7"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
+        let r: Result<Vec<String>, _> = STORE.read(&client).await;
         assert!(matches!(r, Err(RecordError::Corrupt { .. })));
         STORE
-            .update(&host, |v: &mut Vec<String>| v.push("fresh".into()))
+            .update(&client, |v: &mut Vec<String>| v.push("fresh".into()))
             .await
             .unwrap();
-        let write = host
-            .calls()
-            .into_iter()
-            .find(|c| c.starts_with("kubectl-replace"))
-            .unwrap();
-        assert!(write.contains("sets.corrupt"));
-        assert!(write.contains("not json {"));
+        let write = &writes(&server, "PUT").await[0];
+        assert_eq!(write["data"]["sets.corrupt"], "not json {");
+        assert_eq!(write["data"]["sets"], r#"["fresh"]"#);
     }
 
     #[tokio::test]
     async fn an_update_that_changes_nothing_writes_nothing() {
-        let host = FakeHost::new()
-            .ok("kubectl get configmap yolab-test", &cm(r#"["a"]"#, "1"))
-            .ok("kubectl-replace", "");
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm(r#"["a"]"#, "1"), None).await;
         let n = STORE
-            .update(&host, |v: &mut Vec<String>| v.len())
+            .update(&client, |v: &mut Vec<String>| v.len())
             .await
             .unwrap();
         assert_eq!(n, 1, "the closure's result is still returned");
-        assert!(!host.ran("kubectl-replace"));
+        assert!(writes(&server, "PUT").await.is_empty());
 
-        let absent = FakeHost::new()
-            .fail(
-                "kubectl get configmap yolab-test",
-                "Error from server (NotFound): configmaps \"yolab-test\" not found",
-            )
-            .ok("kubectl-create", "");
+        let (absent, client) = api_server().await;
+        get_answers(&absent, 404, status(404, "NotFound"), None).await;
         STORE
-            .update(&absent, |_: &mut Vec<String>| ())
+            .update(&client, |_: &mut Vec<String>| ())
             .await
             .unwrap();
         assert!(
-            !absent.ran("kubectl-create"),
+            writes(&absent, "POST").await.is_empty(),
             "an empty record is not worth creating"
         );
     }
 
     #[tokio::test]
     async fn losing_the_race_to_create_retries_as_a_replace_of_the_winner() {
-        let host = FakeHost::new()
-            .fail(
-                "kubectl get configmap yolab-test",
-                "Error from server (NotFound): configmaps \"yolab-test\" not found",
-            )
-            .ok(
-                "kubectl get configmap yolab-test",
-                &cm(r#"["theirs"]"#, "4"),
-            )
-            .fail(
-                "kubectl-create",
-                "Error from server (AlreadyExists): configmaps \"yolab-test\" already exists",
-            )
-            .ok("kubectl-replace", "");
+        let (server, client) = api_server().await;
+        get_answers(&server, 404, status(404, "NotFound"), Some(1)).await;
+        get_answers(&server, 200, cm(r#"["theirs"]"#, "4"), None).await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(status(409, "AlreadyExists")))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
         STORE
-            .update(&host, |v: &mut Vec<String>| v.push("ours".into()))
+            .update(&client, |v: &mut Vec<String>| v.push("ours".into()))
             .await
             .unwrap();
-        let replace = host
-            .calls()
-            .into_iter()
-            .find(|c| c.starts_with("kubectl-replace"))
-            .expect("retried as a replace");
-        assert!(
-            replace.contains("theirs") && replace.contains("ours"),
-            "{replace}"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_answer_that_is_not_a_configmap_is_an_error() {
-        let host = FakeHost::new().ok(
-            "kubectl get configmap yolab-test",
-            r#"{"kind":"Status","metadata":{}}"#,
-        );
-        let r: Result<Vec<String>, _> = STORE.read(&host).await;
-        assert!(matches!(r, Err(RecordError::Cluster(_))));
+        let replace = &writes(&server, "PUT").await[0];
+        assert_eq!(replace["data"]["sets"], r#"["theirs","ours"]"#);
+        assert_eq!(replace["metadata"]["resourceVersion"], "4");
     }
 
     #[test]
@@ -394,36 +459,50 @@ mod tests {
         };
         assert!(contended.to_string().contains("gave up"));
         assert!(std::error::Error::source(&contended).is_none());
-        let cluster = RecordError::from(CmdError::parse("kubectl get", "bad"));
+        let cluster = RecordError::from(kube::Error::LinesCodecMaxLineLengthExceeded);
         assert!(std::error::Error::source(&cluster).is_some());
     }
 
     #[tokio::test]
     async fn an_object_without_a_resource_version_is_never_blindly_replaced() {
-        let host = FakeHost::new()
-            .ok(
-                "kubectl get configmap yolab-test",
-                r#"{"kind":"ConfigMap","metadata":{},"data":{"sets":"[]"}}"#,
-            )
-            .ok("kubectl-replace", "");
+        let (server, client) = api_server().await;
+        get_answers(
+            &server,
+            200,
+            json!({
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": { "name": "yolab-test", "namespace": "kube-system" },
+                "data": { "sets": "[]" }
+            }),
+            None,
+        )
+        .await;
         let r = STORE
-            .update(&host, |v: &mut Vec<String>| v.push("x".into()))
+            .update(&client, |v: &mut Vec<String>| v.push("x".into()))
             .await;
         assert!(r.is_err());
-        assert!(!host.ran("kubectl-replace"));
+        assert!(writes(&server, "PUT").await.is_empty());
     }
 
     #[tokio::test]
     async fn endless_contention_gives_up_instead_of_overwriting() {
-        let host = FakeHost::new()
-            .ok("kubectl get configmap yolab-test", &cm("[]", "1"))
-            .fail(
-                "kubectl-replace",
-                "Error from server (Conflict): the object has been modified",
-            );
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("[]", "1"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(conflict())
+            .mount(&server)
+            .await;
         let r = STORE
-            .update(&host, |v: &mut Vec<String>| v.push("x".into()))
+            .update(&client, |v: &mut Vec<String>| v.push("x".into()))
             .await;
         assert!(matches!(r, Err(RecordError::Contended { .. })));
+        assert_eq!(writes(&server, "PUT").await.len(), CAS_ATTEMPTS);
+    }
+
+    #[test]
+    fn the_test_fixture_is_what_the_store_reads() {
+        let v = stored("yolab-test", &json!(["a"]), "3");
+        let cm: ConfigMap = serde_json::from_value(v).unwrap();
+        assert_eq!(cm.data.unwrap()["sets"], r#"["a"]"#);
     }
 }

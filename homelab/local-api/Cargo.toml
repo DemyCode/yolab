@@ -34,8 +34,11 @@ tempfile = "3"
 time = "0.3"
 automerge = "0.12"
 jsonschema = { version = "0.58.2", default-features = false }
+kube = "4.2"
+k8s-openapi = { version = "0.28", features = ["v1_36"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 tokio = { version = "1", features = ["test-util"] }
 proptest = "1.11.0"
+wiremock = "0.6"

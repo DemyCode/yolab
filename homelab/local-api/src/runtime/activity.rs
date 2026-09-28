@@ -64,22 +64,20 @@ async fn cached(key: Key, ask: impl std::future::Future<Output = Answer>) -> Ans
 }
 
 async fn kube_api_ready() -> Answer {
-    let ok = crate::exec::checked(
-        "kubectl",
-        &["get", "--raw", "/readyz", "--request-timeout=10s"],
-        Duration::from_secs(15),
-    )
-    .await
-    .is_ok();
-    Some(ok)
+    let Ok(client) = crate::k8s::client().await else {
+        return Some(false);
+    };
+    Some(crate::k8s::ready(&client).await)
 }
 
 async fn ceph_ready() -> Answer {
-    Some(
-        crate::ceph_cli::ceph(&["--connect-timeout", "10", "health"])
-            .await
-            .is_ok(),
-    )
+    Some(ceph_answers(&crate::host::RealHost).await)
+}
+
+async fn ceph_answers<H: crate::host::Host>(host: &H) -> bool {
+    host.ceph(&["--connect-timeout", "10", "health"])
+        .await
+        .is_ok()
 }
 
 pub async fn is_met(r: Requirement) -> bool {
@@ -113,7 +111,10 @@ pub async fn gate(activities: &[Activity]) -> Gate {
     for a in activities {
         let answer = cached(Key::Act(*a), async {
             let r = match a {
-                Activity::Restore => crate::routers::restore::running_anywhere().await,
+                Activity::Restore => match crate::k8s::client().await {
+                    Ok(client) => crate::routers::restore::running_anywhere(&client).await,
+                    Err(e) => Err(e),
+                },
             };
             r.map_err(|e| tracing::debug!("activity {a:?}: {e:#}")).ok()
         })
@@ -158,5 +159,36 @@ mod tests {
     async fn nothing_declared_means_nothing_asked() {
         assert!(unmet(&[]).await.is_none());
         assert!(matches!(gate(&[]).await, Gate::Clear));
+    }
+
+    #[tokio::test]
+    async fn the_api_server_is_ready_only_when_readyz_says_so() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        Mock::given(method("GET"))
+            .and(path("/readyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/readyz"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("[-]etcd failed"))
+            .mount(&server)
+            .await;
+        assert!(crate::k8s::ready(&kube).await);
+        assert!(!crate::k8s::ready(&kube).await);
+        assert!(!crate::k8s::ready(&crate::k8s::testing::unreachable()).await);
+    }
+
+    #[tokio::test]
+    async fn ceph_is_ready_only_when_it_answers() {
+        use crate::host::fake::FakeHost;
+        assert!(
+            ceph_answers(&FakeHost::new().ok("ceph --connect-timeout 10 health", "HEALTH_OK"))
+                .await
+        );
+        assert!(!ceph_answers(&FakeHost::new().fail("ceph --connect-timeout", "timed out")).await);
     }
 }

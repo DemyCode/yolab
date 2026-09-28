@@ -85,12 +85,7 @@ async fn dashboard_url<H: Host>(host: &H) -> String {
 }
 
 async fn verify_login(dash_url: &str, password: &str) -> u16 {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-    else {
-        return 0;
-    };
+    let client = crate::http::client();
     let url = format!("{}/api/auth", dash_url.trim_end_matches('/'));
     let body = json!({"username": "admin", "password": password}).to_string();
     match client
@@ -98,6 +93,7 @@ async fn verify_login(dash_url: &str, password: &str) -> u16 {
         .header("Content-Type", "application/json")
         .header("Accept", "application/vnd.ceph.api.v1.0+json")
         .body(body)
+        .timeout(Duration::from_secs(15))
         .send()
         .await
     {

@@ -40,16 +40,15 @@ fn now_secs() -> i64 {
 static LOADED: AtomicBool = AtomicBool::new(false);
 static REVOKED_BEFORE_LOAD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-async fn load_sessions_from_k8s() -> Result<HashMap<String, i64>, crate::exec::CmdError> {
-    let Some(data) = crate::kubectl::get_secret(SECRET_NAME, SECRET_NS).await? else {
+async fn load_sessions_from_k8s(client: &kube::Client) -> anyhow::Result<HashMap<String, i64>> {
+    let Some(data) = crate::k8s::secret_data(client, SECRET_NS, SECRET_NAME).await? else {
         return Ok(HashMap::new());
     };
     let Some(json) = data.get("sessions") else {
         return Ok(HashMap::new());
     };
-    let stored = serde_json::from_str::<HashMap<String, i64>>(json).map_err(|e| {
-        crate::exec::CmdError::parse(format!("secret {SECRET_NS}/{SECRET_NAME}"), e)
-    })?;
+    let stored = serde_json::from_str::<HashMap<String, i64>>(json)
+        .map_err(|e| anyhow::anyhow!("secret {SECRET_NS}/{SECRET_NAME} is unreadable: {e}"))?;
     Ok(live_only(stored, now_secs()))
 }
 
@@ -66,7 +65,7 @@ fn merge_loaded(live: &mut HashMap<String, i64>, stored: HashMap<String, i64>, r
     }
 }
 
-async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
+async fn save_sessions_to_k8s(kube: &crate::k8s::Kube, sessions: &HashMap<String, i64>) {
     if !LOADED.load(Ordering::SeqCst) {
         tracing::debug!("sessions not loaded from k8s yet — keeping this change in memory");
         return;
@@ -78,9 +77,17 @@ async fn save_sessions_to_k8s(sessions: &HashMap<String, i64>) {
             return;
         }
     };
-    if let Err(e) =
-        crate::kubectl::apply_secret(SECRET_NAME, SECRET_NS, &[("sessions", &json)], &[]).await
-    {
+    let saved = match kube.client().await {
+        Ok(client) => {
+            crate::k8s::apply(
+                &client,
+                &crate::k8s::secret_manifest(SECRET_NAME, SECRET_NS, &[("sessions", &json)], &[]),
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = saved {
         tracing::warn!("failed to persist sessions to k8s: {e}");
     }
 }
@@ -94,12 +101,16 @@ fn note_revoked(token: &str) {
     }
 }
 
-pub async fn init_sessions(sessions: &Sessions) {
+pub async fn init_sessions(sessions: &Sessions, kube: crate::k8s::Kube) {
     let sessions = sessions.clone();
     tokio::spawn(async move {
         let mut delay = std::time::Duration::from_secs(2);
         loop {
-            match load_sessions_from_k8s().await {
+            let loaded = match kube.client().await {
+                Ok(client) => load_sessions_from_k8s(&client).await,
+                Err(e) => Err(e),
+            };
+            match loaded {
                 Ok(stored) => {
                     let mut live = sessions.write().await;
                     let revoked = REVOKED_BEFORE_LOAD
@@ -114,7 +125,7 @@ pub async fn init_sessions(sessions: &Sessions) {
                         tracing::info!("restored {n} session(s) from k8s secret");
                     }
                     if had_live || !revoked.is_empty() {
-                        save_sessions_to_k8s(&live).await;
+                        save_sessions_to_k8s(&kube, &live).await;
                     }
                     return;
                 }
@@ -250,7 +261,7 @@ pub async fn login(
     {
         let mut sessions = state.auth.sessions.write().await;
         sessions.insert(token.clone(), expiry);
-        save_sessions_to_k8s(&sessions).await;
+        save_sessions_to_k8s(&state.kube, &sessions).await;
     }
     let cookie = Cookie::build(("yolab_session", token))
         .http_only(true)
@@ -275,7 +286,7 @@ pub async fn logout(State(state): State<crate::AppState>, jar: CookieJar) -> Res
         let mut sessions = state.auth.sessions.write().await;
         sessions.remove(&token);
         note_revoked(&token);
-        save_sessions_to_k8s(&sessions).await;
+        save_sessions_to_k8s(&state.kube, &sessions).await;
     }
     let cookie = Cookie::build(("yolab_session", ""))
         .max_age(time::Duration::seconds(0))
@@ -622,6 +633,7 @@ mod tests {
         crate::AppState {
             auth: auth_state(Arc::clone(&config)),
             config,
+            kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
         }
     }
 

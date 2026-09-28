@@ -180,7 +180,10 @@ impl Controller for CsiSecretsController {
         &[Requirement::Ceph, Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        locked("csi-secrets", || csi_secrets::run(&HOST)).await
+        locked("csi-secrets", || async {
+            csi_secrets::run(&crate::routers::backup_common::Backend::real().await?).await
+        })
+        .await
     }
 }
 
@@ -292,18 +295,22 @@ impl Controller for CsiRecoveryController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        once_per_boot(std::path::Path::new(CSI_RECOVERED_MARKER), &HOST).await
+        once_per_boot(
+            std::path::Path::new(CSI_RECOVERED_MARKER),
+            &crate::k8s::client().await?,
+        )
+        .await
     }
 }
 
-async fn once_per_boot<H: Host>(marker: &std::path::Path, host: &H) -> Result<Tick> {
+async fn once_per_boot(marker: &std::path::Path, client: &kube::Client) -> Result<Tick> {
     if marker.exists() {
         return Ok(Tick::Idle("already done this boot".into()));
     }
-    if !crate::csi::plugin_daemonset_exists(host).await? {
+    if !crate::csi::plugin_daemonset_exists(client).await? {
         return Ok(Tick::RequeueAfter(Duration::from_secs(15)));
     }
-    crate::csi::restart_local_plugin(host).await?;
+    crate::csi::restart_local_plugin(client).await?;
     if let Some(dir) = marker.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -356,46 +363,65 @@ mod tests {
 
     #[tokio::test]
     async fn csi_recovery_runs_once_per_boot() {
+        use crate::csi::testing::{deleted_plugin_pods, plugin_pods_deleted, DAEMONSET};
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("run/yolab/csi-recovered");
-        let host = FakeHost::new()
-            .ok("kubectl get daemonset csi-cephfsplugin", "{}")
-            .ok("kubectl delete pod", "");
-        assert_eq!(once_per_boot(&marker, &host).await.unwrap(), Tick::Done);
-        assert!(host.ran("kubectl delete pod"));
+        let (server, client) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            DAEMONSET,
+            200,
+            serde_json::json!({ "metadata": { "name": "csi-cephfsplugin" } }),
+        )
+        .await;
+        plugin_pods_deleted(&server, 200).await;
+        assert_eq!(once_per_boot(&marker, &client).await.unwrap(), Tick::Done);
+        assert!(deleted_plugin_pods(&server).await);
 
-        let again = FakeHost::new();
+        let (again, client) = crate::k8s::testing::api_server().await;
         assert!(matches!(
-            once_per_boot(&marker, &again).await.unwrap(),
+            once_per_boot(&marker, &client).await.unwrap(),
             Tick::Idle(_)
         ));
-        assert!(again.calls().is_empty());
+        assert!(again.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn csi_recovery_waits_for_the_daemonset_without_claiming_it_ran() {
+        use crate::csi::testing::{deleted_plugin_pods, DAEMONSET};
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("marker");
-        let host = FakeHost::new().fail(
-            "kubectl get daemonset csi-cephfsplugin",
-            "Error from server (NotFound): daemonsets.apps \"csi-cephfsplugin\" not found",
-        );
+        let (server, client) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            DAEMONSET,
+            404,
+            crate::k8s::testing::status(404, "NotFound"),
+        )
+        .await;
         assert!(matches!(
-            once_per_boot(&marker, &host).await.unwrap(),
+            once_per_boot(&marker, &client).await.unwrap(),
             Tick::RequeueAfter(_)
         ));
         assert!(!marker.exists());
-        assert!(!host.ran("delete pod"));
+        assert!(!deleted_plugin_pods(&server).await);
     }
 
     #[tokio::test]
     async fn a_restart_that_failed_is_not_marked_done_for_the_boot() {
+        use crate::csi::testing::{plugin_pods_deleted, DAEMONSET};
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("marker");
-        let host = FakeHost::new()
-            .ok("kubectl get daemonset csi-cephfsplugin", "{}")
-            .fail("kubectl delete pod", "etcd timeout");
-        assert!(once_per_boot(&marker, &host).await.is_err());
+        let (server, client) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            DAEMONSET,
+            200,
+            serde_json::json!({ "metadata": { "name": "csi-cephfsplugin" } }),
+        )
+        .await;
+        plugin_pods_deleted(&server, 500).await;
+        assert!(once_per_boot(&marker, &client).await.is_err());
         assert!(!marker.exists(), "the next tick must try again");
     }
 

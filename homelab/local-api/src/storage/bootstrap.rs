@@ -53,13 +53,14 @@ fn write_keyring(path: &Path, contents: &str) -> Result<()> {
 }
 
 async fn fetch_join_bundle(seed_addr: &str, token: &str) -> Result<CephJoinBundle> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .context("build http client")?;
-    client
-        .get(format!("http://[{seed_addr}]:3001/api/cluster/ceph-join"))
+    crate::http::client()
+        .get(crate::http::peer_url(
+            seed_addr,
+            3001,
+            "/api/cluster/ceph-join",
+        ))
         .header(CLUSTER_AUTH_HEADER, token)
+        .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
         .with_context(|| format!("[{seed_addr}] did not hand over the cluster credentials"))?
@@ -357,24 +358,6 @@ mod tests {
             args: &'a [&str],
         ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
             self.inner.ceph_volume(args)
-        }
-        fn kubectl<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
-            self.inner.kubectl(args)
-        }
-        fn kubectl_json<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = crate::host::HostResult<serde_json::Value>> + Send + 'a {
-            self.inner.kubectl_json(args)
-        }
-        fn kubectl_apply<'a>(
-            &self,
-            manifest: &'a str,
-        ) -> impl Future<Output = crate::host::HostResult<()>> + Send + 'a {
-            self.inner.kubectl_apply(manifest)
         }
         fn systemctl<'a>(
             &self,

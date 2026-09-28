@@ -60,7 +60,7 @@ impl Controller for StoreSyncController {
         }
 
         let token = cfg.cluster_token();
-        let client = reqwest::Client::new();
+        let client = crate::http::client();
         let mut reached = 0usize;
         for peer in &peers {
             match exchange(&client, peer, cfg.port, &token).await {
@@ -80,7 +80,7 @@ impl Controller for StoreSyncController {
 }
 
 async fn exchange(
-    client: &reqwest::Client,
+    client: &crate::http::Client,
     peer: &str,
     port: u16,
     token: &str,
@@ -88,7 +88,7 @@ async fn exchange(
     let ours = locked().save();
 
     let response = client
-        .post(format!("http://[{peer}]:{port}/api/store/sync"))
+        .post(crate::http::peer_url(peer, port, "/api/store/sync"))
         .header(CLUSTER_AUTH_HEADER, token)
         .body(ours)
         .timeout(REQUEST_TIMEOUT)

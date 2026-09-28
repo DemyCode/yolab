@@ -1,66 +1,56 @@
 use anyhow::{bail, Result};
+use kube::Client;
 
-use crate::host::Host;
+const DAEMONSET_WAIT_ATTEMPTS: u32 = 30;
+const DAEMONSET_WAIT_POLL: std::time::Duration = std::time::Duration::from_secs(10);
 
-const NS: &str = "rook-ceph";
-
-pub async fn run<H: Host>(host: &H) -> Result<()> {
+pub async fn run(client: &Client) -> Result<()> {
     let mut found = false;
-    for _ in 0..30 {
-        if host
-            .kubectl(&["get", "daemonset", "csi-cephfsplugin", "-n", NS])
-            .await
-            .is_ok()
-        {
+    for _ in 0..DAEMONSET_WAIT_ATTEMPTS {
+        if matches!(crate::csi::plugin_daemonset_exists(client).await, Ok(true)) {
             found = true;
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(DAEMONSET_WAIT_POLL).await;
     }
     if !found {
         bail!("csi-cephfsplugin DaemonSet never appeared");
     }
-
-    let hostname = crate::system::hostname();
-    let selector = format!("spec.nodeName={hostname}");
-    let _ = host
-        .kubectl(&[
-            "delete",
-            "pod",
-            "-n",
-            NS,
-            "-l",
-            "app=csi-cephfsplugin",
-            "--field-selector",
-            &selector,
-            "--ignore-not-found",
-        ])
-        .await;
+    if let Err(e) = crate::csi::restart_local_plugin(client).await {
+        tracing::warn!("csi-recovery: this node's plugin pod was not restarted: {e:#}");
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::fake::FakeHost;
+    use crate::csi::testing::{deleted_plugin_pods, plugin_pods_deleted, DAEMONSET};
+    use crate::k8s::testing::{api_server, serve, status};
+    use serde_json::json;
 
     #[tokio::test]
     async fn deletes_this_nodes_plugin_pod_once_the_daemonset_exists() {
-        let host = FakeHost::new()
-            .ok("kubectl get daemonset csi-cephfsplugin -n rook-ceph", "")
-            .ok("kubectl delete pod", "");
-        run(&host).await.unwrap();
-        assert!(host.ran("kubectl delete pod -n rook-ceph -l app=csi-cephfsplugin"));
+        let (server, client) = api_server().await;
+        serve(
+            &server,
+            DAEMONSET,
+            200,
+            json!({ "metadata": { "name": "csi-cephfsplugin" } }),
+        )
+        .await;
+        plugin_pods_deleted(&server, 200).await;
+        run(&client).await.unwrap();
+        assert!(deleted_plugin_pods(&server).await);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn gives_up_when_the_daemonset_never_appears() {
-        let host = FakeHost::new().fail(
-            "kubectl get daemonset csi-cephfsplugin -n rook-ceph",
-            "not found",
-        );
-        let err = run(&host).await.unwrap_err();
+        let (server, client) = api_server().await;
+        serve(&server, DAEMONSET, 404, status(404, "NotFound")).await;
+        tokio::time::pause();
+        let err = run(&client).await.unwrap_err();
         assert!(err.to_string().contains("never appeared"));
-        assert!(!host.ran("kubectl delete pod"));
+        assert!(!deleted_plugin_pods(&server).await);
     }
 }

@@ -6,8 +6,6 @@ use crate::host::fake::FakeHost;
 
 const NOW: u64 = 1_000_000;
 const MON_STATUS: &str = "ceph daemon mon.node1 mon_status";
-const READYZ: &str = "kubectl get --raw /readyz";
-const NODES: &str = "kubectl get nodes -o json";
 
 #[derive(Clone)]
 struct FakeMachine {
@@ -21,6 +19,7 @@ struct FakeNetwork {
     machines: Mutex<HashMap<String, FakeMachine>>,
     platform: Option<Vec<PlatformNode>>,
     platform_down: bool,
+    kubernetes: Mutex<Option<Vec<(String, Option<String>)>>>,
     calls: Mutex<Vec<String>>,
 }
 
@@ -62,6 +61,16 @@ impl FakeNetwork {
             phase,
             error: error.map(str::to_string),
         });
+    }
+
+    fn kubernetes_up(&self, names: &[&str]) {
+        *self.kubernetes.lock().unwrap() = Some(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.to_string(), Some(format!("fd00::{}", i + 1))))
+                .collect(),
+        );
     }
 
     fn refuse(&self, addr: &str, why: &str) {
@@ -172,6 +181,12 @@ impl Network for FakeNetwork {
             Ok(())
         }
     }
+
+    fn kubernetes_nodes(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<(String, Option<String>)>>>> + Send + '_ {
+        async move { Ok(self.kubernetes.lock().unwrap().clone()) }
+    }
 }
 
 fn mon_status_json(state: &str, mons: &[(&str, &str)]) -> String {
@@ -189,14 +204,6 @@ fn mon_status_json(state: &str, mons: &[(&str, &str)]) -> String {
     .to_string()
 }
 
-fn nodes_json(names: &[&str]) -> String {
-    json!({"items": names.iter().enumerate().map(|(i, n)| json!({
-        "metadata": {"name": n},
-        "status": {"addresses": [{"type": "InternalIP", "address": format!("fd00::{}", i + 1)}]},
-    })).collect::<Vec<_>>()})
-    .to_string()
-}
-
 fn local() -> (tempfile::TempDir, LocalRecord) {
     let dir = tempfile::tempdir().unwrap();
     let record = LocalRecord::under(dir.path());
@@ -208,19 +215,17 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 }
 
 fn broken_cluster() -> (FakeHost, FakeNetwork) {
-    let host = FakeHost::new()
-        .ok(
-            MON_STATUS,
-            &mon_status_json(
-                "probing",
-                &[
-                    ("node1", "fd00::1"),
-                    ("node2", "fd00::2"),
-                    ("node3", "fd00::3"),
-                ],
-            ),
-        )
-        .fail(READYZ, "connection refused");
+    let host = FakeHost::new().ok(
+        MON_STATUS,
+        &mon_status_json(
+            "probing",
+            &[
+                ("node1", "fd00::1"),
+                ("node2", "fd00::2"),
+                ("node3", "fd00::3"),
+            ],
+        ),
+    );
     let net = FakeNetwork::with(&[("node1", "fd00::1"), ("node3", "fd00::3")]).platform(&[
         (11, "fd00::1"),
         (12, "fd00::2"),
@@ -347,9 +352,7 @@ async fn with_the_platform_down_the_monmap_still_lists_the_machines() {
 
 #[tokio::test]
 async fn a_heal_is_refused_when_no_list_of_machines_can_be_read() {
-    let host = FakeHost::new()
-        .fail(MON_STATUS, "admin socket not found")
-        .fail(READYZ, "refused");
+    let host = FakeHost::new().fail(MON_STATUS, "admin socket not found");
     let mut net = FakeNetwork::with(&[("node1", "fd00::1")]);
     net.platform_down = true;
     let s = survey(&host, &net, "node1", "fd00::1", 5_000).await;
@@ -367,10 +370,9 @@ async fn a_healthy_cluster_has_nothing_to_heal() {
             "ceph osd dump",
             r#"{"osds":[{"osd":0,"up":1,"in":1}],"pools":[]}"#,
         )
-        .ok("ceph pg dump pgs_brief", "[]")
-        .ok(READYZ, "ok")
-        .ok(NODES, &nodes_json(&["node1", "node2"]));
+        .ok("ceph pg dump pgs_brief", "[]");
     let net = FakeNetwork::with(&[("node1", "fd00::1"), ("node2", "fd00::2")]);
+    net.kubernetes_up(&["node1", "node2"]);
     let s = survey(&host, &net, "node1", "fd00::1", 5_000).await;
     assert!(s.problems().is_empty(), "{:?}", s.problems());
     assert!(s.refusal(None).unwrap().contains("nothing is wrong"));
@@ -544,7 +546,7 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
     assert_eq!(heal.restart_boot_id.as_deref(), Some("boot1"));
 
     net.set_phase("fd00::3", "ab12", PhaseView::Restarted, None);
-    let host = FakeHost::new().fail(READYZ, "refused");
+    let host = FakeHost::new();
     tick(&host, &net, &record, "boot2", NOW + 300)
         .await
         .unwrap();
@@ -556,9 +558,7 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
         .unwrap()
         .contains("Kubernetes is starting"));
 
-    let host = FakeHost::new()
-        .ok(READYZ, "ok")
-        .ok(NODES, &nodes_json(&["node1"]));
+    net.kubernetes_up(&["node1"]);
     tick(&host, &net, &record, "boot2", NOW + 400)
         .await
         .unwrap();
@@ -570,9 +570,7 @@ async fn a_heal_prepares_everywhere_arms_restarts_all_and_waits_for_the_new_clus
         .iter()
         .any(|c| c.starts_with("delete platform node")));
 
-    let host = FakeHost::new()
-        .ok(READYZ, "ok")
-        .ok(NODES, &nodes_json(&["node1", "node3"]));
+    net.kubernetes_up(&["node1", "node3"]);
     tick(&host, &net, &record, "boot2", NOW + 500)
         .await
         .unwrap();
@@ -605,9 +603,8 @@ async fn a_machine_that_did_not_restart_is_asked_again() {
     heal.restart_boot_id = Some("boot1".into());
     record.save(&heal).unwrap();
     net.set_phase("fd00::3", "ab12", PhaseView::Armed, None);
-    let host = FakeHost::new()
-        .ok(READYZ, "ok")
-        .ok(NODES, &nodes_json(&["node1"]));
+    net.kubernetes_up(&["node1"]);
+    let host = FakeHost::new();
     tick(&host, &net, &record, "boot2", NOW + 30).await.unwrap();
     assert!(net.calls().contains(&"reboot fd00::3".to_string()));
     assert!(record

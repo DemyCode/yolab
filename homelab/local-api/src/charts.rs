@@ -1,6 +1,8 @@
+use kube::Client;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+
+use crate::host::Host;
 
 const REPO_CM: &str = "yolab-chart-repos";
 const REPO_NS: &str = "kube-system";
@@ -29,25 +31,26 @@ fn official_url() -> String {
     })
 }
 
-pub async fn list_repos() -> Vec<ChartRepo> {
+fn repos_ref() -> serde_json::Value {
+    crate::k8s::reference("v1", "ConfigMap", REPO_NS, REPO_CM)
+}
+
+pub async fn list_repos(client: &Client) -> Vec<ChartRepo> {
     let mut repos = vec![ChartRepo {
         name: OFFICIAL.into(),
         url: official_url(),
         removable: false,
     }];
-    let stored: std::collections::HashMap<String, String> = crate::kubectl::get_json(&[
-        "get",
-        "configmap",
-        REPO_CM,
-        "-n",
-        REPO_NS,
-        "-o",
-        "jsonpath={.data}",
-    ])
-    .await
-    .ok()
-    .and_then(|v| serde_json::from_value(v).ok())
-    .unwrap_or_default();
+    let stored: std::collections::BTreeMap<String, String> =
+        match crate::k8s::get(client, &repos_ref()).await {
+            Ok(found) => found
+                .and_then(|cm| serde_json::from_value(cm["data"].clone()).ok())
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("the added chart repositories are unreadable right now: {e:#}");
+                Default::default()
+            }
+        };
     for (name, url) in stored {
         if name == OFFICIAL {
             continue;
@@ -75,7 +78,7 @@ pub fn valid_repo_url(url: &str) -> bool {
     url.starts_with("https://")
 }
 
-pub async fn add_repo(name: &str, url: &str) -> anyhow::Result<()> {
+pub async fn add_repo(client: &Client, name: &str, url: &str) -> anyhow::Result<()> {
     if !valid_repo_name(name) {
         anyhow::bail!(
             "repo name must be lowercase letters, digits and hyphens, and not '{OFFICIAL}'"
@@ -84,55 +87,24 @@ pub async fn add_repo(name: &str, url: &str) -> anyhow::Result<()> {
     if !valid_repo_url(url) {
         anyhow::bail!("repo URL must start with https://");
     }
-    let patch = serde_json::json!({ "data": { name: url } }).to_string();
-    if crate::kubectl::run(&[
-        "patch",
-        "configmap",
-        REPO_CM,
-        "-n",
-        REPO_NS,
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await
-    .is_err()
-    {
-        let _ = crate::kubectl::run(&["create", "configmap", REPO_CM, "-n", REPO_NS]).await;
-        crate::kubectl::run(&[
-            "patch",
-            "configmap",
-            REPO_CM,
-            "-n",
-            REPO_NS,
-            "--type",
-            "merge",
-            "-p",
-            &patch,
-        ])
-        .await?;
+    let mut added = repos_ref();
+    added["data"] = serde_json::json!({ name: url });
+    match crate::k8s::merge_patch(client, &added).await {
+        Err(e) if crate::k8s::refused_with(&e, 404) => crate::k8s::apply(client, &added).await,
+        other => other,
     }
-    Ok(())
 }
 
-pub async fn remove_repo(name: &str) -> anyhow::Result<()> {
+pub async fn remove_repo(client: &Client, name: &str) -> anyhow::Result<()> {
     if name == OFFICIAL {
         anyhow::bail!("the official catalog cannot be removed");
     }
-    let patch = serde_json::json!({ "data": { name: null } }).to_string();
-    crate::kubectl::run(&[
-        "patch",
-        "configmap",
-        REPO_CM,
-        "-n",
-        REPO_NS,
-        "--type",
-        "merge",
-        "-p",
-        &patch,
-    ])
-    .await?;
+    let mut removed = repos_ref();
+    removed["data"] = serde_json::json!({ name: null });
+    match crate::k8s::merge_patch(client, &removed).await {
+        Err(e) if crate::k8s::refused_with(&e, 404) => {}
+        other => other?,
+    }
     let dir = cache_dir_for(name);
     let _ = tokio::fs::remove_dir_all(&dir).await;
     Ok(())
@@ -173,36 +145,42 @@ fn valid_chart_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-async fn pull_into(dir: &Path, registry: &str, entry: &CatalogEntry) -> anyhow::Result<()> {
+const HELM_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+async fn pull_into<H: Host>(
+    host: &H,
+    dir: &Path,
+    registry: &str,
+    entry: &CatalogEntry,
+) -> anyhow::Result<()> {
     let reference = format!("{}/{}", registry.trim_end_matches('/'), entry.name);
     let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
-    let out = Command::new("helm")
-        .args([
-            "pull",
-            &reference,
-            "--version",
-            &entry.version,
-            "--untar",
-            "--untardir",
-            &dir.to_string_lossy(),
-        ])
-        .output()
+    let untar_dir = dir.to_string_lossy();
+    let out = host
+        .run_cmd_bounded(
+            "helm",
+            &[
+                "pull",
+                &reference,
+                "--version",
+                &entry.version,
+                "--untar",
+                "--untardir",
+                &untar_dir,
+            ],
+            HELM_PULL_TIMEOUT,
+        )
         .await?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "pull {reference}:{}: {}",
-            entry.version,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+    if !out.success {
+        anyhow::bail!("pull {reference}:{}: {}", entry.version, out.stderr.trim());
     }
     Ok(())
 }
 
 async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
-    let body = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?
+    let body = crate::http::client()
         .get(&repo.url)
+        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await?
         .error_for_status()?
@@ -216,7 +194,12 @@ async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
     Ok(manifest)
 }
 
-pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
+pub async fn sync_chart<H: Host>(
+    host: &H,
+    cache_root: &Path,
+    repo: &ChartRepo,
+    name: &str,
+) -> anyhow::Result<()> {
     if !valid_chart_name(name) {
         anyhow::bail!("unusable chart name {name:?}");
     }
@@ -228,20 +211,24 @@ pub async fn sync_chart(repo: &ChartRepo, name: &str) -> anyhow::Result<()> {
         .find(|c| c.name == name)
         .ok_or_else(|| anyhow::anyhow!("{name} is not in {}", repo.name))?;
 
-    let dir = cache_dir_for(&repo.name);
+    let dir = cache_root.join(&repo.name);
     tokio::fs::create_dir_all(&dir).await?;
-    pull_into(&dir, &manifest.registry, entry).await
+    pull_into(host, &dir, &manifest.registry, entry).await
 }
 
-pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
+pub async fn sync_repo<H: Host>(
+    host: &H,
+    cache_root: &Path,
+    repo: &ChartRepo,
+) -> anyhow::Result<usize> {
     let manifest = fetch_manifest(repo).await?;
 
-    let dir = cache_dir_for(&repo.name);
+    let dir = cache_root.join(&repo.name);
     tokio::fs::create_dir_all(&dir).await?;
 
     if let Some(library) = &manifest.library {
         if valid_chart_name(&library.name) {
-            if let Err(e) = pull_into(&dir, &manifest.registry, library).await {
+            if let Err(e) = pull_into(host, &dir, &manifest.registry, library).await {
                 tracing::warn!("{}: library pull: {e}", repo.name);
             }
         } else {
@@ -263,7 +250,7 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
             );
             continue;
         }
-        match pull_into(&dir, &manifest.registry, entry).await {
+        match pull_into(host, &dir, &manifest.registry, entry).await {
             Ok(()) => pulled += 1,
             Err(e) => tracing::warn!("{e}"),
         }
@@ -271,13 +258,13 @@ pub async fn sync_repo(repo: &ChartRepo) -> anyhow::Result<usize> {
     Ok(pulled)
 }
 
-pub async fn chart_sources() -> Vec<(String, PathBuf)> {
+pub async fn chart_sources(client: &Client) -> Vec<(String, PathBuf)> {
     let mut sources = Vec::new();
     let custom = cache_dir_for(CUSTOM);
     if custom.is_dir() {
         sources.push((CUSTOM.to_string(), custom));
     }
-    for repo in list_repos().await {
+    for repo in list_repos(client).await {
         let dir = cache_dir_for(&repo.name);
         if dir.is_dir() {
             sources.push((repo.name.clone(), dir));
@@ -286,8 +273,12 @@ pub async fn chart_sources() -> Vec<(String, PathBuf)> {
     sources
 }
 
-pub async fn resolve_chart(id: &str, repo: Option<&str>) -> Option<(String, PathBuf)> {
-    for (name, dir) in chart_sources().await {
+pub async fn resolve_chart(
+    client: &Client,
+    id: &str,
+    repo: Option<&str>,
+) -> Option<(String, PathBuf)> {
+    for (name, dir) in chart_sources(client).await {
         if let Some(want) = repo {
             if want != name {
                 continue;
@@ -317,19 +308,24 @@ impl crate::runtime::Controller for ChartSyncController {
         &[crate::runtime::Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        let mut failed = Vec::new();
-        for repo in list_repos().await {
-            match sync_repo(&repo).await {
-                Ok(n) if n > 0 => tracing::info!("chart sync: {} — {n} chart(s)", repo.name),
-                Ok(_) => {}
-                Err(e) => failed.push(format!("{}: {e}", repo.name)),
-            }
+        let b = crate::routers::backup_common::Backend::real().await?;
+        sync_all(&b.kube, &b.host).await
+    }
+}
+
+async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::runtime::Tick> {
+    let mut failed = Vec::new();
+    for repo in list_repos(client).await {
+        match sync_repo(host, Path::new(CACHE_DIR), &repo).await {
+            Ok(n) if n > 0 => tracing::info!("chart sync: {} — {n} chart(s)", repo.name),
+            Ok(_) => {}
+            Err(e) => failed.push(format!("{}: {e}", repo.name)),
         }
-        if failed.is_empty() {
-            Ok(crate::runtime::Tick::Done)
-        } else {
-            anyhow::bail!("{}", failed.join("; "))
-        }
+    }
+    if failed.is_empty() {
+        Ok(crate::runtime::Tick::Done)
+    } else {
+        anyhow::bail!("{}", failed.join("; "))
     }
 }
 
@@ -425,5 +421,130 @@ mod tests {
             })
         );
         assert_eq!(m.charts.len(), 1);
+    }
+
+    mod against_the_world {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{api_server, status};
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const REPOS_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos";
+
+        async fn catalog(body: &str) -> (MockServer, ChartRepo) {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/catalog.yaml"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+            let repo = ChartRepo {
+                name: "community".into(),
+                url: format!("{}/catalog.yaml", server.uri()),
+                removable: true,
+            };
+            (server, repo)
+        }
+
+        #[tokio::test]
+        async fn a_catalog_pointing_anywhere_but_an_oci_registry_is_refused() {
+            let (_server, repo) = catalog("registry: https://evil.example\n").await;
+            assert!(fetch_manifest(&repo).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_chart_is_pulled_at_the_version_the_catalog_names() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts/\ncharts:\n  - name: notes\n    version: \"1.2.3\"\n",
+            )
+            .await;
+            let host = FakeHost::new().ok("helm pull", "");
+            let cache = tempfile::tempdir().unwrap();
+            sync_chart(&host, cache.path(), &repo, "notes")
+                .await
+                .unwrap();
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes --version 1.2.3 --untar"));
+        }
+
+        #[tokio::test]
+        async fn a_chart_the_catalog_does_not_list_is_never_pulled() {
+            let (_server, repo) = catalog("registry: oci://ghcr.io/x/charts\n").await;
+            let host = FakeHost::new();
+            let cache = tempfile::tempdir().unwrap();
+            assert!(sync_chart(&host, cache.path(), &repo, "notes")
+                .await
+                .is_err());
+            assert!(host.calls().is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_failed_pull_is_reported_with_helms_reason() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"1\"\n",
+            )
+            .await;
+            let host = FakeHost::new().fail("helm pull", "manifest unknown");
+            let cache = tempfile::tempdir().unwrap();
+            let e = sync_chart(&host, cache.path(), &repo, "notes")
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("manifest unknown"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn the_official_catalog_is_listed_even_when_the_cluster_is_down() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            let repos = list_repos(&kube).await;
+            assert_eq!(repos.len(), 1);
+            assert_eq!(repos[0].name, OFFICIAL);
+            assert!(!repos[0].removable);
+        }
+
+        #[tokio::test]
+        async fn the_first_added_repo_creates_the_list() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path(REPOS_PATH))
+                .and(wiremock::matchers::header(
+                    "content-type",
+                    "application/merge-patch+json",
+                ))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .and(path(REPOS_PATH))
+                .and(wiremock::matchers::header("content-type", "application/apply-patch+yaml"))
+                .and(body_partial_json(serde_json::json!({ "data": { "community": "https://c.example/catalog.yaml" } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "metadata": { "name": "yolab-chart-repos", "namespace": "kube-system" }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            add_repo(&kube, "community", "https://c.example/catalog.yaml")
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_bad_repo_is_refused_before_the_cluster_is_asked() {
+            let (server, kube) = api_server().await;
+            assert!(add_repo(&kube, "community", "http://plain.example")
+                .await
+                .is_err());
+            assert!(add_repo(&kube, OFFICIAL, "https://x.example")
+                .await
+                .is_err());
+            assert!(remove_repo(&kube, OFFICIAL).await.is_err());
+            assert!(server.received_requests().await.unwrap().is_empty());
+        }
     }
 }

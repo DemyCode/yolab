@@ -6,12 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::appschema::{AppSchema, Format, OutputSpec, Source};
-use crate::host::{Host, HOST};
+use kube::Client;
 
 const SECRET: &str = "yolab-outputs";
 const SECRET_KEY: &str = "outputs.json";
 const LEGACY_ANNOTATION: &str = "yolab.io/outputs";
-const LOGS_TAIL: &str = "--tail=2000";
+const LOGS_TAIL: i64 = 2000;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Found {
@@ -141,15 +141,13 @@ fn stored_json(secret: &Value) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-pub async fn read_remembered<H: Host>(host: &H, ns: &str) -> anyhow::Result<Option<Remembered>> {
-    let secret = host
-        .kubectl_get_opt(&["get", "secret", SECRET, "-n", ns, "-o", "json"])
-        .await?;
-    Ok(secret.map(|s| parse_remembered(stored_json(&s).as_deref())))
+pub async fn read_remembered(client: &Client, ns: &str) -> anyhow::Result<Option<Remembered>> {
+    let secret = crate::k8s::secret_data(client, ns, SECRET).await?;
+    Ok(secret.map(|data| parse_remembered(data.get(SECRET_KEY).map(String::as_str))))
 }
 
-fn secret_manifest(ns: &str, remembered: &Remembered) -> anyhow::Result<String> {
-    let manifest = serde_json::json!({
+fn secret_manifest(ns: &str, remembered: &Remembered) -> anyhow::Result<Value> {
+    Ok(serde_json::json!({
         "apiVersion": "v1",
         "kind": "Secret",
         "type": "Opaque",
@@ -159,29 +157,16 @@ fn secret_manifest(ns: &str, remembered: &Remembered) -> anyhow::Result<String> 
             "labels": { "yolab.io/managed": "true", "yolab.io/outputs": "true" }
         },
         "stringData": { SECRET_KEY: serde_json::to_string(remembered)? }
-    });
-    Ok(manifest.to_string())
+    }))
 }
 
-pub async fn remembered_everywhere<H: Host>(host: &H) -> BTreeMap<String, Remembered> {
-    let listed = host
-        .kubectl_json(&[
-            "get",
-            "secrets",
-            "--all-namespaces",
-            "-l",
-            "yolab.io/outputs=true",
-            "-o",
-            "json",
-        ])
-        .await;
-    let Ok(listed) = listed else {
+pub async fn remembered_everywhere(client: &Client) -> BTreeMap<String, Remembered> {
+    let labelled = kube::api::ListParams::default().labels("yolab.io/outputs=true");
+    let Ok(secrets) = crate::k8s::list(client, "v1", "Secret", None, &labelled).await else {
         return BTreeMap::new();
     };
-    listed["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    secrets
+        .iter()
         .filter_map(|secret| {
             let ns = secret["metadata"]["namespace"].as_str()?;
             Some((
@@ -192,12 +177,12 @@ pub async fn remembered_everywhere<H: Host>(host: &H) -> BTreeMap<String, Rememb
         .collect()
 }
 
-async fn log_lines<H: Host>(host: &H, ns: &str) -> anyhow::Result<Vec<String>> {
-    let pods = host
-        .kubectl_json(&["get", "pods", "-n", ns, "-o", "json"])
-        .await?;
+async fn log_lines(client: &Client, ns: &str) -> anyhow::Result<Vec<String>> {
+    use k8s_openapi::api::core::v1::Pod;
+    let pods = crate::k8s::list(client, "v1", "Pod", Some(ns), &Default::default()).await?;
+    let api = kube::Api::<Pod>::namespaced(client.clone(), ns);
     let mut lines = Vec::new();
-    for pod in pods["items"].as_array().into_iter().flatten() {
+    for pod in &pods {
         let Some(name) = pod["metadata"]["name"].as_str() else {
             continue;
         };
@@ -208,17 +193,13 @@ async fn log_lines<H: Host>(host: &H, ns: &str) -> anyhow::Result<Vec<String>> {
             .chain(pod["spec"]["containers"].as_array().into_iter().flatten())
             .filter_map(|c| c["name"].as_str());
         for container in containers {
-            let args = [
-                "logs",
-                "-n",
-                ns,
-                name,
-                "-c",
-                container,
-                "--timestamps",
-                LOGS_TAIL,
-            ];
-            if let Ok(text) = host.kubectl(&args).await {
+            let params = kube::api::LogParams {
+                container: Some(container.to_string()),
+                timestamps: true,
+                tail_lines: Some(LOGS_TAIL),
+                ..Default::default()
+            };
+            if let Ok(text) = api.logs(name, &params).await {
                 lines.extend(text.lines().map(str::to_string));
             }
         }
@@ -234,8 +215,8 @@ fn in_time_order(mut lines: Vec<String>) -> Vec<String> {
     lines
 }
 
-pub async fn rescan<H: Host>(
-    host: &H,
+pub async fn rescan(
+    client: &Client,
     ns: &str,
     app: &AppSchema,
     settings: &Map<String, Value>,
@@ -247,7 +228,7 @@ pub async fn rescan<H: Host>(
         .filter(|o| matches!(o.source, Source::Logs(_)))
         .collect();
 
-    let stored = read_remembered(host, ns).await?;
+    let stored = read_remembered(client, ns).await?;
     let existed = stored.is_some();
     let mut remembered = stored.unwrap_or_default();
     let mut changed = false;
@@ -259,28 +240,27 @@ pub async fn rescan<H: Host>(
     }
 
     if !looked_for.is_empty() {
-        let lines = log_lines(host, ns).await?;
+        let lines = log_lines(client, ns).await?;
         let fresh = latest_matches(&looked_for, lines.iter().map(String::as_str));
         changed |= remember(&mut remembered, fresh, Utc::now());
     }
 
     if changed || (!existed && !remembered.is_empty()) {
-        host.kubectl_apply(&secret_manifest(ns, &remembered)?)
-            .await?;
+        crate::k8s::apply(client, &secret_manifest(ns, &remembered)?).await?;
     }
     Ok(remembered)
 }
 
-pub async fn rescan_all<H: Host>(
-    host: &H,
+pub async fn rescan_all(
+    client: &Client,
     catalog_dir: &std::path::Path,
 ) -> anyhow::Result<Vec<String>> {
-    let apps = crate::routers::apps::installed_apps(host).await?;
+    let apps = crate::routers::apps::installed_apps(client).await?;
     let mut failed = Vec::new();
     for app in &apps {
         let schema = crate::routers::apps::app_schema(catalog_dir, &app.app_id);
         if let Err(e) = rescan(
-            host,
+            client,
             &app.namespace,
             &schema,
             &app.settings,
@@ -312,7 +292,7 @@ impl crate::runtime::Controller for OutputsController {
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let catalog_dir = crate::config::Config::from_env().catalog_dir();
-        let failed = rescan_all(&HOST, &catalog_dir).await?;
+        let failed = rescan_all(&crate::k8s::client().await?, &catalog_dir).await?;
         if failed.is_empty() {
             Ok(crate::runtime::Tick::Done)
         } else {
@@ -474,16 +454,17 @@ mod tests {
 
     mod against_a_cluster {
         use super::*;
-        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{
+            accept_patches, api_server, asked, list, patched, secret_with, serve, serve_logs,
+            status,
+        };
         use std::collections::HashMap;
+        use wiremock::MockServer;
 
         const NS: &str = "yolab-files-ab12";
-        const GET_SECRET: &str = "kubectl get secret yolab-outputs -n yolab-files-ab12 -o json";
-        const GET_PODS: &str = "kubectl get pods -n yolab-files-ab12 -o json";
-        const INIT_LOGS: &str = "kubectl logs -n yolab-files-ab12 gateway-7f -c file-explorer-init";
-        const CADDY_LOGS: &str = "kubectl logs -n yolab-files-ab12 gateway-7f -c caddy";
-        const NOT_FOUND: &str =
-            r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
+        const NS_PATH: &str = "/api/v1/namespaces/yolab-files-ab12";
+        const SECRET_PATH: &str = "/api/v1/namespaces/yolab-files-ab12/secrets/yolab-outputs";
+        const POD_PATH: &str = "/api/v1/namespaces/yolab-files-ab12/pods/gateway-7f";
 
         fn app(explorer_default: bool) -> AppSchema {
             AppSchema::from_parts(
@@ -506,22 +487,27 @@ mod tests {
             )
         }
 
-        fn pods() -> String {
-            json!({ "items": [{
-                "metadata": { "name": "gateway-7f" },
-                "spec": {
-                    "initContainers": [{ "name": "file-explorer-init" }],
-                    "containers": [{ "name": "caddy" }]
-                }
-            }]})
-            .to_string()
+        async fn pods(server: &MockServer) {
+            serve(
+                server,
+                &format!("{NS_PATH}/pods"),
+                200,
+                list(
+                    "Pod",
+                    vec![json!({
+                        "metadata": { "name": "gateway-7f" },
+                        "spec": {
+                            "initContainers": [{ "name": "file-explorer-init" }],
+                            "containers": [{ "name": "caddy" }]
+                        }
+                    })],
+                ),
+            )
+            .await;
         }
 
-        fn stored(remembered: &Remembered) -> String {
-            use base64::Engine as _;
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(serde_json::to_string(remembered).unwrap());
-            json!({ "data": { "outputs.json": encoded } }).to_string()
+        fn stored(remembered: &Remembered) -> Value {
+            secret_with("outputs.json", &serde_json::to_string(remembered).unwrap())
         }
 
         fn remembered(key: &str, value: &str) -> Remembered {
@@ -538,134 +524,153 @@ mod tests {
             format!("2026-09-28T12:03:00.000000000Z YOLAB_OUTPUT file_explorer_password {value}")
         }
 
-        fn applied(host: &FakeHost) -> Vec<String> {
-            host.calls()
-                .into_iter()
-                .filter(|c| c.starts_with("kubectl-apply"))
-                .collect()
+        fn saved(patch: &Value) -> Remembered {
+            parse_remembered(patch["stringData"]["outputs.json"].as_str())
+        }
+
+        async fn nothing_stored(server: &MockServer) {
+            serve(server, SECRET_PATH, 404, status(404, "NotFound")).await;
         }
 
         #[tokio::test]
         async fn a_value_printed_by_an_init_container_is_found_and_saved() {
-            let host = FakeHost::new()
-                .fail(GET_SECRET, NOT_FOUND)
-                .ok(GET_PODS, &pods())
-                .ok(INIT_LOGS, &printed("s3cret"))
-                .ok(CADDY_LOGS, "")
-                .ok("kubectl-apply", "");
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
+            accept_patches(&server).await;
 
-            let found = rescan(&host, NS, &app(true), &Map::new(), &Map::new())
+            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
                 .await
                 .unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
-            let writes = applied(&host);
+            let writes = patched(&server).await;
             assert_eq!(writes.len(), 1);
-            assert!(writes[0].contains("s3cret") && writes[0].contains("yolab-outputs"));
+            assert_eq!(writes[0]["metadata"]["name"], "yolab-outputs");
+            assert_eq!(saved(&writes[0])["file_explorer_password"].value, "s3cret");
         }
 
         #[tokio::test]
         async fn nothing_is_written_when_nothing_new_was_found() {
-            let host = FakeHost::new()
-                .ok(
-                    GET_SECRET,
-                    &stored(&remembered("file_explorer_password", "s3cret")),
-                )
-                .ok(GET_PODS, &pods())
-                .ok(INIT_LOGS, &printed("s3cret"))
-                .ok(CADDY_LOGS, "");
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                SECRET_PATH,
+                200,
+                stored(&remembered("file_explorer_password", "s3cret")),
+            )
+            .await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
 
-            rescan(&host, NS, &app(true), &Map::new(), &Map::new())
+            rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
                 .await
                 .unwrap();
 
-            assert!(applied(&host).is_empty());
+            assert!(patched(&server).await.is_empty());
         }
 
         #[tokio::test]
         async fn a_value_is_kept_after_the_pod_restarts_and_its_logs_are_gone() {
-            let host = FakeHost::new()
-                .ok(
-                    GET_SECRET,
-                    &stored(&remembered("file_explorer_password", "s3cret")),
-                )
-                .ok(GET_PODS, &pods())
-                .ok(INIT_LOGS, "")
-                .ok(CADDY_LOGS, "");
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                SECRET_PATH,
+                200,
+                stored(&remembered("file_explorer_password", "s3cret")),
+            )
+            .await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", "").await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
 
-            let found = rescan(&host, NS, &app(true), &Map::new(), &Map::new())
+            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
                 .await
                 .unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
-            assert!(applied(&host).is_empty());
+            assert!(patched(&server).await.is_empty());
         }
 
         #[tokio::test]
         async fn a_newer_value_replaces_the_remembered_one() {
-            let host = FakeHost::new()
-                .ok(
-                    GET_SECRET,
-                    &stored(&remembered("file_explorer_password", "old")),
-                )
-                .ok(GET_PODS, &pods())
-                .ok(INIT_LOGS, &printed("new"))
-                .ok(CADDY_LOGS, "")
-                .ok("kubectl-apply", "");
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                SECRET_PATH,
+                200,
+                stored(&remembered("file_explorer_password", "old")),
+            )
+            .await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed("new")).await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
+            accept_patches(&server).await;
 
-            let found = rescan(&host, NS, &app(true), &Map::new(), &Map::new())
+            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
                 .await
                 .unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "new");
-            assert!(applied(&host)[0].contains("new"));
+            assert_eq!(
+                saved(&patched(&server).await[0])["file_explorer_password"].value,
+                "new"
+            );
         }
 
         #[tokio::test]
         async fn logs_are_not_read_when_nothing_is_expected_from_them() {
-            let host = FakeHost::new().fail(GET_SECRET, NOT_FOUND);
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
             let explorer_off = Map::from_iter([("file_explorer_enabled".into(), json!(false))]);
 
-            rescan(&host, NS, &app(true), &explorer_off, &Map::new())
+            rescan(&kube, NS, &app(true), &explorer_off, &Map::new())
                 .await
                 .unwrap();
 
-            assert!(!host.ran("get pods"));
-            assert!(!host.ran("logs"));
-            assert!(applied(&host).is_empty(), "nothing found, nothing to save");
+            assert!(!asked(&server, "/pods").await);
+            assert!(
+                patched(&server).await.is_empty(),
+                "nothing found, nothing to save"
+            );
         }
 
         #[tokio::test]
         async fn values_from_the_old_annotation_are_moved_into_the_secret() {
-            let host = FakeHost::new()
-                .fail(GET_SECRET, NOT_FOUND)
-                .ok(GET_PODS, &pods())
-                .ok(INIT_LOGS, "")
-                .ok(CADDY_LOGS, "")
-                .ok("kubectl-apply", "");
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", "").await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
+            accept_patches(&server).await;
             let ann = Map::from_iter([(
                 LEGACY_ANNOTATION.to_string(),
                 json!(r#"[{"key":"file_explorer_password","value":"from-before","type":"text"}]"#),
             )]);
 
-            let found = rescan(&host, NS, &app(true), &Map::new(), &ann)
+            let found = rescan(&kube, NS, &app(true), &Map::new(), &ann)
                 .await
                 .unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "from-before");
-            assert!(applied(&host)[0].contains("from-before"));
+            assert_eq!(
+                saved(&patched(&server).await[0])["file_explorer_password"].value,
+                "from-before"
+            );
         }
 
         #[tokio::test]
         async fn one_container_whose_logs_cannot_be_read_does_not_hide_the_others() {
-            let host = FakeHost::new()
-                .fail(GET_SECRET, NOT_FOUND)
-                .ok(GET_PODS, &pods())
-                .fail(CADDY_LOGS, "container \"caddy\" is waiting to start")
-                .ok(INIT_LOGS, &printed("s3cret"))
-                .ok("kubectl-apply", "");
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
+            accept_patches(&server).await;
 
-            let found = rescan(&host, NS, &app(true), &Map::new(), &Map::new())
+            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
                 .await
                 .unwrap();
 
@@ -674,28 +679,39 @@ mod tests {
 
         #[tokio::test]
         async fn an_unreachable_cluster_is_an_error_not_an_empty_answer() {
-            let host = FakeHost::new().fail(GET_SECRET, "Unable to connect to the server: timeout");
+            let (server, kube) = api_server().await;
+            serve(&server, SECRET_PATH, 503, status(503, "ServiceUnavailable")).await;
 
-            let result = rescan(&host, NS, &app(true), &Map::new(), &Map::new()).await;
+            let result = rescan(&kube, NS, &app(true), &Map::new(), &Map::new()).await;
 
             assert!(result.is_err());
             assert!(
-                applied(&host).is_empty(),
+                patched(&server).await.is_empty(),
                 "never overwrite what we could not read"
             );
         }
 
         #[tokio::test]
         async fn every_apps_remembered_values_are_read_in_one_call() {
-            let listed = json!({ "items": [
-                { "metadata": { "namespace": "yolab-a" },
-                  "data": serde_json::from_str::<Value>(&stored(&remembered("url", "https://a"))).unwrap()["data"] },
-                { "metadata": { "namespace": "yolab-b" }, "data": { "outputs.json": "not base64!" } }
-            ]});
-            let host =
-                FakeHost::new().ok("kubectl get secrets --all-namespaces", &listed.to_string());
+            let (server, kube) = api_server().await;
+            let mut a = stored(&remembered("url", "https://a"));
+            a["metadata"] = json!({ "name": "yolab-outputs", "namespace": "yolab-a" });
+            serve(
+                &server,
+                "/api/v1/secrets",
+                200,
+                list(
+                    "Secret",
+                    vec![
+                        a,
+                        json!({ "metadata": { "name": "yolab-outputs", "namespace": "yolab-b" },
+                                "data": { "outputs.json": "not base64!" } }),
+                    ],
+                ),
+            )
+            .await;
 
-            let everywhere = remembered_everywhere(&host).await;
+            let everywhere = remembered_everywhere(&kube).await;
 
             assert_eq!(everywhere["yolab-a"]["url"].value, "https://a");
             assert!(
@@ -706,9 +722,15 @@ mod tests {
 
         #[tokio::test]
         async fn the_listing_shows_nothing_remembered_when_the_cluster_cannot_be_read() {
-            let host =
-                FakeHost::new().fail("kubectl get secrets", "Unable to connect to the server");
-            assert!(remembered_everywhere(&host).await.is_empty());
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/secrets",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            assert!(remembered_everywhere(&kube).await.is_empty());
         }
 
         fn catalog_with_files_app() -> tempfile::TempDir {
@@ -741,25 +763,57 @@ mod tests {
         #[tokio::test]
         async fn every_running_app_is_rescanned_and_failures_are_named() {
             let catalog = catalog_with_files_app();
-            let namespaces = json!({ "items": [
-                namespace("yolab-good", "Active"),
-                namespace("yolab-broken", "Active"),
-                namespace("yolab-leaving", "Terminating")
-            ]});
-            let host = FakeHost::new()
-                .ok("kubectl get namespaces", &namespaces.to_string())
-                .fail("kubectl get secret yolab-outputs -n yolab-good", NOT_FOUND)
-                .ok("kubectl get pods -n yolab-good", r#"{"items":[{"metadata":{"name":"p"},"spec":{"containers":[{"name":"app"}]}}]}"#)
-                .ok("kubectl logs -n yolab-good p -c app", "2026-09-28T12:00:00Z YOLAB_OUTPUT token t0k")
-                .fail("kubectl get secret yolab-outputs -n yolab-broken", "Unable to connect to the server")
-                .ok("kubectl-apply", "");
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/namespaces",
+                200,
+                list(
+                    "Namespace",
+                    vec![
+                        namespace("yolab-good", "Active"),
+                        namespace("yolab-broken", "Active"),
+                        namespace("yolab-leaving", "Terminating"),
+                    ],
+                ),
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/namespaces/yolab-good/secrets/yolab-outputs",
+                404,
+                status(404, "NotFound"),
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/namespaces/yolab-good/pods",
+                200,
+                list("Pod", vec![json!({ "metadata": { "name": "p" }, "spec": { "containers": [{ "name": "app" }] } })]),
+            )
+            .await;
+            serve_logs(
+                &server,
+                "/api/v1/namespaces/yolab-good/pods/p",
+                "app",
+                "2026-09-28T12:00:00Z YOLAB_OUTPUT token t0k",
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/namespaces/yolab-broken/secrets/yolab-outputs",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            accept_patches(&server).await;
 
-            let failed = rescan_all(&host, catalog.path()).await.unwrap();
+            let failed = rescan_all(&kube, catalog.path()).await.unwrap();
 
             assert_eq!(failed, vec!["yolab-broken".to_string()]);
-            assert!(applied(&host)[0].contains("t0k"));
+            assert_eq!(saved(&patched(&server).await[0])["token"].value, "t0k");
             assert!(
-                !host.ran("yolab-leaving"),
+                !asked(&server, "yolab-leaving").await,
                 "an app being removed is left alone"
             );
         }

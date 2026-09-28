@@ -23,27 +23,6 @@ pub trait Host: Send + Sync + Clone {
         &self,
         args: &'a [&str],
     ) -> impl Future<Output = HostResult<String>> + Send + 'a;
-    fn kubectl<'a>(&self, args: &'a [&str])
-        -> impl Future<Output = HostResult<String>> + Send + 'a;
-    fn kubectl_json<'a>(
-        &self,
-        args: &'a [&str],
-    ) -> impl Future<Output = HostResult<Value>> + Send + 'a;
-    fn kubectl_apply<'a>(
-        &self,
-        manifest: &'a str,
-    ) -> impl Future<Output = HostResult<()>> + Send + 'a;
-    fn kubectl_write<'a>(
-        &self,
-        verb: &'a str,
-        _manifest: &'a str,
-    ) -> impl Future<Output = HostResult<()>> + Send + 'a {
-        async move {
-            Err(CmdError::Forbidden {
-                cmd: format!("kubectl {verb} -f - (not supported by this host)"),
-            })
-        }
-    }
     fn systemctl<'a>(
         &self,
         args: &'a [&str],
@@ -77,6 +56,48 @@ pub trait Host: Send + Sync + Clone {
         _timeout: Duration,
     ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
         self.run_cmd(bin, args)
+    }
+
+    fn run_cmd_env<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        _env: &'a [(&'a str, &'a str)],
+        _timeout: Duration,
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+        async move {
+            Err(CmdError::Failed {
+                cmd: exec::render(bin, args),
+                kind: exec::Failure::Other,
+                stderr: "not supported by this host".into(),
+            })
+        }
+    }
+
+    fn run_lines<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        _timeout: Duration,
+        _on_line: &'a (dyn Fn(String) + Send + Sync),
+    ) -> impl Future<Output = HostResult<bool>> + Send + 'a {
+        async move {
+            Err(CmdError::Failed {
+                cmd: exec::render(bin, args),
+                kind: exec::Failure::Other,
+                stderr: "not supported by this host".into(),
+            })
+        }
+    }
+
+    fn ceph_typed<'a, T: serde::de::DeserializeOwned + Send + 'a>(
+        &'a self,
+        args: &'a [&'a str],
+    ) -> impl Future<Output = HostResult<T>> + Send + 'a {
+        async move {
+            let v = self.ceph_json(args).await?;
+            serde_json::from_value(v).map_err(|e| CmdError::parse(exec::render("ceph", args), e))
+        }
     }
 
     fn reachable(&self) -> impl Future<Output = bool> + Send + '_ {
@@ -126,19 +147,6 @@ pub trait Host: Send + Sync + Clone {
             model::parse_pgs_brief("ceph pg dump pgs_brief", &raw)
         }
     }
-
-    fn kubectl_get_opt<'a>(
-        &'a self,
-        args: &'a [&str],
-    ) -> impl Future<Output = HostResult<Option<Value>>> + Send + 'a {
-        async move {
-            match self.kubectl_json(args).await {
-                Ok(v) => Ok(Some(v)),
-                Err(e) if e.is_not_found() => Ok(None),
-                Err(e) => Err(e),
-            }
-        }
-    }
 }
 
 #[derive(Clone, Default)]
@@ -182,43 +190,6 @@ impl Host for RealHost {
         crate::ceph_cli::ceph_volume_destructive(door, args)
     }
 
-    fn kubectl<'a>(
-        &self,
-        args: &'a [&str],
-    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
-        async move { crate::kubectl::run(args).await }
-    }
-
-    fn kubectl_json<'a>(
-        &self,
-        args: &'a [&str],
-    ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
-        async move { crate::kubectl::get_json(args).await }
-    }
-
-    fn kubectl_apply<'a>(
-        &self,
-        manifest: &'a str,
-    ) -> impl Future<Output = HostResult<()>> + Send + 'a {
-        async move { crate::kubectl::apply(manifest).await }
-    }
-
-    fn kubectl_write<'a>(
-        &self,
-        verb: &'a str,
-        manifest: &'a str,
-    ) -> impl Future<Output = HostResult<()>> + Send + 'a {
-        async move {
-            match verb {
-                "create" => crate::kubectl::create(manifest).await,
-                "replace" => crate::kubectl::replace(manifest).await,
-                other => Err(CmdError::Forbidden {
-                    cmd: format!("kubectl {other} -f -"),
-                }),
-            }
-        }
-    }
-
     fn systemctl<'a>(
         &self,
         args: &'a [&str],
@@ -242,6 +213,26 @@ impl Host for RealHost {
     ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
         async move { exec::output(bin, args, timeout).await }
     }
+
+    fn run_cmd_env<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        env: &'a [(&'a str, &'a str)],
+        timeout: Duration,
+    ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+        async move { exec::output_env_unthrottled(bin, args, env, timeout).await }
+    }
+
+    fn run_lines<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        timeout: Duration,
+        on_line: &'a (dyn Fn(String) + Send + Sync),
+    ) -> impl Future<Output = HostResult<bool>> + Send + 'a {
+        async move { exec::stream_lines(bin, args, timeout, on_line).await }
+    }
 }
 
 #[cfg(test)]
@@ -261,10 +252,13 @@ pub(crate) mod fake {
     type ScriptedAnswer = std::result::Result<String, String>;
     type Script = Vec<(String, VecDeque<ScriptedAnswer>)>;
 
+    type Env = Vec<(String, String)>;
+
     #[derive(Clone, Default)]
     pub(crate) struct FakeHost {
         calls: Arc<Mutex<Vec<String>>>,
         script: Arc<Mutex<Script>>,
+        envs: Arc<Mutex<Vec<(String, Env)>>>,
     }
 
     impl FakeHost {
@@ -292,6 +286,25 @@ pub(crate) mod fake {
         pub fn fail(self, prefix: &str, err: &str) -> Self {
             self.push(prefix, Err(err.to_string()));
             self
+        }
+
+        pub fn env_of(&self, needle: &str) -> Option<Env> {
+            self.envs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(cmd, _)| cmd.contains(needle))
+                .map(|(_, env)| env.clone())
+        }
+
+        pub fn envs_of(&self, needle: &str) -> Vec<Env> {
+            self.envs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(cmd, _)| cmd.contains(needle))
+                .map(|(_, env)| env.clone())
+                .collect()
         }
 
         fn answer(&self, cmd: &str) -> HostResult<String> {
@@ -406,43 +419,6 @@ pub(crate) mod fake {
             async move { me.answer(&format!("ceph-volume {}", args.join(" "))) }
         }
 
-        fn kubectl<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("kubectl {}", args.join(" "))) }
-        }
-
-        fn kubectl_json<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
-            let me = self.clone();
-            async move {
-                let cmd = format!("kubectl {}", args.join(" "));
-                let raw = me.answer(&cmd)?;
-                crate::exec::parse_json(&cmd, &raw)
-            }
-        }
-
-        fn kubectl_apply<'a>(
-            &self,
-            manifest: &'a str,
-        ) -> impl Future<Output = HostResult<()>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("kubectl-apply {manifest}")).map(|_| ()) }
-        }
-
-        fn kubectl_write<'a>(
-            &self,
-            verb: &'a str,
-            manifest: &'a str,
-        ) -> impl Future<Output = HostResult<()>> + Send + 'a {
-            let me = self.clone();
-            async move { me.answer(&format!("kubectl-{verb} {manifest}")).map(|_| ()) }
-        }
-
         fn systemctl<'a>(
             &self,
             args: &'a [&str],
@@ -462,6 +438,44 @@ pub(crate) mod fake {
         ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
             async move { Ok(output_of(me.answer(&format!("{bin} {}", args.join(" "))))) }
+        }
+
+        fn run_cmd_env<'a>(
+            &self,
+            bin: &'a str,
+            args: &'a [&'a str],
+            env: &'a [(&'a str, &'a str)],
+            _timeout: std::time::Duration,
+        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let cmd = format!("{bin} {}", args.join(" "));
+                me.envs.lock().unwrap().push((
+                    cmd.clone(),
+                    env.iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                ));
+                Ok(output_of(me.answer(&cmd)))
+            }
+        }
+
+        fn run_lines<'a>(
+            &self,
+            bin: &'a str,
+            args: &'a [&'a str],
+            _timeout: std::time::Duration,
+            on_line: &'a (dyn Fn(String) + Send + Sync),
+        ) -> impl Future<Output = HostResult<bool>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let (ok, text) = match me.answer(&format!("{bin} {}", args.join(" "))) {
+                    Ok(out) => (true, out),
+                    Err(e) => (false, e.to_string()),
+                };
+                text.lines().for_each(|l| on_line(l.to_string()));
+                Ok(ok)
+            }
         }
     }
 }
@@ -490,25 +504,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kubectl_get_opt_separates_absent_from_unreachable() {
-        let absent = FakeHost::new().fail(
-            "kubectl get configmap x",
-            "Error from server (NotFound): configmaps \"x\" not found",
-        );
+    async fn the_fake_keeps_the_environment_a_command_ran_with() {
+        let host = FakeHost::new().ok("restic snapshots", "[]");
+        host.run_cmd_env(
+            "restic",
+            &["snapshots", "--no-lock"],
+            &[("RESTIC_REPOSITORY", "s3:x/y")],
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            absent
-                .kubectl_get_opt(&["get", "configmap", "x"])
-                .await
-                .unwrap(),
-            None
+            host.env_of("restic snapshots"),
+            Some(vec![("RESTIC_REPOSITORY".into(), "s3:x/y".into())])
         );
-        let down = FakeHost::new().fail(
-            "kubectl get configmap x",
-            "The connection to the server localhost:6443 was refused",
+        assert!(
+            host.calls().iter().all(|c| !c.contains("s3:x/y")),
+            "the environment is never part of the logged command"
         );
-        assert!(down
-            .kubectl_get_opt(&["get", "configmap", "x"])
-            .await
-            .is_err());
     }
 }

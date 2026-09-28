@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::host::Host;
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
 pub struct CephJoinBundle {
@@ -49,8 +50,8 @@ fn strip_port(raw: &str) -> Option<String> {
     }
 }
 
-async fn keyring(entity: &str) -> anyhow::Result<String> {
-    let text = crate::ceph_cli::ceph(&["auth", "get", entity]).await?;
+async fn keyring<H: Host>(host: &H, entity: &str) -> anyhow::Result<String> {
+    let text = host.ceph(&["auth", "get", entity]).await?;
     if !text.contains("key =") {
         anyhow::bail!("`ceph auth get {entity}` returned no key");
     }
@@ -58,23 +59,28 @@ async fn keyring(entity: &str) -> anyhow::Result<String> {
 }
 
 pub async fn ceph_join_bundle() -> Result<Json<CephJoinBundle>> {
-    let fsid = crate::ceph_cli::cluster_fsid()
+    Ok(Json(bundle(&crate::host::RealHost).await?))
+}
+
+async fn bundle<H: Host>(host: &H) -> anyhow::Result<CephJoinBundle> {
+    let fsid = host
+        .cluster_fsid()
         .await
         .map_err(|e| anyhow::anyhow!("ceph is not reachable from this node: {e}"))?;
 
-    let dump = crate::ceph_cli::ceph_json(&["mon", "dump"]).await?;
+    let dump = host.ceph_json(&["mon", "dump"]).await?;
     let mon_addrs = parse_mon_addrs(&dump);
     if mon_addrs.is_empty() {
-        return Err(anyhow::anyhow!("no mon addresses in `ceph mon dump`").into());
+        anyhow::bail!("no mon addresses in `ceph mon dump`");
     }
 
-    Ok(Json(CephJoinBundle {
+    Ok(CephJoinBundle {
         fsid,
-        mon_keyring: keyring("mon.").await?,
-        admin_keyring: keyring("client.admin").await?,
-        bootstrap_osd_keyring: keyring("client.bootstrap-osd").await?,
+        mon_keyring: keyring(host, "mon.").await?,
+        admin_keyring: keyring(host, "client.admin").await?,
+        bootstrap_osd_keyring: keyring(host, "client.bootstrap-osd").await?,
         mon_addrs,
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -147,5 +153,45 @@ mod tests {
         assert!(parse_mon_addrs(&json!({})).is_empty());
         assert!(parse_mon_addrs(&json!({"mons": []})).is_empty());
         assert!(parse_mon_addrs(&json!({"mons": [{"name": "n"}]})).is_empty());
+    }
+
+    mod against_ceph {
+        use super::*;
+        use crate::host::fake::FakeHost;
+
+        const KEY: &str = "[mon.]\n\tkey = AQD==\n";
+        const DUMP: &str =
+            r#"{"mons": [{"public_addrs": {"addrvec": [{"addr": "[fd00::1]:3300"}]}}]}"#;
+
+        #[tokio::test]
+        async fn the_bundle_carries_the_fsid_mons_and_all_three_keys() {
+            let host = FakeHost::new()
+                .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)
+                .ok("ceph mon dump", DUMP)
+                .ok("ceph auth get", KEY);
+            let b = bundle(&host).await.unwrap();
+            assert_eq!(b.fsid, "abc-123");
+            assert_eq!(b.mon_addrs, vec!["fd00::1"]);
+            assert!(host.ran("ceph auth get client.bootstrap-osd"));
+            assert_eq!(b.admin_keyring, KEY);
+        }
+
+        #[tokio::test]
+        async fn a_key_that_is_not_there_is_never_handed_over_empty() {
+            let host = FakeHost::new()
+                .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)
+                .ok("ceph mon dump", DUMP)
+                .ok("ceph auth get", "");
+            assert!(bundle(&host).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_cluster_without_mons_hands_over_nothing() {
+            let host = FakeHost::new()
+                .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)
+                .ok("ceph mon dump", r#"{"mons": []}"#);
+            assert!(bundle(&host).await.is_err());
+            assert!(!host.ran("ceph auth get"));
+        }
     }
 }

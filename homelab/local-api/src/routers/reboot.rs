@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::{extract::State, Json};
 
-use crate::{auth::CLUSTER_AUTH_HEADER, kubectl, AppState};
+use crate::{auth::CLUSTER_AUTH_HEADER, AppState};
 
 const REBOOT_DELAY_SECS: u64 = 3;
 
@@ -10,11 +10,9 @@ fn spawn_reboot() {
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(REBOOT_DELAY_SECS)).await;
         tracing::warn!("rebooting this machine now");
-        let _ = tokio::process::Command::new("systemctl")
-            .arg("reboot")
-            .stdin(std::process::Stdio::null())
-            .status()
-            .await;
+        if let Err(e) = crate::host::Host::systemctl(&crate::host::RealHost, &["reboot"]).await {
+            tracing::error!("reboot did not start: {e}");
+        }
     });
 }
 
@@ -27,7 +25,7 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(900);
 const SETTLE_POLL: Duration = Duration::from_secs(10);
 
 struct RebootFleet {
-    client: reqwest::Client,
+    client: crate::http::Client,
     port: u16,
     token: String,
 }
@@ -36,7 +34,7 @@ impl crate::runtime::fleet::Fleet for RebootFleet {
     async fn act(&self, node: &str) -> anyhow::Result<()> {
         let r = self
             .client
-            .post(format!("http://[{node}]:{}/api/system/reboot", self.port))
+            .post(crate::http::peer_url(node, self.port, "/api/system/reboot"))
             .header(CLUSTER_AUTH_HEADER, &self.token)
             .timeout(Duration::from_secs(10))
             .send()
@@ -47,7 +45,7 @@ impl crate::runtime::fleet::Fleet for RebootFleet {
 
     async fn settled(&self, node: &str) -> bool {
         self.client
-            .get(format!("http://[{node}]:{}/api/status", self.port))
+            .get(crate::http::peer_url(node, self.port, "/api/status"))
             .header(CLUSTER_AUTH_HEADER, &self.token)
             .timeout(Duration::from_secs(5))
             .send()
@@ -59,11 +57,14 @@ impl crate::runtime::fleet::Fleet for RebootFleet {
 pub async fn reboot_all(State(state): State<AppState>) -> Json<serde_json::Value> {
     let cfg = state.config.clone();
     let self_ip = cfg.node_ipv6.clone();
-    let nodes = kubectl::get_nodes().await.unwrap_or_default();
-    let peers = crate::runtime::fleet::order(&kubectl::peer_ipv6(&nodes, &self_ip), &self_ip);
+    let nodes = match state.kube.client().await {
+        Ok(client) => crate::k8s::nodes(&client).await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let peers = crate::runtime::fleet::order(&crate::k8s::peer_ipv6(&nodes, &self_ip), &self_ip);
 
     let fleet = RebootFleet {
-        client: reqwest::Client::new(),
+        client: crate::http::client(),
         port: cfg.port,
         token: cfg.cluster_token(),
     };

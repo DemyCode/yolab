@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::ceph::model::{FsEntry, OsdStat};
+use crate::host::Host;
 use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
 
 const FS_NAME: &str = "yolab-fs";
@@ -37,52 +38,61 @@ impl Controller for CephFsController {
         &[Activity::Restore]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        ensure().await
+        ensure(&crate::host::HOST).await
     }
 }
 
-pub(crate) async fn ensure() -> Result<Tick> {
-    let stat: OsdStat = crate::ceph_cli::ceph_typed(&["osd", "stat"]).await?;
-    if stat.num_up_osds == 0 {
-        return Ok(Tick::Idle("no OSD is up yet".into()));
-    }
-
-    let fs_ls: Vec<FsEntry> = crate::ceph_cli::ceph_typed(&["fs", "ls"]).await?;
-    if has_named(&fs_ls, FS_NAME) {
-        ensure_subvolumegroup().await?;
-        return Ok(Tick::Done);
-    }
-
-    let pool_ls = crate::ceph_cli::ceph(&["osd", "pool", "ls"]).await?;
-    for (pool, pgs) in [(META_POOL, "16"), (DATA_POOL, "32")] {
-        if pool_listed(&pool_ls, pool) {
-            continue;
+#[allow(clippy::manual_async_fn)]
+pub(crate) fn ensure<H: Host>(
+    host: &H,
+) -> impl std::future::Future<Output = Result<Tick>> + Send + '_ {
+    async move {
+        let stat: OsdStat = host.ceph_typed(&["osd", "stat"]).await?;
+        if stat.num_up_osds == 0 {
+            return Ok(Tick::Idle("no OSD is up yet".into()));
         }
-        crate::ceph_cli::ceph(&["osd", "pool", "create", pool, pgs, pgs]).await?;
-        crate::ceph_cli::ceph(&[
-            "osd",
-            "pool",
-            "set",
-            pool,
-            "size",
-            "1",
-            "--yes-i-really-mean-it",
-        ])
-        .await?;
+
+        let fs_ls: Vec<FsEntry> = host.ceph_typed(&["fs", "ls"]).await?;
+        if has_named(&fs_ls, FS_NAME) {
+            ensure_subvolumegroup(host).await?;
+            return Ok(Tick::Done);
+        }
+
+        let pool_ls = host.ceph(&["osd", "pool", "ls"]).await?;
+        for (pool, pgs) in [(META_POOL, "16"), (DATA_POOL, "32")] {
+            if pool_listed(&pool_ls, pool) {
+                continue;
+            }
+            host.ceph(&["osd", "pool", "create", pool, pgs, pgs])
+                .await?;
+            host.ceph(&[
+                "osd",
+                "pool",
+                "set",
+                pool,
+                "size",
+                "1",
+                "--yes-i-really-mean-it",
+            ])
+            .await?;
+        }
+        host.ceph(&["fs", "new", FS_NAME, META_POOL, DATA_POOL, "--force"])
+            .await?;
+        tracing::info!("created CephFS {FS_NAME}");
+        ensure_subvolumegroup(host).await?;
+        Ok(Tick::Done)
     }
-    crate::ceph_cli::ceph(&["fs", "new", FS_NAME, META_POOL, DATA_POOL, "--force"]).await?;
-    tracing::info!("created CephFS {FS_NAME}");
-    ensure_subvolumegroup().await?;
-    Ok(Tick::Done)
 }
 
-async fn ensure_subvolumegroup() -> Result<()> {
-    let ls: Vec<FsEntry> =
-        crate::ceph_cli::ceph_typed(&["fs", "subvolumegroup", "ls", FS_NAME]).await?;
+async fn ensure_subvolumegroup<H: Host>(host: &H) -> Result<()> {
+    let ls: Vec<FsEntry> = host
+        .ceph_typed(&["fs", "subvolumegroup", "ls", FS_NAME])
+        .await?;
     if has_named(&ls, SUBVOLUME_GROUP) {
         return Ok(());
     }
-    crate::ceph_cli::ceph(&["fs", "subvolumegroup", "create", FS_NAME, SUBVOLUME_GROUP]).await?;
+    host.ceph(&["fs", "subvolumegroup", "create", FS_NAME, SUBVOLUME_GROUP])
+        .await?;
     Ok(())
 }
 
@@ -113,5 +123,72 @@ mod tests {
         assert!(pool_listed(ls, "yolab-fs-metadata"));
         assert!(!pool_listed(ls, "metadata"));
         assert!(!pool_listed(ls, "yolab-fs-metadata-extra"));
+    }
+
+    mod against_ceph {
+        use super::*;
+        use crate::host::fake::FakeHost;
+
+        #[tokio::test]
+        async fn nothing_is_created_before_an_osd_is_up() {
+            let host = FakeHost::new().ok(
+                "ceph osd stat",
+                r#"{"num_osds": 1, "num_up_osds": 0, "num_in_osds": 0}"#,
+            );
+            assert!(matches!(ensure(&host).await.unwrap(), Tick::Idle(_)));
+            assert!(!host.ran("ceph fs"));
+        }
+
+        #[tokio::test]
+        async fn an_existing_filesystem_only_gets_its_subvolume_group() {
+            let host = FakeHost::new()
+                .ok(
+                    "ceph osd stat",
+                    r#"{"num_osds": 1, "num_up_osds": 1, "num_in_osds": 1}"#,
+                )
+                .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
+                .ok("ceph fs subvolumegroup ls", "[]")
+                .ok("ceph fs subvolumegroup create", "");
+            ensure(&host).await.unwrap();
+            assert!(host.ran("ceph fs subvolumegroup create yolab-fs csi"));
+            assert!(!host.ran("ceph fs new"));
+            assert!(!host.ran("ceph osd pool create"));
+        }
+
+        #[tokio::test]
+        async fn a_missing_filesystem_is_made_from_the_pools_it_lacks() {
+            let host = FakeHost::new()
+                .ok(
+                    "ceph osd stat",
+                    r#"{"num_osds": 1, "num_up_osds": 1, "num_in_osds": 1}"#,
+                )
+                .ok("ceph fs ls", "[]")
+                .ok("ceph osd pool ls", "yolab-fs-metadata\n")
+                .ok("ceph osd pool create", "")
+                .ok("ceph osd pool set", "")
+                .ok("ceph fs new", "")
+                .ok("ceph fs subvolumegroup ls", r#"[{"name": "csi"}]"#);
+            ensure(&host).await.unwrap();
+            assert!(host.ran("ceph osd pool create yolab-fs-data0 32 32"));
+            assert!(!host.ran("ceph osd pool create yolab-fs-metadata"));
+            assert!(
+                host.position("ceph osd pool create yolab-fs-data0") < host.position("ceph fs new"),
+                "{:?}",
+                host.calls()
+            );
+            assert!(!host.ran("ceph fs subvolumegroup create"));
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_listing_stops_before_anything_is_created() {
+            let host = FakeHost::new()
+                .ok(
+                    "ceph osd stat",
+                    r#"{"num_osds": 1, "num_up_osds": 1, "num_in_osds": 1}"#,
+                )
+                .ok("ceph fs ls", r#"{"not": "a list"}"#);
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph osd pool create") && !host.ran("ceph fs new"));
+        }
     }
 }

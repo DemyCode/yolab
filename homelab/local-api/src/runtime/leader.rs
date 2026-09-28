@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{json, Value};
 
-use crate::exec::CmdError;
+use kube::Client;
+
+use crate::k8s::Kube;
 
 pub const LEASE_NAME: &str = "yolab-disk-reconciler";
 pub const LEASE_NS: &str = "rook-ceph";
@@ -55,7 +57,7 @@ fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
 
-pub fn start(identity: String) -> Leadership {
+pub fn start(identity: String, kube: Kube) -> Leadership {
     let last = Arc::new(AtomicI64::new(0));
     let handle = Leadership {
         last_renewed_ms: last.clone(),
@@ -69,7 +71,11 @@ pub fn start(identity: String) -> Leadership {
         let mut seen: Option<(String, Instant)> = None;
         loop {
             let attempt_started = now_ms();
-            match try_acquire(&identity, Utc::now(), &mut seen).await {
+            let attempt = match kube.client().await {
+                Ok(client) => try_acquire(&client, &identity, Utc::now(), &mut seen).await,
+                Err(e) => Err(e),
+            };
+            match attempt {
                 Ok(true) => {
                     if !IS_ME.swap(true, Ordering::SeqCst) {
                         tracing::info!("leader: {identity} now holds the cluster lease");
@@ -96,13 +102,15 @@ fn may_stand(identity: &str) -> bool {
     !identity.trim().is_empty()
 }
 
-pub async fn held_by(identity: &str) -> Result<bool, CmdError> {
+fn lease_ref() -> Value {
+    crate::k8s::reference("coordination.k8s.io/v1", "Lease", LEASE_NS, LEASE_NAME)
+}
+
+pub async fn held_by(client: &Client, identity: &str) -> anyhow::Result<bool> {
     if !may_stand(identity) {
         return Ok(false);
     }
-    let lease =
-        crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
-            .await?;
+    let lease = crate::k8s::get(client, &lease_ref()).await?;
     Ok(lease.is_some_and(|l| holds_live(&l, identity, Utc::now())))
 }
 
@@ -187,36 +195,30 @@ fn manifest(
 }
 
 async fn try_acquire(
+    client: &Client,
     identity: &str,
     now: DateTime<Utc>,
     seen: &mut Option<(String, Instant)>,
-) -> Result<bool, CmdError> {
-    let current =
-        crate::kubectl::get_opt(&["get", "lease", LEASE_NAME, "-n", LEASE_NS, "-o", "json"])
-            .await?;
+) -> anyhow::Result<bool> {
+    let current = crate::k8s::get(client, &lease_ref()).await?;
     let Some(lease) = current else {
-        return match crate::kubectl::create(&manifest(identity, now, now, None).to_string()).await {
+        return match crate::k8s::create(client, &manifest(identity, now, now, None)).await {
             Ok(()) => Ok(true),
-            Err(e) if e.is_already_exists() => Ok(false),
+            Err(e) if crate::k8s::refused_with(&e, 409) => Ok(false),
             Err(e) => Err(e),
         };
     };
     let Some(version) = lease["metadata"]["resourceVersion"].as_str() else {
-        return Err(CmdError::parse(
-            "kubectl get lease",
-            "lease has no resourceVersion",
-        ));
+        anyhow::bail!("the lease has no resourceVersion");
     };
     let unchanged = unchanged_for(seen, version, Instant::now());
     match decide(&lease, identity, now, unchanged) {
         LeaseDecision::Yield => Ok(false),
         LeaseDecision::Take { acquire_time } => {
             let rv = Some(version);
-            match crate::kubectl::replace(&manifest(identity, now, acquire_time, rv).to_string())
-                .await
-            {
+            match crate::k8s::replace(client, &manifest(identity, now, acquire_time, rv)).await {
                 Ok(()) => Ok(true),
-                Err(e) if e.is_conflict() => Ok(false),
+                Err(e) if crate::k8s::refused_with(&e, 409) => Ok(false),
                 Err(e) => Err(e),
             }
         }
@@ -320,12 +322,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_without_a_name_never_holds_the_lease_for_a_manual_run() {
-        assert!(!held_by("").await.unwrap());
+        assert!(!held_by(&crate::k8s::testing::unreachable(), "")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
     async fn starting_without_a_name_yields_a_handle_that_never_leads() {
-        assert!(!start(String::new()).is_leader());
+        assert!(!start(
+            String::new(),
+            Kube::with(crate::k8s::testing::unreachable())
+        )
+        .is_leader());
     }
 
     #[test]
