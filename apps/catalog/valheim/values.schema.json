@@ -26,7 +26,9 @@
         "server_pass": {
           "type": "string",
           "title": "Server password",
-          "description": "Minimum 5 characters"
+          "description": "Minimum 5 characters",
+          "writeOnly": true,
+          "generate": true
         },
         "server_public": {
           "type": "boolean",
@@ -35,34 +37,24 @@
         }
       }
     },
-    "yolab": {
+    "outputs": {
       "type": "object",
-      "description": "Injected by local-api at install time; not user-editable.",
+      "readOnly": true,
       "properties": {
-        "platformApiUrl": {
-          "type": "string"
+        "server_pass": {
+          "type": "string",
+          "title": "Server password",
+          "format": "secret",
+          "source": {
+            "config": "server_pass"
+          }
         },
-        "accountToken": {
-          "type": "string"
-        },
-        "serviceName": {
-          "type": "string"
-        },
-        "images": {
-          "type": "object"
-        },
-        "gateway": {
-          "type": "object",
-          "properties": {
-            "upstream": {
-              "type": "string"
-            },
-            "caddyfile": {
-              "type": "string"
-            },
-            "pvcName": {
-              "type": "string"
-            }
+        "ipv6": {
+          "type": "string",
+          "title": "IPv6 Address",
+          "format": "text",
+          "source": {
+            "logs": "YOLAB_OUTPUT ipv6 (\\S+)"
           }
         }
       }

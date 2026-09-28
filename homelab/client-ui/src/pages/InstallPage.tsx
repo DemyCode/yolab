@@ -31,6 +31,12 @@ import {
   instanceNameFor,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
+import {
+  addressField,
+  configSchemaOf,
+  generatedFields,
+  uiSchemaFor,
+} from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type {
@@ -39,32 +45,6 @@ import type {
   CatalogApp,
   DomainResponse,
 } from "@/types/apps";
-
-interface SchemaProp {
-  type?: string;
-  title?: string;
-  default?: unknown;
-  description?: string;
-  format?: string;
-  enum?: string[];
-  minLength?: number;
-  maxLength?: number;
-}
-
-interface ConfigSchema {
-  properties?: Record<string, SchemaProp>;
-  required?: string[];
-}
-
-function configSchema(schema: object | undefined): ConfigSchema {
-  if (!schema) return {};
-  const s = schema as ConfigSchema & { properties?: { config?: ConfigSchema } };
-  const nested = s.properties?.config;
-  if (nested && typeof nested === "object" && "properties" in nested) {
-    return nested;
-  }
-  return s.properties ? s : {};
-}
 
 export function InstallPage() {
   const { appId } = useParams<{ appId: string }>();
@@ -151,7 +131,7 @@ export function InstallPage() {
     };
   }, [backupNamespace, copyData]);
 
-  const schema = useMemo(() => configSchema(app?.schema), [app?.schema]);
+  const schema = useMemo(() => configSchemaOf(app?.schema), [app?.schema]);
   const required = useMemo(
     () => new Set(schema.required ?? []),
     [schema.required],
@@ -169,34 +149,17 @@ export function InstallPage() {
   );
   const instanceName = instanceNameFor(origin.mode, appId ?? "", sourceDef);
 
-  const addressKey = useMemo(
-    () =>
-      Object.entries(schema.properties ?? {}).find(
-        ([, p]) => p.format === "tunnel",
-      )?.[0],
-    [schema.properties],
-  );
+  const addressKey = useMemo(() => addressField(schema), [schema]);
 
   const rjsfSchema = useMemo(
     () => ({ type: "object", ...schema }) as RJSFSchema,
     [schema],
   );
 
-  const rjsfUiSchema = useMemo(() => {
-    const chartUi = (app?.uischema ?? {}) as Record<string, unknown>;
-    const ui: Record<string, unknown> = { ...chartUi };
-    if (addressKey) {
-      const existing = (ui[addressKey] ?? {}) as Record<string, unknown>;
-      ui[addressKey] = {
-        ...existing,
-        "ui:options": {
-          ...((existing["ui:options"] as object) ?? {}),
-          domain: domain.data?.domain ?? "",
-        },
-      };
-    }
-    return ui;
-  }, [app?.uischema, addressKey, domain.data?.domain]);
+  const rjsfUiSchema = useMemo(
+    () => uiSchemaFor(schema, domain.data?.domain ?? ""),
+    [schema, domain.data?.domain],
+  );
 
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const seeded = useRef<string | null>(null);
@@ -209,11 +172,8 @@ export function InstallPage() {
       ? { ...(sourceDef.config as Record<string, unknown>) }
       : {};
     for (const [name, prop] of Object.entries(schema.properties)) {
-      const widget = ((
-        app?.uischema as Record<string, Record<string, unknown>>
-      )?.[name] ?? {})["ui:widget"];
-      if (widget === "PasswordWidget") {
-        if (!sourceDef) {
+      if (prop.writeOnly) {
+        if (prop.generate && !sourceDef) {
           seed[name] = generateSecret(Math.max(24, prop.minLength ?? 0));
         }
       } else if (seed[name] === undefined && prop.default !== undefined) {
@@ -228,7 +188,6 @@ export function InstallPage() {
   }, [
     appId,
     schema.properties,
-    app?.uischema,
     sourceDef,
     addressKey,
     origin.mode,
@@ -241,12 +200,7 @@ export function InstallPage() {
       : { ...formData, [addressKey]: instanceName };
   }, [formData, addressKey, instanceName]);
 
-  const generatedSecrets = useMemo<[string, string][]>(() => {
-    const ui = (app?.uischema ?? {}) as Record<string, Record<string, unknown>>;
-    return Object.entries(schema.properties ?? {})
-      .filter(([n]) => ui[n]?.["ui:widget"] === "PasswordWidget")
-      .map(([n, p]) => [n, p.title ?? n]);
-  }, [app?.uischema, schema.properties]);
+  const generatedSecrets = useMemo(() => generatedFields(schema), [schema]);
 
   const subdomain =
     addressKey && typeof values[addressKey] === "string"

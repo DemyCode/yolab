@@ -1,3 +1,4 @@
+mod appschema;
 mod auth;
 mod boot;
 mod cache;
@@ -18,6 +19,7 @@ mod kubectl;
 mod mesh;
 mod notify;
 mod ops;
+mod outputs;
 mod proc;
 mod records;
 mod router;

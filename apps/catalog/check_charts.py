@@ -170,7 +170,7 @@ def check_db_init_is_idempotent(app, script, container, fail):
                 )
 
 
-def check(app, docs, fail, chart_yaml=""):
+def check(app, docs, fail, chart_yaml="", schema=None):
     kinds = {}
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
@@ -383,23 +383,91 @@ def check(app, docs, fail, chart_yaml=""):
         )
     )
     if renders_file_explorer:
-        declared = set()
-        try:
-            ann = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
-            declared = {
-                o.get("key") for o in json.loads(ann.get("yolab.io/outputs") or "[]")
-            }
-        except (yaml.YAMLError, json.JSONDecodeError, AttributeError, TypeError):
-            fail(
-                app, "renders the file explorer but its yolab.io/outputs is unreadable"
-            )
+        outputs = ((schema or {}).get("properties") or {}).get("outputs") or {}
+        declared = outputs.get("properties") or {}
         for key in ("file_explorer_url", "file_explorer_password"):
             if key not in declared:
                 fail(
                     app,
-                    f"renders the file explorer but yolab.io/outputs "
-                    f"does not declare {key}",
+                    f"renders the file explorer but its schema's outputs "
+                    f"do not declare {key}",
                 )
+            elif declared[key].get("when") != EXPLORER_ON:
+                fail(
+                    app,
+                    f"output {key} is not conditioned on the file explorer being "
+                    f"on, so an app installed without it waits for it forever",
+                )
+
+
+EXPLORER_ON = {"properties": {"file_explorer_enabled": {"const": True}}}
+OUTPUT_FORMATS = {"text", "uri", "secret", "multiline"}
+LEGACY_ANNOTATIONS = ("yolab.io/uischema", "yolab.io/outputs")
+
+
+def check_schema(app, schema, chart_yaml, fail):
+    try:
+        annotations = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
+    except yaml.YAMLError:
+        annotations = {}
+    for legacy in LEGACY_ANNOTATIONS:
+        if legacy in annotations:
+            fail(
+                app,
+                f"Chart.yaml still carries {legacy} — the form and the outputs "
+                f"are declared in values.schema.json now",
+            )
+
+    props = schema.get("properties") or {}
+    if "yolab" in props:
+        fail(
+            app,
+            "values.schema.json describes the platform's `yolab` values — "
+            "they are injected by YoLab, not chosen by whoever installs the app",
+        )
+
+    config = (props.get("config") or {}).get("properties") or {}
+    tunnels = [n for n, p in config.items() if p.get("format") == "tunnel"]
+    if len(tunnels) > 1:
+        fail(app, f"more than one address field: {', '.join(tunnels)}")
+    for name, prop in config.items():
+        if prop.get("generate") and not prop.get("writeOnly"):
+            fail(app, f"config.{name} is generated but not marked writeOnly")
+
+    outputs = (props.get("outputs") or {}).get("properties") or {}
+    for key, out in outputs.items():
+        where = f"outputs.{key}"
+        if not isinstance(out.get("title"), str) or not out["title"].strip():
+            fail(app, f"{where} has no title to show")
+        if out.get("format", "text") not in OUTPUT_FORMATS:
+            fail(
+                app,
+                f"{where} has format {out.get('format')!r}, not one of "
+                f"{sorted(OUTPUT_FORMATS)}",
+            )
+        source = out.get("source")
+        if not isinstance(source, dict) or len(source) != 1:
+            fail(app, f'{where} needs exactly one source: {{"logs": ...}} or {{"config": ...}}')
+        elif "logs" in source:
+            try:
+                if re.compile(source["logs"]).groups < 1:
+                    fail(app, f"{where}: its logs pattern has no capture group")
+            except (re.error, TypeError) as e:
+                fail(app, f"{where}: its logs pattern does not compile ({e})")
+        elif "config" in source:
+            field = source["config"]
+            if field not in config:
+                fail(app, f"{where} shows config.{field}, which does not exist")
+            elif not config[field].get("generate"):
+                fail(
+                    app,
+                    f"{where} shows config.{field}, which the person typed "
+                    f"themselves — only generated values need showing",
+                )
+        else:
+            fail(app, f"{where} has an unknown source {sorted(source)}")
+        if "when" in out and not isinstance(out["when"], (dict, bool)):
+            fail(app, f"{where}: `when` must be a schema")
 
 
 def main(argv):
@@ -458,7 +526,16 @@ def main(argv):
             except yaml.YAMLError as e:
                 fail(app, f"rendered invalid YAML: {e}")
                 continue
-            check(app, docs, fail, text)
+            schema_path = Path(chart_dir, "values.schema.json")
+            try:
+                schema = json.loads(schema_path.read_text())
+            except FileNotFoundError:
+                schema = {}
+            except json.JSONDecodeError as e:
+                fail(app, f"values.schema.json is not valid JSON: {e}")
+                schema = {}
+            check_schema(app, schema, text, fail)
+            check(app, docs, fail, text, schema)
 
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:

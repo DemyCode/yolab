@@ -27,3 +27,19 @@ export function generateSecret(length = 24): string {
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
 }
+
+export function relativeTime(
+  input: string | number | Date,
+  now: Date = new Date(),
+): string {
+  const seconds = Math.round(
+    (now.getTime() - new Date(input).getTime()) / 1000,
+  );
+  if (!Number.isFinite(seconds)) return "";
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
+  return formatDateTime(input);
+}

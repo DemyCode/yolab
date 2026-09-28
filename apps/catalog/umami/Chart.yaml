@@ -3,7 +3,7 @@ name: umami
 description: "Privacy-focused, cookie-free website analytics"
 home: https://github.com/umami-software/umami
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "2"
 
 dependencies:
@@ -15,18 +15,3 @@ annotations:
   yolab.io/display-name: "Umami"
   yolab.io/icon: "📉"
   yolab.io/category: "monitoring"
-  yolab.io/uischema: |
-    {
-      "subdomain": {
-        "ui:widget": "TunnelWidget"
-      },
-      "app_secret": {
-        "ui:widget": "PasswordWidget"
-      }
-    }
-  yolab.io/outputs: |
-    [
-      { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" },
-      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
-      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
-    ]

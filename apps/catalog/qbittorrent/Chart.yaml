@@ -3,7 +3,7 @@ name: qbittorrent
 description: "BitTorrent client with a web interface"
 home: https://www.qbittorrent.org
 type: application
-version: 0.1.2
+version: 0.1.3
 appVersion: "5"
 
 dependencies:
@@ -15,17 +15,3 @@ annotations:
   yolab.io/display-name: "qBittorrent"
   yolab.io/icon: "⬇️"
   yolab.io/category: "utilities"
-  yolab.io/uischema: |
-    {
-      "subdomain": {
-        "ui:widget": "TunnelWidget"
-      }
-    }
-  yolab.io/outputs: |
-    [
-      { "key": "url", "label": "Web URL", "type": "url", "pattern": "YOLAB_OUTPUT url (\\S+)" },
-      { "key": "username", "label": "Username", "type": "text", "pattern": "The WebUI administrator username is: (\\S+)" },
-      { "key": "password", "label": "Temporary password", "type": "text", "pattern": "A temporary password is provided for this session: (\\S+)" },
-      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
-      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
-    ]

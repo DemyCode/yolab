@@ -20,28 +20,9 @@ pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_BACKUP: &str = "yolab.io/backup";
-const ANN_OUTPUTS: &str = "yolab.io/outputs";
 const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
 const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
-const LOGS_SCAN_TAIL: u32 = 500;
 const LOGS_FOLLOW_TAIL: u32 = 100;
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AppOutput {
-    pub key: String,
-    pub label: String,
-    pub value: String,
-    #[serde(rename = "type")]
-    pub type_: String,
-}
-
-#[derive(Serialize, Clone)]
-pub struct OutputSpec {
-    pub key: String,
-    pub label: String,
-    #[serde(rename = "type")]
-    pub type_: String,
-}
 
 #[derive(Serialize)]
 pub struct AppInfo {
@@ -50,10 +31,16 @@ pub struct AppInfo {
     pub instance_id: Option<String>,
     pub status: String,
     pub detail: String,
-    pub outputs: Vec<AppOutput>,
-    pub outputs_spec: Vec<OutputSpec>,
+    pub outputs: Vec<crate::outputs::ShownOutput>,
     pub config: serde_json::Map<String, Value>,
     pub backup: AppBackupStatus,
+}
+
+pub(crate) struct InstalledApp {
+    pub namespace: String,
+    pub app_id: String,
+    pub settings: serde_json::Map<String, Value>,
+    pub annotations: serde_json::Map<String, Value>,
 }
 
 #[derive(Serialize)]
@@ -86,7 +73,6 @@ pub struct CatalogApp {
     pub category: String,
     pub chart_version: String,
     pub schema: Value,
-    pub uischema: Value,
 }
 
 #[derive(Serialize)]
@@ -97,8 +83,8 @@ pub struct PodInfo {
 }
 
 #[derive(Serialize)]
-pub struct ScanOutputsResponse {
-    pub outputs: Vec<AppOutput>,
+pub struct OutputsResponse {
+    pub outputs: Vec<crate::outputs::ShownOutput>,
 }
 
 #[derive(Serialize)]
@@ -131,18 +117,6 @@ async fn annotate_ns(ns: &str, key: &str, value: &str) {
 const CONFIG_SECRET: &str = "yolab-config";
 const CONFIG_SECRET_KEY: &str = "config.json";
 const REDACTED: &str = "__redacted__";
-
-fn credential_fields(uischema: &Value) -> std::collections::HashSet<String> {
-    uischema
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .filter(|(_, spec)| spec["ui:widget"] == "PasswordWidget")
-                .map(|(name, _)| name.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 fn redact_credentials(
     config: &serde_json::Map<String, Value>,
@@ -237,7 +211,7 @@ pub struct AppDefinition {
 pub(crate) async fn write_definition(
     ns: &str,
     def: &AppDefinition,
-    uischema: &Value,
+    app: &crate::appschema::AppSchema,
 ) -> anyhow::Result<()> {
     let full = serde_json::to_string(def)?;
     let config_json = serde_json::to_string(&def.config)?;
@@ -251,13 +225,68 @@ pub(crate) async fn write_definition(
         &[("yolab.io/managed", "true")],
     )
     .await?;
-    let redacted = redact_credentials(&def.config, &credential_fields(uischema));
+    record_definition(ns, def);
+    let redacted = redact_credentials(&def.config, &app.credentials());
     annotate_ns(ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
     annotate_ns(ns, ANN_BACKUP, &serde_json::to_string(&def.backup)?).await;
+    crate::runtime::wake("outputs");
     Ok(())
 }
 
 pub(crate) async fn read_definition(ns: &str) -> anyhow::Result<AppDefinition> {
+    match read_definition_from_cluster(ns).await {
+        Ok(def) => {
+            take_definition_in(ns, &def);
+            Ok(def)
+        }
+        Err(e) => match stored_definition(ns) {
+            Some(def) => {
+                tracing::warn!(
+                    "{ns}: its saved settings could not be read from the cluster ({e}) — using the \
+                     copy replicated to this machine"
+                );
+                Ok(def)
+            }
+            None => Err(e),
+        },
+    }
+}
+
+fn stored_definition(ns: &str) -> Option<AppDefinition> {
+    crate::store::locked().app_definition(ns).unwrap_or_else(|e| {
+        tracing::error!("{ns}: the replicated copy of its settings is unreadable ({e})");
+        None
+    })
+}
+
+fn take_definition_in(ns: &str, def: &AppDefinition) {
+    let mut store = crate::store::locked();
+    match store.import_app_definition(ns, def) {
+        Ok(true) => {
+            if let Err(e) = store.persist(&crate::store::default_path()) {
+                tracing::warn!("{ns}: the desired-state store could not be saved ({e})");
+            }
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!("{ns}: could not be taken into the desired-state store ({e})"),
+    }
+}
+
+fn record_definition(ns: &str, def: &AppDefinition) {
+    let mut store = crate::store::locked();
+    if let Err(e) = store.set_app_definition(ns, def) {
+        tracing::warn!(
+            "{ns}: its settings were saved to the cluster but not recorded in the desired-state \
+             store ({e})"
+        );
+        return;
+    }
+    if let Err(e) = store.persist(&crate::store::default_path()) {
+        tracing::warn!("{ns}: the desired-state store could not be saved ({e})");
+    }
+}
+
+async fn read_definition_from_cluster(ns: &str) -> anyhow::Result<AppDefinition> {
     let data = crate::kubectl::get_secret(CONFIG_SECRET, ns)
         .await?
         .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
@@ -282,18 +311,18 @@ pub(crate) fn redact_definition(
     def: &AppDefinition,
     catalog_dir: &std::path::Path,
 ) -> AppDefinition {
-    let ui = chart_uischema(catalog_dir, &def.app_id);
+    let app = app_schema(catalog_dir, &def.app_id);
     let mut d = def.clone();
-    d.config = redact_credentials(&def.config, &credential_fields(&ui));
+    d.config = redact_credentials(&def.config, &app.credentials());
     d
 }
 
 pub(crate) fn merge_credentials(
     mut incoming: serde_json::Map<String, Value>,
     stored: &serde_json::Map<String, Value>,
-    uischema: &Value,
+    app: &crate::appschema::AppSchema,
 ) -> serde_json::Map<String, Value> {
-    for field in credential_fields(uischema) {
+    for field in app.credentials() {
         let untouched = incoming.get(&field).and_then(|v| v.as_str()) == Some(REDACTED);
         if untouched {
             match stored.get(&field) {
@@ -434,8 +463,6 @@ fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
 const ANN_DISPLAY_NAME: &str = "yolab.io/display-name";
 const ANN_ICON: &str = "yolab.io/icon";
 const ANN_CATEGORY: &str = "yolab.io/category";
-const ANN_UISCHEMA: &str = "yolab.io/uischema";
-const ANN_CHART_OUTPUTS: &str = "yolab.io/outputs";
 
 #[derive(Deserialize, Default)]
 struct ChartYaml {
@@ -454,7 +481,7 @@ struct ChartYaml {
 
 struct ChartMeta {
     chart: ChartYaml,
-    schema: Value,
+    app: crate::appschema::AppSchema,
 }
 
 impl ChartMeta {
@@ -464,9 +491,6 @@ impl ChartMeta {
             .get(key)
             .map(String::as_str)
             .unwrap_or("")
-    }
-    fn ann_json(&self, key: &str) -> Value {
-        serde_json::from_str(self.ann(key)).unwrap_or(Value::Null)
     }
     fn display_name(&self) -> String {
         let n = self.ann(ANN_DISPLAY_NAME);
@@ -487,28 +511,19 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
     let schema = std::fs::read_to_string(dir.join("values.schema.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .map(|v| v["properties"]["config"].clone())
         .unwrap_or(Value::Null);
-    Some(ChartMeta { chart, schema })
+    let app = crate::appschema::AppSchema::from_parts(schema, &chart.annotations);
+    Some(ChartMeta { chart, app })
 }
 
-pub(crate) fn chart_uischema(catalog_dir: &std::path::Path, id: &str) -> Value {
-    if id.is_empty() {
-        return Value::Null;
+pub(crate) fn app_schema(catalog_dir: &std::path::Path, id: &str) -> crate::appschema::AppSchema {
+    let found = (!id.is_empty())
+        .then(|| read_chart(&catalog_dir.join(id)))
+        .flatten();
+    match found {
+        Some(meta) => meta.app,
+        None => crate::appschema::AppSchema::from_parts(Value::Null, &Default::default()),
     }
-    read_chart(&catalog_dir.join(id))
-        .map(|m| m.ann_json(ANN_UISCHEMA))
-        .unwrap_or(Value::Null)
-}
-
-fn chart_outputs_spec(catalog_dir: &std::path::Path, id: &str) -> Vec<Value> {
-    if id.is_empty() {
-        return Vec::new();
-    }
-    read_chart(&catalog_dir.join(id))
-        .map(|m| m.ann_json(ANN_CHART_OUTPUTS))
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default()
 }
 
 fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
@@ -591,17 +606,6 @@ async fn ensure_app_namespace(
     Ok(())
 }
 
-fn normalize_outputs(ann: &serde_json::Map<String, Value>) -> Vec<AppOutput> {
-    let raw = ann.get(ANN_OUTPUTS).and_then(|v| v.as_str()).unwrap_or("");
-    if raw.is_empty() {
-        return vec![];
-    }
-    serde_json::from_str::<Vec<AppOutput>>(raw).unwrap_or_else(|e| {
-        tracing::warn!("{ANN_OUTPUTS} does not hold a list of outputs ({e}) — showing none");
-        vec![]
-    })
-}
-
 fn validate_config_values(
     config: &serde_json::Map<String, Value>,
 ) -> std::result::Result<(), String> {
@@ -658,8 +662,7 @@ fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
         icon: meta.ann(ANN_ICON).to_string(),
         category: meta.ann(ANN_CATEGORY).to_string(),
         chart_version: meta.chart.version.clone(),
-        schema: meta.schema.clone(),
-        uischema: meta.ann_json(ANN_UISCHEMA),
+        schema: meta.app.config(),
     }
 }
 
@@ -862,9 +865,10 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let ns_selector = format!("{LABEL_MANAGED}=true");
     let ns_args = ["get", "namespaces", "-l", &ns_selector, "-o", "json"];
     let pod_args = ["get", "pods", "--all-namespaces", "-o", "json"];
-    let (ns_out, pods_out) = tokio::join!(
+    let (ns_out, pods_out, mut remembered) = tokio::join!(
         crate::kubectl::get_json(&ns_args),
         crate::kubectl::get_json(&pod_args),
+        crate::outputs::remembered_everywhere(),
     );
     let v: Value = ns_out?;
 
@@ -925,31 +929,13 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let config: serde_json::Map<String, Value> = ann
-            .get(ANN_CONFIG)
-            .and_then(|v| v.as_str())
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
-
-        let outputs_spec = chart_outputs_spec(&catalog_dir, &id)
-            .into_iter()
-            .filter(|o| o["type"].as_str() != Some("hidden"))
-            .filter_map(|o| {
-                Some(OutputSpec {
-                    key: o["key"].as_str()?.to_string(),
-                    label: o
-                        .get("label")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(o["key"].as_str()?)
-                        .to_string(),
-                    type_: o
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("text")
-                        .to_string(),
-                })
-            })
-            .collect();
+        let config = saved_settings(&ann);
+        let outputs = listed_outputs(
+            &app_schema(&catalog_dir, &id),
+            remembered.remove(&format!("yolab-{name}")).unwrap_or_default(),
+            &ann,
+            &config,
+        );
 
         let policy: BackupPolicy = ann
             .get(ANN_BACKUP)
@@ -967,8 +953,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             instance_name: name,
             status,
             detail,
-            outputs: normalize_outputs(&ann),
-            outputs_spec,
+            outputs,
             config,
             backup: AppBackupStatus {
                 enabled: policy.enabled,
@@ -1066,7 +1051,7 @@ pub async fn install_app(
         body.config,
         source_definition.as_ref(),
         sources.data,
-        &chart_uischema(&state.config.catalog_dir(), &id),
+        &app_schema(&state.config.catalog_dir(), &id),
     ) {
         Ok(p) => p,
         Err(e) => return refuse(e),
@@ -1119,7 +1104,7 @@ pub(crate) async fn stage_install(
     ensure_tunnel_credentials(&ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
-    let service_name = resolve_service_name(&meta.schema, config);
+    let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
         .tempfile()
@@ -1172,7 +1157,7 @@ pub async fn update_app(
             .map(str::to_string)
     };
     let id = annotation(ANN_APP_ID).unwrap_or_default();
-    let uischema = chart_uischema(&state.config.catalog_dir(), &id);
+    let app = app_schema(&state.config.catalog_dir(), &id);
     let stored_config = match read_config(&ns).await {
         Ok(c) => c,
         Err(e) => {
@@ -1185,7 +1170,7 @@ pub async fn update_app(
     };
 
     let config = match body.and_then(|b| b.0.config) {
-        Some(incoming) => merge_credentials(incoming, &stored_config, &uischema),
+        Some(incoming) => merge_credentials(incoming, &stored_config, &app),
         None => stored_config,
     };
 
@@ -1228,8 +1213,8 @@ pub async fn set_backup_policy(
         enabled: body.enabled,
         schedule: body.schedule,
     };
-    let uischema = chart_uischema(&state.config.catalog_dir(), &def.app_id);
-    write_definition(&ns, &def, &uischema).await?;
+    let app = app_schema(&state.config.catalog_dir(), &def.app_id);
+    write_definition(&ns, &def, &app).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -1242,10 +1227,66 @@ pub async fn app_definition(
     Ok(Json(redact_definition(&def, &state.config.catalog_dir())))
 }
 
-pub async fn scan_outputs(
-    State(state): State<AppState>,
-    Path(instance_name): Path<String>,
-) -> Result<Json<ScanOutputsResponse>> {
+fn saved_settings(ann: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    ann.get(ANN_CONFIG)
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
+}
+
+fn without_redacted(config: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    config
+        .iter()
+        .filter(|(_, v)| v.as_str() != Some(REDACTED))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+fn listed_outputs(
+    app: &crate::appschema::AppSchema,
+    mut remembered: crate::outputs::Remembered,
+    ann: &serde_json::Map<String, Value>,
+    settings: &serde_json::Map<String, Value>,
+) -> Vec<crate::outputs::ShownOutput> {
+    for (key, found) in crate::outputs::from_legacy_annotation(ann, chrono::Utc::now()) {
+        remembered.entry(key).or_insert(found);
+    }
+    crate::outputs::shown(
+        &app.applicable_outputs(settings),
+        &remembered,
+        &without_redacted(settings),
+    )
+}
+
+pub(crate) async fn installed_apps() -> anyhow::Result<Vec<InstalledApp>> {
+    let selector = format!("{LABEL_MANAGED}=true");
+    let listed =
+        crate::kubectl::get_json(&["get", "namespaces", "-l", &selector, "-o", "json"]).await?;
+    Ok(listed["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|ns| ns["status"]["phase"].as_str() != Some("Terminating"))
+        .filter_map(|ns| {
+            let annotations = ns["metadata"]["annotations"].as_object().cloned()?;
+            if uninstall_lock_is_fresh(&annotations) {
+                return None;
+            }
+            Some(InstalledApp {
+                namespace: ns["metadata"]["name"].as_str()?.to_string(),
+                app_id: annotations.get(ANN_APP_ID)?.as_str()?.to_string(),
+                settings: saved_settings(&annotations),
+                annotations,
+            })
+        })
+        .collect())
+}
+
+async fn outputs_of(
+    state: &AppState,
+    instance_name: &str,
+    rescan_first: bool,
+) -> Result<Json<OutputsResponse>> {
     let ns = format!("yolab-{instance_name}");
     let ns_v = crate::kubectl::get_json(&["get", "namespace", &ns, "-o", "json"]).await?;
     let ann = ns_v["metadata"]["annotations"]
@@ -1257,108 +1298,47 @@ pub async fn scan_outputs(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let outputs_spec = chart_outputs_spec(&state.config.catalog_dir(), &id);
-    if outputs_spec.is_empty() {
-        return Ok(Json(ScanOutputsResponse {
-            outputs: normalize_outputs(&ann),
-        }));
-    }
+    let app = app_schema(&state.config.catalog_dir(), &id);
+    let settings = saved_settings(&ann);
 
-    struct CompiledSpec {
-        key: String,
-        label: String,
-        type_: String,
-        re: Option<regex::Regex>,
-    }
-    let compiled: Vec<CompiledSpec> = outputs_spec
-        .iter()
-        .filter_map(|spec| {
-            let key = spec["key"].as_str()?.to_string();
-            Some(CompiledSpec {
-                re: spec["pattern"]
-                    .as_str()
-                    .and_then(|p| regex::Regex::new(p).ok()),
-                label: spec
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&key)
-                    .to_string(),
-                type_: spec
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("text")
-                    .to_string(),
-                key,
-            })
-        })
-        .collect();
-
-    let pods_v = crate::kubectl::get_json(&["get", "pods", "-n", &ns, "-o", "json"]).await?;
-    let mut found: std::collections::HashMap<String, String> = Default::default();
-
-    'outer: for pod in pods_v["items"].as_array().unwrap_or(&vec![]) {
-        let pod_name = pod["metadata"]["name"].as_str().unwrap_or("");
-        let empty = vec![];
-        let init_containers = pod["spec"]["initContainers"].as_array().unwrap_or(&empty);
-        let main_containers = pod["spec"]["containers"].as_array().unwrap_or(&empty);
-        let containers: Vec<&str> = init_containers
-            .iter()
-            .chain(main_containers.iter())
-            .filter_map(|c| c["name"].as_str())
-            .collect();
-        for container in containers {
-            let logs = crate::kubectl::run(&[
-                "logs",
-                "-n",
-                &ns,
-                pod_name,
-                "-c",
-                container,
-                &format!("--tail={LOGS_SCAN_TAIL}"),
-            ])
-            .await;
-            let Ok(text) = logs else { continue };
-            for line in text.lines() {
-                for cs in &compiled {
-                    if found.contains_key(&cs.key) {
-                        continue;
-                    }
-                    if let Some(re) = &cs.re {
-                        if let Some(cap) = re.captures(line).and_then(|c| c.get(1)) {
-                            found.insert(cs.key.clone(), cap.as_str().to_string());
-                        }
-                    }
-                }
-            }
-            if found.len() == compiled.len() {
-                break 'outer;
-            }
+    let remembered = if rescan_first {
+        crate::outputs::rescan(&ns, &app, &settings, &ann).await?
+    } else {
+        let mut stored = crate::outputs::read_remembered(&ns).await?;
+        for (key, found) in crate::outputs::from_legacy_annotation(&ann, chrono::Utc::now()) {
+            stored.entry(key).or_insert(found);
         }
-    }
+        stored
+    };
 
-    if found.is_empty() {
-        return Ok(Json(ScanOutputsResponse {
-            outputs: normalize_outputs(&ann),
-        }));
-    }
+    let full_config = match read_definition(&ns).await {
+        Ok(def) => def.config,
+        Err(e) => {
+            tracing::warn!("{ns}: settings unreadable, outputs taken from settings are hidden ({e})");
+            without_redacted(&settings)
+        }
+    };
+    Ok(Json(OutputsResponse {
+        outputs: crate::outputs::shown(
+            &app.applicable_outputs(&settings),
+            &remembered,
+            &full_config,
+        ),
+    }))
+}
 
-    let outputs: Vec<AppOutput> = compiled
-        .iter()
-        .filter_map(|cs| {
-            let value = found.get(&cs.key)?.clone();
-            Some(AppOutput {
-                key: cs.key.clone(),
-                label: cs.label.clone(),
-                value,
-                type_: cs.type_.clone(),
-            })
-        })
-        .collect();
+pub async fn app_outputs(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+) -> Result<Json<OutputsResponse>> {
+    outputs_of(&state, &instance_name, false).await
+}
 
-    let outputs_json = serde_json::to_string(&outputs).unwrap_or_default();
-    annotate_ns(&ns, ANN_OUTPUTS, &outputs_json).await;
-
-    Ok(Json(ScanOutputsResponse { outputs }))
+pub async fn scan_outputs(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+) -> Result<Json<OutputsResponse>> {
+    outputs_of(&state, &instance_name, true).await
 }
 
 fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> bool {
@@ -2082,28 +2062,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_outputs_new_format() {
-        let ann = map(json!({
-            ANN_OUTPUTS: r#"[{"key":"url","label":"Web URL","value":"https://x","type":"url"}]"#
-        }));
-        let out = normalize_outputs(&ann);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].key, "url");
-        assert_eq!(out[0].value, "https://x");
-    }
-
-    #[test]
-    fn normalize_outputs_empty() {
-        assert!(normalize_outputs(&serde_json::Map::new()).is_empty());
-    }
-
-    #[test]
-    fn outputs_in_any_other_shape_are_not_guessed_at() {
-        let ann = map(json!({ ANN_OUTPUTS: r#"[{"url":"https://x"}]"# }));
-        assert!(normalize_outputs(&ann).is_empty());
-    }
-
-    #[test]
     fn no_lock_annotation_is_not_fresh() {
         assert!(!uninstall_lock_is_fresh(&serde_json::Map::new()));
     }
@@ -2175,41 +2133,107 @@ mod tests {
         )));
     }
 
-    fn chart_dir_with(outputs: &str) -> tempfile::TempDir {
+    fn chart_dir_with(schema: Value) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let chart = dir.path().join("filebrowser");
         std::fs::create_dir_all(&chart).unwrap();
         std::fs::write(
             chart.join("Chart.yaml"),
-            format!(
-                "apiVersion: v2\nname: filebrowser\nversion: 0.1.0\nannotations:\n  \
-                 {ANN_CHART_OUTPUTS}: |\n    {outputs}\n"
-            ),
+            "apiVersion: v2\nname: filebrowser\nversion: 0.1.0\n",
         )
         .unwrap();
+        std::fs::write(chart.join("values.schema.json"), schema.to_string()).unwrap();
         dir
     }
 
+    fn filebrowser_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "config": { "type": "object", "properties": {
+                    "password": { "type": "string", "writeOnly": true, "generate": true },
+                    "file_explorer_enabled": { "type": "boolean", "default": true }
+                }},
+                "outputs": { "type": "object", "readOnly": true, "properties": {
+                    "url": { "type": "string", "format": "uri",
+                             "source": { "logs": "YOLAB_OUTPUT url (\\S+)" } },
+                    "password": { "type": "string", "format": "secret",
+                                  "source": { "config": "password" } },
+                    "file_explorer_password": { "type": "string", "format": "secret",
+                        "source": { "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)" },
+                        "when": { "properties": { "file_explorer_enabled": { "const": true } } } }
+                }}
+            }
+        })
+    }
+
+    fn keys_of(outputs: &[crate::outputs::ShownOutput]) -> Vec<&str> {
+        outputs.iter().map(|o| o.key.as_str()).collect()
+    }
+
     #[test]
-    fn the_outputs_annotation_is_read_off_the_chart() {
-        let dir = chart_dir_with(
-            r#"[{"key":"file_explorer_url","label":"File explorer","type":"url"},
-             {"key":"file_explorer_password","label":"Password","type":"text"}]"#,
+    fn an_apps_schema_is_read_off_its_chart() {
+        let dir = chart_dir_with(filebrowser_schema());
+        let app = app_schema(dir.path(), "filebrowser");
+        assert_eq!(app.outputs().len(), 3);
+        assert!(app.credentials().contains("password"));
+    }
+
+    #[test]
+    fn an_app_missing_from_the_catalog_has_no_schema() {
+        let dir = chart_dir_with(filebrowser_schema());
+        assert!(app_schema(dir.path(), "not-in-the-catalog").outputs().is_empty());
+        assert!(app_schema(dir.path(), "").outputs().is_empty());
+    }
+
+    #[test]
+    fn the_listing_never_shows_a_redacted_credential_as_its_value() {
+        let dir = chart_dir_with(filebrowser_schema());
+        let settings = map(json!({ "password": REDACTED, "file_explorer_enabled": true }));
+        let rows = listed_outputs(
+            &app_schema(dir.path(), "filebrowser"),
+            Default::default(),
+            &serde_json::Map::new(),
+            &settings,
         );
-        let specs = chart_outputs_spec(dir.path(), "filebrowser");
-        let keys: Vec<&str> = specs.iter().filter_map(|s| s["key"].as_str()).collect();
-        assert!(keys.contains(&"file_explorer_url"));
-        assert!(keys.contains(&"file_explorer_password"));
+        let password = rows.iter().find(|o| o.key == "password").unwrap();
+        assert_eq!(password.value, None);
     }
 
     #[test]
-    fn a_chart_without_outputs_yields_none() {
-        let dir = chart_dir_with("[]");
-        assert!(chart_outputs_spec(dir.path(), "filebrowser").is_empty());
-        assert!(chart_outputs_spec(dir.path(), "not-in-the-catalog").is_empty());
-        assert!(chart_outputs_spec(dir.path(), "").is_empty());
+    fn the_listing_leaves_out_outputs_of_a_feature_that_is_off() {
+        let dir = chart_dir_with(filebrowser_schema());
+        let settings = map(json!({ "file_explorer_enabled": false }));
+        let rows = listed_outputs(
+            &app_schema(dir.path(), "filebrowser"),
+            Default::default(),
+            &serde_json::Map::new(),
+            &settings,
+        );
+        assert_eq!(keys_of(&rows), vec!["url", "password"]);
     }
 
+    #[test]
+    fn the_listing_shows_values_scanned_before_the_outputs_moved_to_a_secret() {
+        let dir = chart_dir_with(filebrowser_schema());
+        let ann = map(json!({
+            "yolab.io/outputs": r#"[{"key":"url","label":"Web URL","value":"https://files.x","type":"url"}]"#
+        }));
+        let rows = listed_outputs(
+            &app_schema(dir.path(), "filebrowser"),
+            Default::default(),
+            &ann,
+            &serde_json::Map::new(),
+        );
+        assert_eq!(rows[0].value.as_deref(), Some("https://files.x"));
+    }
+
+    #[test]
+    fn the_saved_settings_are_read_from_the_namespace() {
+        let ann = map(json!({ ANN_CONFIG: r#"{"file_explorer_enabled":false}"# }));
+        assert_eq!(saved_settings(&ann)["file_explorer_enabled"], json!(false));
+        assert!(saved_settings(&serde_json::Map::new()).is_empty());
+    }
     #[test]
     fn saved_settings_are_read_exactly_or_reported() {
         use std::collections::HashMap;

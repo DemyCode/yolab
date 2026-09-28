@@ -20,7 +20,6 @@ function app(over: Partial<AppInfo> = {}): AppInfo {
     status: "running",
     detail: "",
     outputs: [],
-    outputs_spec: [],
     config: {},
     backup: { enabled: true, schedule: "", last_ok_at: null, running: false },
     ...over,

@@ -9,13 +9,25 @@ use std::sync::{Mutex, OnceLock};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ReadDoc, ROOT};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use entry::{resolve, Entry, Origin};
 use hlc::Clock;
 
+use crate::routers::apps::AppDefinition;
+use crate::topology::StoragePolicy;
+
 const DISK_CLAIM_PREFIX: &str = "disk_claim:";
+const MACHINE_PREFIX: &str = "machine:";
+const APP_PREFIX: &str = "app:";
+const STORAGE_POLICY_KEY: &str = "policy:storage";
+
 const DISKS_SEEDED_KEY: &str = "meta:disks_seeded";
+const MACHINES_SEEDED_KEY: &str = "meta:machines_seeded";
+const APPS_SEEDED_KEY: &str = "meta:apps_seeded";
+const POLICY_SEEDED_KEY: &str = "meta:policy_seeded";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
@@ -44,6 +56,37 @@ impl From<DiskIntent> for String {
             DiskIntent::Off => "off".to_string(),
             DiskIntent::Forgotten => "forgotten".to_string(),
             DiskIntent::Unknown(raw) => raw,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum MachineState {
+    Member,
+    Draining,
+    Removed,
+    Unknown(String),
+}
+
+impl From<String> for MachineState {
+    fn from(raw: String) -> Self {
+        match raw.as_str() {
+            "member" => MachineState::Member,
+            "draining" => MachineState::Draining,
+            "removed" => MachineState::Removed,
+            _ => MachineState::Unknown(raw),
+        }
+    }
+}
+
+impl From<MachineState> for String {
+    fn from(state: MachineState) -> String {
+        match state {
+            MachineState::Member => "member".to_string(),
+            MachineState::Draining => "draining".to_string(),
+            MachineState::Removed => "removed".to_string(),
+            MachineState::Unknown(raw) => raw,
         }
     }
 }
@@ -141,23 +184,105 @@ impl Store {
         Ok(!applied.is_empty())
     }
 
+    fn read_at<T: DeserializeOwned>(&self, key: &str) -> Result<Option<Entry<T>>, StoreError> {
+        let mut candidates = Vec::new();
+        for (value, _) in self.doc.get_all(ROOT, key)? {
+            let Some(raw) = value.as_str() else {
+                continue;
+            };
+            let parsed: Entry<T> = serde_json::from_str(raw).map_err(|e| StoreError::Corrupt {
+                key: key.to_string(),
+                detail: e.to_string(),
+            })?;
+            self.clock.observe(&parsed.hlc);
+            candidates.push(parsed);
+        }
+        Ok(resolve(candidates))
+    }
+
+    fn write_at<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        origin: Origin,
+    ) -> Result<(), StoreError> {
+        let entry = Entry {
+            value,
+            origin,
+            hlc: self.clock.now(),
+        };
+        let raw = serde_json::to_string(&entry).map_err(|e| StoreError::Corrupt {
+            key: key.to_string(),
+            detail: e.to_string(),
+        })?;
+        self.doc.put(ROOT, key, raw)?;
+        Ok(())
+    }
+
+    fn origin_at(&self, key: &str) -> Result<Option<Origin>, StoreError> {
+        Ok(self.read_at::<Value>(key)?.map(|e| e.origin))
+    }
+
+    fn import_at<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        origin: Origin,
+    ) -> Result<bool, StoreError> {
+        match self.origin_at(key)? {
+            Some(Origin::User) => Ok(false),
+            Some(_) if origin == Origin::Discovered => Ok(false),
+            _ => {
+                self.write_at(key, value, origin)?;
+                Ok(true)
+            }
+        }
+    }
+
+    fn collection<T: DeserializeOwned>(
+        &self,
+        prefix: &str,
+    ) -> Result<BTreeMap<String, Entry<T>>, StoreError> {
+        let keys: Vec<String> = self.doc.keys(ROOT).collect();
+        let mut out = BTreeMap::new();
+        for key in keys {
+            let Some(name) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            if let Some(entry) = self.read_at::<T>(&key)? {
+                out.insert(name.to_string(), entry);
+            }
+        }
+        Ok(out)
+    }
+
+    fn flag(&mut self, key: &str) -> Result<bool, StoreError> {
+        if self.flagged(key) {
+            return Ok(false);
+        }
+        self.doc.put(ROOT, key, "1")?;
+        Ok(true)
+    }
+
+    fn flagged(&self, key: &str) -> bool {
+        self.doc.get(ROOT, key).ok().flatten().is_some()
+    }
+
     pub fn set_disk_intent(
         &mut self,
         node: &str,
         disk_id: &str,
         intent: DiskIntent,
     ) -> Result<(), StoreError> {
-        let key = disk_key(node, disk_id);
-        self.write(&key, intent, Origin::User)
+        self.write_at(&disk_key(node, disk_id), &intent, Origin::User)
     }
 
     pub fn observe_disk(&mut self, node: &str, disk_id: &str) -> Result<bool, StoreError> {
-        let key = disk_key(node, disk_id);
-        if self.read(&key)?.is_some() {
-            return Ok(false);
-        }
-        self.write(&key, DiskIntent::Off, Origin::Discovered)?;
-        Ok(true)
+        self.import_at(
+            &disk_key(node, disk_id),
+            &DiskIntent::Off,
+            Origin::Discovered,
+        )
     }
 
     pub fn import_claim(
@@ -166,15 +291,11 @@ impl Store {
         intent: DiskIntent,
         origin: Origin,
     ) -> Result<bool, StoreError> {
-        let key = format!("{DISK_CLAIM_PREFIX}{record_key}");
-        match self.read(&key)? {
-            Some(existing) if existing.origin == Origin::User => Ok(false),
-            Some(_) if origin == Origin::Discovered => Ok(false),
-            _ => {
-                self.write(&key, intent, origin)?;
-                Ok(true)
-            }
-        }
+        self.import_at(&format!("{DISK_CLAIM_PREFIX}{record_key}"), &intent, origin)
+    }
+
+    pub fn disk_claims(&self) -> Result<BTreeMap<String, Entry<DiskIntent>>, StoreError> {
+        self.collection(DISK_CLAIM_PREFIX)
     }
 
     pub fn desired_records(&self) -> Result<HashMap<String, String>, StoreError> {
@@ -193,68 +314,114 @@ impl Store {
     }
 
     pub fn mark_disks_seeded(&mut self) -> Result<bool, StoreError> {
-        if self.disks_seeded() {
-            return Ok(false);
-        }
-        self.doc.put(ROOT, DISKS_SEEDED_KEY, "1")?;
-        Ok(true)
+        self.flag(DISKS_SEEDED_KEY)
     }
 
     pub fn disks_seeded(&self) -> bool {
-        self.doc
-            .get(ROOT, DISKS_SEEDED_KEY)
-            .ok()
-            .flatten()
-            .is_some()
+        self.flagged(DISKS_SEEDED_KEY)
     }
 
-    pub fn disk_claims(&self) -> Result<BTreeMap<String, Entry<DiskIntent>>, StoreError> {
-        let keys: Vec<String> = self.doc.keys(ROOT).collect();
-        let mut out = BTreeMap::new();
-        for key in keys {
-            let Some(name) = key.strip_prefix(DISK_CLAIM_PREFIX) else {
-                continue;
-            };
-            if let Some(entry) = self.read(&key)? {
-                out.insert(name.to_string(), entry);
+    pub fn set_storage_policy(&mut self, policy: &StoragePolicy) -> Result<(), StoreError> {
+        self.write_at(STORAGE_POLICY_KEY, policy, Origin::User)
+    }
+
+    pub fn import_storage_policy(&mut self, policy: &StoragePolicy) -> Result<bool, StoreError> {
+        self.import_at(STORAGE_POLICY_KEY, policy, Origin::User)
+    }
+
+    pub fn storage_policy(&self) -> Result<Option<StoragePolicy>, StoreError> {
+        Ok(self.read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?.map(|e| e.value))
+    }
+
+    pub fn mark_policy_seeded(&mut self) -> Result<bool, StoreError> {
+        self.flag(POLICY_SEEDED_KEY)
+    }
+
+    pub fn policy_seeded(&self) -> bool {
+        self.flagged(POLICY_SEEDED_KEY)
+    }
+
+    pub fn set_machine_state(
+        &mut self,
+        node: &str,
+        state: MachineState,
+    ) -> Result<(), StoreError> {
+        self.write_at(&format!("{MACHINE_PREFIX}{node}"), &state, Origin::User)
+    }
+
+    pub fn observe_machine(&mut self, node: &str) -> Result<bool, StoreError> {
+        self.import_at(
+            &format!("{MACHINE_PREFIX}{node}"),
+            &MachineState::Member,
+            Origin::Discovered,
+        )
+    }
+
+    pub fn machine_state(&self, node: &str) -> Result<Option<MachineState>, StoreError> {
+        Ok(self
+            .read_at::<MachineState>(&format!("{MACHINE_PREFIX}{node}"))?
+            .map(|e| e.value))
+    }
+
+    pub fn machines(&self) -> Result<BTreeMap<String, Entry<MachineState>>, StoreError> {
+        self.collection(MACHINE_PREFIX)
+    }
+
+    pub fn mark_machines_seeded(&mut self) -> Result<bool, StoreError> {
+        self.flag(MACHINES_SEEDED_KEY)
+    }
+
+    pub fn machines_seeded(&self) -> bool {
+        self.flagged(MACHINES_SEEDED_KEY)
+    }
+
+    pub fn set_app_definition(
+        &mut self,
+        namespace: &str,
+        def: &AppDefinition,
+    ) -> Result<(), StoreError> {
+        self.write_at(&format!("{APP_PREFIX}{namespace}"), def, Origin::User)
+    }
+
+    pub fn import_app_definition(
+        &mut self,
+        namespace: &str,
+        def: &AppDefinition,
+    ) -> Result<bool, StoreError> {
+        self.import_at(&format!("{APP_PREFIX}{namespace}"), def, Origin::User)
+    }
+
+    pub fn app_definition(&self, namespace: &str) -> Result<Option<AppDefinition>, StoreError> {
+        Ok(self
+            .read_at::<AppDefinition>(&format!("{APP_PREFIX}{namespace}"))?
+            .map(|e| e.value))
+    }
+
+    pub fn app_definitions(&self) -> Result<BTreeMap<String, Entry<AppDefinition>>, StoreError> {
+        self.collection(APP_PREFIX)
+    }
+
+    pub fn mark_apps_seeded(&mut self) -> Result<bool, StoreError> {
+        self.flag(APPS_SEEDED_KEY)
+    }
+
+    pub fn apps_seeded(&self) -> bool {
+        self.flagged(APPS_SEEDED_KEY)
+    }
+
+    pub fn debug_json(&self) -> Result<Value, StoreError> {
+        Ok(serde_json::json!({
+            "disk_claims": self.disk_claims()?,
+            "machines": self.machines()?,
+            "apps": self.app_definitions()?,
+            "storage_policy": self.read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?,
+            "seeded": {
+                "disks": self.disks_seeded(),
+                "machines": self.machines_seeded(),
+                "apps": self.apps_seeded(),
+                "storage_policy": self.policy_seeded(),
             }
-        }
-        Ok(out)
-    }
-
-    pub fn debug_json(&self) -> Result<serde_json::Value, StoreError> {
-        Ok(serde_json::json!({ "disk_claims": self.disk_claims()? }))
-    }
-
-    fn read(&self, key: &str) -> Result<Option<Entry<DiskIntent>>, StoreError> {
-        let mut candidates = Vec::new();
-        for (value, _) in self.doc.get_all(ROOT, key)? {
-            let Some(raw) = value.as_str() else {
-                continue;
-            };
-            let parsed: Entry<DiskIntent> =
-                serde_json::from_str(raw).map_err(|e| StoreError::Corrupt {
-                    key: key.to_string(),
-                    detail: e.to_string(),
-                })?;
-            self.clock.observe(&parsed.hlc);
-            candidates.push(parsed);
-        }
-        Ok(resolve(candidates))
-    }
-
-    fn write(&mut self, key: &str, value: DiskIntent, origin: Origin) -> Result<(), StoreError> {
-        let entry = Entry {
-            value,
-            origin,
-            hlc: self.clock.now(),
-        };
-        let raw = serde_json::to_string(&entry).map_err(|e| StoreError::Corrupt {
-            key: key.to_string(),
-            detail: e.to_string(),
-        })?;
-        self.doc.put(ROOT, key, raw)?;
-        Ok(())
+        }))
     }
 }
 
@@ -542,5 +709,200 @@ mod tests {
 
             prop_assert_eq!(forward.disk_claims().unwrap(), reverse.disk_claims().unwrap());
         }
+    }
+
+    fn policy(size: u32) -> StoragePolicy {
+        StoragePolicy {
+            size,
+            failure_domain: "host".to_string(),
+        }
+    }
+
+    fn definition(app_id: &str) -> AppDefinition {
+        AppDefinition {
+            schema: 1,
+            app_id: app_id.to_string(),
+            chart_repo: "yolab".to_string(),
+            chart_version: "1.0.0".to_string(),
+            instance_name: format!("{app_id}-ab12"),
+            service_name: String::new(),
+            config: serde_json::Map::new(),
+            volumes: Vec::new(),
+            resources: Default::default(),
+            backup: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_storage_policy_round_trips() {
+        let mut store = Store::new("node1");
+        store.set_storage_policy(&policy(3)).unwrap();
+        assert_eq!(store.storage_policy().unwrap(), Some(policy(3)));
+    }
+
+    #[test]
+    fn taking_in_a_storage_policy_does_not_undo_one_chosen_since() {
+        let mut store = Store::new("node1");
+        store.set_storage_policy(&policy(3)).unwrap();
+        assert!(!store.import_storage_policy(&policy(2)).unwrap());
+        assert_eq!(store.storage_policy().unwrap(), Some(policy(3)));
+    }
+
+    #[test]
+    fn a_storage_policy_is_taken_in_when_the_store_has_none() {
+        let mut store = Store::new("node1");
+        assert!(store.import_storage_policy(&policy(2)).unwrap());
+        assert_eq!(store.storage_policy().unwrap(), Some(policy(2)));
+    }
+
+    #[test]
+    fn a_machine_that_is_seen_becomes_a_member_without_being_chosen() {
+        let mut store = Store::new("node1");
+        assert!(store.observe_machine("node2").unwrap());
+        assert_eq!(
+            store.machine_state("node2").unwrap(),
+            Some(MachineState::Member)
+        );
+        assert_eq!(
+            store.machines().unwrap().get("node2").map(|e| e.origin),
+            Some(Origin::Discovered)
+        );
+    }
+
+    #[test]
+    fn a_machine_taken_out_stays_out_even_though_it_is_still_being_seen() {
+        let mut store = Store::new("node1");
+        store.observe_machine("node2").unwrap();
+        store
+            .set_machine_state("node2", MachineState::Removed)
+            .unwrap();
+
+        assert!(!store.observe_machine("node2").unwrap());
+        assert_eq!(
+            store.machine_state("node2").unwrap(),
+            Some(MachineState::Removed)
+        );
+    }
+
+    #[test]
+    fn a_machine_state_from_a_newer_version_is_kept_rather_than_guessed_at() {
+        let mut store = Store::new("node1");
+        store
+            .doc
+            .put(
+                ROOT,
+                format!("{MACHINE_PREFIX}node2"),
+                r#"{"v":"quarantined","o":"user","t":"0000000000001-00000-node9"}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            store.machine_state("node2").unwrap(),
+            Some(MachineState::Unknown("quarantined".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_app_definition_round_trips() {
+        let mut store = Store::new("node1");
+        store
+            .set_app_definition("yolab-gitea-ab12", &definition("gitea"))
+            .unwrap();
+
+        let back = store.app_definition("yolab-gitea-ab12").unwrap().unwrap();
+        assert_eq!(back.app_id, "gitea");
+        assert_eq!(back.chart_version, "1.0.0");
+        assert_eq!(back.backup.schedule, "0 3 * * *");
+    }
+
+    #[test]
+    fn taking_in_an_app_definition_does_not_undo_one_saved_since() {
+        let mut store = Store::new("node1");
+        let mut newer = definition("gitea");
+        newer.chart_version = "2.0.0".to_string();
+        store.set_app_definition("yolab-gitea-ab12", &newer).unwrap();
+
+        assert!(!store
+            .import_app_definition("yolab-gitea-ab12", &definition("gitea"))
+            .unwrap());
+        assert_eq!(
+            store
+                .app_definition("yolab-gitea-ab12")
+                .unwrap()
+                .unwrap()
+                .chart_version,
+            "2.0.0"
+        );
+    }
+
+    #[test]
+    fn the_four_kinds_of_record_do_not_bleed_into_each_other() {
+        let mut store = Store::new("node1");
+        store
+            .set_disk_intent("node1", "wwn-a", DiskIntent::On)
+            .unwrap();
+        store.observe_machine("node1").unwrap();
+        store
+            .set_app_definition("yolab-gitea-ab12", &definition("gitea"))
+            .unwrap();
+        store.set_storage_policy(&policy(2)).unwrap();
+        store.mark_disks_seeded().unwrap();
+
+        assert_eq!(store.disk_claims().unwrap().len(), 1);
+        assert_eq!(store.machines().unwrap().len(), 1);
+        assert_eq!(store.app_definitions().unwrap().len(), 1);
+        assert_eq!(store.storage_policy().unwrap(), Some(policy(2)));
+        assert!(store.disks_seeded());
+        assert!(!store.machines_seeded());
+    }
+
+    #[test]
+    fn every_kind_of_record_survives_a_save_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+
+        let mut before = Store::open("node1", &path).unwrap();
+        before
+            .set_disk_intent("node1", "wwn-a", DiskIntent::On)
+            .unwrap();
+        before
+            .set_machine_state("node2", MachineState::Draining)
+            .unwrap();
+        before
+            .set_app_definition("yolab-gitea-ab12", &definition("gitea"))
+            .unwrap();
+        before.set_storage_policy(&policy(3)).unwrap();
+        before.mark_machines_seeded().unwrap();
+        before.persist(&path).unwrap();
+
+        let after = Store::open("node1", &path).unwrap();
+        assert_eq!(after.disk_claims().unwrap(), before.disk_claims().unwrap());
+        assert_eq!(
+            after.machine_state("node2").unwrap(),
+            Some(MachineState::Draining)
+        );
+        assert_eq!(
+            after.app_definition("yolab-gitea-ab12").unwrap().unwrap().app_id,
+            "gitea"
+        );
+        assert_eq!(after.storage_policy().unwrap(), Some(policy(3)));
+        assert!(after.machines_seeded());
+    }
+
+    #[test]
+    fn two_machines_that_each_chose_something_different_keep_both_choices() {
+        let mut a = Store::new("node1");
+        let mut b = Store::new("node2");
+        a.set_storage_policy(&policy(3)).unwrap();
+        b.set_machine_state("node3", MachineState::Removed).unwrap();
+
+        a.merge(&mut b).unwrap();
+        b.merge(&mut a).unwrap();
+
+        assert_eq!(a.storage_policy().unwrap(), Some(policy(3)));
+        assert_eq!(
+            a.machine_state("node3").unwrap(),
+            Some(MachineState::Removed)
+        );
+        assert_eq!(b.storage_policy().unwrap(), Some(policy(3)));
     }
 }

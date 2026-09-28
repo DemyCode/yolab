@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  appFactRows,
+  accessRows,
   appLinks,
+  outputState,
+  stillWaiting,
   appState,
   appDisplayName,
   installedByChart,
   nextInstanceName,
 } from "./apps";
-import type { AppInfo, AppOutput, CatalogApp, OutputSpec } from "@/types/apps";
+import type { AppInfo, AppOutput, CatalogApp } from "@/types/apps";
 
 function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
@@ -16,7 +18,6 @@ function app(over: Partial<AppInfo> = {}): AppInfo {
     status: "running",
     detail: "",
     outputs: [],
-    outputs_spec: [],
     config: {},
     backup: { enabled: false, schedule: "", last_ok_at: null, running: false },
     ...over,
@@ -26,15 +27,16 @@ function app(over: Partial<AppInfo> = {}): AppInfo {
 const out = (
   key: string,
   value: string,
-  type: AppOutput["type"] = "text",
-  label = "",
-): AppOutput => ({ key, label, value, type });
-
-const spec = (
-  key: string,
-  label: string,
-  type: OutputSpec["type"] = "text",
-): OutputSpec => ({ key, label, type });
+  format: AppOutput["format"] = "text",
+  title = "",
+): AppOutput => ({
+  key,
+  title,
+  format,
+  value: value || null,
+  found_at: null,
+  from_config: false,
+});
 
 describe("installedByChart", () => {
   it("counts every copy, not just the first", () => {
@@ -58,8 +60,8 @@ describe("appLinks", () => {
     const links = appLinks(
       app({
         outputs: [
-          out("web", "https://a.example", "url", "Open"),
-          out("admin", "https://a.example/admin", "url", "Admin"),
+          out("web", "https://a.example", "uri", "Open"),
+          out("admin", "https://a.example/admin", "uri", "Admin"),
         ],
       }),
       "example",
@@ -72,7 +74,7 @@ describe("appLinks", () => {
 
   it("falls back to a label a person can read", () => {
     const [link] = appLinks(
-      app({ outputs: [out("web", "https://a.example", "url")] }),
+      app({ outputs: [out("web", "https://a.example", "uri")] }),
       "example",
     );
     expect(link.label).toBe("Open");
@@ -88,7 +90,7 @@ describe("appLinks", () => {
     const links = appLinks(
       app({
         config: { subdomain: "git" },
-        outputs: [out("web", "https://git.box.yolab.io/", "url", "Open")],
+        outputs: [out("web", "https://git.box.yolab.io/", "uri", "Open")],
       }),
       "box.yolab.io",
     );
@@ -97,7 +99,7 @@ describe("appLinks", () => {
 
   it("ignores outputs that are not addresses", () => {
     const links = appLinks(
-      app({ outputs: [out("password", "hunter2"), out("empty", "", "url")] }),
+      app({ outputs: [out("password", "hunter2"), out("empty", "", "uri")] }),
       "",
     );
     expect(links).toEqual([]);
@@ -108,61 +110,51 @@ describe("appLinks", () => {
   });
 });
 
-describe("appFactRows", () => {
-  it("shows a declared fact before its value exists", () => {
-    const rows = appFactRows(
-      app({ outputs_spec: [spec("temp_password", "Temporary password")] }),
-    );
-    expect(rows).toEqual([
-      { key: "temp_password", label: "Temporary password", value: null },
+describe("accessRows", () => {
+  it("shows everything an app reports except the addresses already offered as links", () => {
+    const rows = accessRows([
+      out("web", "https://a.example", "uri"),
+      out("password", "hunter2", "secret"),
+      out("onion", "", "uri"),
     ]);
+    expect(rows.map((r) => r.key)).toEqual(["password", "onion"]);
   });
 
-  it("fills a declared fact in once it has been scraped", () => {
-    const rows = appFactRows(
-      app({
-        outputs_spec: [spec("temp_password", "Temporary password")],
-        outputs: [out("temp_password", "abc123")],
-      }),
-    );
-    expect(rows[0].value).toBe("abc123");
+  it("keeps the order the chart declared", () => {
+    const rows = accessRows([
+      out("b", "2"),
+      out("a", "1"),
+      out("c", "", "multiline"),
+    ]);
+    expect(rows.map((r) => r.key)).toEqual(["b", "a", "c"]);
+  });
+});
+
+describe("outputState", () => {
+  it("is ready once a value is known", () => {
+    expect(outputState(out("password", "hunter2", "secret"))).toBe("ready");
   });
 
-  it("keeps a scraped fact the chart no longer declares", () => {
-    const rows = appFactRows(
-      app({
-        outputs_spec: [spec("user", "Username")],
-        outputs: [out("legacy_password", "sekrit", "text", "Password")],
-      }),
-    );
-    expect(rows.map((r) => r.key)).toEqual(["user", "legacy_password"]);
-    expect(rows[1].value).toBe("sekrit");
+  it("is waiting while the app has not printed it yet", () => {
+    expect(outputState(out("onion", ""))).toBe("waiting");
   });
 
-  it("leaves addresses and hidden values out — they are not facts to read", () => {
-    const rows = appFactRows(
-      app({
-        outputs_spec: [
-          spec("web", "Web", "url"),
-          spec("secret", "S", "hidden"),
-        ],
-        outputs: [
-          out("web", "https://a.example", "url"),
-          out("secret", "x", "hidden"),
-        ],
-      }),
+  it("is unset, not waiting, when it comes from a setting left empty", () => {
+    expect(outputState({ ...out("pin", ""), from_config: true })).toBe(
+      "unset",
     );
-    expect(rows).toEqual([]);
+  });
+});
+
+describe("stillWaiting", () => {
+  it("is true while any output is still expected from the app", () => {
+    expect(stillWaiting([out("a", "1"), out("b", "")])).toBe(true);
   });
 
-  it("is ordered by the chart's spec, not by what happened to be scraped", () => {
-    const rows = appFactRows(
-      app({
-        outputs_spec: [spec("a", "A"), spec("b", "B"), spec("c", "C")],
-        outputs: [out("c", "3"), out("a", "1")],
-      }),
-    );
-    expect(rows.map((r) => r.key)).toEqual(["a", "b", "c"]);
+  it("is false once everything is known or comes from settings", () => {
+    expect(
+      stillWaiting([out("a", "1"), { ...out("pin", ""), from_config: true }]),
+    ).toBe(false);
   });
 });
 

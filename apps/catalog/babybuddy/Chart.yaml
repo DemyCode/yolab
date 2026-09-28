@@ -3,7 +3,7 @@ name: babybuddy
 description: "Track feeds, sleep and nappies without handing a startup your baby's data"
 home: https://docs.baby-buddy.net
 type: application
-version: 0.1.1
+version: 0.1.2
 
 dependencies:
   - name: yolab-common
@@ -11,15 +11,6 @@ dependencies:
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
-  yolab.io/outputs: |
-    [
-      { "key": "file_explorer_url", "label": "File explorer", "type": "url", "pattern": "YOLAB_OUTPUT file_explorer_url (\\S+)" },
-      { "key": "file_explorer_password", "label": "File explorer password", "type": "text", "pattern": "YOLAB_OUTPUT file_explorer_password (\\S+)" }
-    ]
   yolab.io/display-name: "Baby Buddy"
   yolab.io/icon: "👶"
   yolab.io/category: "productivity"
-  yolab.io/uischema: |
-    {
-      "subdomain": { "ui:widget": "TunnelWidget" }
-    }

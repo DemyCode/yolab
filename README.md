@@ -63,17 +63,66 @@ Each app is a standard Helm chart under `apps/catalog/`:
 
 ```
 apps/catalog/my-app/
-  Chart.yaml           # name, version, and the yolab.io/* annotations below
+  Chart.yaml           # name, version, display name, icon, category
   values.yaml          # defaults
-  values.schema.json   # the install form, from `properties.config`
+  values.schema.json   # the install form AND what the app page shows
   templates/           # the Kubernetes manifests, including the gateway
 ```
 
-The YoLab-specific bits are chart annotations, the standard Helm escape hatch:
-`yolab.io/display-name`, `yolab.io/icon`, `yolab.io/category`, `yolab.io/uischema`
-(which fields are passwords, which is the tunnel subdomain), and `yolab.io/outputs`
-(what to surface after install). A chart that declares no `format: tunnel` field
-registers no DNS name. No installer code changes are needed for a new app.
+`Chart.yaml` carries three annotations: `yolab.io/display-name`, `yolab.io/icon` and
+`yolab.io/category`. Everything else a developer controls lives in one standard JSON
+Schema, `values.schema.json`, with two sections:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["config"],
+  "properties": {
+    "config": {
+      "type": "object",
+      "properties": {
+        "subdomain":   { "type": "string", "format": "tunnel", "default": "my-app" },
+        "password":    { "type": "string", "title": "Admin password", "writeOnly": true, "generate": true },
+        "tor_enabled": { "type": "boolean", "title": "Reachable over Tor", "default": false }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url":      { "type": "string", "title": "Web URL", "format": "uri",
+                      "source": { "logs": "YOLAB_OUTPUT url (\\S+)" } },
+        "password": { "type": "string", "title": "Admin password", "format": "secret",
+                      "source": { "config": "password" } },
+        "onion":    { "type": "string", "title": "Tor address", "format": "uri",
+                      "source": { "logs": "YOLAB_OUTPUT onion (\\S+)" },
+                      "when": { "properties": { "tor_enabled": { "const": true } } } }
+      }
+    }
+  }
+}
+```
+
+**`config`** is the install form, rendered in the order written. `format: "tunnel"`
+is the app's address (a chart with none registers no DNS name). `writeOnly: true`
+marks a credential: masked in the form, never written to non-secret places, kept when
+the app is duplicated. Add `generate: true` and YoLab fills it with a random value.
+Fields revealed by a toggle (standard `dependencies`/`oneOf`) render under that toggle.
+
+**`outputs`** is what the app page shows once it runs. Each output has a `title`, a
+`format` (`text`, `uri`, `secret` or `multiline`), and one `source`:
+
+- `{"logs": "<regex>"}`: the first capture group of a matching line in any container's
+  logs, init containers included. YoLab rescans every minute and keeps the latest value
+  found, so a value printed once is not lost when the logs roll over.
+- `{"config": "<field>"}`: a generated setting, such as the admin password.
+
+`when` is a JSON Schema checked against the app's settings (defaults filled in). When it
+does not match, the output is neither shown nor waited for.
+
+`apps/catalog/check_charts.py` enforces all of this. No installer code changes are
+needed for a new app.
 
 ---
 

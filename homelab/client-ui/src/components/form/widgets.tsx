@@ -36,8 +36,9 @@ export function TunnelWidget(props: WidgetProps) {
 }
 
 export function PasswordWidget(props: WidgetProps) {
-  const { value, onChange, disabled, readonly, id, schema } = props;
+  const { value, onChange, disabled, readonly, id, schema, options } = props;
   const [shown, setShown] = useState(false);
+  const generates = options?.generate === true;
   const v = typeof value === "string" ? value : "";
 
   const regenerate = () =>
@@ -61,14 +62,16 @@ export function PasswordWidget(props: WidgetProps) {
       >
         {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
       </button>
-      <button
-        type="button"
-        aria-label="Generate a new one"
-        onClick={regenerate}
-        className="rounded-md p-2 text-fg-muted hover:bg-surface-2"
-      >
-        <RefreshCw className="h-4 w-4" />
-      </button>
+      {generates && (
+        <button
+          type="button"
+          aria-label="Generate a new one"
+          onClick={regenerate}
+          className="rounded-md p-2 text-fg-muted hover:bg-surface-2"
+        >
+          <RefreshCw className="h-4 w-4" />
+        </button>
+      )}
     </div>
   );
 }

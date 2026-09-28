@@ -3,7 +3,7 @@ name: minecraft
 description: "Minecraft Java Edition server"
 home: https://www.minecraft.net
 type: application
-version: 0.1.1
+version: 0.1.2
 
 dependencies:
   - name: yolab-common
@@ -14,11 +14,3 @@ annotations:
   yolab.io/display-name: "Minecraft"
   yolab.io/icon: "⛏️"
   yolab.io/category: "gaming"
-  yolab.io/uischema: |
-    {
-      "subdomain": {
-        "ui:widget": "TunnelWidget"
-      }
-    }
-  yolab.io/outputs: |
-    [{"key": "ipv6", "label": "IPv6 Address", "type": "text", "pattern": "YOLAB_OUTPUT ipv6 (\\S+)"}]
