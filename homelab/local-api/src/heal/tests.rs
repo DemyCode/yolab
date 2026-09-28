@@ -7,6 +7,8 @@ use crate::host::fake::FakeHost;
 const NOW: u64 = 1_000_000;
 const MON_STATUS: &str = "ceph daemon mon.node1 mon_status";
 
+type KubeNodes = Vec<(String, Option<String>)>;
+
 #[derive(Clone)]
 struct FakeMachine {
     name: String,
@@ -19,7 +21,7 @@ struct FakeNetwork {
     machines: Mutex<HashMap<String, FakeMachine>>,
     platform: Option<Vec<PlatformNode>>,
     platform_down: bool,
-    kubernetes: Mutex<Option<Vec<(String, Option<String>)>>>,
+    kubernetes: Mutex<Option<KubeNodes>>,
     calls: Mutex<Vec<String>>,
 }
 
@@ -182,9 +184,7 @@ impl Network for FakeNetwork {
         }
     }
 
-    fn kubernetes_nodes(
-        &self,
-    ) -> impl Future<Output = Result<Option<Vec<(String, Option<String>)>>>> + Send + '_ {
+    fn kubernetes_nodes(&self) -> impl Future<Output = Result<Option<KubeNodes>>> + Send + '_ {
         async move { Ok(self.kubernetes.lock().unwrap().clone()) }
     }
 }
