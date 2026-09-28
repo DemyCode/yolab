@@ -591,7 +591,9 @@ mod tests {
     async fn a_chosen_policy_is_stored_in_ceph() {
         use crate::host::fake::FakeHost;
         let host = FakeHost::new().ok("ceph config-key set yolab/storage-policy", "");
-        write_policy_to_cluster(&host, &policy(3, "osd")).await.unwrap();
+        write_policy_to_cluster(&host, &policy(3, "osd"))
+            .await
+            .unwrap();
         assert!(host
             .ran(r#"ceph config-key set yolab/storage-policy {"size":3,"failure_domain":"osd"}"#));
     }

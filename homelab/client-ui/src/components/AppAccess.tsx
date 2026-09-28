@@ -69,9 +69,15 @@ function OutputValue({ output }: { output: AppOutput }) {
           type="button"
           onClick={() => setRevealed((r) => !r)}
           className="shrink-0 rounded-lg p-2 text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-          aria-label={revealed ? `Hide ${output.title}` : `Show ${output.title}`}
+          aria-label={
+            revealed ? `Hide ${output.title}` : `Show ${output.title}`
+          }
         >
-          {revealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          {revealed ? (
+            <EyeOff className="h-4 w-4" />
+          ) : (
+            <Eye className="h-4 w-4" />
+          )}
         </button>
       )}
       {output.format === "uri" ? (
@@ -183,7 +189,9 @@ export function AppAccess({
           disabled={checking}
           className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-60"
         >
-          <RefreshCw className={cn("h-3.5 w-3.5", checking && "animate-spin")} />
+          <RefreshCw
+            className={cn("h-3.5 w-3.5", checking && "animate-spin")}
+          />
           {checking ? "Checking…" : "Check again"}
         </button>
       </div>

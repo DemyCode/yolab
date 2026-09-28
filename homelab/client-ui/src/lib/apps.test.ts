@@ -140,9 +140,7 @@ describe("outputState", () => {
   });
 
   it("is unset, not waiting, when it comes from a setting left empty", () => {
-    expect(outputState({ ...out("pin", ""), from_config: true })).toBe(
-      "unset",
-    );
+    expect(outputState({ ...out("pin", ""), from_config: true })).toBe("unset");
   });
 });
 

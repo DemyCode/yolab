@@ -432,7 +432,12 @@ describe("seedForm", () => {
   });
 
   it("fills in defaults for settings the copied app never had", () => {
-    const seed = seedForm(schema, { subdomain: "files" }, "restore", counter().generate);
+    const seed = seedForm(
+      schema,
+      { subdomain: "files" },
+      "restore",
+      counter().generate,
+    );
     expect(seed.storage_size).toBe("50Gi");
   });
 });

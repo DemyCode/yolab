@@ -184,7 +184,10 @@ pub async fn remembered_everywhere<H: Host>(host: &H) -> BTreeMap<String, Rememb
         .flatten()
         .filter_map(|secret| {
             let ns = secret["metadata"]["namespace"].as_str()?;
-            Some((ns.to_string(), parse_remembered(stored_json(secret).as_deref())))
+            Some((
+                ns.to_string(),
+                parse_remembered(stored_json(secret).as_deref()),
+            ))
         })
         .collect()
 }
@@ -262,7 +265,8 @@ pub async fn rescan<H: Host>(
     }
 
     if changed || (!existed && !remembered.is_empty()) {
-        host.kubectl_apply(&secret_manifest(ns, &remembered)?).await?;
+        host.kubectl_apply(&secret_manifest(ns, &remembered)?)
+            .await?;
     }
     Ok(remembered)
 }
@@ -275,7 +279,14 @@ pub async fn rescan_all<H: Host>(
     let mut failed = Vec::new();
     for app in &apps {
         let schema = crate::routers::apps::app_schema(catalog_dir, &app.app_id);
-        if let Err(e) = rescan(host, &app.namespace, &schema, &app.settings, &app.annotations).await
+        if let Err(e) = rescan(
+            host,
+            &app.namespace,
+            &schema,
+            &app.settings,
+            &app.annotations,
+        )
+        .await
         {
             tracing::debug!("{}: outputs could not be rescanned ({e})", app.namespace);
             failed.push(app.namespace.clone());
@@ -351,7 +362,11 @@ mod tests {
     fn the_latest_matching_line_wins() {
         let found = latest_matches(
             &[logs("token")],
-            ["YOLAB_OUTPUT token first", "noise", "YOLAB_OUTPUT token second"],
+            [
+                "YOLAB_OUTPUT token first",
+                "noise",
+                "YOLAB_OUTPUT token second",
+            ],
         );
         assert_eq!(found.get("token").map(String::as_str), Some("second"));
     }
@@ -369,16 +384,34 @@ mod tests {
     fn a_new_value_replaces_the_remembered_one() {
         let mut remembered = Remembered::new();
         remember(&mut remembered, fresh(&[("password", "abc")]), at(1));
-        assert!(remember(&mut remembered, fresh(&[("password", "xyz")]), at(2)));
-        assert_eq!(remembered["password"], Found { value: "xyz".into(), found_at: at(2) });
+        assert!(remember(
+            &mut remembered,
+            fresh(&[("password", "xyz")]),
+            at(2)
+        ));
+        assert_eq!(
+            remembered["password"],
+            Found {
+                value: "xyz".into(),
+                found_at: at(2)
+            }
+        );
     }
 
     #[test]
     fn seeing_the_same_value_again_does_not_count_as_a_change() {
         let mut remembered = Remembered::new();
         remember(&mut remembered, fresh(&[("password", "abc")]), at(1));
-        assert!(!remember(&mut remembered, fresh(&[("password", "abc")]), at(5)));
-        assert_eq!(remembered["password"].found_at, at(1), "it was found at 12:01, not re-found");
+        assert!(!remember(
+            &mut remembered,
+            fresh(&[("password", "abc")]),
+            at(5)
+        ));
+        assert_eq!(
+            remembered["password"].found_at,
+            at(1),
+            "it was found at 12:01, not re-found"
+        );
     }
 
     #[test]
@@ -449,7 +482,8 @@ mod tests {
         const GET_PODS: &str = "kubectl get pods -n yolab-files-ab12 -o json";
         const INIT_LOGS: &str = "kubectl logs -n yolab-files-ab12 gateway-7f -c file-explorer-init";
         const CADDY_LOGS: &str = "kubectl logs -n yolab-files-ab12 gateway-7f -c caddy";
-        const NOT_FOUND: &str = r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
+        const NOT_FOUND: &str =
+            r#"Error from server (NotFound): secrets "yolab-outputs" not found"#;
 
         fn app(explorer_default: bool) -> AppSchema {
             AppSchema::from_parts(
@@ -493,7 +527,10 @@ mod tests {
         fn remembered(key: &str, value: &str) -> Remembered {
             Remembered::from([(
                 key.to_string(),
-                Found { value: value.into(), found_at: at(1) },
+                Found {
+                    value: value.into(),
+                    found_at: at(1),
+                },
             )])
         }
 
@@ -530,7 +567,10 @@ mod tests {
         #[tokio::test]
         async fn nothing_is_written_when_nothing_new_was_found() {
             let host = FakeHost::new()
-                .ok(GET_SECRET, &stored(&remembered("file_explorer_password", "s3cret")))
+                .ok(
+                    GET_SECRET,
+                    &stored(&remembered("file_explorer_password", "s3cret")),
+                )
                 .ok(GET_PODS, &pods())
                 .ok(INIT_LOGS, &printed("s3cret"))
                 .ok(CADDY_LOGS, "");
@@ -545,7 +585,10 @@ mod tests {
         #[tokio::test]
         async fn a_value_is_kept_after_the_pod_restarts_and_its_logs_are_gone() {
             let host = FakeHost::new()
-                .ok(GET_SECRET, &stored(&remembered("file_explorer_password", "s3cret")))
+                .ok(
+                    GET_SECRET,
+                    &stored(&remembered("file_explorer_password", "s3cret")),
+                )
                 .ok(GET_PODS, &pods())
                 .ok(INIT_LOGS, "")
                 .ok(CADDY_LOGS, "");
@@ -561,7 +604,10 @@ mod tests {
         #[tokio::test]
         async fn a_newer_value_replaces_the_remembered_one() {
             let host = FakeHost::new()
-                .ok(GET_SECRET, &stored(&remembered("file_explorer_password", "old")))
+                .ok(
+                    GET_SECRET,
+                    &stored(&remembered("file_explorer_password", "old")),
+                )
                 .ok(GET_PODS, &pods())
                 .ok(INIT_LOGS, &printed("new"))
                 .ok(CADDY_LOGS, "")
@@ -633,7 +679,10 @@ mod tests {
             let result = rescan(&host, NS, &app(true), &Map::new(), &Map::new()).await;
 
             assert!(result.is_err());
-            assert!(applied(&host).is_empty(), "never overwrite what we could not read");
+            assert!(
+                applied(&host).is_empty(),
+                "never overwrite what we could not read"
+            );
         }
 
         #[tokio::test]
@@ -643,17 +692,22 @@ mod tests {
                   "data": serde_json::from_str::<Value>(&stored(&remembered("url", "https://a"))).unwrap()["data"] },
                 { "metadata": { "namespace": "yolab-b" }, "data": { "outputs.json": "not base64!" } }
             ]});
-            let host = FakeHost::new().ok("kubectl get secrets --all-namespaces", &listed.to_string());
+            let host =
+                FakeHost::new().ok("kubectl get secrets --all-namespaces", &listed.to_string());
 
             let everywhere = remembered_everywhere(&host).await;
 
             assert_eq!(everywhere["yolab-a"]["url"].value, "https://a");
-            assert!(everywhere["yolab-b"].is_empty(), "an unreadable one counts as nothing found");
+            assert!(
+                everywhere["yolab-b"].is_empty(),
+                "an unreadable one counts as nothing found"
+            );
         }
 
         #[tokio::test]
         async fn the_listing_shows_nothing_remembered_when_the_cluster_cannot_be_read() {
-            let host = FakeHost::new().fail("kubectl get secrets", "Unable to connect to the server");
+            let host =
+                FakeHost::new().fail("kubectl get secrets", "Unable to connect to the server");
             assert!(remembered_everywhere(&host).await.is_empty());
         }
 
@@ -661,8 +715,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let chart = dir.path().join("files");
             std::fs::create_dir_all(&chart).unwrap();
-            std::fs::write(chart.join("Chart.yaml"), "apiVersion: v2\nname: files\nversion: 0.1.0\n")
-                .unwrap();
+            std::fs::write(
+                chart.join("Chart.yaml"),
+                "apiVersion: v2\nname: files\nversion: 0.1.0\n",
+            )
+            .unwrap();
             std::fs::write(
                 chart.join("values.schema.json"),
                 json!({ "properties": { "outputs": { "properties": {
@@ -701,7 +758,10 @@ mod tests {
 
             assert_eq!(failed, vec!["yolab-broken".to_string()]);
             assert!(applied(&host)[0].contains("t0k"));
-            assert!(!host.ran("yolab-leaving"), "an app being removed is left alone");
+            assert!(
+                !host.ran("yolab-leaving"),
+                "an app being removed is left alone"
+            );
         }
     }
 }

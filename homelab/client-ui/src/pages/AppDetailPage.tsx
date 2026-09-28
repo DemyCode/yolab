@@ -738,7 +738,10 @@ export function AppDetailPage() {
       )}
 
       {}
-      <AppAccess instanceName={app.instance_name} appReady={state === "ready"} />
+      <AppAccess
+        instanceName={app.instance_name}
+        appReady={state === "ready"}
+      />
 
       {entry && (
         <div className="mb-6 flex flex-wrap items-center gap-2">

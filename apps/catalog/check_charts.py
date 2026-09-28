@@ -447,7 +447,10 @@ def check_schema(app, schema, chart_yaml, fail):
             )
         source = out.get("source")
         if not isinstance(source, dict) or len(source) != 1:
-            fail(app, f'{where} needs exactly one source: {{"logs": ...}} or {{"config": ...}}')
+            fail(
+                app,
+                f'{where} needs exactly one source: {{"logs": ...}} or {{"config": ...}}',
+            )
         elif "logs" in source:
             try:
                 if re.compile(source["logs"]).groups < 1:
