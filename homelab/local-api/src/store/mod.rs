@@ -343,30 +343,8 @@ impl Store {
         self.flagged(POLICY_SEEDED_KEY)
     }
 
-    pub fn set_machine_state(&mut self, node: &str, state: MachineState) -> Result<(), StoreError> {
-        self.write_at(&format!("{MACHINE_PREFIX}{node}"), &state, Origin::User)
-    }
-
-    pub fn observe_machine(&mut self, node: &str) -> Result<bool, StoreError> {
-        self.import_at(
-            &format!("{MACHINE_PREFIX}{node}"),
-            &MachineState::Member,
-            Origin::Discovered,
-        )
-    }
-
-    pub fn machine_state(&self, node: &str) -> Result<Option<MachineState>, StoreError> {
-        Ok(self
-            .read_at::<MachineState>(&format!("{MACHINE_PREFIX}{node}"))?
-            .map(|e| e.value))
-    }
-
     pub fn machines(&self) -> Result<BTreeMap<String, Entry<MachineState>>, StoreError> {
         self.collection(MACHINE_PREFIX)
-    }
-
-    pub fn mark_machines_seeded(&mut self) -> Result<bool, StoreError> {
-        self.flag(MACHINES_SEEDED_KEY)
     }
 
     pub fn machines_seeded(&self) -> bool {
@@ -397,10 +375,6 @@ impl Store {
 
     pub fn app_definitions(&self) -> Result<BTreeMap<String, Entry<AppDefinition>>, StoreError> {
         self.collection(APP_PREFIX)
-    }
-
-    pub fn mark_apps_seeded(&mut self) -> Result<bool, StoreError> {
-        self.flag(APPS_SEEDED_KEY)
     }
 
     pub fn apps_seeded(&self) -> bool {
