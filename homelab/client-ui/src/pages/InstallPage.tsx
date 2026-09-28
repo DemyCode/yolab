@@ -352,8 +352,9 @@ export function InstallPage() {
           </div>
 
           <p className="mt-6 max-w-sm text-sm text-fg-muted">
-            This usually takes a minute or two. You can leave this page — it
-            keeps going.
+            {phase.toLowerCase().includes("copying")
+              ? "Copying a large app can take several minutes. You can leave this page — it keeps going."
+              : "This usually takes a minute or two. You can leave this page — it keeps going."}
           </p>
 
           <button

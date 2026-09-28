@@ -660,6 +660,12 @@ export function AppDetailPage() {
         </div>
       </header>
 
+      {state === "copying" && (
+        <Banner tone="info" title="Copying this app's data" className="mb-5">
+          {app.detail?.trim() ||
+            "Its files are being copied from the original. It starts on its own when that finishes."}
+        </Banner>
+      )}
       {state === "starting" && (
         <Banner tone="info" title="Still starting" className="mb-5">
           This usually takes a minute or two the first time. Details appear here

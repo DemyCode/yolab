@@ -849,15 +849,26 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     let mut restarts: i64 = 0;
     let mut waiting: Vec<(String, bool)> = Vec::new();
     let mut unschedulable = false;
+    let mut storage_pending = false;
     let mut running_not_ready = false;
 
     for pod in pods {
         if pod["status"]["phase"].as_str() == Some("Pending") {
-            unschedulable |= pod["status"]["conditions"]
-                .as_array()
+            let conditions = pod["status"]["conditions"].as_array();
+            unschedulable |= conditions
                 .map(|cs| {
                     cs.iter()
                         .any(|c| c["type"] == "PodScheduled" && c["reason"] == "Unschedulable")
+                })
+                .unwrap_or(false);
+            storage_pending |= conditions
+                .map(|cs| {
+                    cs.iter().any(|c| {
+                        c["message"]
+                            .as_str()
+                            .map(|m| m.contains("PersistentVolumeClaim"))
+                            .unwrap_or(false)
+                    })
                 })
                 .unwrap_or(false);
         }
@@ -897,7 +908,11 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
         return "This app's image name is not valid, so it cannot be downloaded.".into();
     }
     if unschedulable {
-        return "No machine has room for this app right now.".into();
+        return if storage_pending {
+            "Getting this app's storage ready — copying its files can take a while.".into()
+        } else {
+            "No machine has room for this app right now.".into()
+        };
     }
 
     if has("ContainerCreating") {
@@ -917,15 +932,75 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     String::new()
 }
 
+fn is_cloning(pvc: &Value) -> bool {
+    pvc["status"]["phase"].as_str() == Some("Pending")
+        && ["dataSource", "dataSourceRef"]
+            .iter()
+            .any(|key| pvc["spec"][key]["kind"].as_str() == Some("VolumeSnapshot"))
+}
+
+fn clone_percent(events: &[Value], namespace: &str, pvc: &str) -> Option<u32> {
+    let mut latest: Option<(&str, &str)> = None;
+    for event in events {
+        if event["involvedObject"]["kind"].as_str() != Some("PersistentVolumeClaim")
+            || event["involvedObject"]["namespace"].as_str() != Some(namespace)
+            || event["involvedObject"]["name"].as_str() != Some(pvc)
+        {
+            continue;
+        }
+        let Some(message) = event["message"].as_str() else {
+            continue;
+        };
+        if !message.contains("percentage cloned=") {
+            continue;
+        }
+        let at = event["lastTimestamp"]
+            .as_str()
+            .or_else(|| event["eventTime"].as_str())
+            .unwrap_or("");
+        if latest.map(|(seen, _)| at >= seen).unwrap_or(true) {
+            latest = Some((at, message));
+        }
+    }
+    let (_, message) = latest?;
+    let rest = message.split("percentage cloned=").nth(1)?;
+    let number: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    number
+        .parse::<f64>()
+        .ok()
+        .map(|percent| percent.round() as u32)
+}
+
+fn copying_data(
+    namespace: &str,
+    pvcs_by_ns: &std::collections::HashMap<&str, Vec<&Value>>,
+    events: &[Value],
+) -> Option<String> {
+    let pvc = pvcs_by_ns
+        .get(namespace)?
+        .iter()
+        .find(|pvc| is_cloning(pvc))?;
+    let name = pvc["metadata"]["name"].as_str().unwrap_or("");
+    Some(match clone_percent(events, namespace, name) {
+        Some(percent) => format!("Copying this app's files… {percent}%"),
+        None => "Copying this app's files…".to_string(),
+    })
+}
+
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let client = &state.kube.client().await?;
     let catalog_dir = state.config.catalog_dir();
     let backup_status = crate::routers::backup::app_backup_status(client).await;
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
-    let all_pods = kube::api::ListParams::default();
-    let (ns_out, pods_out, mut remembered) = tokio::join!(
+    let everything = kube::api::ListParams::default();
+    let (ns_out, pods_out, pvcs_out, events_out, mut remembered) = tokio::join!(
         crate::k8s::list(client, "v1", "Namespace", None, &managed),
-        crate::k8s::list(client, "v1", "Pod", None, &all_pods),
+        crate::k8s::list(client, "v1", "Pod", None, &everything),
+        crate::k8s::list(client, "v1", "PersistentVolumeClaim", None, &everything),
+        crate::k8s::list(client, "v1", "Event", None, &everything),
         crate::outputs::remembered_everywhere(client),
     );
     let namespaces = ns_out?;
@@ -937,6 +1012,14 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             pods_by_ns.entry(ns).or_default().push(pod);
         }
     }
+    let all_pvc_items = pvcs_out.unwrap_or_default();
+    let mut pvcs_by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
+    for pvc in &all_pvc_items {
+        if let Some(ns) = pvc["metadata"]["namespace"].as_str() {
+            pvcs_by_ns.entry(ns).or_default().push(pvc);
+        }
+    }
+    let all_event_items = events_out.unwrap_or_default();
 
     let mut apps = vec![];
     for ns in &namespaces {
@@ -950,11 +1033,14 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .trim_start_matches("yolab-")
             .to_string();
         let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
+        let ns_full = format!("yolab-{name}");
         let mut detail = String::new();
         let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
             "uninstalling".to_string()
+        } else if let Some(copying) = copying_data(&ns_full, &pvcs_by_ns, &all_event_items) {
+            detail = copying;
+            "copying".to_string()
         } else {
-            let ns_full = format!("yolab-{name}");
             let items: Vec<&Value> = pods_by_ns
                 .get(ns_full.as_str())
                 .map(|v| v.as_slice())
@@ -1901,6 +1987,71 @@ mod tests {
             {"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}
         ]}});
         assert!(explain_app_state(&[&pod]).to_lowercase().contains("room"));
+    }
+
+    #[test]
+    fn a_pod_waiting_on_its_storage_is_not_told_there_is_no_room() {
+        let pod = json!({"status": {"phase": "Pending", "conditions": [
+            {"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+             "message": "0/2 nodes are available: pod has unbound immediate PersistentVolumeClaims. not found"}
+        ]}});
+        let msg = explain_app_state(&[&pod]).to_lowercase();
+        assert!(msg.contains("storage"), "{msg}");
+        assert!(!msg.contains("room"), "{msg}");
+    }
+
+    fn cloning(name: &str, phase: &str) -> Value {
+        json!({
+            "metadata": {"name": name, "namespace": "yolab-notes"},
+            "spec": {"dataSource": {"kind": "VolumeSnapshot", "name": "yolab-copy-abcd"}},
+            "status": {"phase": phase},
+        })
+    }
+
+    fn progress_event(name: &str, percent: f64, at: &str) -> Value {
+        json!({
+            "involvedObject": {"kind": "PersistentVolumeClaim", "namespace": "yolab-notes", "name": name},
+            "lastTimestamp": at,
+            "message": format!(
+                "failed to provision volume: clone from snapshot is already in progress. \
+                 progress report: percentage cloned={percent}%, amount cloned=88M/236M, \
+                 files cloned=123/307"
+            ),
+        })
+    }
+
+    #[test]
+    fn a_copy_in_progress_names_the_files_and_the_latest_percentage() {
+        let pvc = cloning("minecraft-9hr2-data", "Pending");
+        let events = [
+            progress_event("minecraft-9hr2-data", 11.4, "2026-09-28T00:00:00Z"),
+            progress_event("minecraft-9hr2-data", 37.287, "2026-09-28T00:01:00Z"),
+        ];
+        let mut by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
+        by_ns.insert("yolab-notes", vec![&pvc]);
+        assert_eq!(
+            copying_data("yolab-notes", &by_ns, &events).as_deref(),
+            Some("Copying this app's files… 37%")
+        );
+    }
+
+    #[test]
+    fn a_copy_before_the_first_percentage_still_reads_as_copying() {
+        let pvc = cloning("minecraft-9hr2-data", "Pending");
+        let mut by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
+        by_ns.insert("yolab-notes", vec![&pvc]);
+        assert_eq!(
+            copying_data("yolab-notes", &by_ns, &[]).as_deref(),
+            Some("Copying this app's files…")
+        );
+    }
+
+    #[test]
+    fn a_bound_volume_is_not_a_copy_in_progress() {
+        let pvc = cloning("minecraft-9hr2-data", "Bound");
+        let mut by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
+        by_ns.insert("yolab-notes", vec![&pvc]);
+        assert!(copying_data("yolab-notes", &by_ns, &[]).is_none());
     }
 
     #[test]

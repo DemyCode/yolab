@@ -5,6 +5,7 @@ import {
   outputState,
   stillWaiting,
   appState,
+  appLabel,
   appDisplayName,
   installedByChart,
   nextInstanceName,
@@ -193,6 +194,20 @@ describe("appState", () => {
     expect(appState(app({ status: "uninstalling" }))).toBe("removing");
     expect(appState(app({ status: "starting" }))).toBe("starting");
     expect(appState(app({ status: "running" }))).toBe("ready");
+  });
+
+  it("treats a data copy as its own state, not as starting", () => {
+    expect(appState(app({ status: "copying" }))).toBe("copying");
+  });
+
+  it("shows the server's copy progress instead of a generic label", () => {
+    const copying = app({
+      status: "copying",
+      detail: "Copying this app's files… 37%",
+    });
+    expect(appLabel(copying, appState(copying))).toBe(
+      "Copying this app's files… 37%",
+    );
   });
 });
 
