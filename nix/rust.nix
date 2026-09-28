@@ -14,6 +14,7 @@
     nativeBuildInputs ? [],
     buildInputs ? [],
     extraArgs ? {},
+    testsArgs ? {},
   }: let
     args =
       {
@@ -37,7 +38,7 @@
     inherit args cargoArtifacts;
 
     package = craneLib.buildPackage (args // {inherit cargoArtifacts;});
-    tests = craneLib.cargoTest (args // {inherit cargoArtifacts;});
+    tests = craneLib.cargoTest (args // {inherit cargoArtifacts;} // testsArgs);
 
     clippy = craneLib.cargoClippy (args
       // {
@@ -67,6 +68,10 @@ in {
       path = ../homelab/local-api;
       nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools pkgs.gitMinimal];
       buildInputs = [pkgs.openssl];
+      # The kube/wiremock tests bind loopback and reach it; a sandbox has no
+      # network, so run this one test derivation with the host network.
+      extraArgs.doCheck = false;
+      testsArgs.__noChroot = true;
     };
 
     installer = mkCrate {
