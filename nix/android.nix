@@ -1,7 +1,6 @@
 {
   pkgs,
   rust,
-  lib ? pkgs.lib,
 }: let
   androidPkgs = import pkgs.path {
     inherit (pkgs) system;
