@@ -576,7 +576,9 @@ mod tests {
         let j = Joiner::new(port, WITH_TOKEN);
         let host = joining_host();
 
-        let err = run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap_err();
+        let err = run(&host, &j.root(), "yolab-n2", &j.args)
+            .await
+            .unwrap_err();
 
         assert!(err.to_string().contains("refusing to join"));
         assert!(!admin_keyring_path(&j.root()).exists());
@@ -589,7 +591,9 @@ mod tests {
         let j = Joiner::new(port, WITH_TOKEN);
         let host = joining_host();
 
-        let err = run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap_err();
+        let err = run(&host, &j.root(), "yolab-n2", &j.args)
+            .await
+            .unwrap_err();
 
         assert!(format!("{err:#}").contains("rejected the join request"));
         assert!(!admin_keyring_path(&j.root()).exists());
@@ -601,7 +605,9 @@ mod tests {
         let j = Joiner::new(port, "[tunnel]\n");
         let host = joining_host();
 
-        let err = run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap_err();
+        let err = run(&host, &j.root(), "yolab-n2", &j.args)
+            .await
+            .unwrap_err();
 
         assert!(err.to_string().contains("no tunnel.account_token"));
         assert!(server.received_requests().await.unwrap().is_empty());

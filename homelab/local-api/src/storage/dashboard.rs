@@ -499,7 +499,10 @@ mod tests {
         let (server, port) = crate::testkit::peer().await;
         Mock::given(matchers::method("POST"))
             .and(matchers::path("/ceph-dashboard/api/auth"))
-            .and(matchers::header("Accept", "application/vnd.ceph.api.v1.0+json"))
+            .and(matchers::header(
+                "Accept",
+                "application/vnd.ceph.api.v1.0+json",
+            ))
             .and(matchers::body_json(
                 serde_json::json!({"username": "admin", "password": "clusterpw123"}),
             ))

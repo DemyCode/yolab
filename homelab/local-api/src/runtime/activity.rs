@@ -235,12 +235,18 @@ mod tests {
         let cache = Cache::default();
         let asked = Asked::new();
         let ask = |_: Requirement| asked.answer(Some(true));
-        assert!(first_unmet(&cache, &[Requirement::Ceph], ask).await.is_none());
+        assert!(first_unmet(&cache, &[Requirement::Ceph], ask)
+            .await
+            .is_none());
         tokio::time::advance(Duration::from_secs(4)).await;
-        assert!(first_unmet(&cache, &[Requirement::Ceph], ask).await.is_none());
+        assert!(first_unmet(&cache, &[Requirement::Ceph], ask)
+            .await
+            .is_none());
         assert_eq!(asked.count(), 1);
         tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(first_unmet(&cache, &[Requirement::Ceph], ask).await.is_none());
+        assert!(first_unmet(&cache, &[Requirement::Ceph], ask)
+            .await
+            .is_none());
         assert_eq!(asked.count(), 2);
     }
 
@@ -248,9 +254,7 @@ mod tests {
     async fn requirements_are_cached_apart_from_each_other() {
         let cache = Cache::default();
         let asked = Asked::new();
-        let ask = |r: Requirement| {
-            asked.answer(Some(r == Requirement::KubeApi))
-        };
+        let ask = |r: Requirement| asked.answer(Some(r == Requirement::KubeApi));
         assert_eq!(
             first_unmet(&cache, &[Requirement::KubeApi, Requirement::Ceph], ask).await,
             Some(Requirement::Ceph)
@@ -288,7 +292,10 @@ mod tests {
         })
         .await;
         assert!(matches!(running, Gate::Paused(why) if why.contains("is running")));
-        let unknown = gate_in(&Cache::default(), &[Activity::Restore], |_| asked.answer(None)).await;
+        let unknown = gate_in(&Cache::default(), &[Activity::Restore], |_| {
+            asked.answer(None)
+        })
+        .await;
         assert!(matches!(unknown, Gate::Paused(why) if why.contains("cannot tell")));
         let done = gate_in(&Cache::default(), &[Activity::Restore], |_| {
             asked.answer(Some(false))
