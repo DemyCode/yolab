@@ -77,6 +77,7 @@ run_setup() {
         PLATFORM_API_URL="https://api.example.test" \
         ACCOUNT_TOKEN="test-token" \
         SERVICE_NAME="${SERVICE_NAME_OVERRIDE-myapp}" \
+        ALIASES="${ALIASES_OVERRIDE-}" \
         POD_NAMESPACE="${OWNER_OVERRIDE-yolab-myapp-cd34}" \
         HANDSHAKE_POLL_SECS=1 \
         HANDSHAKE_WATCH_SECS=3 \
@@ -120,7 +121,7 @@ case_start() {
 }
 case_end() {
     rm -rf "$SANDBOX"
-    unset SERVICE_NAME_OVERRIDE OWNER_OVERRIDE
+    unset SERVICE_NAME_OVERRIDE OWNER_OVERRIDE ALIASES_OVERRIDE
 }
 
 TUNNEL_BODY='{"tunnel_id":77,"sub_ipv6":"2001:db8::99","wg_server_endpoint":"1.2.3.4:51820","wg_server_public_key":"SERVER-PUB"}'
@@ -499,6 +500,71 @@ respond records 200 "$RECORD_BODY"
 run_setup
 assert_eq "$RC" "0" "exit code"
 assert_not_called "POST create" "no ownership information, no decision"
+case_end
+
+ALIAS_BODY='{"fqdn":"myapp-files.example.test"}'
+
+case_start "an alias is claimed on the same tunnel address and exported under its variable"
+ALIASES_OVERRIDE="FILE_EXPLORER_FQDN=myapp-files"
+respond create 200 "$TUNNEL_BODY"
+respond records.1 200 "$RECORD_BODY"
+respond records.2 200 "$ALIAS_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called '"name":"myapp-files","value":"2001:db8::99"' "alias record points at the tunnel"
+assert_contains "$(env_file)" 'export FILE_EXPLORER_FQDN=myapp-files.example.test' "env"
+assert_contains "$(env_file)" 'export YOLAB_FQDN=myapp.example.test' "env keeps the app's own name"
+assert_eq "$(state_field 'aliases.FILE_EXPLORER_FQDN')" "myapp-files.example.test" "alias cached"
+case_end
+
+case_start "an alias held by another app stops the pod with the platform's reason"
+ALIASES_OVERRIDE="FILE_EXPLORER_FQDN=taken"
+respond create 200 "$TUNNEL_BODY"
+respond records.1 200 "$RECORD_BODY"
+respond records.2 409 '{"error":"taken.example.test is already used by another app on this account"}'
+run_setup
+assert_eq "$RC" "1" "exit code"
+assert_contains "$(cat "$OUT")" "already used by another app" "reason surfaced"
+case_end
+
+case_start "an unreachable platform keeps serving an alias claimed before"
+ALIASES_OVERRIDE="FILE_EXPLORER_FQDN=myapp-files"
+write_state <<'EOF'
+{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_private_key":"PRIVKEY-cached",
+ "wg_server_endpoint":"9.9.9.9:51820","wg_server_public_key":"CACHED-SERVER-PUB",
+ "fqdn":"myapp.example.test","owner":"yolab-myapp-cd34",
+ "aliases":{"FILE_EXPLORER_FQDN":"myapp-files.example.test"}}
+EOF
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_contains "$(env_file)" 'export FILE_EXPLORER_FQDN=myapp-files.example.test' "cached alias exported"
+case_end
+
+case_start "an unreachable platform cannot invent an alias it never claimed"
+ALIASES_OVERRIDE="FILE_EXPLORER_FQDN=myapp-files"
+write_state <<EOF
+$CACHED_STATE
+EOF
+run_setup
+assert_eq "$RC" "1" "exit code"
+assert_contains "$(cat "$OUT")" "never claimed before" "reason surfaced"
+case_end
+
+case_start "no aliases means exactly one DNS record"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_eq "$(grep -c '^POST records' "$SANDBOX/calls.log")" "1" "record calls"
+case_end
+
+case_start "a malformed alias is refused before anything is claimed for it"
+ALIASES_OVERRIDE="file-explorer=myapp-files"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "1" "exit code"
+assert_eq "$(grep -c '^POST records' "$SANDBOX/calls.log")" "1" "only the app's own record"
 case_end
 
 echo "wg-register: $PASS passed, $FAIL failed"
