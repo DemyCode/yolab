@@ -3,6 +3,7 @@
   treefmtEval,
   rust,
   nixosSystems,
+  androidApk,
 }: let
   builds = import ../homelab/builds.nix {inherit pkgs rust;};
   inherit (rust) crates;
@@ -31,6 +32,15 @@ in let
     clippy-local-api = crates.local-api.clippy;
     clippy-installer = crates.installer.clippy;
     clippy-desktop-client = crates.desktop-client.clippy;
+
+    android-apk-is-signed-so-android-will-install-it =
+      pkgs.runCommand "android-apk-is-signed-so-android-will-install-it"
+      {nativeBuildInputs = [pkgs.jdk17];}
+      ''
+        test "$(ls ${androidApk}/*.apk)" = "${androidApk}/yolab.apk"
+        ${androidApk.buildTools}/apksigner verify --print-certs ${androidApk}/yolab.apk
+        touch $out
+      '';
 
     wg-register-tests =
       pkgs.runCommand "wg-register-tests"

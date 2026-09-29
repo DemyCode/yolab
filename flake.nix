@@ -21,6 +21,10 @@
       url = "path:./homelab/machine";
       flake = false;
     };
+    yolab-android-key = {
+      url = "path:./homelab/android-key";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -153,6 +157,7 @@
         rust
         nixosSystems
         ;
+      androidApk = self.packages.x86_64-linux.android-apk;
     };
   in {
     nixosConfigurations =
@@ -175,7 +180,10 @@
 
     packages.x86_64-linux = {
       desktop-client = rust.crates.desktop-client.package;
-      android-apk = import ./nix/android.nix {inherit pkgs rust;};
+      android-apk = import ./nix/android.nix {
+        inherit pkgs rust;
+        signingKey = inputs.yolab-android-key;
+      };
     };
 
     apps.x86_64-linux = {

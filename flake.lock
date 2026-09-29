@@ -58,7 +58,8 @@
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
         "treefmt-nix": "treefmt-nix",
-        "yolab-machine": "yolab-machine"
+        "yolab-machine": "yolab-machine",
+        "yolab-android-key": "yolab-android-key"
       }
     },
     "rust-overlay": {
@@ -109,6 +110,18 @@
       },
       "original": {
         "path": "./homelab/machine",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "yolab-android-key": {
+      "flake": false,
+      "locked": {
+        "path": "./homelab/android-key",
+        "type": "path"
+      },
+      "original": {
+        "path": "./homelab/android-key",
         "type": "path"
       },
       "parent": []
