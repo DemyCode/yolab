@@ -173,6 +173,10 @@ impl TestApi {
 
 pub(crate) const PEER: &str = "::1";
 
+pub(crate) fn http() -> crate::http::Client {
+    crate::http::Client::new()
+}
+
 pub(crate) async fn peer() -> (wiremock::MockServer, u16) {
     let listener = std::net::TcpListener::bind("[::1]:0").expect("bind a peer on [::1]");
     let port = listener.local_addr().expect("the peer's address").port();
@@ -193,7 +197,7 @@ async fn a_peer_is_reached_through_the_same_url_production_builds() {
         .expect(1)
         .mount(&server)
         .await;
-    let res = crate::http::client()
+    let res = http()
         .get(crate::http::peer_url(PEER, port, "/api/status"))
         .send()
         .await

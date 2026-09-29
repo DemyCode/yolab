@@ -722,7 +722,7 @@ mod real_network {
     fn network(port: u16, platform_url: &str, kube: kube::Client) -> RealNetwork {
         RealNetwork {
             kube: crate::k8s::Kube::with(kube),
-            client: crate::http::client(),
+            client: crate::testkit::http(),
             port,
             token: TOKEN.into(),
             platform_url: platform_url.into(),
