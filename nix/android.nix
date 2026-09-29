@@ -61,6 +61,11 @@
     chmod +x gen/android/gradlew
   '';
 
+  aapt2Override = ''
+    printf 'android.aapt2FromMavenOverride=%s\n' "${sdkRoot}/build-tools/36.0.0/aapt2" \
+      >> "$GRADLE_USER_HOME/gradle.properties"
+  '';
+
   nativeBuildInputs = [
     rust.rustToolchain
     pkgs.cargo-tauri
@@ -86,6 +91,7 @@
         export GRADLE_USER_HOME=$TMPDIR/gradle
         ${cargoOffline}
         mkdir -p "$GRADLE_USER_HOME"
+        ${aapt2Override}
 
         # Generates gen/android. Not committed to the repo: it is a template
         # render, and a checked-in copy silently goes stale against the CLI that
@@ -138,7 +144,7 @@
 
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = "sha256-G2wjpyqasn8ofFLHA6DWCnOo4bYHdZfnM/ANHudtV4k=";
+      outputHash = pkgs.lib.fakeHash;
     }
     // commonEnv
   );
@@ -163,8 +169,7 @@ in
         mkdir -p "$GRADLE_USER_HOME/caches"
         cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
         chmod -R u+w "$GRADLE_USER_HOME"
-        printf 'android.aapt2FromMavenOverride=%s\n' "${sdkRoot}/build-tools/36.0.0/aapt2" \
-          >> "$GRADLE_USER_HOME/gradle.properties"
+        ${aapt2Override}
 
         cargo tauri android init --ci
         ${gradlewShim}
