@@ -797,7 +797,10 @@ mod tests {
             .find("rm -rf /data/minecraft-9mqy/yolab-state")
             .unwrap();
         assert!(moved < dropped, "{command}");
-        assert!(!command.contains("rm -rf /data/minecraft-cza3"), "{command}");
+        assert!(
+            !command.contains("rm -rf /data/minecraft-cza3"),
+            "{command}"
+        );
     }
 
     #[test]
