@@ -197,8 +197,23 @@ pub async fn delete_if_present(
     client: &Client,
     manifest: &serde_json::Value,
 ) -> anyhow::Result<()> {
+    delete_with(client, manifest, &Default::default()).await
+}
+
+pub async fn delete_with_dependents(
+    client: &Client,
+    manifest: &serde_json::Value,
+) -> anyhow::Result<()> {
+    delete_with(client, manifest, &kube::api::DeleteParams::background()).await
+}
+
+async fn delete_with(
+    client: &Client,
+    manifest: &serde_json::Value,
+    params: &kube::api::DeleteParams,
+) -> anyhow::Result<()> {
     let (api, name) = dynamic_api(client, manifest)?;
-    match api.delete(&name, &Default::default()).await {
+    match api.delete(&name, params).await {
         Ok(_) => Ok(()),
         Err(e) if is_not_found(&e) => Ok(()),
         Err(e) => Err(e.into()),
@@ -582,6 +597,28 @@ mod tests {
         delete_if_present(&client, &replication_source())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_a_job_with_its_dependents_takes_its_pods_too() {
+        let (server, client) = api_server().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/apis/batch/v1/namespaces/yolab-notes/jobs/yolab-rebase-ab12",
+            ))
+            .and(wiremock::matchers::body_partial_json(
+                json!({ "propagationPolicy": "Background" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(status(200, "Success")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        delete_with_dependents(
+            &client,
+            &reference("batch/v1", "Job", "yolab-notes", "yolab-rebase-ab12"),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
