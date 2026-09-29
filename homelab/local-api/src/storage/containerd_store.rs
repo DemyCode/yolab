@@ -853,17 +853,19 @@ mod tests {
             .ok("ceph config-key rm", "")
     }
 
-    fn swappable() -> FakeHost {
+    fn swap_base() -> FakeHost {
         claimable(
             mapped()
                 .fail("blkid", "")
                 .ok("mkfs.xfs", "")
-                .ok("mount ", "")
                 .ok("systemctl stop", "")
-                .ok("systemctl is-enabled", "")
                 .ok("systemctl reset-failed", "")
                 .ok("systemctl start", ""),
         )
+    }
+
+    fn swappable() -> FakeHost {
+        swap_base().ok("mount ", "").ok("systemctl is-enabled", "")
     }
 
     fn at(host: &FakeHost, needle: &str) -> usize {
@@ -926,7 +928,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_k3s_that_is_switched_off_stays_off() {
         let dir = tempfile::tempdir().unwrap();
-        let host = swappable().fail("systemctl is-enabled", "disabled");
+        let host = swap_base()
+            .ok("mount ", "")
+            .fail("systemctl is-enabled", "disabled");
         pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
             .await
             .unwrap();
@@ -936,7 +940,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn k3s_is_brought_back_even_when_the_mount_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let host = swappable().fail("mount ", "no such device");
+        let host = swap_base()
+            .fail("mount ", "no such device")
+            .ok("systemctl is-enabled", "");
         let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
             .await
             .unwrap();
