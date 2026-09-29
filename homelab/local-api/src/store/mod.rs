@@ -492,12 +492,18 @@ mod tests {
         let mut a = Store::new("node1");
         a.set_disk_intent("node1", "wwn-a", DiskIntent::On).unwrap();
         let mut echo = Store::load("node1", &a.save()).unwrap();
-        assert!(!a.merge(&mut echo).unwrap(), "its own document back is no news");
+        assert!(
+            !a.merge(&mut echo).unwrap(),
+            "its own document back is no news"
+        );
 
         let mut b = Store::new("node2");
         b.set_disk_intent("node2", "wwn-b", DiskIntent::On).unwrap();
         assert!(a.merge(&mut b).unwrap());
-        assert!(!a.merge(&mut b).unwrap(), "the same news twice is news once");
+        assert!(
+            !a.merge(&mut b).unwrap(),
+            "the same news twice is news once"
+        );
     }
 
     #[test]
