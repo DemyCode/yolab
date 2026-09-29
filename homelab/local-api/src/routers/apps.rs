@@ -234,7 +234,6 @@ pub(crate) async fn write_definition(
         ),
     )
     .await?;
-    record_definition(ns, def);
     let redacted = redact_credentials(&def.config, &app.credentials());
     annotate_ns(client, ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
     annotate_ns(client, ns, ANN_BACKUP, &serde_json::to_string(&def.backup)?).await;
@@ -243,61 +242,6 @@ pub(crate) async fn write_definition(
 }
 
 pub(crate) async fn read_definition(client: &Client, ns: &str) -> anyhow::Result<AppDefinition> {
-    match read_definition_from_cluster(client, ns).await {
-        Ok(def) => {
-            take_definition_in(ns, &def);
-            Ok(def)
-        }
-        Err(e) => match stored_definition(ns) {
-            Some(def) => {
-                tracing::warn!(
-                    "{ns}: its saved settings could not be read from the cluster ({e}) — using the \
-                     copy replicated to this machine"
-                );
-                Ok(def)
-            }
-            None => Err(e),
-        },
-    }
-}
-
-fn stored_definition(ns: &str) -> Option<AppDefinition> {
-    crate::store::locked()
-        .app_definition(ns)
-        .unwrap_or_else(|e| {
-            tracing::error!("{ns}: the replicated copy of its settings is unreadable ({e})");
-            None
-        })
-}
-
-fn take_definition_in(ns: &str, def: &AppDefinition) {
-    let mut store = crate::store::locked();
-    match store.import_app_definition(ns, def) {
-        Ok(true) => {
-            if let Err(e) = store.persist(&crate::store::default_path()) {
-                tracing::warn!("{ns}: the desired-state store could not be saved ({e})");
-            }
-        }
-        Ok(false) => {}
-        Err(e) => tracing::warn!("{ns}: could not be taken into the desired-state store ({e})"),
-    }
-}
-
-fn record_definition(ns: &str, def: &AppDefinition) {
-    let mut store = crate::store::locked();
-    if let Err(e) = store.set_app_definition(ns, def) {
-        tracing::warn!(
-            "{ns}: its settings were saved to the cluster but not recorded in the desired-state \
-             store ({e})"
-        );
-        return;
-    }
-    if let Err(e) = store.persist(&crate::store::default_path()) {
-        tracing::warn!("{ns}: the desired-state store could not be saved ({e})");
-    }
-}
-
-async fn read_definition_from_cluster(client: &Client, ns: &str) -> anyhow::Result<AppDefinition> {
     let data = crate::k8s::secret_data(client, ns, CONFIG_SECRET)
         .await?
         .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
@@ -2944,9 +2888,7 @@ mod tests {
             )
             .await;
 
-            let def = read_definition_from_cluster(&kube, "yolab-notes")
-                .await
-                .unwrap();
+            let def = read_definition(&kube, "yolab-notes").await.unwrap();
             assert_eq!(def.app_id, "notes");
             assert_eq!(def.chart_version, "1.2.0");
             assert_eq!(def.instance_name, "notes");
@@ -2960,9 +2902,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
                 .mount(&server)
                 .await;
-            let e = read_definition_from_cluster(&kube, "yolab-notes")
-                .await
-                .unwrap_err();
+            let e = read_definition(&kube, "yolab-notes").await.unwrap_err();
             assert!(e.to_string().contains("no saved settings"), "{e}");
         }
 
