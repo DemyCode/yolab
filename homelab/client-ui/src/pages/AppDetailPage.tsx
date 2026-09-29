@@ -61,7 +61,7 @@ function CopyValue({ label, value }: { label: string; value: string }) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1600);
             // eslint-disable-next-line no-empty
-          } catch {}
+          } catch { }
         }}
         className="shrink-0 rounded-lg p-2.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
         aria-label={`Copy ${label}`}
@@ -291,7 +291,7 @@ function RestoreDialog({
     setSnapshots(null);
     fetch(
       "/api/backups/snapshots?namespace=" +
-        encodeURIComponent(`yolab-${instanceName}`),
+      encodeURIComponent(`yolab-${instanceName}`),
     )
       .then((r) => r.json())
       .then((d: { snapshots?: RestoreSnapshot[] }) => {
@@ -563,7 +563,7 @@ export function AppDetailPage() {
         const mine = list.find((r) => r.namespace === `yolab-${instanceName}`);
         setRestore(mine ?? null);
         // eslint-disable-next-line no-empty
-      } catch {}
+      } catch { }
     }
     void pollRestore();
     const id = window.setInterval(pollRestore, 5000);
@@ -631,7 +631,7 @@ export function AppDetailPage() {
     const result = await streamEvents(
       `/api/apps/${app.instance_name}/update`,
       { method: "POST" },
-      () => {},
+      () => { },
     );
     if (!result.ok) setError(result.error ?? "Could not update the app");
     await apps.refresh();
@@ -710,7 +710,7 @@ export function AppDetailPage() {
         </Banner>
       )}
 
-      {}
+      { }
       {links.length > 0 && (
         <div className="mb-4 space-y-2">
           {links.map((link, i) => (
@@ -750,7 +750,7 @@ export function AppDetailPage() {
         </div>
       )}
 
-      {}
+      { }
       <AppAccess
         instanceName={app.instance_name}
         appReady={state === "ready"}
@@ -817,7 +817,7 @@ export function AppDetailPage() {
 
       <TechnicalDetails app={app} />
 
-      {}
+      { }
       <section className="mt-10 rounded-card border border-danger/25 bg-danger-soft p-5">
         <h2 className="text-sm font-semibold text-danger">Danger zone</h2>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
