@@ -10,7 +10,6 @@ use kube::Client;
 
 const SECRET: &str = "yolab-outputs";
 const SECRET_KEY: &str = "outputs.json";
-const LEGACY_ANNOTATION: &str = "yolab.io/outputs";
 const LOGS_TAIL: i64 = 2000;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -66,29 +65,6 @@ pub fn remember(
         changed = true;
     }
     changed
-}
-
-pub fn from_legacy_annotation(ann: &Map<String, Value>, since: DateTime<Utc>) -> Remembered {
-    let Some(raw) = ann.get(LEGACY_ANNOTATION).and_then(Value::as_str) else {
-        return Remembered::new();
-    };
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(raw) else {
-        return Remembered::new();
-    };
-    items
-        .iter()
-        .filter_map(|item| {
-            let key = item["key"].as_str()?;
-            let value = item["value"].as_str().filter(|v| !v.is_empty())?;
-            Some((
-                key.to_string(),
-                Found {
-                    value: value.to_string(),
-                    found_at: since,
-                },
-            ))
-        })
-        .collect()
 }
 
 pub fn shown(
@@ -216,7 +192,6 @@ pub async fn rescan(
     ns: &str,
     app: &AppSchema,
     settings: &Map<String, Value>,
-    ann: &Map<String, Value>,
 ) -> anyhow::Result<Remembered> {
     let looked_for: Vec<OutputSpec> = app
         .applicable_outputs(settings)
@@ -228,13 +203,6 @@ pub async fn rescan(
     let existed = stored.is_some();
     let mut remembered = stored.unwrap_or_default();
     let mut changed = false;
-    for (key, found) in from_legacy_annotation(ann, Utc::now()) {
-        if let std::collections::btree_map::Entry::Vacant(slot) = remembered.entry(key) {
-            slot.insert(found);
-            changed = true;
-        }
-    }
-
     if !looked_for.is_empty() {
         let lines = log_lines(client, ns).await?;
         let fresh = latest_matches(&looked_for, lines.iter().map(String::as_str));
@@ -255,15 +223,7 @@ pub async fn rescan_all(
     let mut failed = Vec::new();
     for app in &apps {
         let schema = crate::routers::apps::app_schema(catalog_dir, &app.app_id);
-        if let Err(e) = rescan(
-            client,
-            &app.namespace,
-            &schema,
-            &app.settings,
-            &app.annotations,
-        )
-        .await
-        {
+        if let Err(e) = rescan(client, &app.namespace, &schema, &app.settings).await {
             tracing::debug!("{}: outputs could not be rescanned ({e})", app.namespace);
             failed.push(app.namespace.clone());
         }
@@ -391,19 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn values_scanned_before_this_change_are_carried_over() {
-        let mut ann = Map::new();
-        ann.insert(
-            LEGACY_ANNOTATION.into(),
-            json!(r#"[{"key":"owner_password","label":"Owner password","value":"s3cret","type":"text"},{"key":"empty","value":""}]"#),
-        );
-        let carried = from_legacy_annotation(&ann, at(0));
-        assert_eq!(carried.len(), 1);
-        assert_eq!(carried["owner_password"].value, "s3cret");
-        assert!(from_legacy_annotation(&Map::new(), at(0)).is_empty());
-    }
-
-    #[test]
     fn a_logs_output_not_seen_yet_is_shown_as_waiting() {
         let rows = shown(&[logs("onion_address")], &Remembered::new(), &Map::new());
         assert_eq!(rows[0].value, None);
@@ -454,7 +401,6 @@ mod tests {
             accept_patches, api_server, asked, list, patched, secret_with, serve, serve_logs,
             status,
         };
-        use std::collections::HashMap;
         use wiremock::MockServer;
 
         const NS: &str = "yolab-files-ab12";
@@ -463,24 +409,21 @@ mod tests {
         const POD_PATH: &str = "/api/v1/namespaces/yolab-files-ab12/pods/gateway-7f";
 
         fn app(explorer_default: bool) -> AppSchema {
-            AppSchema::from_parts(
-                json!({ "properties": {
-                    "config": { "properties": {
-                        "password": { "type": "string", "writeOnly": true, "generate": true },
-                        "file_explorer_enabled": { "type": "boolean", "default": explorer_default }
-                    }},
-                    "outputs": { "properties": {
-                        "password": { "title": "Admin password", "format": "secret",
-                                      "source": { "config": "password" } },
-                        "file_explorer_password": {
-                            "title": "File explorer password", "format": "secret",
-                            "source": { "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)" },
-                            "when": { "properties": { "file_explorer_enabled": { "const": true } } }
-                        }
-                    }}
-                }}),
-                &HashMap::new(),
-            )
+            AppSchema::new(json!({ "properties": {
+                "config": { "properties": {
+                    "password": { "type": "string", "writeOnly": true, "generate": true },
+                    "file_explorer_enabled": { "type": "boolean", "default": explorer_default }
+                }},
+                "outputs": { "properties": {
+                    "password": { "title": "Admin password", "format": "secret",
+                                  "source": { "config": "password" } },
+                    "file_explorer_password": {
+                        "title": "File explorer password", "format": "secret",
+                        "source": { "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)" },
+                        "when": { "properties": { "file_explorer_enabled": { "const": true } } }
+                    }
+                }}
+            }}))
         }
 
         async fn pods(server: &MockServer) {
@@ -537,9 +480,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "caddy", "").await;
             accept_patches(&server).await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
-                .await
-                .unwrap();
+            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
             let writes = patched(&server).await;
@@ -562,9 +503,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
             serve_logs(&server, POD_PATH, "caddy", "").await;
 
-            rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
-                .await
-                .unwrap();
+            rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
 
             assert!(patched(&server).await.is_empty());
         }
@@ -583,9 +522,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "file-explorer-init", "").await;
             serve_logs(&server, POD_PATH, "caddy", "").await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
-                .await
-                .unwrap();
+            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
             assert!(patched(&server).await.is_empty());
@@ -606,9 +543,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "caddy", "").await;
             accept_patches(&server).await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
-                .await
-                .unwrap();
+            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "new");
             assert_eq!(
@@ -623,38 +558,12 @@ mod tests {
             nothing_stored(&server).await;
             let explorer_off = Map::from_iter([("file_explorer_enabled".into(), json!(false))]);
 
-            rescan(&kube, NS, &app(true), &explorer_off, &Map::new())
-                .await
-                .unwrap();
+            rescan(&kube, NS, &app(true), &explorer_off).await.unwrap();
 
             assert!(!asked(&server, "/pods").await);
             assert!(
                 patched(&server).await.is_empty(),
                 "nothing found, nothing to save"
-            );
-        }
-
-        #[tokio::test]
-        async fn values_from_the_old_annotation_are_moved_into_the_secret() {
-            let (server, kube) = api_server().await;
-            nothing_stored(&server).await;
-            pods(&server).await;
-            serve_logs(&server, POD_PATH, "file-explorer-init", "").await;
-            serve_logs(&server, POD_PATH, "caddy", "").await;
-            accept_patches(&server).await;
-            let ann = Map::from_iter([(
-                LEGACY_ANNOTATION.to_string(),
-                json!(r#"[{"key":"file_explorer_password","value":"from-before","type":"text"}]"#),
-            )]);
-
-            let found = rescan(&kube, NS, &app(true), &Map::new(), &ann)
-                .await
-                .unwrap();
-
-            assert_eq!(found["file_explorer_password"].value, "from-before");
-            assert_eq!(
-                saved(&patched(&server).await[0])["file_explorer_password"].value,
-                "from-before"
             );
         }
 
@@ -666,9 +575,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
             accept_patches(&server).await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new(), &Map::new())
-                .await
-                .unwrap();
+            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
         }
@@ -678,7 +585,7 @@ mod tests {
             let (server, kube) = api_server().await;
             serve(&server, SECRET_PATH, 503, status(503, "ServiceUnavailable")).await;
 
-            let result = rescan(&kube, NS, &app(true), &Map::new(), &Map::new()).await;
+            let result = rescan(&kube, NS, &app(true), &Map::new()).await;
 
             assert!(result.is_err());
             assert!(
