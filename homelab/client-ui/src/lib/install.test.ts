@@ -13,6 +13,7 @@ import {
   instanceNameFor,
 } from "./install";
 import type { AppDefinition, AppInfo } from "@/types/apps";
+import type { ConfigSchema } from "./schema";
 
 function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
@@ -404,7 +405,7 @@ describe("seedForm", () => {
     expect(lengths).toEqual([24]);
   });
 
-  const explorer = {
+  const explorer: ConfigSchema = {
     properties: {
       file_explorer_enabled: { type: "boolean", default: true },
     },
