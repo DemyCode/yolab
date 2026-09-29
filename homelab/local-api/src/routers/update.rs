@@ -530,11 +530,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_peer_that_is_down_has_not_settled() {
-        let port = std::net::TcpListener::bind("[::1]:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = crate::testkit::closed_port();
         assert!(!fleet(port).settled(PEER).await);
     }
 }

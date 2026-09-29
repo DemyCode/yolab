@@ -4,6 +4,13 @@ pub fn hostname() -> String {
     hostname_in(Path::new("/"))
 }
 
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub fn hostname_in(root: &Path) -> String {
     std::fs::read_to_string(root.join("etc/hostname"))
         .map(|s| s.trim().to_string())
@@ -20,6 +27,12 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("etc")).unwrap();
         std::fs::write(dir.path().join("etc/hostname"), "node1\n").unwrap();
         assert_eq!(hostname_in(dir.path()), "node1");
+    }
+
+    #[test]
+    fn the_clock_reads_unix_seconds() {
+        let after_this_code_was_written = 1_788_000_000;
+        assert!(now_secs() > after_this_code_was_written);
     }
 
     #[test]

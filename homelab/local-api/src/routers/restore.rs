@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::ops::{self, Claim, Claimed, InFlight, Liveness};
+use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, RUNNING, SUCCEEDED};
 use crate::records::Store;
 use crate::routers::backup_common::*;
 use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
@@ -58,7 +58,7 @@ impl Claimed for RestoreSet {
         &self.id
     }
     fn is_running(&self) -> bool {
-        self.state == "running"
+        self.state == RUNNING
     }
     fn claim(&self) -> &Claim {
         &self.claim
@@ -66,12 +66,6 @@ impl Claimed for RestoreSet {
     fn claim_mut(&mut self) -> &mut Claim {
         &mut self.claim
     }
-}
-
-fn upsert(sets: &mut Vec<RestoreSet>, set: RestoreSet) {
-    sets.retain(|s| s.id != set.id);
-    sets.insert(0, set);
-    sets.truncate(MAX_RESTORES);
 }
 
 async fn read_sets(client: &Client) -> anyhow::Result<Vec<RestoreSet>> {
@@ -134,7 +128,7 @@ async fn begin<H: Host>(
         namespace: namespace.to_string(),
         snapshot_id: Some(snapshot_id.to_string()),
         started_at: Utc::now().to_rfc3339(),
-        state: "running".to_string(),
+        state: RUNNING.to_string(),
         finished_at: None,
         error: None,
         scaled_deployments: scaled_deployments.clone(),
@@ -142,7 +136,7 @@ async fn begin<H: Host>(
     };
     RESTORES
         .update(&b.kube, |sets: &mut Vec<RestoreSet>| {
-            upsert(sets, set.clone())
+            ops::upsert(sets, set.clone(), MAX_RESTORES)
         })
         .await?;
     Ok((id, scaled_deployments, guard))
@@ -152,12 +146,7 @@ async fn record_done(client: &Client, id: &str, result: &anyhow::Result<bool>) {
     let finished_at = Utc::now().to_rfc3339();
     let error = result.as_ref().err().map(|e| e.to_string());
     patch_set(client, id, |s| {
-        s.state = if error.is_none() {
-            "succeeded"
-        } else {
-            "failed"
-        }
-        .to_string();
+        s.state = if error.is_none() { SUCCEEDED } else { FAILED }.to_string();
         s.finished_at = Some(finished_at.clone());
         s.error = error.clone();
     })
@@ -1159,10 +1148,10 @@ pub(crate) async fn running_anywhere(client: &Client) -> anyhow::Result<bool> {
 
 fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
     match s.state.as_str() {
-        "succeeded" => "succeeded",
-        "failed" => "failed",
-        _ if liveness.is_live() => "running",
-        _ => "failed",
+        SUCCEEDED => SUCCEEDED,
+        FAILED => FAILED,
+        _ if liveness.is_live() => RUNNING,
+        _ => FAILED,
     }
 }
 
@@ -1208,7 +1197,7 @@ async fn scale_back_abandoned<H: Host>(b: &Backend<H>, node: &str) -> anyhow::Re
                 if let Some(s) = sets.iter_mut().find(|s| s.id == set.id) {
                     if s.is_running() && s.liveness(&me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
                     {
-                        s.state = "failed".to_string();
+                        s.state = FAILED.to_string();
                         s.finished_at = Some(now.to_rfc3339());
                         s.error = Some("interrupted — scaled back up".to_string());
                         claimed_by_us = true;
@@ -1364,15 +1353,6 @@ mod tests {
         let absurd =
             json!({"items": [{"metadata": {"name": "x"}, "spec": {"replicas": 5_000_000_000u64}}]});
         assert!(parse_deployment_scales(&absurd).is_err());
-    }
-
-    #[test]
-    fn upsert_replaces_by_id_and_keeps_newest_first() {
-        let mut sets = vec![set("a", "running"), set("b", "succeeded")];
-        upsert(&mut sets, set("a", "succeeded"));
-        assert_eq!(sets.len(), 2);
-        assert_eq!(sets[0].id, "a");
-        assert_eq!(sets[0].state, "succeeded");
     }
 
     fn t(s: &str) -> chrono::DateTime<Utc> {

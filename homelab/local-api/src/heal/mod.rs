@@ -17,6 +17,7 @@ use crate::ceph::model::{self, PgsByPool};
 use crate::error::Outcome;
 use crate::host::{Host, RealHost};
 use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::system::now_secs;
 use crate::AppState;
 use member::{Begin, Layout, PhaseView, PrepareRequest, Preparing, ResetView};
 
@@ -795,13 +796,6 @@ async fn boot_id() -> Result<String> {
         bail!("this boot has no id — a heal cannot tell whether a restart happened");
     }
     Ok(id.to_string())
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 async fn tick<H: Host, N: Network>(

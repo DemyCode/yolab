@@ -31,10 +31,7 @@ pub fn new_sessions() -> Sessions {
 }
 
 fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    i64::try_from(crate::system::now_secs()).unwrap_or(i64::MAX)
 }
 
 static LOADED: AtomicBool = AtomicBool::new(false);

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::ops::{self, Claim, Claimed, InFlight, Liveness};
+use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
 use crate::routers::backup_common::*;
@@ -88,11 +88,6 @@ impl Claimed for BackupSet {
     }
 }
 
-pub(crate) const QUEUED: &str = "queued";
-pub(crate) const RUNNING: &str = "running";
-pub(crate) const SUCCEEDED: &str = "succeeded";
-pub(crate) const FAILED: &str = "failed";
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SetState {
     Queued,
@@ -112,12 +107,6 @@ fn state_str(s: SetState) -> &'static str {
 
 pub(crate) fn new_id() -> String {
     format!("bk-{}", random_hex(8))
-}
-
-fn upsert(sets: &mut Vec<BackupSet>, set: BackupSet) {
-    sets.retain(|s| s.id != set.id);
-    sets.insert(0, set);
-    sets.truncate(MAX_SETS);
 }
 
 async fn read_sets(client: &Client) -> anyhow::Result<Vec<BackupSet>> {
@@ -249,7 +238,7 @@ async fn enqueue<H: Host>(
                     .map(|s| s.id.clone())
             });
         if existing.is_none() {
-            upsert(sets, queued.clone());
+            ops::upsert(sets, queued.clone(), MAX_SETS);
         }
     })
     .await?;
@@ -1387,7 +1376,7 @@ mod tests {
     #[test]
     fn upsert_replaces_by_id_and_keeps_newest_first() {
         let mut sets = vec![set("a", "running"), set("b", "succeeded")];
-        upsert(&mut sets, set("a", "succeeded"));
+        ops::upsert(&mut sets, set("a", "succeeded"), MAX_SETS);
         assert_eq!(sets.len(), 2);
         assert_eq!(sets[0].id, "a");
         assert_eq!(sets[0].state, "succeeded");
@@ -1399,7 +1388,7 @@ mod tests {
         let mut sets: Vec<BackupSet> = (0..100)
             .map(|i| set(&format!("bk-{i}"), "succeeded"))
             .collect();
-        upsert(&mut sets, set("bk-new", "running"));
+        ops::upsert(&mut sets, set("bk-new", "running"), MAX_SETS);
         assert_eq!(sets.len(), MAX_SETS);
         assert_eq!(sets[0].id, "bk-new");
     }

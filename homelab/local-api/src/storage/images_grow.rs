@@ -17,14 +17,6 @@ fn current_size_mb(rbd_info: &Value) -> Option<u64> {
     rbd_info["size"].as_u64().map(|b| b / 1_048_576)
 }
 
-async fn checked<H: Host>(host: &H, bin: &str, args: &[&str]) -> Result<String> {
-    let out = host.run_cmd(bin, args).await?;
-    if !out.success {
-        bail!("{bin} {}: {}", args.join(" "), out.stderr.trim());
-    }
-    Ok(out.stdout)
-}
-
 pub async fn run<H: Host>(
     host: &H,
     root: &std::path::Path,
@@ -47,8 +39,10 @@ pub async fn run<H: Host>(
     let dev = source.stdout.trim().to_string();
 
     let image = format!("{}/{node}", policy.pool_name);
-    let info: Value =
-        serde_json::from_str(&checked(host, "rbd", &["info", &image, "--format", "json"]).await?)?;
+    let raw = host
+        .run_checked("rbd", &["info", &image, "--format", "json"])
+        .await?;
+    let info: Value = serde_json::from_str(&raw)?;
     let Some(cur_mb) = current_size_mb(&info) else {
         bail!("images-grow: `rbd info {image}` has no size");
     };
@@ -70,18 +64,14 @@ pub async fn run<H: Host>(
         return Ok(());
     }
     tracing::info!("images-grow: growing images RBD: {cur_mb}MB -> {want_mb}MB");
-    checked(
-        host,
-        "rbd",
-        &["resize", &image, "--size", &want_mb.to_string()],
-    )
-    .await?;
+    host.run_checked("rbd", &["resize", &image, "--size", &want_mb.to_string()])
+        .await?;
     match policy.filesystem {
         Filesystem::Xfs => {
-            checked(host, "xfs_growfs", &[&croot_s]).await?;
+            host.run_checked("xfs_growfs", &[&croot_s]).await?;
         }
         Filesystem::Ext4 => {
-            checked(host, "resize2fs", &[&dev]).await?;
+            host.run_checked("resize2fs", &[&dev]).await?;
         }
     }
     Ok(())

@@ -1858,11 +1858,7 @@ mod dashboard_tests {
 
     #[tokio::test]
     async fn an_active_mgr_that_does_not_answer_is_a_bad_gateway() {
-        let port = std::net::TcpListener::bind("[::1]:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = crate::testkit::closed_port();
         let res = proxy_via(&mgr_serving(port), login_request()).await;
         assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
     }

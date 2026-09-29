@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
-    auth::CLUSTER_AUTH_HEADER, config::read_account_token, host::Host,
+    auth::CLUSTER_AUTH_HEADER,
+    config::{read_account_token, remove_if_present},
+    host::Host,
     routers::ceph_join::CephJoinBundle,
 };
 
@@ -91,8 +93,7 @@ async fn create_cluster<H: Host>(
     let admin_s = admin.to_string_lossy().into_owned();
     let bootstrap_osd_s = bootstrap_osd.to_string_lossy().into_owned();
 
-    run_ok(
-        host,
+    host.run_checked(
         "ceph-authtool",
         &[
             "--create-keyring",
@@ -106,8 +107,7 @@ async fn create_cluster<H: Host>(
         ],
     )
     .await?;
-    run_ok(
-        host,
+    host.run_checked(
         "ceph-authtool",
         &[
             "--create-keyring",
@@ -130,8 +130,7 @@ async fn create_cluster<H: Host>(
         ],
     )
     .await?;
-    run_ok(
-        host,
+    host.run_checked(
         "ceph-authtool",
         &[
             "--create-keyring",
@@ -148,14 +147,9 @@ async fn create_cluster<H: Host>(
         ],
     )
     .await?;
-    run_ok(
-        host,
-        "ceph-authtool",
-        &[&tmp_mon_s, "--import-keyring", &admin_s],
-    )
-    .await?;
-    run_ok(
-        host,
+    host.run_checked("ceph-authtool", &[&tmp_mon_s, "--import-keyring", &admin_s])
+        .await?;
+    host.run_checked(
         "ceph-authtool",
         &[&tmp_mon_s, "--import-keyring", &bootstrap_osd_s],
     )
@@ -163,8 +157,7 @@ async fn create_cluster<H: Host>(
 
     let monmap = tmp_monmap_path(root).to_string_lossy().into_owned();
     let addr = addrvec(mon_addr);
-    run_ok(
-        host,
+    host.run_checked(
         "monmaptool",
         &["--create", "--addv", node, &addr, "--fsid", fsid, &monmap],
     )
@@ -189,8 +182,9 @@ async fn join_cluster<H: Host>(
 
     let admin_s = admin.to_string_lossy().into_owned();
     let bootstrap_osd_s = bootstrap_osd.to_string_lossy().into_owned();
-    run_ok(host, "chown", &["ceph:ceph", &admin_s]).await?;
-    run_ok(host, "chown", &["ceph:ceph", &bootstrap_osd_s]).await?;
+    host.run_checked("chown", &["ceph:ceph", &admin_s]).await?;
+    host.run_checked("chown", &["ceph:ceph", &bootstrap_osd_s])
+        .await?;
 
     let monmap = tmp_monmap_path(root);
     let monmap_s = monmap.to_string_lossy().into_owned();
@@ -231,8 +225,7 @@ async fn finish_mkfs<H: Host>(host: &H, root: &Path, node: &str) -> Result<()> {
     let tmp_mon_s = tmp_mon.to_string_lossy().into_owned();
     let monmap_s = monmap.to_string_lossy().into_owned();
 
-    run_ok(
-        host,
+    host.run_checked(
         "ceph-mon",
         &[
             "--mkfs",
@@ -249,27 +242,12 @@ async fn finish_mkfs<H: Host>(host: &H, root: &Path, node: &str) -> Result<()> {
     std::fs::copy(&tmp_mon, dir.join("keyring"))?;
     let ceph_dir = root.join("var/lib/ceph");
     let ceph_dir_s = ceph_dir.to_string_lossy().into_owned();
-    run_ok(host, "chown", &["-R", "ceph:ceph", &ceph_dir_s]).await?;
+    host.run_checked("chown", &["-R", "ceph:ceph", &ceph_dir_s])
+        .await?;
     let admin_s = admin_keyring_path(root).to_string_lossy().into_owned();
-    run_ok(host, "chown", &["ceph:ceph", &admin_s]).await?;
+    host.run_checked("chown", &["ceph:ceph", &admin_s]).await?;
     remove_if_present(&tmp_mon)?;
     remove_if_present(&monmap)?;
-    Ok(())
-}
-
-fn remove_if_present(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
-    }
-}
-
-async fn run_ok<H: Host>(host: &H, bin: &str, args: &[&str]) -> Result<()> {
-    let out = host.run_cmd(bin, args).await?;
-    if !out.success {
-        bail!("{bin} {}: {}", args.join(" "), out.stderr.trim());
-    }
     Ok(())
 }
 
@@ -615,11 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_seed_that_is_down_is_an_error_the_timer_retries() {
-        let port = std::net::TcpListener::bind("[::1]:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = crate::testkit::closed_port();
         let j = Joiner::new(port, WITH_TOKEN);
         let err = run(&joining_host(), &j.root(), "yolab-n2", &j.args)
             .await
