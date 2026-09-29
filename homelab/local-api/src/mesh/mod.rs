@@ -380,13 +380,13 @@ async fn tick<H: Host>(
     let now = now_secs();
     let self_key = wg::self_public_key(host).await?;
 
-    for peer_addr in peers.iter().cloned() {
-        let Some(probe_addr) = probe_address(&peer_addr) else {
+    for peer_addr in peers {
+        let Some(probe_addr) = probe_address(peer_addr) else {
             continue;
         };
         let real_addr = format!("{peer_addr}/128");
 
-        let cand = match fetch_candidates(&peer_addr, port, token, &self_key).await {
+        let cand = match fetch_candidates(peer_addr, port, token, &self_key).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!("mesh: {peer_addr} did not answer: {e:#}");
@@ -417,7 +417,7 @@ async fn tick<H: Host>(
         }
 
         if last_probe
-            .get(&peer_addr)
+            .get(peer_addr)
             .is_some_and(|t| t.elapsed() < PROBE_RETRY)
         {
             continue;
@@ -979,8 +979,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("mesh-peers.json");
         std::fs::write(&cache, r#"["fd00:cafe::6"]"#).unwrap();
-        peer_addresses_from(Some(&crate::k8s::testing::unreachable()), &cache, "fd00:cafe::5")
-            .await;
+        peer_addresses_from(
+            Some(&crate::k8s::testing::unreachable()),
+            &cache,
+            "fd00:cafe::5",
+        )
+        .await;
         assert_eq!(
             std::fs::read_to_string(&cache).unwrap(),
             r#"["fd00:cafe::6"]"#
@@ -990,7 +994,8 @@ mod tests {
     #[tokio::test]
     async fn no_api_and_nothing_remembered_is_no_peers() {
         let dir = tempfile::tempdir().unwrap();
-        let peers = peer_addresses_from(None, &dir.path().join("absent.json"), "fd00:cafe::5").await;
+        let peers =
+            peer_addresses_from(None, &dir.path().join("absent.json"), "fd00:cafe::5").await;
         assert!(peers.is_empty());
     }
 
@@ -1033,11 +1038,23 @@ mod tests {
         let before = dump_of(&[hub_line()]);
         let answered = dump_of(&[
             hub_line(),
-            peer_line(PEER, &format!("{LAN}:51821"), "::dead:1/128", now_secs(), 1, 1),
+            peer_line(
+                PEER,
+                &format!("{LAN}:51821"),
+                "::dead:1/128",
+                now_secs(),
+                1,
+                1,
+            ),
         ]);
-        let host = discovering(&[before, answered], "192.168.1.141 dev enp5s0 src 192.168.1.132");
+        let host = discovering(
+            &[before, answered],
+            "192.168.1.141 dev enp5s0 src 192.168.1.132",
+        );
         let mut last_probe = HashMap::new();
-        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe)
+            .await
+            .unwrap();
 
         let probed = host
             .position("wg set wg1 peer PEERKEY= endpoint 192.168.1.141:51821 allowed-ips ::dead:1/128 persistent-keepalive 5")
@@ -1071,8 +1088,12 @@ mod tests {
             "192.168.1.141 dev wg1 src fd00:cafe::5",
         );
         let mut last_probe = HashMap::new();
-        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
-        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe)
+            .await
+            .unwrap();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe)
+            .await
+            .unwrap();
         let removals = host
             .calls()
             .iter()
@@ -1104,7 +1125,9 @@ mod tests {
         ]);
         let host = discovering(&[stale], "unused");
         let mut last_probe = HashMap::new();
-        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe)
+            .await
+            .unwrap();
         assert!(host.ran("wg set wg1 peer PEERKEY= remove"));
         assert!(!host.ran("allowed-ips ::dead:1/128"));
         assert!(last_probe.contains_key(crate::testkit::PEER));

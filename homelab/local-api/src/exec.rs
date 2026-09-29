@@ -348,7 +348,10 @@ pub fn spawn_detached(
         .map_err(io)?;
     let pid = child.id();
     if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
-        tracing::warn!("{cmd}: could not record pid {pid} in {}: {e}", pid_file.display());
+        tracing::warn!(
+            "{cmd}: could not record pid {pid} in {}: {e}",
+            pid_file.display()
+        );
     }
     let pid_file = pid_file.to_path_buf();
     std::thread::spawn(move || {
@@ -553,7 +556,10 @@ mod tests {
         assert!(pid > 0);
         wait_until_gone(&pid_file);
         let text = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(text.lines().collect::<Vec<_>>(), ["first", "second", "third"]);
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
     }
 
     #[test]

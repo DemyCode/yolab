@@ -284,7 +284,14 @@ mod tests {
         exchange_with(port, &store, &path).await.unwrap();
 
         let sent = &server.received_requests().await.unwrap()[0].body;
-        assert_eq!(Store::load("node2", sent).unwrap().disk_claims().unwrap().len(), 1);
+        assert_eq!(
+            Store::load("node2", sent)
+                .unwrap()
+                .disk_claims()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(lock(&store).disk_claims().unwrap().len(), 2);
         let on_disk = Store::open("node1", &path).unwrap();
         assert_eq!(on_disk.disk_claims().unwrap().len(), 2);
@@ -340,7 +347,9 @@ mod tests {
 
         let err = exchange_with(port, &store, &path).await.unwrap_err();
 
-        assert!(err.to_string().contains("not a readable desired-state document"));
+        assert!(err
+            .to_string()
+            .contains("not a readable desired-state document"));
         assert_eq!(lock(&store).disk_claims().unwrap().len(), 1);
     }
 }
