@@ -263,7 +263,7 @@ mod tests {
 
     async fn exchange_with(port: u16, store: &Mutex<Store>, path: &Path) -> anyhow::Result<()> {
         exchange_into(
-            &crate::http::client(),
+            &crate::testkit::http(),
             crate::testkit::PEER,
             port,
             "cluster-tok",

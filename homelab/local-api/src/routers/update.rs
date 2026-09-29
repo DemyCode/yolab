@@ -424,7 +424,7 @@ mod tests {
 
     fn fleet(port: u16) -> UpdateFleet {
         UpdateFleet {
-            client: crate::http::client(),
+            client: crate::testkit::http(),
             port,
             token: "cluster-tok".into(),
             channel: serde_json::json!({ "url": "github:DemyCode/yolab", "ref": "v2" }),

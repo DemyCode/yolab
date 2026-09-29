@@ -126,7 +126,7 @@ mod tests {
 
     fn fleet(port: u16) -> RebootFleet {
         RebootFleet {
-            client: crate::http::client(),
+            client: crate::testkit::http(),
             port,
             token: "cluster-tok".into(),
         }
