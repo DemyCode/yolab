@@ -3,11 +3,11 @@ name: syncthing
 description: "Continuous file synchronization between your devices"
 home: https://syncthing.net
 type: application
-version: 0.1.3
+version: 0.1.4
 
 dependencies:
   - name: yolab-common
-    version: "0.1.2"
+    version: "0.1.3"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

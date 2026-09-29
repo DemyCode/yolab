@@ -1,7 +1,7 @@
 
 
 {{- define "yolab-common.image.wgRegister" -}}
-{{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:1f68d09b5e4ef2a83b0b50df83633ca397be772cd8d72ebdf8c971f1677f414a" -}}
+{{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:260e4a6f832bd1dd275ecd8ec271e67a63a8203d7ed89145b12ea818c4ae6374" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.wgSidecar" -}}
