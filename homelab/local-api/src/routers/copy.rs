@@ -346,7 +346,7 @@ async fn rebase_release_dir(
         }
         tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
     };
-    crate::k8s::delete_if_present(client, &reference)
+    crate::k8s::delete_with_dependents(client, &reference)
         .await
         .debug_on_err(format!("copy rebase: delete Job {name}"));
     outcome
