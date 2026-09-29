@@ -780,12 +780,16 @@ mod real_network {
     async fn arming_and_undoing_name_the_heal() {
         let (arm, port) = answering("POST", "/api/heal/peer/arm", 200, json!({})).await;
         to_peer(port).arm(PEER, "abc123").await.unwrap();
-        let sent: Value = arm.received_requests().await.unwrap()[0].body_json().unwrap();
+        let sent: Value = arm.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
         assert_eq!(sent, json!({ "heal_id": "abc123" }));
 
         let (undo, port) = answering("POST", "/api/heal/peer/undo", 200, json!({})).await;
         to_peer(port).undo(PEER, "abc123").await.unwrap();
-        let sent: Value = undo.received_requests().await.unwrap()[0].body_json().unwrap();
+        let sent: Value = undo.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
         assert_eq!(sent, json!({ "heal_id": "abc123" }));
     }
 

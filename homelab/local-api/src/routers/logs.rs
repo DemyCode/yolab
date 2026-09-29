@@ -258,7 +258,8 @@ mod tests {
             ..query()
         };
         read_logs(&host, &q).await;
-        assert!(host.ran("journalctl --no-pager -o json -r -n 300 --since 1 hour ago -u k3s.service -p 3"));
+        assert!(host
+            .ran("journalctl --no-pager -o json -r -n 300 --since 1 hour ago -u k3s.service -p 3"));
         assert!(!host.ran(" -b"));
     }
 

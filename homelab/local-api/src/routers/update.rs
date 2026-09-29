@@ -376,7 +376,9 @@ mod tests {
             .position("nixos-rebuild switch --flake")
             .expect("never launched");
         assert!(cleared < rebuilt, "{:?}", host.calls());
-        assert!(lines.iter().any(|l| l.starts_with("$ nixos-rebuild switch")));
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("$ nixos-rebuild switch")));
         assert!(!lines.iter().any(|l| l.starts_with("[ERROR]")));
     }
 
@@ -436,7 +438,10 @@ mod tests {
         let (server, port) = peer().await;
         Mock::given(matchers::method("PUT"))
             .and(matchers::path("/api/update/channel"))
-            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .and(matchers::header(
+                crate::auth::CLUSTER_AUTH_HEADER,
+                "cluster-tok",
+            ))
             .and(matchers::body_json(
                 serde_json::json!({ "url": "github:DemyCode/yolab", "ref": "v2" }),
             ))
@@ -446,7 +451,10 @@ mod tests {
             .await;
         Mock::given(matchers::method("POST"))
             .and(matchers::path("/api/update/trigger"))
-            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .and(matchers::header(
+                crate::auth::CLUSTER_AUTH_HEADER,
+                "cluster-tok",
+            ))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
@@ -502,7 +510,10 @@ mod tests {
         let (server, port) = peer().await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/api/status"))
-            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .and(matchers::header(
+                crate::auth::CLUSTER_AUTH_HEADER,
+                "cluster-tok",
+            ))
             .respond_with(ResponseTemplate::new(503))
             .up_to_n_times(1)
             .mount(&server)
