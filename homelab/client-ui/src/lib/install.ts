@@ -1,5 +1,5 @@
 import type { AppDefinition, AppInfo } from "@/types/apps";
-import { addressField, type ConfigSchema } from "./schema";
+import { addressField, revealedFields, type ConfigSchema } from "./schema";
 
 export type InstallMode = "fresh" | "duplicate" | "restore";
 
@@ -143,6 +143,11 @@ export function seedForm(
       }
     } else if (seed[name] === undefined && prop.default !== undefined) {
       seed[name] = prop.default;
+    }
+  }
+  for (const [name, prop] of revealedFields(schema)) {
+    if (prop.writeOnly && prop.generate && !source) {
+      seed[name] = generate(Math.max(24, prop.minLength ?? 0));
     }
   }
   const address = addressField(schema);

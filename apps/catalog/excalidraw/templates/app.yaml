@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
 {{ include "yolab-common.autheliaSecret" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
