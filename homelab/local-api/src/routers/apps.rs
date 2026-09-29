@@ -786,6 +786,13 @@ pub(crate) fn is_terminating_pod(pod: &Value) -> bool {
     !pod["metadata"]["deletionTimestamp"].is_null()
 }
 
+pub(crate) fn is_finished_pod(pod: &Value) -> bool {
+    matches!(
+        pod["status"]["phase"].as_str(),
+        Some("Succeeded") | Some("Failed")
+    )
+}
+
 pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     if pods.is_empty() {
         return "Waiting to be given a machine to run on".into();
@@ -994,7 +1001,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 .map(|v| v.as_slice())
                 .unwrap_or(&[])
                 .iter()
-                .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p))
+                .filter(|p| {
+                    !is_backup_mover_pod(p) && !is_terminating_pod(p) && !is_finished_pod(p)
+                })
                 .copied()
                 .collect();
             let all_ready = !items.is_empty()
@@ -1870,6 +1879,50 @@ mod tests {
                     .any(|c| c["type"] == "Ready" && c["status"] == "True")
             })
         }));
+    }
+
+    #[test]
+    fn a_pod_that_ran_to_completion_is_finished() {
+        assert!(is_finished_pod(&json!({"status": {"phase": "Succeeded"}})));
+        assert!(is_finished_pod(&json!({"status": {"phase": "Failed"}})));
+    }
+
+    #[test]
+    fn a_pod_that_is_still_going_is_not_finished() {
+        for phase in ["Pending", "Running", "Unknown"] {
+            assert!(
+                !is_finished_pod(&json!({"status": {"phase": phase}})),
+                "{phase}"
+            );
+        }
+        assert!(!is_finished_pod(&json!({})));
+    }
+
+    #[test]
+    fn a_completed_rebase_job_pod_does_not_hold_the_app_at_starting() {
+        let rebase = json!({
+            "metadata": {"name": "yolab-rebase-2c0b3ada-c9bkc"},
+            "status": {"phase": "Succeeded", "conditions": [
+                {"type": "Ready", "status": "False", "reason": "PodCompleted"}
+            ]}
+        });
+        let app = json!({
+            "metadata": {"name": "filebrowser-6558bdc759-9lxvk"},
+            "status": {"phase": "Running", "conditions": [
+                {"type": "Ready", "status": "True"}
+            ]}
+        });
+
+        let counted: Vec<&Value> = [&rebase, &app]
+            .into_iter()
+            .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p) && !is_finished_pod(p))
+            .collect();
+
+        assert_eq!(counted.len(), 1, "only the app's own pod is evidence");
+        assert_eq!(
+            counted[0]["metadata"]["name"],
+            "filebrowser-6558bdc759-9lxvk"
+        );
     }
 
     fn waiting_pod(kind: &str, reason: &str, restarts: i64) -> Value {
