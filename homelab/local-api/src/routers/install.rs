@@ -9,8 +9,9 @@ use serde_json::{Map, Value};
 use crate::config::Config;
 use crate::host::Host;
 use crate::routers::apps::{
-    app_schema, collect_runtime, merge_credentials, rollback_failed_install, stage_install,
-    write_definition, AppDefinition, BackupPolicy, StagedInstall, DEFINITION_SCHEMA,
+    app_schema, clear_install_failed, collect_runtime, mark_install_failed, merge_credentials,
+    stage_install, write_definition, AppDefinition, BackupPolicy, StagedInstall,
+    DEFINITION_SCHEMA,
 };
 use crate::routers::backup_common::Backend;
 
@@ -248,30 +249,6 @@ impl Log {
     }
 }
 
-struct Rollback<H: Host + 'static> {
-    backend: Backend<H>,
-    namespace: String,
-    instance_name: String,
-    armed: bool,
-}
-
-impl<H: Host + 'static> Drop for Rollback<H> {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let (namespace, instance_name) = (self.namespace.clone(), self.instance_name.clone());
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            tracing::error!("{namespace}: no runtime left to undo the failed install");
-            return;
-        };
-        let backend = self.backend.clone();
-        handle.spawn(
-            async move { rollback_failed_install(&backend, &namespace, &instance_name).await },
-        );
-    }
-}
-
 struct ChartJob<'a> {
     app_id: &'a str,
     instance_name: &'a str,
@@ -361,14 +338,11 @@ pub(crate) async fn execute<H: Host + 'static>(
     plan: &InstallPlan,
     log: &Log,
 ) -> anyhow::Result<()> {
-    let mut rollback = Rollback {
-        backend: b.clone(),
-        namespace: format!("yolab-{}", plan.instance_name),
-        instance_name: plan.instance_name.clone(),
-        armed: true,
-    };
     let outcome = install_inner(b, cfg, plan, log).await;
-    rollback.armed = outcome.is_err();
+    if let Err(e) = &outcome {
+        mark_install_failed(&b.kube, &format!("yolab-{}", plan.instance_name), &format!("{e:#}"))
+            .await;
+    }
     outcome
 }
 
@@ -440,7 +414,9 @@ pub(crate) async fn upgrade<H: Host + 'static>(
         backup: &plan.backup,
         verb: "Updating…",
     };
-    apply_chart(b, cfg, &job, &DataFill::None, log).await
+    apply_chart(b, cfg, &job, &DataFill::None, log).await?;
+    clear_install_failed(&b.kube, &format!("yolab-{}", plan.instance_name)).await;
+    Ok(())
 }
 
 async fn helm_install<H: Host>(
@@ -495,26 +471,30 @@ pub(crate) fn verdict(
 }
 
 fn sse<F, Fut>(
+    subject: String,
     work: F,
     done: String,
     after_failure: &'static str,
 ) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>>
 where
     F: FnOnce(Log) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<()>>,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
-    async_stream::stream! {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut running = std::pin::pin!(work(Log(tx)));
-        let mut outcome = None;
-        loop {
-            tokio::select! {
-                biased;
-                Some(line) = rx.recv() => yield Ok(Event::default().data(line)),
-                finished = &mut running, if outcome.is_none() => outcome = Some(finished),
-                else => break,
-            }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let running = work(Log(tx));
+    let task = tokio::spawn(async move {
+        let outcome = running.await;
+        match &outcome {
+            Ok(()) => tracing::info!("{subject}: finished"),
+            Err(e) => tracing::warn!("{subject}: failed: {e:#}"),
         }
+        outcome
+    });
+    async_stream::stream! {
+        while let Some(line) = rx.recv().await {
+            yield Ok(Event::default().data(line));
+        }
+        let outcome = task.await.ok();
         yield Ok(Event::default().data(verdict(outcome, &done, after_failure)));
     }
 }
@@ -529,9 +509,10 @@ pub(crate) fn install_stream(
         plan.app_id
     );
     sse(
+        format!("install yolab-{}", plan.instance_name),
         move |log| async move { execute(&b, &cfg, &plan, &log).await },
         done,
-        "Nothing was left behind, so you can try again.",
+        "It stays in your apps marked as failed, so you can see what went wrong — remove it from there when you are done.",
     )
 }
 
@@ -542,6 +523,7 @@ pub(crate) fn upgrade_stream(
 ) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
     let done = format!("{} updated", plan.app_id);
     sse(
+        format!("update yolab-{}", plan.instance_name),
         move |log| async move { upgrade(&b, &cfg, &plan, &log).await },
         done,
         "Your app was left as it was.",
@@ -858,6 +840,7 @@ mod tests {
     #[tokio::test]
     async fn a_finished_install_closes_the_stream_instead_of_waiting_on_its_log() {
         let stream = sse(
+            "install yolab-gitea-ab12".to_string(),
             |log| async move {
                 log.say("one");
                 log.say("two");
@@ -876,6 +859,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_install_closes_the_stream_too() {
         let stream = sse(
+            "install yolab-gitea-ab12".to_string(),
             |log| async move {
                 log.say("starting");
                 anyhow::bail!("the chart exploded")
@@ -884,6 +868,45 @@ mod tests {
             "Nothing was left behind.",
         );
         assert_eq!(events_of(stream).await, 2);
+    }
+
+    #[tokio::test]
+    async fn an_install_keeps_going_after_the_page_stops_listening() {
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let (finished, finished_rx) = tokio::sync::oneshot::channel::<()>();
+        let stream = sse(
+            "install yolab-gitea-ab12".to_string(),
+            move |log| async move {
+                log.say("started");
+                let _ = released.await;
+                log.say("nobody is reading this any more");
+                let _ = finished.send(());
+                Ok(())
+            },
+            "gitea installed".to_string(),
+            "unused",
+        );
+        drop(stream);
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), finished_rx)
+            .await
+            .expect("the install must run to its end, not stop with the connection")
+            .expect("the install was dropped instead of finishing");
+    }
+
+    fn blow_up() -> anyhow::Result<()> {
+        panic!("the install blew up")
+    }
+
+    #[tokio::test]
+    async fn an_install_that_panics_still_ends_the_stream_with_a_verdict() {
+        let stream = sse(
+            "install yolab-gitea-ab12".to_string(),
+            |_log| async move { blow_up() },
+            "gitea installed".to_string(),
+            "unused",
+        );
+        assert_eq!(events_of(stream).await, 1, "only the verdict");
     }
 
     #[test]

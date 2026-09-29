@@ -200,6 +200,18 @@ describe("appState", () => {
     expect(appState(app({ status: "copying" }))).toBe("copying");
   });
 
+  it("keeps a failed install as its own state instead of calling it ready", () => {
+    expect(appState(app({ status: "failed" }))).toBe("failed");
+  });
+
+  it("labels a failed install plainly on its tile, keeping the reason for its page", () => {
+    const failed = app({
+      status: "failed",
+      detail: "gitea could not be installed — the log above is helm's own",
+    });
+    expect(appLabel(failed, appState(failed))).toBe("Failed installation");
+  });
+
   it("shows the server's copy progress instead of a generic label", () => {
     const copying = app({
       status: "copying",

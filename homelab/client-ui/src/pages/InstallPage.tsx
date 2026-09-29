@@ -143,6 +143,7 @@ export function InstallPage() {
   const [showLog, setShowLog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [detached, setDetached] = useState(false);
 
   const installedOfThisApp = (apps.data ?? []).filter(
     (a) => a.app_id === appId,
@@ -243,6 +244,7 @@ export function InstallPage() {
 
     setInstalling(false);
     if (result.ok) setDone(true);
+    else if (result.dropped) setDetached(true);
     else {
       setError(result.error ?? "Something went wrong during the install.");
       setShowLog(true);
@@ -327,6 +329,33 @@ export function InstallPage() {
               Back to my apps
             </Button>
           </div>
+        </div>
+      </Page>
+    );
+  }
+
+  if (detached) {
+    return (
+      <Page>
+        <div className="flex flex-col items-center py-14 text-center">
+          <AppIconTile
+            appId={app.id}
+            icon={app.icon}
+            name={app.name}
+            className="mb-6"
+          />
+          <h1 className="font-display text-2xl text-fg">
+            Still setting up {app.name}
+          </h1>
+          <p className="mt-2 max-w-sm text-sm text-fg-muted">
+            The connection to your box dropped. An install your box already
+            received keeps going there: check your apps — it becomes ready on
+            its own, or shows “Failed installation” with the reason. If it is
+            not listed, the box never got the request and you can try again.
+          </p>
+          <Button className="mt-7" onClick={() => navigate("/")}>
+            Back to my apps
+          </Button>
         </div>
       </Page>
     );

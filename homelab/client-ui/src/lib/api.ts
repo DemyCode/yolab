@@ -80,22 +80,40 @@ export const api = {
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
+export interface StreamResult {
+  ok: boolean;
+  error?: string;
+  dropped?: boolean;
+}
+
+const DROPPED: StreamResult = {
+  ok: false,
+  dropped: true,
+  error:
+    "The connection to your box dropped. What it was doing keeps going there.",
+};
+
 export async function streamEvents(
   path: string,
   init: RequestInit,
   onLine: (line: string) => void,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<StreamResult> {
   const headers = new Headers(init.headers);
   if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers,
-    credentials: "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers,
+      credentials: "include",
+    });
+  } catch {
+    return DROPPED;
+  }
   if (res.status === 401) {
     onUnauthorized?.();
     return { ok: false, error: "Your session expired. Please sign in again." };
@@ -108,10 +126,16 @@ export async function streamEvents(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let outcome: { ok: boolean; error?: string } | null = null;
+  let outcome: StreamResult | null = null;
 
   for (;;) {
-    const { done, value } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch {
+      break;
+    }
+    const { done, value } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const frames = buffer.split("\n\n");
@@ -128,7 +152,7 @@ export async function streamEvents(
     }
   }
 
-  return outcome ?? { ok: false, error: "The connection closed unexpectedly." };
+  return outcome ?? DROPPED;
 }
 
 export type ListResult<T> =

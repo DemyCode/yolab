@@ -13,7 +13,7 @@ export interface AppInfo {
   app_id: string;
   instance_name: string;
   instance_id?: string | null;
-  status: "starting" | "running" | "uninstalling" | "copying";
+  status: "starting" | "running" | "uninstalling" | "copying" | "failed";
   detail: string;
   outputs: AppOutput[];
   config: Record<string, unknown>;

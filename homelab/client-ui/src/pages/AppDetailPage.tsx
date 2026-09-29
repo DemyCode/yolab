@@ -672,6 +672,13 @@ export function AppDetailPage() {
           as soon as it is up.
         </Banner>
       )}
+      {state === "failed" && (
+        <Banner tone="error" title="Failed installation" className="mb-5">
+          {app.detail?.trim() || "This app did not finish installing."} It was
+          kept so you can see what went wrong. Use “Remove this app” at the
+          bottom of this page when you are done.
+        </Banner>
+      )}
       {state === "removing" && (
         <Banner tone="warning" title="Being removed" className="mb-5">
           This app and its data are being deleted.
