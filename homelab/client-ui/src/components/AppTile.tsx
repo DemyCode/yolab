@@ -18,7 +18,14 @@ export function AppTile({
   const state = appState(app);
   const label = appLabel(app, state);
   const busy = state === "starting" || state === "copying";
-  const tone = state === "removing" ? "warn" : busy ? "busy" : "ok";
+  const tone =
+    state === "failed"
+      ? "error"
+      : state === "removing"
+        ? "warn"
+        : busy
+          ? "busy"
+          : "ok";
 
   return (
     <Link

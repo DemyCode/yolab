@@ -23,6 +23,7 @@ pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_BACKUP: &str = "yolab.io/backup";
 const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
+const ANN_INSTALL_FAILED: &str = "yolab.io/install-failed";
 const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const LOGS_FOLLOW_TAIL: u32 = 100;
 
@@ -1037,6 +1038,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let mut detail = String::new();
         let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
             "uninstalling".to_string()
+        } else if let Some(reason) = install_failure(&ann) {
+            detail = reason;
+            "failed".to_string()
         } else if let Some(copying) = copying_data(&ns_full, &pvcs_by_ns, &all_event_items) {
             detail = copying;
             "copying".to_string()
@@ -1206,29 +1210,32 @@ pub async fn install_app(
     Sse::new(install::install_stream(b, state.config.clone(), plan)).into_response()
 }
 
-pub(crate) async fn rollback_failed_install<H: crate::host::Host>(
-    b: &Backend<H>,
-    ns: &str,
-    instance_name: &str,
-) {
-    match b
-        .host
-        .run_cmd_bounded(
-            "helm",
-            &["uninstall", instance_name, "-n", ns],
-            std::time::Duration::from_secs(120),
-        )
-        .await
-    {
-        Ok(o) if !o.success => {
-            tracing::debug!("rollback {ns}: helm uninstall: {}", o.stderr.trim())
-        }
-        Err(e) => tracing::debug!("rollback {ns}: helm uninstall: {e}"),
-        Ok(_) => {}
+pub(crate) fn install_failure(ann: &serde_json::Map<String, Value>) -> Option<String> {
+    ann.get(ANN_INSTALL_FAILED)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+async fn set_install_failed(client: &Client, ns: &str, value: Value) -> anyhow::Result<()> {
+    let mut patch = namespace_ref(ns);
+    patch["metadata"]["annotations"] = serde_json::json!({ ANN_INSTALL_FAILED: value });
+    match crate::k8s::merge_patch(client, &patch).await {
+        Err(e) if crate::k8s::refused_with(&e, 404) => Ok(()),
+        other => other,
     }
-    crate::k8s::delete_if_present(&b.kube, &namespace_ref(ns))
+}
+
+pub(crate) async fn mark_install_failed(client: &Client, ns: &str, reason: &str) {
+    tracing::warn!("{ns}: install failed, kept for inspection: {reason}");
+    set_install_failed(client, ns, Value::String(reason.to_string()))
         .await
-        .debug_on_err(format!("rollback {ns}: delete namespace"));
+        .warn_on_err(format!("{ns}: could not mark the install as failed"));
+}
+
+pub(crate) async fn clear_install_failed(client: &Client, ns: &str) {
+    set_install_failed(client, ns, Value::Null)
+        .await
+        .warn_on_err(format!("{ns}: could not clear the failed-install mark"));
 }
 
 pub(crate) struct StagedInstall {
@@ -2834,22 +2841,61 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_failed_install_is_rolled_back_by_release_and_namespace() {
+        async fn a_failed_install_is_marked_with_its_reason_and_nothing_is_deleted() {
             let (server, kube) = api_server().await;
-            Mock::given(method("DELETE"))
+            Mock::given(method("PATCH"))
                 .and(path(NS_PATH))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
-                )
+                .and(body_partial_json(json!({
+                    "metadata": { "annotations": { ANN_INSTALL_FAILED: "helm said no" } }
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
                 .expect(1)
                 .mount(&server)
                 .await;
-            let b = Backend {
-                kube,
-                host: FakeHost::new().ok("helm uninstall", ""),
-            };
-            rollback_failed_install(&b, "yolab-notes", "notes").await;
-            assert!(b.host.ran("helm uninstall notes -n yolab-notes"));
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            mark_install_failed(&kube, "yolab-notes", "helm said no").await;
+        }
+
+        #[tokio::test]
+        async fn a_successful_update_clears_the_failed_mark() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .and(body_partial_json(json!({
+                    "metadata": { "annotations": { ANN_INSTALL_FAILED: null } }
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            clear_install_failed(&kube, "yolab-notes").await;
+        }
+
+        #[tokio::test]
+        async fn an_install_that_failed_before_its_namespace_existed_has_nothing_to_mark() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            set_install_failed(&kube, "yolab-notes", json!("too early"))
+                .await
+                .expect("a namespace that was never created is not an error");
+        }
+
+        #[test]
+        fn a_marked_namespace_reports_why_its_install_failed() {
+            let ann = json!({ ANN_INSTALL_FAILED: "helm said no" });
+            assert_eq!(
+                install_failure(ann.as_object().unwrap()).as_deref(),
+                Some("helm said no")
+            );
+            assert_eq!(install_failure(&serde_json::Map::new()), None);
         }
 
         #[tokio::test]

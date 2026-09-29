@@ -62,21 +62,25 @@ export function nextInstanceName(appId: string, installed: AppInfo[]): string {
   return `${appId}-${Date.now()}`;
 }
 
-export type AppState = "ready" | "starting" | "removing" | "copying";
+export type AppState = "ready" | "starting" | "removing" | "copying" | "failed";
 
 export function appState(app: AppInfo): AppState {
   if (app.status === "uninstalling") return "removing";
+  if (app.status === "failed") return "failed";
   if (app.status === "copying") return "copying";
   if (app.status === "starting") return "starting";
   return "ready";
 }
 
 export function appLabel(app: AppInfo, state: AppState): string {
+  if (state === "failed") return appStateLabel(state);
   return app.detail?.trim() || appStateLabel(state);
 }
 
 export function appStateLabel(state: AppState): string {
   switch (state) {
+    case "failed":
+      return "Failed installation";
     case "copying":
       return "Copying files…";
     case "starting":
