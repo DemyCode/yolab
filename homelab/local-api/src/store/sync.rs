@@ -10,14 +10,33 @@ use super::{default_path, locked, Store};
 
 const INTERVAL: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub const SYNC_PATH: &str = "/api/store/v2/sync";
 
-pub async fn handler(body: Bytes) -> Result<Vec<u8>, (StatusCode, String)> {
-    let mut incoming = Store::load(&crate::system::hostname(), &body).map_err(|e| {
+pub async fn legacy_handler() -> (StatusCode, &'static str) {
+    (
+        StatusCode::GONE,
+        "this machine no longer exchanges the old desired-state document; update this caller",
+    )
+}
+
+fn readable(body: &[u8]) -> Result<Store, (StatusCode, String)> {
+    let incoming = Store::load(&crate::system::hostname(), body).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("this is not a readable desired-state document: {e}"),
         )
     })?;
+    if incoming.carries_retired() {
+        return Err((
+            StatusCode::CONFLICT,
+            "this document still carries app records, which are no longer replicated".to_string(),
+        ));
+    }
+    Ok(incoming)
+}
+
+pub async fn handler(body: Bytes) -> Result<Vec<u8>, (StatusCode, String)> {
+    let mut incoming = readable(&body)?;
 
     let mut ours = locked();
     let changed = ours.merge(&mut incoming).map_err(|e| {
@@ -88,7 +107,7 @@ async fn exchange(
     let ours = locked().save();
 
     let response = client
-        .post(crate::http::peer_url(peer, port, "/api/store/sync"))
+        .post(crate::http::peer_url(peer, port, SYNC_PATH))
         .header(CLUSTER_AUTH_HEADER, token)
         .body(ours)
         .timeout(REQUEST_TIMEOUT)
@@ -101,7 +120,7 @@ async fn exchange(
     );
     let theirs = response.bytes().await?;
 
-    let mut incoming = Store::load(&crate::system::hostname(), &theirs)?;
+    let mut incoming = readable(&theirs).map_err(|(_, why)| anyhow::anyhow!("{peer}: {why}"))?;
     let mut ours = locked();
     if ours.merge(&mut incoming)? {
         if let Err(e) = ours.persist(&default_path()) {
@@ -115,6 +134,7 @@ async fn exchange(
 mod tests {
     use super::*;
     use crate::store::DiskIntent;
+    use automerge::transaction::Transactable;
 
     #[test]
     fn an_exchange_is_a_whole_document_in_each_direction() {
@@ -142,5 +162,42 @@ mod tests {
     #[test]
     fn a_body_that_is_not_a_document_is_refused_rather_than_merged() {
         assert!(Store::load("node1", b"not a document").is_err());
+    }
+
+    fn carrying_an_app() -> Vec<u8> {
+        let mut old = Store::new("node9");
+        old.set_disk_intent("node9", "wwn-z", DiskIntent::On)
+            .unwrap();
+        old.doc
+            .put(
+                automerge::ROOT,
+                "app:yolab-gitea-ab12",
+                r#"{"v":{"config":{"password":"x"}},"o":"user","t":"0000000000001-00000-node9"}"#,
+            )
+            .unwrap();
+        old.save()
+    }
+
+    #[test]
+    fn a_document_still_carrying_apps_is_refused_before_it_can_merge_them_back() {
+        match readable(&carrying_an_app()) {
+            Err((status, _)) => assert_eq!(status, StatusCode::CONFLICT),
+            Ok(_) => panic!("a document with app records must not be merged"),
+        }
+    }
+
+    #[test]
+    fn a_clean_document_is_accepted() {
+        let mut clean = Store::new("node9");
+        clean
+            .set_disk_intent("node9", "wwn-z", DiskIntent::On)
+            .unwrap();
+        assert!(readable(&clean.save()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_old_sync_route_answers_gone_so_an_old_machine_cannot_push_its_history() {
+        let (status, _) = legacy_handler().await;
+        assert_eq!(status, StatusCode::GONE);
     }
 }
