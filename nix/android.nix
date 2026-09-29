@@ -36,7 +36,8 @@
   keystore = "${signingKey}/yolab.jks";
   passwordFile = "${signingKey}/password";
   hasKey =
-    signingKey != null
+    signingKey
+    != null
     && builtins.pathExists keystore
     && builtins.pathExists passwordFile;
 
