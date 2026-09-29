@@ -977,15 +977,19 @@ mod osd_switch_tests {
 const DASHBOARD_PASSWORD_FILE: &str = "/var/lib/ceph/dashboard-password";
 
 pub async fn dashboard_creds() -> Json<serde_json::Value> {
-    let password = std::fs::read_to_string(DASHBOARD_PASSWORD_FILE)
+    Json(creds_from(std::path::Path::new(DASHBOARD_PASSWORD_FILE)))
+}
+
+fn creds_from(password_file: &std::path::Path) -> serde_json::Value {
+    let password = std::fs::read_to_string(password_file)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
-    Json(serde_json::json!({
+    serde_json::json!({
         "username": "admin",
         "password": password,
         "ready": !password.is_empty(),
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -1640,7 +1644,11 @@ pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<Stri
 }
 
 pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
-    let Some(origin) = active_dashboard_origin(&crate::host::RealHost).await else {
+    proxy_via(&crate::host::RealHost, req).await
+}
+
+async fn proxy_via<H: Host>(host: &H, req: axum::extract::Request) -> Response {
+    let Some(origin) = active_dashboard_origin(host).await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "The storage dashboard is not available right now. It runs on whichever \
@@ -1761,6 +1769,114 @@ mod dashboard_tests {
         assert!(dashboard_origin_from(&json!({"dashboard": ""})).is_none());
         assert!(dashboard_origin_from(&json!({"dashboard": "not a url"})).is_none());
         assert!(dashboard_origin_from(&json!({"prometheus": "http://x:9283/"})).is_none());
+    }
+
+    use crate::host::fake::FakeHost;
+    use axum::body::Body;
+    use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+
+    fn mgr_serving(port: u16) -> FakeHost {
+        FakeHost::new().ok(
+            "ceph mgr services",
+            &json!({ "dashboard": format!("http://[::1]:{port}/ceph-dashboard/") }).to_string(),
+        )
+    }
+
+    async fn body_of(res: Response) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn login_request() -> axum::extract::Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/ceph-dashboard/api/auth?lang=en")
+            .header("host", "cluster.6.yolab.io")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"username":"admin"}"#))
+            .unwrap()
+    }
+
+    async fn mgr(port_of: impl FnOnce(u16) -> Mock) -> (MockServer, u16) {
+        let (server, port) = crate::testkit::peer().await;
+        port_of(port).mount(&server).await;
+        (server, port)
+    }
+
+    #[tokio::test]
+    async fn a_request_reaches_the_active_mgr_with_its_path_query_method_and_body() {
+        let (server, port) = mgr(|port| {
+            Mock::given(matchers::method("POST"))
+                .and(matchers::path("/ceph-dashboard/api/auth"))
+                .and(matchers::query_param("lang", "en"))
+                .and(matchers::header("host", format!("[::1]:{port}").as_str()))
+                .and(matchers::header("content-type", "application/json"))
+                .and(matchers::body_string(r#"{"username":"admin"}"#))
+                .respond_with(
+                    ResponseTemplate::new(201)
+                        .insert_header("x-ceph-token", "t0k")
+                        .set_body_string("welcome"),
+                )
+                .expect(1)
+        })
+        .await;
+        let res = proxy_via(&mgr_serving(port), login_request()).await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        assert_eq!(res.headers()["x-ceph-token"], "t0k");
+        assert_eq!(body_of(res).await, "welcome");
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn a_standbys_redirect_is_handed_back_not_followed() {
+        let (_server, port) = mgr(|_| {
+            Mock::given(matchers::any()).respond_with(
+                ResponseTemplate::new(303)
+                    .insert_header("location", "http://[fd00:cafe::9]:7000/ceph-dashboard/"),
+            )
+        })
+        .await;
+        let res = proxy_via(&mgr_serving(port), login_request()).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers()["location"],
+            "http://[fd00:cafe::9]:7000/ceph-dashboard/"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_active_mgr_is_unavailable() {
+        let host = FakeHost::new().ok("ceph mgr services", r#"{"dashboard":""}"#);
+        let res = proxy_via(&host, login_request()).await;
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let silent = FakeHost::new().fail("ceph mgr services", "timed out");
+        let res = proxy_via(&silent, login_request()).await;
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn an_active_mgr_that_does_not_answer_is_a_bad_gateway() {
+        let port = std::net::TcpListener::bind("[::1]:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let res = proxy_via(&mgr_serving(port), login_request()).await;
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn the_dashboard_password_is_offered_once_it_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("dashboard-password");
+        assert_eq!(creds_from(&file)["ready"], false);
+        std::fs::write(&file, "s3cret\n").unwrap();
+        let creds = creds_from(&file);
+        assert_eq!(creds["ready"], true);
+        assert_eq!(creds["password"], "s3cret");
+        assert_eq!(creds["username"], "admin");
     }
 }
 

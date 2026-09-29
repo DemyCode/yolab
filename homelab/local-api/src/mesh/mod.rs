@@ -117,20 +117,29 @@ fn path_statuses(peers: &[wg::Peer], addrs: &[String], now: u64) -> Vec<PathStat
 const PEER_CACHE: &str = "/var/lib/yolab/mesh-peers.json";
 
 pub(crate) async fn peer_addresses(self_ip: &str) -> Vec<String> {
-    match live_peer_addresses(self_ip).await {
+    let kube = crate::k8s::client().await.ok();
+    peer_addresses_from(kube.as_ref(), std::path::Path::new(PEER_CACHE), self_ip).await
+}
+
+async fn peer_addresses_from(
+    kube: Option<&kube::Client>,
+    cache: &std::path::Path,
+    self_ip: &str,
+) -> Vec<String> {
+    match live_peer_addresses(kube, self_ip).await {
         Some(peers) => {
             if let Ok(json) = serde_json::to_string(&peers) {
-                let written = std::path::Path::new(PEER_CACHE)
+                let written = cache
                     .parent()
                     .map(std::fs::create_dir_all)
                     .transpose()
-                    .and_then(|_| std::fs::write(PEER_CACHE, json));
+                    .and_then(|_| std::fs::write(cache, json));
                 written.warn_on_err("mesh: cache the peer list");
             }
             peers
         }
         None => {
-            let cached: Vec<String> = std::fs::read_to_string(PEER_CACHE)
+            let cached: Vec<String> = std::fs::read_to_string(cache)
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default();
@@ -145,11 +154,9 @@ pub(crate) async fn peer_addresses(self_ip: &str) -> Vec<String> {
     }
 }
 
-async fn live_peer_addresses(self_ip: &str) -> Option<Vec<String>> {
+async fn live_peer_addresses(kube: Option<&kube::Client>, self_ip: &str) -> Option<Vec<String>> {
     Some(parse_peer_addresses(
-        &crate::k8s::nodes(&crate::k8s::client().await.ok()?)
-            .await
-            .ok()?,
+        &crate::k8s::nodes(kube?).await.ok()?,
         self_ip,
     ))
 }
@@ -257,7 +264,16 @@ impl crate::runtime::Controller for MeshDiscoveryController {
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut last_probe = self.last_probe.lock().await;
-        tick(&RealHost, &mut last_probe).await?;
+        let cfg = crate::config::Config::from_env();
+        let peers = peer_addresses(&cfg.node_ipv6).await;
+        tick(
+            &RealHost,
+            &peers,
+            cfg.port,
+            &cfg.cluster_token(),
+            &mut last_probe,
+        )
+        .await?;
         Ok(crate::runtime::Tick::Done)
     }
 }
@@ -354,20 +370,23 @@ async fn endpoint_via_tunnel<H: Host>(host: &H, endpoint: &str) -> bool {
     routes_via_tunnel(host, endpoint_host(endpoint)).await
 }
 
-async fn tick<H: Host>(host: &H, last_probe: &mut HashMap<String, Instant>) -> anyhow::Result<()> {
-    let cfg = crate::config::Config::from_env();
-    let self_ip = cfg.node_ipv6.clone();
-    let token = cfg.cluster_token();
+async fn tick<H: Host>(
+    host: &H,
+    peers: &[String],
+    port: u16,
+    token: &str,
+    last_probe: &mut HashMap<String, Instant>,
+) -> anyhow::Result<()> {
     let now = now_secs();
     let self_key = wg::self_public_key(host).await?;
 
-    for peer_addr in peer_addresses(&self_ip).await {
+    for peer_addr in peers.iter().cloned() {
         let Some(probe_addr) = probe_address(&peer_addr) else {
             continue;
         };
         let real_addr = format!("{peer_addr}/128");
 
-        let cand = match fetch_candidates(&peer_addr, cfg.port, &token, &self_key).await {
+        let cand = match fetch_candidates(&peer_addr, port, token, &self_key).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!("mesh: {peer_addr} did not answer: {e:#}");
@@ -437,8 +456,8 @@ async fn probe<H: Host>(host: &H, cand: &Candidates, probe_addr: &str) -> Option
             continue;
         }
 
-        let deadline = Instant::now() + PROBE_TIMEOUT;
-        while Instant::now() < deadline {
+        let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let alive = wg::peers(host)
                 .await
@@ -905,5 +924,203 @@ mod tests {
     fn a_single_node_cluster_yields_no_peers_without_erroring() {
         let nodes = vec![node("fd00:cafe::5")];
         assert!(parse_peer_addresses(&nodes, "fd00:cafe::5").is_empty());
+    }
+
+    fn named_node(name: &str, ip: &str) -> serde_json::Value {
+        serde_json::json!({
+            "metadata": { "name": name },
+            "status": { "addresses": [{ "type": "InternalIP", "address": ip }] },
+        })
+    }
+
+    async fn nodes_api(nodes: Vec<serde_json::Value>) -> (wiremock::MockServer, kube::Client) {
+        use wiremock::{matchers, Mock, ResponseTemplate};
+        let (server, client) = crate::k8s::testing::api_server().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/v1/nodes"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(crate::k8s::testing::list("Node", nodes)),
+            )
+            .mount(&server)
+            .await;
+        (server, client)
+    }
+
+    #[tokio::test]
+    async fn live_peers_are_returned_and_remembered_for_when_the_api_is_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("yolab/mesh-peers.json");
+        let (_server, client) = nodes_api(vec![
+            named_node("n1", "fd00:cafe::5"),
+            named_node("n2", "fd00:cafe::6"),
+        ])
+        .await;
+        let peers = peer_addresses_from(Some(&client), &cache, "fd00:cafe::5").await;
+        assert_eq!(peers, ["fd00:cafe::6"]);
+        let remembered: Vec<String> =
+            serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap();
+        assert_eq!(remembered, ["fd00:cafe::6"]);
+    }
+
+    #[tokio::test]
+    async fn without_the_api_the_remembered_peers_are_used_minus_this_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("mesh-peers.json");
+        std::fs::write(&cache, r#"["fd00:cafe::5","fd00:cafe::6"]"#).unwrap();
+        let peers = peer_addresses_from(None, &cache, "fd00:cafe::5").await;
+        assert_eq!(peers, ["fd00:cafe::6"]);
+        let unreachable = crate::k8s::testing::unreachable();
+        let peers = peer_addresses_from(Some(&unreachable), &cache, "fd00:cafe::5").await;
+        assert_eq!(peers, ["fd00:cafe::6"]);
+    }
+
+    #[tokio::test]
+    async fn an_api_failure_never_overwrites_the_remembered_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("mesh-peers.json");
+        std::fs::write(&cache, r#"["fd00:cafe::6"]"#).unwrap();
+        peer_addresses_from(Some(&crate::k8s::testing::unreachable()), &cache, "fd00:cafe::5")
+            .await;
+        assert_eq!(
+            std::fs::read_to_string(&cache).unwrap(),
+            r#"["fd00:cafe::6"]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn no_api_and_nothing_remembered_is_no_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let peers = peer_addresses_from(None, &dir.path().join("absent.json"), "fd00:cafe::5").await;
+        assert!(peers.is_empty());
+    }
+
+    const TOKEN: &str = "cluster-tok";
+    const LAN: &str = "192.168.1.141";
+
+    async fn candidates_peer() -> (wiremock::MockServer, u16) {
+        use wiremock::{matchers, Mock, ResponseTemplate};
+        let (server, port) = crate::testkit::peer().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/cluster/mesh-candidates"))
+            .and(matchers::header(CLUSTER_AUTH_HEADER, TOKEN))
+            .and(matchers::header(MESH_PUBKEY_HEADER, "SELFKEY="))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_key": PEER,
+                "listen_port": 51821,
+                "addresses": [LAN],
+            })))
+            .mount(&server)
+            .await;
+        (server, port)
+    }
+
+    fn discovering(dumps: &[String], lan_route: &str) -> FakeHost {
+        let mut host = FakeHost::new().ok("wg show wg1 public-key", "SELFKEY=");
+        for d in dumps {
+            host = host.ok("wg show wg1 dump", d);
+        }
+        host.ok(&format!("ip route get {LAN}"), lan_route)
+            .ok("wg set", "")
+    }
+
+    fn peers() -> Vec<String> {
+        vec![crate::testkit::PEER.to_string()]
+    }
+
+    #[tokio::test]
+    async fn a_peer_reachable_over_the_lan_is_probed_then_promoted_to_its_real_address() {
+        let (_server, port) = candidates_peer().await;
+        let before = dump_of(&[hub_line()]);
+        let answered = dump_of(&[
+            hub_line(),
+            peer_line(PEER, &format!("{LAN}:51821"), "::dead:1/128", now_secs(), 1, 1),
+        ]);
+        let host = discovering(&[before, answered], "192.168.1.141 dev enp5s0 src 192.168.1.132");
+        let mut last_probe = HashMap::new();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+
+        let probed = host
+            .position("wg set wg1 peer PEERKEY= endpoint 192.168.1.141:51821 allowed-ips ::dead:1/128 persistent-keepalive 5")
+            .unwrap_or_else(|| panic!("never probed: {:?}", host.calls()));
+        let promoted = host
+            .position("wg set wg1 peer PEERKEY= endpoint 192.168.1.141:51821 allowed-ips ::1/128 persistent-keepalive 25")
+            .unwrap_or_else(|| panic!("never promoted: {:?}", host.calls()));
+        assert!(probed < promoted);
+        assert!(last_probe.contains_key(crate::testkit::PEER));
+    }
+
+    #[tokio::test]
+    async fn an_address_that_only_routes_through_the_tunnel_is_never_probed() {
+        let (_server, port) = candidates_peer().await;
+        let host = discovering(
+            &[dump_of(&[hub_line()])],
+            "192.168.1.141 dev wg1 src fd00:cafe::5",
+        );
+        tick(&host, &peers(), port, TOKEN, &mut HashMap::new())
+            .await
+            .unwrap();
+        assert!(!host.ran("endpoint 192.168.1.141"));
+        assert!(host.ran("wg set wg1 peer PEERKEY= remove"));
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_failed_its_probe_is_not_probed_again_until_the_retry_window() {
+        let (_server, port) = candidates_peer().await;
+        let host = discovering(
+            &[dump_of(&[hub_line()])],
+            "192.168.1.141 dev wg1 src fd00:cafe::5",
+        );
+        let mut last_probe = HashMap::new();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+        let removals = host
+            .calls()
+            .iter()
+            .filter(|c| c.contains("PEERKEY= remove"))
+            .count();
+        assert_eq!(removals, 1, "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_live_direct_path_is_left_exactly_as_it_is() {
+        let (_server, port) = candidates_peer().await;
+        let direct = dump_of(&[
+            hub_line(),
+            peer_line(PEER, &format!("{LAN}:51821"), "::1/128", now_secs(), 5, 5),
+        ]);
+        let host = discovering(&[direct], "unused");
+        tick(&host, &peers(), port, TOKEN, &mut HashMap::new())
+            .await
+            .unwrap();
+        assert!(!host.ran("wg set"), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_stale_direct_path_falls_back_to_the_relay() {
+        let (_server, port) = candidates_peer().await;
+        let stale = dump_of(&[
+            hub_line(),
+            peer_line(PEER, &format!("{LAN}:51821"), "::1/128", 1_000, 5, 5),
+        ]);
+        let host = discovering(&[stale], "unused");
+        let mut last_probe = HashMap::new();
+        tick(&host, &peers(), port, TOKEN, &mut last_probe).await.unwrap();
+        assert!(host.ran("wg set wg1 peer PEERKEY= remove"));
+        assert!(!host.ran("allowed-ips ::dead:1/128"));
+        assert!(last_probe.contains_key(crate::testkit::PEER));
+    }
+
+    #[tokio::test]
+    async fn a_peer_whose_api_does_not_answer_is_skipped_without_touching_wireguard() {
+        let port = std::net::TcpListener::bind("[::1]:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let host = discovering(&[dump_of(&[hub_line()])], "unused");
+        tick(&host, &peers(), port, TOKEN, &mut HashMap::new())
+            .await
+            .unwrap();
+        assert!(!host.ran("wg set"));
     }
 }

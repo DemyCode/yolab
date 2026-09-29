@@ -1,3 +1,5 @@
+use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -20,7 +22,11 @@ pub async fn legacy_handler() -> (StatusCode, &'static str) {
 }
 
 fn readable(body: &[u8]) -> Result<Store, (StatusCode, String)> {
-    let incoming = Store::load(&crate::system::hostname(), body).map_err(|e| {
+    readable_as(&crate::system::hostname(), body)
+}
+
+fn readable_as(node: &str, body: &[u8]) -> Result<Store, (StatusCode, String)> {
+    let incoming = Store::load(node, body).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("this is not a readable desired-state document: {e}"),
@@ -104,7 +110,34 @@ async fn exchange(
     port: u16,
     token: &str,
 ) -> anyhow::Result<()> {
-    let ours = locked().save();
+    exchange_into(
+        client,
+        peer,
+        port,
+        token,
+        super::shared(),
+        &crate::system::hostname(),
+        &default_path(),
+    )
+    .await
+}
+
+fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
+    store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn exchange_into(
+    client: &crate::http::Client,
+    peer: &str,
+    port: u16,
+    token: &str,
+    store: &Mutex<Store>,
+    node: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let ours = lock(store).save();
 
     let response = client
         .post(crate::http::peer_url(peer, port, SYNC_PATH))
@@ -120,10 +153,11 @@ async fn exchange(
     );
     let theirs = response.bytes().await?;
 
-    let mut incoming = readable(&theirs).map_err(|(_, why)| anyhow::anyhow!("{peer}: {why}"))?;
-    let mut ours = locked();
+    let mut incoming =
+        readable_as(node, &theirs).map_err(|(_, why)| anyhow::anyhow!("{peer}: {why}"))?;
+    let mut ours = lock(store);
     if ours.merge(&mut incoming)? {
-        if let Err(e) = ours.persist(&default_path()) {
+        if let Err(e) = ours.persist(path) {
             tracing::warn!("{peer}'s choices were merged but not saved to disk ({e})");
         }
     }
@@ -206,5 +240,107 @@ mod tests {
     async fn the_old_sync_route_answers_gone_so_an_old_machine_cannot_push_its_history() {
         let (status, _) = legacy_handler().await;
         assert_eq!(status, StatusCode::GONE);
+    }
+
+    use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+
+    fn with_disk(node: &str, disk: &str) -> Store {
+        let mut s = Store::new(node);
+        s.set_disk_intent(node, disk, DiskIntent::On).unwrap();
+        s
+    }
+
+    async fn peer_replying(status: u16, reply: Vec<u8>) -> (MockServer, u16) {
+        let (server, port) = crate::testkit::peer().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path(SYNC_PATH))
+            .and(matchers::header(CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .respond_with(ResponseTemplate::new(status).set_body_bytes(reply))
+            .mount(&server)
+            .await;
+        (server, port)
+    }
+
+    async fn exchange_with(port: u16, store: &Mutex<Store>, path: &Path) -> anyhow::Result<()> {
+        exchange_into(
+            &crate::http::client(),
+            crate::testkit::PEER,
+            port,
+            "cluster-tok",
+            store,
+            "node1",
+            path,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn an_exchange_sends_our_choices_and_keeps_the_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+        let (server, port) = peer_replying(200, with_disk("node2", "wwn-b").save()).await;
+        let store = Mutex::new(with_disk("node1", "wwn-a"));
+
+        exchange_with(port, &store, &path).await.unwrap();
+
+        let sent = &server.received_requests().await.unwrap()[0].body;
+        assert_eq!(Store::load("node2", sent).unwrap().disk_claims().unwrap().len(), 1);
+        assert_eq!(lock(&store).disk_claims().unwrap().len(), 2);
+        let on_disk = Store::open("node1", &path).unwrap();
+        assert_eq!(on_disk.disk_claims().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_adds_nothing_is_not_written_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+        let mut ours = with_disk("node1", "wwn-a");
+        let (_server, port) = peer_replying(200, ours.save()).await;
+        let store = Mutex::new(ours);
+
+        exchange_with(port, &store, &path).await.unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_refuses_the_exchange_changes_nothing_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+        let (_server, port) = peer_replying(401, with_disk("node2", "wwn-b").save()).await;
+        let store = Mutex::new(with_disk("node1", "wwn-a"));
+
+        let err = exchange_with(port, &store, &path).await.unwrap_err();
+
+        assert!(err.to_string().contains("401"));
+        assert_eq!(lock(&store).disk_claims().unwrap().len(), 1);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_peer_still_carrying_apps_is_not_merged_back_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+        let (_server, port) = peer_replying(200, carrying_an_app()).await;
+        let store = Mutex::new(with_disk("node1", "wwn-a"));
+
+        let err = exchange_with(port, &store, &path).await.unwrap_err();
+
+        assert!(err.to_string().contains("app records"));
+        assert!(!lock(&store).carries_retired());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn garbage_from_a_peer_is_an_error_not_a_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+        let (_server, port) = peer_replying(200, b"<html>proxy error</html>".to_vec()).await;
+        let store = Mutex::new(with_disk("node1", "wwn-a"));
+
+        let err = exchange_with(port, &store, &path).await.unwrap_err();
+
+        assert!(err.to_string().contains("not a readable desired-state document"));
+        assert_eq!(lock(&store).disk_claims().unwrap().len(), 1);
     }
 }

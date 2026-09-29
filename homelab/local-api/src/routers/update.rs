@@ -14,6 +14,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     config::{Channel, Config},
+    host::Host,
     AppState,
 };
 
@@ -57,7 +58,13 @@ async fn emit(out: &tokio::sync::mpsc::Sender<String>, msg: impl Into<String>) {
     let _ = out.send(msg.into()).await;
 }
 
-async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bool {
+const SWITCH_UNIT: &str = "nixos-rebuild-switch-to-configuration.service";
+
+async fn run_update<H: Host>(
+    host: &H,
+    cfg: &Config,
+    out: &tokio::sync::mpsc::Sender<String>,
+) -> bool {
     let ch = cfg.channel();
 
     emit(
@@ -66,7 +73,7 @@ async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bo
     )
     .await;
 
-    clear_stale_rebuild_unit();
+    let _ = host.systemctl(&["reset-failed", SWITCH_UNIT]).await;
 
     let args = rebuild_args(cfg, &ch);
     emit(out, format!("$ nixos-rebuild {}", args.join(" "))).await;
@@ -76,43 +83,17 @@ async fn run_update(cfg: &Config, out: &tokio::sync::mpsc::Sender<String>) -> bo
     )
     .await;
 
-    let (Ok(log_file), Ok(log2)) = (
-        std::fs::File::create(&cfg.rebuild_log),
-        std::fs::File::create(&cfg.rebuild_log),
-    ) else {
-        emit(out, "[ERROR] could not open the rebuild log").await;
-        return false;
-    };
-
-    let child = std::process::Command::new("nixos-rebuild")
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(log_file)
-        .stderr(log2)
-        .spawn();
-
-    let mut child = match child {
-        Ok(c) => c,
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    match host
+        .spawn_detached("nixos-rebuild", &argv, &cfg.rebuild_log, &cfg.rebuild_pid)
+        .await
+    {
+        Ok(_) => true,
         Err(e) => {
             emit(out, format!("[ERROR] could not launch nixos-rebuild: {e}")).await;
-            return false;
+            false
         }
-    };
-
-    let pid = child.id();
-    let _ = std::fs::write(&cfg.rebuild_pid, pid.to_string());
-    let pid_file = cfg.rebuild_pid.clone();
-    std::thread::spawn(move || {
-        let _ = child.wait();
-        if std::fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            == Some(pid)
-        {
-            let _ = std::fs::remove_file(&pid_file);
-        }
-    });
-    true
+    }
 }
 
 pub async fn update(State(state): State<AppState>) -> Response {
@@ -139,7 +120,7 @@ pub async fn update(State(state): State<AppState>) -> Response {
 
     tokio::spawn(async move {
         let _guard = UpdateGuard;
-        run_update(&cfg, &tx).await;
+        run_update(&crate::host::RealHost, &cfg, &tx).await;
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
@@ -178,7 +159,7 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 
     tokio::spawn(async move {
         let _guard = UpdateGuard;
-        run_update(&cfg, &tx).await;
+        run_update(&crate::host::RealHost, &cfg, &tx).await;
     });
 
     Json(serde_json::json!({"status": "started"}))
@@ -201,18 +182,6 @@ fn rebuild_args(cfg: &Config, ch: &Channel) -> Vec<String> {
         "--max-jobs".into(),
         "1".into(),
     ]
-}
-
-fn clear_stale_rebuild_unit() {
-    let _ = std::process::Command::new("systemctl")
-        .args([
-            "reset-failed",
-            "nixos-rebuild-switch-to-configuration.service",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
 }
 
 const PEER_SETTLE_TIMEOUT: Duration = Duration::from_secs(1800);
@@ -366,5 +335,195 @@ mod tests {
         let args = rebuild_args(&cfg, &ch);
         let i = args.iter().position(|a| a == "--flake").unwrap();
         assert_eq!(args[i + 1], "github:someone/fork/v2.1.0#yolab");
+    }
+
+    use crate::host::fake::FakeHost;
+    use crate::runtime::fleet::Fleet;
+    use crate::testkit::{peer, PEER};
+    use wiremock::{matchers, Mock, ResponseTemplate};
+
+    fn update_cfg(dir: &tempfile::TempDir) -> Config {
+        let mut cfg = cfg_in(dir);
+        cfg.rebuild_log = dir.path().join("rebuild.log");
+        cfg.rebuild_pid = dir.path().join("rebuild.pid");
+        cfg
+    }
+
+    async fn run(host: &FakeHost, cfg: &Config) -> (bool, Vec<String>) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let launched = run_update(host, cfg, &tx).await;
+        drop(tx);
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line);
+        }
+        (launched, lines)
+    }
+
+    #[tokio::test]
+    async fn an_update_clears_the_failed_switch_unit_before_launching_the_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = update_cfg(&dir);
+        let host = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .ok("nixos-rebuild switch", "building the system");
+        let (launched, lines) = run(&host, &cfg).await;
+        assert!(launched);
+        let cleared = host
+            .position(&format!("systemctl reset-failed {SWITCH_UNIT}"))
+            .expect("a failed switch unit makes the next switch refuse to start");
+        let rebuilt = host
+            .position("nixos-rebuild switch --flake")
+            .expect("never launched");
+        assert!(cleared < rebuilt, "{:?}", host.calls());
+        assert!(lines.iter().any(|l| l.starts_with("$ nixos-rebuild switch")));
+        assert!(!lines.iter().any(|l| l.starts_with("[ERROR]")));
+    }
+
+    #[tokio::test]
+    async fn the_rebuild_writes_into_the_log_and_pid_file_the_ui_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = update_cfg(&dir);
+        let host = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .ok("nixos-rebuild switch", "building the system");
+        run(&host, &cfg).await;
+        assert_eq!(
+            std::fs::read_to_string(&cfg.rebuild_log).unwrap(),
+            "building the system"
+        );
+        assert!(cfg.rebuild_pid.exists());
+    }
+
+    #[tokio::test]
+    async fn a_switch_unit_that_cannot_be_cleared_does_not_stop_the_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = update_cfg(&dir);
+        let host = FakeHost::new()
+            .fail("systemctl reset-failed", "Unit not loaded")
+            .ok("nixos-rebuild switch", "");
+        let (launched, _) = run(&host, &cfg).await;
+        assert!(launched);
+        assert!(host.ran("nixos-rebuild switch"));
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_that_cannot_start_is_reported_not_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = update_cfg(&dir);
+        let host = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .fail("nixos-rebuild", "No such file or directory");
+        let (launched, lines) = run(&host, &cfg).await;
+        assert!(!launched);
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("[ERROR] could not launch nixos-rebuild")));
+        assert!(!cfg.rebuild_pid.exists());
+    }
+
+    fn fleet(port: u16) -> UpdateFleet {
+        UpdateFleet {
+            client: crate::http::client(),
+            port,
+            token: "cluster-tok".into(),
+            channel: serde_json::json!({ "url": "github:DemyCode/yolab", "ref": "v2" }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peer_is_given_this_machines_channel_before_being_told_to_update() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("PUT"))
+            .and(matchers::path("/api/update/channel"))
+            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .and(matchers::body_json(
+                serde_json::json!({ "url": "github:DemyCode/yolab", "ref": "v2" }),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/api/update/trigger"))
+            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        fleet(port).act(PEER).await.unwrap();
+        let paths: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().to_string())
+            .collect();
+        assert_eq!(paths, ["/api/update/channel", "/api/update/trigger"]);
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_refuses_the_channel_is_never_told_to_update() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("PUT"))
+            .and(matchers::path("/api/update/channel"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/api/update/trigger"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let err = fleet(port).act(PEER).await.unwrap_err();
+        assert!(err.to_string().contains("refused the channel"));
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_refuses_to_update_stops_the_roll() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("PUT"))
+            .and(matchers::path("/api/update/channel"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/api/update/trigger"))
+            .respond_with(ResponseTemplate::new(409))
+            .mount(&server)
+            .await;
+        let err = fleet(port).act(PEER).await.unwrap_err();
+        assert!(err.to_string().contains("refused to start updating"));
+    }
+
+    #[tokio::test]
+    async fn a_peer_has_settled_only_once_its_api_answers() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/status"))
+            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/status"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let f = fleet(port);
+        assert!(!f.settled(PEER).await);
+        assert!(f.settled(PEER).await);
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_is_down_has_not_settled() {
+        let port = std::net::TcpListener::bind("[::1]:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(!fleet(port).settled(PEER).await);
     }
 }

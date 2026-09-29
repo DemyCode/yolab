@@ -323,6 +323,47 @@ pub async fn stream_lines(
     Ok(status.success())
 }
 
+pub fn spawn_detached(
+    bin: &str,
+    args: &[&str],
+    log: &std::path::Path,
+    pid_file: &std::path::Path,
+) -> Result<u32, CmdError> {
+    let cmd = render(bin, args);
+    let io = |source| CmdError::Spawn {
+        cmd: cmd.clone(),
+        source,
+    };
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir).map_err(io)?;
+    }
+    let stdout = std::fs::File::create(log).map_err(io)?;
+    let stderr = stdout.try_clone().map_err(io)?;
+    let mut child = std::process::Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .map_err(io)?;
+    let pid = child.id();
+    if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
+        tracing::warn!("{cmd}: could not record pid {pid} in {}: {e}", pid_file.display());
+    }
+    let pid_file = pid_file.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            == Some(pid)
+        {
+            let _ = std::fs::remove_file(&pid_file);
+        }
+    });
+    Ok(pid)
+}
+
 pub(crate) fn into_checked(
     bin: &str,
     args: &[&str],
@@ -485,5 +526,72 @@ mod tests {
             }
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    fn wait_until_gone(path: &std::path::Path) {
+        for _ in 0..100 {
+            if !path.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("{} was never removed", path.display());
+    }
+
+    #[test]
+    fn a_detached_command_logs_stdout_and_stderr_into_one_file_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("logs/rebuild.log");
+        let pid_file = dir.path().join("rebuild.pid");
+        let pid = spawn_detached(
+            "sh",
+            &["-c", "echo first; echo second >&2; echo third"],
+            &log,
+            &pid_file,
+        )
+        .unwrap();
+        assert!(pid > 0);
+        wait_until_gone(&pid_file);
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(text.lines().collect::<Vec<_>>(), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn a_detached_command_that_cannot_start_records_no_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("rebuild.pid");
+        let err = spawn_detached(
+            "yolab-definitely-not-a-binary",
+            &[],
+            &dir.path().join("rebuild.log"),
+            &pid_file,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CmdError::Spawn { .. }));
+        assert!(!pid_file.exists());
+    }
+
+    #[test]
+    fn a_newer_pid_file_is_not_removed_by_an_older_command_finishing() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("rebuild.pid");
+        let marker = dir.path().join("done");
+        let script = format!("sleep 0.2; touch {}", marker.display());
+        spawn_detached(
+            "sh",
+            &["-c", &script],
+            &dir.path().join("rebuild.log"),
+            &pid_file,
+        )
+        .unwrap();
+        std::fs::write(&pid_file, "999999").unwrap();
+        for _ in 0..100 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(std::fs::read_to_string(&pid_file).unwrap(), "999999");
     }
 }

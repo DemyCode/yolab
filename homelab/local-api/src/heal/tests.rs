@@ -711,3 +711,178 @@ fn backups_stop_only_when_app_data_is_lost() {
     lost.insert("yolab-fs-data0".into(), BTreeSet::from(["3.1".to_string()]));
     assert!(blocked_by_loss(&lost).is_some());
 }
+
+mod real_network {
+    use super::*;
+    use crate::testkit::{peer, PEER};
+    use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+
+    const TOKEN: &str = "cluster-tok";
+
+    fn network(port: u16, platform_url: &str, kube: kube::Client) -> RealNetwork {
+        RealNetwork {
+            kube: crate::k8s::Kube::with(kube),
+            client: crate::http::client(),
+            port,
+            token: TOKEN.into(),
+            platform_url: platform_url.into(),
+        }
+    }
+
+    fn to_peer(port: u16) -> RealNetwork {
+        network(port, "", crate::k8s::testing::unreachable())
+    }
+
+    async fn answering(verb: &str, route: &str, status: u16, body: Value) -> (MockServer, u16) {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method(verb))
+            .and(matchers::path(route))
+            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, TOKEN))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        (server, port)
+    }
+
+    #[tokio::test]
+    async fn a_peer_is_asked_who_it_is_with_the_cluster_token() {
+        let (_server, port) = answering(
+            "GET",
+            "/api/heal/peer",
+            200,
+            json!({ "name": "node2", "addr": "fd00:cafe::6", "reset": null }),
+        )
+        .await;
+        let info = to_peer(port).peer(PEER).await.unwrap();
+        assert_eq!(info.name, "node2");
+        assert_eq!(info.addr, "fd00:cafe::6");
+        assert!(info.reset.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_peer_is_sent_the_whole_prepare_request() {
+        let request = PrepareRequest {
+            heal_id: "abc123".into(),
+            driver: "node1".into(),
+            fsid: "11111111-2222-3333-4444-555555555555".into(),
+            server_addr: "https://[fd00:cafe::5]:6443".into(),
+        };
+        let (server, port) = answering("POST", "/api/heal/peer/prepare", 200, json!({})).await;
+        to_peer(port).prepare(PEER, &request).await.unwrap();
+        let sent: PrepareRequest = server.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
+        assert_eq!(sent, request);
+    }
+
+    #[tokio::test]
+    async fn arming_and_undoing_name_the_heal() {
+        let (arm, port) = answering("POST", "/api/heal/peer/arm", 200, json!({})).await;
+        to_peer(port).arm(PEER, "abc123").await.unwrap();
+        let sent: Value = arm.received_requests().await.unwrap()[0].body_json().unwrap();
+        assert_eq!(sent, json!({ "heal_id": "abc123" }));
+
+        let (undo, port) = answering("POST", "/api/heal/peer/undo", 200, json!({})).await;
+        to_peer(port).undo(PEER, "abc123").await.unwrap();
+        let sent: Value = undo.received_requests().await.unwrap()[0].body_json().unwrap();
+        assert_eq!(sent, json!({ "heal_id": "abc123" }));
+    }
+
+    #[tokio::test]
+    async fn a_peer_is_rebooted_through_its_own_api() {
+        let (_server, port) = answering("POST", "/api/system/reboot", 200, json!({})).await;
+        to_peer(port).reboot(PEER).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refusal_carries_the_peers_own_reason() {
+        let (_server, port) = answering(
+            "POST",
+            "/api/heal/peer/arm",
+            409,
+            json!({ "error": "this machine was not prepared for heal abc123" }),
+        )
+        .await;
+        let err = to_peer(port).arm(PEER, "abc123").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.starts_with("409"), "{msg}");
+        assert!(msg.contains("was not prepared for heal abc123"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn without_a_platform_or_a_token_there_are_no_platform_nodes() {
+        let server = MockServer::start().await;
+        let unknown = network(1, "", crate::k8s::testing::unreachable());
+        assert_eq!(unknown.platform_nodes().await.unwrap(), None);
+        let mut anonymous = network(1, &server.uri(), crate::k8s::testing::unreachable());
+        anonymous.token = String::new();
+        assert_eq!(anonymous.platform_nodes().await.unwrap(), None);
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn platform_nodes_are_listed_with_the_account_token() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/nodes"))
+            .and(matchers::header("authorization", "Bearer cluster-tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "node_id": 7, "sub_ipv6": "fd00:cafe::6", "extra": "ignored" }
+            ])))
+            .mount(&server)
+            .await;
+        let nodes = network(1, &server.uri(), crate::k8s::testing::unreachable())
+            .platform_nodes()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            nodes,
+            [PlatformNode {
+                node_id: 7,
+                sub_ipv6: "fd00:cafe::6".into()
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_platform_node_that_is_already_gone_is_success() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("DELETE"))
+            .and(matchers::path("/nodes/7"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("DELETE"))
+            .and(matchers::path("/nodes/8"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let net = network(1, &server.uri(), crate::k8s::testing::unreachable());
+        net.delete_platform_node(7).await.unwrap();
+        assert!(net.delete_platform_node(8).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn without_a_reachable_kubernetes_there_are_no_kubernetes_nodes() {
+        assert_eq!(to_peer(1).kubernetes_nodes().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_api_server_that_is_not_ready_is_not_asked_for_nodes() {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/readyz"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        assert_eq!(network(1, "", kube).kubernetes_nodes().await.unwrap(), None);
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.url.path() == "/readyz"));
+    }
+}
