@@ -3,11 +3,11 @@ name: gitea
 description: "Lightweight self-hosted Git service"
 home: https://about.gitea.com
 type: application
-version: 0.1.5
+version: 0.1.6
 
 dependencies:
   - name: yolab-common
-    version: "0.1.4"
+    version: "0.1.5"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

@@ -3,12 +3,12 @@ name: searxng
 description: "Privacy-respecting metasearch engine"
 home: https://docs.searxng.org
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: "1"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.4"
+    version: "0.1.5"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
