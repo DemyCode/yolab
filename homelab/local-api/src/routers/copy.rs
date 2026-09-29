@@ -11,6 +11,7 @@ const SNAPSHOT_WAIT_SECS: u64 = 300;
 const CLONE_WAIT_SECS: u64 = 6 * 60 * 60;
 const POLL_SECS: u64 = 5;
 const REBASE_WAIT_SECS: u64 = 300;
+const TUNNEL_STATE_DIR: &str = "yolab-state";
 const REBASE_IMAGE: &str =
     "ghcr.io/demycode/wg-register:main-latest@sha256:1f68d09b5e4ef2a83b0b50df83633ca397be772cd8d72ebdf8c971f1677f414a";
 const COPY_LABEL: &str = "yolab.io/copy";
@@ -273,7 +274,8 @@ fn rebase_job_manifest(
 ) -> Value {
     let command = format!(
         "if [ -d /data/{source_dir} ] && [ ! -e /data/{dest_dir} ]; then \
-         mv /data/{source_dir} /data/{dest_dir}; fi"
+         mv /data/{source_dir} /data/{dest_dir}; fi; \
+         rm -rf /data/{dest_dir}/{TUNNEL_STATE_DIR}"
     );
     json!({
         "apiVersion": "batch/v1",
@@ -774,6 +776,28 @@ mod tests {
             m["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"],
             "gitea-cd34-data"
         );
+    }
+
+    #[test]
+    fn a_duplicate_drops_the_sources_tunnel_so_it_registers_its_own_address() {
+        let m = rebase_job_manifest(
+            "yolab-rebase-abcd",
+            "yolab-minecraft-9mqy",
+            "minecraft-9mqy-data",
+            "minecraft-cza3",
+            "minecraft-9mqy",
+        );
+        let command = m["spec"]["template"]["spec"]["containers"][0]["args"][0]
+            .as_str()
+            .unwrap();
+        let moved = command
+            .find("mv /data/minecraft-cza3 /data/minecraft-9mqy")
+            .unwrap();
+        let dropped = command
+            .find("rm -rf /data/minecraft-9mqy/yolab-state")
+            .unwrap();
+        assert!(moved < dropped, "{command}");
+        assert!(!command.contains("rm -rf /data/minecraft-cza3"), "{command}");
     }
 
     #[test]
