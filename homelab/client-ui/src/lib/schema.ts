@@ -2,6 +2,7 @@ export interface SchemaProp {
   type?: string;
   title?: string;
   default?: unknown;
+  const?: unknown;
   description?: string;
   format?: string;
   enum?: string[];
