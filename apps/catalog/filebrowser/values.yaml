@@ -3,6 +3,7 @@ config:
   subdomain: filebrowser
   password: ""
   storage_size: 50Gi
+  file_explorer_enabled: false
 
 yolab:
   platformApiUrl: ""

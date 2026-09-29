@@ -3,7 +3,7 @@ name: filebrowser
 description: Web-based file manager for your storage
 home: https://filebrowser.org
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: "2"
 
 dependencies:
