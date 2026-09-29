@@ -163,6 +163,8 @@ in
         mkdir -p "$GRADLE_USER_HOME/caches"
         cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
         chmod -R u+w "$GRADLE_USER_HOME"
+        printf 'android.aapt2FromMavenOverride=%s\n' "${sdkRoot}/build-tools/36.0.0/aapt2" \
+          >> "$GRADLE_USER_HOME/gradle.properties"
 
         cargo tauri android init --ci
         ${gradlewShim}
