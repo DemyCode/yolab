@@ -217,10 +217,10 @@ for ALIAS in $ALIASES; do
     ALIAS_VAR=${ALIAS%%=*}
     ALIAS_NAME=${ALIAS#*=}
     case "$ALIAS_VAR" in
-        "" | [0-9]* | *[!A-Z0-9_]*)
-            echo "ERROR: alias '$ALIAS' must be VAR=name, with VAR made of A-Z, 0-9 and _" >&2
-            exit 1
-            ;;
+    "" | [0-9]* | *[!A-Z0-9_]*)
+        echo "ERROR: alias '$ALIAS' must be VAR=name, with VAR made of A-Z, 0-9 and _" >&2
+        exit 1
+        ;;
     esac
     if [ "$ALIAS_NAME" = "$ALIAS" ] || [ -z "$ALIAS_NAME" ]; then
         echo "ERROR: alias '$ALIAS' names no DNS record" >&2
