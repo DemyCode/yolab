@@ -4,6 +4,7 @@ set -e
 PLATFORM_API_URL="${PLATFORM_API_URL:?PLATFORM_API_URL is required}"
 ACCOUNT_TOKEN="${ACCOUNT_TOKEN:?ACCOUNT_TOKEN is required}"
 SERVICE_NAME="${SERVICE_NAME:-}"
+ALIASES="${ALIASES:-}"
 
 WG_DIR="${WG_DIR:-/wireguard}"
 YOLAB_DIR="${YOLAB_DIR:-/yolab}"
@@ -211,6 +212,49 @@ if [ "$REUSE" = "0" ]; then
     chmod 600 "$STATE_FILE"
 fi
 
+ALIAS_EXPORTS=""
+for ALIAS in $ALIASES; do
+    ALIAS_VAR=${ALIAS%%=*}
+    ALIAS_NAME=${ALIAS#*=}
+    case "$ALIAS_VAR" in
+        "" | [0-9]* | *[!A-Z0-9_]*)
+            echo "ERROR: alias '$ALIAS' must be VAR=name, with VAR made of A-Z, 0-9 and _" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$ALIAS_NAME" = "$ALIAS" ] || [ -z "$ALIAS_NAME" ]; then
+        echo "ERROR: alias '$ALIAS' names no DNS record" >&2
+        exit 1
+    fi
+    ALIAS_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
+        -X POST "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/records" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+        -d "{\"record_type\":\"AAAA\",\"name\":\"$ALIAS_NAME\",\"value\":\"$SUB_IPV6\"}" || true)
+    ALIAS_HTTP=$(printf '%s' "$ALIAS_RESP" | tail -1)
+    ALIAS_BODY=$(printf '%s' "$ALIAS_RESP" | head -n -1)
+    if [ "$ALIAS_HTTP" -ge 200 ] 2>/dev/null && [ "$ALIAS_HTTP" -lt 300 ]; then
+        ALIAS_FQDN=$(printf '%s' "$ALIAS_BODY" | jq -r .fqdn)
+        TMP_STATE=$(mktemp)
+        jq --arg var "$ALIAS_VAR" --arg fqdn "$ALIAS_FQDN" '.aliases[$var] = $fqdn' \
+            "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
+        chmod 600 "$STATE_FILE"
+        echo "DNS alias claimed: $ALIAS_FQDN -> $SUB_IPV6"
+    elif [ "$ALIAS_HTTP" -ge 400 ] 2>/dev/null && [ "$ALIAS_HTTP" -lt 500 ]; then
+        echo "ERROR: could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP): $ALIAS_BODY" >&2
+        exit 1
+    else
+        ALIAS_FQDN=$(jq -r --arg var "$ALIAS_VAR" '.aliases[$var] // empty' "$STATE_FILE")
+        if [ -z "$ALIAS_FQDN" ]; then
+            echo "ERROR: could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP) and it was never claimed before" >&2
+            exit 1
+        fi
+        echo "WARNING: claiming '$ALIAS_NAME' returned HTTP $ALIAS_HTTP, continuing with cached $ALIAS_FQDN"
+    fi
+    ALIAS_EXPORTS="${ALIAS_EXPORTS}export $ALIAS_VAR=$ALIAS_FQDN
+"
+done
+
 URL=""
 [ -n "$FQDN" ] && URL="https://$FQDN"
 
@@ -235,6 +279,7 @@ export YOLAB_IPV6=$SUB_IPV6
 export YOLAB_FQDN=$FQDN
 export YOLAB_URL=$URL
 EOF
+printf '%s' "$ALIAS_EXPORTS" >>"$YOLAB_DIR/env"
 
 echo "YOLAB_OUTPUT tunnel_id $TUNNEL_ID"
 echo "YOLAB_OUTPUT ipv6 $SUB_IPV6"
