@@ -49,7 +49,10 @@ describe("streamEvents", () => {
   });
 
   it("treats a stream that ends without a verdict as dropped, because the box keeps going", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => streaming(frames("Installing…"))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => streaming(frames("Installing…"))),
+    );
     const result = await streamEvents("/api/apps/gitea", {}, () => {});
     expect(result.ok).toBe(false);
     expect(result.dropped).toBe(true);
@@ -67,7 +70,10 @@ describe("streamEvents", () => {
       }
       throw new TypeError("network error");
     };
-    vi.stubGlobal("fetch", vi.fn(async () => streaming(read)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => streaming(read)),
+    );
     const lines: string[] = [];
     const result = await streamEvents("/api/apps/gitea", {}, (l) =>
       lines.push(l),
